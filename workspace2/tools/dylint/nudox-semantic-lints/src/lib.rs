@@ -57,6 +57,39 @@ impl<'tcx> LateLintPass<'tcx> for NudoxSemanticLints {
 }
 
 #[test]
-fn ui() {
-    dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
+fn ui() -> std::io::Result<()> {
+    use std::{ffi::OsStr, io::ErrorKind, path::Path};
+
+    let fixture_root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/ui"));
+    let mut source_count = 0;
+    for entry in fixture_root.read_dir()? {
+        let path = entry?.path();
+        match path.extension() {
+            Some(extension) if extension == OsStr::new("rs") => {
+                source_count += 1;
+                if !path.with_extension("stderr").is_file() {
+                    return Err(ErrorKind::InvalidData.into());
+                }
+            }
+            Some(extension) if extension == OsStr::new("stderr") => {
+                if !path.with_extension("rs").is_file() {
+                    return Err(ErrorKind::InvalidData.into());
+                }
+            }
+            _ => {}
+        }
+    }
+    if source_count == 0 {
+        return Err(ErrorKind::NotFound.into());
+    }
+
+    dylint_testing::ui::Test::src_base(env!("CARGO_PKG_NAME"), fixture_root)
+        .rustc_flags([
+            "-Dnudox_dynamic_dispatch",
+            "-Dnudox_erased_map_err",
+            "-Dnudox_redundant_public_accessor",
+            "-Dnudox_stringly_state_field",
+        ])
+        .run();
+    Ok(())
 }

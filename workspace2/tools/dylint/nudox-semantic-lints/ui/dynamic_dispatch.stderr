@@ -1,0 +1,39 @@
+error: explicit trait object introduces dynamic dispatch
+  --> $DIR/dynamic_dispatch.rs:5:20
+   |
+LL | fn direct(source: &dyn Source) {
+   |                    ^^^^^^^^^^
+   |
+   = help: use an enum, a generic parameter, or an associated type at the shipping boundary
+   = note: requested on the command line with `-D nudox-dynamic-dispatch`
+
+error: explicit trait object introduces dynamic dispatch
+  --> $DIR/dynamic_dispatch.rs:11:27
+   |
+LL |         fn $name(source: &dyn Source) {
+   |                           ^^^^^^^^^^
+...
+LL | local_dynamic_boundary!(expanded);
+   | --------------------------------- in this macro invocation
+   |
+   = help: use an enum, a generic parameter, or an associated type at the shipping boundary
+   = note: this error originates in the macro `local_dynamic_boundary` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: explicit trait object introduces dynamic dispatch
+  --> $DIR/dynamic_dispatch.rs:33:23
+   |
+LL | fn laundered(source: &PluginSource) {
+   |                       ^^^^^^^^^^^^
+   |
+   = help: use an enum, a generic parameter, or an associated type at the shipping boundary
+
+error: explicit trait object introduces dynamic dispatch
+  --> $DIR/dynamic_dispatch.rs:37:29
+   |
+LL | fn nested_laundered(source: OwnedPluginSource) {
+   |                             ^^^^^^^^^^^^^^^^^
+   |
+   = help: use an enum, a generic parameter, or an associated type at the shipping boundary
+
+error: aborting due to 4 previous errors
+

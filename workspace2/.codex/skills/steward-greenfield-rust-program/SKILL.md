@@ -72,7 +72,9 @@ While Terra works, produce durable shared progress in disjoint paths:
    enforcement with pass/fail fixtures; remove text heuristics that infer Rust semantics.
 3. **Cross-cutting research:** study production repositories and primary sources for one unresolved
    protocol, compiler, index, concurrency, allocation, SIMD, or storage decision. Convert learning
-   into a test, measurement, or decision record.
+   into a test, measurement, or decision record. Resolve compiler and dependency sources from the
+   pinned sysroot, lockfile, or Cargo checkout and search them with bounded `rg` queries. Never scan
+   the filesystem root or an unbounded home tree to discover a source already named by its authority.
 4. **Compaction:** search accepted code for duplicate invariant owners, repeated decoding, leaky
    witnesses, weak errors, needless ownership, allocation lifetime mismatch, universal generics,
    forwarding helpers, and branch/work duplication.
@@ -112,7 +114,9 @@ When a manager returns:
    abstractions when the new capability reveals duplicate or weaker invariant ownership.
 3. Run the chief public journey, affected workspace gates, semantic lints, and novel cross-cutting
    attacks: owner mixing, raw authority rebranding, source/owner loss, cancellation/restart, constant
-   input, hidden allocation/work, and dependency leakage as applicable.
+   input, hidden allocation/work, and dependency leakage as applicable. When the candidate changes
+   toolchain/bootstrap code, add a fresh-cache falsifier: empty external Cargo/tool caches, enter only
+   the pinned environment, then run the exact offline gate. Warm user state is not evidence.
 4. Decide mechanism by mechanism. It is valid to merge the candidate, refactor surrounding code,
    transplant a few excellent ideas, or reject most of the surface. A symbol-level salvage ledger is
    mandatory before substantial removal.

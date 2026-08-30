@@ -1,6 +1,6 @@
 use clippy_utils::{diagnostics::span_lint_and_help, peel_blocks};
 use rustc_hir::{ExprKind, ImplItem, ImplItemImplKind, ImplItemKind, PatKind, def::Res};
-use rustc_lint::LateContext;
+use rustc_lint::{LateContext, LintContext};
 use rustc_middle::ty;
 use rustc_session::declare_lint;
 
@@ -14,7 +14,7 @@ declare_lint! {
 }
 
 pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>) {
-    if item.span.from_expansion()
+    if item.span.in_external_macro(context.sess().source_map())
         || !matches!(item.impl_kind, ImplItemImplKind::Inherent { .. })
         || !context
             .tcx

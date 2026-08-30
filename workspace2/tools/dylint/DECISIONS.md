@@ -16,10 +16,13 @@ This is intentionally separate from workspace2's stable shipping toolchain. The 
 not stable across rustc versions, so updating any one of these pins requires updating all of them and
 re-recording every UI diagnostic.
 
-The runner also installs `rustfmt` for that pinned nightly to check the isolated lint workspace. It is
-kept out of the library's `rust-toolchain.toml` because Dylint's 6.0.4 build script requires the
-template's exact two-component declaration; the additional installed component does not affect the
-dynamic lint ABI.
+`flake.lock` pins Nixpkgs and Fenix. `flake.nix` builds both Dylint executables from the exact Dylint
+Git tag and provides immutable stable and nightly Fenix toolchains. A repository-local `RUSTUP_HOME`
+only gives those Nix store paths the names Dylint expects; it never downloads a component. Cargo
+commands are locked and offline after bootstrap, but the current flake does **not** yet provide the
+lint workspace's pinned `clippy_utils` Git source or Dylint's generated driver. A clean machine can
+therefore still depend on mutable Cargo and `$HOME/.dylint_drivers` caches. Fresh-cache offline closure
+is a release blocker, not a completed reproducibility claim.
 
 Sources:
 
@@ -31,36 +34,42 @@ Sources:
 
 The first bundle chooses four narrow rules whose meaning can be proven from HIR and type checking.
 
-1. `NUDOX_ERASED_MAP_ERR` finds `Result::map_err` closures whose argument is `_` and whose body
-   directly constructs or names the replacement error. It does not guess about an arbitrary method
-   named `map_err`, does not inspect macro-generated code, and permits a helper call because packed
+1. `NUDOX_ERASED_MAP_ERR` finds `Result::map_err` closures whose argument is unused and whose body
+   directly constructs or names the replacement error. A named `_source` is not a source-preservation
+   proof. It does not guess about an arbitrary method named `map_err`, and permits a helper call because packed
    validators may deliberately rescan canonical bytes to recover an exact cold diagnostic after a
    typed cast rejects. That call exclusion is a documented false-negative boundary; the helper's
    exact error behavior remains an integration-test and review obligation.
 2. `NUDOX_STRINGLY_STATE_FIELD` finds fields named `step`, `expected`, or `observed` whose resolved
-   type is an immutable string slice. It does not reject diagnostic message text or unrelated string
-   data.
+   type is either an immutable string slice or `String`. It does not reject diagnostic message text
+   or unrelated string data.
 3. `NUDOX_REDUNDANT_PUBLIC_ACCESSOR` finds a public inherent zero-argument receiver method whose body
    only returns an already-public field of the same receiver. `ImplItemImplKind` supplies the
    compiler-owned inherent-versus-trait distinction, and rustc's associated-item metadata proves
    that the function has a `self` parameter. Required trait methods and associated functions are
    therefore excluded regardless of method or trait name. Private fields and transformed or
    validated projections are also excluded.
-4. `NUDOX_DYNAMIC_DISPATCH` finds explicit trait-object types. Generic parameters, associated types,
-   and closed enum dispatch are not flagged. An earned cold adapter or plugin boundary can use a
+4. `NUDOX_DYNAMIC_DISPATCH` finds explicit trait-object types and uses whose aliases resolve to a
+   trait object. An allow on an alias declaration therefore cannot silently grant dynamic dispatch
+   to every alias consumer. Generic parameters, associated types, and closed enum dispatch are not flagged. An earned cold adapter or plugin boundary can use a
    narrow item-level `#[allow(nudox_dynamic_dispatch, reason = "...")]`. The reason must identify
    the erased boundary and its ownership or latency justification. The UI suite includes this
    intentional escape hatch next to a rejected unannotated trait object. This first bundle does not
    semantically reject broader suppression scope; module- or crate-wide suppression remains an
    explicit review tripwire until a separate attribute-scope lint has pass/fail fixtures.
 
-Each rule ignores external macro expansions. Unit fixtures include a failing pattern and the nearest
-allowed pattern so broadening a rule becomes an explicit review decision.
+Each rule ignores external macro expansions but checks constructs emitted by local macros. One focused
+UI fixture per law contains direct, local-macro, alias or unused-binding attacks plus the nearest legal
+neighbors, so changing an enforcement boundary changes a named diagnostic specimen. The runner uses
+an absolute `CARGO_MANIFEST_DIR` fixture root and denies all four lints explicitly; corrupting a golden
+diagnostic was verified to fail the suite. The test also rejects an empty fixture inventory and
+requires an exact `.rs`/`.stderr` pair in both directions.
 
-The repository invocation deliberately checks shipping library and binary targets, not test targets.
+The semantic invocation deliberately checks shipping library and binary targets, not test targets.
 The UI suite owns lint behavior in isolation; ordinary test code remains free to use concise test-only
 representations without weakening shipping policy. `shipping-workspaces.sh` is the single manifest
-inventory used by both semantic linting and resolved normal-dependency checks. It names every current
+and source-root inventory used by semantic linting, formatting, tests, both Clippy configurations,
+documentation, the unsafe custody scan, and resolved normal-dependency checks. It names every current
 workspace root:
 
 - the root `crates/*` workspace;
@@ -99,9 +108,10 @@ workspace is tested by its exact UI suite and is not recursively linted by itsel
 - Source length, word count, and parameter count are not design properties and receive no replacement
   gate. Control/data complexity remains under Clippy's cognitive-complexity lint and human review.
 
-Repository scans remain appropriate for resolved dependency bans and the explicitly reviewed unsafe-file
-allowlist: those are cross-file repository facts. Rust semantic patterns belong to the compiler-backed
-lint bundle.
+Repository scans remain appropriate for resolved dependency bans and the explicit unsafe-file
+allowlist: those are cross-file repository facts. The allowlist contains the two runtime proof modules
+and the two unsafe layout-laboratory experiment modules; strict Clippy additionally requires each
+unsafe block's local justification. Rust semantic patterns belong to the compiler-backed lint bundle.
 
 ## Quality-gate migration
 
@@ -115,7 +125,7 @@ The old shell rules were classified by the evidence they actually supplied:
 | public getter-name list | Dylint, narrowed | only a method returning an already-public field is provably redundant |
 | panic/expect/unwrap/unreachable spellings | Clippy | the existing compiler lints are more complete; `expect_used` and `unreachable` are now enabled |
 | serde spelling | resolved dependency graph | the product constraint is presence in normal shipping dependencies, including renamed imports |
-| unsafe spelling | retained repository scan | rustc denies unsafe by default; the scan additionally proves that local exceptions remain in the two reviewed files and carry written safety evidence |
+| unsafe spelling | retained repository scan | rustc denies unsafe by default; the scan additionally proves that local exceptions remain in the four reviewed modules and carry written safety evidence |
 | forbidden normal dependencies | retained `cargo tree` scan | only resolution can prove package presence on normal edges |
 | unit structs, manual formatting, constructors, numeric literals, and tuple projections | deleted | the text patterns conflated valid roles with violations; each needs a future semantic rule with pass/fail neighbors before enforcement |
 | `SegQueue` / `unbounded` constructor spellings | deleted; boundedness proof retained | current shipping sources contain no such constructor; admission-budget APIs and Loom transition tests own bounded progress, while any future lint must resolve reviewed constructor definitions rather than tokens |

@@ -67,6 +67,15 @@ public item without current consumer and falsifier
 
 Compiler-backed semantic lints are authoritative for patterns they cover. Text search may inventory
 tokens and dependencies, but it cannot establish whether a Rust construct violates a semantic law.
+For every changed semantic lint, mutate its specimen through a local macro, a type alias, renamed
+unused bindings, and an unrelated same-named method where those attacks apply. Verify every workspace
+in the declared shipping inventory receives its tests, strict Clippy variants, docs, dependency
+resolution, and semantic policy gates; a central list used by only one command is not gate custody.
+Dylint UI suites must resolve their fixture root from `CARGO_MANIFEST_DIR` and deny every subject lint
+explicitly. Prove fixture custody once by corrupting one expected diagnostic or source specimen and
+observing the suite fail. The test must also reject an empty inventory and an orphan source or golden;
+an absolute path alone does not make zero discovery impossible. A green runner that silently discovers
+zero intended fixtures is a blocker.
 Do not summarize the scan as “accounted for.” A missing row, missing location, or `acceptable` without
 a contract law or measurement makes the review incomplete and forbids approval. The primary Terra
 must preserve the raw reviewer table; a paraphrased manager ledger is not independent evidence.
@@ -150,7 +159,11 @@ Run all applicable passes in this order:
    exclusion from server machinery.
 10. **Tests/evidence:** try to make tests pass with the implementation broken. Demand exact negative
     assertions, boundary tables, public integration, isolated allocation measurement, raw performance
-    evidence, feature/target coverage, and source-bearing fault injection.
+    evidence, feature/target coverage, and source-bearing fault injection. For a claimed reproducible
+    offline toolchain, run the complete gate with empty external Cargo and generated-driver caches
+    after only entering the pinned environment. A lockfile plus `--offline` on a warm machine is not
+    closure; every Git source and generated compiler driver must come from the pinned closure or a
+    repository-owned vendor source.
 
 For a synthetic dispatcher, adapter, or frontend, delete input forwarding or replace the concrete body
 with a constant. If public tests remain green or optimized code no longer consumes the input, the proof
