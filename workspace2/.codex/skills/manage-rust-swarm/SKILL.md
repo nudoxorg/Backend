@@ -175,6 +175,12 @@ commit ranges and cherry-picks only accepted checkpoints. Rejected prototypes re
 the worker branch and count as written-then-rejected churn; they never become anonymous edits in the
 manager tree.
 
+Before assigning a deletion-first rewrite of a substantial candidate, the manager extracts a salvage
+ledger: mechanism, property, proof, destination, and permitted disposition. The worker may change the
+representation freely but must close every row. A line cap cannot authorize dropping a mechanism; if
+the mechanisms form two honest responsibilities, split the checkpoint and its caps instead. The
+reviewer independently traces every `retain`/`absorb` claim into executable code and a falsifier.
+
 Every writing card names the absolute worktree, the literal working directory, and allowed paths
 relative to the repository root. Its preflight records `git rev-parse --show-toplevel`, current SHA,
 and clean/known-dirty status before the first edit. A duplicated workspace prefix or file created

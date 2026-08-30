@@ -72,6 +72,12 @@ Compare planned and actual formatted LOC for every file before reviewing semanti
 a new boundary. Search for public errors, types, dependencies, and reexports that have no consumer and
 falsifying test in this checkpoint; delete them rather than calling them preparation for the next one.
 
+For a large rejected block, review deletion as rigorously as addition. Require a salvage ledger naming
+every real mechanism, its current proof, and its destination. Reject a cleanup that removes a proven
+property merely to meet a size target, and reject a “salvage” that keeps an unnecessary compatibility
+surface instead of moving the property into its strongest owner. The acceptable outcome is smaller
+code with the same or stronger falsifiable properties, not fewer lines by forgotten behavior.
+
 ## Review passes
 
 Run all applicable passes in this order:

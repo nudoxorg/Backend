@@ -124,6 +124,16 @@ On return, read losing as well as chosen commits; extract measurements, countere
 opportunities. Re-derive the smallest integration card on current shared state. Never cherry-pick a
 prototype wholesale, preserve its API for convenience, or call its branch-local gates acceptance.
 
+Rejection is not permission to erase useful engineering. Before replacing or stripping a substantial
+prototype, write a **salvage ledger** with one row per independently valuable mechanism: invariant or
+operator property, exact owning code, falsifier that demonstrates it, integration destination, and
+one of `retain`, `absorb`, `supersede with proof`, or `reject as false capability`. A deletion is
+allowed only when another named owner and falsifier cover the same property, or when the row explains
+why the apparent property was never real. Preserve mechanisms and measurements, not accidental APIs.
+If the clean replacement cannot yet absorb a valuable mechanism, keep the prototype inspectable and
+split the integration boundary; do not silently trade away durability, ownership, streaming, error,
+or allocation behavior to satisfy a LOC cap.
+
 ## Cross-cutting abstraction review
 
 Before accepting a new type or mechanism, ask across every plane:
