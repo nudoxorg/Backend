@@ -78,6 +78,11 @@ property merely to meet a size target, and reject a “salvage” that keeps an 
 surface instead of moving the property into its strongest owner. The acceptable outcome is smaller
 code with the same or stronger falsifiable properties, not fewer lines by forgotten behavior.
 
+Audit the ledger at symbol granularity: old owner, new owner, old falsifier replay, and a mutation that
+kills the new proof. Sample private algorithms and test oracles as aggressively as public types; useful
+engineering is not limited to API surface. Report whole-block deletion as a finding unless every row is
+absorbed or an executable counterexample proves it should not exist.
+
 ## Review passes
 
 Run all applicable passes in this order:

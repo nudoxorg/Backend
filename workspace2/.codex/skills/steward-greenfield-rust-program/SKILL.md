@@ -143,6 +143,16 @@ shape is not evidence that the mechanism survived. Do not cherry-pick a large bl
 one useful property: transplant that property into the current invariant owner and keep the prototype
 commit named as evidence until the replacement closes.
 
+Treat whole-block stripping as the exceptional result, not the cleanup default. First partition the
+block into representation, invariant, algorithm, diagnostic, test oracle, and measured performance
+mechanisms. Attempt a surgical transplant or compression for every mechanism that survives hostile
+review, including private helpers and test generators that never deserved public API. The ledger must
+name the exact old lines or symbols and the exact new owner; “concept retained” is insufficient. Replay
+the old test against the replacement before removing it, then add a mutation that would pass if the
+mechanism had only been described rather than preserved. Entire removal is allowed only when every row
+is either absorbed elsewhere or rejected by an executable counterexample showing the capability was
+false, redundant, or harmful.
+
 ## Cross-cutting abstraction review
 
 Before accepting a new type or mechanism, ask across every plane:

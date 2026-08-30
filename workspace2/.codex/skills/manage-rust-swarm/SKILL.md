@@ -181,6 +181,12 @@ representation freely but must close every row. A line cap cannot authorize drop
 the mechanisms form two honest responsibilities, split the checkpoint and its caps instead. The
 reviewer independently traces every `retain`/`absorb` claim into executable code and a falsifier.
 
+Do not hand a worker an undifferentiated “replace this file/block” task. The manager first partitions
+the source into invariant, representation, algorithm, diagnostic, oracle, and measurement rows, with
+old symbol/line anchors. Luna implements one or more closed rows; Terra replays the old falsifier and
+adds a property-killing mutation before accepting the transplant. A wholesale deletion requires every
+row to close independently and is expected to be rare.
+
 Every writing card names the absolute worktree, the literal working directory, and allowed paths
 relative to the repository root. Its preflight records `git rev-parse --show-toplevel`, current SHA,
 and clean/known-dirty status before the first edit. A duplicated workspace prefix or file created

@@ -31,7 +31,7 @@ The card owns the following writable set:
 | Area | Exact writable paths |
 | --- | --- |
 | identity | `workspace2/crates/nudox-id/src/{marker,content,artifact,lib}.rs`, `workspace2/crates/nudox-id/tests/*` only if an existing owning test tree is created with a valid manifest consumer |
-| locality | `workspace2/crates/nudox-root/src/locality.rs`, `workspace2/crates/nudox-root/src/locality/{cursor,error,view}.rs`, `workspace2/crates/nudox-root/src/locality/artifact/{mod,errors,header,layout,rank,rows,trusted_decode,validate,view,write}.rs`, `workspace2/crates/nudox-root/src/tests.rs`, `workspace2/crates/nudox-root/tests/{locality_validation,identity_contracts}.rs`, `workspace2/crates/nudox-root/Cargo.toml` only for an already-locked test dependency
+| locality | `workspace2/crates/nudox-root/src/locality.rs`, `workspace2/crates/nudox-root/src/locality/{cursor,error,view}.rs`, `workspace2/crates/nudox-root/src/locality/artifact/{mod,descriptor,errors,header,layout,rank,rows,validate,view,write}.rs`, `workspace2/crates/nudox-root/src/tests.rs`, `workspace2/crates/nudox-root/tests/{locality_validation,identity_contracts}.rs`, `workspace2/crates/nudox-root/Cargo.toml` only for an already-locked test dependency
 | object pack | `workspace2/crates/nudox-object-pack/src/{index,view,write,lib}.rs`, `workspace2/crates/nudox-object-pack/tests/{object_pack,index,view,identity_contracts}.rs`
 | workflow | `workspace2/crates/nudox-workflow/src/{durable,tests,lib}.rs`, `workspace2/crates/nudox-workflow/tests/{durable_shared,identity_contracts}.rs`
 | evidence | `workspace2/.codex/evidence/{typed-identity-shipping-card,salvage-ledger,typed-identity-shipping-closure}.md`
@@ -43,6 +43,12 @@ checked at raw ingress. A locality validation owns a private compact borrowed
 witness that contains closed, typed views of every identity-bearing lane; trusted
 cursor/view projection borrows those facts and returns no `LocalityReadError`.
 No public unchecked raw identity constructor is permitted.
+
+One artifact-header domain code owns descriptor authority for the complete
+artifact. Each descriptor carries a typed 31-byte `ContentPayload`; validation
+checks the header authority once, casts every lane once, and only then mints the
+borrowed witness. Projection uses safe `From` conversions from that payload and
+must not reconstruct, transmute, or dynamically revalidate identity authority.
 
 The public domain law is closed rather than generically revalidated: only the
 registered domain markers are accepted and the generic parameter is retained
