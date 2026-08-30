@@ -58,10 +58,11 @@ Do not dispatch essay tasks, architecture selection, product scoring, broad plan
 writers. If only one coherent edit exists, use one Luna and do the other work yourself; agent count is
 not progress.
 
-Plan the finite child-stage graph before dispatch. Retain each completed child's commit and raw
-receipt, then release or retire that child unless the next already-named card reuses it immediately.
-Never keep completed workers alive merely as possible future reviewers: reviewer independence and a
-reserved review slot are more valuable than speculative reuse. If capacity is exhausted, stop new
+Plan the finite child-stage graph before dispatch and allocate a bounded worker roster plus one
+permanently distinct reviewer lane. Reuse a completed, role-verified Luna with a new follow-up card;
+bind that turn to the new card digest and returned commit. Do not spawn a fresh child for every repair
+or calibration pass, because a runtime's total thread allowance may remain consumed after completion.
+Never reuse an implementer as the independent reviewer. If the bounded roster is exhausted, stop new
 dispatch, preserve the clean checkpoint, and make the next required role/stage explicit. A missing
 independent review cannot be replaced by manager self-approval.
 
