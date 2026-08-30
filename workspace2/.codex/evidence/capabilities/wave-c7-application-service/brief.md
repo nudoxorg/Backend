@@ -13,6 +13,12 @@ causal source), stable ordering, bounded replay cursors, and progress state. It 
 typed facts; it does not own filesystem/network/runtime SDKs, JSON/MCP/CLI/GPUI protocol details,
 serde, caching, `dyn`, boxed streams/futures, or a graph/vector backend.
 
+Accepted compiler vocabulary is exactly `nudox_compile_vocab::Language::{RustSubset,
+TypeScriptSubset}`, `nudox_compile_vocab::Stage::{Parse, LowerIr}`, and
+`FrontendError::UnsupportedStage { language, stage }`. The accepted index snapshot identity is
+`nudox_index_vocab::IndexSnapshotId = ContentId<IndexSnapshotDomain>`; exact and lexical segment
+identities remain distinct (`ExactSegmentId`, `LexicalSegmentId`).
+
 Must preserve: accepted compiler language/stage names, typed snapshot identity, exact error/source
 fidelity, deterministic ordering, client-independent state, useful local facts while remote work is
 unavailable, and disabled typed-probe laziness.
