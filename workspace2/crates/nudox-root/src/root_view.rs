@@ -163,7 +163,9 @@ pub enum RootReadError {
         key: EntryKey,
     },
     /// A present parent key was absent from the same canonical root.
-    #[error("root row {ordinal} key {key:?} names missing parent {parent:?}")]
+    #[error(
+        "root row {ordinal} key {key:?} names missing parent {parent:?}, whose canonical insertion coordinate is {insertion}"
+    )]
     MissingParent {
         /// Canonical row ordinal.
         ordinal: u32,
@@ -171,6 +173,8 @@ pub enum RootReadError {
         key: EntryKey,
         /// Missing parent key.
         parent: EntryKey,
+        /// Exact insertion coordinate returned by canonical-key lookup.
+        insertion: usize,
     },
     /// The exact compact hierarchy lane could not be reserved.
     #[error("root hierarchy validation could not reserve {requested_bytes} transient bytes")]
@@ -371,10 +375,11 @@ fn validate_hierarchy(
                 }
                 let position = rows
                     .binary_search_by_key(&*parent, |candidate| candidate.key.get())
-                    .map_err(|_| RootReadError::MissingParent {
+                    .map_err(|insertion| RootReadError::MissingParent {
                         ordinal,
                         key,
                         parent,
+                        insertion,
                     })?;
                 parents[native(ordinal)] = compact(position);
             }
@@ -1081,7 +1086,7 @@ mod tests {
         set_u64(&mut missing, second + PARENT_KEY_OFFSET, 99);
         assert!(matches!(
             ValidatedRoot::<ObjectDomain>::try_from(missing.as_slice()),
-            Err(RootReadError::MissingParent { ordinal: 1, key, parent })
+            Err(RootReadError::MissingParent { ordinal: 1, key, parent, insertion: 2 })
                 if key == EntryKey::from(2) && parent == EntryKey::from(99)
         ));
 
