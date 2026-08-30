@@ -92,6 +92,30 @@ between executable changes, which the progress clock below now forbids.
 4. Only after this salvage pass records the exact integrated baseline may new stage controllers
    start. Their first checkpoint is a thin working vertical, not a full public API proposal.
 
+### Integrated recovery baseline — August 30, 2026
+
+Canonical now contains the reviewed shared substrate through `70f1cbb6`, the action-first policy
+through `c89ba8b8`, and the recovered C1 wire/borrow foundation through `5f99ad4d`. The C1 range is a
+real allocation-free `no_std` implementation with caller-owned output, private prepared authority,
+borrowed validated views, typed wire layout, recursive references, mutation attacks, and an
+actual-exported-rlib surface probe. It is not structural semantic-IR closure: products, atoms, pooled
+lists, external references, hash-consing, and permutation-stable canonical bytes remain red.
+
+| Wave | Current canonical state | Next executable terminal |
+| --- | --- | --- |
+| A1 foundation/object | Partially integrated | Add the smallest authenticated owning-range witness and wrong-artifact header/directory/body attacks while preserving rejected owner/store state. Repair the disposable-`TMPDIR` Dylint UI path as a separate tooling defect. |
+| A2 durability/transport | Partially integrated | Put bounded nonblocking admission and reusable group commit around `FileJournal`; prove exact `StableReceipt` fan-out before publication or leased transport. |
+| B3 compiler/IR | C0 plus C1 wire/borrow foundation integrated | Add the first hash-consed product/atom representation and a permutation-canonicality falsifier, then extend to pooled lists and external references. |
+| B4 immutable index | I0 vocabulary only | Implement one borrowed immutable manifest plus exact segment/query pinned to `IndexSnapshotId`; add lexical/Tantivy only after that slice is green. |
+| B5 graph/vector | Absent; an external candidate is under decomposition | Separate vocabulary, faults, admission, graph, vector, and adapters; do not import the current mixed-responsibility query module wholesale. |
+| C6 adaptive local-first | Absent | Implement the smallest deterministic `next_action` over bounded `FactKey` inputs after the graph/vector seam is real. |
+| C7 application/interfaces | Absent | Build one in-process typed command/query path; add CLI, MCP, and GPUI only as thin consumers. |
+| D8 system closure | Absent | Add ordinary cross-crate integration coverage as each real seam lands; the 200-package terminal remains deliberately unclaimed. |
+
+No wave is externally blocked. A missing reviewer/model route is a controller fallback, and the
+reproduced Dylint temporary-path defect is actionable tooling work rather than an excuse to stop a
+product slice.
+
 ## Dependency waves
 
 ### Wave A — shared substrate
