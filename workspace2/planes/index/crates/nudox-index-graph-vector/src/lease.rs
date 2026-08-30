@@ -802,6 +802,13 @@ mod loom_tests {
                 )
             });
             assert!(settle.join().is_ok());
+            let producer_wake_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
+            let producer_waker = Waker::from(StandardArc::clone(&producer_wake_count));
+            let mut producer_context = Context::from_waker(&producer_waker);
+            assert!(matches!(
+                producer.poll_ready(&mut producer_context),
+                Poll::Pending
+            ));
             {
                 let event = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
                 let Poll::Ready(GraphStreamEvent::Batch(mut batch)) = event else {
@@ -816,8 +823,9 @@ mod loom_tests {
                 assert_eq!(batch.copy_into(&mut output), Ok(1));
             }
             assert_eq!(stream.charged_items(), 0);
+            assert_eq!(producer_wake_count.0.load(Ordering::SeqCst), 1);
             assert!(matches!(
-                producer.poll_ready(&mut context),
+                producer.poll_ready(&mut producer_context),
                 Poll::Ready(Ok(()))
             ));
             assert!(wake_count.0.load(Ordering::SeqCst) <= 1);
