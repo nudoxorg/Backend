@@ -13,6 +13,16 @@ impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> 
     }
 }
 
+// The admitted width is eight: this performs at most 28 comparisons and retains no scratch owner.
+fn duplicate_positions<SegmentId: Eq>(segments: &[SegmentId]) -> Option<(usize, usize)> {
+    segments.iter().enumerate().find_map(|(left_position, left)| {
+        segments[left_position + 1..]
+            .iter()
+            .position(|right| left == right)
+            .map(|right_offset| (left_position, left_position + right_offset + 1))
+    })
+}
+
 /// A validated borrowed selection whose identity is derived from every selected segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndexSnapshot<'selection> {
@@ -39,33 +49,19 @@ impl<'selection> IndexSnapshot<'selection> {
                 observed: lexical.len(),
             });
         }
-        for (left_position, left) in exact.iter().enumerate() {
-            if let Some((offset, _)) = exact
-                .iter()
-                .enumerate()
-                .skip(left_position + 1)
-                .find(|(_, right)| *left == **right)
-            {
-                return Err(IndexSnapshotError::DuplicateExactSegment {
-                    left_position,
-                    right_position: offset,
-                    id: *left,
-                });
-            }
+        if let Some((left_position, right_position)) = duplicate_positions(exact) {
+            return Err(IndexSnapshotError::DuplicateExactSegment {
+                left_position,
+                right_position,
+                id: exact[left_position],
+            });
         }
-        for (left_position, left) in lexical.iter().enumerate() {
-            if let Some((offset, _)) = lexical
-                .iter()
-                .enumerate()
-                .skip(left_position + 1)
-                .find(|(_, right)| *left == **right)
-            {
-                return Err(IndexSnapshotError::DuplicateLexicalSegment {
-                    left_position,
-                    right_position: offset,
-                    id: *left,
-                });
-            }
+        if let Some((left_position, right_position)) = duplicate_positions(lexical) {
+            return Err(IndexSnapshotError::DuplicateLexicalSegment {
+                left_position,
+                right_position,
+                id: lexical[left_position],
+            });
         }
 
         let mut hasher = ContentHasher::<IndexSnapshotDomain>::new();
