@@ -1,6 +1,6 @@
 ---
 name: review-rust-gem
-description: Perform a hostile, evidence-backed review of one workspace2 Rust slice before parent approval. Use after an implementation checkpoint or when auditing claimed correctness, simplicity, typing, allocation, concurrency, durability, diagnostics, testing, or performance. This skill reviews; it does not silently implement fixes.
+description: Perform one hostile, evidence-backed review of a concrete workspace2 Rust implementation checkpoint. Use after code and executable falsifiers exist; return one ranked repair packet without blocking disjoint implementation or starting a prose cycle.
 ---
 
 # Review a Rust gem
@@ -9,26 +9,23 @@ Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then the one applicab
 shared craft laws are the review standard. Do not invent a second style guide.
 
 The reviewer is adversarial toward claims and collaborative toward the implementation. Find the
-smallest design that actually proves the contract. Green tests, clever types, and low LOC are inputs,
-not approval.
+smallest design that actually proves the contract. Green tests and clever types are inputs, not
+approval. Review follows a concrete checkpoint; lack of pre-edit reviewer custody never blocks code.
 
 ## Required inputs
 
-Require: approved contract card, parent decisions, before/after tree or diff, direct consumers,
+Require: contract card, before/after tree or diff, direct consumers,
 claimed ledgers, commands/results, and applicable baseline evidence. If any is absent, report the
 missing proof; do not infer success.
 
-Freeze scope before reading details: record changed paths, generated/manifest changes, net production
-LOC, deleted APIs, and unrelated dirty files. Review is read-only except parent-approved isolated
+Freeze scope before reading details: record changed paths, generated/manifest changes, deleted APIs,
+and unrelated dirty files. Review is read-only except isolated
 experiments. Check wildcard workspace members for orphan/incomplete crate directories before running
 gates. Never repair code while compiling the findings; that hides causal evidence.
 
-Recompute the remaining forecast with the shared skill's uncertainty reserve. A claim that technically
-fits only by consuming the reserve is a scope failure and must split before further implementation.
-Compare planned and actual formatted LOC for every file before reviewing semantics. A variance above
-20% or 25 lines is a process finding: stop the phase, identify the missing responsibility, and require
-a new boundary. Search for public errors, types, dependencies, and reexports that have no consumer and
-falsifying test in this checkpoint; delete them rather than calling them preparation for the next one.
+Search for public errors, types, dependencies, and reexports that have no consumer and falsifying test
+in this checkpoint; delete them rather than calling them preparation for the next one. Judge scope by
+invariant ownership, state space, dependencies, retained resources, and reviewability—not source size.
 
 ## Review passes
 
@@ -40,8 +37,7 @@ Run all applicable passes in this order:
    representation, compatibility shim, and public surface that can be private/deleted.
 3. **Less-is-more:** find wrappers, getters, delegate traits, stateless structs, helper proliferation,
    parallel algorithms, repeated fields, redundant wire metadata, and branches that representation
-   can remove. Recount normally formatted logical source; reject `rustfmt::skip`, one-line functions,
-   or statement packing used to manufacture a low-LOC claim.
+   can remove. Reject `rustfmt::skip`, one-line functions, or statement packing used to hide complexity.
 4. **Types:** inspect raw primitives, tuple coordinates, optional correlated state, string stages,
    catch-all variants, generic ledgers, lifetime truth, conversions, field visibility, and invalid
    states. Demand descriptive generic names.
@@ -92,15 +88,14 @@ Do not approve when:
 - an allocation/generic/unsafe/SIMD/dependency ledger is incomplete;
 - concurrency is modeled in analogous test code rather than production transitions;
 - tests assert only success/no panic or use `expect`/`unwrap` as reporting;
-- an LOC or simplicity claim depends on suppressed formatting or compressed logical statements;
+- a simplicity claim depends on suppressed formatting or compressed logical statements;
 - diagnostics exist only in an outer demo;
 - retained complexity rises without a measured/deleted cost;
-- the implementation crossed its named baseline/cap, hid written-then-deleted churn, or introduced
-  future-phase public surface without current behavior and tests;
+- the implementation introduced future-phase public surface without current behavior and tests;
 - full gates are red for an owned finding.
 
-Approval requires zero blockers/majors, reproducible commands, honest remaining caps, and a smaller
-next decision. “Approve with comments” is not final approval; it is another checkpoint.
+Approval requires zero blockers/majors, reproducible commands, honest gaps, and a smaller next
+decision. Return one coherent ranked packet; do not drip new stylistic findings across repeated turns.
 
 ## Reviewer self-check
 
