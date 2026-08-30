@@ -12,10 +12,7 @@ use zerocopy::IntoBytes;
 use crate::{
     CommitError, CommitIoStep, FrameSequence, HeaderError, JournalError, JournalIoStep,
     JournalOffset, StableReceipt,
-    format::{
-        FrameRecord, HeaderRecord, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES, frame_offset,
-        receipt_end,
-    },
+    format::{FrameRecord, HeaderRecord, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES, frame_offset},
 };
 
 #[derive(Debug)]
@@ -43,10 +40,12 @@ impl FileJournal {
             .write(true)
             .open(path)
             .map_err(|source| JournalError::io(JournalIoStep::Open, source))?;
-        let file_bytes = file_length(&file)?;
-        validate_header(&mut file, file_bytes)?;
-        let (recovery, next, repaired_end) = scan_committed_prefix(&mut file, file_bytes)?;
-        repair_tail(&mut file, file_bytes, repaired_end)?;
+        let bytes = file
+            .metadata()
+            .map(|metadata| JournalOffset::from(metadata.len()))
+            .map_err(|source| JournalError::io(JournalIoStep::Inspect, source))?;
+        validate_header(&mut file, bytes)?;
+        let (recovery, next) = recover(&mut file, bytes)?;
         Ok(Self {
             file,
             state: recovery.state,
@@ -63,9 +62,12 @@ impl FileJournal {
         if self.poisoned {
             return Err(JournalError::Poisoned);
         }
-        let file_bytes = file_length(&self.file)?;
-        let (recovery, next, repaired_end) = scan_committed_prefix(&mut self.file, file_bytes)?;
-        repair_tail(&mut self.file, file_bytes, repaired_end)?;
+        let bytes = self
+            .file
+            .metadata()
+            .map(|metadata| JournalOffset::from(metadata.len()))
+            .map_err(|source| JournalError::io(JournalIoStep::Inspect, source))?;
+        let (recovery, next) = recover(&mut self.file, bytes)?;
         self.state = recovery.state;
         self.next = next;
         Ok(recovery)
@@ -100,13 +102,12 @@ impl FileJournal {
         }
         let reduction = reduce(self.state, event).map_err(CommitError::Reduction)?;
         let sequence = self.next;
-        let durable_end = receipt_end(sequence).ok_or(CommitError::ReceiptOverflow { sequence })?;
         let next = sequence
             .successor()
             .ok_or(CommitError::ReceiptOverflow { sequence })?;
+        let durable_end = frame_offset(next).ok_or(CommitError::ReceiptOverflow { sequence })?;
         let attempted = WorkflowRecord::from(event);
-        let frame = FrameRecord::encode(sequence, attempted);
-        if let Err(failure) = persist(&mut self.file, &frame) {
+        if let Err(failure) = persist(&mut self.file, &FrameRecord::encode(sequence, attempted)) {
             self.poisoned = true;
             return Err(CommitError::OutcomeUnknown {
                 attempted,
@@ -119,12 +120,6 @@ impl FileJournal {
         self.next = next;
         Ok(StableReceipt::committed(sequence, durable_end))
     }
-}
-
-fn file_length(file: &File) -> Result<JournalOffset, JournalError> {
-    file.metadata()
-        .map(|metadata| JournalOffset(metadata.len()))
-        .map_err(|source| JournalError::io(JournalIoStep::Inspect, source))
 }
 
 fn persist_header(file: &mut File, header: &HeaderRecord) -> Result<(), JournalError> {
@@ -151,52 +146,46 @@ fn persist_frame(file: &mut File, frame: &FrameRecord) -> Result<(), PersistFail
     })
 }
 
-fn validate_header(file: &mut File, file_bytes: JournalOffset) -> Result<(), JournalError> {
-    if file_bytes.0 < JOURNAL_HEADER_BYTES as u64 {
+fn validate_header(file: &mut File, bytes: JournalOffset) -> Result<(), JournalError> {
+    if *bytes < JOURNAL_HEADER_BYTES as u64 {
         return Err(HeaderError::Truncated {
-            required: JournalOffset(JOURNAL_HEADER_BYTES as u64),
-            actual: file_bytes,
+            required: JournalOffset::from(JOURNAL_HEADER_BYTES as u64),
+            actual: bytes,
         }
         .into());
     }
-    let mut bytes = [0; JOURNAL_HEADER_BYTES];
+    let mut header = [0; JOURNAL_HEADER_BYTES];
     file.seek(SeekFrom::Start(0))
-        .and_then(|_| file.read_exact(&mut bytes))
+        .and_then(|_| file.read_exact(&mut header))
         .map_err(|source| JournalError::io(JournalIoStep::ReadHeader, source))?;
-    HeaderRecord::decode(bytes).map(|_| ()).map_err(Into::into)
+    HeaderRecord::decode(header).map(|_| ()).map_err(Into::into)
 }
 
-fn scan_committed_prefix(
+fn recover(
     file: &mut File,
-    file_bytes: JournalOffset,
-) -> Result<(Recovery, FrameSequence, JournalOffset), JournalError> {
-    let payload_bytes = file_bytes.0 - JOURNAL_HEADER_BYTES as u64;
-    let complete_frames = payload_bytes / JOURNAL_FRAME_BYTES as u64;
-    let repaired_end =
-        JournalOffset(JOURNAL_HEADER_BYTES as u64 + complete_frames * JOURNAL_FRAME_BYTES as u64);
+    bytes: JournalOffset,
+) -> Result<(Recovery, FrameSequence), JournalError> {
+    let payload = *bytes - JOURNAL_HEADER_BYTES as u64;
+    let remaining = payload / JOURNAL_FRAME_BYTES as u64;
+    let repaired_end = JournalOffset::from(*bytes - payload % JOURNAL_FRAME_BYTES as u64);
     file.seek(SeekFrom::Start(JOURNAL_HEADER_BYTES as u64))
         .map_err(|source| JournalError::io(JournalIoStep::ReadFrame, source))?;
-    let mut records = Records {
-        file,
-        remaining: complete_frames,
-        expected: FrameSequence::FIRST,
+    let (recovery, next) = {
+        let mut records = Records {
+            file,
+            remaining,
+            expected: FrameSequence::FIRST,
+        };
+        let recovery = replay_stream(&mut records).map_err(map_replay_error)?;
+        (recovery, records.expected)
     };
-    let recovery = replay_stream(&mut records).map_err(map_replay_error)?;
-    Ok((recovery, records.expected, repaired_end))
-}
-
-fn repair_tail(
-    file: &mut File,
-    observed_end: JournalOffset,
-    repaired_end: JournalOffset,
-) -> Result<(), JournalError> {
-    if observed_end == repaired_end {
-        return Ok(());
+    if bytes != repaired_end {
+        file.set_len(*repaired_end)
+            .map_err(|source| JournalError::io(JournalIoStep::RepairTail, source))?;
+        file.sync_all()
+            .map_err(|source| JournalError::io(JournalIoStep::SyncTailRepair, source))?;
     }
-    file.set_len(repaired_end.0)
-        .map_err(|source| JournalError::io(JournalIoStep::RepairTail, source))?;
-    file.sync_all()
-        .map_err(|source| JournalError::io(JournalIoStep::SyncTailRepair, source))
+    Ok((recovery, next))
 }
 
 struct Records<'file> {
@@ -247,9 +236,9 @@ fn read_record(file: &mut File, expected: FrameSequence) -> Result<WorkflowRecor
 
 fn map_replay_error(error: ReplayError<JournalError>) -> JournalError {
     match error {
-        ReplayError::Source(source) => source,
-        ReplayError::Decode(source) => JournalError::Decode(source),
-        ReplayError::Reduction(source) => JournalError::Reduction(source),
+        ReplayError::Source(error) => error,
+        ReplayError::Decode(error) => JournalError::Decode(error),
+        ReplayError::Reduction(error) => JournalError::Reduction(error),
     }
 }
 

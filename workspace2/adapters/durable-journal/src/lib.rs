@@ -1,9 +1,3 @@
-#![allow(
-    missing_docs,
-    clippy::missing_errors_doc,
-    reason = "closed adapter facts and errors are documented at their semantic boundaries"
-)]
-
 mod error;
 mod format;
 mod journal;
@@ -17,14 +11,16 @@ pub use journal::FileJournal;
 /// Physical ordinal of a committed journal frame.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct FrameSequence(pub u64);
+pub struct FrameSequence {
+    value: u64,
+}
 
 impl FrameSequence {
-    pub const FIRST: Self = Self(0);
+    pub const FIRST: Self = Self { value: 0 };
 
     pub(crate) const fn successor(self) -> Option<Self> {
-        match self.0.checked_add(1) {
-            Some(next) => Some(Self(next)),
+        match self.value.checked_add(1) {
+            Some(value) => Some(Self { value }),
             None => None,
         }
     }
@@ -34,32 +30,34 @@ impl Deref for FrameSequence {
     type Target = u64;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.value
     }
 }
 
 impl From<u64> for FrameSequence {
     fn from(sequence: u64) -> Self {
-        Self(sequence)
+        Self { value: sequence }
     }
 }
 
 /// Absolute byte position in the journal file.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct JournalOffset(pub u64);
+pub struct JournalOffset {
+    value: u64,
+}
 
 impl Deref for JournalOffset {
     type Target = u64;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.value
     }
 }
 
 impl From<u64> for JournalOffset {
     fn from(offset: u64) -> Self {
-        Self(offset)
+        Self { value: offset }
     }
 }
 
@@ -88,11 +86,7 @@ pub struct ReceiptFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StableReceipt {
     facts: ReceiptFacts,
-    committed: Committed,
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Committed;
 
 impl StableReceipt {
     pub(crate) const fn committed(sequence: FrameSequence, durable_end: JournalOffset) -> Self {
@@ -101,7 +95,6 @@ impl StableReceipt {
                 sequence,
                 durable_end,
             },
-            committed: Committed,
         }
     }
 }

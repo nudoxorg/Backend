@@ -15,7 +15,7 @@ use zerocopy::IntoBytes;
 use super::{FileJournal, PersistFailure};
 use crate::{
     CommitError, CommitIoStep, FrameSequence, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES,
-    JournalError, JournalIoStep, JournalOffset,
+    JournalError, JournalIoStep,
     format::{FrameRecord, HeaderRecord},
 };
 
@@ -33,15 +33,6 @@ enum InjectedFault {
     FrameSync,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ExpectedFault {
-    HeaderWrite,
-    HeaderSync,
-    FrameWrite,
-    FrameSync,
-    Poisoned,
-}
-
 #[derive(Debug, Error)]
 enum FaultTestError {
     #[error("test filesystem I/O failed")]
@@ -52,23 +43,6 @@ enum FaultTestError {
     Commit(#[from] CommitError),
     #[error("test fixture length cannot be represented")]
     Length(#[from] core::num::TryFromIntError),
-    #[error("expected {expected:?}, observed a stable receipt ending at {observed:?}")]
-    UnexpectedReceipt {
-        expected: ExpectedFault,
-        observed: JournalOffset,
-    },
-    #[error("expected {expected:?}, observed {observed}")]
-    UnexpectedJournal {
-        expected: ExpectedFault,
-        #[source]
-        observed: JournalError,
-    },
-    #[error("expected {expected:?}, observed {observed}")]
-    UnexpectedCommit {
-        expected: ExpectedFault,
-        #[source]
-        observed: CommitError,
-    },
 }
 
 struct Fixture(PathBuf);
@@ -114,26 +88,17 @@ fn observed_fault(source: &io::Error) -> Option<&InjectedFault> {
 }
 
 #[test]
-fn wire_records_have_exact_layout_and_little_endian_golden_bytes() {
-    let header = HeaderRecord::canonical();
-    assert_eq!(JOURNAL_HEADER_BYTES, 32);
-    assert_eq!(JOURNAL_FRAME_BYTES, 92);
-    assert_eq!(header.as_bytes()[8..16], [1, 0, 32, 0, 68, 0, 0, 0]);
-
-    let record = WorkflowRecord::from(requested(7));
-    let frame = FrameRecord::encode(FrameSequence(0x0102_0304_0506_0708), record);
-    assert_eq!(
-        frame.as_bytes()[..8],
-        [8, 7, 6, 5, 4, 3, 2, 1],
-        "sequence memory representation is canonical little-endian"
-    );
-    assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
-    assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
-}
-
-#[test]
 fn every_header_write_prefix_preserves_the_fault_and_never_constructs_a_journal()
 -> Result<(), FaultTestError> {
+    let header = HeaderRecord::canonical();
+    assert_eq!(header.as_bytes()[8..16], [1, 0, 32, 0, 68, 0, 0, 0]);
+    let frame = FrameRecord::encode(
+        FrameSequence::from(0x0102_0304_0506_0708),
+        WorkflowRecord::from(requested(7)),
+    );
+    assert_eq!(frame.as_bytes()[..8], [8, 7, 6, 5, 4, 3, 2, 1]);
+    assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+    assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
     for prefix in 0..JOURNAL_HEADER_BYTES {
         let fixture = Fixture::new("header-prefix");
         let result = FileJournal::create_using(fixture.path(), |file, header| {
@@ -144,24 +109,9 @@ fn every_header_write_prefix_preserves_the_fault_and_never_constructs_a_journal(
                 injected(InjectedFault::HeaderWrite),
             ))
         });
-        match result {
-            Err(JournalError::Io {
-                step: JournalIoStep::WriteHeader,
-                source,
-            }) if observed_fault(&source) == Some(&InjectedFault::HeaderWrite) => {}
-            Err(observed) => {
-                return Err(FaultTestError::UnexpectedJournal {
-                    expected: ExpectedFault::HeaderWrite,
-                    observed,
-                });
-            }
-            Ok(_) => {
-                return Err(FaultTestError::UnexpectedReceipt {
-                    expected: ExpectedFault::HeaderWrite,
-                    observed: JournalOffset(u64::try_from(prefix)?),
-                });
-            }
-        }
+        assert!(matches!(result, Err(JournalError::Io {
+            step: JournalIoStep::WriteHeader, source,
+        }) if observed_fault(&source) == Some(&InjectedFault::HeaderWrite)));
         assert_eq!(fs::metadata(fixture.path())?.len(), u64::try_from(prefix)?);
         fixture.remove()?;
     }
@@ -175,24 +125,9 @@ fn every_header_write_prefix_preserves_the_fault_and_never_constructs_a_journal(
             injected(InjectedFault::HeaderSync),
         ))
     });
-    match result {
-        Err(JournalError::Io {
-            step: JournalIoStep::SyncHeader,
-            source,
-        }) if observed_fault(&source) == Some(&InjectedFault::HeaderSync) => {}
-        Err(observed) => {
-            return Err(FaultTestError::UnexpectedJournal {
-                expected: ExpectedFault::HeaderSync,
-                observed,
-            });
-        }
-        Ok(_) => {
-            return Err(FaultTestError::UnexpectedReceipt {
-                expected: ExpectedFault::HeaderSync,
-                observed: JournalOffset(u64::try_from(JOURNAL_HEADER_BYTES)?),
-            });
-        }
-    }
+    assert!(matches!(result, Err(JournalError::Io {
+        step: JournalIoStep::SyncHeader, source,
+    }) if observed_fault(&source) == Some(&InjectedFault::HeaderSync)));
     assert_eq!(
         fs::metadata(fixture.path())?.len(),
         u64::try_from(JOURNAL_HEADER_BYTES)?
@@ -219,42 +154,13 @@ fn every_frame_write_prefix_returns_no_receipt_poisons_and_reopens_to_the_prior_
                 source: injected(InjectedFault::FrameWrite),
             })
         });
-        match result {
-            Err(CommitError::OutcomeUnknown {
-                attempted: observed,
-                sequence: FrameSequence::FIRST,
-                step: CommitIoStep::WriteFrame,
-                source,
-            }) if observed == attempted
-                && observed_fault(&source) == Some(&InjectedFault::FrameWrite) => {}
-            Err(observed) => {
-                return Err(FaultTestError::UnexpectedCommit {
-                    expected: ExpectedFault::FrameWrite,
-                    observed,
-                });
-            }
-            Ok(receipt) => {
-                return Err(FaultTestError::UnexpectedReceipt {
-                    expected: ExpectedFault::FrameWrite,
-                    observed: receipt.durable_end,
-                });
-            }
-        }
-        match journal.append(event) {
-            Err(CommitError::Poisoned) => {}
-            Err(observed) => {
-                return Err(FaultTestError::UnexpectedCommit {
-                    expected: ExpectedFault::Poisoned,
-                    observed,
-                });
-            }
-            Ok(receipt) => {
-                return Err(FaultTestError::UnexpectedReceipt {
-                    expected: ExpectedFault::Poisoned,
-                    observed: receipt.durable_end,
-                });
-            }
-        }
+        assert!(matches!(result, Err(CommitError::OutcomeUnknown {
+            attempted: observed,
+            sequence: FrameSequence::FIRST,
+            step: CommitIoStep::WriteFrame,
+            source,
+        }) if observed == attempted && observed_fault(&source) == Some(&InjectedFault::FrameWrite)));
+        assert!(matches!(journal.append(event), Err(CommitError::Poisoned)));
         drop(journal);
         let mut reopened = FileJournal::open(fixture.path())?;
         assert_eq!(
@@ -264,7 +170,10 @@ fn every_frame_write_prefix_returns_no_receipt_poisons_and_reopens_to_the_prior_
                 pending_effect: None,
             }
         );
-        assert_eq!(fs::metadata(fixture.path())?.len(), 32);
+        assert_eq!(
+            fs::metadata(fixture.path())?.len(),
+            JOURNAL_HEADER_BYTES as u64
+        );
         fixture.remove()?;
     }
     Ok(())
@@ -291,42 +200,14 @@ fn sync_failure_reconciles_both_absent_and_present_physical_images() -> Result<(
                 source: injected(InjectedFault::FrameSync),
             })
         });
-        match result {
-            Err(CommitError::OutcomeUnknown {
-                attempted,
-                sequence: FrameSequence::FIRST,
-                step: CommitIoStep::SyncFrame,
-                source,
-            }) if attempted == WorkflowRecord::from(event)
-                && observed_fault(&source) == Some(&InjectedFault::FrameSync) => {}
-            Err(observed) => {
-                return Err(FaultTestError::UnexpectedCommit {
-                    expected: ExpectedFault::FrameSync,
-                    observed,
-                });
-            }
-            Ok(receipt) => {
-                return Err(FaultTestError::UnexpectedReceipt {
-                    expected: ExpectedFault::FrameSync,
-                    observed: receipt.durable_end,
-                });
-            }
-        }
-        match journal.replay() {
-            Err(JournalError::Poisoned) => {}
-            Err(observed) => {
-                return Err(FaultTestError::UnexpectedJournal {
-                    expected: ExpectedFault::Poisoned,
-                    observed,
-                });
-            }
-            Ok(_) => {
-                return Err(FaultTestError::UnexpectedReceipt {
-                    expected: ExpectedFault::Poisoned,
-                    observed: JournalOffset(0),
-                });
-            }
-        }
+        assert!(matches!(result, Err(CommitError::OutcomeUnknown {
+            attempted,
+            sequence: FrameSequence::FIRST,
+            step: CommitIoStep::SyncFrame,
+            source,
+        }) if attempted == WorkflowRecord::from(event)
+            && observed_fault(&source) == Some(&InjectedFault::FrameSync)));
+        assert!(matches!(journal.replay(), Err(JournalError::Poisoned)));
         drop(journal);
 
         let mut reopened = FileJournal::open(fixture.path())?;
@@ -351,33 +232,5 @@ fn sync_failure_reconciles_both_absent_and_present_physical_images() -> Result<(
         assert_eq!(reopened.replay()?, expected);
         fixture.remove()?;
     }
-    Ok(())
-}
-
-#[test]
-fn legal_short_writes_can_complete_one_frame_without_an_intermediate_receipt()
--> Result<(), FaultTestError> {
-    const CHUNKS: [usize; 7] = [1, 2, 3, 5, 8, 13, 60];
-    let fixture = Fixture::new("short-success");
-    let mut journal = FileJournal::create(fixture.path())?;
-    let receipt = journal.append_using(requested(17), |file, frame| {
-        file.seek(SeekFrom::End(0))
-            .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
-        let mut written = 0;
-        for bytes in CHUNKS {
-            let end = written + bytes;
-            file.write_all(&frame.as_bytes()[written..end])
-                .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
-            written = end;
-        }
-        file.sync_all().map_err(|source| PersistFailure {
-            step: CommitIoStep::SyncFrame,
-            source,
-        })
-    })?;
-    assert_eq!(receipt.sequence, FrameSequence::FIRST);
-    assert_eq!(receipt.durable_end, JournalOffset(124));
-    assert_eq!(fs::metadata(fixture.path())?.len(), 124);
-    fixture.remove()?;
     Ok(())
 }

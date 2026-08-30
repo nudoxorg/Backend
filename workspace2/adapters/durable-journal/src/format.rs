@@ -1,4 +1,4 @@
-use core::{mem::size_of, ops::Deref};
+use core::mem::size_of;
 
 use blake3::Hasher;
 use nudox_workflow::{WORKFLOW_RECORD_BYTES, WorkflowRecord};
@@ -11,77 +11,46 @@ use crate::{FrameSequence, HeaderError, JournalOffset};
 
 const MAGIC: [u8; 8] = *b"NUDXJNL\0";
 const PHYSICAL_VERSION: u16 = 1;
-const HEADER_WIDTH: u16 = 32;
-const WORKFLOW_RECORD_WIDTH: u16 = 68;
 const CHECKSUM_BYTES: usize = 16;
-
-#[repr(transparent)]
-struct ChecksumDomain<const BYTES: usize>([u8; BYTES]);
-
-impl<const BYTES: usize> Deref for ChecksumDomain<BYTES> {
-    type Target = [u8; BYTES];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<const BYTES: usize> AsRef<[u8]> for ChecksumDomain<BYTES> {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-const HEADER_DOMAIN: ChecksumDomain<24> = ChecksumDomain(*b"nudox.journal.header.v1\0");
-const FRAME_DOMAIN: ChecksumDomain<23> = ChecksumDomain(*b"nudox.journal.frame.v1\0");
+const HEADER_DOMAIN: &[u8] = b"nudox.journal.header.v1\0";
+const FRAME_DOMAIN: &[u8] = b"nudox.journal.frame.v1\0";
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-struct HeaderFields {
+pub(crate) struct HeaderRecord {
     magic: [u8; 8],
     physical_version: U16<LittleEndian>,
     header_bytes: U16<LittleEndian>,
     record_bytes: U16<LittleEndian>,
     reserved: U16<LittleEndian>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-pub(crate) struct HeaderRecord {
-    fields: HeaderFields,
     checksum: [u8; CHECKSUM_BYTES],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-struct FramePayload {
-    sequence: U64<LittleEndian>,
-    record: WorkflowRecord,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub(crate) struct FrameRecord {
-    payload: FramePayload,
+    sequence: U64<LittleEndian>,
+    record: WorkflowRecord,
     checksum: [u8; CHECKSUM_BYTES],
 }
 
 pub const JOURNAL_HEADER_BYTES: usize = size_of::<HeaderRecord>();
 pub const JOURNAL_FRAME_BYTES: usize = size_of::<FrameRecord>();
+const HEADER_PAYLOAD_BYTES: usize = JOURNAL_HEADER_BYTES - CHECKSUM_BYTES;
+const FRAME_PAYLOAD_BYTES: usize = JOURNAL_FRAME_BYTES - CHECKSUM_BYTES;
 
 impl HeaderRecord {
     pub(crate) fn canonical() -> Self {
-        let fields = HeaderFields {
+        let mut header = Self {
             magic: MAGIC,
             physical_version: U16::new(PHYSICAL_VERSION),
-            header_bytes: U16::new(HEADER_WIDTH),
-            record_bytes: U16::new(WORKFLOW_RECORD_WIDTH),
+            header_bytes: U16::new(JOURNAL_HEADER_BYTES as u16),
+            record_bytes: U16::new(WORKFLOW_RECORD_BYTES as u16),
             reserved: U16::new(0),
+            checksum: [0; CHECKSUM_BYTES],
         };
-        Self {
-            checksum: checksum(&HEADER_DOMAIN, fields.as_bytes()),
-            fields,
-        }
+        header.checksum = checksum(HEADER_DOMAIN, &header.as_bytes()[..HEADER_PAYLOAD_BYTES]);
+        header
     }
 
     pub(crate) fn decode(bytes: [u8; JOURNAL_HEADER_BYTES]) -> Result<Self, HeaderError> {
@@ -91,33 +60,34 @@ impl HeaderRecord {
     }
 
     fn validate(&self) -> Result<(), HeaderError> {
-        let fields = &self.fields;
-        if fields.magic != MAGIC {
+        if self.magic != MAGIC {
             return Err(HeaderError::Magic {
-                observed: fields.magic,
+                observed: self.magic,
             });
         }
-        let physical_version = fields.physical_version.get();
+        let physical_version = self.physical_version.get();
         if physical_version != PHYSICAL_VERSION {
             return Err(HeaderError::PhysicalVersion {
                 observed: physical_version,
             });
         }
-        require_width(
-            fields.header_bytes.get(),
-            HEADER_WIDTH,
-            |expected, observed| HeaderError::HeaderWidth { expected, observed },
-        )?;
-        require_width(
-            fields.record_bytes.get(),
-            WORKFLOW_RECORD_WIDTH,
-            |expected, observed| HeaderError::RecordWidth { expected, observed },
-        )?;
-        let reserved = fields.reserved.get();
+        if self.header_bytes.get() != JOURNAL_HEADER_BYTES as u16 {
+            return Err(HeaderError::HeaderWidth {
+                expected: JOURNAL_HEADER_BYTES as u16,
+                observed: self.header_bytes.get(),
+            });
+        }
+        if self.record_bytes.get() != WORKFLOW_RECORD_BYTES as u16 {
+            return Err(HeaderError::RecordWidth {
+                expected: WORKFLOW_RECORD_BYTES as u16,
+                observed: self.record_bytes.get(),
+            });
+        }
+        let reserved = self.reserved.get();
         if reserved != 0 {
             return Err(HeaderError::Reserved { observed: reserved });
         }
-        if self.checksum != checksum(&HEADER_DOMAIN, fields.as_bytes()) {
+        if self.checksum != checksum(HEADER_DOMAIN, &self.as_bytes()[..HEADER_PAYLOAD_BYTES]) {
             return Err(HeaderError::Checksum);
         }
         Ok(())
@@ -126,14 +96,13 @@ impl HeaderRecord {
 
 impl FrameRecord {
     pub(crate) fn encode(sequence: FrameSequence, record: WorkflowRecord) -> Self {
-        let payload = FramePayload {
-            sequence: U64::new(sequence.0),
+        let mut frame = Self {
+            sequence: U64::new(*sequence),
             record,
+            checksum: [0; CHECKSUM_BYTES],
         };
-        Self {
-            checksum: frame_checksum(&payload),
-            payload,
-        }
+        frame.checksum = frame_checksum(&frame.as_bytes()[..FRAME_PAYLOAD_BYTES]);
+        frame
     }
 
     pub(crate) fn decode(bytes: [u8; JOURNAL_FRAME_BYTES]) -> Self {
@@ -141,49 +110,36 @@ impl FrameRecord {
     }
 
     pub(crate) fn sequence(&self) -> FrameSequence {
-        FrameSequence(self.payload.sequence.get())
+        FrameSequence::from(self.sequence.get())
     }
 
     pub(crate) fn record(&self) -> WorkflowRecord {
-        self.payload.record
+        self.record
     }
 
     pub(crate) fn checksum_is_valid(&self) -> bool {
-        self.checksum == frame_checksum(&self.payload)
+        self.checksum == frame_checksum(&self.as_bytes()[..FRAME_PAYLOAD_BYTES])
     }
 }
 
 pub(crate) fn frame_offset(sequence: FrameSequence) -> Option<JournalOffset> {
     sequence
-        .0
         .checked_mul(JOURNAL_FRAME_BYTES as u64)
         .and_then(|frames| frames.checked_add(JOURNAL_HEADER_BYTES as u64))
-        .map(JournalOffset)
+        .map(JournalOffset::from)
 }
 
-pub(crate) fn receipt_end(sequence: FrameSequence) -> Option<JournalOffset> {
-    sequence
-        .0
-        .checked_add(1)
-        .and_then(|count| count.checked_mul(JOURNAL_FRAME_BYTES as u64))
-        .and_then(|frames| frames.checked_add(JOURNAL_HEADER_BYTES as u64))
-        .map(JournalOffset)
-}
-
-fn frame_checksum(payload: &FramePayload) -> [u8; CHECKSUM_BYTES] {
+fn frame_checksum(payload: &[u8]) -> [u8; CHECKSUM_BYTES] {
     let mut hasher = Hasher::new();
-    hasher.update(FRAME_DOMAIN.as_ref());
+    hasher.update(FRAME_DOMAIN);
     hasher.update(&PHYSICAL_VERSION.to_le_bytes());
-    hasher.update(payload.as_bytes());
+    hasher.update(payload);
     truncate(hasher.finalize())
 }
 
-fn checksum<const DOMAIN_BYTES: usize>(
-    domain: &ChecksumDomain<DOMAIN_BYTES>,
-    bytes: &[u8],
-) -> [u8; CHECKSUM_BYTES] {
+fn checksum(domain: &[u8], bytes: &[u8]) -> [u8; CHECKSUM_BYTES] {
     let mut hasher = Hasher::new();
-    hasher.update(domain.as_ref());
+    hasher.update(domain);
     hasher.update(bytes);
     truncate(hasher.finalize())
 }
@@ -194,20 +150,8 @@ fn truncate(hash: blake3::Hash) -> [u8; CHECKSUM_BYTES] {
     checksum
 }
 
-fn require_width(
-    observed: u16,
-    expected: u16,
-    error: impl FnOnce(u16, u16) -> HeaderError,
-) -> Result<(), HeaderError> {
-    if observed == expected {
-        Ok(())
-    } else {
-        Err(error(expected, observed))
-    }
-}
-
 const _: () = {
-    assert!(JOURNAL_HEADER_BYTES == HEADER_WIDTH as usize);
+    assert!(JOURNAL_HEADER_BYTES == 32);
     assert!(JOURNAL_FRAME_BYTES == 92);
-    assert!(WORKFLOW_RECORD_BYTES == WORKFLOW_RECORD_WIDTH as usize);
+    assert!(WORKFLOW_RECORD_BYTES == 68);
 };

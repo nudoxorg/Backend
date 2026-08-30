@@ -3,7 +3,7 @@ mod harness;
 use std::{fs, io::Write};
 
 use blake3::Hasher;
-use harness::{FailureClass, Fixture, ScenarioError, receipt_end};
+use harness::{Fixture, ScenarioError, receipt_end};
 use nudox_durable_journal::{
     CommitError, FileJournal, FrameSequence, HeaderError, JOURNAL_FRAME_BYTES,
     JOURNAL_HEADER_BYTES, JournalError, JournalOffset,
@@ -47,16 +47,8 @@ fn expect_header(
     result: Result<FileJournal, JournalError>,
     expected: HeaderError,
 ) -> Result<(), ScenarioError> {
-    match result {
-        Err(JournalError::Header(observed)) if observed == expected => Ok(()),
-        Err(observed) => Err(ScenarioError::UnexpectedJournalError {
-            expected: FailureClass::Header,
-            observed,
-        }),
-        Ok(_) => Err(ScenarioError::UnexpectedJournalSuccess {
-            expected: FailureClass::Header,
-        }),
-    }
+    assert!(matches!(result, Err(JournalError::Header(observed)) if observed == expected));
+    Ok(())
 }
 
 #[test]
@@ -101,8 +93,14 @@ fn every_restart_prefix_has_exact_receipts_and_independent_recovery() -> Result<
         let mut journal = FileJournal::create(fixture.path())?;
         for (sequence, kind) in events.iter().copied().take(prefix).enumerate() {
             let receipt = journal.append(event(key, kind))?;
-            assert_eq!(receipt.sequence, FrameSequence(u64::try_from(sequence)?));
-            assert_eq!(receipt.durable_end, JournalOffset(receipt_end(sequence)?));
+            assert_eq!(
+                receipt.sequence,
+                FrameSequence::from(u64::try_from(sequence)?)
+            );
+            assert_eq!(
+                receipt.durable_end,
+                JournalOffset::from(receipt_end(sequence)?)
+            );
             drop(journal);
             journal = FileJournal::open(fixture.path())?;
         }
@@ -120,28 +118,18 @@ fn duplicate_is_durable_but_conflicting_key_writes_nothing() -> Result<(), Scena
     let mut journal = FileJournal::create(fixture.path())?;
     let first = journal.append(requested)?;
     let duplicate = journal.append(requested)?;
-    assert_eq!(first.sequence, FrameSequence(0));
-    assert_eq!(duplicate.sequence, FrameSequence(1));
+    assert_eq!(first.sequence, FrameSequence::from(0));
+    assert_eq!(duplicate.sequence, FrameSequence::from(1));
     let durable_bytes = fs::metadata(fixture.path())?.len();
 
     let conflicting = event(StageKey::from([8; 32]), EventKind::Requested);
-    match journal.append(conflicting) {
+    let result = journal.append(conflicting);
+    assert!(matches!(
+        result,
         Err(CommitError::Reduction(nudox_workflow::ReductionError::StageKeyMismatch {
-            expected,
-            observed,
-        })) if expected == key && observed == conflicting.key => {}
-        Err(observed) => {
-            return Err(ScenarioError::UnexpectedCommitError {
-                expected: FailureClass::Reduction,
-                observed,
-            });
-        }
-        Ok(_) => {
-            return Err(ScenarioError::UnexpectedCommitSuccess {
-                expected: FailureClass::Reduction,
-            });
-        }
-    }
+            expected, observed,
+        })) if expected == key && observed == conflicting.key
+    ));
     assert_eq!(fs::metadata(fixture.path())?.len(), durable_bytes);
     assert_eq!(
         journal.replay()?,
@@ -213,8 +201,8 @@ fn every_truncated_header_reports_its_exact_observed_width() -> Result<(), Scena
         expect_header(
             FileJournal::open(fixture.path()),
             HeaderError::Truncated {
-                required: JournalOffset(u64::try_from(JOURNAL_HEADER_BYTES)?),
-                actual: JournalOffset(u64::try_from(actual)?),
+                required: JournalOffset::from(u64::try_from(JOURNAL_HEADER_BYTES)?),
+                actual: JournalOffset::from(u64::try_from(actual)?),
             },
         )?;
         fixture.remove()?;
@@ -272,23 +260,14 @@ fn every_workflow_record_byte_is_covered_by_the_complete_frame_checksum()
         let mut mutated = canonical.clone();
         mutated[record_start + record_byte] ^= 1;
         fixture.replace(&mutated)?;
-        match FileJournal::open(fixture.path()) {
+        let result = FileJournal::open(fixture.path());
+        assert!(matches!(
+            result,
             Err(JournalError::FrameChecksum {
                 sequence: FrameSequence::FIRST,
                 offset,
-            }) if offset == JournalOffset(u64::try_from(JOURNAL_HEADER_BYTES)?) => {}
-            Err(observed) => {
-                return Err(ScenarioError::UnexpectedJournalError {
-                    expected: FailureClass::FrameChecksum,
-                    observed,
-                });
-            }
-            Ok(_) => {
-                return Err(ScenarioError::UnexpectedJournalSuccess {
-                    expected: FailureClass::FrameChecksum,
-                });
-            }
-        }
+            }) if offset == JournalOffset::from(u64::try_from(JOURNAL_HEADER_BYTES)?)
+        ));
         assert_eq!(fs::metadata(fixture.path())?.len(), receipt_end(0)?);
     }
     fixture.remove()?;
@@ -302,44 +281,26 @@ fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), Scenar
     let mut wrong_sequence = canonical.clone();
     wrong_sequence[JOURNAL_HEADER_BYTES] = 1;
     fixture.replace(&wrong_sequence)?;
-    match FileJournal::open(fixture.path()) {
+    let result = FileJournal::open(fixture.path());
+    assert!(matches!(
+        result,
         Err(JournalError::Sequence {
             expected: FrameSequence::FIRST,
-            observed: FrameSequence(1),
-        }) => {}
-        Err(observed) => {
-            return Err(ScenarioError::UnexpectedJournalError {
-                expected: FailureClass::Sequence,
-                observed,
-            });
-        }
-        Ok(_) => {
-            return Err(ScenarioError::UnexpectedJournalSuccess {
-                expected: FailureClass::Sequence,
-            });
-        }
-    }
+            observed,
+        }) if observed == FrameSequence::from(1)
+    ));
 
     let mut unknown_event = canonical;
     let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
     unknown_event[record_start + WORKFLOW_EVENT_OFFSET] = u8::MAX;
     rewrite_frame_checksum(&mut unknown_event);
     fixture.replace(&unknown_event)?;
-    match FileJournal::open(fixture.path()) {
+    let result = FileJournal::open(fixture.path());
+    assert!(matches!(
+        result,
         Err(JournalError::Decode(WorkflowRecordError::UnknownEvent { observed }))
-            if observed == u8::MAX => {}
-        Err(observed) => {
-            return Err(ScenarioError::UnexpectedJournalError {
-                expected: FailureClass::Decode,
-                observed,
-            });
-        }
-        Ok(_) => {
-            return Err(ScenarioError::UnexpectedJournalSuccess {
-                expected: FailureClass::Decode,
-            });
-        }
-    }
+            if observed == u8::MAX
+    ));
     fixture.remove()?;
     Ok(())
 }
