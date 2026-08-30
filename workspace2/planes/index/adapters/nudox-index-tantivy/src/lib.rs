@@ -5,7 +5,9 @@
 //! global deterministic ranking remain in `nudox-index-core`; backend floating scores never cross
 //! this adapter boundary.
 
-use nudox_index_core::IndexSnapshotId;
+use core::str::Utf8Error;
+
+use nudox_index_core::{IndexSnapshotId, LexicalManifest, LexicalSegmentId};
 use tantivy::{
     Index, IndexReader, TantivyDocument,
     collector::TopDocs,
@@ -25,15 +27,6 @@ pub const MAX_TANTIVY_TEXT_BYTES: usize = 1_048_576;
 
 /// Maximum UTF-8 query bytes parsed by one operation.
 pub const MAX_TANTIVY_QUERY_BYTES: usize = 4_096;
-
-/// One immutable document projected into Tantivy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TantivyDocumentInput<'text> {
-    /// Stable local document identity shared with the portable lexical core.
-    pub document: u32,
-    /// Borrowed UTF-8 body indexed by Tantivy's default tokenizer.
-    pub text: &'text str,
-}
 
 /// One deterministic adapter hit. Backend floating scores never become identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -66,6 +59,16 @@ impl TantivyTerminal {
 /// Structured build/query failure retaining its causal Tantivy source.
 #[derive(Debug, thiserror::Error)]
 pub enum TantivyAdapterError {
+    /// Nested Tantivy publication requires the complete healthy canonical selection.
+    #[error(
+        "Tantivy projection requires a complete healthy manifest; missing={missing}, degraded={degraded}"
+    )]
+    IncompleteManifest {
+        /// Selected lexical segments unavailable to the manifest.
+        missing: usize,
+        /// Whether the manifest used a degraded route.
+        degraded: bool,
+    },
     /// Caller attempted to query a different immutable snapshot.
     #[error("Tantivy projection snapshot mismatch")]
     WrongSnapshot {
@@ -112,15 +115,16 @@ pub enum TantivyAdapterError {
         /// Complete observed query bytes.
         observed: usize,
     },
-    /// One input document identity occurred more than once.
-    #[error("duplicate document {document} at {first_index} and {index}")]
-    DuplicateDocument {
-        /// First occurrence.
-        first_index: usize,
-        /// Later occurrence.
-        index: usize,
-        /// Repeated identity.
-        document: u32,
+    /// A canonical lexical term was not valid UTF-8 for Tantivy's text field.
+    #[error("Tantivy term at segment {segment:?} row {row} is not valid UTF-8")]
+    NonUtf8Term {
+        /// Immutable segment containing the rejected term.
+        segment: LexicalSegmentId,
+        /// Row within the immutable segment.
+        row: usize,
+        /// Original UTF-8 conversion failure.
+        #[source]
+        source: Utf8Error,
     },
     /// Tantivy failed while building, committing, opening, or searching.
     #[error("Tantivy {phase:?} failed")]
@@ -184,22 +188,40 @@ pub struct TantivyLexical {
 }
 
 impl TantivyLexical {
-    /// Builds and commits a real in-memory Tantivy index for one immutable snapshot.
-    pub fn build(
-        snapshot: IndexSnapshotId,
-        documents: &[TantivyDocumentInput<'_>],
-    ) -> Result<Self, TantivyAdapterError> {
-        if documents.len() > MAX_TANTIVY_DOCUMENTS {
+    /// Builds a real in-memory index directly from a validated immutable lexical manifest.
+    ///
+    /// Each canonical lexical row becomes one nested Tantivy document. The snapshot authority is
+    /// therefore inherited from content-derived segment identities rather than accepted as an
+    /// unrelated caller label.
+    pub fn build(manifest: LexicalManifest<'_, '_>) -> Result<Self, TantivyAdapterError> {
+        if !manifest.is_complete() {
+            return Err(TantivyAdapterError::IncompleteManifest {
+                missing: manifest.missing_len(),
+                degraded: manifest.is_degraded(),
+            });
+        }
+        let document_count = manifest
+            .segments()
+            .iter()
+            .map(|segment| segment.rows().len())
+            .sum::<usize>();
+        if document_count > MAX_TANTIVY_DOCUMENTS {
             return Err(TantivyAdapterError::DocumentLimit {
                 limit: MAX_TANTIVY_DOCUMENTS,
-                observed: documents.len(),
+                observed: document_count,
             });
         }
         let mut text_bytes = 0_usize;
-        for (index, document) in documents.iter().enumerate() {
-            text_bytes = text_bytes
-                .checked_add(document.text.len())
-                .ok_or(TantivyAdapterError::TextBytesOverflow { index })?;
+        let mut document_index = 0_usize;
+        for segment in manifest.segments() {
+            for row in segment.rows() {
+                text_bytes = text_bytes.checked_add(row.term().len()).ok_or(
+                    TantivyAdapterError::TextBytesOverflow {
+                        index: document_index,
+                    },
+                )?;
+                document_index += 1;
+            }
         }
         if text_bytes > MAX_TANTIVY_TEXT_BYTES {
             return Err(TantivyAdapterError::TextBytesLimit {
@@ -207,7 +229,6 @@ impl TantivyLexical {
                 observed: text_bytes,
             });
         }
-        reject_duplicate_documents(documents)?;
         let mut schema = Schema::builder();
         let body_field = schema.add_text_field("body", TEXT);
         let document_field = schema.add_u64_field("document", STORED | INDEXED);
@@ -219,16 +240,25 @@ impl TantivyLexical {
                     phase: TantivyPhase::Writer,
                     source,
                 })?;
-        for document in documents {
-            writer
-                .add_document(doc!(
-                    body_field => document.text,
-                    document_field => u64::from(document.document),
-                ))
-                .map_err(|source| TantivyAdapterError::Tantivy {
-                    phase: TantivyPhase::AddDocument,
-                    source,
+        for segment in manifest.segments() {
+            for (row_index, row) in segment.rows().iter().copied().enumerate() {
+                let text = core::str::from_utf8(row.term()).map_err(|source| {
+                    TantivyAdapterError::NonUtf8Term {
+                        segment: segment.id(),
+                        row: row_index,
+                        source,
+                    }
                 })?;
+                writer
+                    .add_document(doc!(
+                        body_field => text,
+                        document_field => u64::from(row.document().ordinal()),
+                    ))
+                    .map_err(|source| TantivyAdapterError::Tantivy {
+                        phase: TantivyPhase::AddDocument,
+                        source,
+                    })?;
+            }
         }
         writer
             .commit()
@@ -243,7 +273,7 @@ impl TantivyLexical {
                 source,
             })?;
         Ok(Self {
-            snapshot,
+            snapshot: manifest.snapshot(),
             index,
             reader,
             body_field,
@@ -326,29 +356,15 @@ impl TantivyLexical {
     }
 }
 
-fn reject_duplicate_documents(
-    documents: &[TantivyDocumentInput<'_>],
-) -> Result<(), TantivyAdapterError> {
-    for index in 0..documents.len() {
-        for first_index in 0..index {
-            if documents[first_index].document == documents[index].document {
-                return Err(TantivyAdapterError::DuplicateDocument {
-                    first_index,
-                    index,
-                    document: documents[index].document,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 fn insert_document(output: &mut [Option<TantivyHit>], written: &mut usize, document: u32) {
     if output.is_empty() {
         return;
     }
     let candidate = TantivyHit { document };
     let occupied = (*written).min(output.len());
+    if output[..occupied].contains(&Some(candidate)) {
+        return;
+    }
     let mut position = occupied;
     for (index, hit) in output.iter().copied().take(occupied).enumerate() {
         if hit.is_some_and(|hit| candidate < hit) {
