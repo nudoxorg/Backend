@@ -8,6 +8,3 @@ publish.workspace = true
 
 [dependencies]
 nudox-index-vocab = { path = "../nudox-index-vocab" }
-
-[dev-dependencies]
-allocation-counter.workspace = true
