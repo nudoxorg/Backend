@@ -5,9 +5,10 @@ use nudox_id::{ContentId, GenerationId, ObjectDomain};
 use nudox_object::{ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase};
 use nudox_observe::{DropNewest, FlightRecorder};
 use nudox_root::{
-    ClosureScratch, EntryKey, EntryRangeError, GenerationRoot, GenerationView, LocalityError,
-    LocalityException, LocalityWriteError, MetadataBytes, NonResident, PreparedLocality,
-    RootBuildError, RootEntry, ValidatedLocality,
+    BorrowedGenerationView, ClosureError, ClosureScratch, EntryKey, EntryRangeError,
+    GenerationRoot, GenerationView, LocalityError, LocalityException, LocalityWriteError,
+    MetadataBytes, NonResident, PreparedLocality, RootBuildError, RootEntry, RootReadError,
+    RootWriteError, ValidatedLocality, ValidatedRoot,
 };
 use nudox_schema::SchemaId;
 use rstest::rstest;
@@ -16,13 +17,17 @@ use thiserror::Error;
 use crate::{
     AbsentCount, DemandBindError, Fetch, FetchRoute, HydrationOutcome, HydrationProbeEvent, Need,
     PlanCoverage, PlanError, PlanScratch, Projection, VerificationError, demand, plan,
-    plan_with_probe,
+    plan_borrowed, plan_with_probe,
 };
 
 #[derive(Debug, Error)]
 enum ScenarioError {
     #[error("root fixture construction failed")]
     Root(#[from] RootBuildError),
+    #[error("borrowed root fixture decoding failed")]
+    RootRead(#[from] RootReadError),
+    #[error("borrowed root fixture encoding failed")]
+    RootWrite(#[from] RootWriteError),
     #[error("locality fixture binding failed")]
     Locality(#[from] LocalityError),
     #[error("locality fixture output failed")]
@@ -169,5 +174,6 @@ fn require_demand_mismatch(
     }
 }
 
+mod borrowed;
 mod planning;
 mod publication;

@@ -14,12 +14,12 @@ use zerocopy::{
     byteorder::{BigEndian, U64},
 };
 
-use crate::{BoundNeed, Projection};
+use crate::{BoundBorrowedNeed, BoundNeed, Projection};
 
 pub use evidence::{
     AbsentCount, PlanCoverage, PlanError, PlanRejection, PlanScratch, PlanScratchFacts,
 };
-pub use output::{Fetch, FetchRoute, HydrationPlanView, Promise};
+pub use output::{BorrowedHydrationPlanView, Fetch, FetchRoute, HydrationPlanView, Promise};
 
 /// Closed outcome for one completed hydration operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,46 +68,108 @@ where
     }
 
     let (ordinal_buffer, facts) = plan_scratch.begin_plan();
+    ordinal_buffer.clear();
     let mut dependency_set = DependencySetWriter::new(need.view.id, need.projection, count);
     let mut tally = PlanTally::new(count);
-    let absent = selected
-        .retain_ordinals_where(ordinal_buffer, |entry| {
-            let object = entry.object;
-            dependency_set.descriptor(object);
-            if is_present(object) {
-                tally.record_present();
-                false
-            } else {
-                match entry.locality {
-                    Locality::Promised(_) => {
-                        tally.record_promised();
-                    }
-                    Locality::Resident | Locality::Overlaid(_) => {
-                        tally.record_missing();
-                    }
+    for (entry, ordinal) in selected.iter().zip(0_u32..) {
+        let object = entry.object;
+        dependency_set.descriptor(object);
+        if is_present(object) {
+            tally.record_present();
+        } else {
+            match entry.locality {
+                Locality::Promised(_) => {
+                    tally.record_promised();
                 }
-                true
+                Locality::Resident | Locality::Overlaid(_) => {
+                    tally.record_missing();
+                }
             }
-        })
-        .map_err(
-            |nudox_root::SelectedOrdinalBufferError::TooSmall {
-                 required,
-                 available,
-             }| PlanError::ScratchTooSmall {
-                required,
-                available,
-            },
-        )?;
+            ordinal_buffer.push(ordinal);
+        }
+    }
     let (coverage, absent_count) = tally.finish();
     if absent_count > facts.high_water_absent {
         facts.high_water_absent = absent_count;
     }
+    let positions = ordinal_buffer.as_slice();
     Ok(HydrationPlanView::new(
         need.view.id,
         need.projection,
         dependency_set.finish(),
         coverage,
-        absent,
+        selected,
+        positions,
+    ))
+}
+
+/// Pure wanted/have planner over a borrowed canonical root/locality view.
+/// No root bytes, descriptors, locality backing, or presence predicate are
+/// retained by the returned plan; only the validated selected view and the
+/// caller-owned sparse ordinal positions are borrowed.
+///
+/// # Errors
+///
+/// Returns the exact [`PlanError::Closure`] cause when closure selection cannot
+/// use the caller-provided scratch, or [`PlanError::ScratchTooSmall`] with the
+/// requested and available counts before changing sparse-plan accounting.
+pub fn plan_borrowed<'scratch, 'view, 'root, 'locality, DomainTag: Domain, IsPresent>(
+    need: BoundBorrowedNeed<'view, 'root, 'locality, DomainTag>,
+    closure_scratch: &'scratch mut ClosureScratch,
+    plan_scratch: &'scratch mut PlanScratch,
+    mut is_present: IsPresent,
+) -> Result<BorrowedHydrationPlanView<'scratch, 'scratch, 'root, 'locality, DomainTag>, PlanError>
+where
+    IsPresent: FnMut(ObjectRef<DomainTag>) -> bool,
+    'view: 'scratch,
+    'root: 'scratch,
+    'locality: 'scratch,
+{
+    let selected = need
+        .view
+        .select_closure(need.projection.range(), closure_scratch)
+        .map_err(PlanError::Closure)?;
+    let count = selected.count();
+    if count > plan_scratch.capacity {
+        return Err(PlanError::ScratchTooSmall {
+            required: count,
+            available: plan_scratch.capacity,
+        });
+    }
+
+    let (ordinal_buffer, facts) = plan_scratch.begin_plan();
+    ordinal_buffer.clear();
+    let mut dependency_set = DependencySetWriter::new(need.view.id, need.projection, count);
+    let mut tally = PlanTally::new(count);
+    for (entry, ordinal) in selected.iter().zip(0_u32..) {
+        let object = entry.object;
+        dependency_set.descriptor(object);
+        if is_present(object) {
+            tally.record_present();
+        } else {
+            match entry.locality {
+                Locality::Promised(_) => {
+                    tally.record_promised();
+                }
+                Locality::Resident | Locality::Overlaid(_) => {
+                    tally.record_missing();
+                }
+            }
+            ordinal_buffer.push(ordinal);
+        }
+    }
+    let (coverage, absent_count) = tally.finish();
+    if absent_count > facts.high_water_absent {
+        facts.high_water_absent = absent_count;
+    }
+    let positions = ordinal_buffer.as_slice();
+    Ok(BorrowedHydrationPlanView::new(
+        need.view.id,
+        need.projection,
+        dependency_set.finish(),
+        coverage,
+        selected,
+        positions,
     ))
 }
 

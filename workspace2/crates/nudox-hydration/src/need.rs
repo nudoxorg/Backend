@@ -1,5 +1,5 @@
 use nudox_id::{Domain, GenerationId};
-use nudox_root::{EntryRange, GenerationView};
+use nudox_root::{BorrowedGenerationView, EntryRange, GenerationView};
 use thiserror::Error;
 
 /// Requested immutable generation projection.
@@ -90,6 +90,29 @@ impl Need {
             projection: self.projection,
         })
     }
+
+    /// Checks this wire/request demand against one borrowed canonical
+    /// generation/locality composition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandBindError::GenerationMismatch`] when the request pins
+    /// a different immutable generation than `view`.
+    pub fn bind_borrowed<'view, 'root, 'locality, DomainTag: Domain>(
+        self,
+        view: &'view BorrowedGenerationView<'root, 'locality, DomainTag>,
+    ) -> Result<BoundBorrowedNeed<'view, 'root, 'locality, DomainTag>, DemandBindError> {
+        if self.pinned_root != view.id {
+            return Err(DemandBindError::GenerationMismatch {
+                requested: self.pinned_root,
+                actual: view.id,
+            });
+        }
+        Ok(BoundBorrowedNeed {
+            view,
+            projection: self.projection,
+        })
+    }
 }
 
 /// Demand proven coherent with one borrowed generation/locality composition.
@@ -101,6 +124,20 @@ pub struct BoundNeed<'view, 'root, 'locality, DomainTag> {
 
 impl<DomainTag> Copy for BoundNeed<'_, '_, '_, DomainTag> {}
 impl<DomainTag> Clone for BoundNeed<'_, '_, '_, DomainTag> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// Demand proven coherent with one borrowed canonical root/locality view.
+pub struct BoundBorrowedNeed<'view, 'root, 'locality, DomainTag> {
+    pub(crate) view: &'view BorrowedGenerationView<'root, 'locality, DomainTag>,
+    /// Exact projection now bound to the view's generation proof.
+    pub projection: Projection,
+}
+
+impl<DomainTag> Copy for BoundBorrowedNeed<'_, '_, '_, DomainTag> {}
+impl<DomainTag> Clone for BoundBorrowedNeed<'_, '_, '_, DomainTag> {
     fn clone(&self) -> Self {
         *self
     }

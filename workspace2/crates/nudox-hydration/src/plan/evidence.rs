@@ -1,7 +1,7 @@
-use alloc::collections::TryReserveError;
+use alloc::{collections::TryReserveError, vec::Vec};
 use core::{mem::size_of, ops::Deref};
 
-use nudox_root::{ClosureError, MetadataBytes, SelectedCount, SelectedOrdinalBuffer};
+use nudox_root::{ClosureError, MetadataBytes, SelectedCount};
 use thiserror::Error;
 
 /// Semantic count measured in selected entries that are absent locally.
@@ -79,7 +79,7 @@ pub struct PlanScratchFacts {
 
 /// Caller-owned reusable sparse planning memory.
 pub struct PlanScratch {
-    absent: SelectedOrdinalBuffer,
+    absent: Vec<u32>,
     facts: PlanScratchFacts,
 }
 
@@ -99,20 +99,23 @@ impl PlanScratch {
     /// Returns the allocator's exact reservation cause before retaining
     /// partially initialized scratch.
     pub fn new(capacity: SelectedCount) -> Result<Self, TryReserveError> {
-        let absent = SelectedOrdinalBuffer::new(capacity)?;
+        let mut absent = Vec::new();
+        #[allow(
+            clippy::as_conversions,
+            reason = "SelectedCount is a root-bounded compact u32 count"
+        )]
+        absent.try_reserve_exact(u32::from(capacity) as usize)?;
         Ok(Self {
             facts: PlanScratchFacts {
                 capacity,
-                retained_absence_bytes: absent.retained_bytes().into(),
+                retained_absence_bytes: (absent.capacity() * size_of::<u32>()).into(),
                 high_water_absent: AbsentCount::ZERO,
             },
             absent,
         })
     }
 
-    pub(super) const fn begin_plan(
-        &mut self,
-    ) -> (&mut SelectedOrdinalBuffer, &mut PlanScratchFacts) {
+    pub(super) const fn begin_plan(&mut self) -> (&mut Vec<u32>, &mut PlanScratchFacts) {
         (&mut self.absent, &mut self.facts)
     }
 }

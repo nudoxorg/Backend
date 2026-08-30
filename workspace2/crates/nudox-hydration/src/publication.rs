@@ -2,7 +2,7 @@ use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef};
 use thiserror::Error;
 
-use crate::HydrationPlanView;
+use crate::{BorrowedHydrationPlanView, HydrationPlanView};
 
 /// Borrowed staged transition with no verified-completeness authority.
 pub struct StagedGeneration<'plan, 'selection, 'storage, DomainTag> {
@@ -16,6 +16,53 @@ impl<'plan, 'selection, 'storage, DomainTag: Domain>
     ) -> Self {
         Self { plan }
     }
+    /// Consumes staging after verifying every descriptor of a complete root closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact partial-projection or first missing-descriptor fact;
+    /// neither result can be converted to a verified-generation witness.
+    pub fn verify<IsPresent>(
+        self,
+        mut is_present: IsPresent,
+    ) -> Result<VerifiedGeneration, VerificationError<DomainTag>>
+    where
+        IsPresent: FnMut(ObjectRef<DomainTag>) -> bool,
+    {
+        if !self.plan.projection.is_complete() {
+            return Err(VerificationError::PartialProjection {
+                pinned_root: self.plan.pinned_root,
+            });
+        }
+        for object in self.plan.required() {
+            if !is_present(object) {
+                return Err(VerificationError::MissingObject {
+                    pinned_root: self.plan.pinned_root,
+                    object,
+                });
+            }
+        }
+        Ok(VerifiedGeneration {
+            pinned_root: self.plan.pinned_root,
+            dep_set: self.plan.dep_set,
+        })
+    }
+}
+
+/// Borrowed staged transition with no verified-completeness authority.
+pub struct BorrowedStagedGeneration<'plan, 'selection, 'storage, 'root, 'locality, DomainTag> {
+    plan: &'plan BorrowedHydrationPlanView<'selection, 'storage, 'root, 'locality, DomainTag>,
+}
+
+impl<'plan, 'selection, 'storage, 'root, 'locality, DomainTag: Domain>
+    BorrowedStagedGeneration<'plan, 'selection, 'storage, 'root, 'locality, DomainTag>
+{
+    pub(crate) const fn new(
+        plan: &'plan BorrowedHydrationPlanView<'selection, 'storage, 'root, 'locality, DomainTag>,
+    ) -> Self {
+        Self { plan }
+    }
+
     /// Consumes staging after verifying every descriptor of a complete root closure.
     ///
     /// # Errors
