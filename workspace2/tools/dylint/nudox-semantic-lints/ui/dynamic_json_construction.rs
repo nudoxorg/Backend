@@ -1,4 +1,4 @@
-// aux-build: serde_json.rs
+#![feature(rustc_private)]
 #![allow(dead_code)]
 
 #[macro_use]

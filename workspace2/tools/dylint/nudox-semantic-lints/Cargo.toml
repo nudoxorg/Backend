@@ -16,4 +16,3 @@ dylint_testing = "=6.0.4"
 
 [package.metadata.rust-analyzer]
 rustc_private = true
-

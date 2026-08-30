@@ -25,7 +25,9 @@ if ((${#lint_libraries[@]} != 1)); then
 fi
 lint_library="${lint_libraries[0]}"
 
-export DYLINT_RUSTFLAGS="-Dnudox_erased_map_err -Dnudox_stringly_state_field -Dnudox_redundant_public_accessor -Dnudox_dynamic_dispatch"
+# Every lint registered by the library is warn-by-default. Denying all warnings here makes
+# registration sufficient for shipping enforcement and prevents the runner's inventory drifting.
+export DYLINT_RUSTFLAGS="-Dwarnings"
 
 for relative_manifest in "${shipping_workspace_manifests[@]}"; do
   dylint_cargo dylint \

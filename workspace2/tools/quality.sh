@@ -15,6 +15,7 @@ fi
 # shellcheck source=pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
+"$project_dir/tools/check-crate-layout.sh"
 "$project_dir/tools/dylint/run.sh"
 for relative_manifest in "${shipping_workspace_manifests[@]}"; do
   manifest="$project_dir/$relative_manifest"

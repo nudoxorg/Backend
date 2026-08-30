@@ -44,3 +44,4 @@ LL | local_state!(ExpandedScenario);
    = note: this error originates in the macro `local_state` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 5 previous errors
+
