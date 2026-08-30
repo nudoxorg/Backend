@@ -5,4 +5,3 @@ error: lifetime may not live long enough
   |                  - let's call the lifetime of this reference `'1`
 5 |     ValidatedRoot::try_from(bytes).unwrap()
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'static`
-

@@ -1,14 +1,33 @@
+//! Canonical root-view integration coverage.
+
 use nudox_id::{ContentId, ObjectDomain};
 use nudox_object::{ObjectKind, ObjectRef};
-use nudox_root::{EntryKey, GenerationRoot, RootEntry, RootReadError, ValidatedRoot};
+use nudox_root::{
+    GenerationRoot, RootBuildError, RootEntry, RootReadError, RootWriteError, ValidatedRoot,
+};
 use nudox_schema::SchemaId;
+use thiserror::Error;
 
-fn entry(key: u64, parent: Option<u64>) -> RootEntry<ObjectDomain> {
+#[derive(Debug, Error)]
+enum CanonicalRootViewTestError {
+    #[error(transparent)]
+    Build(#[from] RootBuildError),
+    #[error(transparent)]
+    Read(#[from] RootReadError),
+    #[error(transparent)]
+    Write(#[from] RootWriteError),
+    #[error("expected truncated root bytes")]
+    ExpectedTruncated,
+    #[error("expected trailing root bytes")]
+    ExpectedTrailing,
+}
+
+fn entry(key: u8, parent: Option<u8>) -> RootEntry<ObjectDomain> {
     RootEntry {
-        key: key.into(),
-        parent: parent.map(Into::into),
+        key: u64::from(key).into(),
+        parent: parent.map(u64::from).map(Into::into),
         object: ObjectRef {
-            content: ContentId::from([key as u8; 32]),
+            content: ContentId::from_digest([key; 32]),
             length: 0.into(),
             schema: SchemaId::Object,
             kind: ObjectKind::from(0),
@@ -17,30 +36,34 @@ fn entry(key: u64, parent: Option<u64>) -> RootEntry<ObjectDomain> {
 }
 
 #[test]
-fn canonical_bytes_round_trip_and_identity_match() {
-    let root = GenerationRoot::new(vec![entry(2, Some(1)), entry(1, None)]).unwrap();
+fn canonical_bytes_round_trip_and_identity_match() -> Result<(), CanonicalRootViewTestError> {
+    let root = GenerationRoot::new(vec![entry(2, Some(1)), entry(1, None)])?;
     let mut bytes = vec![0; usize::from(root.canonical_len())];
-    root.write_canonical(&mut bytes).unwrap();
-    let borrowed = ValidatedRoot::<ObjectDomain>::try_from(bytes.as_slice()).unwrap();
+    root.write_canonical(&mut bytes)?;
+    let borrowed = ValidatedRoot::<ObjectDomain>::try_from(bytes.as_slice())?;
     assert_eq!(borrowed.id, root.id);
     assert_eq!(borrowed.entry_count, 2.into());
     assert_eq!(borrowed.bytes, bytes.as_slice());
+    Ok(())
 }
 
 #[test]
-fn exact_extent_is_required() {
-    let root = GenerationRoot::new(vec![entry(1, None)]).unwrap();
+fn exact_extent_is_required() -> Result<(), CanonicalRootViewTestError> {
+    let root = GenerationRoot::new(vec![entry(1, None)])?;
     let mut bytes = vec![0; usize::from(root.canonical_len())];
-    root.write_canonical(&mut bytes).unwrap();
-    let error = match ValidatedRoot::<ObjectDomain>::try_from(&bytes[..bytes.len() - 1]) {
-        Ok(_) => panic!("expected extent"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, RootReadError::Extent { .. }));
+    root.write_canonical(&mut bytes)?;
+    let error = ValidatedRoot::<ObjectDomain>::try_from(&bytes[..bytes.len() - 1])
+        .err()
+        .ok_or(CanonicalRootViewTestError::ExpectedTruncated)?;
+    if !matches!(error, RootReadError::Truncated { .. }) {
+        return Err(CanonicalRootViewTestError::ExpectedTruncated);
+    }
     bytes.push(0);
-    assert!(matches!(
+    if !matches!(
         ValidatedRoot::<ObjectDomain>::try_from(bytes.as_slice()),
-        Err(RootReadError::Extent { .. })
-    ));
+        Err(RootReadError::TrailingBytes { .. })
+    ) {
+        return Err(CanonicalRootViewTestError::ExpectedTrailing);
+    }
+    Ok(())
 }
-

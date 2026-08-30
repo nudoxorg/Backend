@@ -1,4 +1,4 @@
-use core::num::NonZeroU64;
+use core::{num::NonZeroU64, ops::Deref};
 
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
@@ -46,13 +46,9 @@ pub(in crate::locality) struct OverlayLanes<'bytes> {
     pub(in crate::locality) descriptors: &'bytes [LocalityDescriptorWireRecord],
 }
 
-/// Borrowed validation witness for one complete locality artifact.
-///
-/// The canonical bytes remain borrowed. Header facts are decoded once and the
-/// validated lane table is retained, so random reads and sequential cursors
-/// never rebuild the complete grammar geometry. The direct writer traverses
-/// the same validator before returning this witness.
-pub struct ValidatedLocality<'bytes, DomainTag> {
+/// Immutable facts decoded from one complete locality artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedLocalityFacts<'bytes, DomainTag> {
     /// Underlying complete canonical artifact bytes.
     pub bytes: &'bytes [u8],
     /// Generation identity bound into the fixed header.
@@ -61,8 +57,26 @@ pub struct ValidatedLocality<'bytes, DomainTag> {
     pub content_authority: ContentAuthority<DomainTag>,
     /// Root cardinality bound into the fixed header.
     pub root_count: RootEntryCount,
+}
+
+/// Borrowed validation witness for one complete locality artifact.
+///
+/// The canonical bytes remain borrowed. Header facts are decoded once and the
+/// validated lane table is retained, so random reads and sequential cursors
+/// never rebuild the complete grammar geometry. The direct writer traverses
+/// the same validator before returning this witness.
+pub struct ValidatedLocality<'bytes, DomainTag> {
+    facts: ValidatedLocalityFacts<'bytes, DomainTag>,
     exception_count: u32,
     lanes: BorrowedLanes<'bytes>,
+}
+
+impl<'bytes, DomainTag> Deref for ValidatedLocality<'bytes, DomainTag> {
+    type Target = ValidatedLocalityFacts<'bytes, DomainTag>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 /// Reusable accelerated locality-validation engine.
@@ -119,10 +133,12 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
         lanes: BorrowedLanes<'bytes>,
     ) -> Self {
         Self {
-            bytes,
-            generation,
-            content_authority,
-            root_count,
+            facts: ValidatedLocalityFacts {
+                bytes,
+                generation,
+                content_authority,
+                root_count,
+            },
             exception_count,
             lanes,
         }

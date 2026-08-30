@@ -136,9 +136,6 @@ compile_error!("nudox-root requires at least 32-bit usize coordinates");
 pub(crate) struct RowIndex(u32);
 
 impl RowIndex {
-    pub(crate) const fn from_validated_borrowed_root_position(position: usize) -> Self {
-        Self(position as u32)
-    }
     /// Projects this compact root coordinate onto this process's exact packed
     /// root array. This is the sole native-index conversion for row access.
     #[allow(

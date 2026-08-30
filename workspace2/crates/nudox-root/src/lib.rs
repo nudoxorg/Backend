@@ -28,7 +28,8 @@ pub use locality::{
     LocalityLayout, LocalityLookupWork, LocalityRow, LocalityScanWork, LocalityValidator,
     LocalityWriteError, MeasuredGenerationLookup, MeasuredGenerationScan, NonResident,
     PreparedLocality, SelectedCount, SelectedGeneration, SelectedOrdinalBuffer,
-    SelectedOrdinalBufferError, SelectedOrdinals, ValidatedLocality, with_validated_locality,
+    SelectedOrdinalBufferError, SelectedOrdinals, ValidatedLocality, ValidatedLocalityFacts,
+    with_validated_locality,
 };
 pub use overlay::{OverlayBuildWork, OverlayError, propagate_overlays};
 pub use packed::{

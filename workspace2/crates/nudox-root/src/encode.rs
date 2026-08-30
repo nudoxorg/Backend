@@ -64,7 +64,7 @@ impl RootWireRecord {
         reason = "the builder resolved every non-sentinel compact parent from this exact immutable row slice"
     )]
     fn from_row<DomainTag>(rows: &[RootRow<DomainTag>], row: &RootRow<DomainTag>) -> Self {
-        let (parent_present, parent_key) = match row.parent {
+        let (parent_present, parent_key) = match row.parent() {
             NO_PARENT => (ParentWire::Absent, U64::new(0)),
             parent => (ParentWire::Present, U64::new(*rows[parent as usize].key)),
         };
@@ -72,7 +72,7 @@ impl RootWireRecord {
             key: U64::new(*row.key),
             parent_present,
             parent_key,
-            descriptor: nudox_object::ObjectDescriptorWireRecord::from(&row.object),
+            descriptor: nudox_object::ObjectDescriptorWireRecord::from(&row.object()),
         }
     }
 }
