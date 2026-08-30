@@ -1,16 +1,11 @@
-error[E0505]: cannot move out of `evidence` because it is borrowed
-  --> tests/ui/drop_verified_evidence.rs:15:10
+error[E0505]: cannot move out of `store` because it is borrowed
+  --> tests/ui/drop_verified_evidence.rs:23:10
    |
-13 |     let evidence = String::from("store snapshot");
-   |         -------- binding `evidence` declared here
-14 |     let witness = hypothetical_witness(&evidence);
-   |                                        --------- borrow of `evidence` occurs here
-15 |     drop(evidence);
-   |          ^^^^^^^^ move out of `evidence` occurs here
-16 |     consume(&witness);
+21 |     let store = hypothetical_store();
+   |         ----- binding `store` declared here
+22 |     let witness = hypothetical_witness(&store);
+   |                                        ------ borrow of `store` occurs here
+23 |     drop(store);
+   |          ^^^^^ move out of `store` occurs here
+24 |     consume(&witness);
    |             -------- borrow later used here
-   |
-help: consider cloning the value if the performance cost is acceptable
-   |
-14 |     let witness = hypothetical_witness(&evidence.clone());
-   |                                                 ++++++++

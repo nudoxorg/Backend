@@ -299,7 +299,7 @@ fn main() {
     );
     layout!(
         "hydration",
-        VerifiedGeneration<'static, ()>,
+        VerifiedGeneration<'static, ObjectDomain, Box<[u8]>>,
         "sealed facts plus exact evidence borrow"
     );
     layout!(

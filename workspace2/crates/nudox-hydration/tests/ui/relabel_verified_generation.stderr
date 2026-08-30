@@ -1,7 +1,7 @@
-error[E0594]: cannot assign to data in dereference of `VerifiedGeneration<'_, ()>`
- --> tests/ui/relabel_verified_generation.rs:5:5
+error[E0594]: cannot assign to data in dereference of `VerifiedGeneration<'_, ObjectDomain, Box<[u8]>>`
+ --> tests/ui/relabel_verified_generation.rs:8:5
   |
-5 |     verified.pinned_root = replacement;
+8 |     verified.pinned_root = replacement;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot assign
   |
-  = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `VerifiedGeneration<'_, ()>`
+  = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `VerifiedGeneration<'_, ObjectDomain, Box<[u8]>>`

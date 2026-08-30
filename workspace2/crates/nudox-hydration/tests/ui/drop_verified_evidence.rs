@@ -1,17 +1,25 @@
 use nudox_hydration::VerifiedGeneration;
+use nudox_id::ObjectDomain;
+use nudox_store_memory::MemoryStore;
 
-fn hypothetical_witness(evidence: &String) -> VerifiedGeneration<'_, String> {
-    let _ = evidence;
+fn hypothetical_witness(
+    store: &MemoryStore<ObjectDomain>,
+) -> VerifiedGeneration<'_, ObjectDomain, Box<[u8]>> {
+    let _ = store;
     loop {}
 }
 
-fn consume(witness: &VerifiedGeneration<'_, String>) {
+fn consume(witness: &VerifiedGeneration<'_, ObjectDomain, Box<[u8]>>) {
     let _ = witness;
 }
 
+fn hypothetical_store() -> MemoryStore<ObjectDomain> {
+    loop {}
+}
+
 fn main() {
-    let evidence = String::from("store snapshot");
-    let witness = hypothetical_witness(&evidence);
-    drop(evidence);
+    let store = hypothetical_store();
+    let witness = hypothetical_witness(&store);
+    drop(store);
     consume(&witness);
 }

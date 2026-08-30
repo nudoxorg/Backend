@@ -234,6 +234,7 @@ dependencies = [
  "nudox-object",
  "nudox-observe",
  "nudox-root",
+ "nudox-store-memory",
  "thiserror",
  "zerocopy",
 ]

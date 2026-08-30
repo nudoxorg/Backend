@@ -5,7 +5,7 @@ fn verified_generation_retains_facts_and_one_exact_evidence_reference() {
     let witness_bytes =
         size_of::<GenerationId>() + size_of::<nudox_object::DepSetId>() + size_of::<&()>();
     assert_eq!(
-        size_of::<crate::VerifiedGeneration<'static, ()>>(),
+        size_of::<crate::VerifiedGeneration<'static, ObjectDomain, Box<[u8]>>>(),
         witness_bytes
     );
 }
@@ -30,7 +30,8 @@ fn binding_and_verification_reject_adjacent_invalid_states() -> Result<(), Scena
     let mut closure = closure_scratch(&root)?;
     let mut planning = plan_scratch(&root)?;
     let partial = plan(bound, &mut closure, &mut planning, |_| true)?;
-    match partial.stage().verify(&(), |(), _| true) {
+    let store = memory_store(&[1, 2, 3])?;
+    match partial.stage().verify_store(&store) {
         Err(VerificationError::PartialProjection { pinned_root }) => {
             assert_eq!(pinned_root, root.id);
         }
@@ -67,16 +68,11 @@ fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing
         &mut planning,
         |_| false,
     )?;
-    let present = [object(1)];
-    match partial.stage().verify(&present, |present, descriptor| {
-        present.contains(&descriptor)
-    }) {
-        Err(VerificationError::MissingObject {
-            pinned_root,
-            object: missing,
-        }) => {
-            assert_eq!(pinned_root, root.id);
-            assert_eq!(missing, object(2));
+    let partial_store = memory_store(&[1])?;
+    match partial.stage().verify_store(&partial_store) {
+        Err(VerificationError::MissingObject { report }) => {
+            assert_eq!(report.pinned_root, root.id);
+            assert_eq!(report.object, object(2));
         }
         Err(_) => {
             return Err(ScenarioError::Transition {
@@ -102,18 +98,63 @@ fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing
     )?;
     assert!(replay.is_complete());
     assert_eq!(replay.fetches().count(), 0);
-    let present = [object(1), object(2), object(3)];
+    let store = memory_store(&[1, 2, 3])?;
     let verified = replay
         .stage()
-        .verify(&present, |present, descriptor| {
-            present.contains(&descriptor)
-        })
+        .verify_store(&store)
         .map_err(ScenarioError::Verification)?;
     assert_eq!(verified.pinned_root, root.id);
     assert_eq!(verified.dep_set, replay.dep_set);
     assert!(core::ptr::eq(
         core::ptr::from_ref(verified.as_ref()),
-        core::ptr::from_ref(&present)
+        core::ptr::from_ref(&store)
     ));
     Ok(())
+}
+
+#[test]
+fn exact_content_under_different_metadata_cannot_verify() -> Result<(), ScenarioError> {
+    let root = root()?;
+    let locality_bytes = locality(&root)?;
+    let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
+    let view = GenerationView::new(&root, &locality)?;
+    let mut closure = closure_scratch(&root)?;
+    let mut planning = plan_scratch(&root)?;
+    let complete = plan(
+        demand(&view, Projection::CompleteGeneration),
+        &mut closure,
+        &mut planning,
+        |_| true,
+    )?;
+    let mut store = MemoryStore::new(StoreCapacity {
+        bytes: 12_u64.into(),
+        slots: 3_u32.into(),
+    })?;
+    insert_fixture(&mut store, object(2), 2)?;
+    insert_fixture(&mut store, object(3), 3)?;
+    let expected = object(1);
+    let substituted = ObjectRef {
+        schema: SchemaId::Frame,
+        ..expected
+    };
+    insert_fixture(&mut store, substituted, 1)?;
+
+    match complete.stage().verify_store(&store) {
+        Err(VerificationError::StoredDescriptorMismatch { report }) => {
+            assert_eq!(report.pinned_root, root.id);
+            assert_eq!(report.expected, expected);
+            assert_eq!(report.actual, substituted);
+            Ok(())
+        }
+        Err(_) => Err(ScenarioError::Transition {
+            step: ScenarioStep::DescriptorVerification,
+            expected: ScenarioExpectation::StoredDescriptorMismatch,
+            observed: ScenarioObservation::DifferentVerificationError,
+        }),
+        Ok(_) => Err(ScenarioError::Transition {
+            step: ScenarioStep::DescriptorVerification,
+            expected: ScenarioExpectation::StoredDescriptorMismatch,
+            observed: ScenarioObservation::VerifiedGeneration,
+        }),
+    }
 }

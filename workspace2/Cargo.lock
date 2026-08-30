@@ -364,6 +364,7 @@ dependencies = [
  "nudox-observe",
  "nudox-root",
  "nudox-schema",
+ "nudox-store-memory",
  "rstest",
  "thiserror",
  "trybuild",
@@ -413,10 +414,12 @@ dependencies = [
 name = "nudox-operation"
 version = "0.1.0"
 dependencies = [
+ "nudox-hydration",
  "nudox-id",
  "nudox-object",
  "nudox-root",
  "nudox-schema",
+ "nudox-store-memory",
  "thiserror",
 ]
 

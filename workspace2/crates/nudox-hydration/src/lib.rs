@@ -15,8 +15,8 @@ pub use plan::{
     PlanRejection, PlanScratch, PlanScratchFacts, Promise, plan, plan_borrowed, plan_with_probe,
 };
 pub use publication::{
-    BorrowedStagedGeneration, StagedGeneration, VerificationError, VerifiedGeneration,
-    VerifiedGenerationFacts,
+    BorrowedStagedGeneration, MissingRequiredObject, StagedGeneration, StoredDescriptorConflict,
+    VerificationError, VerifiedGeneration, VerifiedGenerationFacts,
 };
 
 #[cfg(test)]

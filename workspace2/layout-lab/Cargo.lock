@@ -247,6 +247,7 @@ dependencies = [
  "nudox-object",
  "nudox-observe",
  "nudox-root",
+ "nudox-store-memory",
  "thiserror",
  "zerocopy",
 ]
@@ -308,6 +309,7 @@ dependencies = [
 name = "nudox-operation"
 version = "0.1.0"
 dependencies = [
+ "nudox-hydration",
  "nudox-id",
  "nudox-object",
  "nudox-root",

@@ -115,7 +115,8 @@ fn borrowed_range_and_verification_keep_partial_and_missing_causes_exact()
             missing: 2.into(),
         }
     );
-    let partial_verification = ranged.stage().verify(&(), |(), _| true);
+    let full_store = memory_store(&[1, 2, 3])?;
+    let partial_verification = ranged.stage().verify_store(&full_store);
     require_partial_verification(&partial_verification, view.id)?;
 
     let complete = plan_borrowed(
@@ -124,10 +125,8 @@ fn borrowed_range_and_verification_keep_partial_and_missing_causes_exact()
         &mut scratch,
         |_| false,
     )?;
-    let present = [object(1)];
-    let missing_verification = complete.stage().verify(&present, |present, descriptor| {
-        present.contains(&descriptor)
-    });
+    let partial_store = memory_store(&[1])?;
+    let missing_verification = complete.stage().verify_store(&partial_store);
     require_missing_verification(&missing_verification, view.id)?;
     Ok(())
 }
@@ -228,8 +227,11 @@ fn assert_complete_borrowed_plan(
     Ok((borrowed.dep_set, borrowed.coverage))
 }
 
-fn require_partial_verification<Evidence: ?Sized>(
-    result: &Result<crate::VerifiedGeneration<'_, Evidence>, VerificationError<ObjectDomain>>,
+fn require_partial_verification<PayloadOwner: AsRef<[u8]>>(
+    result: &Result<
+        crate::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
+        VerificationError<ObjectDomain>,
+    >,
     expected_root: GenerationId,
 ) -> Result<(), ScenarioError> {
     match result {
@@ -250,17 +252,17 @@ fn require_partial_verification<Evidence: ?Sized>(
     }
 }
 
-fn require_missing_verification<Evidence: ?Sized>(
-    result: &Result<crate::VerifiedGeneration<'_, Evidence>, VerificationError<ObjectDomain>>,
+fn require_missing_verification<PayloadOwner: AsRef<[u8]>>(
+    result: &Result<
+        crate::VerifiedGeneration<'_, ObjectDomain, PayloadOwner>,
+        VerificationError<ObjectDomain>,
+    >,
     expected_root: GenerationId,
 ) -> Result<(), ScenarioError> {
     match result {
-        Err(VerificationError::MissingObject {
-            pinned_root,
-            object: missing,
-        }) => {
-            assert_eq!(*pinned_root, expected_root);
-            assert_eq!(*missing, object(2));
+        Err(VerificationError::MissingObject { report }) => {
+            assert_eq!(report.pinned_root, expected_root);
+            assert_eq!(report.object, object(2));
             Ok(())
         }
         Err(_) => Err(ScenarioError::Transition {

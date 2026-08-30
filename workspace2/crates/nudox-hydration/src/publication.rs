@@ -1,5 +1,9 @@
+use alloc::boxed::Box;
+use core::ops::Deref;
+
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef};
+use nudox_store_memory::MemoryStore;
 use thiserror::Error;
 
 use crate::{BorrowedHydrationPlanView, HydrationPlanView};
@@ -16,42 +20,32 @@ impl<'plan, 'selection, 'storage, DomainTag: Domain>
     ) -> Self {
         Self { plan }
     }
-    /// Consumes staging after the borrowed evidence owner affirms every descriptor.
+    /// Consumes staging after checking every descriptor in the exact memory store.
     ///
     /// # Errors
     ///
-    /// Returns the exact partial-projection or first missing-descriptor fact;
-    /// neither result can be converted to a verified-generation witness. The
-    /// returned witness retains `evidence`, so later consumers can use the exact
-    /// owner that supplied these answers.
-    pub fn verify<Evidence: ?Sized, IsPresent>(
+    /// Returns the exact partial-projection, missing-descriptor, or stored
+    /// metadata-mismatch fact; neither result can be converted to a
+    /// verified-generation witness. The returned witness retains the exact
+    /// store borrow used for every lookup.
+    pub fn verify_store<PayloadOwner>(
         self,
-        evidence: &Evidence,
-        mut is_present: IsPresent,
-    ) -> Result<VerifiedGeneration<'_, Evidence>, VerificationError<DomainTag>>
+        store: &MemoryStore<DomainTag, PayloadOwner>,
+    ) -> Result<VerifiedGeneration<'_, DomainTag, PayloadOwner>, VerificationError<DomainTag>>
     where
-        IsPresent: FnMut(&Evidence, ObjectRef<DomainTag>) -> bool,
+        PayloadOwner: AsRef<[u8]>,
     {
         if !self.plan.projection.is_complete() {
             return Err(VerificationError::PartialProjection {
                 pinned_root: self.plan.pinned_root,
             });
         }
-        for object in self.plan.required() {
-            if !is_present(evidence, object) {
-                return Err(VerificationError::MissingObject {
-                    pinned_root: self.plan.pinned_root,
-                    object,
-                });
-            }
-        }
-        Ok(VerifiedGeneration {
-            facts: VerifiedGenerationFacts {
-                pinned_root: self.plan.pinned_root,
-                dep_set: self.plan.dep_set,
-            },
-            evidence,
-        })
+        verify_required(
+            self.plan.pinned_root,
+            self.plan.dep_set,
+            self.plan.required(),
+            store,
+        )
     }
 }
 
@@ -69,43 +63,72 @@ impl<'plan, 'selection, 'storage, 'root, 'locality, DomainTag: Domain>
         Self { plan }
     }
 
-    /// Consumes staging after the borrowed evidence owner affirms every descriptor.
+    /// Consumes staging after checking every descriptor in the exact memory store.
     ///
     /// # Errors
     ///
-    /// Returns the exact partial-projection or first missing-descriptor fact;
-    /// neither result can be converted to a verified-generation witness. The
-    /// returned witness retains `evidence`, so later consumers can use the exact
-    /// owner that supplied these answers.
-    pub fn verify<Evidence: ?Sized, IsPresent>(
+    /// Returns the exact partial-projection, missing-descriptor, or stored
+    /// metadata-mismatch fact; neither result can be converted to a
+    /// verified-generation witness. The returned witness retains the exact
+    /// store borrow used for every lookup.
+    pub fn verify_store<PayloadOwner>(
         self,
-        evidence: &Evidence,
-        mut is_present: IsPresent,
-    ) -> Result<VerifiedGeneration<'_, Evidence>, VerificationError<DomainTag>>
+        store: &MemoryStore<DomainTag, PayloadOwner>,
+    ) -> Result<VerifiedGeneration<'_, DomainTag, PayloadOwner>, VerificationError<DomainTag>>
     where
-        IsPresent: FnMut(&Evidence, ObjectRef<DomainTag>) -> bool,
+        PayloadOwner: AsRef<[u8]>,
     {
         if !self.plan.projection.is_complete() {
             return Err(VerificationError::PartialProjection {
                 pinned_root: self.plan.pinned_root,
             });
         }
-        for object in self.plan.required() {
-            if !is_present(evidence, object) {
-                return Err(VerificationError::MissingObject {
-                    pinned_root: self.plan.pinned_root,
-                    object,
-                });
-            }
-        }
-        Ok(VerifiedGeneration {
-            facts: VerifiedGenerationFacts {
-                pinned_root: self.plan.pinned_root,
-                dep_set: self.plan.dep_set,
-            },
-            evidence,
-        })
+        verify_required(
+            self.plan.pinned_root,
+            self.plan.dep_set,
+            self.plan.required(),
+            store,
+        )
     }
+}
+
+fn verify_required<DomainTag, PayloadOwner>(
+    pinned_root: GenerationId,
+    dep_set: DepSetId,
+    required: impl Iterator<Item = ObjectRef<DomainTag>>,
+    store: &MemoryStore<DomainTag, PayloadOwner>,
+) -> Result<VerifiedGeneration<'_, DomainTag, PayloadOwner>, VerificationError<DomainTag>>
+where
+    DomainTag: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    for expected in required {
+        let Some(stored) = store.get(expected.content) else {
+            return Err(VerificationError::MissingObject {
+                report: Box::new(MissingRequiredObject {
+                    pinned_root,
+                    object: expected,
+                }),
+            });
+        };
+        let actual = stored.reference;
+        if actual != expected {
+            return Err(VerificationError::StoredDescriptorMismatch {
+                report: Box::new(StoredDescriptorConflict {
+                    pinned_root,
+                    expected,
+                    actual,
+                }),
+            });
+        }
+    }
+    Ok(VerifiedGeneration {
+        facts: VerifiedGenerationFacts {
+            pinned_root,
+            dep_set,
+        },
+        store,
+    })
 }
 
 /// Read-only facts from checking a generation's complete dependency closure.
@@ -122,17 +145,25 @@ pub struct VerifiedGenerationFacts {
     pub dep_set: DepSetId,
 }
 
-/// Sealed generation facts retaining the exact evidence owner that was checked.
+/// Sealed generation facts retaining the exact memory store that was checked.
 ///
-/// Holding this value keeps the evidence immutably borrowed. A consumer can use
-/// [`AsRef`] to read from that exact store, lease, or snapshot rather than
-/// substituting another instance after verification.
-pub struct VerifiedGeneration<'evidence, Evidence: ?Sized> {
+/// Holding this value keeps the store immutably borrowed. A consumer can use
+/// [`AsRef`] to read from that exact store rather than substituting another
+/// instance after verification.
+pub struct VerifiedGeneration<'store, DomainTag, PayloadOwner>
+where
+    DomainTag: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
     facts: VerifiedGenerationFacts,
-    evidence: &'evidence Evidence,
+    store: &'store MemoryStore<DomainTag, PayloadOwner>,
 }
 
-impl<Evidence: ?Sized> Deref for VerifiedGeneration<'_, Evidence> {
+impl<DomainTag, PayloadOwner> Deref for VerifiedGeneration<'_, DomainTag, PayloadOwner>
+where
+    DomainTag: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
     type Target = VerifiedGenerationFacts;
 
     fn deref(&self) -> &Self::Target {
@@ -140,9 +171,14 @@ impl<Evidence: ?Sized> Deref for VerifiedGeneration<'_, Evidence> {
     }
 }
 
-impl<Evidence: ?Sized> AsRef<Evidence> for VerifiedGeneration<'_, Evidence> {
-    fn as_ref(&self) -> &Evidence {
-        self.evidence
+impl<DomainTag, PayloadOwner> AsRef<MemoryStore<DomainTag, PayloadOwner>>
+    for VerifiedGeneration<'_, DomainTag, PayloadOwner>
+where
+    DomainTag: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    fn as_ref(&self) -> &MemoryStore<DomainTag, PayloadOwner> {
+        self.store
     }
 }
 
@@ -156,12 +192,37 @@ pub enum VerificationError<DomainTag> {
         pinned_root: GenerationId,
     },
     /// Exact descriptor absent at final closure verification.
-    #[error("generation {pinned_root:?} is missing required object {object:?}")]
+    #[error("{report}")]
     MissingObject {
-        /// Incomplete root.
-        pinned_root: GenerationId,
-        /// Absent descriptor.
-        object: ObjectRef<DomainTag>,
+        /// Complete cold-path diagnostic, allocated only after failed lookup.
+        report: Box<MissingRequiredObject<DomainTag>>,
+    },
+    /// The store retained the required content under different descriptor metadata.
+    #[error("{report}")]
+    StoredDescriptorMismatch {
+        /// Complete cold-path diagnostic, allocated only after failed comparison.
+        report: Box<StoredDescriptorConflict<DomainTag>>,
     },
 }
-use core::ops::Deref;
+
+/// Exact missing-object report retained outside the hot result layout.
+#[derive(Debug, Error)]
+#[error("generation {pinned_root:?} is missing required object {object:?}")]
+pub struct MissingRequiredObject<DomainTag> {
+    /// Incomplete root.
+    pub pinned_root: GenerationId,
+    /// Absent descriptor.
+    pub object: ObjectRef<DomainTag>,
+}
+
+/// Exact descriptor-conflict report retained outside the hot result layout.
+#[derive(Debug, Error)]
+#[error("generation {pinned_root:?} expected stored descriptor {expected:?}, found {actual:?}")]
+pub struct StoredDescriptorConflict<DomainTag> {
+    /// Incomplete root.
+    pub pinned_root: GenerationId,
+    /// Descriptor named by the generation closure.
+    pub expected: ObjectRef<DomainTag>,
+    /// Descriptor retained by the store for the same content identity.
+    pub actual: ObjectRef<DomainTag>,
+}

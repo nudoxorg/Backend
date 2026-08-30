@@ -7,11 +7,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+nudox-hydration = { path = "../nudox-hydration" }
 nudox-id = { path = "../nudox-id" }
 nudox-object = { path = "../nudox-object" }
 nudox-root = { path = "../nudox-root" }
 nudox-schema = { path = "../nudox-schema" }
 thiserror.workspace = true
+
+[dev-dependencies]
+nudox-store-memory = { path = "../nudox-store-memory" }
 
 [lints]
 workspace = true

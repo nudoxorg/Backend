@@ -6,9 +6,10 @@
 
 use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
+use nudox_hydration::VerifiedGeneration;
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{ObjectRef, ProviderSet};
-use nudox_root::{EntryKey, GenerationEntry, GenerationView, Locality};
+use nudox_root::{BorrowedGenerationView, EntryKey, GenerationEntry, GenerationView, Locality};
 use nudox_schema::OperationId;
 use thiserror::Error;
 
@@ -19,6 +20,8 @@ use crate::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
 pub enum ObjectProvenance {
     Resident,
     Overlay,
+    /// A remote promise whose exact body is held by the retained verified store.
+    HydratedPromise,
 }
 
 #[cfg(test)]
@@ -348,6 +351,21 @@ pub enum LocalObjectError<ObjectDomain> {
         observed: ObjectRef<ObjectDomain>,
     },
 }
+
+/// Failure to bind a store-verified generation to one canonical row.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum VerifiedObjectBindError {
+    #[error("verified generation {observed:?} differs from view generation {expected:?}")]
+    StaleGeneration {
+        expected: GenerationId,
+        observed: GenerationId,
+    },
+    #[error("generation {generation:?} has no object at key {key:?}")]
+    MissingKey {
+        generation: GenerationId,
+        key: EntryKey,
+    },
+}
 /// One row whose common provenance and generation are hoisted once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectBatch<'source, ObjectDomain> {
@@ -380,6 +398,127 @@ impl<ObjectDomain: Domain> LocalObjectProvider<ObjectDomain> {
             generation: view.id,
             entry,
         })
+    }
+
+    /// Binds one complete store-backed generation proof to one borrowed canonical row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VerifiedObjectBindError::StaleGeneration`] before lookup when
+    /// the proof and view name different roots, or
+    /// [`VerifiedObjectBindError::MissingKey`] with the exact validated
+    /// generation and absent key.
+    pub fn bind_verified<'verified, 'store, PayloadOwner>(
+        view: &BorrowedGenerationView<'_, '_, ObjectDomain>,
+        key: EntryKey,
+        verified: &'verified VerifiedGeneration<'store, ObjectDomain, PayloadOwner>,
+    ) -> Result<
+        BoundLocalObjectProvider<'verified, 'store, ObjectDomain, PayloadOwner>,
+        VerifiedObjectBindError,
+    >
+    where
+        PayloadOwner: AsRef<[u8]>,
+    {
+        if verified.pinned_root != view.id {
+            return Err(VerifiedObjectBindError::StaleGeneration {
+                expected: view.id,
+                observed: verified.pinned_root,
+            });
+        }
+        let entry = view.get(key).ok_or(VerifiedObjectBindError::MissingKey {
+            generation: view.id,
+            key,
+        })?;
+        let provenance = match entry.locality {
+            Locality::Resident => ObjectProvenance::Resident,
+            Locality::Overlaid(_) => ObjectProvenance::Overlay,
+            Locality::Promised(_) => ObjectProvenance::HydratedPromise,
+        };
+        Ok(BoundLocalObjectProvider {
+            evidence: verified,
+            object: entry.object,
+            provenance,
+        })
+    }
+}
+
+/// One object bound once to the exact immutable store verified for its generation.
+pub struct BoundLocalObjectProvider<'verified, 'store, ObjectDomain, PayloadOwner>
+where
+    ObjectDomain: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    evidence: &'verified VerifiedGeneration<'store, ObjectDomain, PayloadOwner>,
+    object: ObjectRef<ObjectDomain>,
+    provenance: ObjectProvenance,
+}
+
+impl<'verified, 'store, ObjectDomain, PayloadOwner>
+    BoundLocalObjectProvider<'verified, 'store, ObjectDomain, PayloadOwner>
+where
+    ObjectDomain: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    /// Starts the already-bound cursor without another request or store lookup.
+    #[must_use]
+    pub const fn start(
+        &self,
+    ) -> BoundLocalObjectRun<'_, 'verified, 'store, ObjectDomain, PayloadOwner> {
+        BoundLocalObjectRun {
+            provider: self,
+            phase: BoundRunPhase::Batch,
+        }
+    }
+}
+
+enum BoundRunPhase {
+    Batch,
+    Terminal,
+    Finished,
+}
+
+/// Cursor borrowing the provider, its generation proof, and the exact immutable store.
+pub struct BoundLocalObjectRun<'provider, 'verified, 'store, ObjectDomain, PayloadOwner>
+where
+    ObjectDomain: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    provider: &'provider BoundLocalObjectProvider<'verified, 'store, ObjectDomain, PayloadOwner>,
+    phase: BoundRunPhase,
+}
+
+impl<ObjectDomain, PayloadOwner> BatchSource<PinnedObjectOperation<ObjectDomain>>
+    for BoundLocalObjectRun<'_, '_, '_, ObjectDomain, PayloadOwner>
+where
+    ObjectDomain: Domain,
+    PayloadOwner: AsRef<[u8]>,
+{
+    type Batch<'source>
+        = ObjectBatch<'source, ObjectDomain>
+    where
+        Self: 'source;
+
+    fn next_batch(
+        &mut self,
+    ) -> Result<SourcePoll<Self::Batch<'_>, MissingObject<ObjectDomain>>, Infallible> {
+        let provider = self.provider;
+        match self.phase {
+            BoundRunPhase::Batch => {
+                self.phase = BoundRunPhase::Terminal;
+                Ok(SourcePoll::Batch(ObjectBatch {
+                    generation: provider.evidence.pinned_root,
+                    provenance: provider.provenance,
+                    item: &provider.object,
+                }))
+            }
+            BoundRunPhase::Terminal => {
+                self.phase = BoundRunPhase::Finished;
+                Ok(SourcePoll::Terminal(TerminalSummary::Complete {
+                    emitted: 1,
+                }))
+            }
+            BoundRunPhase::Finished => Ok(SourcePoll::Finished),
+        }
     }
 }
 impl<ObjectDomain: Domain> Provider<PinnedObjectOperation<ObjectDomain>>
