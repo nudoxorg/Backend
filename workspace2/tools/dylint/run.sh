@@ -14,11 +14,7 @@ source "$lint_workspace/shipping-workspaces.sh"
 # shellcheck source=../../pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
-(
-  cd "$lint_workspace"
-  dylint_cargo fmt --all -- --check
-  dylint_cargo test --locked --offline
-)
+"$lint_workspace/ui-test.sh"
 
 shopt -s nullglob
 lint_libraries=("$lint_target_dir"/debug/*"nudox_semantic_lints@$dylint_toolchain-"*)
