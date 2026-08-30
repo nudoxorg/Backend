@@ -231,14 +231,14 @@ fn require_missing_verification(
 }
 
 fn require_borrowed_demand_mismatch(
-    result: &Result<crate::BoundBorrowedNeed<'_, '_, '_, ObjectDomain>, DemandBindError>,
+    result: &Result<crate::BoundBorrowedNeed<'_, '_, '_, ObjectDomain>, PlanError>,
     actual: GenerationId,
 ) -> Result<(), ScenarioError> {
     match result {
-        Err(DemandBindError::GenerationMismatch {
+        Err(PlanError::Demand(DemandBindError::GenerationMismatch {
             requested,
             actual: seen,
-        }) => {
+        })) => {
             assert_eq!(*requested, GenerationId::from_digest([9; 32]));
             assert_eq!(*seen, actual);
             Ok(())
@@ -247,6 +247,11 @@ fn require_borrowed_demand_mismatch(
             step: ScenarioStep::DemandBinding,
             expected: ScenarioExpectation::GenerationMismatch,
             observed: ScenarioObservation::BoundDemand,
+        }),
+        Err(_) => Err(ScenarioError::Transition {
+            step: ScenarioStep::DemandBinding,
+            expected: ScenarioExpectation::GenerationMismatch,
+            observed: ScenarioObservation::DifferentPlanError,
         }),
     }
 }

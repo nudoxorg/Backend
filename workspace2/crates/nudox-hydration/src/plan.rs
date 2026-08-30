@@ -258,6 +258,7 @@ const fn plan_outcome<DomainTag>(
 ) -> HydrationOutcome {
     match result {
         Ok(plan) => HydrationOutcome::Planned(plan.coverage),
+        Err(PlanError::Demand(_)) => HydrationOutcome::Rejected(PlanRejection::DemandMismatch),
         Err(PlanError::Closure(ClosureError::ScratchTooSmall { .. })) => {
             HydrationOutcome::Rejected(PlanRejection::ClosureScratchTooSmall)
         }

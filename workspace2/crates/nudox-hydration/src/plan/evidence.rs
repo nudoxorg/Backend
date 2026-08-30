@@ -60,6 +60,8 @@ pub struct PlanCoverage {
 /// Closed rejection class for a planning operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanRejection {
+    /// Borrowed demand named a different paired generation.
+    DemandMismatch,
     /// Caller closure scratch could not cover the selected root.
     ClosureScratchTooSmall,
     /// Caller plan scratch could not retain every selected descriptor.
@@ -123,6 +125,9 @@ impl PlanScratch {
 /// Pure plan derivation failure.
 #[derive(Debug, Error)]
 pub enum PlanError {
+    /// Borrowed demand did not name the generation paired with its locality.
+    #[error("demand binding failed")]
+    Demand(#[from] crate::DemandBindError),
     /// Caller-owned root-selection scratch was insufficient.
     #[error("closure scratch failure")]
     Closure(#[from] ClosureError),
