@@ -72,6 +72,8 @@ The remaining gaps are architectural, not polish:
 
 - [x] Exact caller-output writer, compact count header, borrowed ordered directory validation, and
   representative non-empty zero-allocation evidence.
+- [x] Scatter/gather pack seam: write the canonical index prefix separately and lend verified body
+  segments from their original owners, so file/object-store adapters need no full-pack staging copy.
 - [ ] Binary-search a descriptor into a typed body range without allocation, reparsing, or constructing
   temporary identities inside comparisons.
 - [ ] Lend body bytes from the original owner and perform optional selected BLAKE3 verification with
