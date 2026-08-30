@@ -48,6 +48,12 @@ impl From<u32> for ByteCount {
 }
 
 impl ByteCount {
+    /// Returns the exact byte quantity for transport and resource accounting.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
     const fn fits_within(self, available: Self) -> bool {
         self.0 <= available.0
     }
@@ -65,6 +71,12 @@ impl From<u8> for OperationBudget {
 }
 
 impl OperationBudget {
+    /// Returns the exact remaining action credit.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
     const fn available(self) -> bool {
         self.0 > 0
     }
@@ -82,6 +94,12 @@ impl From<u8> for RetryBudget {
 }
 
 impl RetryBudget {
+    /// Returns the exact remaining recovery credit.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
     const fn available(self) -> bool {
         self.0 > 0
     }
@@ -103,6 +121,12 @@ impl From<u32> for LatencyMicros {
 }
 
 impl LatencyMicros {
+    /// Returns the measured latency in microseconds.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
     const fn no_more_than(self, limit: Self) -> bool {
         self.0 <= limit.0
     }
@@ -540,10 +564,22 @@ impl ExecutionRequest {
         ExecutionPoll::Item(ExecutionItem { request: self })
     }
 
+    /// Ends the action after the adapter applied its one effect item.
+    #[must_use]
+    pub const fn completed(self) -> ExecutionTerminal {
+        ExecutionTerminal::Completed { request: self }
+    }
+
+    /// Ends the action because cancellation won the adapter's linearization race.
+    #[must_use]
+    pub const fn cancelled(self) -> ExecutionTerminal {
+        ExecutionTerminal::Cancelled { request: self }
+    }
+
     /// Ends the action because cancellation won the adapter's linearization race.
     #[must_use]
     pub const fn cancel(self) -> ExecutionPoll {
-        ExecutionPoll::Terminal(ExecutionTerminal::Cancelled { request: self })
+        ExecutionPoll::Terminal(self.cancelled())
     }
 
     /// Ends the action with its exact external failure phase.

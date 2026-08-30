@@ -273,6 +273,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures",
+]
+
+[[package]]
 name = "block"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -485,6 +498,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -635,6 +654,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -2027,6 +2055,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-adaptive"
+version = "0.1.0"
+dependencies = [
+ "nudox-id",
+ "nudox-index-vocab",
+]
+
+[[package]]
 name = "nudox-compile-registry"
 version = "0.1.0"
 dependencies = [
@@ -2038,6 +2074,21 @@ name = "nudox-compile-vocab"
 version = "0.1.0"
 dependencies = [
  "nudox-ir-vocab",
+]
+
+[[package]]
+name = "nudox-id"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "nudox-index-vocab"
+version = "0.1.0"
+dependencies = [
+ "nudox-id",
 ]
 
 [[package]]
@@ -3821,6 +3872,7 @@ dependencies = [
 name = "wave-application-core"
 version = "0.1.0"
 dependencies = [
+ "nudox-adaptive",
  "nudox-compile-registry",
  "nudox-compile-vocab",
  "nudox-observe",

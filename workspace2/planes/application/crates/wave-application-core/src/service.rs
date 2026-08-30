@@ -1,38 +1,45 @@
 //! The concrete, fixture-free application behavior owner.
 
+use std::{future::Future, pin::Pin as TaskPin, task::Context};
+
+use nudox_adaptive::{
+    BundleFact, BundleState, CapabilityDomain, CapabilityKind, ContentId, ExecutionRequest,
+    ExecutionTerminal, LatencyMicros, Pin, PlacementAction, PolicyDecision, PolicyInput,
+    RemoteHealth, ResourceBudget, next_action,
+};
 use nudox_compile_registry::FullRegistry;
 use nudox_compile_vocab::{Language, Stage};
 use nudox_observe::Probe;
 
 use crate::{
-    APPLICATION_OPERATION, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
-    CapabilityHealth, Diagnostic, DiagnosticCode, DiagnosticDetail, InputText, MAX_REPLY_ROWS,
-    MAX_SEMANTIC_TEXT_BYTES, OperationKey, ProgressCursor, ProgressEvent, ProgressEvents,
-    ProgressPage, ReplyBody, Terminal,
+    AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
+    CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    ExecutionState, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody,
+    Terminal, execution::LocalCapabilityExecution,
 };
 
-/// One concrete service with exactly one mutable, bounded application-owned operation state.
+/// One concrete service that owns at most one bounded adaptive effect.
 ///
-/// The service uses the real compiler registry today. Immutable index, graph, and vector providers
-/// have no accepted production seam yet, so their commands return typed degraded dependency facts
-/// rather than fixture data or claimed lower-plane completion.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// The compiler registry is an identity passthrough today and is reported as such. Immutable
+/// index, graph, and vector providers have no accepted production seam, so their commands return
+/// typed degraded dependency facts. C6 policy selection and its local bundle execution are real.
 pub struct ApplicationService {
-    operation: OperationPhase,
+    active_bundle: Option<ActiveBundle>,
+    execution: Option<ActiveExecution>,
+    last_execution: Option<ExecutionState>,
+    next_operation: u64,
 }
 
-/// The private operation owner prevents cancellation from becoming completion later.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OperationPhase {
-    Idle,
-    Active,
-    Cancelled,
+struct ActiveBundle {
+    pin: Pin,
+    bundle: ContentId<CapabilityDomain>,
 }
 
-/// A private progress computation avoids an oversized `Result` error payload.
-enum ProgressOutcome {
-    Page(ProgressPage),
-    Rejected(Diagnostic),
+struct ActiveExecution {
+    operation: OperationKey,
+    pin: Pin,
+    task: LocalCapabilityExecution,
 }
 
 impl ApplicationService {
@@ -40,7 +47,10 @@ impl ApplicationService {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            operation: OperationPhase::Idle,
+            active_bundle: None,
+            execution: None,
+            last_execution: None,
+            next_operation: 1,
         }
     }
 
@@ -51,7 +61,7 @@ impl ApplicationService {
         self.execute_observed(input, &mut disabled)
     }
 
-    /// Executes one request and lazily emits one typed event only when the supplied probe retains it.
+    /// Executes one request and lazily emits one typed event only when the probe retains it.
     #[must_use]
     pub fn execute_observed<Observer>(
         &mut self,
@@ -102,12 +112,23 @@ impl ApplicationService {
                 snapshot,
                 limit,
             } => Self::remote_unavailable(correlation, snapshot, limit, Capability::Vector),
-            ApplicationInput::Health { correlation } => Self::health(correlation),
-            ApplicationInput::BeginProgress { correlation } => self.begin_progress(correlation),
-            ApplicationInput::Progress {
+            ApplicationInput::Health { correlation } => self.health(correlation),
+            ApplicationInput::RecoverLocal {
                 correlation,
-                cursor,
-            } => self.progress(correlation, cursor),
+                pin,
+                bundle,
+                budget,
+            } => self.recover_local(correlation, pin, bundle, budget),
+            ApplicationInput::ReleaseLocal {
+                correlation,
+                pin,
+                bundle,
+                budget,
+            } => self.release_local(correlation, pin, bundle, budget),
+            ApplicationInput::PollExecution {
+                correlation,
+                operation,
+            } => self.poll_execution(correlation, operation),
             ApplicationInput::Cancel {
                 correlation,
                 operation,
@@ -136,16 +157,22 @@ impl ApplicationService {
         };
         match FullRegistry.dispatch(language, stage, source.as_bytes()) {
             Ok(compiled) => match InputText::from_compiler_bytes(compiled) {
-                Some(output) => ApplicationReply {
+                Some(passthrough) => ApplicationReply {
                     correlation,
-                    body: ReplyBody::Generated {
+                    body: ReplyBody::CompilerPassthrough {
                         package,
                         language,
                         stage,
-                        output,
+                        source: passthrough,
                     },
-                    terminal: Terminal::Complete { emitted: 1 },
-                    diagnostic: None,
+                    terminal: Terminal::Partial {
+                        emitted: 1,
+                        unavailable: Capability::CompilerOutput,
+                    },
+                    diagnostic: Some(Diagnostic {
+                        code: DiagnosticCode::DependencyUnavailable,
+                        detail: DiagnosticDetail::Capability(Capability::CompilerOutput),
+                    }),
                 },
                 None => Self::rejected(
                     correlation,
@@ -226,92 +253,304 @@ impl ApplicationService {
         }
     }
 
-    fn health(correlation: crate::CorrelationId) -> ApplicationReply {
+    fn health(&self, correlation: crate::CorrelationId) -> ApplicationReply {
+        let analyzer = if self.active_bundle.is_some() {
+            CapabilityHealth::LocalReady(Capability::LocalAnalyzer)
+        } else {
+            CapabilityHealth::Unavailable(Capability::LocalAnalyzer)
+        };
         ApplicationReply {
             correlation,
             body: ReplyBody::Health([
-                CapabilityHealth::LocalReady(Capability::Compiler),
+                CapabilityHealth::LocalReady(Capability::CompilerRegistry),
+                CapabilityHealth::Unavailable(Capability::CompilerOutput),
                 CapabilityHealth::Unavailable(Capability::Index),
                 CapabilityHealth::Unavailable(Capability::Graph),
                 CapabilityHealth::Unavailable(Capability::Vector),
+                analyzer,
             ]),
-            terminal: Terminal::Complete { emitted: 4 },
+            terminal: Terminal::Partial {
+                emitted: 2,
+                unavailable: Capability::CompilerOutput,
+            },
             diagnostic: None,
         }
     }
 
-    fn begin_progress(&mut self, correlation: crate::CorrelationId) -> ApplicationReply {
-        if self.operation != OperationPhase::Idle {
+    fn recover_local(
+        &mut self,
+        correlation: crate::CorrelationId,
+        pin: Pin,
+        bundle: ContentId<CapabilityDomain>,
+        budget: ResourceBudget,
+    ) -> ApplicationReply {
+        if let Some(execution) = &self.execution {
             return Self::rejected(
                 correlation,
-                Self::operation_unavailable(APPLICATION_OPERATION),
+                Self::operation_unavailable(execution.operation),
             );
         }
-        self.operation = OperationPhase::Active;
+        let state = if self.active_bundle == Some(ActiveBundle { pin, bundle }) {
+            BundleState::ActiveIdle
+        } else {
+            BundleState::AvailableRequired
+        };
+        let bundles = [BundleFact {
+            capability: CapabilityKind::Analyzer,
+            bundle,
+            state,
+        }];
+        let input = PolicyInput {
+            pin,
+            local: &[],
+            remote: &[],
+            demand: &[],
+            bundles: &bundles,
+            remote_health: RemoteHealth::Outage,
+            budget,
+        };
+        self.adapt(correlation, pin, next_action(&input))
+    }
+
+    fn release_local(
+        &mut self,
+        correlation: crate::CorrelationId,
+        pin: Pin,
+        bundle: ContentId<CapabilityDomain>,
+        budget: ResourceBudget,
+    ) -> ApplicationReply {
+        if let Some(execution) = &self.execution {
+            return Self::rejected(
+                correlation,
+                Self::operation_unavailable(execution.operation),
+            );
+        }
+        let state = if self.active_bundle == Some(ActiveBundle { pin, bundle }) {
+            BundleState::ActiveIdle
+        } else {
+            BundleState::AvailableIdle
+        };
+        let bundles = [BundleFact {
+            capability: CapabilityKind::Analyzer,
+            bundle,
+            state,
+        }];
+        let input = PolicyInput {
+            pin,
+            local: &[],
+            remote: &[],
+            demand: &[],
+            bundles: &bundles,
+            remote_health: RemoteHealth::Healthy {
+                observed: pin,
+                latency: LatencyMicros::from(0),
+            },
+            budget,
+        };
+        self.adapt(correlation, pin, next_action(&input))
+    }
+
+    fn adapt(
+        &mut self,
+        correlation: crate::CorrelationId,
+        pin: Pin,
+        decision: PolicyDecision,
+    ) -> ApplicationReply {
+        match decision {
+            PolicyDecision::Act(PlacementAction::AcquireBundle { capability, bundle }) => self
+                .start_execution(
+                    correlation,
+                    pin,
+                    PlacementAction::AcquireBundle { capability, bundle },
+                    CapabilityTransition::Acquire { capability, bundle },
+                ),
+            PolicyDecision::Act(PlacementAction::ReleaseBundle { capability, bundle }) => self
+                .start_execution(
+                    correlation,
+                    pin,
+                    PlacementAction::ReleaseBundle { capability, bundle },
+                    CapabilityTransition::Release { capability, bundle },
+                ),
+            PolicyDecision::Act(PlacementAction::RetryRemote {
+                pin,
+                cause,
+                retries_remaining,
+            }) => Self::adaptive_reply(
+                correlation,
+                AdaptiveDisposition::RetryRemote {
+                    pin,
+                    cause,
+                    retries_remaining,
+                },
+                Terminal::Degraded {
+                    emitted: 0,
+                    unavailable: Capability::Remote,
+                },
+                None,
+            ),
+            PolicyDecision::Act(_unexecutable) => {
+                Self::dependency_unavailable(correlation, Capability::Remote)
+            }
+            non_action => Self::adapt_non_action(correlation, non_action),
+        }
+    }
+
+    fn adapt_non_action(
+        correlation: crate::CorrelationId,
+        decision: PolicyDecision,
+    ) -> ApplicationReply {
+        match decision {
+            PolicyDecision::NoAction => Self::adaptive_reply(
+                correlation,
+                AdaptiveDisposition::NoAction,
+                Terminal::Complete { emitted: 0 },
+                None,
+            ),
+            PolicyDecision::Overloaded(overload) => Self::adaptive_reply(
+                correlation,
+                AdaptiveDisposition::Overloaded(overload),
+                Terminal::Degraded {
+                    emitted: 0,
+                    unavailable: Capability::LocalAnalyzer,
+                },
+                None,
+            ),
+            PolicyDecision::RecoveryExhausted { pin, cause } => Self::adaptive_reply(
+                correlation,
+                AdaptiveDisposition::RecoveryExhausted { pin, cause },
+                Terminal::Degraded {
+                    emitted: 0,
+                    unavailable: Capability::Remote,
+                },
+                None,
+            ),
+            PolicyDecision::Rejected(source) => Self::adaptive_reply(
+                correlation,
+                AdaptiveDisposition::Rejected(source),
+                Terminal::Failed,
+                Some(Diagnostic {
+                    code: DiagnosticCode::AdaptivePolicyRejected,
+                    detail: DiagnosticDetail::Policy(source),
+                }),
+            ),
+            PolicyDecision::Act(_action) => {
+                Self::dependency_unavailable(correlation, Capability::Remote)
+            }
+        }
+    }
+
+    fn adaptive_reply(
+        correlation: crate::CorrelationId,
+        disposition: AdaptiveDisposition,
+        terminal: Terminal,
+        diagnostic: Option<Diagnostic>,
+    ) -> ApplicationReply {
         ApplicationReply {
             correlation,
-            body: ReplyBody::ProgressStarted {
-                operation: APPLICATION_OPERATION,
+            body: ReplyBody::Adaptive(disposition),
+            terminal,
+            diagnostic,
+        }
+    }
+
+    fn start_execution(
+        &mut self,
+        correlation: crate::CorrelationId,
+        pin: Pin,
+        action: PlacementAction,
+        transition: CapabilityTransition,
+    ) -> ApplicationReply {
+        let operation = OperationKey(self.next_operation);
+        self.next_operation = self.next_operation.saturating_add(1);
+        self.last_execution = None;
+        self.execution = Some(ActiveExecution {
+            operation,
+            pin,
+            task: LocalCapabilityExecution::new(ExecutionRequest::new(action), transition),
+        });
+        ApplicationReply {
+            correlation,
+            body: ReplyBody::ExecutionStarted {
+                operation,
+                transition,
             },
-            terminal: Terminal::Complete { emitted: 1 },
+            terminal: Terminal::Accepted { operation },
             diagnostic: None,
         }
     }
 
-    fn progress(
-        &self,
+    fn poll_execution(
+        &mut self,
         correlation: crate::CorrelationId,
-        cursor: ProgressCursor,
+        operation: OperationKey,
     ) -> ApplicationReply {
-        let outcome = match cursor {
-            ProgressCursor::Finished => ProgressOutcome::Page(ProgressPage::Finished),
-            ProgressCursor::Start => self.progress_from(0),
-            ProgressCursor::Offset(offset) => self.progress_from(offset),
+        let Some(mut execution) = self.execution.take() else {
+            return self.fused_or_rejected(correlation, operation);
         };
-        match outcome {
-            ProgressOutcome::Rejected(diagnostic) => Self::rejected(correlation, diagnostic),
-            ProgressOutcome::Page(page) => ApplicationReply {
-                correlation,
-                body: ReplyBody::Progress(page),
-                terminal: Terminal::Complete { emitted: 1 },
-                diagnostic: None,
-            },
+        if execution.operation != operation {
+            self.execution = Some(execution);
+            return Self::rejected(correlation, Self::operation_unavailable(operation));
+        }
+        let transition = execution.task.transition();
+        let waker = std::task::Waker::noop();
+        let mut context = Context::from_waker(waker);
+        match TaskPin::new(&mut execution.task).poll(&mut context) {
+            std::task::Poll::Pending => {
+                self.execution = Some(execution);
+                Self::execution_reply(
+                    correlation,
+                    ExecutionState::Pending {
+                        operation,
+                        transition,
+                    },
+                )
+            }
+            std::task::Poll::Ready(Some(terminal)) => {
+                let state =
+                    self.apply_execution_terminal(operation, execution.pin, transition, terminal);
+                self.last_execution = Some(state);
+                Self::execution_reply(correlation, state)
+            }
+            std::task::Poll::Ready(None) => self.fused_or_rejected(correlation, operation),
         }
     }
 
-    fn progress_from(&self, offset: u8) -> ProgressOutcome {
-        if self.operation == OperationPhase::Cancelled {
-            return ProgressOutcome::Page(ProgressPage::Terminal {
-                terminal: Terminal::Cancelled { emitted: 0 },
-                next: ProgressCursor::Finished,
-            });
-        }
-        if self.operation == OperationPhase::Idle {
-            if offset == 0 {
-                return ProgressOutcome::Page(ProgressPage::Terminal {
-                    terminal: Terminal::Complete { emitted: 0 },
-                    next: ProgressCursor::Finished,
-                });
+    fn apply_execution_terminal(
+        &mut self,
+        operation: OperationKey,
+        pin: Pin,
+        transition: CapabilityTransition,
+        terminal: ExecutionTerminal,
+    ) -> ExecutionState {
+        match terminal {
+            ExecutionTerminal::Completed { request: _request } => {
+                match transition {
+                    CapabilityTransition::Acquire { bundle, .. } => {
+                        self.active_bundle = Some(ActiveBundle { pin, bundle });
+                    }
+                    CapabilityTransition::Release { bundle, .. } => {
+                        if self.active_bundle == Some(ActiveBundle { pin, bundle }) {
+                            self.active_bundle = None;
+                        }
+                    }
+                }
+                ExecutionState::Completed {
+                    operation,
+                    transition,
+                }
             }
-            return Self::cursor_rejected(offset, 0);
-        }
-        match offset {
-            0 => {
-                let mut events = ProgressEvents::empty();
-                events.push(ProgressEvent {
-                    sequence: 0,
-                    operation: APPLICATION_OPERATION,
-                    completed_units: 0,
-                });
-                ProgressOutcome::Page(ProgressPage::Events {
-                    events,
-                    next: ProgressCursor::Offset(1),
-                })
-            }
-            1 => ProgressOutcome::Page(ProgressPage::Pending {
-                cursor: ProgressCursor::Offset(1),
-            }),
-            _ => Self::cursor_rejected(offset, 1),
+            ExecutionTerminal::Cancelled { request: _request } => ExecutionState::Cancelled {
+                operation,
+                transition,
+            },
+            ExecutionTerminal::Failed {
+                request: _request,
+                phase,
+            } => ExecutionState::Failed {
+                operation,
+                transition,
+                phase,
+            },
         }
     }
 
@@ -320,14 +559,60 @@ impl ApplicationService {
         correlation: crate::CorrelationId,
         operation: OperationKey,
     ) -> ApplicationReply {
-        if operation != APPLICATION_OPERATION || self.operation != OperationPhase::Active {
+        let Some(execution) = self.execution.take() else {
+            return Self::rejected(correlation, Self::operation_unavailable(operation));
+        };
+        if execution.operation != operation {
+            self.execution = Some(execution);
             return Self::rejected(correlation, Self::operation_unavailable(operation));
         }
-        self.operation = OperationPhase::Cancelled;
+        let transition = execution.task.transition();
+        let Some(terminal) = execution.task.cancel() else {
+            return self.fused_or_rejected(correlation, operation);
+        };
+        let state = self.apply_execution_terminal(operation, execution.pin, transition, terminal);
+        self.last_execution = Some(state);
+        Self::execution_reply(correlation, state)
+    }
+
+    fn fused_or_rejected(
+        &self,
+        correlation: crate::CorrelationId,
+        operation: OperationKey,
+    ) -> ApplicationReply {
+        match self.last_execution {
+            Some(
+                state @ (ExecutionState::Completed {
+                    operation: observed,
+                    ..
+                }
+                | ExecutionState::Cancelled {
+                    operation: observed,
+                    ..
+                }
+                | ExecutionState::Failed {
+                    operation: observed,
+                    ..
+                }),
+            ) if observed == operation => Self::execution_reply(correlation, state),
+            _ => Self::rejected(correlation, Self::operation_unavailable(operation)),
+        }
+    }
+
+    fn execution_reply(
+        correlation: crate::CorrelationId,
+        state: ExecutionState,
+    ) -> ApplicationReply {
+        let terminal = match state {
+            ExecutionState::Pending { operation, .. } => Terminal::Accepted { operation },
+            ExecutionState::Completed { .. } => Terminal::Complete { emitted: 1 },
+            ExecutionState::Cancelled { .. } => Terminal::Cancelled { emitted: 0 },
+            ExecutionState::Failed { .. } => Terminal::Failed,
+        };
         ApplicationReply {
             correlation,
-            body: ReplyBody::Cancelled { operation },
-            terminal: Terminal::Cancelled { emitted: 0 },
+            body: ReplyBody::Execution(state),
+            terminal,
             diagnostic: None,
         }
     }
@@ -393,13 +678,6 @@ impl ApplicationService {
             code: DiagnosticCode::UnknownStage,
             detail: DiagnosticDetail::Text(value),
         }
-    }
-
-    fn cursor_rejected(observed: u8, maximum: u8) -> ProgressOutcome {
-        ProgressOutcome::Rejected(Diagnostic {
-            code: DiagnosticCode::ProgressCursorOutOfRange,
-            detail: DiagnosticDetail::Cursor { observed, maximum },
-        })
     }
 
     fn operation_unavailable(operation: OperationKey) -> Diagnostic {

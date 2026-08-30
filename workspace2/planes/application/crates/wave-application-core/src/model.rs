@@ -1,12 +1,14 @@
 //! Closed application vocabulary and bounded reply storage.
 
 use crate::text::InputText;
+use nudox_adaptive::{
+    CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
+    RecoveryCause, ResourceBudget, RetryBudget,
+};
 use nudox_compile_vocab::{FrontendError, Language, Stage};
 
 /// Largest result list accepted by the concrete service.
 pub const MAX_REPLY_ROWS: u8 = 4;
-/// Largest progress event page returned by one cursor poll.
-pub const MAX_PROGRESS_ROWS: usize = 2;
 /// Longest accepted semantic query or package name.
 pub const MAX_SEMANTIC_TEXT_BYTES: usize = 32;
 
@@ -14,28 +16,17 @@ pub const MAX_SEMANTIC_TEXT_BYTES: usize = 32;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CorrelationId(pub u64);
 
-/// One stable operation identity for bounded progress and cancellation.
+/// One stable operation identity for bounded execution and cancellation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OperationKey(pub u64);
 
-/// The service-owned generation operation exposed after an accepted compiler request.
+/// The first service-owned adaptive operation identity.
 pub const APPLICATION_OPERATION: OperationKey = OperationKey(1);
-
-/// A replay cursor that carries all client-specific progression state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProgressCursor {
-    /// Beginning of the immutable bounded history.
-    Start,
-    /// The next unobserved immutable event ordinal.
-    Offset(u8),
-    /// The caller already observed the sole terminal fact.
-    Finished,
-}
 
 /// Closed typed input accepted by the in-process service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationInput {
-    /// Generate one package through an accepted compiler row.
+    /// Validate one package through an existing compiler-registry row.
     Generate {
         /// Request correlation.
         correlation: CorrelationId,
@@ -45,7 +36,7 @@ pub enum ApplicationInput {
         stage: InputText,
         /// Unvalidated package name.
         package: InputText,
-        /// Caller-bounded source bytes forwarded to the real compiler registry.
+        /// Caller-bounded source bytes forwarded to the compiler registry.
         source: InputText,
     },
     /// Inspect one immutable snapshot.
@@ -96,19 +87,36 @@ pub enum ApplicationInput {
         /// Request correlation.
         correlation: CorrelationId,
     },
-    /// Admit one service-owned bounded progress handle before a later cancel or provider completion.
-    BeginProgress {
+    /// Select the canonical local-first outage action for one immutable analyzer bundle.
+    RecoverLocal {
         /// Request correlation.
         correlation: CorrelationId,
+        /// Generation and snapshot authority pinned by the caller.
+        pin: Pin,
+        /// Hash-pinned verified analyzer bundle already resident locally.
+        bundle: ContentId<CapabilityDomain>,
+        /// Exact physical, action, and retry credits for this policy snapshot.
+        budget: ResourceBudget,
     },
-    /// Replay a bounded immutable progress history.
-    Progress {
+    /// Select a safe contraction action for the service-owned active analyzer bundle.
+    ReleaseLocal {
         /// Request correlation.
         correlation: CorrelationId,
-        /// Caller-owned cursor state.
-        cursor: ProgressCursor,
+        /// Generation and snapshot authority pinned by the caller.
+        pin: Pin,
+        /// Hash-pinned verified analyzer bundle selected for release.
+        bundle: ContentId<CapabilityDomain>,
+        /// Exact physical, action, and retry credits for this policy snapshot.
+        budget: ResourceBudget,
     },
-    /// Cancel the one admitted local operation.
+    /// Poll exactly one service-owned adaptive execution future.
+    PollExecution {
+        /// Request correlation.
+        correlation: CorrelationId,
+        /// Operation whose wake/terminal state is requested.
+        operation: OperationKey,
+    },
+    /// Cancel exactly one service-owned adaptive execution future.
     Cancel {
         /// Request correlation.
         correlation: CorrelationId,
@@ -129,16 +137,22 @@ impl ApplicationInput {
             | Self::Vector { correlation, .. }
             | Self::Locality { correlation, .. }
             | Self::Health { correlation }
-            | Self::BeginProgress { correlation }
-            | Self::Progress { correlation, .. }
+            | Self::RecoverLocal { correlation, .. }
+            | Self::ReleaseLocal { correlation, .. }
+            | Self::PollExecution { correlation, .. }
             | Self::Cancel { correlation, .. } => correlation,
         }
     }
 }
 
-/// The one explicit terminal state for each semantic operation.
+/// The one explicit request disposition returned by every semantic operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Terminal {
+    /// A separate bounded operation owns the selected action.
+    Accepted {
+        /// Exact admitted operation.
+        operation: OperationKey,
+    },
     /// Full result coverage.
     Complete {
         /// Number of emitted rows.
@@ -163,21 +177,27 @@ pub enum Terminal {
         /// Number of emitted rows before cancellation.
         emitted: u8,
     },
-    /// Semantic validation or a compiler row failed.
+    /// Semantic validation, policy validation, or a compiler row failed.
     Failed,
 }
 
 /// Named capability health, never an unstructured availability string.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Capability {
-    /// The local compiler registry.
-    Compiler,
-    /// The immutable-index seam, which is unavailable until a real provider is injected.
+    /// The local compiler vocabulary registry.
+    CompilerRegistry,
+    /// A genuine compiler artifact, which the current registry does not produce.
+    CompilerOutput,
+    /// The immutable-index seam, unavailable until a real provider is integrated.
     Index,
     /// The absent remote graph provider.
     Graph,
     /// The absent remote vector provider.
     Vector,
+    /// The optional local analyzer bundle governed by the adaptive policy.
+    LocalAnalyzer,
+    /// The remote recovery adapter.
+    Remote,
 }
 
 /// One concrete health fact.
@@ -185,86 +205,89 @@ pub enum Capability {
 pub enum CapabilityHealth {
     /// A local capability is available now.
     LocalReady(Capability),
-    /// A remote capability has no accepted upstream provider yet.
+    /// A capability has no accepted provider or active residence yet.
     Unavailable(Capability),
 }
 
-/// One immutable progress event.
+/// One observable local capability transition selected by C6.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProgressEvent {
-    /// Stable chronology number.
-    pub sequence: u8,
-    /// Operation that owns the event.
-    pub operation: OperationKey,
-    /// Bounded work units completed at this point.
-    pub completed_units: u8,
-}
-
-/// Fixed-capacity progress event page.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProgressEvents {
-    items: [Option<ProgressEvent>; MAX_PROGRESS_ROWS],
-    length: u8,
-}
-
-impl ProgressEvents {
-    /// Makes an empty page.
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self {
-            items: [None; MAX_PROGRESS_ROWS],
-            length: 0,
-        }
-    }
-
-    pub(crate) fn push(&mut self, event: ProgressEvent) {
-        self.items[usize::from(self.length)] = Some(event);
-        self.length += 1;
-    }
-
-    /// Returns the exact row count.
-    #[must_use]
-    pub const fn len(&self) -> u8 {
-        self.length
-    }
-
-    /// Reports whether the page has no retained progress events.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.length == 0
-    }
-
-    /// Returns one event by page ordinal.
-    #[must_use]
-    pub fn get(&self, ordinal: u8) -> Option<ProgressEvent> {
-        self.items.get(usize::from(ordinal)).copied().flatten()
-    }
-}
-
-/// A bounded cursor poll that cannot invent another terminal after `Finished`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProgressPage {
-    /// One nonterminal immutable event page.
-    Events {
-        /// Ordered rows.
-        events: ProgressEvents,
-        /// Cursor for the next page.
-        next: ProgressCursor,
+pub enum CapabilityTransition {
+    /// Activate the verified analyzer bundle.
+    Acquire {
+        /// Typed adaptive capability.
+        capability: CapabilityKind,
+        /// Hash-pinned verified bundle.
+        bundle: ContentId<CapabilityDomain>,
     },
-    /// The operation remains active and has no new service event yet.
+    /// Release the verified analyzer bundle after the policy proves it idle.
+    Release {
+        /// Typed adaptive capability.
+        capability: CapabilityKind,
+        /// Hash-pinned verified bundle.
+        bundle: ContentId<CapabilityDomain>,
+    },
+}
+
+/// A pure adaptive decision that does not claim an executed effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveDisposition {
+    /// No action was both safe and required.
+    NoAction,
+    /// One bounded remote retry is selected but has no provider in this slice.
+    RetryRemote {
+        /// Immutable authority retained across recovery.
+        pin: Pin,
+        /// Exact causal remote failure.
+        cause: RecoveryCause,
+        /// Credit remaining after the selected attempt.
+        retries_remaining: RetryBudget,
+    },
+    /// Recovery remains necessary with no retry credit.
+    RecoveryExhausted {
+        /// Immutable authority still unavailable.
+        pin: Pin,
+        /// Exact causal remote failure.
+        cause: RecoveryCause,
+    },
+    /// Resource admission rejected the otherwise canonical action.
+    Overloaded(Overload),
+    /// The caller-owned policy snapshot was malformed or ambiguous.
+    Rejected(PolicyError),
+}
+
+/// One observation of the finite service-owned capability future.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionState {
+    /// A real waker was registered and the action remains uniquely owned by the future.
     Pending {
-        /// Unchanged caller cursor.
-        cursor: ProgressCursor,
+        /// Polled operation.
+        operation: OperationKey,
+        /// Exact still-owned action.
+        transition: CapabilityTransition,
     },
-    /// The sole observed operation terminal.
-    Terminal {
-        /// Exact operation terminal.
-        terminal: Terminal,
-        /// Fused next cursor.
-        next: ProgressCursor,
+    /// The local metadata transition was applied and its owner reached a fused terminal.
+    Completed {
+        /// Completed operation.
+        operation: OperationKey,
+        /// Exact applied action.
+        transition: CapabilityTransition,
     },
-    /// A previously terminal cursor has no further state to report.
-    Finished,
+    /// Cancellation won before the action item was emitted.
+    Cancelled {
+        /// Cancelled operation.
+        operation: OperationKey,
+        /// Exact unexecuted action.
+        transition: CapabilityTransition,
+    },
+    /// The external adapter failed in one typed phase without losing the action owner.
+    Failed {
+        /// Failed operation.
+        operation: OperationKey,
+        /// Exact unexecuted action.
+        transition: CapabilityTransition,
+        /// External phase retaining failure attribution.
+        phase: ExecutionPhase,
+    },
 }
 
 /// Structured business diagnostic code.
@@ -284,10 +307,10 @@ pub enum DiagnosticCode {
     UnsupportedCompilerStage,
     /// Existing compiler registry returned a result that cannot fit the bounded text reply.
     CompilerOutputUnrepresentable,
-    /// Progress cursor lay beyond immutable retained history.
-    ProgressCursorOutOfRange,
-    /// Cancellation named an unknown operation.
+    /// Cancellation or polling named an unknown operation.
     OperationUnavailable,
+    /// Adaptive policy input was rejected with its typed cause retained.
+    AdaptivePolicyRejected,
 }
 
 /// Exact rejected operand/cause retained by a business diagnostic.
@@ -313,17 +336,12 @@ pub enum DiagnosticDetail {
     },
     /// Existing typed compiler rejection.
     Frontend(FrontendError),
-    /// Exact cursor and immutable history length.
-    Cursor {
-        /// Rejected cursor offset.
-        observed: u8,
-        /// Available immutable event count.
-        maximum: u8,
-    },
     /// Exact unavailable operation identity.
     Operation(OperationKey),
     /// Exact lower-plane dependency that the service refuses to counterfeit.
     Capability(Capability),
+    /// Exact adaptive validation cause.
+    Policy(PolicyError),
 }
 
 /// One source-preserving service diagnostic.
@@ -338,16 +356,16 @@ pub struct Diagnostic {
 /// Semantic reply body; all business behavior is represented here rather than in adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplyBody {
-    /// The existing compiler registry accepted the source row.
-    Generated {
+    /// The compiler registry accepted the vocabulary row but returned caller source unchanged.
+    CompilerPassthrough {
         /// Package named by the request.
         package: InputText,
         /// Accepted compiler language.
         language: Language,
         /// Accepted compiler stage.
         stage: Stage,
-        /// Exact caller source bytes returned by the accepted registry row.
-        output: InputText,
+        /// Exact source returned by the current registry row, not a claimed compiler artifact.
+        source: InputText,
     },
     /// A lower-plane dependency is not present in this application slice.
     DependencyUnavailable {
@@ -355,19 +373,18 @@ pub enum ReplyBody {
         capability: Capability,
     },
     /// All known local/unavailable capability facts.
-    Health([CapabilityHealth; 4]),
-    /// One bounded client-owned replay cursor result.
-    Progress(ProgressPage),
-    /// A separate service-owned operation was admitted; its terminal is observed through `Progress`.
-    ProgressStarted {
-        /// Stable handle for cancellation and replay.
+    Health([CapabilityHealth; 6]),
+    /// A pure C6 decision whose external effect is not counterfeited.
+    Adaptive(AdaptiveDisposition),
+    /// C6 selected a local effect and a finite execution future owns it.
+    ExecutionStarted {
+        /// Stable handle for polling and cancellation.
         operation: OperationKey,
+        /// Exact selected local effect.
+        transition: CapabilityTransition,
     },
-    /// Cancellation was applied to the named service-owned operation.
-    Cancelled {
-        /// Named operation whose terminal winner is cancellation.
-        operation: OperationKey,
-    },
+    /// One real poll or fused terminal from the service-owned execution future.
+    Execution(ExecutionState),
     /// A typed failure has no fabricated payload.
     Rejected,
 }
@@ -379,9 +396,9 @@ pub struct ApplicationReply {
     pub correlation: CorrelationId,
     /// One semantic body.
     pub body: ReplyBody,
-    /// One request terminal.
+    /// One request disposition.
     pub terminal: Terminal,
-    /// A failure has exactly one source-preserving diagnostic in this first slice.
+    /// A failure has exactly one source-preserving diagnostic in this slice.
     pub diagnostic: Option<Diagnostic>,
 }
 
@@ -390,6 +407,6 @@ pub struct ApplicationReply {
 pub struct ApplicationEvent {
     /// Correlated reply event.
     pub correlation: CorrelationId,
-    /// Exact resulting request terminal.
+    /// Exact resulting request disposition.
     pub terminal: Terminal,
 }
