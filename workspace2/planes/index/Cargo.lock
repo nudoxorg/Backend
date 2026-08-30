@@ -152,6 +152,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-index-core"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "nudox-index-vocab",
+]
+
+[[package]]
 name = "nudox-index-graph-vector"
 version = "0.1.0"
 dependencies = [
