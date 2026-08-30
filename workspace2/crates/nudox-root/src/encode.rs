@@ -2,7 +2,7 @@ use core::mem::size_of;
 
 use nudox_id::{FixedCanonicalRecord, GenerationHasher, GenerationId, HASH_BYTES};
 use zerocopy::{
-    Immutable, IntoBytes,
+    Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
     byteorder::{BigEndian, U16, U32, U64},
 };
 
@@ -14,6 +14,17 @@ use crate::packed::{NO_PARENT, RootRow};
 struct RootHeaderRecord {
     count: U64<BigEndian>,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned)]
+pub(crate) struct RootWireRecord {
+    pub(crate) key: U64<BigEndian>,
+    pub(crate) parent_present: u8,
+    pub(crate) parent_key: U64<BigEndian>,
+    pub(crate) descriptor: nudox_object::ObjectDescriptorWireRecord,
+}
+
+const _: [(); 63] = [(); size_of::<RootWireRecord>()];
 
 /// Canonical semantic row grammar. All fields are byte arrays so `repr(C)` has
 /// alignment one and no padding; `size_of` is the authoritative wire width.
@@ -47,7 +58,8 @@ impl RootRowRecord {
         reason = "the builder resolved every non-sentinel compact parent from this exact immutable row slice"
     )]
     fn from_row<DomainTag>(rows: &[RootRow<DomainTag>], row: &RootRow<DomainTag>) -> Self {
-        let (parent_present, parent_key) = match row.parent {
+        let object = row.object();
+        let (parent_present, parent_key) = match row.parent() {
             NO_PARENT => (0, U64::new(0)),
             parent => (1, U64::new(*rows[parent as usize].key)),
         };
@@ -55,10 +67,10 @@ impl RootRowRecord {
             key: U64::new(*row.key),
             parent_present,
             parent_key,
-            content: *row.object.content,
-            length: U64::new(*row.object.length),
-            schema: U32::new(u32::from(row.object.schema)),
-            kind: U16::new(*row.object.kind),
+            content: *object.content,
+            length: U64::new(*object.length),
+            schema: U32::new(u32::from(object.schema)),
+            kind: U16::new(*object.kind),
         }
     }
 }

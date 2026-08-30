@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::MetadataBytes;
 use crate::encode::canonical_id;
 use crate::entry::{EntryKey, RootEntry};
-use crate::packed::{GenerationRoot, NO_PARENT, RootRow};
+use crate::packed::{GenerationRoot, HierarchyDepth, HierarchyState, NO_PARENT, RootRow};
 
 /// Builder-validated compact bound consumed by packed root coordinates.
 struct CompactRootLength(u32);
@@ -31,7 +31,7 @@ impl CompactRootLength {
 
 /// Checked mutable root builder; successful finish publishes an immutable packed root.
 pub struct GenerationRootBuilder<DomainTag> {
-    entries: Vec<RootEntry<DomainTag>>,
+    rows: Vec<RootRow<DomainTag>>,
 }
 
 impl<DomainTag> GenerationRootBuilder<DomainTag> {
@@ -41,9 +41,9 @@ impl<DomainTag> GenerationRootBuilder<DomainTag> {
     ///
     /// Returns the allocation cause before the builder can accept any entry.
     pub fn with_capacity(entry_capacity: usize) -> Result<Self, TryReserveError> {
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(entry_capacity)?;
-        Ok(Self { entries })
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(entry_capacity)?;
+        Ok(Self { rows })
     }
 
     /// Fallibly adds one arbitrary-order construction entry.
@@ -56,15 +56,15 @@ impl<DomainTag> GenerationRootBuilder<DomainTag> {
         &mut self,
         entry: RootEntry<DomainTag>,
     ) -> Result<(), RejectedRootEntry<DomainTag>> {
-        if self.entries.len() == self.entries.capacity() {
+        if self.rows.len() == self.rows.capacity() {
             return Err(RejectedRootEntry {
                 error: RootPushError::InputCapacityExceeded {
-                    capacity: self.entries.capacity(),
+                    capacity: self.rows.capacity(),
                 },
                 entry,
             });
         }
-        self.entries.push(entry);
+        self.rows.push(RootRow::collected(entry));
         Ok(())
     }
 
@@ -72,40 +72,37 @@ impl<DomainTag> GenerationRootBuilder<DomainTag> {
     ///
     /// # Errors
     ///
-    /// Returns an exact duplicate/parent/cycle/depth failure, compact-index
-    /// conversion failure, or retained allocation source.
+    /// Returns an exact duplicate/parent/cycle/depth or compact-index failure.
+    /// Finishing performs no allocation: the row's private phase niche carries
+    /// hierarchy traversal state in the already reserved arena.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "the loop coordinate is constructed directly from this exact row length"
+    )]
     pub fn finish(mut self) -> Result<GenerationRoot<DomainTag>, RootBuildError> {
-        self.entries.sort_unstable_by_key(|entry| entry.key);
-        validate_unique(&self.entries)?;
-        let entry_count = self.entries.len();
+        self.rows.sort_unstable_by_key(|row| row.key);
+        validate_unique_rows(&self.rows)?;
+        let entry_count = self.rows.len();
         let compact_length = CompactRootLength::from_entries(entry_count)?;
-
-        let mut rows = reserve_exact(entry_count, RootBuildError::RowReservation)?;
-        for (index, entry) in self.entries.iter().enumerate() {
+        for index in 0..self.rows.len() {
             let _compact_index = CompactRootLength::index(index);
-            let parent = resolve_parent(entry, &self.entries)?;
-            rows.push(RootRow {
-                object: entry.object,
-                key: entry.key,
-                parent,
-                depth: 0_u32.into(),
-            });
+            let key = self.rows[index].key;
+            let parent = match self.rows[index].collected_parent() {
+                None => NO_PARENT,
+                Some(parent_key) => resolve_parent_key(key, parent_key, &self.rows)?,
+            };
+            self.rows[index].set_unseen(parent);
         }
-        let peak_live_bytes = self.entries.capacity() * size_of::<RootEntry<DomainTag>>()
-            + rows.capacity() * size_of::<RootRow<DomainTag>>();
-        // Input entries are no longer needed after the rows have captured all
-        // semantic facts. Releasing them before hierarchy scratch avoids the
-        // former input + rows + marks + path peak.
-        drop(self.entries);
-        validate_hierarchy(&mut rows)?;
-        let id = canonical_id(&rows);
+        let peak_live_bytes = self.rows.capacity() * size_of::<RootRow<DomainTag>>();
+        validate_hierarchy(&mut self.rows)?;
+        let id = canonical_id(&self.rows);
         Ok(GenerationRoot {
             facts: crate::packed::GenerationRootFacts {
                 id,
                 entry_count: compact_length.0.into(),
                 construction_peak_bytes: peak_live_bytes.into(),
             },
-            rows: rows.into_boxed_slice(),
+            rows: self.rows.into_boxed_slice(),
         })
     }
 }
@@ -118,7 +115,16 @@ impl<DomainTag> GenerationRoot<DomainTag> {
     /// Returns the same exact construction failures as
     /// [`GenerationRootBuilder::finish`].
     pub fn new(entries: Vec<RootEntry<DomainTag>>) -> Result<Self, RootBuildError> {
-        GenerationRootBuilder { entries }.finish()
+        let input_bytes = entries.capacity() * size_of::<RootEntry<DomainTag>>();
+        let mut builder = GenerationRootBuilder::with_capacity(entries.len())
+            .map_err(RootBuildError::RowReservation)?;
+        let row_bytes = builder.rows.capacity() * size_of::<RootRow<DomainTag>>();
+        for entry in entries {
+            builder.rows.push(RootRow::collected(entry));
+        }
+        let mut root = builder.finish()?;
+        root.facts.construction_peak_bytes = (input_bytes + row_bytes).into();
+        Ok(root)
     }
 
     /// Returns the exact caller-buffer extent for canonical root bytes.
@@ -193,12 +199,6 @@ pub enum RootBuildError {
     /// Packed root row reservation failed.
     #[error("could not reserve packed root rows")]
     RowReservation(#[source] TryReserveError),
-    /// Hierarchy validation mark reservation failed.
-    #[error("could not reserve hierarchy validation marks")]
-    HierarchyReservation(#[source] TryReserveError),
-    /// Hierarchy validation path reservation failed.
-    #[error("could not reserve hierarchy validation path")]
-    PathReservation(#[source] TryReserveError),
     /// A hierarchy path exceeds the compact depth representation.
     #[error("root hierarchy depth exceeds compact representation")]
     DepthOverflow,
@@ -223,96 +223,80 @@ pub struct RejectedRootEntry<DomainTag> {
     pub entry: RootEntry<DomainTag>,
 }
 
-fn reserve_exact<Element>(
-    capacity: usize,
-    map_error: impl FnOnce(TryReserveError) -> RootBuildError,
-) -> Result<Vec<Element>, RootBuildError> {
-    let mut output = Vec::new();
-    output.try_reserve_exact(capacity).map_err(map_error)?;
-    Ok(output)
-}
-
-fn validate_unique<DomainTag>(entries: &[RootEntry<DomainTag>]) -> Result<(), RootBuildError> {
+fn validate_unique_rows<DomainTag>(rows: &[RootRow<DomainTag>]) -> Result<(), RootBuildError> {
     let mut previous = None;
-    for entry in entries {
-        if previous == Some(entry.key) {
-            return Err(RootBuildError::DuplicateKey { key: entry.key });
+    for row in rows {
+        if previous == Some(row.key) {
+            return Err(RootBuildError::DuplicateKey { key: row.key });
         }
-        previous = Some(entry.key);
+        previous = Some(row.key);
     }
     Ok(())
 }
 
-fn resolve_parent<DomainTag>(
-    entry: &RootEntry<DomainTag>,
-    entries: &[RootEntry<DomainTag>],
+fn resolve_parent_key<DomainTag>(
+    child: EntryKey,
+    parent: EntryKey,
+    rows: &[RootRow<DomainTag>],
 ) -> Result<u32, RootBuildError> {
-    match entry.parent {
-        None => Ok(NO_PARENT),
-        Some(parent_key) => {
-            let Ok(index) = entries.binary_search_by_key(&parent_key, |candidate| candidate.key)
-            else {
-                return Err(RootBuildError::MissingParent {
-                    child: entry.key,
-                    parent: parent_key,
-                });
-            };
-            Ok(CompactRootLength::index(index))
-        }
-    }
+    rows.binary_search_by_key(&parent, |row| row.key)
+        .map(CompactRootLength::index)
+        .map_err(|_| RootBuildError::MissingParent { child, parent })
 }
 
 /// Validates a just-built dense hierarchy before rows can become immutable.
 ///
 /// The builder created every parent by a binary search over this same `rows`
-/// slice. `visits` and `path` were allocated to exactly `rows.len()`, and all
-/// cursors originate in `0..rows.len()` or those resolved parents. The direct
-/// dense accesses below therefore consume construction proof rather than
-/// exposing an impossible `Internal` result to root consumers.
+/// slice. The explicit two-byte state occupies descriptor padding and the
+/// parent remains in the low payload word while rows are marked. Thus cycle
+/// detection and depth assignment need no side allocation. All cursors
+/// originate in `0..rows.len()` or those resolved parents.
 #[allow(
     clippy::indexing_slicing,
-    reason = "all coordinates originate in this exact rows range or builder-resolved parent links; dense marks/path have the same length"
+    reason = "all coordinates originate in this exact rows range or builder-resolved parent links"
 )]
 fn validate_hierarchy<DomainTag>(rows: &mut [RootRow<DomainTag>]) -> Result<(), RootBuildError> {
-    #[derive(Clone, Copy, Eq, PartialEq)]
-    enum Visit {
-        Unseen,
-        Visiting,
-        Done,
-    }
-
-    let mut visits = reserve_exact(rows.len(), RootBuildError::HierarchyReservation)?;
-    visits.resize(rows.len(), Visit::Unseen);
-    let mut path = reserve_exact(rows.len(), RootBuildError::PathReservation)?;
     for start in 0..rows.len() {
-        if visits[start] == Visit::Done {
+        if rows[start].hierarchy_state() == HierarchyState::Published {
             continue;
         }
-        path.clear();
         let mut cursor = Some(start);
-        while let Some(index) = cursor {
-            match visits[index] {
-                Visit::Unseen => {
-                    visits[index] = Visit::Visiting;
-                    path.push(index);
-                    cursor = parent_index(rows[index].parent)?;
+        let mut chain_length = 0_u32;
+        let base_depth = loop {
+            let Some(index) = cursor else {
+                break 0_u32.into();
+            };
+            match rows[index].hierarchy_state() {
+                HierarchyState::Unseen => {
+                    rows[index].mark_visiting();
+                    chain_length = chain_length
+                        .checked_add(1)
+                        .ok_or(RootBuildError::DepthOverflow)?;
+                    cursor = parent_index(rows[index].parent())?;
                 }
-                Visit::Visiting => {
+                HierarchyState::Visiting => {
                     return Err(RootBuildError::HierarchyCycle {
                         key: rows[index].key,
                     });
                 }
-                Visit::Done => break,
+                HierarchyState::Published => break rows[index].depth(),
             }
-        }
-        let mut depth = match cursor {
-            Some(index) => rows[index].depth,
-            None => 0_u32.into(),
         };
-        while let Some(index) = path.pop() {
-            depth = depth.checked_child().ok_or(RootBuildError::DepthOverflow)?;
-            rows[index].depth = depth;
-            visits[index] = Visit::Done;
+
+        cursor = Some(start);
+        let mut remaining = chain_length;
+        while remaining != 0 {
+            let Some(index) = cursor else {
+                unreachable!("resolved hierarchy chain ended before its measured length");
+            };
+            let depth = HierarchyDepth::from(
+                (*base_depth)
+                    .checked_add(remaining)
+                    .ok_or(RootBuildError::DepthOverflow)?,
+            );
+            cursor = parent_index(rows[index].parent())?;
+            rows[index].publish(depth);
+            remaining -= 1;
         }
     }
     Ok(())

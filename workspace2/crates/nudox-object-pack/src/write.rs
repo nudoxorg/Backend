@@ -28,7 +28,10 @@ pub struct PackInput<'bytes> {
 pub struct ObjectPackFacts {
     /// Exact canonical output length accepted by [`PreparedObjectPack::write`].
     pub required_bytes: ObjectPackBytes,
-    index_bytes: ObjectPackBytes,
+    /// Exact count-header and directory prefix length. Remote/file adapters
+    /// can write this prefix once and stream body segments without assembling
+    /// the complete pack in memory.
+    pub index_bytes: ObjectPackBytes,
 }
 
 /// Fully measured immutable sparse input ready for a direct caller-buffer write.
@@ -127,6 +130,57 @@ impl<'inputs, 'bytes> PreparedObjectPack<'inputs, 'bytes> {
         )]
         let output = &mut output[..required];
         let (index, bodies) = output.split_at_mut(usize::from(self.facts.index_bytes));
+        self.write_index_preflighted(index);
+        let mut body = bodies;
+        for segment in self.body_segments() {
+            let (target, rest) = body.split_at_mut(segment.len());
+            target.copy_from_slice(segment);
+            body = rest;
+        }
+        Ok(output)
+    }
+
+    /// Writes only the canonical count-and-directory prefix.
+    ///
+    /// File, object-store, and vectored-I/O adapters can retain this small
+    /// prefix and consume [`Self::body_segments`] directly, avoiding one
+    /// complete-pack allocation and payload copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ObjectPackError::OutputTooSmall`] before changing `output`
+    /// when the exact index prefix is unavailable.
+    pub fn write_index<'output>(
+        &self,
+        output: &'output mut [u8],
+    ) -> Result<&'output [u8], ObjectPackError> {
+        let required = usize::from(self.facts.index_bytes);
+        if output.len() < required {
+            return Err(ObjectPackError::OutputTooSmall {
+                required: self.facts.index_bytes,
+                available: output.len().into(),
+            });
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the exact index-length preflight proves this output prefix"
+        )]
+        let output = &mut output[..required];
+        self.write_index_preflighted(output);
+        Ok(output)
+    }
+
+    /// Lends the already verified canonical bodies in directory order.
+    ///
+    /// The iterator allocates nothing and its slices point at the original
+    /// caller-owned inputs. Adapters choose bounded coalescing or vectored-I/O
+    /// policy without changing pack identity or copying through the core.
+    #[must_use]
+    pub fn body_segments(&self) -> impl ExactSizeIterator<Item = &'bytes [u8]> + '_ {
+        self.inputs.iter().map(|input| input.bytes)
+    }
+
+    fn write_index_preflighted(&self, index: &mut [u8]) {
         let (count, mut directory) = index.split_at_mut(COUNT_BYTES);
         count.copy_from_slice(
             ObjectCountRecord(U64::<BigEndian>::new(u64_from_usize(self.inputs.len()))).as_bytes(),
@@ -142,12 +196,5 @@ impl<'inputs, 'bytes> PreparedObjectPack<'inputs, 'bytes> {
             target.copy_from_slice(record.as_bytes());
             directory = rest;
         }
-        let mut body = bodies;
-        for input in self.inputs {
-            let (target, rest) = body.split_at_mut(input.bytes.len());
-            target.copy_from_slice(input.bytes);
-            body = rest;
-        }
-        Ok(output)
     }
 }

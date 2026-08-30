@@ -40,6 +40,33 @@ fn input(bytes: &[u8]) -> Result<PackInput<'_>, TestError> {
     })
 }
 
+fn ordered_pair<'bytes>(
+    first: PackInput<'bytes>,
+    second: PackInput<'bytes>,
+) -> [PackInput<'bytes>; 2] {
+    if first.reference.content < second.reference.content {
+        [first, second]
+    } else {
+        [second, first]
+    }
+}
+
+fn reconstruct_from_segments(
+    prepared: &PreparedObjectPack<'_, '_>,
+    inputs: &[PackInput<'_>],
+) -> Result<Vec<u8>, TestError> {
+    let mut index = vec![SENTINEL; usize::from(prepared.index_bytes)];
+    let index_pointer = index.as_ptr();
+    let written_index = prepared.write_index(&mut index)?;
+    assert_eq!(written_index.as_ptr(), index_pointer);
+    for (segment, source) in prepared.body_segments().zip(inputs) {
+        assert_eq!(segment.as_ptr(), source.bytes.as_ptr());
+        assert_eq!(segment, source.bytes);
+        index.extend_from_slice(segment);
+    }
+    Ok(index)
+}
+
 fn write(inputs: &[PackInput<'_>]) -> Result<Vec<u8>, TestError> {
     let prepared = PreparedObjectPack::prepare(inputs)?;
     let mut output = vec![0_u8; usize::from(prepared.required_bytes)];
@@ -207,5 +234,29 @@ fn preflight_and_output_borrow_preserve_exact_sentinel_and_pointer_laws() -> Res
     let oversized_written = prepared.write(&mut oversized)?;
     assert_eq!(oversized_written.as_ptr(), oversized_pointer);
     assert_eq!(oversized.last(), Some(&SENTINEL));
+    Ok(())
+}
+
+#[test]
+fn index_and_borrowed_body_segments_reconstruct_without_full_pack_staging() -> Result<(), TestError>
+{
+    let first = input(b"body-one")?;
+    let second = input(b"body-two-is-longer")?;
+    let inputs = ordered_pair(first, second);
+    let prepared = PreparedObjectPack::prepare(&inputs)?;
+    assert_eq!(prepared.body_segments().len(), inputs.len());
+    let reconstructed = reconstruct_from_segments(&prepared, &inputs)?;
+    assert_eq!(reconstructed, write(&inputs)?);
+
+    let mut short = vec![SENTINEL; usize::from(prepared.index_bytes) - 1];
+    let available = short.len();
+    assert_eq!(
+        prepared.write_index(&mut short),
+        Err(ObjectPackError::OutputTooSmall {
+            required: prepared.index_bytes,
+            available: available.into(),
+        })
+    );
+    assert!(short.iter().all(|byte| *byte == SENTINEL));
     Ok(())
 }

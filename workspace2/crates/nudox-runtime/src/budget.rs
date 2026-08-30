@@ -143,7 +143,13 @@ impl CreditPoolCore {
         }
     }
     pub(crate) fn reserve(&self, count: usize) -> Option<ReservedCredits> {
-        let mut observed = self.available.load(Ordering::Acquire);
+        if count == 0 {
+            return Some(ReservedCredits { count });
+        }
+        // This atomic owns only the numerical credit invariant. Payload initialization,
+        // publication, and coordinate reuse synchronize independently through the slot and
+        // ready-bit state machines, so reserving a byte count does not acquire any memory.
+        let mut observed = self.available.load(Ordering::Relaxed);
         loop {
             if observed < count {
                 return None;
@@ -151,8 +157,8 @@ impl CreditPoolCore {
             match self.available.compare_exchange_weak(
                 observed,
                 observed - count,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             ) {
                 Ok(_) => return Some(ReservedCredits { count }),
                 Err(actual) => observed = actual,
@@ -160,14 +166,21 @@ impl CreditPoolCore {
         }
     }
     pub(crate) fn release(&self, reservation: ReservedCredits) {
+        if reservation.count == 0 {
+            return;
+        }
         // A reservation is issued by this exact pool and cannot be duplicated. Under that linear
-        // proof, restoration cannot exceed capacity, so no rollback branch is an API state.
+        // proof, restoration cannot exceed capacity, so no rollback branch is an API state. The
+        // RMW needs only the atomic's modification order: it publishes no payload memory.
         let _previous = self
             .available
-            .fetch_add(reservation.count, Ordering::Release);
+            .fetch_add(reservation.count, Ordering::Relaxed);
     }
     pub(crate) fn available(&self) -> usize {
-        self.available.load(Ordering::Acquire)
+        // Structural metrics and waiter selection are explicitly eventually consistent. A waiter
+        // always rechecks ordinary admission after registering/arming, so a stale observation can
+        // cause only a benign delayed or spurious wake, never lost ownership or over-admission.
+        self.available.load(Ordering::Relaxed)
     }
 }
 
@@ -185,6 +198,13 @@ mod tests {
 
     fn loom_transition() -> Result<(), BudgetTestError> {
         let credits = Arc::new(CreditPoolCore::new(1));
+        let empty = credits
+            .reserve(0)
+            .ok_or(BudgetTestError::ZeroReservationMissing)?;
+        credits.release(empty);
+        if credits.available() != 1 {
+            return Err(BudgetTestError::ZeroReservationChangedCapacity);
+        }
         let other = Arc::clone(&credits);
         let first = thread::spawn(move || {
             if let Some(reservation) = other.reserve(1) {
@@ -222,5 +242,9 @@ mod tests {
         Conservation { observed: usize },
         #[error("a two-credit reservation succeeded against one-credit capacity")]
         OverReservation,
+        #[error("a zero-credit reservation was unexpectedly unavailable")]
+        ZeroReservationMissing,
+        #[error("a zero-credit reservation changed pool capacity")]
+        ZeroReservationChangedCapacity,
     }
 }

@@ -1,8 +1,9 @@
 use alloc::boxed::Box;
 use core::{borrow::Borrow, mem::size_of, ops::Deref};
 
-use nudox_id::GenerationId;
-use nudox_object::ObjectRef;
+use nudox_id::{ContentId, GenerationId};
+use nudox_object::{ObjectKind, ObjectLength, ObjectRef};
+use nudox_schema::SchemaId;
 
 use crate::entry::{EntryKey, EntryRange, RootEntry};
 
@@ -24,15 +25,6 @@ impl Deref for HierarchyDepth {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl HierarchyDepth {
-    pub(crate) const fn checked_child(self) -> Option<Self> {
-        match self.0.checked_add(1) {
-            Some(depth) => Some(Self(depth)),
-            None => None,
-        }
     }
 }
 
@@ -144,6 +136,9 @@ compile_error!("nudox-root requires at least 32-bit usize coordinates");
 pub(crate) struct RowIndex(u32);
 
 impl RowIndex {
+    pub(crate) const fn from_validated_borrowed_root_position(position: usize) -> Self {
+        Self(position as u32)
+    }
     /// Projects this compact root coordinate onto this process's exact packed
     /// root array. This is the sole native-index conversion for row access.
     #[allow(
@@ -183,21 +178,114 @@ impl RowIndex {
 
 /// Packed semantic facts retained for every root entry.
 ///
-/// This is intentionally 64 bytes: `ObjectRef` (48), semantic key (8), checked
-/// parent index (4), and precomputed depth (4). Residence lives in sparse
-/// sidecars because the common resident state costs no additional bytes.
+/// The descriptor's otherwise trailing two-byte padding is made explicit as a
+/// private construction state. The final word is phase-reused: while collecting
+/// it carries the parent key; after validation it carries packed parent/depth.
 #[repr(C)]
 pub(crate) struct RootRow<DomainTag> {
-    pub(crate) object: ObjectRef<DomainTag>,
+    content: ContentId<DomainTag>,
+    length: ObjectLength,
+    schema: SchemaId,
+    kind: ObjectKind,
+    state: RowState,
     pub(crate) key: EntryKey,
-    pub(crate) parent: u32,
-    pub(crate) depth: HierarchyDepth,
+    payload: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+enum RowState {
+    CollectedParent,
+    CollectedRoot,
+    Unseen,
+    Visiting,
+    Published,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HierarchyState {
+    Unseen,
+    Visiting,
+    Published,
 }
 
 impl<DomainTag> Copy for RootRow<DomainTag> {}
 impl<DomainTag> Clone for RootRow<DomainTag> {
     fn clone(&self) -> Self {
         *self
+    }
+}
+
+impl<DomainTag> RootRow<DomainTag> {
+    pub(crate) fn collected(entry: RootEntry<DomainTag>) -> Self {
+        let RootEntry {
+            key,
+            parent,
+            object,
+        } = entry;
+        Self {
+            content: object.content,
+            length: object.length,
+            schema: object.schema,
+            kind: object.kind,
+            state: if parent.is_some() {
+                RowState::CollectedParent
+            } else {
+                RowState::CollectedRoot
+            },
+            key,
+            payload: parent.map_or(0, |parent| *parent),
+        }
+    }
+    pub(crate) const fn object(&self) -> ObjectRef<DomainTag> {
+        ObjectRef {
+            content: self.content,
+            length: self.length,
+            schema: self.schema,
+            kind: self.kind,
+        }
+    }
+    pub(crate) fn collected_parent(&self) -> Option<EntryKey> {
+        match self.state {
+            RowState::CollectedRoot => None,
+            RowState::CollectedParent => Some(EntryKey::from(self.payload)),
+            _ => unreachable!("parent keys are available only during root collection"),
+        }
+    }
+    pub(crate) const fn parent(&self) -> u32 {
+        debug_assert!(matches!(
+            self.state,
+            RowState::Unseen | RowState::Visiting | RowState::Published
+        ));
+        let [first, second, third, fourth, _, _, _, _] = self.payload.to_le_bytes();
+        u32::from_le_bytes([first, second, third, fourth])
+    }
+    pub(crate) const fn depth(&self) -> HierarchyDepth {
+        debug_assert!(matches!(self.state, RowState::Published));
+        let [_, _, _, _, first, second, third, fourth] = self.payload.to_le_bytes();
+        HierarchyDepth(u32::from_le_bytes([first, second, third, fourth]))
+    }
+    pub(crate) fn hierarchy_state(&self) -> HierarchyState {
+        match self.state {
+            RowState::Unseen => HierarchyState::Unseen,
+            RowState::Visiting => HierarchyState::Visiting,
+            RowState::Published => HierarchyState::Published,
+            _ => unreachable!("hierarchy traversal begins only after parent resolution"),
+        }
+    }
+    pub(crate) fn set_unseen(&mut self, parent: u32) {
+        self.payload = u64::from(parent);
+        self.state = RowState::Unseen;
+    }
+    pub(crate) fn mark_visiting(&mut self) {
+        debug_assert_eq!(self.state, RowState::Unseen);
+        self.state = RowState::Visiting;
+    }
+    pub(crate) fn publish(&mut self, depth: HierarchyDepth) {
+        debug_assert_eq!(self.state, RowState::Visiting);
+        let parent = self.parent();
+        self.payload = (u64::from(depth.0) << 32) | u64::from(parent);
+        self.state = RowState::Published;
     }
 }
 
@@ -220,8 +308,9 @@ pub struct GenerationRootFacts {
     pub id: GenerationId,
     /// Builder-proven compact row count for this immutable root.
     pub entry_count: RootEntryCount,
-    /// Exact simultaneous input-plus-packed-row bytes at the construction
-    /// peak, before input entries are released for hierarchy validation.
+    /// Exact maximum simultaneously live input/row payload bytes. The
+    /// streaming builder needs only the published row arena; the owned-vector
+    /// convenience path also accounts for its caller-shaped input allocation.
     pub construction_peak_bytes: MetadataBytes,
 }
 
@@ -267,24 +356,24 @@ impl<DomainTag> GenerationRoot<DomainTag> {
         self.rows
             .binary_search_by_key(&key, |row| row.key)
             .ok()
-            .map(|index| self.row(RowIndex::from_arena_position(index)).depth)
+            .map(|index| self.row(RowIndex::from_arena_position(index)).depth())
     }
     /// Reconstructs an entry at a validated packed-arena coordinate.
     pub(crate) fn entry_at(&self, index: RowIndex) -> RootEntry<DomainTag> {
         let row = self.row(index);
-        let parent = match row.parent {
+        let parent = match row.parent() {
             NO_PARENT => None,
             parent => Some(self.row(RowIndex::from_validated_parent(parent)).key),
         };
         RootEntry {
             key: row.key,
             parent,
-            object: row.object,
+            object: row.object(),
         }
     }
     /// Returns a validated parent coordinate, when this is not a hierarchy root.
     pub(crate) fn parent_index(&self, index: RowIndex) -> Option<RowIndex> {
-        let parent = self.row(index).parent;
+        let parent = self.row(index).parent();
         if parent == NO_PARENT {
             None
         } else {
@@ -374,11 +463,14 @@ impl<DomainTag> Iterator for CanonicalRows<'_, DomainTag> {
 #[cfg(test)]
 mod tests {
     use super::RootRow;
-    use core::mem::{align_of, size_of};
+    use core::mem::{align_of, offset_of, size_of};
     use nudox_id::ObjectDomain;
     #[test]
     fn resident_row_is_exactly_sixty_four_bytes() {
         assert_eq!(size_of::<RootRow<ObjectDomain>>(), 64);
         assert_eq!(align_of::<RootRow<ObjectDomain>>(), 8);
+        assert_eq!(offset_of!(RootRow<ObjectDomain>, state), 46);
+        assert_eq!(offset_of!(RootRow<ObjectDomain>, key), 48);
+        assert_eq!(offset_of!(RootRow<ObjectDomain>, payload), 56);
     }
 }

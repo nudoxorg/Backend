@@ -13,6 +13,6 @@ mod write;
 pub use errors::{LocalityError, LocalityReadError, LocalityWriteError};
 pub(in crate::locality) use layout::LaneTable;
 pub use layout::LocalityLayout;
-pub use view::{LocalityValidator, ValidatedLocality, with_validated_locality};
+pub use view::{LocalityValidator, ValidatedLocality, ValidatedLocalityFacts, with_validated_locality};
 pub(crate) use write::LocalityEncoder;
 pub use write::PreparedLocality;

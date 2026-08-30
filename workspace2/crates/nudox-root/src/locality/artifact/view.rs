@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, mem::size_of};
+use core::{marker::PhantomData, mem::size_of, ops::Deref};
 
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
@@ -19,15 +19,24 @@ use super::{
 /// never rebuild the complete grammar geometry. The direct writer supplies
 /// the same already-known facts without recasting its output.
 pub struct ValidatedLocality<'bytes, DomainTag> {
-    /// Underlying complete canonical artifact bytes.
-    pub bytes: &'bytes [u8],
-    /// Generation identity bound into the fixed header.
-    pub generation: GenerationId,
-    /// Root cardinality bound into the fixed header.
-    pub root_count: RootEntryCount,
+    facts: ValidatedLocalityFacts<'bytes>,
     exception_count: u32,
     lanes: LaneTable,
     domain: PhantomData<fn() -> DomainTag>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedLocalityFacts<'bytes> {
+    pub bytes: &'bytes [u8],
+    pub generation: GenerationId,
+    pub root_count: RootEntryCount,
+}
+
+impl<'bytes, DomainTag> Deref for ValidatedLocality<'bytes, DomainTag> {
+    type Target = ValidatedLocalityFacts<'bytes>;
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 /// Reusable accelerated locality-validation engine.
@@ -83,9 +92,7 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         lanes: LaneTable,
     ) -> Self {
         Self {
-            bytes,
-            generation,
-            root_count,
+            facts: ValidatedLocalityFacts { bytes, generation, root_count },
             exception_count,
             lanes,
             domain: PhantomData,

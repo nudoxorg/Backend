@@ -1,4 +1,5 @@
 use super::*;
+use crate::GenerationRootBuilder;
 
 #[test]
 fn retained_root_owner_and_construction_peak_have_exact_layout_evidence()
@@ -17,6 +18,41 @@ fn retained_root_owner_and_construction_peak_have_exact_layout_evidence()
             * (size_of::<RootEntry<ObjectDomain>>()
                 + size_of::<crate::packed::RootRow<ObjectDomain>>()))
         .into()
+    );
+    Ok(())
+}
+
+#[test]
+fn streaming_builder_reuses_phase_row_and_preserves_canonical_identity() -> Result<(), ScenarioError>
+{
+    let mut builder = GenerationRootBuilder::<ObjectDomain>::with_capacity(3)
+        .map_err(RootBuildError::RowReservation)
+        .map_err(ScenarioError::Root)?;
+    for entry in [
+        resident(2, Some(1), object(2)),
+        resident(1, None, object(1)),
+        resident(3, Some(2), object(3)),
+    ] {
+        assert!(
+            builder.try_push(entry).is_ok(),
+            "exactly reserved streaming builder rejected an entry"
+        );
+    }
+    let streaming = builder.finish()?;
+    let ordinary = root(Vec::from([
+        resident(1, None, object(1)),
+        resident(2, Some(1), object(2)),
+        resident(3, Some(2), object(3)),
+    ]))?;
+    assert_eq!(streaming.id, ordinary.id);
+    assert_eq!(
+        streaming.metadata_bytes(),
+        (3 * size_of::<crate::packed::RootRow<ObjectDomain>>()).into()
+    );
+    assert_eq!(streaming.depth_of(key(3)), Some(3_u32.into()));
+    assert_eq!(
+        streaming.construction_peak_bytes,
+        (3 * size_of::<crate::packed::RootRow<ObjectDomain>>()).into()
     );
     Ok(())
 }

@@ -103,8 +103,6 @@ enum RootErrorKind {
     HierarchyCycle,
     IndexConversion,
     RowReservation,
-    HierarchyReservation,
-    PathReservation,
     DepthOverflow,
 }
 
@@ -206,8 +204,6 @@ const fn root_error_kind(error: &RootBuildError) -> RootErrorKind {
         RootBuildError::HierarchyCycle { .. } => RootErrorKind::HierarchyCycle,
         RootBuildError::IndexConversion(_) => RootErrorKind::IndexConversion,
         RootBuildError::RowReservation(_) => RootErrorKind::RowReservation,
-        RootBuildError::HierarchyReservation(_) => RootErrorKind::HierarchyReservation,
-        RootBuildError::PathReservation(_) => RootErrorKind::PathReservation,
         RootBuildError::DepthOverflow => RootErrorKind::DepthOverflow,
     }
 }

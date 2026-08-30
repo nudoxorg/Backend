@@ -9,8 +9,8 @@ use core::mem::{align_of, offset_of, size_of};
 use nudox_frame::{EncodeError, PreparedFrame, SectionInput};
 use nudox_hydration::{
     BoundNeed, DemandBindError, Fetch, FetchRoute, HydrationPlanView, Need, PlanCoverage,
-    PlanError, PlanScratch, PlanScratchFacts, Projection, Promise, ReadyGeneration,
-    StagedGeneration, VerificationError, VerifiedGeneration,
+    PlanError, PlanScratch, PlanScratchFacts, Projection, Promise, StagedGeneration,
+    VerificationError, VerifiedGeneration,
 };
 use nudox_id::{
     ArtifactHasher, ArtifactId, ContentHasher, ContentId, ContentRoutingWord, DomainTag,
@@ -298,7 +298,6 @@ fn main() {
         "borrowing typestate"
     );
     layout!("hydration", VerifiedGeneration, "sealed typestate witness");
-    layout!("hydration", ReadyGeneration, "sealed typestate witness");
     layout!(
         "hydration",
         VerificationError<ObjectDomain>,
