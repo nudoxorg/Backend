@@ -1,6 +1,6 @@
 schema = 1
 capability_id = "wave-c7-application-service"
-state = "phase0"
+state = "evidence-blocked"
 baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
 baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
 candidate_commit = ""
@@ -20,7 +20,26 @@ sandbox = "danger-full-access (runtime profile supplied by parent; no separate s
 brief = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/brief.md", sha256 = "f19dcb634855cf7902d2c64ec2e7ded14ba84d16f8279f273105505eb3cda530" }
 matrix = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/proof-matrix.md", sha256 = "66bca0bc1f2e20301a9f25cd086354b3938259bdea52e22b40b67f862735223b" }
 research = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/research.md", sha256 = "7dac09a18ba8c664ed9873a4c3cb0f4e80aaf4565cf784eef2cb0b084a7cd124" }
-closure = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/closure.md", sha256 = "ed91f57747b7e4a154e18274b3a0d47d8cd4929bff30c2c1308b93fd7a750d22" }
+closure = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/closure.md", sha256 = "db9aca67f4c0c49cfb029bac793164842b25220ec35b584e4d355f7b20e4a77e" }
 coupling = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/coupling-skeleton.md", sha256 = "9a0f6faf76283ce0450e3d78db6bb1f724e1d04b53794f97f367d94dd8f0a93a" }
 testing_map = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/testing-map.md", sha256 = "470dd7736c28ed1a69dc5a770700f4e7a3a04b9db49dfea59c63a98903ec90bc" }
 pre_edit_packet = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/packets/pre-edit.md", sha256 = "dbf8df6bd4a0255a672fdde18328abe92309c01f188fe76d3373e579af4e47b1" }
+
+[[blocked_attempts]]
+task_id = "01a0513e-951d-7721-83b8-31f5f43dd0bb"
+kind = "sidecar"
+raw_receipt = "/private/tmp/c7-preedit-review-v2.KhEdon"
+result = "JoinError::Panic: inherited non-Unicode env value; commands failed before execution"
+source_snapshot = "/private/tmp/c7-preedit-source-v2.JTwgEh"
+source_digest_before = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+source_digest_after = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+
+[[blocked_attempts]]
+task_id = "01a05140-753b-7003-b7c9-16616993c57b"
+kind = "sidecar"
+raw_receipt = "/private/tmp/c7-preedit-review-v3.dMOiEx/sidecar-final.md"
+raw_jsonl = "/private/tmp/c7-preedit-review-v3.dMOiEx/sidecar.jsonl"
+result = "router error: Unknown model gpt-5.6-luna; available gpt-5.6-sol,gpt-5.6-terra"
+source_snapshot = "/private/tmp/c7-preedit-source-v2.JTwgEh"
+source_digest_before = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+source_digest_after = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
