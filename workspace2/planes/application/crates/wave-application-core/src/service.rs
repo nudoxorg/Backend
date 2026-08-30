@@ -14,8 +14,8 @@ use nudox_observe::Probe;
 use crate::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    ExecutionState, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody,
-    Terminal, execution::LocalCapabilityExecution,
+    ExecutionState, InconsistentRecovery, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES,
+    OperationKey, ReplyBody, Terminal, execution::LocalCapabilityExecution,
 };
 
 /// One concrete service that owns at most one bounded adaptive effect.
@@ -118,7 +118,8 @@ impl ApplicationService {
                 pin,
                 bundle,
                 budget,
-            } => self.recover_local(correlation, pin, bundle, budget),
+            } => self.recover_local(correlation, pin, bundle, budget, RemoteHealth::Outage),
+            ApplicationInput::RecoverInconsistent(recovery) => self.recover_inconsistent(recovery),
             ApplicationInput::ReleaseLocal {
                 correlation,
                 pin,
@@ -283,6 +284,7 @@ impl ApplicationService {
         pin: Pin,
         bundle: ContentId<CapabilityDomain>,
         budget: ResourceBudget,
+        remote_health: RemoteHealth,
     ) -> ApplicationReply {
         if let Some(execution) = &self.execution {
             return Self::rejected(
@@ -306,10 +308,22 @@ impl ApplicationService {
             remote: &[],
             demand: &[],
             bundles: &bundles,
-            remote_health: RemoteHealth::Outage,
+            remote_health,
             budget,
         };
         self.adapt(correlation, pin, next_action(&input))
+    }
+
+    fn recover_inconsistent(&mut self, recovery: InconsistentRecovery) -> ApplicationReply {
+        self.recover_local(
+            recovery.correlation,
+            recovery.expected,
+            recovery.bundle,
+            recovery.budget,
+            RemoteHealth::Inconsistent {
+                observed: recovery.observed,
+            },
+        )
     }
 
     fn release_local(

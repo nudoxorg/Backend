@@ -5,9 +5,9 @@ use nudox_observe::{DropNewest, FlightRecorder, Probe};
 use wave_application_core::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationService, BatteryState,
     ByteCount, Capability, CapabilityDomain, CapabilityHealth, CapabilityTransition, ContentId,
-    CorrelationId, DiagnosticCode, ExecutionState, GenerationId, IndexSnapshotId, InputText,
-    InputTextError, OperationBudget, OperationKey, Pin, Pressure, ReplyBody, ResourceBudget,
-    RetryBudget, Terminal,
+    CorrelationId, DiagnosticCode, ExecutionState, GenerationId, InconsistentRecovery,
+    IndexSnapshotId, InputText, InputTextError, OperationBudget, OperationKey, Pin, Pressure,
+    RecoveryCause, ReplyBody, ResourceBudget, RetryBudget, Terminal,
 };
 
 fn text(value: &str) -> Result<InputText, InputTextError> {
@@ -234,6 +234,44 @@ fn outage_acquires_real_local_bundle_then_exposes_bounded_remote_retry()
             retries_remaining,
             ..
         }) if retries_remaining.get() == 0
+    ));
+    assert_eq!(
+        retry.terminal,
+        Terminal::Degraded {
+            emitted: 0,
+            unavailable: Capability::Remote,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn inconsistent_remote_pin_is_exposed_through_the_application_policy_seam()
+-> Result<(), ServiceTestError> {
+    let mut service = ApplicationService::new();
+    acquire_and_complete(&mut service)?;
+    let observed = Pin {
+        generation: GenerationId::from_canonical_bytes(b"different-generation"),
+        snapshot: IndexSnapshotId::from_canonical_bytes(b"different-snapshot"),
+    };
+
+    let retry = service.execute(&ApplicationInput::RecoverInconsistent(
+        InconsistentRecovery {
+            correlation: CorrelationId(35),
+            expected: pin(),
+            observed,
+            bundle: bundle(),
+            budget: budget(1, 1, BatteryState::Normal),
+        },
+    ));
+
+    assert!(matches!(
+        retry.body,
+        ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
+            cause: RecoveryCause::Inconsistent { observed: returned },
+            retries_remaining,
+            ..
+        }) if returned == observed && retries_remaining.get() == 0
     ));
     assert_eq!(
         retry.terminal,

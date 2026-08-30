@@ -23,6 +23,21 @@ pub struct OperationKey(pub u64);
 /// The first service-owned adaptive operation identity.
 pub const APPLICATION_OPERATION: OperationKey = OperationKey(1);
 
+/// One remote inconsistency recovery command with both immutable authorities retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InconsistentRecovery {
+    /// Request correlation.
+    pub correlation: CorrelationId,
+    /// Generation and snapshot authority pinned by the caller.
+    pub expected: Pin,
+    /// Different generation or snapshot actually observed from the remote.
+    pub observed: Pin,
+    /// Hash-pinned verified analyzer bundle already resident locally.
+    pub bundle: ContentId<CapabilityDomain>,
+    /// Exact physical, action, and retry credits for this policy snapshot.
+    pub budget: ResourceBudget,
+}
+
 /// Closed typed input accepted by the in-process service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationInput {
@@ -98,6 +113,8 @@ pub enum ApplicationInput {
         /// Exact physical, action, and retry credits for this policy snapshot.
         budget: ResourceBudget,
     },
+    /// Recover locally after a remote answered under a different immutable authority.
+    RecoverInconsistent(InconsistentRecovery),
     /// Select a safe contraction action for the service-owned active analyzer bundle.
     ReleaseLocal {
         /// Request correlation.
@@ -141,6 +158,7 @@ impl ApplicationInput {
             | Self::ReleaseLocal { correlation, .. }
             | Self::PollExecution { correlation, .. }
             | Self::Cancel { correlation, .. } => correlation,
+            Self::RecoverInconsistent(recovery) => recovery.correlation,
         }
     }
 }
