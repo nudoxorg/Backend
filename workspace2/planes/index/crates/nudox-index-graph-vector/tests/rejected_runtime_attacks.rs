@@ -5,13 +5,19 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use nudox_index_graph_vector::{
-    AdmissionError, Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphRow,
-    GraphStreamEvent, GraphTerminal, GraphTraceEvent, MAX_PARTITIONS, Metric, ModelId, PartitionId,
-    ProjectionId, TraceProbe, TraceRecorder, TrustfallGraph, VectorAuthority, VectorTerminal,
+    AdmissionError, Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphAuthority, GraphEdge,
+    GraphRow, GraphStreamEvent, GraphTerminal, GraphTraceEvent, MAX_PARTITIONS, Metric, ModelId,
+    PartitionId, ProjectionId, TraceProbe, TraceRecorder, TrustfallGraph, VectorAuthority,
+    VectorTerminal,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
-use std::{sync::Arc, task::Wake};
+use std::{
+    sync::{Arc, mpsc},
+    task::Wake,
+    thread,
+    time::Duration,
+};
 
 fn snapshot(byte: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[byte; 32])
@@ -31,6 +37,50 @@ impl Wake for WakeCount {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug)]
+struct ReentrantProducerWake {
+    producer: Arc<EdgeBatchProducer>,
+    wake_count: AtomicUsize,
+}
+
+impl Wake for ReentrantProducerWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_count.fetch_add(1, Ordering::SeqCst);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(
+            self.producer.poll_ready(&mut context),
+            Poll::Pending
+        ));
+    }
+}
+
+#[derive(Debug)]
+struct ReentrantCreditWake {
+    producer: Arc<EdgeBatchProducer>,
+    wake_count: AtomicUsize,
+}
+
+impl Wake for ReentrantCreditWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_count.fetch_add(1, Ordering::SeqCst);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(
+            self.producer.poll_ready(&mut context),
+            Poll::Ready(Ok(()))
+        ));
     }
 }
 
@@ -68,6 +118,109 @@ fn cancellation_owns_and_reaches_pending_wake_registration() {
         })) if observed == authority
     ));
     assert_eq!(stream.charged_items(), 0);
+}
+
+#[test]
+fn completion_wake_reenters_producer_after_unlocking_completion_state() {
+    let authority = graph_authority(9);
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let channel = EdgeBatchStream::channel(
+        authority,
+        &[PartitionId::new(0)],
+        1,
+        size_of::<GraphEdge>(),
+        &cancellation,
+        &mut trace,
+    );
+    assert!(channel.is_ok());
+    let Ok((producer, mut stream)) = channel else {
+        return;
+    };
+    let producer = Arc::new(producer);
+    let wake = Arc::new(ReentrantProducerWake {
+        producer: Arc::clone(&producer),
+        wake_count: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut context = Context::from_waker(&waker);
+    assert!(matches!(
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
+        Poll::Pending
+    ));
+
+    let (settled, settled_result) = mpsc::channel();
+    let completion = Arc::clone(&producer);
+    let settle = thread::spawn(move || {
+        let result = completion.settle(PartitionId::new(0), &[]);
+        let _ = settled.send(result);
+    });
+    let result = settled_result.recv_timeout(Duration::from_secs(1));
+    assert!(
+        matches!(result, Ok(Ok(()))),
+        "settle did not complete: {result:?}"
+    );
+    assert!(settle.join().is_ok());
+    assert_eq!(wake.wake_count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn batch_release_wake_reenters_ready_producer_after_unlock() {
+    let (completed, completion) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let authority = graph_authority(10);
+        let cancellation = Cancellation::new();
+        let mut trace = TraceProbe::disabled();
+        let channel = EdgeBatchStream::channel(
+            authority,
+            &[PartitionId::new(0)],
+            1,
+            size_of::<GraphEdge>(),
+            &cancellation,
+            &mut trace,
+        );
+        assert!(channel.is_ok());
+        let Ok((producer, mut stream)) = channel else {
+            return;
+        };
+        let producer = Arc::new(producer);
+        let edges = [GraphEdge::new(
+            authority,
+            PartitionId::new(0),
+            EntityId::new(1),
+            EntityId::new(2),
+        )];
+        assert_eq!(producer.settle(PartitionId::new(0), &edges), Ok(()));
+        let wake = Arc::new(ReentrantCreditWake {
+            producer: Arc::clone(&producer),
+            wake_count: AtomicUsize::new(0),
+        });
+        let waker = Waker::from(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(producer.poll_ready(&mut context), Poll::Pending));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        let Poll::Ready(GraphStreamEvent::Batch(mut batch)) =
+            Pin::new(&mut stream).poll_batch(&mut context, &mut trace)
+        else {
+            return;
+        };
+        let mut output = [GraphEdge::new(
+            authority,
+            PartitionId::new(0),
+            EntityId::new(0),
+            EntityId::new(0),
+        )];
+        let copied = batch.copy_into(&mut output);
+        let _ = completed.send((copied, wake.wake_count.load(Ordering::SeqCst)));
+    });
+
+    let result = completion.recv_timeout(Duration::from_secs(1));
+    assert!(
+        matches!(result, Ok((Ok(1), 1))),
+        "batch release did not complete after a reentrant wake: {result:?}"
+    );
+    assert!(worker.join().is_ok());
 }
 
 #[test]

@@ -346,16 +346,14 @@ struct CompletionState {
 }
 
 impl CompletionState {
-    fn release_batch(&mut self) {
+    fn release_batch(&mut self) -> Option<Waker> {
         for slot in self.edges.iter_mut().take(self.len) {
             *slot = None;
         }
         self.len = 0;
         self.charged_bytes = 0;
         self.ready = false;
-        if let Some(waker) = self.producer_waiter.take() {
-            waker.wake();
-        }
+        self.producer_waiter.take()
     }
 
     fn selected_contains(&self, partition: PartitionId) -> bool {
@@ -449,7 +447,9 @@ impl EdgeBatchProducer {
         state.charged_bytes = observed_bytes;
         state.ready = true;
         state.delivered[selected_position] = true;
-        if let Some(waker) = state.consumer_waiter.take() {
+        let waker = state.consumer_waiter.take();
+        drop(state);
+        if let Some(waker) = waker {
             waker.wake();
         }
         Ok(())
@@ -461,7 +461,11 @@ impl EdgeBatchProducer {
         if state.closed {
             return Err(StreamCapacityError::StreamClosed);
         }
-        queue_accounted_terminal(&mut state);
+        let waker = queue_accounted_terminal(&mut state);
+        drop(state);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
         Ok(())
     }
 
@@ -507,7 +511,11 @@ impl EdgeBatchProducer {
                 });
             }
         }
-        queue_accounted_terminal(&mut state);
+        let waker = queue_accounted_terminal(&mut state);
+        drop(state);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
         Ok(())
     }
 }
@@ -611,7 +619,7 @@ impl<'cancellation> EdgeBatchStream<'cancellation> {
             return Poll::Ready(GraphStreamEvent::Fused);
         }
         if stream.cancellation.is_cancelled() {
-            state.release_batch();
+            let waker = state.release_batch();
             state.closed = true;
             state.terminal = None;
             state.terminal_emitted = true;
@@ -619,8 +627,12 @@ impl<'cancellation> EdgeBatchStream<'cancellation> {
             let terminal = GraphTerminal::Cancelled {
                 authority: state.authority,
             };
+            drop(state);
+            if let Some(waker) = waker {
+                waker.wake();
+            }
             trace.record_with(|| GraphTraceEvent::Terminal {
-                authority: state.authority,
+                authority: terminal.authority(),
                 cancelled: true,
             });
             return Poll::Ready(GraphStreamEvent::Terminal(terminal));
@@ -631,7 +643,9 @@ impl<'cancellation> EdgeBatchStream<'cancellation> {
                 authority: state.authority,
                 edges: state.len as u8,
             });
-            return Poll::Ready(GraphStreamEvent::Batch(LeasedGraphBatch { state }));
+            return Poll::Ready(GraphStreamEvent::Batch(LeasedGraphBatch {
+                state: Some(state),
+            }));
         }
         if let Some(terminal) = state.terminal.take() {
             state.terminal_emitted = true;
@@ -654,15 +668,19 @@ impl<'cancellation> EdgeBatchStream<'cancellation> {
             .register(stream.cancellation_slot, context.waker());
         if stream.cancellation.is_cancelled() {
             state.consumer_waiter = None;
-            state.release_batch();
+            let waker = state.release_batch();
             state.closed = true;
             state.terminal_emitted = true;
             stream.cancellation.clear(stream.cancellation_slot);
             let terminal = GraphTerminal::Cancelled {
                 authority: state.authority,
             };
+            drop(state);
+            if let Some(waker) = waker {
+                waker.wake();
+            }
             trace.record_with(|| GraphTraceEvent::Terminal {
-                authority: state.authority,
+                authority: terminal.authority(),
                 cancelled: true,
             });
             return Poll::Ready(GraphStreamEvent::Terminal(terminal));
@@ -688,49 +706,57 @@ impl Drop for EdgeBatchStream<'_> {
         self.cancellation.release(self.cancellation_slot);
         let mut state = lock_state(&self.shared);
         state.closed = true;
-        state.release_batch();
+        let waker = state.release_batch();
         state.consumer_waiter = None;
+        drop(state);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 }
 
 /// Exclusive lending authority over one complete settled provider batch.
 #[derive(Debug)]
 pub struct LeasedGraphBatch<'stream> {
-    state: MutexGuard<'stream, CompletionState>,
+    state: Option<MutexGuard<'stream, CompletionState>>,
 }
 
 impl LeasedGraphBatch<'_> {
     /// Returns the complete retained batch size.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.state.len
+        self.state.as_ref().map_or(0, |state| state.len)
     }
 
     /// Returns true only for an empty provider batch.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.state.len == 0
+        self.len() == 0
     }
 
     /// Copies only after proving the destination can retain every leased edge.
     pub fn copy_into(&mut self, output: &mut [GraphEdge]) -> Result<usize, InsufficientOutput> {
-        let required = self.state.len;
+        let Some(mut state) = self.state.take() else {
+            return Ok(0);
+        };
+        let required = state.len;
         if output.len() < required {
+            self.state = Some(state);
             return Err(InsufficientOutput {
                 required,
                 available: output.len(),
             });
         }
-        for (destination, source) in output
-            .iter_mut()
-            .zip(self.state.edges.iter())
-            .take(required)
-        {
+        for (destination, source) in output.iter_mut().zip(state.edges.iter()).take(required) {
             if let Some(edge) = source {
                 *destination = *edge;
             }
         }
-        self.state.release_batch();
+        let waker = state.release_batch();
+        drop(state);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
         Ok(required)
     }
 }
@@ -758,7 +784,7 @@ fn accounted_missing(state: &CompletionState) -> ([Option<PartitionId>; MAX_PART
     (missing, missing_len)
 }
 
-fn queue_accounted_terminal(state: &mut CompletionState) {
+fn queue_accounted_terminal(state: &mut CompletionState) -> Option<Waker> {
     let (missing, missing_len) = accounted_missing(state);
     state.closed = true;
     state.terminal = if missing_len == 0 {
@@ -772,9 +798,7 @@ fn queue_accounted_terminal(state: &mut CompletionState) {
             missing_len,
         })
     };
-    if let Some(waker) = state.consumer_waiter.take() {
-        waker.wake();
-    }
+    state.consumer_waiter.take()
 }
 
 #[cfg(all(test, feature = "loom-model"))]
