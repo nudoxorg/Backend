@@ -97,6 +97,7 @@ impl Probe<RootProbeEvent> for TracingProbe {
                 selected_rows = event.selected_rows,
                 projected_rows = event.work.projected_rows,
                 ancestor_edges = event.work.ancestor_edges,
+                parent_search_comparisons = event.work.parent_search_comparisons,
                 "root selection completed"
             );
         });

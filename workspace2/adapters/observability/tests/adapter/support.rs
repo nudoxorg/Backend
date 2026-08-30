@@ -109,6 +109,7 @@ pub(super) const EVENTS: [ExpectedEvent; 15] = [
             ("selected_rows", count(1)),
             ("projected_rows", count(1)),
             ("ancestor_edges", count(0)),
+            ("parent_search_comparisons", count(0)),
         ],
         ScenarioSpan::Root,
     ),

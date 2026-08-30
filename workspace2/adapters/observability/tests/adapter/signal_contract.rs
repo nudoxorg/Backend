@@ -398,6 +398,7 @@ fn filtered_dispatch_does_not_build_root_probe_events() -> Result<(), AdapterTes
                 work: SelectionWork {
                     projected_rows: 1,
                     ancestor_edges: 0,
+                    parent_search_comparisons: 0,
                 },
             }
         });

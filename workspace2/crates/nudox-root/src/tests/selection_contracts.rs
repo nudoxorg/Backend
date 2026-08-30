@@ -19,6 +19,7 @@ fn narrow_projection_selects_only_range_and_checked_ancestors() -> Result<(), Sc
         crate::SelectionWork {
             projected_rows: 1,
             ancestor_edges: 2,
+            parent_search_comparisons: 0,
         }
     );
     Ok(())
@@ -43,6 +44,7 @@ fn closure_probe_records_one_aggregate_selection_event() -> Result<(), ScenarioE
             work: crate::SelectionWork {
                 projected_rows: 1,
                 ancestor_edges: 1,
+                parent_search_comparisons: 0,
             },
         })
     );

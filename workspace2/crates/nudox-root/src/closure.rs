@@ -44,6 +44,12 @@ pub struct SelectionWork {
     pub projected_rows: usize,
     /// Parent edges followed while adding ancestor closure.
     pub ancestor_edges: usize,
+    /// Canonical-key comparisons spent resolving borrowed parent coordinates.
+    ///
+    /// Owned roots retain parent coordinates and therefore report zero. Borrowed
+    /// canonical roots trade retained parent metadata for binary-search work and
+    /// report that work explicitly instead of hiding it behind the edge count.
+    pub parent_search_comparisons: usize,
 }
 
 /// One completed closure selection, with no key or descriptor cardinality.
@@ -78,6 +84,7 @@ impl ClosureScratch {
                 work: SelectionWork {
                     projected_rows: 0,
                     ancestor_edges: 0,
+                    parent_search_comparisons: 0,
                 },
             },
         })
@@ -89,6 +96,7 @@ impl ClosureScratch {
         self.facts.work = SelectionWork {
             projected_rows: 0,
             ancestor_edges: 0,
+            parent_search_comparisons: 0,
         };
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
@@ -124,6 +132,10 @@ impl ClosureScratch {
 
     pub(crate) const fn record_ancestor_edge(&mut self) {
         self.facts.work.ancestor_edges += 1;
+    }
+
+    pub(crate) const fn record_parent_search_comparisons(&mut self, comparisons: usize) {
+        self.facts.work.parent_search_comparisons += comparisons;
     }
 
     pub(crate) fn selected_indices(&self) -> &[RowIndex] {

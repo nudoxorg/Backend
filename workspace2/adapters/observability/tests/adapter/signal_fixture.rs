@@ -47,6 +47,7 @@ fn emit_root(probe: &mut TracingProbe) {
             work: SelectionWork {
                 projected_rows: 1,
                 ancestor_edges: 0,
+                parent_search_comparisons: 0,
             },
         },
     );
