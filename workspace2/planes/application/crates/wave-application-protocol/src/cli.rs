@@ -59,15 +59,7 @@ impl fmt::Display for AdapterErrorCause {
     }
 }
 
-impl Error for AdapterErrorCause {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Json(source) => Some(source),
-            Self::Number(source) => Some(source),
-            Self::TextLength(_) => None,
-        }
-    }
-}
+impl Error for AdapterErrorCause {}
 
 /// Structured transport rejection that never enters application dispatch.
 #[derive(Debug)]
@@ -126,13 +118,7 @@ impl fmt::Display for AdapterError {
     }
 }
 
-impl Error for AdapterError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.cause
-            .as_ref()
-            .map(|source| source as &(dyn Error + 'static))
-    }
-}
+impl Error for AdapterError {}
 
 /// Decodes one complete CLI argument vector into a closed typed application input.
 ///

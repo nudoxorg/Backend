@@ -58,11 +58,7 @@ impl fmt::Display for McpDecodeError {
     }
 }
 
-impl Error for McpDecodeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.error)
-    }
-}
+impl Error for McpDecodeError {}
 
 /// Closed result of one bounded MCP frame decode.
 #[derive(Debug)]

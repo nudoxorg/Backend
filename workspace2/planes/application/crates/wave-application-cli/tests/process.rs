@@ -19,15 +19,7 @@ impl fmt::Display for CliTestError {
     }
 }
 
-impl Error for CliTestError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(source) => Some(source),
-            Self::Json(source) => Some(source),
-            Self::MissingLine(_) => None,
-        }
-    }
-}
+impl Error for CliTestError {}
 
 impl From<io::Error> for CliTestError {
     fn from(source: io::Error) -> Self {

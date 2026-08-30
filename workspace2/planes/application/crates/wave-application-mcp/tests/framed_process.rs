@@ -23,14 +23,7 @@ impl fmt::Display for TestError {
     }
 }
 
-impl Error for TestError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(source) => Some(source),
-            Self::Json(source) => Some(source),
-        }
-    }
-}
+impl Error for TestError {}
 
 impl From<io::Error> for TestError {
     fn from(source: io::Error) -> Self {
