@@ -76,6 +76,8 @@ pub(crate) enum CorpusRenderError {
     InsufficientOutput { required: usize, available: usize },
     #[error("corpus ordinal {observed} exceeded the three-digit limit {limit}")]
     OrdinalOutOfRange { limit: usize, observed: usize },
+    #[error("appending {appended} bytes to the {written}-byte corpus prefix overflowed")]
+    LengthOverflow { written: usize, appended: usize },
     #[error("generated corpus range ended outside its {written} written bytes")]
     InvalidGeneratedRange { written: usize },
     #[error("generated corpus source was not UTF-8")]
@@ -176,9 +178,9 @@ impl<'output> OutputWriter<'output> {
         let start = self.written;
         let end = start
             .checked_add(input.len())
-            .ok_or(CorpusRenderError::InsufficientOutput {
-                required: usize::MAX,
-                available: self.output.len(),
+            .ok_or(CorpusRenderError::LengthOverflow {
+                written: start,
+                appended: input.len(),
             })?;
         let available = self.output.len();
         let destination =
