@@ -8,8 +8,8 @@ mod frame;
 mod json;
 
 pub use cli::{
-    AdapterError, AdapterErrorCause, AdapterErrorCode, MAX_CLI_ARGUMENTS, collect_cli_arguments,
-    decode_cli,
+    AdapterError, AdapterErrorCause, AdapterErrorCode, CLI_COMMAND_SEPARATOR, MAX_CLI_ARGUMENTS,
+    collect_cli_arguments, decode_cli,
 };
 pub use frame::{
     MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,

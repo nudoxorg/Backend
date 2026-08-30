@@ -2,11 +2,15 @@
 
 use std::{error::Error, fmt, io, ops::Deref};
 
+use nudox_adaptive::{
+    BudgetAmount, CapabilityKind, DuplicateInput, ExecutionPhase, InputClass, Overload,
+    OverloadSubject, PolicyError, RecoveryCause, ResourceClass, StorageTier,
+};
 use serde_json::{Value, json};
 use wave_application_core::{
-    APPLICATION_OPERATION, ApplicationInput, ApplicationReply, Capability, CapabilityHealth,
-    CorrelationId, Diagnostic, DiagnosticDetail, InputText, ProgressCursor, ProgressEvents,
-    ProgressPage, ReplyBody, Terminal,
+    APPLICATION_OPERATION, AdaptiveDisposition, ApplicationInput, ApplicationReply, Capability,
+    CapabilityHealth, CapabilityTransition, CorrelationId, Diagnostic, DiagnosticDetail,
+    ExecutionState, InputText, ReplyBody, Terminal,
 };
 
 use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
@@ -176,7 +180,9 @@ fn tool_input(params: &serde_json::Map<String, Value>) -> Result<ApplicationInpu
         .ok_or_else(|| missing("arguments"))?;
     let action = required_text(arguments, "action")?;
     let correlation = required_number(arguments, "correlation")?;
-    input_from_json(&action, correlation, |name| required_text(arguments, name))
+    input_from_json(&action, correlation, |name| {
+        required_argument(arguments, name)
+    })
 }
 
 fn cancellation_input(
@@ -206,6 +212,30 @@ fn required_text(
         .ok_or_else(|| malformed(name))
 }
 
+fn required_argument(
+    object: &serde_json::Map<String, Value>,
+    name: &'static str,
+) -> Result<String, AdapterError> {
+    let value = object.get(name).ok_or_else(|| missing(name))?;
+    if let Some(text) = value.as_str() {
+        return Ok(text.to_owned());
+    }
+    if is_numeric_argument(name) {
+        return value
+            .as_u64()
+            .map(|number| number.to_string())
+            .ok_or_else(|| malformed(name));
+    }
+    Err(malformed(name))
+}
+
+fn is_numeric_argument(name: &str) -> bool {
+    matches!(
+        name,
+        "limit" | "operation" | "ram_free" | "nvme_free" | "operations" | "retries"
+    )
+}
+
 fn required_number(
     object: &serde_json::Map<String, Value>,
     name: &'static str,
@@ -229,17 +259,17 @@ fn request_id_number(value: &Value, field: &'static str) -> Result<u64, AdapterE
 
 fn reply_body(body: ReplyBody) -> Value {
     match body {
-        ReplyBody::Generated {
+        ReplyBody::CompilerPassthrough {
             package,
             language,
             stage,
-            output,
+            source,
         } => json!({
-            "kind": "generated",
+            "kind": "compiler_passthrough",
             "package": text(package),
             "language": language_name(language),
             "stage": stage_name(stage),
-            "output": text(output),
+            "source": text(source),
         }),
         ReplyBody::DependencyUnavailable { capability } => json!({
             "kind": "dependency_unavailable",
@@ -249,71 +279,31 @@ fn reply_body(body: ReplyBody) -> Value {
             "kind": "health",
             "facts": facts.map(health),
         }),
-        ReplyBody::Progress(page) => json!({
-            "kind": "progress",
-            "page": progress(page),
+        ReplyBody::Adaptive(disposition) => json!({
+            "kind": "adaptive",
+            "disposition": adaptive_disposition(disposition),
         }),
-        ReplyBody::ProgressStarted { operation } => json!({
-            "kind": "progress_started",
+        ReplyBody::ExecutionStarted {
+            operation,
+            transition,
+        } => json!({
+            "kind": "execution_started",
             "operation": operation.0,
+            "transition": capability_transition(transition),
         }),
-        ReplyBody::Cancelled { operation } => json!({
-            "kind": "cancelled",
-            "operation": operation.0,
+        ReplyBody::Execution(state) => json!({
+            "kind": "execution",
+            "state": execution_state(state),
         }),
         ReplyBody::Rejected => json!({"kind": "rejected"}),
     }
 }
 
-fn progress(page: ProgressPage) -> Value {
-    match page {
-        ProgressPage::Events { events, next } => json!({
-            "kind": "events",
-            "events": progress_events(events),
-            "next": cursor(next),
-        }),
-        ProgressPage::Pending {
-            cursor: pending_cursor,
-        } => json!({
-            "kind": "pending",
-            "cursor": cursor(pending_cursor),
-        }),
-        ProgressPage::Terminal {
-            terminal: operation_terminal,
-            next,
-        } => json!({
-            "kind": "terminal",
-            "terminal": terminal(operation_terminal),
-            "next": cursor(next),
-        }),
-        ProgressPage::Finished => json!({"kind": "finished"}),
-    }
-}
-
-fn progress_events(events: ProgressEvents) -> Vec<Value> {
-    let mut output = Vec::with_capacity(usize::from(events.len()));
-    for ordinal in 0..events.len() {
-        if let Some(event) = events.get(ordinal) {
-            output.push(json!({
-                "sequence": event.sequence,
-                "operation": event.operation.0,
-                "completed_units": event.completed_units,
-            }));
-        }
-    }
-    output
-}
-
-fn cursor(cursor: ProgressCursor) -> Value {
-    match cursor {
-        ProgressCursor::Start => json!("start"),
-        ProgressCursor::Offset(offset) => json!(offset),
-        ProgressCursor::Finished => json!("finished"),
-    }
-}
-
 fn terminal(terminal: Terminal) -> Value {
     match terminal {
+        Terminal::Accepted { operation } => {
+            json!({"kind": "accepted", "operation": operation.0})
+        }
         Terminal::Complete { emitted } => json!({"kind": "complete", "emitted": emitted}),
         Terminal::Partial {
             emitted,
@@ -356,10 +346,8 @@ fn diagnostic_code(code: wave_application_core::DiagnosticCode) -> &'static str 
         wave_application_core::DiagnosticCode::CompilerOutputUnrepresentable => {
             "compiler_output_unrepresentable"
         }
-        wave_application_core::DiagnosticCode::ProgressCursorOutOfRange => {
-            "progress_cursor_out_of_range"
-        }
         wave_application_core::DiagnosticCode::OperationUnavailable => "operation_unavailable",
+        wave_application_core::DiagnosticCode::AdaptivePolicyRejected => "adaptive_policy_rejected",
     }
 }
 
@@ -380,15 +368,16 @@ fn diagnostic_detail(detail: DiagnosticDetail) -> Value {
             "rejected": text(rejected),
         }),
         DiagnosticDetail::Frontend(source) => frontend(source),
-        DiagnosticDetail::Cursor { observed, maximum } => {
-            json!({"kind": "cursor", "observed": observed, "maximum": maximum})
-        }
         DiagnosticDetail::Operation(operation) => {
             json!({"kind": "operation", "value": operation.0})
         }
         DiagnosticDetail::Capability(capability) => {
             json!({"kind": "capability", "value": capability_name(capability)})
         }
+        DiagnosticDetail::Policy(policy) => json!({
+            "kind": "policy",
+            "error": policy_error(policy),
+        }),
     }
 }
 
@@ -429,10 +418,246 @@ fn stage_name(stage: nudox_compile_vocab::Stage) -> &'static str {
 
 fn capability_name(capability: Capability) -> &'static str {
     match capability {
-        Capability::Compiler => "compiler",
+        Capability::CompilerRegistry => "compiler_registry",
+        Capability::CompilerOutput => "compiler_output",
         Capability::Index => "index",
         Capability::Graph => "graph",
         Capability::Vector => "vector",
+        Capability::LocalAnalyzer => "local_analyzer",
+        Capability::Remote => "remote",
+    }
+}
+
+fn adaptive_disposition(disposition: AdaptiveDisposition) -> Value {
+    match disposition {
+        AdaptiveDisposition::NoAction => json!({"kind": "no_action"}),
+        AdaptiveDisposition::RetryRemote {
+            pin,
+            cause,
+            retries_remaining,
+        } => json!({
+            "kind": "retry_remote",
+            "pin": pin_value(pin),
+            "cause": recovery_cause(cause),
+            "retries_remaining": retries_remaining.get(),
+        }),
+        AdaptiveDisposition::RecoveryExhausted { pin, cause } => json!({
+            "kind": "recovery_exhausted",
+            "pin": pin_value(pin),
+            "cause": recovery_cause(cause),
+        }),
+        AdaptiveDisposition::Overloaded(overload) => json!({
+            "kind": "overloaded",
+            "overload": overload_value(overload),
+        }),
+        AdaptiveDisposition::Rejected(policy) => json!({
+            "kind": "rejected",
+            "error": policy_error(policy),
+        }),
+    }
+}
+
+fn capability_transition(transition: CapabilityTransition) -> Value {
+    match transition {
+        CapabilityTransition::Acquire { capability, bundle } => json!({
+            "kind": "acquire",
+            "capability": capability_kind_name(capability),
+            "bundle": content_id(bundle),
+        }),
+        CapabilityTransition::Release { capability, bundle } => json!({
+            "kind": "release",
+            "capability": capability_kind_name(capability),
+            "bundle": content_id(bundle),
+        }),
+    }
+}
+
+fn execution_state(state: ExecutionState) -> Value {
+    match state {
+        ExecutionState::Pending {
+            operation,
+            transition,
+        } => json!({
+            "kind": "pending",
+            "operation": operation.0,
+            "transition": capability_transition(transition),
+        }),
+        ExecutionState::Completed {
+            operation,
+            transition,
+        } => json!({
+            "kind": "completed",
+            "operation": operation.0,
+            "transition": capability_transition(transition),
+        }),
+        ExecutionState::Cancelled {
+            operation,
+            transition,
+        } => json!({
+            "kind": "cancelled",
+            "operation": operation.0,
+            "transition": capability_transition(transition),
+        }),
+        ExecutionState::Failed {
+            operation,
+            transition,
+            phase,
+        } => json!({
+            "kind": "failed",
+            "operation": operation.0,
+            "transition": capability_transition(transition),
+            "phase": execution_phase_name(phase),
+        }),
+    }
+}
+
+fn pin_value(pin: nudox_adaptive::Pin) -> Value {
+    json!({
+        "generation": content_id(pin.generation),
+        "snapshot": content_id(pin.snapshot),
+    })
+}
+
+fn content_id<DomainTag>(value: nudox_adaptive::ContentId<DomainTag>) -> String {
+    value.to_string()
+}
+
+fn recovery_cause(cause: RecoveryCause) -> Value {
+    match cause {
+        RecoveryCause::Outage => json!({"kind": "outage"}),
+        RecoveryCause::Inconsistent { observed } => json!({
+            "kind": "inconsistent",
+            "observed": pin_value(observed),
+        }),
+    }
+}
+
+fn overload_value(overload: Overload) -> Value {
+    json!({
+        "subject": overload_subject(overload.subject),
+        "resource": resource_class_name(overload.resource),
+        "needed": budget_amount(overload.needed),
+        "available": budget_amount(overload.available),
+    })
+}
+
+fn overload_subject(subject: OverloadSubject) -> Value {
+    match subject {
+        OverloadSubject::Fact(key) => json!({"kind": "fact", "key": fact_key(key)}),
+        OverloadSubject::Bundle { capability, bundle } => json!({
+            "kind": "bundle",
+            "capability": capability_kind_name(capability),
+            "bundle": content_id(bundle),
+        }),
+        OverloadSubject::Remote(pin) => json!({"kind": "remote", "pin": pin_value(pin)}),
+    }
+}
+
+fn budget_amount(amount: BudgetAmount) -> Value {
+    match amount {
+        BudgetAmount::Bytes(bytes) => json!({"kind": "bytes", "value": bytes.get()}),
+        BudgetAmount::Operations(operations) => {
+            json!({"kind": "operations", "value": operations.get()})
+        }
+        BudgetAmount::Retries(retries) => {
+            json!({"kind": "retries", "value": retries.get()})
+        }
+    }
+}
+
+fn fact_key(key: nudox_adaptive::FactKey) -> Value {
+    json!({
+        "pin": pin_value(key.pin),
+        "object": content_id(key.object),
+    })
+}
+
+fn policy_error(error: PolicyError) -> Value {
+    match error {
+        PolicyError::TooManyFacts {
+            class,
+            limit,
+            observed,
+        } => json!({
+            "kind": "too_many_facts",
+            "class": input_class_name(class),
+            "limit": limit,
+            "observed": observed,
+        }),
+        PolicyError::PinMismatch {
+            class,
+            expected,
+            observed,
+        } => json!({
+            "kind": "pin_mismatch",
+            "class": input_class_name(class),
+            "expected": pin_value(expected),
+            "observed": fact_key(observed),
+        }),
+        PolicyError::Duplicate(duplicate) => {
+            json!({"kind": "duplicate", "value": duplicate_input(duplicate)})
+        }
+    }
+}
+
+fn duplicate_input(duplicate: DuplicateInput) -> Value {
+    match duplicate {
+        DuplicateInput::Local { key, tier } => {
+            json!({
+                "kind": "local",
+                "key": fact_key(key),
+                "tier": storage_tier_name(tier),
+            })
+        }
+        DuplicateInput::Remote { key } => json!({"kind": "remote", "key": fact_key(key)}),
+        DuplicateInput::Demand { key } => json!({"kind": "demand", "key": fact_key(key)}),
+        DuplicateInput::Bundle { capability, bundle } => json!({
+            "kind": "bundle",
+            "capability": capability_kind_name(capability),
+            "bundle": content_id(bundle),
+        }),
+    }
+}
+
+fn input_class_name(class: InputClass) -> &'static str {
+    match class {
+        InputClass::Local => "local",
+        InputClass::Remote => "remote",
+        InputClass::Demand => "demand",
+        InputClass::Bundle => "bundle",
+    }
+}
+
+fn resource_class_name(class: ResourceClass) -> &'static str {
+    match class {
+        ResourceClass::Ram => "ram",
+        ResourceClass::Nvme => "nvme",
+        ResourceClass::Operations => "operations",
+        ResourceClass::Retries => "retries",
+    }
+}
+
+fn storage_tier_name(tier: StorageTier) -> &'static str {
+    match tier {
+        StorageTier::Ram => "ram",
+        StorageTier::Nvme => "nvme",
+    }
+}
+
+fn capability_kind_name(capability: CapabilityKind) -> &'static str {
+    match capability {
+        CapabilityKind::Analyzer => "analyzer",
+        CapabilityKind::Compiler => "compiler",
+        CapabilityKind::Codec => "codec",
+        CapabilityKind::Model => "model",
+    }
+}
+
+fn execution_phase_name(phase: ExecutionPhase) -> &'static str {
+    match phase {
+        ExecutionPhase::LocalResidence => "local_residence",
+        ExecutionPhase::CapabilityBundle => "capability_bundle",
+        ExecutionPhase::Remote => "remote",
     }
 }
 

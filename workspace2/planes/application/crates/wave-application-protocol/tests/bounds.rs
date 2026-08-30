@@ -1,9 +1,40 @@
-use std::io::{self, Cursor};
+use std::{
+    error::Error,
+    fmt,
+    io::{self, Cursor},
+};
 
 use wave_application_protocol::{
     AdapterErrorCause, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, McpDecode, decode_cli, decode_mcp,
     read_frame,
 };
+
+#[derive(Debug)]
+enum TestError {
+    Io(io::Error),
+}
+
+impl fmt::Display for TestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for TestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(source) => Some(source),
+        }
+    }
+}
+
+impl From<io::Error> for TestError {
+    fn from(source: io::Error) -> Self {
+        Self::Io(source)
+    }
+}
 
 #[test]
 fn fixed_header_bound_rejects_before_earned_body_allocation() -> io::Result<()> {
@@ -30,7 +61,7 @@ fn fixed_header_count_rejects_before_earned_body_allocation() -> io::Result<()> 
 }
 
 #[test]
-fn parser_errors_preserve_primitive_and_json_causes() -> Result<(), Box<dyn std::error::Error>> {
+fn parser_errors_preserve_primitive_and_json_causes() -> Result<(), TestError> {
     let arguments = vec!["health".to_owned(), "not-a-number".to_owned()];
     let Err(number_error) = decode_cli(&arguments) else {
         return Err(io::Error::other("invalid correlation was accepted").into());
@@ -48,7 +79,7 @@ fn parser_errors_preserve_primitive_and_json_causes() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn post_parse_mcp_rejections_retain_request_id() -> Result<(), Box<dyn std::error::Error>> {
+fn post_parse_mcp_rejections_retain_request_id() -> Result<(), TestError> {
     let McpDecode::Rejected(error) = decode_mcp(
         br#"{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"nudox.application"}}"#,
     ) else {
