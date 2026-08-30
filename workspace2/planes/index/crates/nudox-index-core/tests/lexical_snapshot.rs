@@ -192,3 +192,31 @@ fn insufficient_dedup_scratch_precedes_output_mutation() {
     );
     assert_eq!(output, before);
 }
+
+#[test]
+fn lexical_snapshot_rejects_reversed_update_precedence() {
+    let old_rows = [LexicalRow::new(b"needle", 1, LexicalScore::new(9))];
+    let update_rows = [LexicalRow::new(b"needle", 1, LexicalScore::new(2))];
+    let old = LexicalSegment::new(&old_rows);
+    let update = LexicalSegment::new(&update_rows);
+    assert!(old.is_ok() && update.is_ok());
+    let (Some(old), Some(update)) = (old.ok(), update.ok()) else {
+        return;
+    };
+    let selected = [update.id(), old.id()];
+    let snapshot = IndexSnapshot::new(&[], &selected);
+    assert!(snapshot.is_ok());
+    let Some(snapshot) = snapshot.ok() else {
+        return;
+    };
+    let reversed = [old, update];
+    assert!(matches!(
+        LexicalManifest::new(snapshot, &reversed, &[]),
+        Err(nudox_index_core::LexicalManifestError::PresentOrderMismatch {
+            present_position: 1,
+            preceding_selected_position: 1,
+            selected_position: 0,
+            id,
+        }) if id == update.id()
+    ));
+}

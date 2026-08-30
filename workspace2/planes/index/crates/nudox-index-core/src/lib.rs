@@ -116,13 +116,25 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
                 }
             }
         }
+        let mut preceding_selected_position = None;
         for (present_position, segment) in segments.iter().enumerate() {
-            if !selected.contains(&segment.id()) {
+            let Some(selected_position) = selected.iter().position(|id| *id == segment.id()) else {
                 return Err(ExactManifestError::PresentNotSelected {
                     present_position,
                     id: segment.id(),
                 });
+            };
+            if let Some(preceding) = preceding_selected_position
+                && selected_position <= preceding
+            {
+                return Err(ExactManifestError::PresentOrderMismatch {
+                    present_position,
+                    preceding_selected_position: preceding,
+                    selected_position,
+                    id: segment.id(),
+                });
             }
+            preceding_selected_position = Some(selected_position);
         }
         for (missing_position, id) in missing.iter().enumerate() {
             if !selected.contains(id) {
@@ -301,6 +313,17 @@ pub enum ExactManifestError {
         /// Unselected segment identity.
         id: ExactSegmentId,
     },
+    /// Reachable update order disagreed with the order bound into the snapshot.
+    PresentOrderMismatch {
+        /// Reachable segment position whose order was rejected.
+        present_position: usize,
+        /// Snapshot position of the preceding reachable segment.
+        preceding_selected_position: usize,
+        /// Snapshot position of the rejected reachable segment.
+        selected_position: usize,
+        /// Rejected exact segment identity.
+        id: ExactSegmentId,
+    },
     /// A missing identity was not selected by the snapshot authority.
     MissingNotSelected {
         /// Missing segment position.
@@ -428,13 +451,25 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                 }
             }
         }
+        let mut preceding_selected_position = None;
         for (present_position, segment) in segments.iter().enumerate() {
-            if !selected.contains(&segment.id()) {
+            let Some(selected_position) = selected.iter().position(|id| *id == segment.id()) else {
                 return Err(LexicalManifestError::PresentNotSelected {
                     present_position,
                     id: segment.id(),
                 });
+            };
+            if let Some(preceding) = preceding_selected_position
+                && selected_position <= preceding
+            {
+                return Err(LexicalManifestError::PresentOrderMismatch {
+                    present_position,
+                    preceding_selected_position: preceding,
+                    selected_position,
+                    id: segment.id(),
+                });
             }
+            preceding_selected_position = Some(selected_position);
         }
         for (missing_position, id) in missing.iter().enumerate() {
             if !selected.contains(id) {
@@ -661,6 +696,17 @@ pub enum LexicalManifestError {
         /// Reachable segment position.
         present_position: usize,
         /// Unselected segment identity.
+        id: LexicalSegmentId,
+    },
+    /// Reachable update order disagreed with the order bound into the snapshot.
+    PresentOrderMismatch {
+        /// Reachable segment position whose order was rejected.
+        present_position: usize,
+        /// Snapshot position of the preceding reachable segment.
+        preceding_selected_position: usize,
+        /// Snapshot position of the rejected reachable segment.
+        selected_position: usize,
+        /// Rejected lexical segment identity.
         id: LexicalSegmentId,
     },
     /// A missing identity was not selected by the snapshot authority.

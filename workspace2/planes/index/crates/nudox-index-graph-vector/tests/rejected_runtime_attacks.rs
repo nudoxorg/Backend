@@ -276,3 +276,57 @@ fn disabled_trace_has_no_queue_and_enabled_trace_is_drainable() {
         })
     );
 }
+
+#[test]
+fn terminal_absence_is_derived_from_delivered_partition_accounting() {
+    let authority = graph_authority(8);
+    let partition = PartitionId::new(2);
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let channel =
+        EdgeBatchStream::channel(authority, &[partition], 0, 0, &cancellation, &mut trace);
+    assert!(channel.is_ok());
+    let Ok((producer, mut stream)) = channel else {
+        return;
+    };
+    assert_eq!(producer.finish(), Ok(()));
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    let terminal = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
+    let Poll::Ready(GraphStreamEvent::Terminal(terminal)) = terminal else {
+        return;
+    };
+    assert_eq!(terminal.missing(), &[Some(partition)]);
+
+    let second_cancellation = Cancellation::new();
+    let second = EdgeBatchStream::channel(
+        authority,
+        &[partition],
+        0,
+        0,
+        &second_cancellation,
+        &mut trace,
+    );
+    assert!(second.is_ok());
+    let Ok((second_producer, mut second_stream)) = second else {
+        return;
+    };
+    assert_eq!(second_producer.settle(partition, &[]), Ok(()));
+    {
+        let event = Pin::new(&mut second_stream).poll_batch(&mut context, &mut trace);
+        let Poll::Ready(GraphStreamEvent::Batch(mut batch)) = event else {
+            return;
+        };
+        assert_eq!(batch.copy_into(&mut []), Ok(0));
+    }
+    assert_eq!(
+        second_producer.finish_partial(&[partition]),
+        Err(
+            nudox_index_graph_vector::StreamCapacityError::IncorrectMissingPartitions {
+                expected: None,
+                observed: Some(partition),
+                index: 0,
+            }
+        )
+    );
+}

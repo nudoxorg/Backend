@@ -195,6 +195,11 @@ pub enum StreamCapacityError {
         /// Rejected partition.
         observed: PartitionId,
     },
+    /// A partition already supplied its one complete provider batch.
+    PartitionAlreadySettled {
+        /// Repeated completed partition.
+        partition: PartitionId,
+    },
     /// One settled edge belongs to another stream authority.
     WrongAuthority {
         /// Rejected edge coordinate.
@@ -228,6 +233,15 @@ pub enum StreamCapacityError {
         index: usize,
         /// Repeated missing partition.
         partition: PartitionId,
+    },
+    /// Caller-declared absence did not equal the exact undelivered selection.
+    IncorrectMissingPartitions {
+        /// Exact undelivered partition at the first mismatch, or `None` past its end.
+        expected: Option<PartitionId>,
+        /// Caller-declared partition at the first mismatch, or `None` past its end.
+        observed: Option<PartitionId>,
+        /// First mismatching semantic position.
+        index: usize,
     },
 }
 
@@ -317,6 +331,7 @@ struct CompletionState {
     authority: GraphAuthority,
     selected: [Option<PartitionId>; MAX_PARTITIONS],
     selected_len: usize,
+    delivered: [bool; MAX_PARTITIONS],
     item_capacity: usize,
     byte_capacity: usize,
     edges: [Option<GraphEdge>; MAX_LEASED_EDGES],
@@ -387,10 +402,16 @@ impl EdgeBatchProducer {
         if state.ready || state.len != 0 {
             return Err(StreamCapacityError::BatchAlreadySettled);
         }
-        if !state.selected_contains(partition) {
+        let Some(selected_position) = state.selected[..state.selected_len]
+            .iter()
+            .position(|selected| *selected == Some(partition))
+        else {
             return Err(StreamCapacityError::UnselectedPartition {
                 observed: partition,
             });
+        };
+        if state.delivered[selected_position] {
+            return Err(StreamCapacityError::PartitionAlreadySettled { partition });
         }
         if edges.len() > state.item_capacity {
             return Err(StreamCapacityError::ItemCapacity {
@@ -427,25 +448,20 @@ impl EdgeBatchProducer {
         state.len = edges.len();
         state.charged_bytes = observed_bytes;
         state.ready = true;
+        state.delivered[selected_position] = true;
         if let Some(waker) = state.consumer_waiter.take() {
             waker.wake();
         }
         Ok(())
     }
 
-    /// Queues complete termination after every settled batch is consumed.
+    /// Queues a complete or exact-partial terminal from delivered partition accounting.
     pub fn finish(&self) -> Result<(), StreamCapacityError> {
         let mut state = lock_state(&self.shared);
         if state.closed {
             return Err(StreamCapacityError::StreamClosed);
         }
-        state.closed = true;
-        state.terminal = Some(GraphTerminal::Complete {
-            authority: state.authority,
-        });
-        if let Some(waker) = state.consumer_waiter.take() {
-            waker.wake();
-        }
+        queue_accounted_terminal(&mut state);
         Ok(())
     }
 
@@ -478,19 +494,20 @@ impl EdgeBatchProducer {
                 });
             }
         }
-        let mut exact_missing = [None; MAX_PARTITIONS];
-        for (slot, partition) in exact_missing.iter_mut().zip(missing.iter().copied()) {
-            *slot = Some(partition);
+        let (exact_missing, exact_missing_len) = accounted_missing(&state);
+        let comparison_len = core::cmp::max(exact_missing_len, missing.len());
+        for index in 0..comparison_len {
+            let expected = exact_missing.get(index).copied().flatten();
+            let observed = missing.get(index).copied();
+            if expected != observed {
+                return Err(StreamCapacityError::IncorrectMissingPartitions {
+                    expected,
+                    observed,
+                    index,
+                });
+            }
         }
-        state.closed = true;
-        state.terminal = Some(GraphTerminal::Partial {
-            authority: state.authority,
-            missing: exact_missing,
-            missing_len: missing.len(),
-        });
-        if let Some(waker) = state.consumer_waiter.take() {
-            waker.wake();
-        }
+        queue_accounted_terminal(&mut state);
         Ok(())
     }
 }
@@ -553,6 +570,7 @@ impl<'cancellation> EdgeBatchStream<'cancellation> {
             authority,
             selected: selected_storage,
             selected_len: selected.len(),
+            delivered: [false; MAX_PARTITIONS],
             item_capacity,
             byte_capacity,
             edges: [None; MAX_LEASED_EDGES],
@@ -721,6 +739,41 @@ fn lock_state(shared: &Mutex<CompletionState>) -> MutexGuard<'_, CompletionState
     match shared.lock() {
         Ok(state) => state,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn accounted_missing(state: &CompletionState) -> ([Option<PartitionId>; MAX_PARTITIONS], usize) {
+    let mut missing = [None; MAX_PARTITIONS];
+    let mut missing_len = 0_usize;
+    for (index, selected) in state.selected[..state.selected_len]
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        if !state.delivered[index] {
+            missing[missing_len] = selected;
+            missing_len += 1;
+        }
+    }
+    (missing, missing_len)
+}
+
+fn queue_accounted_terminal(state: &mut CompletionState) {
+    let (missing, missing_len) = accounted_missing(state);
+    state.closed = true;
+    state.terminal = if missing_len == 0 {
+        Some(GraphTerminal::Complete {
+            authority: state.authority,
+        })
+    } else {
+        Some(GraphTerminal::Partial {
+            authority: state.authority,
+            missing,
+            missing_len,
+        })
+    };
+    if let Some(waker) = state.consumer_waiter.take() {
+        waker.wake();
     }
 }
 

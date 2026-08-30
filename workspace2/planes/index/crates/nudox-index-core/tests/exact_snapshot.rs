@@ -165,3 +165,31 @@ fn divergent_rows_cannot_enter_the_same_snapshot_authority() {
             if id == second.id()
     ));
 }
+
+#[test]
+fn snapshot_authority_rejects_reversed_update_precedence() {
+    let old_rows = [ExactRow::present(ALPHA, b"old")];
+    let update_rows = [ExactRow::present(ALPHA, b"new")];
+    let old = ExactSegment::new(&old_rows);
+    let update = ExactSegment::new(&update_rows);
+    assert!(old.is_ok() && update.is_ok());
+    let (Some(old), Some(update)) = (old.ok(), update.ok()) else {
+        return;
+    };
+    let selected = [update.id(), old.id()];
+    let snapshot = IndexSnapshot::new(&selected, &[]);
+    assert!(snapshot.is_ok());
+    let Some(snapshot) = snapshot.ok() else {
+        return;
+    };
+    let reversed = [old, update];
+    assert!(matches!(
+        ExactManifest::new(snapshot, &reversed, &[]),
+        Err(nudox_index_core::ExactManifestError::PresentOrderMismatch {
+            present_position: 1,
+            preceding_selected_position: 1,
+            selected_position: 0,
+            id,
+        }) if id == update.id()
+    ));
+}
