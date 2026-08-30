@@ -440,6 +440,13 @@ pub enum PlacementAction {
         /// Exact transferred ownership.
         bytes: ByteCount,
     },
+    /// Drop an idle RAM copy after proving the same pinned bytes remain on local durable storage.
+    EvictFromRam {
+        /// Canonical identity whose volatile duplicate is released.
+        key: FactKey,
+        /// Exact released bytes.
+        bytes: ByteCount,
+    },
     /// Activate a verified local bundle for recovery or local work.
     AcquireBundle {
         /// Typed capability that becomes active.
@@ -623,8 +630,9 @@ pub enum ExecutionPhase {
 
 /// Return the one canonical action for an immutable bounded snapshot.
 ///
-/// Candidate classes are ordered exactly as preservation, bundle acquisition, remote recovery,
-/// healthy fetch, eviction, then bundle release. Ties are ordered by [`FactKey`] or by
+/// Candidate classes are ordered exactly as preservation, safe RAM contraction, bundle
+/// acquisition, remote recovery, healthy fetch, `NVMe` eviction, then bundle release. Ties are
+/// ordered by [`FactKey`] or by
 /// `(CapabilityKind, ContentId<CapabilityDomain>)`, never by caller slice order. The adapter applies an action and
 /// returns a new snapshot before this function is called again, so resource and retry credits are
 /// neither hidden mutable policy state nor an in-process async queue.
@@ -636,6 +644,17 @@ pub fn next_action(input: &PolicyInput<'_>) -> PolicyDecision {
 
     if let Some(local) = least_preservation_candidate(input) {
         return admit_preservation(input, local);
+    }
+
+    if let Some(local) = least_ram_eviction_candidate(input) {
+        return admit_operation(
+            input.budget.operations,
+            OverloadSubject::Fact(local.key),
+            PlacementAction::EvictFromRam {
+                key: local.key,
+                bytes: local.bytes,
+            },
+        );
     }
 
     if let Some(bundle) = least_acquire_candidate(input) {
@@ -892,6 +911,24 @@ fn admit_preservation(input: &PolicyInput<'_>, local: LocalFact) -> PolicyDecisi
         key: local.key,
         bytes: local.bytes,
     })
+}
+
+fn least_ram_eviction_candidate(input: &PolicyInput<'_>) -> Option<LocalFact> {
+    if input.budget.memory_pressure == Pressure::Relaxed {
+        return None;
+    }
+    input
+        .local
+        .iter()
+        .copied()
+        .filter(|local| {
+            local.tier == StorageTier::Ram
+                && local.retention == Retention::Idle
+                && input.local.iter().any(|candidate| {
+                    candidate.key == local.key && candidate.tier == StorageTier::Nvme
+                })
+        })
+        .min_by_key(|local| local.key)
 }
 
 fn least_acquire_candidate(input: &PolicyInput<'_>) -> Option<BundleFact> {

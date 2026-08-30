@@ -249,7 +249,13 @@ fn existing_nvme_copy_is_not_preserved_twice() {
         },
     };
 
-    assert_eq!(next_action(&input), PolicyDecision::NoAction);
+    assert_eq!(
+        next_action(&input),
+        PolicyDecision::Act(PlacementAction::EvictFromRam {
+            key: key(8),
+            bytes: ByteCount::from(16),
+        })
+    );
 }
 
 #[test]
