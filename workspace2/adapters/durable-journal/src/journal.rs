@@ -155,6 +155,11 @@ fn parent_directory(path: &Path) -> Result<File, JournalError> {
         .map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
 }
 
+#[cfg(not(any(unix, windows)))]
+fn parent_directory(path: &Path) -> Result<File, JournalError> {
+    File::open(path).map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
+}
+
 fn persist_header(file: &mut File, header: &HeaderRecord) -> Result<(), JournalError> {
     file.write_all(header.as_bytes())
         .map_err(|source| JournalError::io(JournalIoStep::WriteHeader, source))?;
