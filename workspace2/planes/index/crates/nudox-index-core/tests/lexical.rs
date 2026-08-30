@@ -19,7 +19,7 @@ fn hit(term: &'static [u8], document: u32, units: u32) -> LexicalHit<'static> {
 fn input_permutation_is_rejected_and_ties_rank_by_document() {
     let permuted = [row(b"alpha", 9, 4), row(b"alpha", 3, 4)];
     assert_eq!(
-        LexicalSegment::new(b"permuted", &permuted),
+        LexicalSegment::new(&permuted),
         Err(LexicalSegmentError::OutOfOrder {
             index: 1,
             previous: permuted[0],
@@ -33,7 +33,7 @@ fn input_permutation_is_rejected_and_ties_rank_by_document() {
         row(b"alpha", 12, 8),
         row(b"beta", 1, 100),
     ];
-    let segment = LexicalSegment::new(b"ties", &rows);
+    let segment = LexicalSegment::new(&rows);
     let top_k = LexicalTopK::new(3);
     assert!(segment.is_ok());
     assert!(top_k.is_ok());
@@ -63,7 +63,7 @@ fn input_permutation_is_rejected_and_ties_rank_by_document() {
 fn hostile_row_bound_precedes_duplicate_order_and_identity_work() {
     let duplicate_rows = [row(b"same", 0, 1); MAX_LEXICAL_ROWS + 1];
     assert_eq!(
-        LexicalSegment::new(b"hostile", &duplicate_rows),
+        LexicalSegment::new(&duplicate_rows),
         Err(LexicalSegmentError::TooManyRows {
             max: MAX_LEXICAL_ROWS,
             observed: MAX_LEXICAL_ROWS + 1,
@@ -90,7 +90,7 @@ fn term_lookup_and_ranked_hits_borrow_original_term_bytes() {
         LexicalRow::new(alpha, 2, score(1)),
         row(b"beta", 3, 9),
     ];
-    let segment = LexicalSegment::new(b"borrowed", &rows);
+    let segment = LexicalSegment::new(&rows);
     let top_k = LexicalTopK::new(2);
     assert!(segment.is_ok());
     assert!(top_k.is_ok());
@@ -126,7 +126,7 @@ fn insufficient_output_reports_exact_capacity_and_remains_unchanged() {
         row(b"alpha", 2, 2),
         row(b"alpha", 3, 1),
     ];
-    let segment = LexicalSegment::new(b"short", &rows);
+    let segment = LexicalSegment::new(&rows);
     let top_k = LexicalTopK::new(3);
     assert!(segment.is_ok());
     assert!(top_k.is_ok());

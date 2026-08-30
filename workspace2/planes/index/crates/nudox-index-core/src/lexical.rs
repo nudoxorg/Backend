@@ -2,10 +2,46 @@
 
 use core::cmp::Ordering;
 
+use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use nudox_index_vocab::LexicalSegmentId;
 
 /// Maximum number of rows admitted by one lexical segment view.
 pub const MAX_LEXICAL_ROWS: usize = 256;
+
+/// Maximum term bytes admitted by one lexical segment.
+pub const MAX_LEXICAL_PAYLOAD_BYTES: usize = 65_536;
+
+const CANONICAL_CHUNK_BYTES: usize = 32;
+
+struct CanonicalRecord<const BYTES: usize>([u8; BYTES]);
+
+impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> {
+    fn canonical_bytes(&self) -> &[u8; BYTES] {
+        &self.0
+    }
+}
+
+fn write_bytes(hasher: &mut ContentHasher<IndexLexicalSegmentDomain>, bytes: &[u8]) {
+    hasher.write_record(&CanonicalRecord((bytes.len() as u64).to_le_bytes()));
+    for chunk in bytes.chunks(CANONICAL_CHUNK_BYTES) {
+        let mut record = [0_u8; CANONICAL_CHUNK_BYTES + 1];
+        record[0] = chunk.len() as u8;
+        record[1..=chunk.len()].copy_from_slice(chunk);
+        hasher.write_record(&CanonicalRecord(record));
+    }
+}
+
+fn segment_id(rows: &[LexicalRow<'_>]) -> LexicalSegmentId {
+    let mut hasher = ContentHasher::<IndexLexicalSegmentDomain>::new();
+    hasher.write_record(&CanonicalRecord(*b"nudox.lexical.rows.v1"));
+    hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
+    for row in rows {
+        write_bytes(&mut hasher, row.term());
+        hasher.write_record(&CanonicalRecord(row.document().ordinal().to_le_bytes()));
+        hasher.write_record(&CanonicalRecord(row.score().units().to_le_bytes()));
+    }
+    hasher.finalize()
+}
 
 /// Maximum number of lexical hits one operation may request.
 pub const MAX_LEXICAL_TOP_K: usize = MAX_LEXICAL_ROWS;
@@ -33,7 +69,7 @@ impl LexicalScore {
     }
 }
 
-/// A fixed-width local document identity used by lexical rows.
+/// A fixed-width stable document identity used across lexical segments in one snapshot.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct LexicalDocumentId(u32);
@@ -159,6 +195,57 @@ pub struct LexicalHit<'bytes> {
     score: LexicalScore,
 }
 
+/// One globally ranked lexical hit with immutable segment provenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexicalSnapshotHit<'bytes> {
+    segment: LexicalSegmentId,
+    term: &'bytes [u8],
+    document: LexicalDocumentId,
+    score: LexicalScore,
+}
+
+impl<'bytes> LexicalSnapshotHit<'bytes> {
+    /// Creates one caller-owned placeholder or globally ranked result slot.
+    #[must_use]
+    pub const fn new(
+        segment: LexicalSegmentId,
+        term: &'bytes [u8],
+        document: LexicalDocumentId,
+        score: LexicalScore,
+    ) -> Self {
+        Self {
+            segment,
+            term,
+            document,
+            score,
+        }
+    }
+
+    /// Returns the immutable source segment.
+    #[must_use]
+    pub const fn segment(self) -> LexicalSegmentId {
+        self.segment
+    }
+
+    /// Borrows the matching term bytes.
+    #[must_use]
+    pub const fn term(self) -> &'bytes [u8] {
+        self.term
+    }
+
+    /// Returns the stable document identity.
+    #[must_use]
+    pub const fn document(self) -> LexicalDocumentId {
+        self.document
+    }
+
+    /// Returns the fixed-width recipe score.
+    #[must_use]
+    pub const fn score(self) -> LexicalScore {
+        self.score
+    }
+}
+
 impl<'bytes> LexicalHit<'bytes> {
     /// Creates a caller-owned output placeholder or hit.
     #[must_use]
@@ -208,6 +295,18 @@ pub enum LexicalSegmentError<'bytes> {
         /// Complete observed row count.
         observed: usize,
     },
+    /// The complete term payload exceeds the fixed byte budget.
+    PayloadBytesLimit {
+        /// Maximum admitted term bytes.
+        max: usize,
+        /// Complete observed term bytes.
+        observed: usize,
+    },
+    /// Summing hostile term widths overflowed the platform counter.
+    PayloadBytesOverflow {
+        /// Row whose term crossed the representable byte range.
+        index: usize,
+    },
     /// A row did not follow term/document order.
     OutOfOrder {
         /// Zero-based offending row index.
@@ -239,17 +338,27 @@ impl<'bytes> LexicalSegment<'bytes> {
     /// Validates and lends a sorted lexical segment without allocating or
     /// sorting input.
     ///
-    /// The row bound is checked before ordering, duplicate, and identity work.
+    /// Row and byte bounds are checked before ordering, duplicate, and identity work.
     /// This keeps an attacker-controlled row count from amplifying validation
     /// or canonical identity hashing.
-    pub fn new(
-        segment_bytes: &[u8],
-        rows: &'bytes [LexicalRow<'bytes>],
-    ) -> Result<Self, LexicalSegmentError<'bytes>> {
+    pub fn new(rows: &'bytes [LexicalRow<'bytes>]) -> Result<Self, LexicalSegmentError<'bytes>> {
         if rows.len() > MAX_LEXICAL_ROWS {
             return Err(LexicalSegmentError::TooManyRows {
                 max: MAX_LEXICAL_ROWS,
                 observed: rows.len(),
+            });
+        }
+
+        let mut payload_bytes = 0_usize;
+        for (index, row) in rows.iter().enumerate() {
+            payload_bytes = payload_bytes
+                .checked_add(row.term().len())
+                .ok_or(LexicalSegmentError::PayloadBytesOverflow { index })?;
+        }
+        if payload_bytes > MAX_LEXICAL_PAYLOAD_BYTES {
+            return Err(LexicalSegmentError::PayloadBytesLimit {
+                max: MAX_LEXICAL_PAYLOAD_BYTES,
+                observed: payload_bytes,
             });
         }
 
@@ -276,7 +385,7 @@ impl<'bytes> LexicalSegment<'bytes> {
         }
 
         Ok(Self {
-            id: LexicalSegmentId::from_canonical_bytes(segment_bytes),
+            id: segment_id(rows),
             rows,
         })
     }

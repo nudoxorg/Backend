@@ -9,14 +9,18 @@
 
 mod exact;
 mod lexical;
+mod snapshot;
 
-pub use exact::{ExactOperation, ExactRow, ExactSegment, ExactSegmentError};
+pub use exact::{
+    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, MAX_EXACT_PAYLOAD_BYTES,
+};
 pub use lexical::{
     LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,
-    LexicalSegment, LexicalSegmentError, LexicalTopK, LexicalTopKError, MAX_LEXICAL_ROWS,
-    MAX_LEXICAL_TOP_K,
+    LexicalSegment, LexicalSegmentError, LexicalSnapshotHit, LexicalTopK, LexicalTopKError,
+    MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
 };
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
+pub use snapshot::{IndexSnapshot, IndexSnapshotError};
 
 /// Maximum exact or lexical segments a single borrowed manifest can select.
 pub const MAX_SELECTED_SEGMENTS: usize = 8;
@@ -33,7 +37,7 @@ pub struct ExactManifest<'manifest, 'segment> {
 impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
     /// Validates selection bounds before looking for duplicate segment identities.
     pub fn new(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [ExactSegment<'segment>],
         missing: &'manifest [ExactSegmentId],
     ) -> Result<Self, ExactManifestError> {
@@ -42,7 +46,7 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
 
     /// Validates a manifest that reached its pinned snapshot through a degraded path.
     pub fn new_degraded(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [ExactSegment<'segment>],
         missing: &'manifest [ExactSegmentId],
         reason: ExactDegradation,
@@ -56,7 +60,7 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
     }
 
     fn new_with_availability(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [ExactSegment<'segment>],
         missing: &'manifest [ExactSegmentId],
         availability: ExactAvailability,
@@ -71,6 +75,14 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
             return Err(ExactManifestError::MissingSegmentLimit {
                 limit: MAX_SELECTED_SEGMENTS,
                 observed: missing.len(),
+            });
+        }
+        let selected = snapshot.exact();
+        let observed_selection = segments.len() + missing.len();
+        if selected.len() != observed_selection {
+            return Err(ExactManifestError::SnapshotSelectionWidth {
+                selected: selected.len(),
+                observed: observed_selection,
             });
         }
         for (left_position, left) in segments.iter().enumerate() {
@@ -104,8 +116,24 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
                 }
             }
         }
+        for (present_position, segment) in segments.iter().enumerate() {
+            if !selected.contains(&segment.id()) {
+                return Err(ExactManifestError::PresentNotSelected {
+                    present_position,
+                    id: segment.id(),
+                });
+            }
+        }
+        for (missing_position, id) in missing.iter().enumerate() {
+            if !selected.contains(id) {
+                return Err(ExactManifestError::MissingNotSelected {
+                    missing_position,
+                    id: *id,
+                });
+            }
+        }
         Ok(Self {
-            snapshot,
+            snapshot: snapshot.id(),
             segments,
             missing,
             availability,
@@ -259,6 +287,27 @@ pub enum ExactManifestError {
         /// Full untrusted selected missing segment count.
         observed: usize,
     },
+    /// Reachable and missing segments did not account for the snapshot selection.
+    SnapshotSelectionWidth {
+        /// Number of exact identities bound into the snapshot.
+        selected: usize,
+        /// Number supplied as reachable or missing.
+        observed: usize,
+    },
+    /// A reachable segment was not selected by the snapshot authority.
+    PresentNotSelected {
+        /// Reachable segment position.
+        present_position: usize,
+        /// Unselected segment identity.
+        id: ExactSegmentId,
+    },
+    /// A missing identity was not selected by the snapshot authority.
+    MissingNotSelected {
+        /// Missing segment position.
+        missing_position: usize,
+        /// Unselected missing identity.
+        id: ExactSegmentId,
+    },
     /// One segment identity appeared in two present positions.
     DuplicatePresentSegment {
         /// Earlier duplicate position.
@@ -300,7 +349,7 @@ pub struct LexicalManifest<'manifest, 'segment> {
 impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
     /// Validates a healthy lexical snapshot manifest before query execution.
     pub fn new(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [LexicalSegment<'segment>],
         missing: &'manifest [LexicalSegmentId],
     ) -> Result<Self, LexicalManifestError> {
@@ -309,7 +358,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
 
     /// Validates a lexical manifest reached through a degraded route.
     pub fn new_degraded(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [LexicalSegment<'segment>],
         missing: &'manifest [LexicalSegmentId],
         reason: LexicalDegradation,
@@ -323,7 +372,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
     }
 
     fn new_with_availability(
-        snapshot: IndexSnapshotId,
+        snapshot: IndexSnapshot<'_>,
         segments: &'manifest [LexicalSegment<'segment>],
         missing: &'manifest [LexicalSegmentId],
         availability: LexicalAvailability,
@@ -338,6 +387,14 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
             return Err(LexicalManifestError::MissingSegmentLimit {
                 limit: MAX_SELECTED_SEGMENTS,
                 observed: missing.len(),
+            });
+        }
+        let selected = snapshot.lexical();
+        let observed_selection = segments.len() + missing.len();
+        if selected.len() != observed_selection {
+            return Err(LexicalManifestError::SnapshotSelectionWidth {
+                selected: selected.len(),
+                observed: observed_selection,
             });
         }
         for (left_position, left) in segments.iter().enumerate() {
@@ -371,8 +428,24 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                 }
             }
         }
+        for (present_position, segment) in segments.iter().enumerate() {
+            if !selected.contains(&segment.id()) {
+                return Err(LexicalManifestError::PresentNotSelected {
+                    present_position,
+                    id: segment.id(),
+                });
+            }
+        }
+        for (missing_position, id) in missing.iter().enumerate() {
+            if !selected.contains(id) {
+                return Err(LexicalManifestError::MissingNotSelected {
+                    missing_position,
+                    id: *id,
+                });
+            }
+        }
         Ok(Self {
-            snapshot,
+            snapshot: snapshot.id(),
             segments,
             missing,
             availability,
@@ -385,52 +458,114 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         self.snapshot
     }
 
-    /// Executes one segment-local lexical ranking over a borrowed selected segment.
+    /// Executes one deterministic manifest-wide ranking into caller-owned output.
     ///
-    /// Segment choice is explicit because local document ordinals are meaningful only
-    /// with their source segment identity. A later cross-segment merge must own a
-    /// separate deduplication scratch representation rather than hiding it here.
+    /// Selected segments are ordered newest first. The first occurrence of a stable document
+    /// identity wins, providing update semantics without allocating a hidden deduplication map.
+    /// The caller supplies one optional-document scratch slot per matching row; its exact required
+    /// capacity is reported before the first scratch or output write.
     pub fn execute<'output>(
         &self,
-        segment_position: usize,
         operation: LexicalOperation<'_>,
         top_k: LexicalTopK,
-        output: &'output mut [LexicalHit<'segment>],
+        seen_documents: &mut [Option<LexicalDocumentId>],
+        output: &'output mut [LexicalSnapshotHit<'segment>],
     ) -> Result<LexicalTerminal<'manifest, 'output, 'segment>, LexicalQueryError> {
-        let Some(segment) = self.segments.get(segment_position) else {
-            return Err(LexicalQueryError::UnselectedSegment {
-                selected: segment_position,
-                present: self.segments.len(),
+        let matching_rows = self
+            .segments
+            .iter()
+            .filter_map(|segment| segment.lookup(operation))
+            .map(<[LexicalRow<'_>]>::len)
+            .sum::<usize>();
+        if seen_documents.len() < matching_rows {
+            return Err(LexicalQueryError::ScratchCapacity {
+                required: matching_rows,
+                available: seen_documents.len(),
             });
-        };
-        let hit_count = match segment.rank(operation, top_k, output) {
-            Ok(hit_count) => hit_count,
-            Err(error) => return Err(LexicalQueryError::OutputCapacity(error)),
-        };
+        }
+
+        let mut unique_documents = 0_usize;
+        for segment in self.segments {
+            if let Some(rows) = segment.lookup(operation) {
+                for row in rows {
+                    if !seen_documents[..unique_documents].contains(&Some(row.document())) {
+                        seen_documents[unique_documents] = Some(row.document());
+                        unique_documents += 1;
+                    }
+                }
+            }
+        }
+        let required = core::cmp::min(unique_documents, top_k.limit());
+        if output.len() < required {
+            return Err(LexicalQueryError::OutputCapacity(LexicalOutputError {
+                required,
+                available: output.len(),
+            }));
+        }
+
+        let mut emitted_documents = 0_usize;
+        let mut hit_count = 0_usize;
+        for segment in self.segments {
+            if let Some(rows) = segment.lookup(operation) {
+                for row in rows {
+                    if seen_documents[..emitted_documents].contains(&Some(row.document())) {
+                        continue;
+                    }
+                    seen_documents[emitted_documents] = Some(row.document());
+                    emitted_documents += 1;
+                    let candidate = LexicalSnapshotHit::new(
+                        segment.id(),
+                        row.term(),
+                        row.document(),
+                        row.score(),
+                    );
+                    let position = output[..hit_count]
+                        .iter()
+                        .position(|current| lexical_snapshot_order(&candidate, current).is_lt())
+                        .unwrap_or(hit_count);
+                    if position < required {
+                        let new_count = core::cmp::min(hit_count + 1, required);
+                        for destination in (position + 1..new_count).rev() {
+                            output[destination] = output[destination - 1];
+                        }
+                        output[position] = candidate;
+                        hit_count = new_count;
+                    }
+                }
+            }
+        }
         let hits = &output[..hit_count];
         match self.availability {
             LexicalAvailability::Healthy if self.missing.is_empty() => {
                 Ok(LexicalTerminal::Complete {
                     snapshot: self.snapshot,
-                    segment: segment.id(),
                     hits,
                 })
             }
             LexicalAvailability::Healthy => Ok(LexicalTerminal::Partial {
                 snapshot: self.snapshot,
-                segment: segment.id(),
                 hits,
                 missing: self.missing,
             }),
             LexicalAvailability::Degraded(reason) => Ok(LexicalTerminal::Degraded {
                 snapshot: self.snapshot,
-                segment: segment.id(),
                 hits,
                 missing: self.missing,
                 reason,
             }),
         }
     }
+}
+
+fn lexical_snapshot_order(
+    left: &LexicalSnapshotHit<'_>,
+    right: &LexicalSnapshotHit<'_>,
+) -> core::cmp::Ordering {
+    right
+        .score()
+        .cmp(&left.score())
+        .then_with(|| left.document().cmp(&right.document()))
+        .then_with(|| left.segment().cmp(&right.segment()))
 }
 
 /// Health provenance for a selected lexical snapshot route.
@@ -454,37 +589,33 @@ pub enum LexicalDegradation {
 /// A lexical execution rejection preserving selection or capacity operands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LexicalQueryError {
-    /// The requested segment position was not a present selected segment.
-    UnselectedSegment {
-        /// Requested selected-segment position.
-        selected: usize,
-        /// Number of present selected segments.
-        present: usize,
+    /// Caller deduplication scratch could not retain every matching document identity.
+    ScratchCapacity {
+        /// Exact required optional-document slots.
+        required: usize,
+        /// Supplied optional-document slots.
+        available: usize,
     },
     /// Caller output could not retain the complete requested ranking.
     OutputCapacity(LexicalOutputError),
 }
 
-/// The one snapshot-pinned terminal for a segment-local lexical ranking.
+/// The one snapshot-pinned terminal for a manifest-wide lexical ranking.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LexicalTerminal<'manifest, 'output, 'bytes> {
     /// Every selected segment was present and healthy.
     Complete {
         /// Snapshot identity used by the query.
         snapshot: IndexSnapshotId,
-        /// Source segment for the local document ordinals in `hits`.
-        segment: LexicalSegmentId,
         /// Caller-owned ranked output borrowed for the terminal lifetime.
-        hits: &'output [LexicalHit<'bytes>],
+        hits: &'output [LexicalSnapshotHit<'bytes>],
     },
     /// Some selected lexical segments were unavailable.
     Partial {
         /// Snapshot identity used by the query.
         snapshot: IndexSnapshotId,
-        /// Source segment for the local document ordinals in `hits`.
-        segment: LexicalSegmentId,
         /// Caller-owned ranked output borrowed for the terminal lifetime.
-        hits: &'output [LexicalHit<'bytes>],
+        hits: &'output [LexicalSnapshotHit<'bytes>],
         /// Exact selected lexical segment identities not reached by the query.
         missing: &'manifest [LexicalSegmentId],
     },
@@ -492,10 +623,8 @@ pub enum LexicalTerminal<'manifest, 'output, 'bytes> {
     Degraded {
         /// Snapshot identity used by the query.
         snapshot: IndexSnapshotId,
-        /// Source segment for the local document ordinals in `hits`.
-        segment: LexicalSegmentId,
         /// Caller-owned ranked output borrowed for the terminal lifetime.
-        hits: &'output [LexicalHit<'bytes>],
+        hits: &'output [LexicalSnapshotHit<'bytes>],
         /// Exact selected lexical segment identities not reached by the query.
         missing: &'manifest [LexicalSegmentId],
         /// Route-health provenance for the degraded terminal.
@@ -519,6 +648,27 @@ pub enum LexicalManifestError {
         limit: usize,
         /// Full untrusted selected segment count.
         observed: usize,
+    },
+    /// Reachable and missing segments did not account for the snapshot selection.
+    SnapshotSelectionWidth {
+        /// Number of lexical identities bound into the snapshot.
+        selected: usize,
+        /// Number supplied as reachable or missing.
+        observed: usize,
+    },
+    /// A reachable segment was not selected by the snapshot authority.
+    PresentNotSelected {
+        /// Reachable segment position.
+        present_position: usize,
+        /// Unselected segment identity.
+        id: LexicalSegmentId,
+    },
+    /// A missing identity was not selected by the snapshot authority.
+    MissingNotSelected {
+        /// Missing segment position.
+        missing_position: usize,
+        /// Unselected missing identity.
+        id: LexicalSegmentId,
     },
     /// One segment identity appeared in two present positions.
     DuplicatePresentSegment {

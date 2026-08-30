@@ -1,23 +1,22 @@
 use nudox_index_core::{
-    ExactManifest, ExactManifestError, ExactSegment, ExactSegmentError, IndexSnapshotId,
+    ExactManifest, ExactManifestError, ExactSegment, ExactSegmentError, IndexSnapshot,
     MAX_SELECTED_SEGMENTS,
 };
 
-const SEGMENT_BYTES: &[u8] = b"bounded-manifest-segment";
-
 fn repeated_segment() -> Result<ExactSegment<'static>, ExactSegmentError<'static>> {
-    ExactSegment::new(SEGMENT_BYTES, &[])
+    ExactSegment::new(&[])
 }
 
 #[test]
 fn hostile_selection_limit_fails_before_duplicate_validation()
 -> Result<(), ExactSegmentError<'static>> {
     let segments = [repeated_segment()?; MAX_SELECTED_SEGMENTS + 1];
-    let result = ExactManifest::new(
-        IndexSnapshotId::from_canonical_bytes(b"snapshot"),
-        &segments,
-        &[],
-    );
+    let snapshot = IndexSnapshot::new(&[], &[]);
+    assert!(snapshot.is_ok());
+    let Some(snapshot) = snapshot.ok() else {
+        return Ok(());
+    };
+    let result = ExactManifest::new(snapshot, &segments, &[]);
 
     assert_eq!(
         result,

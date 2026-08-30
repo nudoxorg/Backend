@@ -1,9 +1,50 @@
 //! Borrowed immutable exact-key segments.
 
+use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 use nudox_index_vocab::ExactSegmentId;
 
 /// Maximum number of rows admitted by one exact segment view.
 pub const MAX_EXACT_ROWS: usize = 256;
+
+/// Maximum key and value bytes admitted by one exact segment.
+pub const MAX_EXACT_PAYLOAD_BYTES: usize = 65_536;
+
+const CANONICAL_CHUNK_BYTES: usize = 32;
+
+struct CanonicalRecord<const BYTES: usize>([u8; BYTES]);
+
+impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> {
+    fn canonical_bytes(&self) -> &[u8; BYTES] {
+        &self.0
+    }
+}
+
+fn write_bytes(hasher: &mut ContentHasher<IndexExactSegmentDomain>, bytes: &[u8]) {
+    hasher.write_record(&CanonicalRecord((bytes.len() as u64).to_le_bytes()));
+    for chunk in bytes.chunks(CANONICAL_CHUNK_BYTES) {
+        let mut record = [0_u8; CANONICAL_CHUNK_BYTES + 1];
+        record[0] = chunk.len() as u8;
+        record[1..=chunk.len()].copy_from_slice(chunk);
+        hasher.write_record(&CanonicalRecord(record));
+    }
+}
+
+fn segment_id(rows: &[ExactRow<'_>]) -> ExactSegmentId {
+    let mut hasher = ContentHasher::<IndexExactSegmentDomain>::new();
+    hasher.write_record(&CanonicalRecord(*b"nudox.exact.rows.v1"));
+    hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
+    for row in rows {
+        write_bytes(&mut hasher, row.key());
+        match row.value_bytes() {
+            Some(value) => {
+                hasher.write_record(&CanonicalRecord([1]));
+                write_bytes(&mut hasher, value);
+            }
+            None => hasher.write_record(&CanonicalRecord([0])),
+        }
+    }
+    hasher.finalize()
+}
 
 /// One borrowed exact row. A tombstone is an immutable deletion fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +133,18 @@ pub enum ExactSegmentError<'bytes> {
         /// Complete observed row count.
         observed: usize,
     },
+    /// The complete key/value payload exceeds the fixed byte budget.
+    PayloadBytesLimit {
+        /// Maximum admitted payload bytes.
+        max: usize,
+        /// Complete observed payload bytes.
+        observed: usize,
+    },
+    /// Summing hostile key/value widths overflowed the platform counter.
+    PayloadBytesOverflow {
+        /// Row whose value or key crossed the representable byte range.
+        index: usize,
+    },
     /// A key did not follow the canonical byte order.
     OutOfOrder {
         /// Zero-based offending row index.
@@ -120,17 +173,30 @@ pub struct ExactSegment<'bytes> {
 impl<'bytes> ExactSegment<'bytes> {
     /// Validates and lends a sorted exact segment without allocating or sorting input.
     ///
-    /// The row bound is checked before ordering validation and before the segment bytes are
-    /// hashed into the disposable typed identity. This keeps attacker-controlled row counts from
-    /// amplifying duplicate, ordering, or identity work.
-    pub fn new(
-        segment_bytes: &[u8],
-        rows: &'bytes [ExactRow<'bytes>],
-    ) -> Result<Self, ExactSegmentError<'bytes>> {
+    /// Row and byte bounds are checked before ordering and identity work. The identity is derived
+    /// from the same admitted rows this view queries, so it cannot label unrelated backing data.
+    pub fn new(rows: &'bytes [ExactRow<'bytes>]) -> Result<Self, ExactSegmentError<'bytes>> {
         if rows.len() > MAX_EXACT_ROWS {
             return Err(ExactSegmentError::TooManyRows {
                 max: MAX_EXACT_ROWS,
                 observed: rows.len(),
+            });
+        }
+
+        let mut payload_bytes = 0_usize;
+        for (index, row) in rows.iter().enumerate() {
+            payload_bytes = payload_bytes
+                .checked_add(row.key().len())
+                .and_then(|total| {
+                    row.value_bytes()
+                        .map_or(Some(total), |value| total.checked_add(value.len()))
+                })
+                .ok_or(ExactSegmentError::PayloadBytesOverflow { index })?;
+        }
+        if payload_bytes > MAX_EXACT_PAYLOAD_BYTES {
+            return Err(ExactSegmentError::PayloadBytesLimit {
+                max: MAX_EXACT_PAYLOAD_BYTES,
+                observed: payload_bytes,
             });
         }
 
@@ -156,7 +222,7 @@ impl<'bytes> ExactSegment<'bytes> {
         }
 
         Ok(Self {
-            id: ExactSegmentId::from_canonical_bytes(segment_bytes),
+            id: segment_id(rows),
             rows,
         })
     }

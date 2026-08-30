@@ -16,7 +16,7 @@ fn real_tantivy_document_set_matches_the_borrowed_lexical_core() {
         LexicalRow::new(b"rust", 7, LexicalScore::new(1)),
         LexicalRow::new(b"systems", 2, LexicalScore::new(1)),
     ];
-    let segment = LexicalSegment::new(b"lexical differential", &rows);
+    let segment = LexicalSegment::new(&rows);
     assert!(segment.is_ok());
     let Ok(segment) = segment else {
         return;

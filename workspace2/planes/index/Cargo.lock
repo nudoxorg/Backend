@@ -604,6 +604,7 @@ dependencies = [
 name = "nudox-index-core"
 version = "0.1.0"
 dependencies = [
+ "nudox-id",
  "nudox-index-vocab",
 ]
 
