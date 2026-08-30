@@ -1,6 +1,7 @@
 use std::{error::Error, fmt, io, process::Command};
 
 use serde_json::Value;
+use wave_application_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
 
 #[derive(Debug)]
 enum CliTestError {
@@ -72,12 +73,15 @@ fn child_process_reports_source_sensitive_compiler_passthrough() -> Result<(), C
 
 #[test]
 fn one_process_preserves_the_real_adaptive_future_across_commands() -> Result<(), CliTestError> {
+    let generation = GenerationId::from_digest([11; 32]).to_string();
+    let snapshot = IndexSnapshotId::from_digest([13; 32]).to_string();
+    let bundle = ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string();
     let output = run(&[
         "recover-local",
         "80",
-        "generation-a",
-        "snapshot-a",
-        "analyzer-a",
+        &generation,
+        &snapshot,
+        &bundle,
         "4096",
         "8192",
         "1",

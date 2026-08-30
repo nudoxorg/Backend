@@ -20,9 +20,6 @@ pub struct CorrelationId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OperationKey(pub u64);
 
-/// The first service-owned adaptive operation identity.
-pub const APPLICATION_OPERATION: OperationKey = OperationKey(1);
-
 /// One remote inconsistency recovery command with both immutable authorities retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InconsistentRecovery {

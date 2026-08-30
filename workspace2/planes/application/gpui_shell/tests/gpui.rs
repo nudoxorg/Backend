@@ -4,9 +4,10 @@
 use gpui::{AppContext, TestAppContext};
 #[cfg(feature = "real-gpui")]
 use wave_application_core::{
-    ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain,
-    CorrelationId, ExecutionState, GenerationId, IndexSnapshotId, OperationBudget, Pin, Pressure,
-    ReplyBody, ResourceBudget, RetryBudget, Terminal,
+    AdaptiveDisposition, ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability,
+    CapabilityDomain, CorrelationId, ExecutionState, GenerationId, InconsistentRecovery,
+    IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ReplyBody, ResourceBudget,
+    RetryBudget, Terminal,
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_gpui_shell::{GpuiShellView, ProjectionState};
@@ -51,6 +52,35 @@ fn require_reply(
 ) -> Option<wave_application_core::ApplicationReply> {
     assert!(result.is_ok());
     result.as_ref().ok().copied()
+}
+
+#[cfg(feature = "real-gpui")]
+fn inconsistent_input() -> (ApplicationInput, Pin) {
+    let observed = Pin {
+        generation: GenerationId::from_canonical_bytes(b"gpui-observed-generation"),
+        snapshot: IndexSnapshotId::from_canonical_bytes(b"gpui-observed-snapshot"),
+    };
+    (
+        ApplicationInput::RecoverInconsistent(InconsistentRecovery {
+            correlation: CorrelationId(94),
+            expected: pin(),
+            observed,
+            bundle: bundle(),
+            budget: budget(1, 1),
+        }),
+        observed,
+    )
+}
+
+#[cfg(feature = "real-gpui")]
+fn assert_inconsistent_reply(reply: &wave_application_core::ApplicationReply, observed: Pin) {
+    assert!(matches!(
+        reply.body,
+        ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
+            cause: RecoveryCause::Inconsistent { observed: returned },
+            ..
+        }) if returned == observed
+    ));
 }
 
 #[cfg(feature = "real-gpui")]
@@ -111,6 +141,13 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.state().summaries()[2].state, ProjectionState::Ready);
     });
+
+    let (inconsistent, observed) = inconsistent_input();
+    let inconsistent_result = view.update(cx, |view, cx| view.execute(&inconsistent, cx));
+    let Some(inconsistent_reply) = require_reply(&inconsistent_result) else {
+        return;
+    };
+    assert_inconsistent_reply(&inconsistent_reply, observed);
 }
 
 #[cfg(feature = "real-gpui")]
