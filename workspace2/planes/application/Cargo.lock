@@ -3924,6 +3924,7 @@ dependencies = [
  "nudox-adaptive",
  "nudox-compile-vocab",
  "nudox-id",
+ "serde",
  "serde_json",
  "wave-application-core",
 ]

@@ -82,7 +82,7 @@ fn main() -> io::Result<()> {
     let mut service = ApplicationService::new();
     let mut active_requests = ActiveRequests::default();
     while let Some(frame) = read_frame(&mut input)? {
-        let response = match decode_mcp(&frame) {
+        let body = match decode_mcp(&frame) {
             McpDecode::Accepted(envelope) => {
                 match envelope.request {
                     McpRequest::Application(input) => {
@@ -93,7 +93,7 @@ fn main() -> io::Result<()> {
                             // producing a response frame.
                             continue;
                         };
-                        mcp_reply(id, reply)
+                        serde_json::to_vec(&mcp_reply(id, reply)).map_err(io::Error::other)?
                     }
                     McpRequest::Cancellation(target) => {
                         let Some((operation, correlation)) = active_requests.resolve(&target)
@@ -119,10 +119,9 @@ fn main() -> io::Result<()> {
                     // level error, so it is intentionally not emitted.
                     continue;
                 };
-                mcp_error(id, &error.error)
+                serde_json::to_vec(&mcp_error(id, &error.error)).map_err(io::Error::other)?
             }
         };
-        let body = serde_json::to_vec(&response).map_err(io::Error::other)?;
         write_frame(&mut output, &body)?;
     }
     Ok(())

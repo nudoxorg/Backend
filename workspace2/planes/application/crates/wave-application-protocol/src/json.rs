@@ -2,17 +2,14 @@
 
 use std::{error::Error, fmt, io, ops::Deref};
 
-use nudox_adaptive::{
-    BudgetAmount, DuplicateInput, Overload, OverloadSubject, PolicyError, RecoveryCause,
-};
-use serde_json::{Value, json};
-use wave_application_core::{
-    AdaptiveDisposition, ApplicationInput, ApplicationReply, Capability, CapabilityHealth,
-    CapabilityTransition, Diagnostic, DiagnosticDetail, ExecutionState, InputText, ReplyBody,
-    Terminal,
-};
+use serde_json::Value;
+use wave_application_core::{ApplicationInput, ApplicationReply, InputText};
 
 use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
+
+mod wire;
+
+pub use wire::{McpError, McpReply};
 
 /// Decoded MCP request identity plus one typed request for the application process.
 #[derive(Clone, Debug, PartialEq)]
@@ -164,41 +161,14 @@ pub fn decode_mcp(body: &[u8]) -> McpDecode {
 
 /// Builds a standard JSON-RPC error response for malformed adapter input.
 #[must_use]
-pub fn mcp_error(id: &Value, error: &AdapterError) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": -32602,
-            "message": adapter_code(error.code),
-            "data": adapter_error_json(error),
-        }
-    })
+pub fn mcp_error<'value>(id: &'value Value, error: &AdapterError) -> McpError<'value> {
+    McpError::new(id, error)
 }
 
 /// Builds an MCP tool response whose structured content exactly projects one service reply.
 #[must_use]
-pub fn mcp_reply(id: &Value, reply: ApplicationReply) -> Value {
-    let structured = reply_json(reply);
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": {
-            "content": [{"type": "text", "text": "nudox application reply"}],
-            "structuredContent": structured,
-        }
-    })
-}
-
-/// Converts a typed semantic reply into adapter-owned structured JSON without changing its meaning.
-#[must_use]
-pub fn reply_json(reply: ApplicationReply) -> Value {
-    json!({
-        "correlation": reply.correlation.0,
-        "body": reply_body(reply.body),
-        "terminal": terminal(reply.terminal),
-        "diagnostic": reply.diagnostic.map(diagnostic),
-    })
+pub fn mcp_reply(id: &Value, reply: ApplicationReply) -> McpReply<'_> {
+    McpReply::new(id, reply)
 }
 
 /// Encodes one CLI semantic result without giving the CLI a JSON dependency edge.
@@ -207,7 +177,7 @@ pub fn reply_json(reply: ApplicationReply) -> Value {
 ///
 /// Returns the serializer's I/O-compatible error if bounded reply presentation cannot serialize.
 pub fn encode_cli_reply(reply: ApplicationReply) -> io::Result<Vec<u8>> {
-    serde_json::to_vec(&reply_json(reply)).map_err(io::Error::other)
+    serde_json::to_vec(&wire::ApplicationReplyWire::from(reply)).map_err(io::Error::other)
 }
 
 /// Encodes one CLI transport diagnostic without giving the CLI a JSON dependency edge.
@@ -216,8 +186,7 @@ pub fn encode_cli_reply(reply: ApplicationReply) -> io::Result<Vec<u8>> {
 ///
 /// Returns the serializer's I/O-compatible error if the diagnostic cannot serialize.
 pub fn encode_cli_adapter_error(error: &AdapterError) -> io::Result<Vec<u8>> {
-    serde_json::to_vec(&json!({"adapter_error": adapter_error_json(error)}))
-        .map_err(io::Error::other)
+    serde_json::to_vec(&wire::AdapterErrorEnvelope::from(error)).map_err(io::Error::other)
 }
 
 fn tool_input(params: &serde_json::Map<String, Value>) -> Result<ApplicationInput, AdapterError> {
@@ -309,372 +278,6 @@ fn parse_request_id(value: &Value, field: &'static str) -> Result<McpRequestId, 
     Err(malformed(field))
 }
 
-fn reply_body(body: ReplyBody) -> Value {
-    match body {
-        ReplyBody::CompilerPassthrough {
-            package,
-            language,
-            stage,
-            source,
-        } => json!({
-            "kind": "compiler_passthrough",
-            "package": text(package),
-            "language": language_name(language),
-            "stage": stage_name(stage),
-            "source": text(source),
-        }),
-        ReplyBody::DependencyUnavailable { capability } => json!({
-            "kind": "dependency_unavailable",
-            "capability": capability_name(capability),
-        }),
-        ReplyBody::Health(facts) => json!({
-            "kind": "health",
-            "facts": facts.map(health),
-        }),
-        ReplyBody::Adaptive(disposition) => json!({
-            "kind": "adaptive",
-            "disposition": adaptive_disposition(disposition),
-        }),
-        ReplyBody::ExecutionStarted {
-            operation,
-            transition,
-        } => json!({
-            "kind": "execution_started",
-            "operation": operation.0,
-            "transition": capability_transition(transition),
-        }),
-        ReplyBody::Execution(state) => json!({
-            "kind": "execution",
-            "state": execution_state(state),
-        }),
-        ReplyBody::Rejected => json!({"kind": "rejected"}),
-    }
-}
-
-fn terminal(terminal: Terminal) -> Value {
-    match terminal {
-        Terminal::Accepted { operation } => {
-            json!({"kind": "accepted", "operation": operation.0})
-        }
-        Terminal::Complete { emitted } => json!({"kind": "complete", "emitted": emitted}),
-        Terminal::Partial {
-            emitted,
-            unavailable,
-        } => json!({
-            "kind": "partial",
-            "emitted": emitted,
-            "unavailable": capability_name(unavailable),
-        }),
-        Terminal::Degraded {
-            emitted,
-            unavailable,
-        } => json!({
-            "kind": "degraded",
-            "emitted": emitted,
-            "unavailable": capability_name(unavailable),
-        }),
-        Terminal::Cancelled { emitted } => json!({"kind": "cancelled", "emitted": emitted}),
-        Terminal::Failed => json!({"kind": "failed"}),
-    }
-}
-
-fn diagnostic(diagnostic: Diagnostic) -> Value {
-    json!({
-        "code": diagnostic_code(diagnostic.code),
-        "detail": diagnostic_detail(diagnostic.detail),
-    })
-}
-
-fn diagnostic_code(code: wave_application_core::DiagnosticCode) -> &'static str {
-    match code {
-        wave_application_core::DiagnosticCode::UnknownLanguage => "unknown_language",
-        wave_application_core::DiagnosticCode::UnknownStage => "unknown_stage",
-        wave_application_core::DiagnosticCode::SemanticTextTooLong => "semantic_text_too_long",
-        wave_application_core::DiagnosticCode::ResultLimitExceeded => "result_limit_exceeded",
-        wave_application_core::DiagnosticCode::DependencyUnavailable => "dependency_unavailable",
-        wave_application_core::DiagnosticCode::UnsupportedCompilerStage => {
-            "unsupported_compiler_stage"
-        }
-        wave_application_core::DiagnosticCode::CompilerOutputUnrepresentable => {
-            "compiler_output_unrepresentable"
-        }
-        wave_application_core::DiagnosticCode::OperationUnavailable => "operation_unavailable",
-        wave_application_core::DiagnosticCode::AdaptivePolicyRejected => "adaptive_policy_rejected",
-    }
-}
-
-fn diagnostic_detail(detail: DiagnosticDetail) -> Value {
-    match detail {
-        DiagnosticDetail::Text(value) => json!({"kind": "text", "value": text(value)}),
-        DiagnosticDetail::Limit { requested, maximum } => {
-            json!({"kind": "limit", "requested": requested, "maximum": maximum})
-        }
-        DiagnosticDetail::TextLength {
-            actual,
-            maximum,
-            rejected,
-        } => json!({
-            "kind": "text_length",
-            "actual": actual,
-            "maximum": maximum,
-            "rejected": text(rejected),
-        }),
-        DiagnosticDetail::Frontend(source) => frontend(source),
-        DiagnosticDetail::Operation(operation) => {
-            json!({"kind": "operation", "value": operation.0})
-        }
-        DiagnosticDetail::Capability(capability) => {
-            json!({"kind": "capability", "value": capability_name(capability)})
-        }
-        DiagnosticDetail::Policy(policy) => json!({
-            "kind": "policy",
-            "error": policy_error(policy),
-        }),
-    }
-}
-
-fn health(fact: CapabilityHealth) -> Value {
-    match fact {
-        CapabilityHealth::LocalReady(capability) => {
-            json!({"capability": capability_name(capability), "state": "local_ready"})
-        }
-        CapabilityHealth::Unavailable(capability) => {
-            json!({"capability": capability_name(capability), "state": "unavailable"})
-        }
-    }
-}
-
-fn frontend(source: nudox_compile_vocab::FrontendError) -> Value {
-    match source {
-        nudox_compile_vocab::FrontendError::UnsupportedStage { language, stage } => json!({
-            "kind": "unsupported_stage",
-            "language": language_name(language),
-            "stage": stage_name(stage),
-        }),
-    }
-}
-
-fn language_name(language: nudox_compile_vocab::Language) -> &'static str {
-    match language {
-        nudox_compile_vocab::Language::RustSubset => "rust",
-        nudox_compile_vocab::Language::TypeScriptSubset => "typescript",
-    }
-}
-
-fn stage_name(stage: nudox_compile_vocab::Stage) -> &'static str {
-    match stage {
-        nudox_compile_vocab::Stage::Parse => "parse",
-        nudox_compile_vocab::Stage::LowerIr => "lower-ir",
-    }
-}
-
-fn capability_name(capability: Capability) -> &'static str {
-    match capability {
-        Capability::CompilerRegistry => "compiler_registry",
-        Capability::CompilerOutput => "compiler_output",
-        Capability::Index => "index",
-        Capability::Graph => "graph",
-        Capability::Vector => "vector",
-        Capability::LocalAnalyzer => "local_analyzer",
-        Capability::Remote => "remote",
-    }
-}
-
-fn adaptive_disposition(disposition: AdaptiveDisposition) -> Value {
-    match disposition {
-        AdaptiveDisposition::NoAction => json!({"kind": "no_action"}),
-        AdaptiveDisposition::RetryRemote {
-            pin,
-            cause,
-            retries_remaining,
-        } => json!({
-            "kind": "retry_remote",
-            "pin": pin_value(pin),
-            "cause": recovery_cause(cause),
-            "retries_remaining": retries_remaining.get(),
-        }),
-        AdaptiveDisposition::RecoveryExhausted { pin, cause } => json!({
-            "kind": "recovery_exhausted",
-            "pin": pin_value(pin),
-            "cause": recovery_cause(cause),
-        }),
-        AdaptiveDisposition::Overloaded(overload) => json!({
-            "kind": "overloaded",
-            "overload": overload_value(overload),
-        }),
-        AdaptiveDisposition::Rejected(policy) => json!({
-            "kind": "rejected",
-            "error": policy_error(policy),
-        }),
-    }
-}
-
-fn capability_transition(transition: CapabilityTransition) -> Value {
-    match transition {
-        CapabilityTransition::Acquire { capability, bundle } => json!({
-            "kind": "acquire",
-            "capability": capability.as_ref(),
-            "bundle": content_id(bundle),
-        }),
-        CapabilityTransition::Release { capability, bundle } => json!({
-            "kind": "release",
-            "capability": capability.as_ref(),
-            "bundle": content_id(bundle),
-        }),
-    }
-}
-
-fn execution_state(state: ExecutionState) -> Value {
-    match state {
-        ExecutionState::Pending {
-            operation,
-            transition,
-        } => json!({
-            "kind": "pending",
-            "operation": operation.0,
-            "transition": capability_transition(transition),
-        }),
-        ExecutionState::Completed {
-            operation,
-            transition,
-        } => json!({
-            "kind": "completed",
-            "operation": operation.0,
-            "transition": capability_transition(transition),
-        }),
-        ExecutionState::Cancelled {
-            operation,
-            transition,
-        } => json!({
-            "kind": "cancelled",
-            "operation": operation.0,
-            "transition": capability_transition(transition),
-        }),
-        ExecutionState::Failed {
-            operation,
-            transition,
-            phase,
-        } => json!({
-            "kind": "failed",
-            "operation": operation.0,
-            "transition": capability_transition(transition),
-            "phase": phase.as_ref(),
-        }),
-    }
-}
-
-fn pin_value(pin: nudox_adaptive::Pin) -> Value {
-    json!({
-        "generation": content_id(pin.generation),
-        "snapshot": content_id(pin.snapshot),
-    })
-}
-
-fn content_id<DomainTag>(value: nudox_adaptive::ContentId<DomainTag>) -> String {
-    value.to_string()
-}
-
-fn recovery_cause(cause: RecoveryCause) -> Value {
-    match cause {
-        RecoveryCause::Outage => json!({"kind": "outage"}),
-        RecoveryCause::Inconsistent { observed } => json!({
-            "kind": "inconsistent",
-            "observed": pin_value(observed),
-        }),
-    }
-}
-
-fn overload_value(overload: Overload) -> Value {
-    json!({
-        "subject": overload_subject(overload.subject),
-        "resource": overload.resource.as_ref(),
-        "needed": budget_amount(overload.needed),
-        "available": budget_amount(overload.available),
-    })
-}
-
-fn overload_subject(subject: OverloadSubject) -> Value {
-    match subject {
-        OverloadSubject::Fact(key) => json!({"kind": "fact", "key": fact_key(key)}),
-        OverloadSubject::Bundle { capability, bundle } => json!({
-            "kind": "bundle",
-            "capability": capability.as_ref(),
-            "bundle": content_id(bundle),
-        }),
-        OverloadSubject::Remote(pin) => json!({"kind": "remote", "pin": pin_value(pin)}),
-    }
-}
-
-fn budget_amount(amount: BudgetAmount) -> Value {
-    match amount {
-        BudgetAmount::Bytes(bytes) => json!({"kind": "bytes", "value": bytes.get()}),
-        BudgetAmount::Operations(operations) => {
-            json!({"kind": "operations", "value": operations.get()})
-        }
-        BudgetAmount::Retries(retries) => {
-            json!({"kind": "retries", "value": retries.get()})
-        }
-    }
-}
-
-fn fact_key(key: nudox_adaptive::FactKey) -> Value {
-    json!({
-        "pin": pin_value(key.pin),
-        "object": content_id(key.object),
-    })
-}
-
-fn policy_error(error: PolicyError) -> Value {
-    match error {
-        PolicyError::TooManyFacts {
-            class,
-            limit,
-            observed,
-        } => json!({
-            "kind": "too_many_facts",
-            "class": class.as_ref(),
-            "limit": limit,
-            "observed": observed,
-        }),
-        PolicyError::PinMismatch {
-            class,
-            expected,
-            observed,
-        } => json!({
-            "kind": "pin_mismatch",
-            "class": class.as_ref(),
-            "expected": pin_value(expected),
-            "observed": fact_key(observed),
-        }),
-        PolicyError::Duplicate(duplicate) => {
-            json!({"kind": "duplicate", "value": duplicate_input(duplicate)})
-        }
-    }
-}
-
-fn duplicate_input(duplicate: DuplicateInput) -> Value {
-    match duplicate {
-        DuplicateInput::Local { key, tier } => {
-            json!({
-                "kind": "local",
-                "key": fact_key(key),
-                "tier": tier.as_ref(),
-            })
-        }
-        DuplicateInput::Remote { key } => json!({"kind": "remote", "key": fact_key(key)}),
-        DuplicateInput::Demand { key } => json!({"kind": "demand", "key": fact_key(key)}),
-        DuplicateInput::Bundle { capability, bundle } => json!({
-            "kind": "bundle",
-            "capability": capability.as_ref(),
-            "bundle": content_id(bundle),
-        }),
-    }
-}
-
-fn text(value: InputText) -> String {
-    String::from_utf8_lossy(value.as_bytes()).into_owned()
-}
-
 fn malformed(field: &'static str) -> AdapterError {
     AdapterError::simple(AdapterErrorCode::InvalidShape, field)
 }
@@ -685,23 +288,4 @@ fn missing(field: &'static str) -> AdapterError {
 
 fn unknown(_action: &str) -> AdapterError {
     AdapterError::simple(AdapterErrorCode::UnknownAction, "action")
-}
-
-fn adapter_error_json(error: &AdapterError) -> Value {
-    json!({
-        "code": adapter_code(error.code),
-        "field": error.field,
-        "actual": error.actual,
-    })
-}
-
-fn adapter_code(code: AdapterErrorCode) -> &'static str {
-    match code {
-        AdapterErrorCode::UnknownAction => "unknown_action",
-        AdapterErrorCode::MissingField => "missing_field",
-        AdapterErrorCode::InvalidNumber => "invalid_number_or_json_shape",
-        AdapterErrorCode::InvalidShape => "invalid_json_shape",
-        AdapterErrorCode::FieldTooLong => "field_too_long",
-        AdapterErrorCode::TooManyFields => "too_many_fields",
-    }
 }
