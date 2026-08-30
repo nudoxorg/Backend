@@ -68,7 +68,7 @@ impl CursorOrdinals {
 }
 
 impl<'locality, DomainTag: Domain> LocalityCursor<'locality, DomainTag> {
-    pub(super) const fn new(locality: &'locality ValidatedLocality<'locality, DomainTag>) -> Self {
+    pub(crate) const fn new(locality: &'locality ValidatedLocality<'locality, DomainTag>) -> Self {
         Self {
             locality,
             ordinals: CursorOrdinals {
@@ -80,7 +80,7 @@ impl<'locality, DomainTag: Domain> LocalityCursor<'locality, DomainTag> {
         }
     }
 
-    pub(super) fn locality_without_work(&mut self, row: RowIndex) -> Locality<DomainTag> {
+    pub(crate) fn locality_without_work(&mut self, row: RowIndex) -> Locality<DomainTag> {
         self.find(row, &mut ())
     }
 

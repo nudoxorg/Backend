@@ -27,7 +27,7 @@ pub use view::{
     SelectedGeneration,
 };
 
-use cursor::LocalityCursor;
+pub(crate) use cursor::LocalityCursor;
 
 /// Honest placement state composed with one semantic root entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,36 +1,53 @@
 use core::mem::size_of;
 
-use nudox_id::{FixedCanonicalRecord, GenerationHasher, GenerationId, HASH_BYTES};
+use nudox_id::{FixedCanonicalRecord, GenerationHasher, GenerationId};
 use zerocopy::{
-    Immutable, IntoBytes,
-    byteorder::{BigEndian, U16, U32, U64},
+    FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
+    byteorder::{BigEndian, U64},
 };
 
 use crate::packed::{NO_PARENT, RootRow};
 
 /// Canonical root header grammar, shared by streaming identity and explicit bytes.
-#[derive(Immutable, IntoBytes)]
+#[derive(Immutable, IntoBytes, FromBytes, KnownLayout, Unaligned)]
 #[repr(C)]
-struct RootHeaderRecord {
-    count: U64<BigEndian>,
+pub(crate) struct RootHeaderRecord {
+    pub(crate) count: U64<BigEndian>,
 }
 
 /// Canonical semantic row grammar. All fields are byte arrays so `repr(C)` has
 /// alignment one and no padding; `size_of` is the authoritative wire width.
-#[derive(Immutable, IntoBytes)]
+#[derive(Clone, Copy, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned)]
+#[repr(u8)]
+pub(crate) enum ParentWire {
+    Absent = 0,
+    Present = 1,
+}
+
+impl From<ParentWire> for u8 {
+    #[allow(
+        clippy::as_conversions,
+        reason = "the closed repr(u8) wire enum has the exact canonical discriminants 0 and 1"
+    )]
+    fn from(parent: ParentWire) -> Self {
+        parent as Self
+    }
+}
+
+/// Canonical semantic row grammar. All fields are byte arrays so `repr(C)` has
+/// alignment one and no padding; `size_of` is the authoritative wire width.
+#[derive(Clone, Copy, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned)]
 #[repr(C)]
-struct RootRowRecord {
-    key: U64<BigEndian>,
-    parent_present: u8,
-    parent_key: U64<BigEndian>,
-    content: [u8; HASH_BYTES],
-    length: U64<BigEndian>,
-    schema: U32<BigEndian>,
-    kind: U16<BigEndian>,
+pub(crate) struct RootWireRecord {
+    pub(crate) key: U64<BigEndian>,
+    pub(crate) parent_present: ParentWire,
+    pub(crate) parent_key: U64<BigEndian>,
+    pub(crate) descriptor: nudox_object::ObjectDescriptorWireRecord,
 }
 
 const ROOT_HEADER_RECORD_BYTES: usize = size_of::<RootHeaderRecord>();
-const ROOT_ROW_RECORD_BYTES: usize = size_of::<RootRowRecord>();
+pub(crate) const ROOT_ROW_RECORD_BYTES: usize = size_of::<RootWireRecord>();
+const _: [(); 63] = [(); ROOT_ROW_RECORD_BYTES];
 
 impl RootHeaderRecord {
     const fn new(count: u64) -> Self {
@@ -40,7 +57,7 @@ impl RootHeaderRecord {
     }
 }
 
-impl RootRowRecord {
+impl RootWireRecord {
     #[allow(
         clippy::as_conversions,
         clippy::indexing_slicing,
@@ -48,17 +65,14 @@ impl RootRowRecord {
     )]
     fn from_row<DomainTag>(rows: &[RootRow<DomainTag>], row: &RootRow<DomainTag>) -> Self {
         let (parent_present, parent_key) = match row.parent {
-            NO_PARENT => (0, U64::new(0)),
-            parent => (1, U64::new(*rows[parent as usize].key)),
+            NO_PARENT => (ParentWire::Absent, U64::new(0)),
+            parent => (ParentWire::Present, U64::new(*rows[parent as usize].key)),
         };
         Self {
             key: U64::new(*row.key),
             parent_present,
             parent_key,
-            content: *row.object.content,
-            length: U64::new(*row.object.length),
-            schema: U32::new(u32::from(row.object.schema)),
-            kind: U16::new(*row.object.kind),
+            descriptor: nudox_object::ObjectDescriptorWireRecord::from(&row.object),
         }
     }
 }
@@ -69,7 +83,7 @@ impl FixedCanonicalRecord<ROOT_HEADER_RECORD_BYTES> for RootHeaderRecord {
     }
 }
 
-impl FixedCanonicalRecord<ROOT_ROW_RECORD_BYTES> for RootRowRecord {
+impl FixedCanonicalRecord<ROOT_ROW_RECORD_BYTES> for RootWireRecord {
     fn canonical_bytes(&self) -> &[u8; ROOT_ROW_RECORD_BYTES] {
         zerocopy::transmute_ref!(self)
     }
@@ -81,7 +95,7 @@ pub(crate) fn canonical_id<DomainTag>(rows: &[RootRow<DomainTag>]) -> Generation
     let mut hasher = GenerationHasher::new();
     hasher.write_record(&header);
     for row in rows {
-        hasher.write_record(&RootRowRecord::from_row(rows, row));
+        hasher.write_record(&RootWireRecord::from_row(rows, row));
     }
     hasher.finalize()
 }
@@ -101,7 +115,7 @@ pub(crate) fn write_canonical<DomainTag>(rows: &[RootRow<DomainTag>], output: &m
     output[..ROOT_HEADER_RECORD_BYTES].copy_from_slice(header.canonical_bytes());
     let mut offset = ROOT_HEADER_RECORD_BYTES;
     for row in rows {
-        let record = RootRowRecord::from_row(rows, row);
+        let record = RootWireRecord::from_row(rows, row);
         output[offset..offset + ROOT_ROW_RECORD_BYTES].copy_from_slice(record.canonical_bytes());
         offset += ROOT_ROW_RECORD_BYTES;
     }

@@ -12,6 +12,7 @@ mod entry;
 mod locality;
 mod overlay;
 mod packed;
+mod root_view;
 
 pub use builder::{
     GenerationRootBuilder, RejectedRootEntry, RootBuildError, RootPushError, RootWriteError,
@@ -32,6 +33,10 @@ pub use locality::{
 pub use overlay::{OverlayBuildWork, OverlayError, propagate_overlays};
 pub use packed::{
     GenerationRoot, GenerationRootFacts, HierarchyDepth, MetadataBytes, RootEntryCount,
+};
+pub use root_view::{
+    BorrowedGenerationScan, BorrowedGenerationView, BorrowedRootFacts, BorrowedSelectedGeneration,
+    BorrowedSelectedScan, RootReadError, ValidatedRoot,
 };
 
 #[cfg(test)]

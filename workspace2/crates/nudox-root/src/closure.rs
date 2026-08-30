@@ -83,7 +83,7 @@ impl ClosureScratch {
         })
     }
 
-    fn begin_selection(&mut self) {
+    pub(crate) fn begin_selection(&mut self) {
         self.selected_indices.clear();
         self.selected_count = 0;
         self.facts.work = SelectionWork {
@@ -101,13 +101,41 @@ impl ClosureScratch {
         clippy::indexing_slicing,
         reason = "select_closure checked scratch capacity against this exact root before every private RowIndex mark access"
     )]
-    fn mark(&mut self, index: RowIndex) {
+    pub(crate) fn mark(&mut self, index: RowIndex) {
         if self.marks[index.array_index()] != self.epoch {
             self.marks[index.array_index()] = self.epoch;
             self.selected_indices.push(index);
             // A selection is a subset of the root builder's compact row bound.
             self.selected_count += 1;
         }
+    }
+
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "borrowed and owned selectors preflight this exact root against scratch capacity before querying a validated row coordinate"
+    )]
+    pub(crate) fn is_marked(&self, index: RowIndex) -> bool {
+        self.marks[index.array_index()] == self.epoch
+    }
+
+    pub(crate) const fn record_projected_row(&mut self) {
+        self.facts.work.projected_rows += 1;
+    }
+
+    pub(crate) const fn record_ancestor_edge(&mut self) {
+        self.facts.work.ancestor_edges += 1;
+    }
+
+    pub(crate) fn selected_indices(&self) -> &[RowIndex] {
+        &self.selected_indices
+    }
+
+    pub(crate) fn sort_selected_indices(&mut self) {
+        self.selected_indices.sort_unstable();
+    }
+
+    pub(crate) const fn selected_count(&self) -> u32 {
+        self.selected_count
     }
 }
 
