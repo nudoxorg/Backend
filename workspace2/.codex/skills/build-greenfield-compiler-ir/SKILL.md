@@ -79,6 +79,12 @@ explicit legacy ideas rejected
 - Frontends borrow native parser arenas. They lower directly into caller-owned typed builders without a
   universal oracle document or owned intermediate tree.
 - IR is packed fragments with typed dense IDs, kind lanes, type DAG, atom bytes, and pooled lists.
+- A production-named fragment binds every typed coordinate to the exact in-artifact lane or retained
+  authority that validates it. A separately valid `TypeId` lane and type-table envelope are not a
+  composable IR until membership, ownership, kind, ordering, and canonical interning are one proof.
+- Calibration cardinality belongs in fixtures, never in a public wire grammar. Tiny `MAX_* = 2`
+  ceilings may prove a decoder experiment, but that experiment stays under evidence/control paths;
+  it cannot occupy the shipping crate or reserve a schema version.
 - Local build indices never encode unresolved/import/wire phases in reserved bits. Cross-fragment refs
   are separate typed semantic values.
 - Portable artifact incrementality is truth. Salsa/red-green/parser caches are disposable frontend-local
@@ -100,6 +106,12 @@ DO:    typed dense entity lane + kind payload lanes + atom/list/type pools
 DON'T: one EntryIndex with runtime reserved bits for local/export/import/resolved
 DO:    EntityId<Kind> for local dense space; ExternalRef<ExpectedKind> for cross-fragment facts
 
+DON'T: validate geometry, accept every payload permutation, and call the bytes canonical IR
+DO:    prove lane membership, structural sort/dedupe, interned type identity, and permutation-stable bytes
+
+DON'T: publish `MAX_TYPE_NODES = 2` in the shipping format while the real type pool is unspecified
+DO:    keep the two-node control in evidence; design the production coordinate width from measured corpora
+
 DON'T: Box<dyn Error> because generic bounds are inconvenient
 DO:    concrete associated error through the generic driver; one closed boundary error at dispatch
 
@@ -118,6 +130,9 @@ Stop with exact evidence before:
 - adding Salsa, a parser SDK, VM/process runtime, unsafe, SIMD, self-reference, or reference counting;
 - adding a generic or const parameter without two consumers and a branch/copy/invalid-state win;
 - retaining per-entity `Vec`/`Box`/`String` owners or allocating after canonical layout preparation;
+- adding a production crate/schema whose public cardinality is merely the current test matrix;
+- splitting one artifact into independently validated envelopes without an exact authority binding
+  every coordinate-bearing lane to its owner;
 - adding a typestate that performs no proof/effect/ownership transition;
 - changing foundation/index/workflow APIs without a separate named checkpoint;
 - preserving a legacy compiler/IR behavior by inertia;
@@ -130,6 +145,11 @@ illegal stage/kind/language cases, exact recipe sensitivity/insensitivity, golde
 and structural mutation, pointer containment, arena/allocator/copy/retained-byte high water, canonical
 output across input/scheduling permutations, exact invalidation sets, causal errors, typed diagnostics,
 and a top-level real public journey.
+
+The owning workspace's ordinary locked test and Clippy graph must discover the production crate and
+its public journey. A green nested workspace is useful local custody, but is not integration proof.
+Mutation tests must distinguish structural bytes that must reject or canonicalize from payload bytes
+whose variability is semantically intended; “all payload mutations validate” never proves canonicality.
 
 Scheduler work additionally crashes/cancels/kills at every stage and publication prefix, asserts
 physical-credit conservation after every action, exercises heterogeneous memory classes under load,
