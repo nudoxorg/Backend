@@ -28,34 +28,6 @@ pub enum DomainCode {
     IndexLexicalSegment = 10,
 }
 
-/// Rejection for a raw byte outside the closed domain registry.
-#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
-#[error("unknown domain code {raw}")]
-pub struct UnknownDomainCode {
-    /// Observed raw registry code.
-    pub raw: u8,
-}
-
-impl TryFrom<u8> for DomainCode {
-    type Error = UnknownDomainCode;
-
-    fn try_from(raw: u8) -> Result<Self, Self::Error> {
-        match raw {
-            1 => Ok(Self::Object),
-            2 => Ok(Self::Root),
-            3 => Ok(Self::Operation),
-            4 => Ok(Self::DependencySet),
-            5 => Ok(Self::Capability),
-            6 => Ok(Self::Configuration),
-            7 => Ok(Self::StageKey),
-            8 => Ok(Self::IndexSnapshot),
-            9 => Ok(Self::IndexExactSegment),
-            10 => Ok(Self::IndexLexicalSegment),
-            raw => Err(UnknownDomainCode { raw }),
-        }
-    }
-}
-
 impl From<DomainCode> for u8 {
     #[allow(
         clippy::as_conversions,
@@ -76,27 +48,6 @@ pub enum EncodingCode {
     LocalitySorted = 2,
     /// Object-pack encoding.
     ObjectPack = 3,
-}
-
-/// Rejection for a raw byte outside the closed encoding registry.
-#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
-#[error("unknown encoding code {raw}")]
-pub struct UnknownEncodingCode {
-    /// Observed raw registry code.
-    pub raw: u8,
-}
-
-impl TryFrom<u8> for EncodingCode {
-    type Error = UnknownEncodingCode;
-
-    fn try_from(raw: u8) -> Result<Self, Self::Error> {
-        match raw {
-            1 => Ok(Self::Frame),
-            2 => Ok(Self::LocalitySorted),
-            3 => Ok(Self::ObjectPack),
-            raw => Err(UnknownEncodingCode { raw }),
-        }
-    }
 }
 
 impl From<EncodingCode> for u8 {
@@ -188,7 +139,7 @@ pub trait Encoding: sealed::Encoding {
 }
 
 macro_rules! protocol_markers {
-    ($(($marker:ident, $trait_name:ident, $tag_type:ident, $code_type:ident, $label:literal, $code:expr)),+ $(,)?) => {
+    ($(($marker:ident, $trait_name:ident, $tag_type:ident, $code_type:ident, $label:literal, $code:ident)),+ $(,)?) => {
         $(
             #[doc = concat!("Protocol-owned marker for `", stringify!($marker), "`.")]
             #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -198,7 +149,7 @@ macro_rules! protocol_markers {
 
             impl $trait_name for $marker {
                 const TAG: $tag_type = $tag_type::new(*$label);
-                const CODE: $code_type = $code;
+                const CODE: $code_type = $code_type::$code;
             }
         )+
     };
@@ -211,7 +162,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.object.v1\0",
-        DomainCode::Object
+        Object
     ),
     (
         RootDomain,
@@ -219,7 +170,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.root.v1\0\0\0",
-        DomainCode::Root
+        Root
     ),
     (
         OperationDomain,
@@ -227,7 +178,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.op.v1\0\0\0\0\0",
-        DomainCode::Operation
+        Operation
     ),
     (
         DependencySetDomain,
@@ -235,7 +186,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.depset.v1\0",
-        DomainCode::DependencySet
+        DependencySet
     ),
     (
         CapabilityDomain,
@@ -243,7 +194,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.cap.v1\0\0\0\0",
-        DomainCode::Capability
+        Capability
     ),
     (
         ConfigurationDomain,
@@ -251,7 +202,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.config.v1\0",
-        DomainCode::Configuration
+        Configuration
     ),
     (
         StageKeyDomain,
@@ -259,7 +210,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.stage.v1\0\0",
-        DomainCode::StageKey
+        StageKey
     ),
     (
         IndexSnapshotDomain,
@@ -267,7 +218,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.idx.snap.1",
-        DomainCode::IndexSnapshot
+        IndexSnapshot
     ),
     (
         IndexExactSegmentDomain,
@@ -275,7 +226,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.idx.exact1",
-        DomainCode::IndexExactSegment
+        IndexExactSegment
     ),
     (
         IndexLexicalSegmentDomain,
@@ -283,7 +234,7 @@ protocol_markers!(
         DomainTag,
         DomainCode,
         b"nudox.idx.lexic1",
-        DomainCode::IndexLexicalSegment
+        IndexLexicalSegment
     ),
     (
         FrameEncoding,
@@ -291,7 +242,7 @@ protocol_markers!(
         EncodingTag,
         EncodingCode,
         b"nudox.frame.v1\0\0",
-        EncodingCode::Frame
+        Frame
     ),
     (
         LocalitySortedEncoding,
@@ -299,7 +250,7 @@ protocol_markers!(
         EncodingTag,
         EncodingCode,
         b"nudox.locsort.v1",
-        EncodingCode::LocalitySorted
+        LocalitySorted
     ),
     (
         ObjectPackEncoding,
@@ -307,7 +258,7 @@ protocol_markers!(
         EncodingTag,
         EncodingCode,
         b"nudox.objpack.v1",
-        EncodingCode::ObjectPack
+        ObjectPack
     ),
 );
 

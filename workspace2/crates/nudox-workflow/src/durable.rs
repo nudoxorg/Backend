@@ -77,8 +77,11 @@ pub enum WorkflowRecordError {
     UnknownEvent { observed: u8 },
     #[error("workflow record failure tag {observed} is unknown")]
     UnknownFailure { observed: u8 },
-    #[error("event {event:?} carried unexpected output bytes")]
-    UnexpectedOutput { event: EventName },
+    #[error("event {event:?} carried unexpected output bytes {observed:?}")]
+    UnexpectedOutput {
+        event: EventName,
+        observed: [u8; 32],
+    },
     #[error("event {event:?} carried unexpected failure tag {observed}")]
     UnexpectedFailure { event: EventName, observed: u8 },
     #[error("workflow output identity failed checked decode")]
@@ -95,9 +98,13 @@ impl PartialEq for WorkflowRecordError {
             | (Self::UnknownFailure { observed }, Self::UnknownFailure { observed: other }) => {
                 observed == other
             }
-            (Self::UnexpectedOutput { event }, Self::UnexpectedOutput { event: other }) => {
-                event == other
-            }
+            (
+                Self::UnexpectedOutput { event, observed },
+                Self::UnexpectedOutput {
+                    event: other,
+                    observed: other_observed,
+                },
+            ) => event == other && observed == other_observed,
             (
                 Self::UnexpectedFailure { event, observed },
                 Self::UnexpectedFailure {
@@ -188,7 +195,10 @@ fn ensure_zero_output(
     if record.output == [0; 32] {
         Ok(())
     } else {
-        Err(WorkflowRecordError::UnexpectedOutput { event })
+        Err(WorkflowRecordError::UnexpectedOutput {
+            event,
+            observed: record.output,
+        })
     }
 }
 

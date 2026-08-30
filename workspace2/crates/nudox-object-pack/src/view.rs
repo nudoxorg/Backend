@@ -65,7 +65,7 @@ impl<'pack> TryFrom<&'pack [u8]> for ObjectPackView<'pack> {
 }
 
 impl<'pack> ObjectPackView<'pack> {
-    /// Finds a descriptor by raw 32-byte identity using binary search.
+    /// Finds a descriptor by its checked typed identity using binary search.
     #[must_use]
     #[allow(
         clippy::indexing_slicing,

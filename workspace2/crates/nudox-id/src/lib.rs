@@ -6,6 +6,10 @@
 //! BLAKE3 stream component. Logical content consumes declared canonical records; encoded artifacts
 //! accept arbitrary borrowed chunks so mapped files, range reads, and network bodies need not be
 //! staged before hashing.
+//!
+//! Content identities retain 248 digest bits (about a 124-bit birthday-collision budget), while
+//! artifact identities retain 240 digest bits (about a 120-bit birthday-collision budget) after
+//! their protocol authority cells.
 
 #[cfg(test)]
 extern crate std;
@@ -25,8 +29,7 @@ pub use marker::{
     CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, DomainCode, DomainTag,
     Encoding, EncodingCode, EncodingTag, FrameEncoding, IndexExactSegmentDomain,
     IndexLexicalSegmentDomain, IndexSnapshotDomain, LocalitySortedEncoding, ObjectDomain,
-    ObjectPackEncoding, OperationDomain, RootDomain, StageKeyDomain, UnknownDomainCode,
-    UnknownEncodingCode,
+    ObjectPackEncoding, OperationDomain, RootDomain, StageKeyDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};
