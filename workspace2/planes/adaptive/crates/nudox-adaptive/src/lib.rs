@@ -133,7 +133,8 @@ impl LatencyMicros {
 }
 
 /// Physical residence of canonical bytes.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum StorageTier {
     /// Process-addressable memory.
     Ram,
@@ -197,7 +198,8 @@ pub struct Demand {
 }
 
 /// Optional product capability supplied by a verified bundle.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum CapabilityKind {
     /// Language or semantic analyzer.
     Analyzer,
@@ -338,7 +340,8 @@ pub struct PolicyInput<'facts> {
 }
 
 /// Input collection whose fixed bound was exceeded.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum InputClass {
     /// [`PolicyInput::local`].
     Local,
@@ -392,7 +395,8 @@ pub enum PolicyError {
 }
 
 /// Physical budget whose exact admission failed.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ResourceClass {
     /// Process-addressable bytes.
     Ram,
@@ -654,7 +658,8 @@ impl ExecutionTerminal {
 }
 
 /// Concrete adapter phase that owns execution failure attribution.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum ExecutionPhase {
     /// Local residence reservation or transfer.
     LocalResidence,

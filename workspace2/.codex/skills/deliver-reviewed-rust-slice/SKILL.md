@@ -93,6 +93,19 @@ for more research. The agent scores its slice only if asked; the parent owns pro
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.
+- Do not hide plain independent facts behind one-line inherent accessors. If replacing a field cannot
+  invalidate another field or counterfeit authority, make it public. Keep fields private only when
+  the type owns a correlated invariant, and expose the smallest semantic operation rather than a
+  getter with the same name.
+
+```rust
+// DON'T: ceremony around an unconstrained borrowed fact.
+pub struct ExactRow<'bytes> { key: &'bytes [u8] }
+impl<'bytes> ExactRow<'bytes> { pub const fn key(self) -> &'bytes [u8] { self.key } }
+
+// DO: direct field access for an independent fact.
+pub struct ExactRow<'bytes> { pub key: &'bytes [u8] }
+```
 
 ## Types and generics
 
@@ -232,6 +245,41 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
 - Do not add nom/binrw/winnow for fixed records. Consider one only when a genuinely variable grammar
   loses substantial manual state/error code while keeping borrows and provenance.
 
+## Adapter protocols and declarative data
+
+- Model owned protocol requests and responses as typed `serde` records and closed enums. Constructing
+  nested shipping JSON with `json!`, `Map<String, Value>`, string keys, and later field lookups is a
+  rejected intermediate representation: it postpones schema errors to runtime, allocates needless
+  maps/strings, and makes protocol review visual guesswork. `Value` is allowed only for genuinely
+  open extension data or at the final dynamic boundary; name that boundary and test it.
+- Keep transport, request/response DTOs, domain validation, and orchestration in separate modules when
+  they carry different error types or proof surfaces. A single adapter module that owns HTTP, JSON
+  construction, response parsing, domain identity checks, retries, and public service behavior has
+  already crossed a boundary; split it before adding another operation.
+- Protocol literals are declared once as enum serialization names or typed field definitions. When
+  the workspace owns an enum, derive its stable textual projection (`serde`, `strum`, or an equivalent
+  closed mapping) at the enum. Do not repeat `*_name()` matches in each adapter. If core must remain
+  dependency-free, define a local serializable mirror with an exhaustive `From`, not several free
+  string helpers.
+- Error payloads never use `detail: &'static str`, `field: &'static str`, string phases, or “known X”.
+  Use a closed expected/observed enum, the rejected typed value, and the concrete parse/transport
+  source. A catch-all malformed-response variant is acceptable only when it retains the original
+  parser source and bounded offending fragment.
+- Repeated payload checks are data, not copy/pasted branches. Represent the required claims as a
+  typed expectation table or one validation record and return a typed mismatch kind. Do not combine
+  checks by erasing which invariant failed.
+
+```rust
+// DON'T: schema and diagnostics encoded as strings and dynamic maps.
+json!({ "filter": { "must": [{ "key": "snapshot", "match": { "value": id } }] } })
+MalformedResponse { phase, detail: "known metric" }
+
+// DO: one typed wire model and one typed domain rejection.
+#[derive(serde::Serialize)]
+struct MatchCondition<'value> { key: PayloadKey, #[serde(rename = "match")] value: ExactMatch<'value> }
+enum MetricDecodeError { Unknown { observed: BoundedText } }
+```
+
 ## SIMD and unsafe
 
 Scalar is authoritative. Do not SIMD construction, BLAKE3 hashing, sparse lookup, pointer chasing,
@@ -285,6 +333,10 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
   the first exact variant plus operands/source.
 - Avoid branchless theater. In hot loops, predictable branches can beat extra allocations or scans.
   Reshape invalid states and split cold validation from trusted traversal; then profile.
+- State constructor complexity in its proof ledger. An ordered immutable selection should normally
+  require canonical order and validate bounds/order/uniqueness in one linear adjacent pass. Do not
+  ship quadratic duplicate scans for bounded input merely because the bound is finite; if order is
+  semantically meaningful, use an earned bounded set/index and measure it.
 - Early returns are fine for rare failures when they clarify the happy path. Repeated near-identical
   limit branches should be a declarative table or typed common operation, not copy/paste.
 - Tuple positions like `.0`/`.1`, literal loop counts, `1 + (n - 1) / q`, and repeated binary-search

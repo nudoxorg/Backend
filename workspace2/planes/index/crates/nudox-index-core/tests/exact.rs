@@ -18,7 +18,7 @@ fn immutable_exact_segment_borrows_sorted_rows_and_keeps_tombstones() {
     };
 
     let found = segment.lookup(ExactOperation::new(BETA));
-    assert_eq!(found.map(|row| row.key()), Some(BETA));
+    assert_eq!(found.map(|row| row.key), Some(BETA));
     assert_eq!(
         found.and_then(|row| row.value_bytes()),
         Some(b"v2".as_slice())

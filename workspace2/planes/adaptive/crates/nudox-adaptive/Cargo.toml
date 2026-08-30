@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 nudox-id = { path = "../../../../crates/nudox-id" }
 nudox-index-vocab = { path = "../../../index/crates/nudox-index-vocab" }
+strum.workspace = true

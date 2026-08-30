@@ -3,8 +3,7 @@
 use std::{error::Error, fmt, io, ops::Deref};
 
 use nudox_adaptive::{
-    BudgetAmount, CapabilityKind, DuplicateInput, ExecutionPhase, InputClass, Overload,
-    OverloadSubject, PolicyError, RecoveryCause, ResourceClass, StorageTier,
+    BudgetAmount, DuplicateInput, Overload, OverloadSubject, PolicyError, RecoveryCause,
 };
 use serde_json::{Value, json};
 use wave_application_core::{
@@ -514,12 +513,12 @@ fn capability_transition(transition: CapabilityTransition) -> Value {
     match transition {
         CapabilityTransition::Acquire { capability, bundle } => json!({
             "kind": "acquire",
-            "capability": capability_kind_name(capability),
+            "capability": capability.as_ref(),
             "bundle": content_id(bundle),
         }),
         CapabilityTransition::Release { capability, bundle } => json!({
             "kind": "release",
-            "capability": capability_kind_name(capability),
+            "capability": capability.as_ref(),
             "bundle": content_id(bundle),
         }),
     }
@@ -559,7 +558,7 @@ fn execution_state(state: ExecutionState) -> Value {
             "kind": "failed",
             "operation": operation.0,
             "transition": capability_transition(transition),
-            "phase": execution_phase_name(phase),
+            "phase": phase.as_ref(),
         }),
     }
 }
@@ -588,7 +587,7 @@ fn recovery_cause(cause: RecoveryCause) -> Value {
 fn overload_value(overload: Overload) -> Value {
     json!({
         "subject": overload_subject(overload.subject),
-        "resource": resource_class_name(overload.resource),
+        "resource": overload.resource.as_ref(),
         "needed": budget_amount(overload.needed),
         "available": budget_amount(overload.available),
     })
@@ -599,7 +598,7 @@ fn overload_subject(subject: OverloadSubject) -> Value {
         OverloadSubject::Fact(key) => json!({"kind": "fact", "key": fact_key(key)}),
         OverloadSubject::Bundle { capability, bundle } => json!({
             "kind": "bundle",
-            "capability": capability_kind_name(capability),
+            "capability": capability.as_ref(),
             "bundle": content_id(bundle),
         }),
         OverloadSubject::Remote(pin) => json!({"kind": "remote", "pin": pin_value(pin)}),
@@ -633,7 +632,7 @@ fn policy_error(error: PolicyError) -> Value {
             observed,
         } => json!({
             "kind": "too_many_facts",
-            "class": input_class_name(class),
+            "class": class.as_ref(),
             "limit": limit,
             "observed": observed,
         }),
@@ -643,7 +642,7 @@ fn policy_error(error: PolicyError) -> Value {
             observed,
         } => json!({
             "kind": "pin_mismatch",
-            "class": input_class_name(class),
+            "class": class.as_ref(),
             "expected": pin_value(expected),
             "observed": fact_key(observed),
         }),
@@ -659,58 +658,16 @@ fn duplicate_input(duplicate: DuplicateInput) -> Value {
             json!({
                 "kind": "local",
                 "key": fact_key(key),
-                "tier": storage_tier_name(tier),
+                "tier": tier.as_ref(),
             })
         }
         DuplicateInput::Remote { key } => json!({"kind": "remote", "key": fact_key(key)}),
         DuplicateInput::Demand { key } => json!({"kind": "demand", "key": fact_key(key)}),
         DuplicateInput::Bundle { capability, bundle } => json!({
             "kind": "bundle",
-            "capability": capability_kind_name(capability),
+            "capability": capability.as_ref(),
             "bundle": content_id(bundle),
         }),
-    }
-}
-
-fn input_class_name(class: InputClass) -> &'static str {
-    match class {
-        InputClass::Local => "local",
-        InputClass::Remote => "remote",
-        InputClass::Demand => "demand",
-        InputClass::Bundle => "bundle",
-    }
-}
-
-fn resource_class_name(class: ResourceClass) -> &'static str {
-    match class {
-        ResourceClass::Ram => "ram",
-        ResourceClass::Nvme => "nvme",
-        ResourceClass::Operations => "operations",
-        ResourceClass::Retries => "retries",
-    }
-}
-
-fn storage_tier_name(tier: StorageTier) -> &'static str {
-    match tier {
-        StorageTier::Ram => "ram",
-        StorageTier::Nvme => "nvme",
-    }
-}
-
-fn capability_kind_name(capability: CapabilityKind) -> &'static str {
-    match capability {
-        CapabilityKind::Analyzer => "analyzer",
-        CapabilityKind::Compiler => "compiler",
-        CapabilityKind::Codec => "codec",
-        CapabilityKind::Model => "model",
-    }
-}
-
-fn execution_phase_name(phase: ExecutionPhase) -> &'static str {
-    match phase {
-        ExecutionPhase::LocalResidence => "local_residence",
-        ExecutionPhase::CapabilityBundle => "capability_bundle",
-        ExecutionPhase::Remote => "remote",
     }
 }
 

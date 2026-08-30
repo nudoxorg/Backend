@@ -7,6 +7,9 @@ edition = "2024"
 rust-version = "1.97.1"
 publish = false
 
+[workspace.dependencies]
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 

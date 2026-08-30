@@ -34,7 +34,7 @@ fn segment_id(rows: &[ExactRow<'_>]) -> ExactSegmentId {
     hasher.write_record(&CanonicalRecord(*b"nudox.exact.rows.v1"));
     hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
     for row in rows {
-        write_bytes(&mut hasher, row.key());
+        write_bytes(&mut hasher, row.key);
         match row.value_bytes() {
             Some(value) => {
                 hasher.write_record(&CanonicalRecord([1]));
@@ -49,7 +49,8 @@ fn segment_id(rows: &[ExactRow<'_>]) -> ExactSegmentId {
 /// One borrowed exact row. A tombstone is an immutable deletion fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactRow<'bytes> {
-    key: &'bytes [u8],
+    /// Canonical key bytes borrowed from the segment owner.
+    pub key: &'bytes [u8],
     value: ExactValue<'bytes>,
 }
 
@@ -70,12 +71,6 @@ impl<'bytes> ExactRow<'bytes> {
             key,
             value: ExactValue::Tombstone,
         }
-    }
-
-    /// Borrows the canonical key bytes.
-    #[must_use]
-    pub const fn key(self) -> &'bytes [u8] {
-        self.key
     }
 
     /// Borrows a present value, or returns `None` for a tombstone.
@@ -106,7 +101,8 @@ pub(crate) enum ExactValue<'bytes> {
 /// A bounded exact lookup over a borrowed query key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactOperation<'query> {
-    key: &'query [u8],
+    /// Query key borrowed from the caller.
+    pub key: &'query [u8],
 }
 
 impl<'query> ExactOperation<'query> {
@@ -116,11 +112,6 @@ impl<'query> ExactOperation<'query> {
         Self { key }
     }
 
-    /// Borrows the query key.
-    #[must_use]
-    pub const fn key(self) -> &'query [u8] {
-        self.key
-    }
 }
 
 /// A rejected exact segment retains the offending row and bounds.
@@ -186,7 +177,7 @@ impl<'bytes> ExactSegment<'bytes> {
         let mut payload_bytes = 0_usize;
         for (index, row) in rows.iter().enumerate() {
             payload_bytes = payload_bytes
-                .checked_add(row.key().len())
+                .checked_add(row.key.len())
                 .and_then(|total| {
                     row.value_bytes()
                         .map_or(Some(total), |value| total.checked_add(value.len()))

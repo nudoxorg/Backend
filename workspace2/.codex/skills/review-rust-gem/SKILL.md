@@ -62,6 +62,13 @@ Run all applicable passes in this order:
     assertions, boundary tables, public integration, isolated allocation measurement, raw performance
     evidence, feature/target coverage, and source-bearing fault injection.
 
+For every adapter checkpoint, additionally inventory all `serde_json::Value`, `json!`, dynamic maps,
+string error fields/details, and free enum-to-name functions. Reject nested shipping JSON that lacks
+a typed DTO, repeated string projections for enums the workspace owns, and response parsing that mixes
+wire decoding with domain validation and service orchestration. For every immutable collection
+constructor, record its asymptotic validation cost and reject quadratic duplicate scans when canonical
+ordering or an earned bounded index can make the invariant linear.
+
 ## Finding format
 
 Every finding contains:
@@ -92,6 +99,11 @@ Do not approve when:
 - tests assert only success/no panic or use `expect`/`unwrap` as reporting;
 - a simplicity claim depends on suppressed formatting or compressed logical statements;
 - diagnostics exist only in an outer demo;
+- a shipping adapter encodes a closed protocol through nested `json!`/dynamic maps or reports a closed
+  mismatch through string fields/details;
+- a plain independent fact is hidden behind a one-line getter, or a derived authority is made public;
+- a constructor performs quadratic validation without evidence that ordering is semantic and the
+  fixed bound makes the measured cost preferable;
 - retained complexity rises without a measured/deleted cost;
 - the implementation introduced future-phase public surface without current behavior and tests;
 - full gates are red for an owned finding.
