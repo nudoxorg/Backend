@@ -1,7 +1,7 @@
 //! The outage path preserves local data, then expands local capability, then retries remotely.
 
 use nudox_adaptive::{
-    BatteryState, BundleFact, BundleResidence, ByteCount, CapabilityKind, ContentId, Demand,
+    BatteryState, BundleFact, BundleState, ByteCount, CapabilityKind, ContentId, Demand,
     DemandLevel, FactKey, GenerationId, IndexSnapshotId, LatencyMicros, LocalFact, ObjectDomain,
     OperationBudget, Pin, PlacementAction, PolicyDecision, PolicyInput, Pressure, RecoveryCause,
     RemoteFact, RemoteHealth, ResourceBudget, Retention, RetryBudget, StorageTier, next_action,
@@ -69,7 +69,7 @@ impl OutageFixture {
             analyzer: BundleFact {
                 capability: CapabilityKind::Analyzer,
                 bundle: bundle(13),
-                residence: BundleResidence::Available,
+                state: BundleState::AvailableRequired,
             },
         }
     }
@@ -120,7 +120,7 @@ fn outage_recovery_preserves_then_acquires_then_retries() {
     );
 
     let active = [BundleFact {
-        residence: BundleResidence::Active,
+        state: BundleState::ActiveInUse,
         ..available[0]
     }];
     let retry_input = PolicyInput {

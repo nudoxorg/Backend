@@ -1,7 +1,7 @@
 //! Table and permutation attacks for the deterministic policy boundary.
 
 use nudox_adaptive::{
-    BatteryState, BudgetAmount, BundleFact, BundleResidence, ByteCount, CapabilityDomain,
+    BatteryState, BudgetAmount, BundleFact, BundleState, ByteCount, CapabilityDomain,
     CapabilityKind, ContentId, Demand, DemandLevel, DuplicateInput, ExecutionPhase, ExecutionPoll,
     ExecutionRequest, ExecutionTerminal, FactKey, GenerationId, IndexSnapshotId, InputClass,
     LatencyMicros, LocalFact, MAX_REMOTE_FACTS, ObjectDomain, OperationBudget, Overload,
@@ -142,12 +142,12 @@ fn bundle_permutations_keep_the_same_acquisition_action() {
         BundleFact {
             capability: CapabilityKind::Model,
             bundle: bundle(9),
-            residence: BundleResidence::Available,
+            state: BundleState::AvailableRequired,
         },
         BundleFact {
             capability: CapabilityKind::Analyzer,
             bundle: bundle(2),
-            residence: BundleResidence::Available,
+            state: BundleState::AvailableRequired,
         },
     ];
     let bundle_reverse = [bundle_forward[1], bundle_forward[0]];
@@ -167,6 +167,89 @@ fn bundle_permutations_keep_the_same_acquisition_action() {
         };
         assert_eq!(next_action(&input), expected_acquire);
     }
+}
+
+#[test]
+fn outage_does_not_activate_an_idle_bundle_without_capability_demand() {
+    let idle_bundle = [BundleFact {
+        capability: CapabilityKind::Analyzer,
+        bundle: bundle(2),
+        state: BundleState::AvailableIdle,
+    }];
+    let input = PolicyInput {
+        pin: pin(),
+        local: &[],
+        remote: &[],
+        demand: &[],
+        bundles: &idle_bundle,
+        remote_health: RemoteHealth::Outage,
+        budget: budget(),
+    };
+
+    assert_eq!(
+        next_action(&input),
+        PolicyDecision::Act(PlacementAction::RetryRemote {
+            pin: pin(),
+            cause: RecoveryCause::Outage,
+            retries_remaining: RetryBudget::from(0),
+        })
+    );
+}
+
+#[test]
+fn critical_storage_never_discards_the_only_copy() {
+    let only_copy = [LocalFact {
+        key: key(5),
+        tier: StorageTier::Nvme,
+        bytes: ByteCount::from(16),
+        retention: Retention::Idle,
+    }];
+    let input = PolicyInput {
+        pin: pin(),
+        local: &only_copy,
+        remote: &[],
+        demand: &[],
+        bundles: &[],
+        remote_health: healthy(),
+        budget: ResourceBudget {
+            storage_pressure: Pressure::Critical,
+            ..budget()
+        },
+    };
+
+    assert_eq!(next_action(&input), PolicyDecision::NoAction);
+}
+
+#[test]
+fn existing_nvme_copy_is_not_preserved_twice() {
+    let local = [
+        LocalFact {
+            key: key(8),
+            tier: StorageTier::Ram,
+            bytes: ByteCount::from(16),
+            retention: Retention::Idle,
+        },
+        LocalFact {
+            key: key(8),
+            tier: StorageTier::Nvme,
+            bytes: ByteCount::from(16),
+            retention: Retention::Idle,
+        },
+    ];
+    let input = PolicyInput {
+        pin: pin(),
+        local: &local,
+        remote: &[],
+        demand: &[],
+        bundles: &[],
+        remote_health: healthy(),
+        budget: ResourceBudget {
+            memory_pressure: Pressure::Elevated,
+            ..budget()
+        },
+    };
+
+    assert_eq!(next_action(&input), PolicyDecision::NoAction);
 }
 
 #[test]
@@ -291,12 +374,13 @@ fn contraction_evicts_before_releasing_an_active_bundle() {
     let bundles = [BundleFact {
         capability: CapabilityKind::Analyzer,
         bundle: bundle(15),
-        residence: BundleResidence::Active,
+        state: BundleState::ActiveIdle,
     }];
+    let remote = [remote(6)];
     let eviction_input = PolicyInput {
         pin: pin(),
         local: &local,
-        remote: &[],
+        remote: &remote,
         demand: &[],
         bundles: &bundles,
         remote_health: healthy(),
@@ -324,6 +408,29 @@ fn contraction_evicts_before_releasing_an_active_bundle() {
             bundle: bundle(15),
         })
     );
+}
+
+#[test]
+fn contraction_never_releases_a_bundle_owned_by_running_work() {
+    let bundles = [BundleFact {
+        capability: CapabilityKind::Analyzer,
+        bundle: bundle(15),
+        state: BundleState::ActiveInUse,
+    }];
+    let input = PolicyInput {
+        pin: pin(),
+        local: &[],
+        remote: &[],
+        demand: &[],
+        bundles: &bundles,
+        remote_health: healthy(),
+        budget: ResourceBudget {
+            memory_pressure: Pressure::Critical,
+            ..budget()
+        },
+    };
+
+    assert_eq!(next_action(&input), PolicyDecision::NoAction);
 }
 
 #[test]

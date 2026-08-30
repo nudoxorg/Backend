@@ -185,13 +185,41 @@ pub enum CapabilityKind {
     Model,
 }
 
-/// Externally observable local state of a verified capability bundle.
+/// Externally observable physical residence of a verified capability bundle.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BundleResidence {
     /// Verified bytes are locally available but inactive.
     Available,
-    /// The verified capability is active and can be released by contraction.
+    /// The verified capability is active.
     Active,
+}
+
+/// Closed bundle state coupling residence to its current consumer authority.
+///
+/// In particular, an inactive bundle cannot be in use and an active bundle cannot still be
+/// awaiting acquisition. Keeping those combinations out of the vocabulary prevents contraction
+/// from releasing a live capability and prevents outages from activating unrelated bundles.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum BundleState {
+    /// Verified bytes are locally available and no consumer requires activation.
+    AvailableIdle,
+    /// A consumer requires this locally available capability.
+    AvailableRequired,
+    /// The capability is active but no running operation owns it.
+    ActiveIdle,
+    /// A running local operation owns the active capability.
+    ActiveInUse,
+}
+
+impl BundleState {
+    /// Return the externally observable physical residence.
+    #[must_use]
+    pub const fn residence(self) -> BundleResidence {
+        match self {
+            Self::AvailableIdle | Self::AvailableRequired => BundleResidence::Available,
+            Self::ActiveIdle | Self::ActiveInUse => BundleResidence::Active,
+        }
+    }
 }
 
 /// One bundle fact from the signature-verification boundary.
@@ -201,8 +229,8 @@ pub struct BundleFact {
     pub capability: CapabilityKind,
     /// Hash-pinned verified artifact.
     pub bundle: ContentId<CapabilityDomain>,
-    /// Observable activation state; the policy keeps no shadow state.
-    pub residence: BundleResidence,
+    /// Observable residence and consumer authority; the policy keeps no shadow state.
+    pub state: BundleState,
 }
 
 /// Current remote health as observed by the adapter.
@@ -837,7 +865,13 @@ fn least_preservation_candidate(input: &PolicyInput<'_>) -> Option<LocalFact> {
         .local
         .iter()
         .copied()
-        .filter(|local| local.tier == StorageTier::Ram && local.retention == Retention::Idle)
+        .filter(|local| {
+            local.tier == StorageTier::Ram
+                && local.retention == Retention::Idle
+                && !input.local.iter().any(|candidate| {
+                    candidate.key == local.key && candidate.tier == StorageTier::Nvme
+                })
+        })
         .min_by_key(|local| local.key)
 }
 
@@ -866,7 +900,7 @@ fn least_acquire_candidate(input: &PolicyInput<'_>) -> Option<BundleFact> {
         .bundles
         .iter()
         .copied()
-        .filter(|bundle| bundle.residence == BundleResidence::Available)
+        .filter(|bundle| bundle.state == BundleState::AvailableRequired)
         .min_by_key(|bundle| (bundle.capability, bundle.bundle))
 }
 
@@ -956,8 +990,26 @@ fn least_eviction_candidate(input: &PolicyInput<'_>) -> Option<LocalFact> {
         .local
         .iter()
         .copied()
-        .filter(|local| local.tier == StorageTier::Nvme && local.retention == Retention::Idle)
+        .filter(|local| {
+            local.tier == StorageTier::Nvme
+                && local.retention == Retention::Idle
+                && has_eviction_survivor(input, local.key)
+        })
         .min_by_key(|local| local.key)
+}
+
+fn has_eviction_survivor(input: &PolicyInput<'_>, key: FactKey) -> bool {
+    let has_ram_copy = input
+        .local
+        .iter()
+        .any(|candidate| candidate.key == key && candidate.tier == StorageTier::Ram);
+    let matching_remote_is_healthy = matches!(
+        input.remote_health,
+        RemoteHealth::Healthy { observed, .. } if observed == input.pin
+    );
+    let has_remote_copy =
+        matching_remote_is_healthy && input.remote.iter().any(|candidate| candidate.key == key);
+    has_ram_copy || has_remote_copy
 }
 
 fn least_release_candidate(input: &PolicyInput<'_>) -> Option<BundleFact> {
@@ -971,7 +1023,7 @@ fn least_release_candidate(input: &PolicyInput<'_>) -> Option<BundleFact> {
         .bundles
         .iter()
         .copied()
-        .filter(|bundle| bundle.residence == BundleResidence::Active)
+        .filter(|bundle| bundle.state == BundleState::ActiveIdle)
         .min_by_key(|bundle| (bundle.capability, bundle.bundle))
 }
 
