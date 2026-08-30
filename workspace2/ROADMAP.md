@@ -23,8 +23,9 @@ The remaining gaps are architectural, not polish:
   head consumes it and releases a distinct published capability after a stable receipt.
 - `PinnedObjectRequest` is rebound after the provider was already selected; operation binding should
   happen once and eliminate the duplicate generation/object comparisons.
-- `nudox-workflow` proves canonical records and shared asynchronous append, but not a crash-safe file
-  journal with group commit, sync receipts, reopen, torn-tail handling, and fault injection.
+- `nudox-workflow` now has a crash-safe, single-owner file journal with sync receipts, reopen,
+  torn-tail repair, exclusive ownership, directory durability, and fault injection; bounded MPSC
+  group commit and atomic publication remain open.
 - the object pack validates its header and ordered directory, but has no public zero-copy lookup/body
   view, selected content verification, authenticated partial range, or async leased range adapter.
 - transport, horizontally partitioned remote index, vertically elastic compiler workers, adaptive
@@ -91,10 +92,13 @@ The remaining gaps are architectural, not polish:
 
 ### 4. Durable publication and workflow plane
 
-- [ ] Single-owner file journal with bounded MPSC submissions, reusable group-commit buffers, stable
-  receipts, typed poison/shutdown, and no producer-side file or probe sharing.
-- [ ] Crash/reopen at every prefix, short write, sync failure, torn tail, duplicate record, and
-  directory durability evidence against an independent reducer.
+- [x] Blocking single-owner file journal with stable receipts, typed poison/reopen, streaming replay,
+  exclusive physical ownership, and no retained log allocation. See
+  [`DURABLE_JOURNAL_D0_CLOSURE.md`](DURABLE_JOURNAL_D0_CLOSURE.md).
+- [x] Crash/reopen at every prefix, short write, sync failure, torn tail, duplicate record, checksum
+  enforcement, and directory durability evidence against an independent reducer.
+- [ ] Put bounded MPSC submissions and reusable group-commit buffers around the single file owner;
+  prove exact receipt fan-out, cancellation, poison, shutdown, and no producer-side file/probe sharing.
 - [ ] Immutable publication log plus compact CAS head/index; only a stable receipt can release the
   publication effect and convert verified authority to published authority.
 
@@ -170,7 +174,7 @@ integration card on current shared state; prototype APIs have no compatibility s
 | Index I0 vocabulary | Root deletion candidate is held after final review exposed raw cross-family rebranding | Rebase only after typed identity integrity closes; add a true negative API witness, rerun blind review, and treat the integrated tree as a fresh candidate. |
 | Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
 | Leased range T0 | Autonomous Terra calibration active; the first pre-edit Terra rejected an incomplete ABI/credit card | First terminal is a two-lease runtime-independent reorder/conservation proof with complete/cancelled terminals. Partial/degraded/failed and physical adapters remain later children. |
-| Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |
+| Durable journal D0 | Synchronous single-owner durability substrate integrated; asynchronous heart remains open | Preserve the accepted file authority and its fault proofs while adding bounded MPSC/group commit as a separate owner, then bind stable receipts to publication CAS. |
 | Observability health | Adapter seam is green after removing the dedicated scenario crate | A future lifecycle capability must expose real exporter failure without reintroducing a test-support package or portable SDK dependency. |
 
 ## Manager/worker execution cycle
