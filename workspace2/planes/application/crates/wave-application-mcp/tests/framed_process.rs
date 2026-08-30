@@ -100,22 +100,29 @@ fn framed_mcp_process_preserves_structured_results_and_named_cancellation()
 
     let cancellation_request = json!({
         "jsonrpc": "2.0",
-        "id": 82,
         "method": "$/cancelRequest",
-        "params": {"correlation": 82, "operation": "1"},
+        "params": {"requestId": 82},
     });
     send(&mut stdin, &cancellation_request)?;
-    let cancelled = receive(&mut stdout)?;
-    let cancelled_structured = &cancelled["result"]["structuredContent"];
-    assert_eq!(cancelled_structured["body"]["kind"], "cancelled");
-    assert_eq!(cancelled_structured["terminal"]["kind"], "cancelled");
 
     let progress_request = request(83, "progress", &json!({"cursor": "start"}))?;
     send(&mut stdin, &progress_request)?;
     let progress = receive(&mut stdout)?;
+    assert_eq!(progress["id"], 83);
     let page = &progress["result"]["structuredContent"]["body"]["page"];
     assert_eq!(page["kind"], "terminal");
     assert_eq!(page["terminal"]["kind"], "cancelled");
+
+    let malformed = json!({
+        "jsonrpc": "2.0",
+        "id": 84,
+        "method": "tools/call",
+        "params": {"name": "nudox.application"},
+    });
+    send(&mut stdin, &malformed)?;
+    let error = receive(&mut stdout)?;
+    assert_eq!(error["id"], 84);
+    assert_eq!(error["error"]["data"]["code"], "missing_field");
 
     drop(stdin);
     let status = child.wait()?;

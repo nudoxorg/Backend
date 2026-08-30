@@ -15,6 +15,6 @@ pub use frame::{
     MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,
 };
 pub use json::{
-    McpEnvelope, decode_mcp, encode_cli_adapter_error, encode_cli_reply, mcp_error, mcp_reply,
-    reply_json,
+    McpDecode, McpDecodeError, McpEnvelope, decode_mcp, encode_cli_adapter_error, encode_cli_reply,
+    mcp_error, mcp_reply, reply_json,
 };

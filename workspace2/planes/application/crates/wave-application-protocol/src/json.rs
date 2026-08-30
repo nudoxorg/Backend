@@ -1,11 +1,12 @@
 //! JSON-RPC/MCP envelope decoding and lossless presentation.
 
-use std::io;
+use std::{error::Error, fmt, io, ops::Deref};
 
 use serde_json::{Value, json};
 use wave_application_core::{
-    ApplicationInput, ApplicationReply, Capability, CapabilityHealth, Diagnostic, DiagnosticDetail,
-    InputText, ProgressCursor, ProgressEvents, ProgressPage, ReplyBody, Terminal,
+    APPLICATION_OPERATION, ApplicationInput, ApplicationReply, Capability, CapabilityHealth,
+    CorrelationId, Diagnostic, DiagnosticDetail, InputText, ProgressCursor, ProgressEvents,
+    ProgressPage, ReplyBody, Terminal,
 };
 
 use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
@@ -14,38 +15,97 @@ use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpEnvelope {
     /// JSON-RPC request identifier preserved for the response.
-    pub id: Value,
+    /// `None` denotes a JSON-RPC notification, which must not receive a response.
+    pub id: Option<Value>,
     /// Closed typed service input.
     pub input: ApplicationInput,
 }
 
-/// Decodes a bounded MCP JSON-RPC request without performing business validation.
+/// A bounded MCP decode failure with the already parsed JSON-RPC request id retained.
 ///
-/// # Errors
-///
-/// Returns [`AdapterError`] when the JSON-RPC envelope or its transport fields are malformed.
-pub fn decode_mcp(body: &[u8]) -> Result<McpEnvelope, AdapterError> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|source| AdapterError::invalid_json("frame", source))?;
-    let object = value.as_object().ok_or_else(|| malformed("request"))?;
-    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return Err(malformed("jsonrpc"));
+/// Parse failures have no trustworthy id and therefore carry `None`. Once the JSON object has
+/// been parsed, every subsequent shape/dispatch failure retains its `id` so the process adapter can
+/// return a JSON-RPC error to the originating request instead of manufacturing `null`.
+#[derive(Debug)]
+pub struct McpDecodeError {
+    /// Request id, when the JSON object supplied one.
+    pub id: Option<Value>,
+    /// Structured adapter cause, including its original parser source where applicable.
+    pub error: AdapterError,
+}
+
+impl McpDecodeError {
+    fn new(id: Option<Value>, error: AdapterError) -> Self {
+        Self { id, error }
     }
-    let id = object.get("id").cloned().ok_or_else(|| missing("id"))?;
-    let method = object
-        .get("method")
-        .and_then(Value::as_str)
-        .ok_or_else(|| malformed("method"))?;
-    let params = object
-        .get("params")
-        .and_then(Value::as_object)
-        .ok_or_else(|| missing("params"))?;
-    let input = match method {
-        "tools/call" => tool_input(params)?,
-        "$/cancelRequest" => cancellation_input(params)?,
-        _ => return Err(unknown(method)),
+}
+
+impl Deref for McpDecodeError {
+    type Target = AdapterError;
+
+    fn deref(&self) -> &Self::Target {
+        &self.error
+    }
+}
+
+impl fmt::Display for McpDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl Error for McpDecodeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// Closed result of one bounded MCP frame decode.
+#[derive(Debug)]
+pub enum McpDecode {
+    /// A valid request or notification ready for the application service.
+    Accepted(McpEnvelope),
+    /// A transport rejection with its parsed request identity when available.
+    Rejected(McpDecodeError),
+}
+
+/// Decodes a bounded MCP JSON-RPC request without performing business validation.
+#[must_use]
+pub fn decode_mcp(body: &[u8]) -> McpDecode {
+    let value: Value = match serde_json::from_slice(body) {
+        Ok(value) => value,
+        Err(source) => {
+            return McpDecode::Rejected(McpDecodeError::new(
+                None,
+                AdapterError::invalid_json("frame", source),
+            ));
+        }
     };
-    Ok(McpEnvelope { id, input })
+    let id = value
+        .as_object()
+        .and_then(|object| object.get("id"))
+        .cloned();
+    let Some(object) = value.as_object() else {
+        return McpDecode::Rejected(McpDecodeError::new(id, malformed("request")));
+    };
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return McpDecode::Rejected(McpDecodeError::new(id, malformed("jsonrpc")));
+    }
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        return McpDecode::Rejected(McpDecodeError::new(id, malformed("method")));
+    };
+    let Some(params) = object.get("params").and_then(Value::as_object) else {
+        return McpDecode::Rejected(McpDecodeError::new(id, missing("params")));
+    };
+    let input = match method {
+        "tools/call" => tool_input(params),
+        "$/cancelRequest" => cancellation_input(params),
+        _ => Err(unknown(method)),
+    };
+    match input {
+        Ok(input) => McpDecode::Accepted(McpEnvelope { id, input }),
+        Err(error) => McpDecode::Rejected(McpDecodeError::new(id, error)),
+    }
 }
 
 /// Builds a standard JSON-RPC error response for malformed adapter input.
@@ -122,8 +182,17 @@ fn tool_input(params: &serde_json::Map<String, Value>) -> Result<ApplicationInpu
 fn cancellation_input(
     params: &serde_json::Map<String, Value>,
 ) -> Result<ApplicationInput, AdapterError> {
-    let correlation = required_number(params, "correlation")?;
-    input_from_json("cancel", correlation, |name| required_text(params, name))
+    // MCP's cancellation notification identifies the original request, not the service's
+    // internal operation key. This application currently exposes one bounded operation, so the
+    // request id maps to its correlation while the typed operation identity remains service-owned.
+    let request_id = params
+        .get("requestId")
+        .ok_or_else(|| missing("requestId"))?;
+    let correlation = request_id_number(request_id, "requestId")?;
+    Ok(ApplicationInput::Cancel {
+        correlation: CorrelationId(correlation),
+        operation: APPLICATION_OPERATION,
+    })
 }
 
 fn required_text(
@@ -145,6 +214,17 @@ fn required_number(
         .get(name)
         .and_then(Value::as_u64)
         .ok_or_else(|| malformed(name))
+}
+
+fn request_id_number(value: &Value, field: &'static str) -> Result<u64, AdapterError> {
+    if let Some(number) = value.as_u64() {
+        return Ok(number);
+    }
+    let Some(text) = value.as_str() else {
+        return Err(malformed(field));
+    };
+    text.parse::<u64>()
+        .map_err(|source| AdapterError::invalid_number(field, source))
 }
 
 fn reply_body(body: ReplyBody) -> Value {
