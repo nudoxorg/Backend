@@ -12,6 +12,7 @@ static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpectedFailure {
     Header,
+    FrameChecksum,
     ExclusiveOwnership,
     Reduction,
 }

@@ -11,7 +11,7 @@ use nudox_durable_journal::{
 };
 use nudox_workflow::{
     Effect, EffectAction, EventKind, FailureCode, Phase, Recovery, StageKey, StageOutput,
-    WorkflowEvent, WorkflowState, WorkflowVersion,
+    WORKFLOW_RECORD_BYTES, WorkflowEvent, WorkflowState, WorkflowVersion,
 };
 
 fn event(key: StageKey, kind: EventKind) -> WorkflowEvent {
@@ -250,6 +250,39 @@ fn each_header_field_class_has_an_exact_diagnosis() -> Result<(), ScenarioError>
         fixture.replace(&mutated)?;
         expect_header(FileJournal::open(fixture.path()), expected)?;
     }
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn every_workflow_record_byte_is_rejected_by_the_file_boundary_checksum()
+-> Result<(), ScenarioError> {
+    const FRAME_SEQUENCE_BYTES: usize = size_of::<u64>();
+
+    let (fixture, canonical) = one_frame(event(StageKey::from([13; 32]), EventKind::Requested))?;
+    let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
+    let expected_offset = JournalOffset::from(u64::try_from(JOURNAL_HEADER_BYTES)?);
+
+    for record_byte in 0..WORKFLOW_RECORD_BYTES {
+        let mut mutated = canonical.clone();
+        mutated[record_start + record_byte] ^= 1;
+        fixture.replace(&mutated)?;
+        expect_journal(
+            FileJournal::open(fixture.path()),
+            ExpectedFailure::FrameChecksum,
+            |observed| {
+                matches!(
+                    observed,
+                    JournalError::FrameChecksum {
+                        sequence: FrameSequence::FIRST,
+                        offset,
+                    } if *offset == expected_offset
+                )
+            },
+        )?;
+        assert_eq!(fs::metadata(fixture.path())?.len(), receipt_end(0)?);
+    }
+
     fixture.remove()?;
     Ok(())
 }
