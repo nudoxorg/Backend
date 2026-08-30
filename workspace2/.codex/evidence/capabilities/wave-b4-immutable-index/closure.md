@@ -9,15 +9,26 @@ evidence-only increment; B4-01 through B4-13 remain red.
 ## Exact planned Nix commands
 
 ```text
-nix develop ./workspace2 --command cargo test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets --no-fail-fast
-nix develop ./workspace2 --command cargo test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --doc --no-fail-fast
-nix develop ./workspace2 --command cargo clippy --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets -- -D warnings
-nix develop ./workspace2 --command cargo doc --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --no-deps
-nix develop ./workspace2 --command cargo fmt --manifest-path workspace2/planes/index/Cargo.toml --all -- --check
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" fmt --manifest-path workspace2/planes/index/Cargo.toml --all -- --check'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets --no-fail-fast'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --doc --no-fail-fast'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" clippy --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets -- -D warnings'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" doc --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --no-deps'
 ```
 
 These are read-only checks for existing I0 vocabulary. Future B4 code needs focused commands in a
 frozen worker card and cannot cite them as segment/query proof.
+
+## Toolchain failure and recovery receipt
+
+Ambient `cargo` under `nix develop` is inadmissible: Sol's raw checkout receipt observed a nightly
+`rustc` on `PATH`, `NUDOX_STABLE_TOOLCHAIN=1.97.1`, a shared `RUSTC_WRAPPER` sccache setting, and
+`E0514` even with a fresh target. The manager's bounded ambient retry emitted only Nix's initial
+`fetching git input` line before the 30-second command window expired, so it is recorded as an
+inconclusive alternate attempt and not as a claimed reproduction. The commands above explicitly pick
+the pinned stable `cargo`/`rustc` and clear the wrapper; their raw successful receipt is required
+before Phase 0 closes. `workspace2/tools/quality.sh` remains an equivalent full-workspace fallback
+because it registers pinned rustup toolchains.
 
 ## Raw checks and reviewer custody
 

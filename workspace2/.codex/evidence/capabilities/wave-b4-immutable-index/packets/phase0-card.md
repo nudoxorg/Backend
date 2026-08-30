@@ -56,6 +56,19 @@ and executable representation. The first red control has four segments/four rang
 merge candidates; these bound evidence workload only. Reserve one independent reviewer; no
 production-writing Luna is dispatched.
 
+## Exact focused commands
+
+```text
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" fmt --manifest-path workspace2/planes/index/Cargo.toml --all -- --check'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets --no-fail-fast'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" test --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --doc --no-fail-fast'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" clippy --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --all-targets -- -D warnings'
+nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/rustc" RUSTC_WRAPPER= "$NUDOX_STABLE_TOOLCHAIN/bin/cargo" doc --manifest-path workspace2/planes/index/Cargo.toml --locked --offline --workspace --no-deps'
+```
+
+Ambient `cargo` is forbidden because it can select a nightly compiler and inherit the shared sccache
+wrapper; the commands must choose `NUDOX_STABLE_TOOLCHAIN` and clear `RUSTC_WRAPPER`.
+
 ## Questions requiring parent authority
 
 None. Durable identity grammar, dependency/unsafe/SIMD authority, or backend/transport truth would
