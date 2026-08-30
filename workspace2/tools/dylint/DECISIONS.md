@@ -30,9 +30,10 @@ Sources:
 - <https://github.com/trailofbits/dylint#writing-lints>
 - <https://rustc-dev-guide.rust-lang.org/diagnostics.html>
 
-## First semantic bundle
+## Compiler-resolved semantic bundle
 
-The first bundle chooses four narrow rules whose meaning can be proven from HIR and type checking.
+The bundle chooses narrow rules whose meaning can be proven from HIR, type checking, or macro
+provenance.
 
 1. `NUDOX_ERASED_MAP_ERR` finds `Result::map_err` closures whose argument is unused and whose body
    directly constructs or names the replacement error. A named `_source` is not a source-preservation
@@ -40,10 +41,14 @@ The first bundle chooses four narrow rules whose meaning can be proven from HIR 
    validators may deliberately rescan canonical bytes to recover an exact cold diagnostic after a
    typed cast rejects. That call exclusion is a documented false-negative boundary; the helper's
    exact error behavior remains an integration-test and review obligation.
-2. `NUDOX_STRINGLY_STATE_FIELD` finds fields named `step`, `expected`, or `observed` whose resolved
-   type is either an immutable string slice or `String`. It does not reject diagnostic message text
-   or unrelated string data.
-3. `NUDOX_REDUNDANT_PUBLIC_ACCESSOR` finds a public inherent zero-argument receiver method whose body
+2. `NUDOX_STRINGLY_STATE_FIELD` finds static string fields that name a closed protocol/error
+   vocabulary: `step`, `stage`, and `phase` anywhere, or `detail`, `expected`, `observed`, and
+   `field` on an enum ending in `Error`. It uses the field's resolved type and DefId ownership, so
+   ordinary diagnostic messages and dynamically supplied `String` data are legal. A dynamic string
+   can still be a misuse when a particular protocol closes its vocabulary; that needs a DTO/contract
+   test because the compiler cannot infer the vocabulary's source.
+3. `NUDOX_REDUNDANT_PUBLIC_ACCESSOR` finds a public inherent zero-argument receiver method (including
+   an owning `self` receiver) whose body
    only returns an already-public field of the same receiver. `ImplItemImplKind` supplies the
    compiler-owned inherent-versus-trait distinction, and rustc's associated-item metadata proves
    that the function has a `self` parameter. Required trait methods and associated functions are
@@ -54,14 +59,27 @@ The first bundle chooses four narrow rules whose meaning can be proven from HIR 
    to every alias consumer. Generic parameters, associated types, and closed enum dispatch are not flagged. An earned cold adapter or plugin boundary can use a
    narrow item-level `#[allow(nudox_dynamic_dispatch, reason = "...")]`. The reason must identify
    the erased boundary and its ownership or latency justification. The UI suite includes this
-   intentional escape hatch next to a rejected unannotated trait object. This first bundle does not
+   intentional escape hatch next to a rejected unannotated trait object. This bundle does not
    semantically reject broader suppression scope; module- or crate-wide suppression remains an
    explicit review tripwire until a separate attribute-scope lint has pass/fail fixtures.
+5. `NUDOX_ENUM_STATIC_STR_PROJECTION` finds free, one-parameter functions whose parameter resolves
+   to an enum defined by the crate and whose body directly matches that parameter into string
+   literals. Inherent and trait methods are intentionally excluded: the former is the preferred
+   ownership boundary and the latter may be a standard conversion/formatting contract. The lint does
+   not guess from a function name, nor does it inspect external enum definitions.
+6. `NUDOX_DYNAMIC_JSON_CONSTRUCTION` follows macro-expansion provenance to the `serde_json` crate's
+   `json!` macro and emits once at the original call site. It therefore cannot be bypassed by an
+   import alias or local forwarding macro. The exact data vocabulary remains context-sensitive:
+   a documented final open-extension/ABI boundary may use an item-level `allow` with a reason, while
+   every closed protocol request/response must be a `Serialize` DTO. The rule does not infer
+   `Map<String, Value>` intent, because that type is also the correct representation for open data.
 
-Each rule ignores external macro expansions but checks constructs emitted by local macros. One focused
-UI fixture per law contains direct, local-macro, alias or unused-binding attacks plus the nearest legal
-neighbors, so changing an enforcement boundary changes a named diagnostic specimen. The runner uses
-an absolute `CARGO_MANIFEST_DIR` fixture root and denies all four lints explicitly; corrupting a golden
+The HIR/type rules ignore external macro expansions but check constructs emitted by local macros;
+the JSON rule is the deliberate exception and identifies only the external `serde_json::json!` macro
+by its resolved definition. One focused UI fixture per law contains direct, local-macro, alias or
+unused-binding attacks plus the nearest legal neighbors, so changing an enforcement boundary changes
+a named diagnostic specimen. The runner uses an absolute `CARGO_MANIFEST_DIR` fixture root and denies
+all six lints explicitly; corrupting a golden
 diagnostic was verified to fail the suite. The test also rejects an empty fixture inventory and
 requires an exact `.rs`/`.stderr` pair in both directions.
 
@@ -89,6 +107,16 @@ workspace is tested by its exact UI suite and is not recursively linted by itsel
   consumer model.
 - Manual `Display`/`Debug` can be boilerplate or deliberate formatting. A name suffix such as `Error`
   is not semantic proof.
+- A public enum variant cannot be called dead from within its defining crate. Another crate can
+  construct it without leaving a local HIR use, and a no-dependency Dylint invocation deliberately
+  cannot prove the absence of downstream consumers. Private variants could be counted locally, but
+  that would not enforce the requested public-API law. Public-surface inventories and consumer tests
+  own deletion of obsolete public error variants.
+- `serde_json::Value` and `Map<String, Value>` may be the final representation of a genuinely open
+  extension or external ABI. Rustc can resolve those types but cannot prove whether a particular
+  boundary is open. The macro lint therefore requires a narrow, reasoned allow at that boundary;
+  dynamic-map construction still needs a future explicit reviewed `open_json_boundary` annotation
+  before it can be rejected without conflating legal open data with closed protocol payloads.
 - Tuple projections and numeric literals are meaningful in some algorithms and accidental in others.
   Linting them without a domain declaration would reproduce the regex false positives.
 - An unbounded constructor token is not proof that a queue participates in a shipping hot path, nor

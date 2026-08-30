@@ -10,7 +10,17 @@ LL | |     }
    = note: requested on the command line with `-D nudox-redundant-public-accessor`
 
 error: public accessor only returns the public field `bytes`
-  --> $DIR/redundant_public_accessor.rs:19:9
+  --> $DIR/redundant_public_accessor.rs:12:5
+   |
+LL | /     pub const fn into_bytes(self) -> usize {
+LL | |         self.bytes
+LL | |     }
+   | |_____^
+   |
+   = help: delete the accessor and use direct field access
+
+error: public accessor only returns the public field `bytes`
+  --> $DIR/redundant_public_accessor.rs:23:9
    |
 LL | /         pub const fn $name(&self) -> usize {
 LL | |             self.bytes
@@ -23,5 +33,4 @@ LL |       local_accessor!(expanded_bytes);
    = help: delete the accessor and use direct field access
    = note: this error originates in the macro `local_accessor` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 2 previous errors
-
+error: aborting due to 3 previous errors

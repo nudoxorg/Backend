@@ -9,6 +9,10 @@ impl PublicFact {
         self.bytes
     }
 
+    pub const fn into_bytes(self) -> usize {
+        self.bytes
+    }
+
     pub const fn bytes_of(fact: &Self) -> usize {
         fact.bytes
     }
