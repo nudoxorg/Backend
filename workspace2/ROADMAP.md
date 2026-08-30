@@ -52,6 +52,9 @@ The remaining gaps are architectural, not polish:
 - Wave A.2 obtained a valid source-isolated Terra BLOCK and therefore added no publication API. Its
   frozen contracts and fresh-cache tooling counterexample are retained, while the reproduced warmed
   journal-append control now proves an exact second receipt with zero measured heap activity.
+- Wave C.6 corrected a rejected adaptive-policy packet but exhausted fresh reviewer custody before
+  implementation. The evidence keeps its deterministic bounds, pin, bundle-residence, and complete
+  client-graph budget laws; the inert policy scaffold and ignored journey do not enter the product.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
@@ -184,6 +187,12 @@ VCS code has no compatibility standing.
 - [ ] Adapt capability placement to latency, local demand, battery/memory, and remote health without
   changing operation semantics. Local work expands during remote inconsistency and contracts again
   when remote service is healthy.
+
+Wave C.6's first public sketch is deliberately not the client API. Its useful result is a set of
+falsifiable laws: generation-pinned remote facts, externally observable optional-bundle residence,
+bounded duplicate-free policy snapshots, canonical effect order, exact prefix reservations, and a
+release budget measured from the full shipping client graph. A fresh implementation cycle must earn
+the smallest concrete representation from those laws after valid reviewer custody.
 
 ## Parallel prototype portfolio
 
