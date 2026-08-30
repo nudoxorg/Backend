@@ -14,9 +14,9 @@ artifact.
 
 The remaining gaps are architectural, not polish:
 
-- raw `ContentId`/`ArtifactId` reconstruction currently trusts an untyped byte array, so phantom
-  marker authority does not survive a wire/index round trip; the fixed-width checked representation
-  is an active foundation repair and blocks index-vocabulary acceptance.
+- typed identity authority now survives raw wire/index round trips and locality validates one
+  artifact-wide authority before lending typed payloads; the next foundation gap is canonical-byte
+  ownership for roots rather than another identity repair.
 - `GenerationRoot` still owns a boxed native row arena instead of making canonical bytes the primary
   owner with borrowed/mmap/lease adapters.
 - complete local closure yields one non-forgeable verified capability, but no durable publication
@@ -50,9 +50,9 @@ The remaining gaps are architectural, not polish:
 - [ ] Add one deterministic system driver whose commands can later run against memory, file, and
   simulated-network adapters without shadow state.
 
-### 1. Portable typed foundation — active authority repair
+### 1. Portable typed foundation — identity/locality boundary closed
 
-- [ ] Make serialized content/artifact identities carry and validate their closed domain/encoding
+- [x] Make serialized content/artifact identities carry and validate their closed domain/encoding
   authority while remaining fixed-width, allocation-free, borrowed, and single-pass hashed. Remove
   unchecked raw reconstruction and prove cross-authority rebranding fails.
 - [x] Domain-separated hash preimages, closed marker registry, canonical fixed records, borrowed frame
@@ -118,9 +118,9 @@ The full greenfield contract and manager slices live in
 anti-pattern evidence only; none of its APIs, schemas, stores, or search behavior is a compatibility
 constraint.
 
-- [ ] Establish the minimal nested no-std vocabulary after typed raw identity integrity closes. The
-  current deletion candidate removes dormant family machinery, but its final review proved that the
-  foundation's unrestricted raw constructor still permits exact/lexical rebranding.
+- [x] Establish the minimal nested no-std identity vocabulary: snapshot, exact-segment, and
+  lexical-segment aliases use the checked central domains directly. Dormant future-family variants,
+  a one-implementation projection trait, and raw rebranding surface are absent.
 - [ ] Partition immutable generation/object metadata by canonical key with rendezvous placement only
   as an efficiency hint; durable object/change bytes plus atomic publication remain truth.
 - [ ] Build indexes from sealed deltas, publish compact immutable segments once, and share compaction
@@ -170,8 +170,8 @@ integration card on current shared state; prototype APIs have no compatibility s
 
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
-| Typed identity integrity | Autonomous Terra card/calibration active on the exact shared baseline | A fixed 32-byte representation must validate domain/encoding authority, retain exact decode evidence, keep one streaming hash and zero allocations, and migrate every raw durable/wire consumer. |
-| Index I0 vocabulary | Root deletion candidate is held after final review exposed raw cross-family rebranding | Rebase only after typed identity integrity closes; add a true negative API witness, rerun blind review, and treat the integrated tree as a fresh candidate. |
+| Typed identity integrity | Integrated with closed registry, public all-pairs/split-point falsifiers, and safe typed locality payloads | Keep raw authority checks at ingress and resist reintroducing unchecked constructors or post-validation decoding. |
+| Index I0 vocabulary | Integrated after identity repair; nested tests, strict linting, formatting, and docs pass | Start the immutable snapshot/segment grammar without rebuilding a future-family registry or generic family projection. |
 | Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
 | Leased range T0 | Autonomous Terra calibration active; the first pre-edit Terra rejected an incomplete ABI/credit card | First terminal is a two-lease runtime-independent reorder/conservation proof with complete/cancelled terminals. Partial/degraded/failed and physical adapters remain later children. |
 | Durable journal D0 | Synchronous single-owner durability substrate integrated; asynchronous heart remains open | Preserve the accepted file authority and its fault proofs while adding bounded MPSC/group commit as a separate owner, then bind stable receipts to publication CAS. |
@@ -190,9 +190,9 @@ performs the cross-crate architectural review, updates this graph, and generaliz
 actually prevented a repeatable failure.
 
 The next object-plane trial is authenticated partial binding followed by leased range transport.
-Index I0 vocabulary is blocked on typed raw identity integrity, compiler C0.1 is accepted, and leased
-range T0 is being recalibrated after its first builder proved the original card could not fit its
-production ceiling. Primary Terras own
+Index I0 vocabulary and typed raw identity integrity are integrated, compiler C0.1 is accepted, and
+leased range T0 is being recalibrated after its first builder proved the original card could not fit
+its production ceiling. Primary Terras own
 architecture and proof, reviewer Terras remain read-only, and narrowly scoped Luna workers implement
 one checkpoint at a time.
 Parallelism never permits agents to invent incompatible artifact, lease, or terminal representations.

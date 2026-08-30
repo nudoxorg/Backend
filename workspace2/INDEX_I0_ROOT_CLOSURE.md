@@ -1,6 +1,33 @@
 # Index I0 root closure receipt
 
-Verdict: **OPEN — implementation laws reproduced; role/calibration custody incomplete**
+Verdict: **INTEGRATED — minimal identity vocabulary only; index artifact/query work remains open**
+
+## Integrated correction
+
+The historical receipt below records the prototype and the process evidence that produced it. It is
+not the current source authority. After the typed-identity repair closed raw cross-domain rebranding,
+commit `b1a59b16` integrated only the mechanisms that survived a fresh source comparison:
+
+| Prototype mechanism | Disposition | Integrated owner and proof |
+| --- | --- | --- |
+| Snapshot/exact/lexical brands | absorb | direct checked `ContentId` aliases in `nudox-index-vocab`; canonical-byte equality and mutation test |
+| Direct and `Into` family separation | retain | two compile-fail examples reject lexical-to-exact assignment/conversion |
+| Raw family authority | supersede with proof | central identity authority byte plus exact wrong-domain `TryFrom` assertion retaining the complete raw value |
+| Allocation/layout behavior | retain | allocation-counter and `Deref::Target` size/alignment tests |
+| Relation/usage/vector codes | reject as future-only surface | no current segment, caller, parser, or falsifier; the names remain in the historical commit if a real capability later earns one |
+| Dynamic unknown-family decoder | reject as false boundary | no dynamic family-code ingress exists; central identity decoding is the actual raw boundary |
+| Sealed family projection trait and generic alias | absorb then delete | its only invariant is owned more strongly by distinct central domain types; public compile-fail and raw rebranding tests kill regression |
+
+The integrated correction therefore did not preserve accidental API merely to keep the prototype
+recognizable. It preserved every measured or falsifiable mechanism in its strongest current owner.
+The losing implementation, tests, and measurements remain named below in Git evidence.
+
+At the integrated source, `nudox-index-vocab` is 29 production lines and 92 test lines. Its nested
+workspace passes all-target locked/offline tests, strict all-target Clippy, formatting, and doctests.
+This verdict closes only I0 vocabulary; it does not claim an index snapshot format, immutable segment
+view, query engine, placement policy, or remote index.
+
+## Historical prototype receipt
 
 ## Identity and custody
 
