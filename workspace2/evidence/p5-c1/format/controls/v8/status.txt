@@ -1,0 +1,10 @@
+fmt: 0
+test: 0
+diff-check: 0
+clippy-warnings: 0
+source-bytes-after-hex-decode: 23
+terminal-count: 1
+actual-rlib-helper-signature-count: 1
+unstable-hasher-tripwire: 0
+owned-vector-tripwire: 0
+production-edits: 0

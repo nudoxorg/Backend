@@ -1,0 +1,13 @@
+[package]
+name = "nudox-ir-format-control"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+nudox-ir-vocab = { path = "../../../domains/ir/crates/nudox-ir-vocab" }
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,6 @@
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo fmt --check: 0
+cargo test --locked --offline: 0
+test golden_fragment_lends_two_typed_lanes_from_caller_bytes ... ok
+test result: ok. 1 passed; 0 failed
+decoded detached control source: 23 bytes

@@ -208,8 +208,10 @@ alternatives but never merge or close roadmap boxes. Root extracts evidence and 
 integration card on current shared state; prototype APIs have no compatibility standing.
 
 This portfolio is now historical. New work uses the stage controllers in
-[`OVERNIGHT_COMPLETION.md`](OVERNIGHT_COMPLETION.md); P5 remains live until its active controller
-returns, P1 is a re-derivation candidate, and rejected P2/P6 implementations remain negative evidence.
+[`OVERNIGHT_COMPLETION.md`](OVERNIGHT_COMPLETION.md). P5 returned an honest two-attempt
+`EVIDENCE_BLOCKED` receipt at `442f407a`: C0 remains integrated, the narrow C1 prototypes are
+retained as controls, and C1 completion plus C2-C6 remain red. P1 has been re-derived and integrated;
+rejected P2/P6 implementations remain negative evidence.
 
 ## Next-batch readiness
 

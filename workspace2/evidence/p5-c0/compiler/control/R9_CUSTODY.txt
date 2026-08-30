@@ -1,0 +1,21 @@
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: aarch64-apple-darwin
+release: 1.97.1
+LLVM version: 22.1.6
+cargo 1.97.1 (c980f4866 2026-06-30)
+target=aarch64-apple-darwin
+consumer=/private/tmp/p5-c0-r9-candidate.qgELkq/workspace2/planes/compiler/crates/nudox-compile-registry/examples/release_consumer.rs
+control-registry=/private/tmp/p5-c0-r9-control.B1g1Bv/target-c0-compiler-control/aarch64-apple-darwin/release/deps/libnudox_compile_registry-2dcbb6c9b8d1fbf8.rlib
+control-vocab=/private/tmp/p5-c0-r9-control.B1g1Bv/target-c0-compiler-control/aarch64-apple-darwin/release/deps/libnudox_compile_vocab-a8f33c25e34e7525.rlib
+candidate-registry=/private/tmp/p5-c0-r9-candidate.qgELkq/target-c0-compiler-candidate/aarch64-apple-darwin/release/deps/libnudox_compile_registry-bcc76749dd770582.rlib
+candidate-vocab=/private/tmp/p5-c0-r9-candidate.qgELkq/target-c0-compiler-candidate/aarch64-apple-darwin/release/deps/libnudox_compile_vocab-f30a639834d59d39.rlib
+b86ecd9c1c15f855e8523883250b89ab96f042708b54e4ccd21f01edfd4a76c8  /private/tmp/p5-c0-r9-candidate.qgELkq/workspace2/planes/compiler/crates/nudox-compile-registry/examples/release_consumer.rs
+965eaabadaf3178cce0103fe4f9d8bc03ce55468ba0bf9ad3572282b33d47cb4  /private/tmp/p5-c0-r9-control.B1g1Bv/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
+bbe0152ce639ee7f92a9b72e26dd6b040133a28f3700f04aee302abd1c4fe867  /private/tmp/p5-c0-r9-candidate.qgELkq/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
+34329ee72b74719beed3ca2728e3ecc9abd4cf232f8b27ec73d16bd3fe854dcd  /private/tmp/p5-c0-r9-control.B1g1Bv/target-c0-compiler-control/aarch64-apple-darwin/release/deps/libnudox_compile_registry-2dcbb6c9b8d1fbf8.rlib
+acb86f70d98395b9ac23c3cd78db87f52fe1c5622be9452457ac07170266dcac  /private/tmp/p5-c0-r9-control.B1g1Bv/target-c0-compiler-control/aarch64-apple-darwin/release/deps/libnudox_compile_vocab-a8f33c25e34e7525.rlib
+3d1ec331093c0d7889877255857919a161f02eb38d35deed5200b3cc4fa1a42f  /private/tmp/p5-c0-r9-candidate.qgELkq/target-c0-compiler-candidate/aarch64-apple-darwin/release/deps/libnudox_compile_registry-bcc76749dd770582.rlib
+1d3ec95f85b19d42cd7a55a767d811ecb40358d0f68d2b63f50da9643d6e7ba3  /private/tmp/p5-c0-r9-candidate.qgELkq/target-c0-compiler-candidate/aarch64-apple-darwin/release/deps/libnudox_compile_vocab-f30a639834d59d39.rlib

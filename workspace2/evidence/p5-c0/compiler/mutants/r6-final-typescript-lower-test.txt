@@ -1,0 +1,26 @@
+   Compiling nudox-ir-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r6-final-mutants.d2OIxe/workspace2/domains/ir/crates/nudox-ir-vocab)
+   Compiling nudox-compile-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r6-final-mutants.d2OIxe/workspace2/planes/compiler/crates/nudox-compile-vocab)
+   Compiling nudox-compile-registry v0.1.0 (/private/tmp/p5-c0-compiler-r6-final-mutants.d2OIxe/workspace2/planes/compiler/crates/nudox-compile-registry)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+     Running tests/dispatch.rs (/private/tmp/p5-c0-compiler-r6-final-mutants.d2OIxe/target-typescript-lower/debug/deps/dispatch-7b68657fa327e49f)
+
+running 1 test
+test typescript_lower_has_exact_typed_operands ... FAILED
+
+failures:
+
+---- typescript_lower_has_exact_typed_operands stdout ----
+
+thread 'typescript_lower_has_exact_typed_operands' (464988482) panicked at crates/nudox-compile-registry/tests/dispatch.rs:41:5:
+assertion `left == right` failed
+  left: Ok([99, 111, 110, 115, 116, 32, 114, 101, 106, 101, 99, 116, 101, 100, 32, 61, 32, 49, 59])
+ right: Err(UnsupportedStage { language: TypeScriptSubset, stage: LowerIr })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    typescript_lower_has_exact_typed_operands
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nudox-compile-registry --test dispatch`
