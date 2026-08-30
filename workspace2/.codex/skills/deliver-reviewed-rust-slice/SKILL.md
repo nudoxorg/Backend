@@ -8,8 +8,8 @@ description: The mandatory workspace2 Rust craft, performance, structure, testin
 This is the single authority for workspace2 Rust idioms, patterns, structure, evidence, and review.
 Read it completely before a domain skill. Domain skills add scope; they do not redefine these laws.
 
-Deliver one capability, not an interpretation of the roadmap. The parent owns architecture and the
-eventual rubric. The agent owns one proof, reports early, and waits before broadening.
+Deliver one capability, not an interpretation of the roadmap. Role custody and the capability cycle
+are defined once in `../../../ORCHESTRATION.md`; do not redefine them in a domain skill or task card.
 
 When the parent explicitly requests a prototype, these craft/evidence laws still apply. Prototype
 code stays on an isolated branch, keeps the simplest control, and ends in retain/reject/promote-for-
@@ -17,133 +17,67 @@ integration evidence; it never earns shared merge, roadmap closure, or a product
 
 ## Contract before code
 
-No production edit is allowed until the responsible manager supplies and approves every row for its
-workers:
+No production edit is allowed until the responsible Terra freezes one worker card:
 
 ```text
 Capability: one externally observable behavior
-Allowed paths: exact crates/directories
+Allowed paths: exact crates/directories and concurrent owners
 Must preserve: public semantics, bytes, ownership, errors, and state laws
-Must prove: exact tests, traces, and measurements
-Out of scope: explicit adjacent work
-Budget: retained bytes, allocations, copies, work, latency, text, and net LOC
-Checkpoint: the next parent decision
+Must prove: one red falsifier per law plus exact terminal commands
+Out of scope: explicit adjacent behavior and public surface
+Resources: retained/live bytes, allocations, copies, scans, branches, queue, latency, release text
+Checkpoint: the next manager decision
 ```
 
-The root steward normally supplies only the named capability, non-negotiable product laws, and any
-truly external constraint. The manager derives the named baseline, exact paths, current semantics,
-numeric budgets/reserve, terminal commands, and falsifiers from the repository, formatted skeleton,
-measurements, and plan. Returning those discoverable fields as “parent-owned omissions” is a manager
-failure. Escalate only when two plausible choices materially change observable product behavior,
-protocol permanence, dependency/unsafe authority, or the capability boundary. Never fill genuine
-ambiguity with a framework, compatibility layer, copied type, backend enum, or broad refactor.
+The chief supplies the capability, public red journey, non-negotiable product laws, and external
+constraints. Terra derives repository facts, paths, current semantics, resource bounds, unit/fault
+oracles, and commands. Escalate only when two choices materially alter product behavior, permanent
+protocol meaning, dependency/unsafe/SIMD authority, or the capability boundary.
 
-## Mandatory parent loop
-
-### Checkpoint 1 — evidence and design; no production edits
-
-Here “parent” means the manager reviewing a worker. A Terra manager performs this work autonomously
-before it commissions implementation; it does not ask the root to transcribe repository facts into a
-card.
-
-Return:
-
-1. A coverage table quoting every `Must preserve` and `Must prove` row, with its design element and
-   falsifying test. `Deferred`, `unchanged`, and an adjacent component's behavior are not coverage.
-2. Existing call path and invariant owner with file/line evidence.
-3. The simplest safe/std baseline and at most two serious alternatives.
-4. Ownership/allocation, generic, diagnostic, and work ledgers.
-5. Exact tests that can disprove the design.
-6. Expected files and net production LOC.
-7. Decisions that require parent authority.
-
-Timebox inspection to one routed-file pass plus eight additional read/search/experiment calls. Put
-unknowns under parent decisions. If the contract does not fit the budget, request a scope change;
-never silently substitute a smaller capability.
-
-Before requesting edit authority, attach this normally formatted skeleton ledger:
+Before edit authority, attach a coupling skeleton:
 
 ```text
-Approved baseline: checkpoint name + exact existing production LOC by file
-file | public/private items | methods | error variants/fields | docs | estimated formatted LOC
-reserve | max(10% of phase, 25 lines)
-phase delta | sum excluding the untouched baseline and including cross-crate support edits
-
-test file | laws/cases | shared fixture representation | estimated formatted LOC
-test reserve | max(10% of test phase, 15 lines)
+module | invariant owner | public terminal | dependencies | state/control boundary
+test | weakened implementation it kills | exact oracle | retained error/source/owner
+resource | baseline | bound | measurement | rollback condition
 ```
 
-Estimate from a formatted prototype or a comparable existing module, never from the desired cap.
-Count public field docs, error operands, reexports, lint reasons, and cross-crate support changes.
-For protocol, unsafe, or concurrency work, approve at most one new proof-bearing production module
-per checkpoint. A separately approved cleanup may accompany it; future-phase types and errors may not.
-Test estimates are independently binding. Recount test support before test bodies, then after each
-test file; apply the same 20%/25-line and unplanned-item stop rules instead of presenting an oversized
-suite after production approval.
+This is not a source-volume forecast. Stop when the implementation introduces an unplanned invariant
+owner, dependency direction, public item, allocation lifetime, state axis, or error-erasing boundary.
+Many files, parameters, or descriptive generic parameters are valid when they expose independent
+typed facts. Do not hide coupling in parameter objects, callbacks, builders, or universal context
+structs to manipulate a shape metric.
 
-When a test refactor depends on a new fixture representation, format the fixture and one complete
-representative assertion family in scratch before proposing file caps. Extrapolate from the exact
-remaining variants and platform cases. Do not infer the new total only by subtracting old helper LOC;
-typed setup and exact error operands often move rather than disappear.
+## Proof-bearing checkpoints
 
-Reserve is capacity left unused, not the difference between a near-cap estimate and the cap. For a
-260-line test ceiling, the implementation estimate is at most 234 and at least 26 lines remain
-untouched. A 253-line estimate plus seven nominal lines is over budget and must be simplified before
-editing.
+### Design
 
-### Checkpoint 2 — smallest vertical proof
+Map every law to its owner and falsifier. Trace current consumers. Compare the safe standard-library
+control with no more than two serious alternatives. Record ownership/allocation, generic, diagnostic,
+work, and dependency ledgers. No production edit occurs at this checkpoint.
 
-Implement the minimum end-to-end behavior, then stop before a second policy/backend/format case or
-optimization. Return:
+### Smallest vertical proof
 
-- public API diff and deletion ledger;
-- exact tests and commands;
-- allocations, copies, retained owners, logical work, and text-size delta;
-- largest control-flow offender before/after;
-- exact typed diagnostic trace;
-- remaining flaws and next parent decision.
+Implement the minimum public behavior, then stop before a second backend, policy, format, or
+optimization. Return the public diff, exact falsifiers, allocation/copy/work/text measurements,
+typed diagnostic trace, retained/deleted mechanisms, and remaining matrix rows.
 
-More than roughly 250 net production lines or an unbriefed crate is presumed mis-scoped. A larger
-coherent plane must be decomposed into reviewed vertical proofs, not hidden under a higher estimate.
-The LOC gate is preemptive: record the baseline before editing, recount after each production file,
-and stop to re-scope when the current diff plus remaining contract forecast reaches 60% of budget.
-Crossing the limit and then reporting it is checkpoint failure; delete the unapproved draft before
-continuing.
+Source volume is neither a budget nor a completion signal. Format normally. A complexity finding must
+name the coupled policy or state causing it; do not split a coherent transition into forwarding
+helpers, callback layers, or data bags merely to move a metric. Conversely, several independent
+transitions should become consuming phases or a declarative table because that strengthens ownership
+and testing.
 
-Forecasts include an uncertainty reserve of at least the larger of 10% or 25 normally formatted
-production lines. A design estimated at 295 lines against a 300-line cap is over budget, not a narrow
-success. Split at an observable capability boundary before editing; never plan to recover the margin
-through shorter names, missing docs/errors, or compressed source.
+After every material checkpoint compare the candidate with the coupling skeleton. Re-scope when one
+edit begins to own a second public terminal, dependency direction, error vocabulary, or resource
+lifetime. Preserve losing work through the symbol-level salvage process in
+`../../../ORCHESTRATION.md`; never erase a proven mechanism to make a patch appear smaller.
 
-The budget is not a minification contest. Run `cargo fmt` before counting. One-line functions,
-multiple logical statements per line, compressed match arms, omitted whitespace, and module/file-wide
-`rustfmt::skip` count at their normally formatted logical size and fail the readability gate.
-`rustfmt::skip` is reserved for a small table or golden byte fixture whose visual shape is itself the
-evidence. The same rule applies to tests, labs, benchmarks, generated reporters, and unsafe proofs.
+### Integration and closure
 
-After each production file, compare actual to the skeleton before opening the next file. Stop and ask
-for a rebase when any file exceeds its estimate by 20% or 25 lines, when one file consumes 60% of the
-phase, or when a new public item was absent from the skeleton. Do not finish a coherent over-budget
-draft because it is already written. Revert the unapproved phase to the named approved baseline, then
-split it. The handoff records written-then-deleted LOC and the estimation error; hiding churn fails.
-
-File entries are forecasts governed by that variance rule, not brittle exact caps. Use a hard
-per-file cap only for a real external bound such as stack, protocol, binary-text, or parent-declared
-review size. A one-to-five-line formatting or borrow-scope difference that remains inside the phase
-reserve is reported, not repeatedly written and reverted. The protected phase ceiling and unplanned
-surface rules remain hard.
-
-```text
-DON'T: “index.rs ~97” then add parsing, validation, lookup, read containment, six error variants,
-       public facts, docs, and reexports in one pass.
-DO:    approve header geometry; then directory witness; then lookup; then body verification.
-       Each phase owns only errors and tests reachable through that phase's public behavior.
-```
-
-### Checkpoint 3 — integration and closure
-
-Only after approval, integrate adjacent paths and run full gates. The agent scores its slice only if
-asked. The parent owns product completion and any future rubric.
+Only Terra integrates worker checkpoints and reproduces the unit/fault evidence. Only the Sol chief
+integrates the closed candidate across shared crates. Neither role scores the product unless an
+independent adopted rubric is in force.
 
 ## Abstraction and boundary laws
 
@@ -153,11 +87,11 @@ asked. The parent owns product completion and any future rubric.
   network, runtime, tracing/OTEL, cache, and platform machinery.
 - Prefer deletion and the standard library. A wrapper/helper must remove an invalid state, branch,
   copy, repeated algorithm, or unstable dependency—not rename a field or delegate one method.
-- Split files by invariant and ownership boundary. Keep functions under the configured complexity and
-  length thresholds by extracting named semantic phases, not one helper per branch.
-- Source must remain normally formatted and locally readable. Never use formatting suppression or
-  statement packing to satisfy an LOC budget; split the capability at a real ownership or proof
-  boundary instead.
+- Split files by invariant and ownership boundary. Treat cognitive/type complexity as a signal to
+  expose semantic phases or strengthen a representation, never as an instruction to add forwarding
+  functions, callback layers, or parameter bags.
+- Source must remain normally formatted and locally readable. Formatting suppression and statement
+  packing are forbidden outside a small golden table whose visual shape is evidence.
 - In a glob-member workspace, never leave a new crate directory without a valid manifest and target.
   Stage experiments outside the glob or create/remove the complete scaffold atomically so unrelated
   Cargo gates remain runnable.
@@ -475,8 +409,8 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
   choose and document a deterministic source-preserving priority.
 - Test plumbing may not restate the wire grammar once per integer width or mutable/immutable access.
   Use one typed test record/view or one checked const-width cell primitive. If fixture and mutation
-  support exceeds the code containing laws and exact assertions, redesign the fixture before adding
-  cases; test LOC is not exempt from less-is-more review.
+  support obscures the laws and exact assertions, redesign the fixture before adding cases; test
+  infrastructure is subject to the same coupling and invariant review as shipping code.
 - Required boundary cases are zero, one, exact limit, limit+1, every truncation, hostile mutation,
   collision/reorder/duplicate, cancellation at every pending point, drop/unwind, and restart.
 - Allocation assertions run in an isolated process/serial harness with warm-up and compiler/target/
@@ -509,8 +443,8 @@ Stop and ask the parent before:
 ## Handoff
 
 Return only contract status, changed files, behavior proved, allocation/generic/diagnostic/work
-ledgers, exact commands/results, deletion and net-LOC delta, open criticism, and next decision. Never
-claim the global plan or rubric complete.
+ledgers, exact commands/results, retained/deleted mechanisms, open criticism, and next decision.
+Never claim the global plan or rubric complete.
 
 ## Sources behind these laws
 

@@ -5,7 +5,7 @@ description: Direct one isolated workspace2 greenfield prototype portfolio as a 
 
 # Orchestrate a greenfield Rust prototype
 
-Read `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
+Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
 `../review-rust-gem/SKILL.md`, `../calibrate-rust-agent-contract/SKILL.md`, and the one applicable
 domain skill and plan completely. Read `../audit-data-layout/SKILL.md` when the prototype changes a
 numerous/hot representation or makes an allocation, codegen, unsafe, or SIMD claim.
@@ -23,14 +23,13 @@ score, or broadens the product contract to make an experiment pass.
   manufacture a baseline, or silently fall back to an older shared commit.
 - Record that source-candidate commit/tree, then create a separate `codex/prototype-*` worktree and
   branch. Never edit, merge, rebase, or cherry-pick into the shared branch.
-- The Sol master selects one `gpt-5.6-terra` capability manager at a time with a non-inheriting fork.
-  The Terra manager follows `manage-rust-swarm`: it selects real `gpt-5.6-luna` implementation or
-  mechanical-check workers and a separate real `gpt-5.6-terra` read-only reviewer, also through
-  non-inheriting forks. Successful explicit model calls and returned task identities are evidence;
-  role names are not.
-- With four runtime slots, the useful shape is Sol + primary Terra + one Luna + one reviewer Terra.
-  Do not start several idle managers that leave no worker/reviewer capacity. Time-slice at committed
-  proof boundaries.
+- The Sol master selects the registered `nudox_terra_orchestrator` role, expecting
+  `gpt-5.6-terra`/`xhigh`. The manager follows `manage-rust-swarm`: after Phase 0 it selects registered
+  `nudox_luna_implementer` workers and a separate registered `nudox_terra_reviewer`. Runtime receipts
+  bind resolved role config, model, effort, sandbox, task identity, baseline, and checkout; a role or
+  model name alone is not evidence.
+- Inspect live capacity before dispatch. Reserve a slot for independent review and do not start idle
+  managers that leave no Luna implementation capacity. Time-slice at committed proof boundaries.
 - Workers commit passing exact-path checkpoints. Rejected variants remain committed on their
   isolated branches and enter the churn/evidence ledger; they never contaminate the chosen branch.
 
@@ -45,7 +44,7 @@ hard product laws and explicit negative space
 safe std-only/control representation
 at most three serious candidates, one changed axis each
 public or lab falsifier for every claimed benefit
-retained/live bytes, allocations, copies, work, latency, text, LOC, and dependency bounds
+retained/live bytes, allocations, copies, scans, branches, latency, text, and dependency bounds
 owned paths and conflicts with active/shared work
 prototype exit: retain baseline | reject candidate | promote for future integration review
 ```
@@ -102,7 +101,7 @@ prototype objective and exact observable terminal
 baseline, worktree, branches, commit ranges, and dirty-state proof
 Sol/Terra/Luna/reviewer task identities and explicit model-call proof
 candidate table and simplest retained control
-changed/deleted surface and formatted production/test/lab LOC
+changed/deleted invariant, dependency, and public surface
 raw correctness, allocation/copy/work/latency/text/dependency evidence
 strongest counterexamples and input-removal/negative-API mutants
 accepted and rejected representation decisions with rollback

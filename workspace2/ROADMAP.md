@@ -1,7 +1,8 @@
 # Capability roadmap
 
 This is the active plan. A checked box means the named vertical proof exists, not that the distributed
-product is finished. [`WAVE1.md`](WAVE1.md) is historical ownership context.
+product is finished. [`ORCHESTRATION.md`](ORCHESTRATION.md) defines the Sol/Terra/Luna execution and
+evidence-custody system; [`WAVE1.md`](WAVE1.md) is historical ownership context.
 
 ## Current checkpoint
 
@@ -182,7 +183,7 @@ integration card on current shared state; prototype APIs have no compatibility s
 One primary Terra manager owns one capability and its progressively loaded skill. It owns architecture,
 proof, measurements, concise red tests, and acceptance; Luna workers implement bounded cards; a
 separate read-only Terra reviewer attacks the card and artifact at proof checkpoints. Every writing
-worker starts from a frozen digest/LOC ledger in an isolated branch and commits each passing checkpoint;
+worker starts from a frozen contract digest and path ledger in an isolated branch and commits each passing checkpoint;
 rejected work remains auditable without contaminating the manager branch. Both requested child models
 are explicitly selected and never inferred from role names. The manager returns one evidence packet
 only after it reproduces reviewer findings, exact falsifiers, and full owned gates. The root then
@@ -192,7 +193,7 @@ actually prevented a repeatable failure.
 The next object-plane trial is authenticated partial binding followed by leased range transport.
 Index I0 vocabulary and typed raw identity integrity are integrated, compiler C0.1 is accepted, and
 leased range T0 is being recalibrated after its first builder proved the original card could not fit
-its production ceiling. Primary Terras own
+its coupled ABI and proof boundary. Primary Terras own
 architecture and proof, reviewer Terras remain read-only, and narrowly scoped Luna workers implement
 one checkpoint at a time.
 Parallelism never permits agents to invent incompatible artifact, lease, or terminal representations.

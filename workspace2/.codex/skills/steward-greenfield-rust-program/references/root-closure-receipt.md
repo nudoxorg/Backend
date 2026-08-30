@@ -10,7 +10,9 @@ exact source search or executable experiment establishing inapplicability; other
 
 ```text
 capability:
+capability evidence index path and digest:
 canonical contract path and digest:
+TESTING.md digest and applicable-clause mapping artifact:
 calibration artifact digests and post-calibration contract edits:
 source-candidate commit:
 source-candidate tree digest:
@@ -20,9 +22,9 @@ source/test/manifest/lock/fixture/generated-consumer equivalence proof:
 integrated shared commit and scoped tree-equivalence proof:
 review worktree and branch:
 manager baseline and commit range:
-manager model proof:
-Luna worker model proof per writing turn:
-independent Terra reviewer model proof:
+manager task/role/config/model/effort/sandbox/baseline/checkout proof:
+Luna worker task/role/config/model/effort/sandbox/baseline/checkout proof per writing turn:
+independent Terra reviewer task/role/config/model/effort/sandbox/snapshot/packet proof:
 reviewer no-edit proof:
 root post-manager shipping edits:
 fresh reviewer proof after final root shipping edit:
@@ -30,11 +32,10 @@ root-owned changed paths:
 unrelated dirty paths:
 ```
 
-Model proof is the retained successful orchestration call with an explicit non-inheriting `model`
-argument plus its returned task/session identity; a role name or worker self-report is insufficient.
-If the runtime exposes a selected-model field, retain and compare it. If it does not, state that
-limitation rather than inventing a second attestation; a successful explicit selection remains
-transport evidence under the orchestration API contract.
+Role proof is the retained successful registered-role orchestration call plus runtime task/session
+identity, resolved config path, actual model/effort/sandbox, baseline, and checkout. A role name,
+model argument, task label, or worker self-report alone is insufficient. When the runtime does not
+expose a field, state that limitation and mark role evidence `UNVERIFIED`; do not invent attestation.
 
 ## Law ledger
 
@@ -87,14 +88,14 @@ changed files” are not evidence. Zero rows name the complete scanned path set 
 ## Resource and scope ledger
 
 ```text
-formatted production LOC: baseline / candidate / delta / cap / unused reserve
-formatted test LOC: baseline / candidate / delta / cap / unused reserve
+invariant owners and dependency directions changed:
+control/type complexity changes tied to semantic boundaries:
 allocations: site / count / bytes / lifetime / rejection / compared alternative
 copies and materializations:
 logical work and branch evidence:
 optimized consumer artifact and retained control:
 dependencies, features, and public exports added/deleted:
-written-then-rejected churn:
+rejected mechanisms and salvage destinations:
 ```
 
 Measure owner plus backing storage and peak simultaneous ownership. Release text evidence names the
@@ -134,7 +135,7 @@ verdict: ACCEPTED | REJECTED | OPEN
 ```
 
 `ACCEPTED` requires the exact committed source candidate, every law `REPRODUCED`, zero blocker/major,
-unused reserve, two clean full passes, a later receipt whose intervening diff is evidence-only, and no
+resource bounds satisfied, two clean full passes, a later receipt whose intervening diff is evidence-only, and no
 later source edit. When root changed shipping source, tests, manifests, fixtures, or generated
 consumers after manager review, acceptance also requires a fresh independent read-only review of the
 final candidate. Otherwise choose `REJECTED` or `OPEN`; do not average missing proof into a score.

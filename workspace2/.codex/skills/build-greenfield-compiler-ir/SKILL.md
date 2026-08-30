@@ -47,7 +47,7 @@ associated-function namespace is not an earned abstraction.
 
 The wildcards above are architecture, never edit authority. The manager enumerates each writable
 manifest/source/test/registry file, compiles a normally formatted manual expansion/skeleton, names the
-public cross-crate journey and literal commands, and derives numeric LOC/resource/text reserves. It
+public cross-crate journey and literal commands, and derives numeric resource/text bounds. It
 does not return discoverable card fields to root. Only a product-semantic fork, permanent wire choice,
 or new dependency/unsafe/SIMD authority is escalated.
 

@@ -71,7 +71,7 @@ action, and whether the job skill needs a reusable rule.
     derive iteration/count/string mechanics; do not use it to bypass canonical protocol ownership.
 28. Review admission by drawing the ownership graph. If the code acquires several capabilities and
     then contains a family of compensating rollback helpers, replace it with named linear bundles and
-    narrow consuming transitions before discussing line count.
+    narrow consuming transitions before discussing source shape.
 29. Configuration arithmetic has one typed authority. Index load factor, minimum bucket count,
     rounding, mask, and supported target bounds become one validated geometry value; allocation and
     probing consume it without repeating arithmetic or manufacturing impossible overflow states.

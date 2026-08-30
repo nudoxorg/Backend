@@ -5,7 +5,8 @@ description: Design and calibrate a future evidence-based 0–10 rubric for a st
 
 # Write an evidence rubric
 
-Read `../deliver-reviewed-rust-slice/SKILL.md` and `../review-rust-gem/SKILL.md` completely. A rubric
+Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md` and
+`../review-rust-gem/SKILL.md` completely. A rubric
 is downstream of stable contracts and a trustworthy reviewer. It must make gaming harder, not turn
 aspirations into points.
 
@@ -74,8 +75,9 @@ Apply explicit maximums before weighted aggregation:
   reviewer, reviewer edits, or primary Terra delegating acceptance: affected evidence is inadmissible
   and no final score is issued.
 
-LOC reduction, generics, SIMD, unsafe, dependency count, and allocation count are never standalone
-points. They matter only through the contract's memory/work/simplicity/correctness evidence.
+Source compression, genericity, SIMD, unsafe, dependency totals, allocation totals, test totals, and
+agent activity are never standalone points. They matter only through the contract's invalid-state,
+memory, work, coupling, correctness, and operability evidence.
 
 ## Weighting and calibration
 
@@ -94,8 +96,8 @@ Calibrate before adoption:
 3. Blind the artifact labels. Two reviewers independently apply the rubric without discussing scores.
 4. Any criterion divergence greater than one point or any total that places the artifacts outside
    `<8`, `=8`, and `>8` respectively requires rewriting anchors/evidence.
-5. Try three gaming patches: superficial LOC deletion, test-count inflation, and a benchmark-only
-   optimization. The score must not rise without capability evidence.
+5. Try gaming patches: superficial source compression, duplicated easy tests, parameter-bag
+   coupling, and a benchmark-only optimization. The score must not rise without capability evidence.
 6. Version the rubric when contracts or baselines change; never silently edit anchors mid-review.
 
 Before adoption, run the contract itself through `../calibrate-rust-agent-contract/SKILL.md`. If fresh

@@ -34,7 +34,7 @@ must own a current invariant, not reserve a name for later.
 
 The wildcard above is architectural ownership, not a worker card. The manager enumerates every
 writable manifest/source/test/registry path, names the public journey and literal package commands,
-and derives numeric LOC/resource/text reserves before a worker sees it. Discoverable omissions are
+and derives numeric resource/text bounds before a worker sees it. Discoverable omissions are
 repaired autonomously under `manage-rust-swarm`; only a materially different index semantic returns
 to root.
 

@@ -5,14 +5,14 @@ description: Adversarially forward-test a workspace2 Rust contract, domain skill
 
 # Calibrate a Rust agent contract
 
-Read `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
+Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
 `../review-rust-gem/SKILL.md`, and the applicable domain skill and plan completely. Read
 `../write-evidence-rubric/SKILL.md` when a score or cap is in scope.
 
 This is a cold behavioral test of instructions. Do not edit production code, manifests, fixtures, or
 roadmaps. Do not tell evaluators the intended design, known defect, desired answer, or prior agent
-failure. Preserve the exact requested model topology and verify model selection from runtime evidence;
-task names are not proof.
+failure. Preserve the exact requested registered-role topology and verify resolved config, model,
+effort, sandbox, runtime identity, baseline, and checkout; task or model names alone are not proof.
 
 ## Freeze the specimen
 
@@ -49,14 +49,14 @@ Run all three against the same frozen specimen:
 1. **Independent reader:** restates the schema above and the first checkpoint without proposing code.
 2. **Plausible misreader:** chooses the cheapest interpretation that could still look compliant and
    describes the patch it would attempt. Seed no answer; reward finding permission gaps.
-3. **Reviewer calibration:** a separate explicitly selected Terra receives the frozen contract plus
+3. **Reviewer calibration:** a separate registered `nudox_terra_reviewer` receives the frozen contract plus
    small candidate artifacts and must reject each seeded defect with the exact cap and falsifier. It
    remains read-only and is not shown the intended rejection.
 
 For high-risk binary, durability, concurrency, unsafe, or cross-crate contracts, use two independent
 readers. A manager may use Luna for reader/misreader trials, but reviewer calibration uses a separate
-real Terra. Every role must be explicitly selected; inherited manager models and role-like task names
-invalidate the run.
+real Terra reviewer. Every role/config/model/effort must be resolved and bound in the evidence index;
+inherited models and role-like task names invalidate the run.
 
 ## Required adversarial deck
 
@@ -92,7 +92,8 @@ Use only cases applicable to the specimen, but do not omit an applicable case:
   state used as concurrency proof;
 - legacy behavior smuggled into a greenfield phase;
 - an `8` claim with a missing public integration, hostile boundary, restart/fault, or raw measurement;
-- superficial LOC/test-count/benchmark changes that should not improve a score.
+- superficial source compression, test duplication, or isolated benchmark changes that should not
+  improve an evidence judgment.
 
 Candidate artifacts may be tiny isolated compile fixtures or precise diff excerpts. They must be
 executable when compilation or a gate is the claimed evidence; prose-only strawmen do not calibrate a
@@ -112,7 +113,7 @@ not one convenient reader. Stop after two failed rewrite rounds and return the u
 the parent; repeated prompting is not calibration.
 
 Classify every missing field before escalation. Baseline SHA/digests, exact repository paths,
-formatted LOC forecasts, numeric reserve, runnable commands, dependency facts, and the smallest
+coupling skeletons, numeric resource bounds, runnable commands, dependency facts, and the smallest
 existing public consumer are discoverable manager work. The manager fills them and repeats the cold
 trial. Only two materially different observable terminals, permanent wire semantics, or authority
 outside the named capability are parent decisions.

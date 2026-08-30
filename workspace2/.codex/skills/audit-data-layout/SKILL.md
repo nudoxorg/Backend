@@ -50,7 +50,7 @@ Wait for parent approval before adding candidates.
 - Tagged/content-addressed layouts measure entropy at the actual routing/partition consumer. A smaller
   digest with fixed prefix cells may preserve cryptographic strength while still destroying low-bit
   bucket distribution; size/collision claims alone are incomplete.
-- Conversion experiments preserve standard trait semantics. A candidate that wins LOC by making
+- Conversion experiments preserve standard trait semantics. A candidate that compresses source by making
   `From` mutate/normalize the supplied representation is rejected before measurement.
 - Production instrumentation is not benchmark instrumentation. Counters stay lab-only unless the
   product independently requires the typed aggregate event.

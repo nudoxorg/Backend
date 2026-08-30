@@ -17,6 +17,7 @@ the process in `.codex/skills/write-evidence-rubric/SKILL.md`.
 | Approved contract cards for every scored plane | Open | Root closure receipts for each prerequisite capability |
 | Reproducible client and remote baselines | Open | Named workloads, machines/profiles, raw memory/work/text/storage results |
 | Public integration, fault, and performance terminals | Open | Exact ordinary-crate or top-level integration commands and artifacts |
+| Forward-tested orchestration custody | Open | Cold Sol/Terra/Luna trials reject idle coordination, weak box-checking, role-mixed review, and hidden chief micromanagement |
 | Forward-tested independent reviewer | Open | Blind deficient/complete/stretch runs plus seeded-defect rejection table |
 | Forward-tested root steward and closure receipt | Open | A fresh full cold deck rejects stale calibration, role mixing, post-gate source edits, missing scoped equivalence, and root self-review of root fixes |
 | Calibrated rubric writer | Open | Two independent writers agree within one point and resist three gaming patches |

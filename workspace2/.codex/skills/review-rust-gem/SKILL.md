@@ -5,27 +5,34 @@ description: Perform a hostile, evidence-backed review of one workspace2 Rust sl
 
 # Review a Rust gem
 
-Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then the one applicable domain skill. The
-shared craft laws are the review standard. Do not invent a second style guide.
+Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md` completely, then the one
+applicable domain skill. The shared craft laws are the review standard. Do not invent a second style
+guide.
 
-The reviewer is a separate read-only Terra, adversarial toward claims and collaborative toward the
-implementation. It receives raw artifacts without the builder's rationale or the primary Terra's
+The reviewer is the registered `nudox_terra_reviewer` beneath a distinct sidecar parent whose sole
+`workspace-write` root is a disposable build directory. It reads a separate exported source snapshot
+without Git history or builder rationale; that snapshot is never a writable root. Implicit `$TMPDIR`
+and `/tmp` writes are disabled; compiler output, temporary files, and experiments stay under the build
+root, and aggregate source digests must match before and after. It is
+adversarial toward claims and collaborative toward the implementation. It receives raw artifacts without the builder's rationale or the primary Terra's
 suspected answer. It never implements a repair, changes the contract, or owns acceptance. Find the
-smallest design that actually proves the contract. Green tests, clever types, and low LOC are inputs,
+strongest simple design that actually proves the contract. Green tests and clever types are inputs,
 not approval.
 
 ## Required inputs
 
-Require: approved contract card, parent decisions, before/after tree or diff, direct consumers,
-claimed ledgers, commands/results, and applicable baseline evidence. If any is absent, report the
+Require: capability index, approved contract card/digest, `TESTING.md` mapping, snapshot and review
+packet digests, runtime role receipt, direct consumers, claimed ledgers, commands/results, disposable
+build path, and applicable baseline evidence. If any is absent, report the
 missing proof; do not infer success.
 
-Freeze scope before reading details: record changed paths, generated/manifest changes, net production
-LOC, deleted APIs, and unrelated dirty files. Review is read-only except parent-approved isolated
-experiments. Check wildcard workspace members for orphan/incomplete crate directories before running
+Freeze scope before reading details: record changed paths, generated/manifest changes, changed
+invariant/dependency owners, deleted APIs, and unrelated dirty files. Review is read-only; reproduce
+hypotheses only in the disposable external directory. Check wildcard workspace members for orphan/incomplete crate directories before running
 gates. Never repair code while compiling the findings; that hides causal evidence.
 
-Before interpretation, run a mechanical tripwire inventory over changed production and test paths:
+Before interpretation, run the project Dylint/Clippy suite and a mechanical tripwire inventory over
+changed production and test paths:
 panic/`unwrap`/`expect`/`unreachable!`, source-dropping `map_err`, `dyn`/`Box`/`Vec`/`Arc`, public tuple
 fields, unit/stateless structs, public local traits, one-letter generic parameters, numeric
 discriminants/matches, lossy or dual-meaning `From`/`TryFrom`, raw authority reconstruction, and
@@ -58,6 +65,8 @@ unsafe/SIMD/allocator/dependency additions
 public item without current consumer and falsifier
 ```
 
+Compiler-backed semantic lints are authoritative for patterns they cover. Text search may inventory
+tokens and dependencies, but it cannot establish whether a Rust construct violates a semantic law.
 Do not summarize the scan as “accounted for.” A missing row, missing location, or `acceptable` without
 a contract law or measurement makes the review incomplete and forbids approval. The primary Terra
 must preserve the raw reviewer table; a paraphrased manager ledger is not independent evidence.
@@ -65,12 +74,11 @@ must preserve the raw reviewer table; a paraphrased manager ledger is not indepe
 or “all changed files.” A zero row names the complete path set actually scanned and the literal search
 classes; an em dash alone does not prove the scan.
 
-Recompute the remaining forecast with the shared skill's uncertainty reserve. A claim that technically
-fits only by consuming the reserve is a scope failure and must split before further implementation.
-Compare planned and actual formatted LOC for every file before reviewing semantics. A variance above
-20% or 25 lines is a process finding: stop the phase, identify the missing responsibility, and require
-a new boundary. Search for public errors, types, dependencies, and reexports that have no consumer and
-falsifying test in this checkpoint; delete them rather than calling them preparation for the next one.
+Compare the candidate with the frozen coupling skeleton. An unplanned invariant owner, dependency
+direction, public item, resource lifetime, state axis, or error vocabulary is a scope finding. Search
+for public errors, types, dependencies, and reexports that have no current consumer and falsifying
+test; delete them rather than calling them preparation for the next phase. Do not penalize coherent
+parameter or generic lists merely for their size; find the actual coupling or unearned dimension.
 
 For a large rejected block, review deletion as rigorously as addition. Require a salvage ledger naming
 every real mechanism, its current proof, and its destination. Reject a cleanup that removes a proven
@@ -95,8 +103,8 @@ Run all applicable passes in this order:
    valid owners. Compilation is a blocker when coherence is required.
 3. **Less-is-more:** find wrappers, getters, delegate traits, stateless structs, helper proliferation,
    parallel algorithms, repeated fields, redundant wire metadata, and branches that representation
-   can remove. Recount normally formatted logical source; reject `rustfmt::skip`, one-line functions,
-   or statement packing used to manufacture a low-LOC claim.
+   can remove. Reject `rustfmt::skip`, statement packing, forwarding helpers, callbacks, or parameter
+   bags used to manipulate a shape/complexity metric instead of improving the ownership model.
 4. **Types:** inspect raw primitives, tuple coordinates, optional correlated state, string stages,
    catch-all variants, generic ledgers, lifetime truth, conversions, field visibility, and invalid
    states. Demand descriptive generic names. Cross every public method with every reachable phase;
@@ -180,13 +188,14 @@ Do not approve when:
 - concurrency is modeled in analogous test code rather than production transitions;
 - tests assert only success/no panic or use `expect`/`unwrap` as reporting;
 - a runtime test is offered as proof that an unwanted constructor/trait/transition cannot compile;
-- an LOC or simplicity claim depends on suppressed formatting or compressed logical statements;
+- a simplicity claim depends on suppressed formatting, compressed logical statements, forwarding
+  helpers, or hidden parameter-object coupling;
 - diagnostics exist only in an outer demo;
 - a coherence-dependent public struct literal can combine unrelated valid fields, or validated input
   still reaches a panic/fallback/redecode during trusted projection;
 - retained complexity rises without a measured/deleted cost;
-- the implementation crossed its named baseline/cap, hid written-then-deleted churn, or introduced
-  future-phase public surface without current behavior and tests;
+- the implementation diverged from its coupling skeleton or introduced future-phase public surface
+  without current behavior and tests;
 - full gates are red for an owned finding.
 
 Approval requires zero blockers/majors, reproducible commands, honest remaining caps, and a smaller
