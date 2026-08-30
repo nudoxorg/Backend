@@ -1,7 +1,7 @@
 //! Fixed-capacity UTF-8 input retained without heap ownership.
 
-/// Maximum accepted adapter text field length.
-pub const INPUT_TEXT_BYTES: usize = 64;
+/// Maximum retained adapter text width: the semantic bound plus its exact `limit + 1` falsifier.
+pub const INPUT_TEXT_BYTES: usize = crate::model::MAX_SEMANTIC_TEXT_BYTES + 1;
 
 /// An adapter field that has passed only transport width validation.
 ///

@@ -181,6 +181,34 @@ fn absent_index_plane_is_honestly_degraded() -> Result<(), ServiceTestError> {
 }
 
 #[test]
+fn semantic_limit_plus_one_is_retained_but_larger_transport_text_is_rejected()
+-> Result<(), ServiceTestError> {
+    let limit_plus_one = text("123456789012345678901234567890123")?;
+    let mut service = ApplicationService::new();
+    let rejected = service.execute(&ApplicationInput::Generate {
+        correlation: CorrelationId(25),
+        language: text("rust")?,
+        stage: text("parse")?,
+        package: limit_plus_one,
+        source: text("fn bounded() {}")?,
+    });
+    assert_eq!(rejected.terminal, Terminal::Failed);
+    assert_eq!(
+        rejected.diagnostic.map(|diagnostic| diagnostic.code),
+        Some(DiagnosticCode::SemanticTextTooLong)
+    );
+    let transport_error = InputText::try_from_str("1234567890123456789012345678901234");
+    assert!(matches!(
+        transport_error,
+        Err(InputTextError {
+            actual: 34,
+            maximum: 33,
+        })
+    ));
+    Ok(())
+}
+
+#[test]
 fn outage_acquires_real_local_bundle_then_exposes_bounded_remote_retry()
 -> Result<(), ServiceTestError> {
     let mut service = ApplicationService::new();
