@@ -336,6 +336,34 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
   silent omission, or an unchecked narrowing cast to recover facts validation supposedly proved.
   If projection remains fallible, validation has not produced the right representation. Write exact
   caller output only after total preflight; insufficient output leaves every byte unchanged.
+- The successful validation path performs each semantic validity scan once. Prefer a typed slice or
+  record cast whose success is the proof. When that cast fails, a cold diagnostic rescan may locate
+  the first offending cell and retain its exact ordinal/value; do not pay both the typed-validity scan
+  and an equivalent diagnostic scan for valid input merely to share error-building code.
+- Match the witness variant before deriving variant-specific ranks, offsets, or references. A helper
+  that accepts an ordinal which is meaningful only for one enum arm has already weakened the proof.
+  Never fill an impossible arm with a fabricated value, empty iterator, default, panic, or internal
+  error. Reshape the enum/borrow so the impossible call cannot be expressed.
+- A private direct writer is still an untrusted producer at its public boundary. Either return the
+  exact invariant failure found by the same validator or carry a reviewed construction proof; never
+  `unwrap` validation, translate it to a generic write failure, or silently assume private code cannot
+  drift.
+
+```rust
+// DON'T: manufacture data because the helper forgot which arm established `rank`.
+fn overlay_at(&self, rank: usize) -> ObjectRef {
+    match self.placement {
+        Placement::Overlay(ref lanes) => lanes.at(rank),
+        Placement::Promise(_) => fabricated_object(),
+    }
+}
+
+// DO: enter the variant first; its borrow is the authority required by the helper.
+match &self.placement {
+    Placement::Promise(providers) => project_promise(providers, ordinal),
+    Placement::Overlay(lanes) => project_overlay(lanes, lanes.rank(ordinal)),
+}
+```
 - A generic validated view must validate and project the same type parameter. A validator fixed to
   one concrete domain behind a generic witness is unsound API theater. Either prove two real domains
   through the complete writer -> validator -> infallible projection path or remove the generic. Tests

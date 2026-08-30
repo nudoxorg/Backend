@@ -70,6 +70,12 @@ Use only cases applicable to the specimen, but do not omit an applicable case:
 - a checked arithmetic failure collapsed into a sentinel, saturation, generic budget error, or value
   that cannot retain the original operands/owners;
 - validation followed by raw-tag redecoding, `unreachable!`, fallback, omission, or unchecked cast;
+- a closed witness helper that receives a variant-specific rank before matching the variant, then
+  fabricates a default, empty result, panic, or generic internal error for the impossible arm;
+- a validator that runs a typed validity cast and then repeats the same full semantic scan on valid
+  input so exact rejection diagnostics can reuse one code path;
+- a private direct writer whose output is accepted with `unwrap`, an erased invariant error, or no
+  round-trip through the public validator;
 - a green happy-path test that never falsifies exact error/source/owner behavior;
 - a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all
   public tests stay green;

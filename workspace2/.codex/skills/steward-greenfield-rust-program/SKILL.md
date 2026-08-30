@@ -136,6 +136,13 @@ If the clean replacement cannot yet absorb a valuable mechanism, keep the protot
 split the integration boundary; do not silently trade away durability, ownership, streaming, error,
 or allocation behavior to satisfy a LOC cap.
 
+Build the ledger from a line-by-line read of the losing implementation and its tests, not its summary.
+For each `supersede with proof` row, run the old falsifier against the replacement or port an equally
+stronger public falsifier before deleting the old owner. A smaller API, lower LOC, or preferred type
+shape is not evidence that the mechanism survived. Do not cherry-pick a large block merely to preserve
+one useful property: transplant that property into the current invariant owner and keep the prototype
+commit named as evidence until the replacement closes.
+
 ## Cross-cutting abstraction review
 
 Before accepting a new type or mechanism, ask across every plane:

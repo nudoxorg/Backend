@@ -103,7 +103,11 @@ Run all applicable passes in this order:
    hidden scans, oversized functions, lost sources/values, panic paths, hand-written formatting, and
    error priority drift. Trace every validated tag, offset, and length into projection. A second
    raw-to-closed decode, `unreachable!`, `expect`, silent omission, fallback, or unproved narrowing
-   conversion means the representation did not retain its proof.
+   conversion means the representation did not retain its proof. Inspect every helper reachable from
+   a closed-enum arm: if it accepts a coordinate that is valid only for that arm but can also observe
+   other arms, require the caller to pass an arm-specific borrow/witness instead. Treat fabricated
+   data, defaults, empty results, or internal errors in an impossible arm as a blocker, even when the
+   branch is currently unreachable.
 7. **Concurrency/async:** prove receiver-level concurrency, physical bounds, linearization, ordering,
    waker arm/recheck, cancellation, ABA/reuse, poison, shutdown, and progress. Search for locks hidden
    in libraries. Require Loom on production transitions and Miri for unsafe ownership.
@@ -115,6 +119,10 @@ Run all applicable passes in this order:
    construction. Sealing alone and runtime uniqueness tests are insufficient. For every generic
    validated view, prove writer -> validation -> infallible projection for a second real type or
    require removal of the unearned generic.
+   Count full passes over every validated region on successful input. A typed cast followed by an
+   equivalent semantic scan is duplicate work unless the second pass proves a distinct invariant.
+   Exact cell diagnostics may rescan only after the typed cast rejects. Exercise every private direct
+   writer through the public validator and require exact typed failure rather than panic or erasure.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.
