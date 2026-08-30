@@ -25,6 +25,18 @@ Prohibit representation/API implementation, universal DTOs, dynamic schema, back
 matches, consensus, `dyn`, boxed streams, serde, caches, Tantivy schema/truth, Qdrant/Trustfall,
 compiler reliance, dependencies, unsafe/SIMD, Cargo edits, and production-writing Luna work.
 
+## Expected public surface and explicitly forbidden surface
+
+Expected semantic surface: three closed typed operations, `ExactLookup`, `PrefixScan`, and
+`LexicalSearch`, each explicitly passed one `IndexSnapshotId`, its declared typed segment IDs, and
+validated limits/credits, yielding ordered rows and an exact complete/partial terminal. A route or
+tier is never a semantic parameter. A later B4-13 adapter may consume those typed lexical facts for a
+bounded differential comparison only.
+
+Forbidden surface: `Query` trait object, `SearchRequest` bag, `Document` DTO, backend enum, location
+as truth, implicit latest-head lookup, untyped segment ID, raw score float, cache policy, future
+relation/usage/vector type, compiler invocation, or transport/runtime handle in core.
+
 ## Evidence rows, falsifiers, hard controls, and stop triggers
 
 | Matrix rows | Falsifier | Hard control | Stop trigger |
