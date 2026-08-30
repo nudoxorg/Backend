@@ -38,6 +38,15 @@ Before any production-writing Luna starts:
 This phase is sequential because workers cannot implement a card that does not yet exist. Read-only
 repository mapping may run concurrently only when it cannot create or prejudge production edits.
 
+Evidence dependencies must form a DAG. A reader/reviewer receives the frozen packet, source, and
+already-existing receipts only; it may not require the aggregate calibration or closure receipt that
+its own output helps create. The manager records that aggregate only after every named reader returns.
+
+```text
+DON'T: require calibration.md in the reader prompt when calibration.md is assembled from that reader.
+DO:    freeze packet P -> run readers against P -> record their task-bound outputs -> emit receipt R.
+```
+
 ## Start parallel after Phase 0
 
 Inspect live capacity, reserve one slot for independent review, and immediately dispatch registered
@@ -48,6 +57,13 @@ include the safe/std control, one counterexample representation, or one resource
 Do not dispatch essay tasks, architecture selection, product scoring, broad plans, or overlapping
 writers. If only one coherent edit exists, use one Luna and do the other work yourself; agent count is
 not progress.
+
+Plan the finite child-stage graph before dispatch. Retain each completed child's commit and raw
+receipt, then release or retire that child unless the next already-named card reuses it immediately.
+Never keep completed workers alive merely as possible future reviewers: reviewer independence and a
+reserved review slot are more valuable than speculative reuse. If capacity is exhausted, stop new
+dispatch, preserve the clean checkpoint, and make the next required role/stage explicit. A missing
+independent review cannot be replaced by manager self-approval.
 
 ## Establish the four durable artifacts
 
@@ -91,6 +107,13 @@ canonical version of each artifact on the manager branch:
 
 Update canonical artifacts in place. A semantic change alters the digest and invalidates prior worker
 or reviewer evidence for that version. Preserve history in commits, not appended “clarifications.”
+
+Do not use source line count, word count, or generated compiler-output line count as a quality gate.
+Measure authored contract complexity by semantic obligations and coupling. Account generated LLVM,
+assembly, traces, corpora, and benchmark samples separately by bytes, compression, producer command,
+digest, and retention purpose; a raw generated artifact cannot make correct product code fail an
+authored-evidence budget. Prefer a small manifest plus reproducible command when retaining the whole
+artifact adds no diagnostic value.
 
 ## Freeze Luna cards
 
