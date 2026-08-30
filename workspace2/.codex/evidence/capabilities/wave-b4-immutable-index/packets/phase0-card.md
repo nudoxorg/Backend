@@ -45,9 +45,9 @@ relation/usage/vector type, compiler invocation, or transport/runtime handle in 
 | B4-02/B4-03 | mixed family/every truncation/mutation | one validator/borrow owner, typed family | untyped/repeated raw decode or split layout authority |
 | B4-05/B4-06 | permutation/tie/corpus-scan mutant | 4 segments, 4 ranges, 3 rows, 12 merge candidates | unbounded scan, backend loop branch, raw float truth |
 | B4-07/B4-09 | E2 absent/stale route/tier move | request names 4 IDs; one retry; deterministic owners only | zero-hit/fallback/latest snapshot/node truth or claiming durable file/object proof |
-| B4-10 | independent replacement | S3 only after exact+lexical equivalence | local repack/unverified head |
+| B4-10 | independent replacement | S3 records explicit E1/E2/L1/L2 input set, distinct builder receipt, equivalence trace, then atomic head | local repack, S3 alias, or unverified head |
 | B4-11/B4-12 | nonempty allocation/probe/compiler control | raw ledger before performance/dependency claim | heap/dependency/probe/compiler escape hatch |
-| B4-13 | Tantivy differential or two-attempt block | nested lexical comparison only | Tantivy schema/head/document API becomes truth or no raw block receipt |
+| B4-13 | Tantivy differential or two-attempt block | nested lexical comparison only; each block attempt records exact Nix argv, lock/metadata identity, raw stderr, and distinct failure class | Tantivy schema/head/document API becomes truth or no independently inspectable block receipt |
 
 ## Budgets and reserve
 
@@ -68,6 +68,17 @@ nix develop ./workspace2 --command zsh -lc 'RUSTC="$NUDOX_STABLE_TOOLCHAIN/bin/r
 
 Ambient `cargo` is forbidden because it can select a nightly compiler and inherit the shared sccache
 wrapper; the commands must choose `NUDOX_STABLE_TOOLCHAIN` and clear `RUSTC_WRAPPER`.
+
+## Phase 0 acceptance and anti-self-certification
+
+Phase 0 may close only with this card/artifacts structurally checked, clean pre/post source ledger,
+actual manager/reader/misreader/reviewer receipts, raw outputs, a source-isolated review, and exact
+toolchain receipt. It cannot mark any B4 row `EVIDENCE_BLOCKED`, `PROVED BY WORKER`, or
+`REPRODUCED BY TERRA`; it cannot call the seam implemented, make a release/dependency claim, or use
+the evidence wildcard for a production, Cargo, fixture, test, roadmap, symlink, or sidecar-source
+write. A later implementation card must turn each listed falsifier into an executable owner-local or
+ordinary top-level test, including typed terminal shape, sealed-byte input, exact missing payload,
+independent compaction provenance, and deterministic permutation/work controls.
 
 ## Questions requiring parent authority
 

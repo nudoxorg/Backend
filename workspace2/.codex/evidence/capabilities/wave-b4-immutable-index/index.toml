@@ -46,10 +46,10 @@ brief = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/brief.md"
 matrix = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/proof-matrix.md", sha256 = "8ec68966d8d3f915786ea5691d05c4acfb53841ae7510d113cb08c623d4ad5ab" }
 research = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/research.md", sha256 = "f4ee5d01eb921dfddcb405c8d0301214e1c6de23a38c9cc1ebde31ba1b9cca78" }
 closure = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/closure.md", sha256 = "e682ce9175a50584e3c0b6aa6549d2517c14a9dd3f217b1363e42ab51dbf3a63" }
-phase0_card = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/phase0-card.md", sha256 = "d744bd36989b336adfcb2f40ac12941b1cff06ab15eb2eba66094a1e5aa3da14" }
+phase0_card = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/phase0-card.md", sha256 = "cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00" }
 
 [packets]
-pre_edit = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/pre-edit-1.md", sha256 = "5ad848830fceb035e4986855a4c96779d3906253e5c6472c104c6b90ad28e44f" }
+pre_edit = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/pre-edit-1.md", sha256 = "ded9b7ce69a4307fe593448194957ae2cf3b41cc5384abef1826a650e81b19d1" }
 reviewer_calibration = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/reviewer-calibration-deck.md", sha256 = "7d3d6a1d68ff194950d8ac6ecbecaf204d9d5be80ea3d091cf202cd63fbc8f36" }
 
 [receipts]

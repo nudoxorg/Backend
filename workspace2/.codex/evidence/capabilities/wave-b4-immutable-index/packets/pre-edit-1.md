@@ -5,7 +5,7 @@
 Capability: `wave-b4-immutable-index`.
 
 Frozen manager card: `.codex/evidence/capabilities/wave-b4-immutable-index/packets/phase0-card.md`;
-SHA-256 `d744bd36989b336adfcb2f40ac12941b1cff06ab15eb2eba66094a1e5aa3da14`.
+SHA-256 `cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00`.
 
 Baseline commit/tree: `f2565a9fb33af06053bd19721d4dc2753ec09ed5` /
 `8477cb2ab93763c468d5431740cfb1d5e4c4cf82`.
