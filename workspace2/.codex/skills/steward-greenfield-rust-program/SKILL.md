@@ -63,7 +63,9 @@ While managers work, make independent progress that will survive their branch:
    weak public witnesses, repeated raw decoding, magic coordinates, excess owners, unnecessary
    generics, lost sources, and oversized control flow. Prefer deletion or a stronger shared concept.
 5. **Integration health:** keep the shared branch clean, run focused gates after every root commit,
-   and periodically run the complete workspace plus nested adapters. Record unavailable tooling
+   and periodically run the complete root workspace plus every consuming nested plane, domain,
+   adapter, and lab manifest with locked/offline resolution. Check status immediately after each:
+   an uncommitted nested lockfile update disproves the clean integration claim. Record unavailable tooling
    exactly; never turn a missing daemon into a green claim.
 
 For closure passes, run `scripts/run_clean_gates.py` from this skill. It binds every command and raw

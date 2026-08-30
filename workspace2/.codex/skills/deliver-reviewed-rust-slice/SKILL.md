@@ -161,6 +161,10 @@ asked. The parent owns product completion and any future rubric.
 - In a glob-member workspace, never leave a new crate directory without a valid manifest and target.
   Stage experiments outside the glob or create/remove the complete scaffold atomically so unrelated
   Cargo gates remain runnable.
+- A shared crate or dependency edit must enumerate every root, nested plane, domain, adapter, and lab
+  workspace that consumes it. Run each affected manifest with `--locked --offline`; if an unlocked
+  diagnostic run legitimately refreshes a nested `Cargo.lock`, review and commit that lockfile before
+  repeating the locked gate. A green root manifest is not integration evidence for nested workspaces.
 - Public fields are correct only when every field is an independently valid fact and every public
   struct literal is coherent. If two borrows, coordinates, identities, lengths, or witnesses must
   come from the same validation event, keep their pairing private and expose the independent facts
