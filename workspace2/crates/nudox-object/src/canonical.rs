@@ -2,7 +2,7 @@
 
 use core::mem::{align_of, offset_of, size_of};
 
-use nudox_id::FixedCanonicalRecord;
+use nudox_id::{ContentIdDecodeError, Domain, FixedCanonicalRecord};
 use nudox_schema::{SchemaId, UnknownSchemaId};
 use thiserror::Error;
 use zerocopy::{
@@ -46,7 +46,7 @@ pub struct ObjectDescriptorOutputTooSmall {
 }
 
 /// Owned canonical descriptor decoding failure.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum ObjectDescriptorDecodeError {
     /// Input was not exactly one canonical descriptor record.
     #[error(
@@ -59,7 +59,23 @@ pub enum ObjectDescriptorDecodeError {
     /// The record carried an unknown closed schema discriminant.
     #[error("object descriptor schema is unknown")]
     Schema(#[from] UnknownSchemaId),
+    /// The record carried a content identity from another closed domain.
+    #[error("object descriptor content identity is not an object identity")]
+    Content(#[from] ContentIdDecodeError),
 }
+
+impl PartialEq for ObjectDescriptorDecodeError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Width { actual }, Self::Width { actual: other }) => actual == other,
+            (Self::Schema(left), Self::Schema(right)) => left == right,
+            (Self::Content(left), Self::Content(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ObjectDescriptorDecodeError {}
 
 impl<DomainTag> From<&ObjectRef<DomainTag>> for ObjectDescriptorWireRecord {
     fn from(reference: &ObjectRef<DomainTag>) -> Self {
@@ -72,18 +88,20 @@ impl<DomainTag> From<&ObjectRef<DomainTag>> for ObjectDescriptorWireRecord {
     }
 }
 
-impl<DomainTag> From<&ObjectDescriptorWireRecord> for ObjectRef<DomainTag> {
-    fn from(record: &ObjectDescriptorWireRecord) -> Self {
-        Self {
-            content: nudox_id::ContentId::from(record.content),
+impl<DomainTag: Domain> TryFrom<&ObjectDescriptorWireRecord> for ObjectRef<DomainTag> {
+    type Error = ObjectDescriptorDecodeError;
+
+    fn try_from(record: &ObjectDescriptorWireRecord) -> Result<Self, Self::Error> {
+        Ok(Self {
+            content: nudox_id::ContentId::try_from(record.content)?,
             length: ObjectLength::from(record.length.get()),
             schema: record.schema.get(),
             kind: ObjectKind::from(record.kind.get()),
-        }
+        })
     }
 }
 
-impl<DomainTag> TryFrom<&[u8]> for ObjectRef<DomainTag> {
+impl<DomainTag: Domain> TryFrom<&[u8]> for ObjectRef<DomainTag> {
     type Error = ObjectDescriptorDecodeError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
@@ -104,7 +122,7 @@ impl<DomainTag> TryFrom<&[u8]> for ObjectRef<DomainTag> {
                 observed,
             )));
         };
-        Ok(Self::from(record))
+        Self::try_from(record)
     }
 }
 
@@ -162,7 +180,7 @@ mod tests {
 
     fn object() -> ObjectRef<ObjectDomain> {
         ObjectRef {
-            content: ContentId::from([7; 32]),
+            content: ContentId::from_digest([7; 32]),
             length: 12_u64.into(),
             schema: SchemaId::Object,
             kind: 3_u16.into(),
@@ -174,11 +192,12 @@ mod tests {
         let reference = object();
         let record = ObjectDescriptorWireRecord::from(&reference);
         let mut expected = [7_u8; OBJECT_DESCRIPTOR_RECORD_BYTES];
+        expected[0] = 1;
         expected[32..40].copy_from_slice(&12_u64.to_be_bytes());
         expected[40..44].copy_from_slice(&u32::from(SchemaId::Object).to_be_bytes());
         expected[44..46].copy_from_slice(&3_u16.to_be_bytes());
         assert_eq!(record.as_bytes(), expected);
-        assert_eq!(ObjectRef::from(&record), reference);
+        assert_eq!(ObjectRef::try_from(&record).ok(), Some(reference));
     }
 
     #[test]

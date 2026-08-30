@@ -2,6 +2,7 @@
 
 use core::{mem::size_of_val, ops::Deref};
 
+use nudox_id::Domain;
 use nudox_observe::Probe;
 
 use crate::closure::{ClosureError, ClosureScratch, RootProbeEvent, SelectedClosure};
@@ -26,7 +27,7 @@ pub type MeasuredGenerationLookup<DomainTag> =
 
 /// A coherent view exposes immutable root facts and operations through deref;
 /// no mutable dereference can decouple locality evidence from its root.
-impl<DomainTag> Deref for GenerationView<'_, '_, DomainTag> {
+impl<DomainTag: Domain> Deref for GenerationView<'_, '_, DomainTag> {
     type Target = GenerationRoot<DomainTag>;
 
     fn deref(&self) -> &Self::Target {
@@ -40,15 +41,15 @@ pub struct SelectedGeneration<'root, DomainTag> {
     locality: &'root ValidatedLocality<'root, DomainTag>,
 }
 
-impl<DomainTag> Copy for SelectedGeneration<'_, DomainTag> {}
+impl<DomainTag: Domain> Copy for SelectedGeneration<'_, DomainTag> {}
 
-impl<DomainTag> Clone for SelectedGeneration<'_, DomainTag> {
+impl<DomainTag: Domain> Clone for SelectedGeneration<'_, DomainTag> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'selection, DomainTag> SelectedGeneration<'selection, DomainTag> {
+impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
     /// Iterates selected composed entries in canonical key order.
     pub fn iter(
         &self,
@@ -189,7 +190,7 @@ impl<'selection, DomainTag> SelectedGeneration<'selection, DomainTag> {
     }
 }
 
-impl<DomainTag> SelectedOrdinals<'_, '_, DomainTag> {
+impl<DomainTag: Domain> SelectedOrdinals<'_, '_, DomainTag> {
     /// Returns the exact logical compact bytes retained for this list.
     #[must_use]
     pub const fn state_bytes(&self) -> usize {
@@ -242,7 +243,7 @@ pub struct GenerationScan<'root, 'locality, DomainTag> {
     locality: LocalityCursor<'locality, DomainTag>,
 }
 
-impl<DomainTag> Iterator for GenerationScan<'_, '_, DomainTag> {
+impl<DomainTag: Domain> Iterator for GenerationScan<'_, '_, DomainTag> {
     type Item = Result<GenerationEntry<DomainTag>, LocalityReadError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -267,7 +268,7 @@ pub struct MeasuredGenerationScan<'root, 'locality, DomainTag> {
     work: LocalityScanWork,
 }
 
-impl<DomainTag> Deref for MeasuredGenerationScan<'_, '_, DomainTag> {
+impl<DomainTag: Domain> Deref for MeasuredGenerationScan<'_, '_, DomainTag> {
     type Target = LocalityScanWork;
 
     fn deref(&self) -> &Self::Target {
@@ -275,7 +276,7 @@ impl<DomainTag> Deref for MeasuredGenerationScan<'_, '_, DomainTag> {
     }
 }
 
-impl<DomainTag> Iterator for MeasuredGenerationScan<'_, '_, DomainTag> {
+impl<DomainTag: Domain> Iterator for MeasuredGenerationScan<'_, '_, DomainTag> {
     type Item = Result<GenerationEntry<DomainTag>, LocalityReadError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -301,7 +302,7 @@ pub(crate) struct GenerationRows<'root, 'locality, DomainTag> {
     locality: LocalityCursor<'locality, DomainTag>,
 }
 
-impl<DomainTag> Iterator for GenerationRows<'_, '_, DomainTag> {
+impl<DomainTag: Domain> Iterator for GenerationRows<'_, '_, DomainTag> {
     type Item = Result<(RowIndex, GenerationEntry<DomainTag>), LocalityReadError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -324,7 +325,7 @@ impl<DomainTag> Iterator for GenerationRows<'_, '_, DomainTag> {
     }
 }
 
-impl<'root, 'locality, DomainTag> GenerationView<'root, 'locality, DomainTag> {
+impl<'root, 'locality, DomainTag: Domain> GenerationView<'root, 'locality, DomainTag> {
     /// Validates the only cross-axis invariant once before any iteration.
     ///
     /// # Errors

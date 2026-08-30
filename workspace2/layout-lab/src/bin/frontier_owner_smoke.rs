@@ -115,7 +115,7 @@ mod smoke {
                 key: EntryKey::from(i as u64 + 1),
                 parent: None,
                 object: ObjectRef {
-                    content: ContentId::from([(i % 251) as u8; 32]),
+                    content: ContentId::from_digest([(i % 251) as u8; 32]),
                     length: ObjectLength::from(0),
                     schema: SchemaId::Object,
                     kind: ObjectKind::from(0),

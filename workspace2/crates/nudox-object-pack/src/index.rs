@@ -143,6 +143,9 @@ fn validate_directory_schemas(bytes: &[u8]) -> Result<(), ObjectPackError> {
                     actual: actual.into(),
                 });
             }
+            Err(ObjectDescriptorDecodeError::Content(source)) => {
+                return Err(ObjectPackError::DirectoryContent { ordinal, source });
+            }
         }
     }
     Ok(())

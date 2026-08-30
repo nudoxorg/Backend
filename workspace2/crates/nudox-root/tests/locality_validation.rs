@@ -55,7 +55,7 @@ struct ScanEvidence {
 
 fn object(row: u8) -> ObjectRef<ObjectDomain> {
     ObjectRef {
-        content: [row; 32].into(),
+        content: nudox_id::ContentId::from_digest([row; 32]),
         length: ObjectLength::from(u64::from(row) + 1),
         schema: SchemaId::Object,
         kind: ObjectKind::from(1),

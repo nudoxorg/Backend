@@ -2,7 +2,7 @@
 
 use core::{iter::Peekable, mem::size_of_val};
 
-use nudox_id::GenerationId;
+use nudox_id::{Domain, GenerationId};
 use nudox_object::{ObjectRef, RemoteBase};
 use thiserror::Error;
 
@@ -89,7 +89,7 @@ pub struct OverlayBuildWork {
     clippy::result_large_err,
     reason = "base mismatch intentionally retains exact inline object evidence without allocating an error path"
 )]
-pub fn propagate_overlays<'output, DomainTag>(
+pub fn propagate_overlays<'output, DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &mut [bool],
@@ -140,7 +140,7 @@ impl<'marks> OverlayMarks<'marks> {
         clippy::result_large_err,
         reason = "the exact inline overlay mismatch evidence is carried by the shared rejection type without error-path allocation"
     )]
-    fn new<DomainTag>(
+    fn new<DomainTag: Domain>(
         view: &GenerationView<'_, '_, DomainTag>,
         values: &'marks mut [bool],
     ) -> Result<Self, OverlayError<DomainTag>> {
@@ -183,7 +183,7 @@ impl<'marks> OverlayMarks<'marks> {
     clippy::result_large_err,
     reason = "base comparison deliberately preserves exact inline descriptor mismatch evidence"
 )]
-fn validate_and_mark<DomainTag>(
+fn validate_and_mark<DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &mut OverlayMarks<'_>,
@@ -199,7 +199,7 @@ fn validate_and_mark<DomainTag>(
     Ok(())
 }
 
-fn mark_ancestors<DomainTag>(
+fn mark_ancestors<DomainTag: Domain>(
     root: &GenerationRoot<DomainTag>,
     marks: &mut OverlayMarks<'_>,
     start: RowIndex,
@@ -224,7 +224,7 @@ struct OutputCounts {
     clippy::result_large_err,
     reason = "validated locality reconstruction preserves exact source and ordinal through the shared overlay rejection"
 )]
-fn count_output<DomainTag>(
+fn count_output<DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &OverlayMarks<'_>,
@@ -254,7 +254,7 @@ fn count_output<DomainTag>(
     clippy::result_large_err,
     reason = "validated locality reconstruction preserves exact source and ordinal through the shared overlay rejection"
 )]
-fn write_output<DomainTag>(
+fn write_output<DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &OverlayMarks<'_>,
@@ -275,7 +275,7 @@ fn write_output<DomainTag>(
     Ok(())
 }
 
-fn remote_base<DomainTag, Rows>(
+fn remote_base<DomainTag: Domain, Rows>(
     key: EntryKey,
     generation: GenerationId,
     rows: &mut Peekable<Rows>,
@@ -289,7 +289,7 @@ where
     }
 }
 
-fn base_object<DomainTag, Rows>(
+fn base_object<DomainTag: Domain, Rows>(
     key: EntryKey,
     rows: &mut Peekable<Rows>,
 ) -> Option<ObjectRef<DomainTag>>
@@ -312,7 +312,7 @@ where
     clippy::result_large_err,
     reason = "base comparison deliberately preserves exact inline descriptor mismatch evidence"
 )]
-fn validate_overlay<DomainTag, Rows>(
+fn validate_overlay<DomainTag: Domain, Rows>(
     entry: &GenerationEntry<DomainTag>,
     remote: RemoteBase<DomainTag>,
     base_generation: GenerationId,

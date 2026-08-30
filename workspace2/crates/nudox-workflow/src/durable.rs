@@ -7,7 +7,7 @@
 
 use core::{future::Future, mem::size_of};
 
-use nudox_id::{ContentId, FixedCanonicalRecord, ObjectDomain};
+use nudox_id::{ContentId, ContentIdDecodeError, FixedCanonicalRecord, ObjectDomain};
 use thiserror::Error;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
@@ -69,7 +69,7 @@ impl TryFrom<&[u8]> for WorkflowRecord {
 }
 
 /// Exact canonical decode rejection.
-#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[derive(Debug, Error)]
 pub enum WorkflowRecordError {
     #[error("workflow record version {observed} is unknown")]
     UnknownVersion { observed: u16 },
@@ -81,7 +81,37 @@ pub enum WorkflowRecordError {
     UnexpectedOutput { event: EventName },
     #[error("event {event:?} carried unexpected failure tag {observed}")]
     UnexpectedFailure { event: EventName, observed: u8 },
+    #[error("workflow output identity failed checked decode")]
+    Output(#[from] ContentIdDecodeError),
 }
+
+impl PartialEq for WorkflowRecordError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::UnknownVersion { observed }, Self::UnknownVersion { observed: other }) => {
+                observed == other
+            }
+            (Self::UnknownEvent { observed }, Self::UnknownEvent { observed: other })
+            | (Self::UnknownFailure { observed }, Self::UnknownFailure { observed: other }) => {
+                observed == other
+            }
+            (Self::UnexpectedOutput { event }, Self::UnexpectedOutput { event: other }) => {
+                event == other
+            }
+            (
+                Self::UnexpectedFailure { event, observed },
+                Self::UnexpectedFailure {
+                    event: other_event,
+                    observed: other_observed,
+                },
+            ) => event == other_event && observed == other_observed,
+            (Self::Output(left), Self::Output(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for WorkflowRecordError {}
 
 impl TryFrom<&WorkflowRecord> for WorkflowEvent {
     type Error = WorkflowRecordError;
@@ -94,17 +124,26 @@ impl TryFrom<&WorkflowRecord> for WorkflowEvent {
         let name = EventName::from_repr(record.event).ok_or(WorkflowRecordError::UnknownEvent {
             observed: record.event,
         })?;
-        let output = ContentId::<ObjectDomain>::from(record.output);
         let kind = match name {
             EventName::Requested => no_payload(record, EventKind::Requested, name)?,
             EventName::Admitted => no_payload(record, EventKind::Admitted, name)?,
             EventName::Cancelled => no_payload(record, EventKind::Cancelled, name)?,
-            EventName::Staged => output_event(record, EventKind::Staged { output }, name)?,
-            EventName::Verified => output_event(record, EventKind::Verified { output }, name)?,
+            EventName::Staged => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Staged { output }, name)?
+            }
+            EventName::Verified => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Verified { output }, name)?
+            }
             EventName::PublicationStarted => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
                 output_event(record, EventKind::PublicationStarted { output }, name)?
             }
-            EventName::Published => output_event(record, EventKind::Published { output }, name)?,
+            EventName::Published => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Published { output }, name)?
+            }
             EventName::Failed => {
                 ensure_zero_output(record, name)?;
                 let code = FailureCode::from_repr(record.failure).ok_or(
@@ -254,7 +293,7 @@ mod tests {
             version: WorkflowVersion::WAVE1,
             key: key(),
             kind: EventKind::Published {
-                output: ContentId::<ObjectDomain>::from([7; 32]),
+                output: ContentId::<ObjectDomain>::from_digest([7; 32]),
             },
         };
         let record = WorkflowRecord::from(event);

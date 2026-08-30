@@ -1,5 +1,7 @@
 //! Forward-only sparse locality traversal over canonical root rows.
 
+use nudox_id::Domain;
+
 use super::{Locality, LocalityReadError, RowIndex, ValidatedLocality, artifact::LaneTable};
 
 /// Work evidence emitted by one canonical locality scan.
@@ -33,7 +35,7 @@ pub(crate) struct LocalityCursor<'locality, DomainTag> {
     next_present: u32,
 }
 
-impl<'locality, DomainTag> LocalityCursor<'locality, DomainTag> {
+impl<'locality, DomainTag: Domain> LocalityCursor<'locality, DomainTag> {
     pub(super) const fn new(locality: &'locality ValidatedLocality<'locality, DomainTag>) -> Self {
         Self {
             locality,
@@ -128,7 +130,7 @@ impl<'locality, DomainTag> LocalityCursor<'locality, DomainTag> {
             locality
         } else {
             self.next_overlay += 1;
-            Ok(self.locality.cursor_overlay_absent(self.lanes))
+            self.locality.cursor_overlay_absent(self.lanes)
         };
         self.next_exception += 1;
         locality

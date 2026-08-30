@@ -1,6 +1,6 @@
 use core::num::TryFromIntError;
 
-use nudox_id::GenerationId;
+use nudox_id::{ContentIdDecodeError, GenerationId};
 use nudox_object::{ObjectDescriptorDecodeError, ProviderSetError};
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
@@ -33,6 +33,18 @@ pub enum LocalityRegion {
 /// Validation or input-measure rejection for one locality artifact.
 #[derive(Debug, Error, PartialEq)]
 pub enum LocalityError {
+    /// The fixed header carried a generation identity from another closed domain.
+    #[error("locality generation identity failed checked decode")]
+    Generation(#[from] ContentIdDecodeError),
+    /// A present overlay descriptor carried the wrong content-domain authority.
+    #[error("locality present overlay {ordinal} content identity failed checked decode")]
+    PresentOverlayContent {
+        /// Present-overlay descriptor ordinal.
+        ordinal: u32,
+        /// Exact checked identity decode failure.
+        #[source]
+        source: ContentIdDecodeError,
+    },
     /// One required artifact region ends beyond the supplied byte range.
     #[error("locality {region:?} needs {required:?} bytes but only {available:?} are available")]
     Truncated {
@@ -242,8 +254,11 @@ pub enum LocalityError {
 /// Ordinary immutable witnesses cannot produce this error. Keeping the read
 /// boundary fallible contains implementation drift without manufacturing a
 /// placement, panicking, or relying on invalid enum representations.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error, Eq, PartialEq)]
 pub enum LocalityReadError {
+    /// A validated locality's shared generation basis failed checked reconstruction.
+    #[error("validated locality generation identity changed")]
+    Generation(#[from] ContentIdDecodeError),
     /// A provider payload no longer preserves promise non-emptiness.
     #[error("validated locality provider ordinal {ordinal} contains invalid bits {observed:#018x}")]
     Provider {

@@ -15,20 +15,20 @@ use super::{
     view::ValidatedLocality,
 };
 
-pub(super) fn parse<DomainTag>(
+pub(super) fn parse<DomainTag: nudox_id::Domain>(
     bytes: &[u8],
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
     parse_with_level(bytes, None)
 }
 
-pub(super) fn parse_accelerated<DomainTag>(
+pub(super) fn parse_accelerated<DomainTag: nudox_id::Domain>(
     bytes: &[u8],
     level: Level,
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
     parse_with_level(bytes, Some(level))
 }
 
-fn parse_with_level<DomainTag>(
+fn parse_with_level<DomainTag: nudox_id::Domain>(
     bytes: &[u8],
     level: Option<Level>,
 ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityError> {
@@ -74,7 +74,7 @@ fn parse_with_level<DomainTag>(
     validate_descriptor_schemas(bytes, lanes, header.present_overlay_count.get())?;
     Ok(ValidatedLocality::from_validated(
         bytes,
-        header.generation.into(),
+        nudox_id::GenerationId::try_from(header.generation)?,
         header.root_count.get().into(),
         header.exception_count.get(),
         lanes,
@@ -252,6 +252,9 @@ fn validate_descriptor_schemas(
                     required: size_of::<nudox_object::ObjectDescriptorWireRecord>().into(),
                     available: actual.into(),
                 });
+            }
+            Err(ObjectDescriptorDecodeError::Content(source)) => {
+                return Err(LocalityError::PresentOverlayContent { ordinal, source });
             }
         }
         ordinal += 1;

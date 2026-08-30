@@ -1,4 +1,4 @@
-use nudox_id::GenerationId;
+use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef, ProviderSet};
 use nudox_root::{GenerationEntry, Locality, LocalityReadError, MetadataBytes, SelectedOrdinals};
 
@@ -45,7 +45,7 @@ pub struct HydrationPlanView<'selection, 'storage, DomainTag> {
     absent: SelectedOrdinals<'selection, 'storage, DomainTag>,
 }
 
-impl<'selection, 'storage, DomainTag> HydrationPlanView<'selection, 'storage, DomainTag> {
+impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'storage, DomainTag> {
     pub(super) const fn new(
         pinned_root: GenerationId,
         projection: Projection,

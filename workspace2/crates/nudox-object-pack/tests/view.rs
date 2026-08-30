@@ -85,7 +85,7 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
 {
     let empty_bytes = [0; OBJECT_PACK_HEADER_BYTES];
     let empty = ObjectPackView::try_from(empty_bytes.as_slice())?;
-    absent(&empty, ContentId::from([0; 32]))?;
+    absent(&empty, ContentId::from_digest([0; 32]))?;
     let only = input(b"only")?;
     let one_input = [only];
     let prepared = PreparedObjectPack::prepare(&one_input)?;
@@ -121,9 +121,9 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
         .find(|byte| **byte != u8::MAX)
         .ok_or(TestError::Missing)?;
     *above_byte += 1;
-    absent(&view, ContentId::from(below))?;
-    absent(&view, ContentId::from(above))?;
-    absent(&view, ContentId::from([0x55; 32]))?;
+    absent(&view, ContentId::from_digest(below))?;
+    absent(&view, ContentId::from_digest(above))?;
+    absent(&view, ContentId::from_digest([0x55; 32]))?;
     Ok(())
 }
 

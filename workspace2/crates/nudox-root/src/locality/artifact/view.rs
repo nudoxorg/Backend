@@ -3,7 +3,7 @@ use core::{marker::PhantomData, mem::size_of};
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
 use fearless_simd::Level;
-use nudox_id::{Encoding, EncodingTag, GenerationId, LocalitySortedEncoding};
+use nudox_id::{Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding};
 use nudox_object::{ObjectRef, ProviderSet, RemoteBase};
 
 use super::{
@@ -60,7 +60,7 @@ impl LocalityValidator {
     /// # Errors
     ///
     /// Returns the exact structural, rank, provider, or schema violation.
-    pub fn validate<'bytes, DomainTag>(
+    pub fn validate<'bytes, DomainTag: Domain>(
         &self,
         bytes: &'bytes [u8],
     ) -> Result<ValidatedLocality<'bytes, DomainTag>, LocalityError> {
@@ -74,7 +74,7 @@ impl Default for LocalityValidator {
     }
 }
 
-impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
+impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
     pub(super) const fn from_validated(
         bytes: &'bytes [u8],
         generation: GenerationId,
@@ -158,17 +158,14 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         let overlay_bits = lane(self.bytes, lanes.overlay_bits, lanes.overlay_ranks);
         if !rank::member(overlay_bits, overlay) {
             return Ok(Locality::Overlaid(RemoteBase::Absent {
-                generation: self.overlay_basis(lanes),
+                generation: self.overlay_basis(lanes)?,
             }));
         }
         let overlay_ranks = lane(self.bytes, lanes.overlay_ranks, lanes.present);
         let present = work.rank(overlay_bits, overlay_ranks, overlay);
-        self.descriptor_at(lanes, present).map(|object| {
-            Locality::Overlaid(RemoteBase::Present {
-                generation: self.overlay_basis(lanes),
-                object,
-            })
-        })
+        let generation = self.overlay_basis(lanes)?;
+        self.descriptor_at(lanes, present)
+            .map(|object| Locality::Overlaid(RemoteBase::Present { generation, object }))
     }
 
     fn provider_at(
@@ -185,10 +182,10 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         clippy::indexing_slicing,
         reason = "a non-promise validated exception proves the measured shared overlay-basis lane is present"
     )]
-    fn overlay_basis(&self, lanes: LaneTable) -> GenerationId {
+    fn overlay_basis(&self, lanes: LaneTable) -> Result<GenerationId, LocalityReadError> {
         let mut bytes = [0_u8; 32];
         bytes.copy_from_slice(&self.bytes[lanes.basis..lanes.complete]);
-        GenerationId::from(bytes)
+        GenerationId::try_from(bytes).map_err(LocalityReadError::Generation)
     }
 
     #[allow(
@@ -245,10 +242,10 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
     pub(in crate::locality) fn cursor_overlay_absent(
         &self,
         lanes: LaneTable,
-    ) -> Locality<DomainTag> {
-        Locality::Overlaid(RemoteBase::Absent {
-            generation: self.overlay_basis(lanes),
-        })
+    ) -> Result<Locality<DomainTag>, LocalityReadError> {
+        Ok(Locality::Overlaid(RemoteBase::Absent {
+            generation: self.overlay_basis(lanes)?,
+        }))
     }
 
     pub(in crate::locality) fn cursor_overlay_present(
@@ -256,12 +253,9 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         lanes: LaneTable,
         present: u32,
     ) -> Result<Locality<DomainTag>, LocalityReadError> {
-        self.descriptor_at(lanes, present).map(|object| {
-            Locality::Overlaid(RemoteBase::Present {
-                generation: self.overlay_basis(lanes),
-                object,
-            })
-        })
+        let generation = self.overlay_basis(lanes)?;
+        self.descriptor_at(lanes, present)
+            .map(|object| Locality::Overlaid(RemoteBase::Present { generation, object }))
     }
 
     pub(in crate::locality) const fn lane_table(&self) -> LaneTable {
@@ -269,7 +263,7 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
     }
 }
 
-impl<'bytes, DomainTag> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, DomainTag> {
+impl<'bytes, DomainTag: Domain> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, DomainTag> {
     type Error = LocalityError;
 
     fn try_from(bytes: &'bytes [u8]) -> Result<Self, Self::Error> {
@@ -283,7 +277,7 @@ impl<'bytes, DomainTag> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, Doma
 /// # Errors
 ///
 /// Returns the exact validation failure for the bytes borrowed for this call.
-pub fn with_validated_locality<ByteOwner, DomainTag, Output>(
+pub fn with_validated_locality<ByteOwner, DomainTag: Domain, Output>(
     owner: &ByteOwner,
     visit: impl for<'bytes> FnOnce(ValidatedLocality<'bytes, DomainTag>) -> Output,
 ) -> Result<Output, LocalityError>

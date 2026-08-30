@@ -1,5 +1,6 @@
 //! The only post-validation semantic reconstruction boundary.
 
+use nudox_id::Domain;
 use nudox_object::{ObjectRef, ProviderSet};
 
 use super::errors::LocalityReadError;
@@ -15,7 +16,7 @@ pub(super) fn provider(raw: u64, ordinal: u32) -> Result<ProviderSet, LocalityRe
 
 /// Reconstructs a descriptor whose closed schema was checked during locality
 /// parse while borrowing these same immutable bytes.
-pub(super) fn descriptor<DomainTag>(
+pub(super) fn descriptor<DomainTag: Domain>(
     record_bytes: &[u8],
     ordinal: u32,
 ) -> Result<ObjectRef<DomainTag>, LocalityReadError> {

@@ -86,7 +86,7 @@ fn key(raw: u64) -> EntryKey {
 
 fn object(byte: u8) -> ObjectRef<ObjectDomain> {
     ObjectRef {
-        content: ContentId::from([byte; 32]),
+        content: ContentId::from_digest([byte; 32]),
         length: 4_u64.into(),
         schema: SchemaId::Object,
         kind: 1_u16.into(),
@@ -159,7 +159,7 @@ fn require_demand_mismatch(
             requested,
             actual: seen,
         }) => {
-            assert_eq!(*requested, GenerationId::from([9; 32]));
+            assert_eq!(*requested, GenerationId::from_digest([9; 32]));
             assert_eq!(*seen, actual);
             Ok(())
         }

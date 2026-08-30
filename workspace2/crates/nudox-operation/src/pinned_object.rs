@@ -6,7 +6,7 @@
 
 use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
-use nudox_id::GenerationId;
+use nudox_id::{Domain, GenerationId};
 use nudox_object::{ObjectRef, ProviderSet};
 use nudox_root::{EntryKey, GenerationEntry, GenerationView, Locality, LocalityReadError};
 use nudox_schema::OperationId;
@@ -92,7 +92,7 @@ mod tests {
 
     fn object(byte: u8) -> ObjectRef<ObjectDomain> {
         ObjectRef {
-            content: ContentId::from([byte; 32]),
+            content: ContentId::from_digest([byte; 32]),
             schema: SchemaId::Object,
             length: ObjectLength::from(4),
             kind: ObjectKind::from(1),
@@ -129,7 +129,7 @@ mod tests {
         let overlay_facts = [LocalityException::new(
             overlay_row,
             NonResident::Overlaid(RemoteBase::Absent {
-                generation: GenerationId::from([3; 32]),
+                generation: GenerationId::from_digest([3; 32]),
             }),
         )];
         let mut overlay_bytes = locality_bytes(&root, &overlay_facts)?;
@@ -235,12 +235,12 @@ mod tests {
     ) -> Result<(), TestError> {
         assert_eq!(
             start_error(&provider.start(PinnedObjectRequest {
-                generation: GenerationId::from([8; 32]),
+                generation: GenerationId::from_digest([8; 32]),
                 required
             }))?,
             LocalObjectError::StaleGeneration {
                 expected: generation,
-                observed: GenerationId::from([8; 32]),
+                observed: GenerationId::from_digest([8; 32]),
             }
         );
         assert_eq!(
@@ -358,13 +358,13 @@ pub struct ObjectBatch<'source, ObjectDomain> {
     pub provenance: ObjectProvenance,
     pub item: &'source ObjectRef<ObjectDomain>,
 }
-impl<ObjectDomain> Deref for ObjectBatch<'_, ObjectDomain> {
+impl<ObjectDomain: Domain> Deref for ObjectBatch<'_, ObjectDomain> {
     type Target = [ObjectRef<ObjectDomain>];
     fn deref(&self) -> &Self::Target {
         core::slice::from_ref(self.item)
     }
 }
-impl<ObjectDomain> AsRef<[ObjectRef<ObjectDomain>]> for ObjectBatch<'_, ObjectDomain> {
+impl<ObjectDomain: Domain> AsRef<[ObjectRef<ObjectDomain>]> for ObjectBatch<'_, ObjectDomain> {
     fn as_ref(&self) -> &[ObjectRef<ObjectDomain>] {
         self
     }
@@ -375,7 +375,7 @@ pub struct LocalObjectProvider<ObjectDomain> {
     generation: GenerationId,
     entry: GenerationEntry<ObjectDomain>,
 }
-impl<ObjectDomain> LocalObjectProvider<ObjectDomain> {
+impl<ObjectDomain: Domain> LocalObjectProvider<ObjectDomain> {
     /// Selects an actual entry from a generation-coherent view.
     ///
     /// # Errors
@@ -391,7 +391,7 @@ impl<ObjectDomain> LocalObjectProvider<ObjectDomain> {
         }))
     }
 }
-impl<ObjectDomain> Provider<PinnedObjectOperation<ObjectDomain>>
+impl<ObjectDomain: Domain> Provider<PinnedObjectOperation<ObjectDomain>>
     for LocalObjectProvider<ObjectDomain>
 {
     type Run = LocalObjectRun<ObjectDomain>;
@@ -437,7 +437,7 @@ pub struct LocalObjectRun<ObjectDomain> {
     object: ObjectRef<ObjectDomain>,
     phase: RunPhase,
 }
-impl<ObjectDomain> BatchSource<PinnedObjectOperation<ObjectDomain>>
+impl<ObjectDomain: Domain> BatchSource<PinnedObjectOperation<ObjectDomain>>
     for LocalObjectRun<ObjectDomain>
 {
     type Batch<'source>

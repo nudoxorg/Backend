@@ -119,13 +119,15 @@ mod tests {
     #[test]
     fn descriptor_is_exactly_48_bytes() {
         let descriptor = ObjectRef::<ObjectDomain> {
-            content: ContentId::from([3; 32]),
+            content: ContentId::from_digest([3; 32]),
             length: 99.into(),
             schema: SchemaId::Object,
             kind: 7.into(),
         };
         let copied = descriptor;
-        assert_eq!(copied.content.as_ref(), &[3; 32]);
+        let mut expected = [3; 32];
+        expected[0] = 1;
+        assert_eq!(copied.content.as_ref(), &expected);
         assert_eq!(*copied.length, 99);
         assert_eq!(size_of::<ObjectRef<ObjectDomain>>(), 48);
         assert_eq!(align_of::<ObjectRef<ObjectDomain>>(), 8);

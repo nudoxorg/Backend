@@ -808,15 +808,15 @@ fn workflow_key(seed: u8) -> StageKey {
         OperationId::PinnedObject,
         StageId::HydrateObject,
         &StageInput {
-            generation: GenerationId::from([seed; 32]),
-            content: ContentId::<ObjectDomain>::from([seed.wrapping_add(1); 32]),
+            generation: GenerationId::from_digest([seed; 32]),
+            content: ContentId::<ObjectDomain>::from_digest([seed.wrapping_add(1); 32]),
         },
-        ContentId::<CapabilityDomain>::from([seed.wrapping_add(2); 32]),
-        ContentId::<ConfigurationDomain>::from([seed.wrapping_add(3); 32]),
+        ContentId::<CapabilityDomain>::from_digest([seed.wrapping_add(2); 32]),
+        ContentId::<ConfigurationDomain>::from_digest([seed.wrapping_add(3); 32]),
     )
 }
 fn workflow_events(key: StageKey) -> [WorkflowEvent; 6] {
-    let output = ContentId::<ObjectDomain>::from([9; 32]);
+    let output = ContentId::<ObjectDomain>::from_digest([9; 32]);
     [
         WorkflowEvent {
             version: WorkflowVersion::WAVE1,

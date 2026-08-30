@@ -85,7 +85,7 @@ fn artifact(count: u32) -> Result<Vec<u8>, BenchmarkError> {
             key: EntryKey::from(u64::from(row)),
             parent: None,
             object: ObjectRef {
-                content: ContentId::from([row as u8; 32]),
+                content: ContentId::from_digest([row as u8; 32]),
                 length: 1_u64.into(),
                 schema: SchemaId::Object,
                 kind: 1_u16.into(),

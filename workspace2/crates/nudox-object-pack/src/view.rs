@@ -86,7 +86,7 @@ impl<'pack> ObjectPackView<'pack> {
                     let length = native_coordinate(row.descriptor.length.get());
                     let start = end - length;
                     return Some(ObjectPackObject {
-                        reference: reference(row),
+                        reference: reference(row, content),
                         body: &self.bodies[start..end],
                     });
                 }
@@ -105,6 +105,14 @@ const fn native_coordinate(value: u64) -> usize {
     value as usize
 }
 
-fn reference(row: &crate::format::DirectoryRecord) -> ObjectRef<ObjectDomain> {
-    ObjectRef::from(&row.descriptor)
+fn reference(
+    row: &crate::format::DirectoryRecord,
+    content: &ContentId<ObjectDomain>,
+) -> ObjectRef<ObjectDomain> {
+    ObjectRef {
+        content: *content,
+        length: nudox_object::ObjectLength::from(row.descriptor.length.get()),
+        schema: row.descriptor.schema.get(),
+        kind: nudox_object::ObjectKind::from(row.descriptor.kind.get()),
+    }
 }

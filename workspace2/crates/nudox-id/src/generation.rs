@@ -27,7 +27,7 @@ mod tests {
         );
         assert_eq!(
             GenerationId::from_canonical_bytes(b"canonical root"),
-            GenerationId::from([
+            GenerationId::from_digest([
                 183, 115, 129, 71, 108, 4, 131, 43, 47, 18, 229, 162, 52, 75, 153, 206, 231, 42,
                 24, 117, 209, 249, 184, 205, 170, 200, 198, 233, 71, 130, 23, 136,
             ])

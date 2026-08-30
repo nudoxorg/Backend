@@ -13,7 +13,11 @@ fn binding_and_verification_reject_adjacent_invalid_states() -> Result<(), Scena
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
     let view = GenerationView::new(&root, &locality)?;
     require_demand_mismatch(
-        &Need::new(GenerationId::from([9; 32]), Projection::CompleteGeneration).bind(&view),
+        &Need::new(
+            GenerationId::from_digest([9; 32]),
+            Projection::CompleteGeneration,
+        )
+        .bind(&view),
         root.id,
     )?;
 

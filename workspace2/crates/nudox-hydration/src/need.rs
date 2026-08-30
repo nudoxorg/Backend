@@ -1,4 +1,4 @@
-use nudox_id::GenerationId;
+use nudox_id::{Domain, GenerationId};
 use nudox_root::{EntryRange, GenerationView};
 use thiserror::Error;
 
@@ -75,7 +75,7 @@ impl Need {
     ///
     /// Returns [`DemandBindError::GenerationMismatch`] when the request pins a
     /// different immutable generation than `view`.
-    pub fn bind<'view, 'root, 'locality, DomainTag>(
+    pub fn bind<'view, 'root, 'locality, DomainTag: Domain>(
         self,
         view: &'view GenerationView<'root, 'locality, DomainTag>,
     ) -> Result<BoundNeed<'view, 'root, 'locality, DomainTag>, DemandBindError> {

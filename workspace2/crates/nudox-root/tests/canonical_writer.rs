@@ -19,7 +19,7 @@ fn entry(key: u64, parent: Option<u64>, content: u8) -> RootEntry<ObjectDomain> 
         key: EntryKey::from(key),
         parent: parent.map(EntryKey::from),
         object: ObjectRef {
-            content: [content; 32].into(),
+            content: nudox_id::ContentId::from_digest([content; 32]),
             length: ObjectLength::from(3),
             schema: SchemaId::Object,
             kind: ObjectKind::from(9),
@@ -36,7 +36,7 @@ fn canonical_writer_is_exact_borrowed_and_transactional() -> Result<(), Canonica
         0, 0, 0, 0, 0, 0, 0, 1, // key
         0, // no parent
         0, 0, 0, 0, 0, 0, 0, 0, // absent parent key
-        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        1, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
         7, 7, // content
         0, 0, 0, 0, 0, 0, 0, 3, // length
         0, 0, 0, 1, // schema

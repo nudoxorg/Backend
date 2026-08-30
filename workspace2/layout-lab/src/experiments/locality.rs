@@ -378,12 +378,12 @@ fn provider() -> Result<ProviderSet, nudox_object::ProviderIdError> {
 }
 
 fn generation() -> GenerationId {
-    GenerationId::from([0x6a; 32])
+    GenerationId::from_digest([0x6a; 32])
 }
 
 fn object(row: usize) -> ObjectRef<ObjectDomain> {
     ObjectRef {
-        content: ContentId::from([row as u8; 32]),
+        content: ContentId::from_digest([row as u8; 32]),
         length: ObjectLength::from(1),
         schema: SchemaId::Object,
         kind: ObjectKind::from(7),

@@ -260,10 +260,12 @@ fn locality_changes_preserve_identity_and_narrow_large_ranges_touch_only_demand(
 #[test]
 fn remote_tombstone_is_a_distinct_preserved_fact() -> Result<(), ScenarioError> {
     let remote: RemoteBase<ObjectDomain> = RemoteBase::Absent {
-        generation: GenerationId::from([8; 32]),
+        generation: GenerationId::from_digest([8; 32]),
     };
     match remote {
-        RemoteBase::Absent { generation } => assert_eq!(generation, GenerationId::from([8; 32])),
+        RemoteBase::Absent { generation } => {
+            assert_eq!(generation, GenerationId::from_digest([8; 32]));
+        }
         RemoteBase::Present { .. } => {
             return Err(ScenarioError::Transition {
                 step: ScenarioStep::RemoteTombstone,

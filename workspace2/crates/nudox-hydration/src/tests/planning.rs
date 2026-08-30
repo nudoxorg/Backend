@@ -201,7 +201,7 @@ fn sparse_absence_state_reports_logical_and_retained_bytes(
             demand(&view, Projection::CompleteGeneration),
             &mut closure,
             &mut planning,
-            |descriptor| descriptor.content.as_ref()[0] <= 100 - misses,
+            |descriptor| descriptor.content.as_ref()[1] <= 100 - misses,
         )?;
         assert_eq!(planned.coverage.required, 100.into());
         assert_eq!(planned.coverage.missing, expected_misses.into());

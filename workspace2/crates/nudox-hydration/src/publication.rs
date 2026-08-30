@@ -1,4 +1,4 @@
-use nudox_id::GenerationId;
+use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef};
 use nudox_root::LocalityReadError;
 use thiserror::Error;
@@ -9,7 +9,7 @@ use crate::HydrationPlanView;
 pub struct StagedGeneration<'plan, 'selection, 'storage, DomainTag> {
     plan: &'plan HydrationPlanView<'selection, 'storage, DomainTag>,
 }
-impl<'plan, 'selection, 'storage, DomainTag>
+impl<'plan, 'selection, 'storage, DomainTag: Domain>
     StagedGeneration<'plan, 'selection, 'storage, DomainTag>
 {
     pub(crate) const fn new(

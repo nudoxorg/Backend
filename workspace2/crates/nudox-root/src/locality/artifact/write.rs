@@ -33,7 +33,7 @@ pub struct PreparedLocality<'facts, DomainTag> {
     basis: Option<GenerationId>,
 }
 
-impl<'facts, DomainTag> PreparedLocality<'facts, DomainTag> {
+impl<'facts, DomainTag: nudox_id::Domain> PreparedLocality<'facts, DomainTag> {
     /// Checks root-issued exception rows in strict canonical order and
     /// measures every direct-write lane.
     ///
@@ -108,7 +108,7 @@ pub(crate) struct LocalityEncoder<'output, DomainTag> {
     domain: core::marker::PhantomData<fn() -> DomainTag>,
 }
 
-impl<'output, DomainTag> LocalityEncoder<'output, DomainTag> {
+impl<'output, DomainTag: nudox_id::Domain> LocalityEncoder<'output, DomainTag> {
     pub(crate) fn new(
         output: &'output mut [u8],
         generation: GenerationId,

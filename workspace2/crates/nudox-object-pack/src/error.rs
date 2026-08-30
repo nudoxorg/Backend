@@ -1,6 +1,6 @@
 use core::num::TryFromIntError;
 
-use nudox_id::ContentId;
+use nudox_id::{ContentId, ContentIdDecodeError};
 use nudox_object::ObjectLength;
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
@@ -116,6 +116,15 @@ pub enum ObjectPackError {
         /// Exact closed-schema conversion rejection.
         #[source]
         source: UnknownSchemaId,
+    },
+    /// A directory content cell carries the wrong closed identity authority.
+    #[error("pack directory row {ordinal} has an invalid content identity")]
+    DirectoryContent {
+        /// Directory row containing the rejected content cell.
+        ordinal: usize,
+        /// Exact checked identity decode failure.
+        #[source]
+        source: ContentIdDecodeError,
     },
     /// Directory content cells are not strictly ascending.
     #[error("pack directory content {current:?} does not follow {previous:?} at row {ordinal}")]

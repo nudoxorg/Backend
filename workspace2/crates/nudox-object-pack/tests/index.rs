@@ -167,6 +167,7 @@ fn directory_mutations_preserve_exact_schema_order_and_cumulative_diagnostics()
     let (previous, current) = {
         let [first, second, _] = &mut reordered.rows;
         first.descriptor.content = [u8::MAX; 32];
+        first.descriptor.content[0] = 1;
         (first.descriptor.content, second.descriptor.content)
     };
     assert_eq!(

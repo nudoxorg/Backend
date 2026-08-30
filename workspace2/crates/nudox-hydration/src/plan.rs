@@ -4,7 +4,7 @@ mod output;
 use core::mem::size_of;
 
 use nudox_id::{
-    ContentHasher, DependencySetDomain, FixedCanonicalRecord, GenerationId, HASH_BYTES,
+    ContentHasher, DependencySetDomain, Domain, FixedCanonicalRecord, GenerationId, HASH_BYTES,
 };
 use nudox_object::{ObjectDescriptorWireRecord, ObjectRef};
 use nudox_observe::Probe;
@@ -43,7 +43,7 @@ pub struct HydrationProbeEvent {
 ///
 /// Returns an exact closure-scratch or plan-scratch capacity failure before
 /// returning a borrowing plan view.
-pub fn plan<'scratch, 'view, 'root, 'locality, DomainTag, IsPresent>(
+pub fn plan<'scratch, 'view, 'root, 'locality, DomainTag: Domain, IsPresent>(
     need: BoundNeed<'view, 'root, 'locality, DomainTag>,
     closure_scratch: &'scratch mut ClosureScratch,
     plan_scratch: &'scratch mut PlanScratch,
@@ -163,7 +163,15 @@ impl PlanTally {
 /// # Errors
 ///
 /// Returns the exact planning rejection from [`plan`].
-pub fn plan_with_probe<'scratch, 'view, 'root, 'locality, DomainTag, IsPresent, Observation>(
+pub fn plan_with_probe<
+    'scratch,
+    'view,
+    'root,
+    'locality,
+    DomainTag: Domain,
+    IsPresent,
+    Observation,
+>(
     need: BoundNeed<'view, 'root, 'locality, DomainTag>,
     closure_scratch: &'scratch mut ClosureScratch,
     plan_scratch: &'scratch mut PlanScratch,
