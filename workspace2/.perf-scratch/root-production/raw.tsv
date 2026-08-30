@@ -1,0 +1,4 @@
+format	root-production-v1
+rows	representation	construction_peak_bytes	retained_bytes	median_ns	id
+100000	owned-vec	13600000	6400000	18249083	ContentId(eb154a19ad8af12e9471d89b3a2785ba072fe41835c8d74eaf61c6bb5f9a195a)
+100000	streaming-phase-niche	6400000	6400000	19040417	ContentId(eb154a19ad8af12e9471d89b3a2785ba072fe41835c8d74eaf61c6bb5f9a195a)

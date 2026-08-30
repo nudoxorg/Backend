@@ -4,6 +4,12 @@ This is the active plan. A checked box means the named vertical proof exists, no
 product is finished. [`ORCHESTRATION.md`](ORCHESTRATION.md) defines the Sol/Terra/Luna execution and
 evidence-custody system; [`WAVE1.md`](WAVE1.md) is historical ownership context.
 
+The active completion waves, controller ownership, exact product terminals, and integration order are
+in [`OVERNIGHT_COMPLETION.md`](OVERNIGHT_COMPLETION.md). Dispositions of the recent P1/P2/P5/P6,
+performance, and GUI tasks are frozen in
+[`RECENT_TASK_INTEGRATION.md`](RECENT_TASK_INTEGRATION.md). Those ledgers supersede the old
+prototype-only dispatch strategy without deleting its evidence.
+
 ## Current checkpoint
 
 The portable foundation is coherent enough to build on, but the product is still between a local
@@ -166,6 +172,10 @@ partial storage, real index, real compiler/IR, declarative registries, the local
 GUI/component delivery, and the unified proof harness. These sessions commit isolated controls and
 alternatives but never merge or close roadmap boxes. Root extracts evidence and re-derives a smaller
 integration card on current shared state; prototype APIs have no compatibility standing.
+
+This portfolio is now historical. New work uses the stage controllers in
+[`OVERNIGHT_COMPLETION.md`](OVERNIGHT_COMPLETION.md); P5 remains live until its active controller
+returns, P1 is a re-derivation candidate, and rejected P2/P6 implementations remain negative evidence.
 
 ## Next-batch readiness
 
