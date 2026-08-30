@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
-//! Real Tantivy nested lexical projection over one immutable index snapshot.
+//! Real, bounded Tantivy lexical-membership projection over one immutable index snapshot.
+//!
+//! Tantivy establishes term membership only. Fixed-point scoring, update reconciliation, and
+//! global deterministic ranking remain in `nudox-index-core`; backend floating scores never cross
+//! this adapter boundary.
 
 use nudox_index_core::IndexSnapshotId;
 use tantivy::{
@@ -12,6 +16,15 @@ use tantivy::{
 
 /// Tantivy's minimum writer heap in bytes for this bounded nested build.
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
+
+/// Maximum documents admitted by one in-memory nested projection.
+pub const MAX_TANTIVY_DOCUMENTS: usize = 256;
+
+/// Maximum aggregate UTF-8 document bytes admitted by one projection.
+pub const MAX_TANTIVY_TEXT_BYTES: usize = 1_048_576;
+
+/// Maximum UTF-8 query bytes parsed by one operation.
+pub const MAX_TANTIVY_QUERY_BYTES: usize = 4_096;
 
 /// One immutable document projected into Tantivy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +82,36 @@ pub enum TantivyAdapterError {
         /// Caller-provided slots.
         available: usize,
     },
+    /// The corpus exceeded the fixed document-count admission bound.
+    #[error("Tantivy corpus has {observed} documents, limit is {limit}")]
+    DocumentLimit {
+        /// Fixed document-count limit.
+        limit: usize,
+        /// Complete observed document count.
+        observed: usize,
+    },
+    /// The corpus exceeded the fixed aggregate text-byte admission bound.
+    #[error("Tantivy corpus has {observed} text bytes, limit is {limit}")]
+    TextBytesLimit {
+        /// Fixed aggregate text-byte limit.
+        limit: usize,
+        /// Complete observed text bytes.
+        observed: usize,
+    },
+    /// Summing hostile document widths overflowed the platform counter.
+    #[error("Tantivy corpus text width overflowed at document {index}")]
+    TextBytesOverflow {
+        /// Document whose width crossed the representable range.
+        index: usize,
+    },
+    /// The query exceeded the fixed parser-work admission bound.
+    #[error("Tantivy query has {observed} bytes, limit is {limit}")]
+    QueryBytesLimit {
+        /// Fixed query byte limit.
+        limit: usize,
+        /// Complete observed query bytes.
+        observed: usize,
+    },
     /// One input document identity occurred more than once.
     #[error("duplicate document {document} at {first_index} and {index}")]
     DuplicateDocument {
@@ -108,6 +151,9 @@ pub enum TantivyAdapterError {
     DocumentCountOverflow {
         /// Complete backend document count.
         observed: u64,
+        /// Original checked-integer conversion failure.
+        #[source]
+        source: core::num::TryFromIntError,
     },
 }
 
@@ -143,6 +189,24 @@ impl TantivyLexical {
         snapshot: IndexSnapshotId,
         documents: &[TantivyDocumentInput<'_>],
     ) -> Result<Self, TantivyAdapterError> {
+        if documents.len() > MAX_TANTIVY_DOCUMENTS {
+            return Err(TantivyAdapterError::DocumentLimit {
+                limit: MAX_TANTIVY_DOCUMENTS,
+                observed: documents.len(),
+            });
+        }
+        let mut text_bytes = 0_usize;
+        for (index, document) in documents.iter().enumerate() {
+            text_bytes = text_bytes
+                .checked_add(document.text.len())
+                .ok_or(TantivyAdapterError::TextBytesOverflow { index })?;
+        }
+        if text_bytes > MAX_TANTIVY_TEXT_BYTES {
+            return Err(TantivyAdapterError::TextBytesLimit {
+                limit: MAX_TANTIVY_TEXT_BYTES,
+                observed: text_bytes,
+            });
+        }
         reject_duplicate_documents(documents)?;
         let mut schema = Schema::builder();
         let body_field = schema.add_text_field("body", TEXT);
@@ -207,14 +271,22 @@ impl TantivyLexical {
                 available: output.len(),
             });
         }
+        if query.len() > MAX_TANTIVY_QUERY_BYTES {
+            return Err(TantivyAdapterError::QueryBytesLimit {
+                limit: MAX_TANTIVY_QUERY_BYTES,
+                observed: query.len(),
+            });
+        }
         let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
         let query = parser
             .parse_query(query)
             .map_err(|source| TantivyAdapterError::Query { source })?;
         let searcher = self.reader.searcher();
-        let available_documents = usize::try_from(searcher.num_docs()).map_err(|_| {
+        let observed_documents = searcher.num_docs();
+        let available_documents = usize::try_from(observed_documents).map_err(|source| {
             TantivyAdapterError::DocumentCountOverflow {
-                observed: searcher.num_docs(),
+                observed: observed_documents,
+                source,
             }
         })?;
         let matches = searcher

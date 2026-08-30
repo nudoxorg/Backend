@@ -2,7 +2,10 @@ use nudox_index_core::{
     IndexSnapshotId, LexicalDocumentId, LexicalHit, LexicalOperation, LexicalRow, LexicalScore,
     LexicalSegment, LexicalTopK,
 };
-use nudox_index_tantivy::{TantivyAdapterError, TantivyDocumentInput, TantivyHit, TantivyLexical};
+use nudox_index_tantivy::{
+    MAX_TANTIVY_DOCUMENTS, MAX_TANTIVY_QUERY_BYTES, TantivyAdapterError, TantivyDocumentInput,
+    TantivyHit, TantivyLexical,
+};
 
 fn snapshot(byte: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[byte; 32])
@@ -99,4 +102,33 @@ fn wrong_snapshot_and_short_output_fail_before_mutation() {
         })
     ));
     assert_eq!(output, [sentinel]);
+}
+
+#[test]
+fn hostile_corpus_and_query_bounds_precede_duplicate_and_parser_work() {
+    let repeated = TantivyDocumentInput {
+        document: 7,
+        text: "rust",
+    };
+    let documents = [repeated; MAX_TANTIVY_DOCUMENTS + 1];
+    assert!(matches!(
+        TantivyLexical::build(snapshot(4), &documents),
+        Err(TantivyAdapterError::DocumentLimit { limit, observed })
+            if limit == MAX_TANTIVY_DOCUMENTS && observed == MAX_TANTIVY_DOCUMENTS + 1
+    ));
+
+    let adapter = TantivyLexical::build(snapshot(5), &[repeated]);
+    assert!(adapter.is_ok());
+    let Some(adapter) = adapter.ok() else {
+        return;
+    };
+    let query = "x".repeat(MAX_TANTIVY_QUERY_BYTES + 1);
+    let mut output = [Some(TantivyHit { document: 99 })];
+    let before = output;
+    assert!(matches!(
+        adapter.search(snapshot(5), &query, 1, &mut output),
+        Err(TantivyAdapterError::QueryBytesLimit { limit, observed })
+            if limit == MAX_TANTIVY_QUERY_BYTES && observed == MAX_TANTIVY_QUERY_BYTES + 1
+    ));
+    assert_eq!(output, before);
 }
