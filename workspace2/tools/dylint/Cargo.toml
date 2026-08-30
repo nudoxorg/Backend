@@ -1,0 +1,4 @@
+[workspace]
+members = ["nudox-semantic-lints"]
+resolver = "3"
+

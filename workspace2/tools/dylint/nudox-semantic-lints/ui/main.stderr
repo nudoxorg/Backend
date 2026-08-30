@@ -1,0 +1,22 @@
+warning: wildcard Result::map_err discards the source error
+  --> $DIR/main.rs:13:21
+   |
+LL |     result.map_err(|_| ConfigError::Allocation)
+   |                     ^
+
+warning: semantic state field `step` is stringly typed
+  --> $DIR/main.rs:29:5
+   |
+LL |     step: &'static str,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: public accessor only returns the public field `bytes`
+  --> $DIR/main.rs:45:5
+   |
+LL | /     pub const fn bytes(&self) -> usize {
+LL | |         self.bytes
+LL | |     }
+   | |_____^
+
+warning: 3 warnings emitted
+
