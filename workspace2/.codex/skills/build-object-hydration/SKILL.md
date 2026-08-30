@@ -42,6 +42,45 @@ actually satisfy the lifetime.
   receipt. Prefer one `Generation<State>` representation when both states have consumers; otherwise
   keep one non-forgeable verified fact and delete effect-free marker transitions.
 
+### Proof records and evidence owners
+
+Plans, verified closures, leases, and publication receipts are authority records, not ordinary DTOs.
+Attack them from downstream code before approval:
+
+- mutate every public identity, projection, dependency set, bound, and state field after legitimate
+  construction;
+- mix facts from two valid roots, stores, snapshots, or leases;
+- replace a range projection with complete-generation authority;
+- use a constant-true presence predicate, then drop or substitute the alleged store before the
+  consumer runs.
+
+If any attack compiles, the proof boundary is open. Keep correlated construction private. Put
+independently readable facts in one public fact record and expose them through immutable `Deref`
+without `DerefMut`; add downstream compile-fail assignments, not merely a struct-literal failure.
+When verification depends on physical presence, the result must retain the exact immutable store,
+snapshot, or lease borrow and the consumer must use that retained owner. `PhantomData<&Store>`, a
+copied store ID, and `FnMut(ObjectRef) -> bool` alone do not prove instance identity or continued
+residence.
+
+```rust
+// DON'T: public facts can be relabeled, and an arbitrary predicate has no owner.
+pub struct Verified { pub root: GenerationId, pub dependencies: DepSetId }
+let verified = plan.verify(|_| true)?;
+
+// DO: readable facts are immutable and the exact checked evidence remains borrowed.
+pub struct VerifiedFacts { pub root: GenerationId, pub dependencies: DepSetId }
+pub struct Verified<'evidence, Evidence: ?Sized> {
+    facts: VerifiedFacts,
+    evidence: &'evidence Evidence,
+}
+impl<Evidence: ?Sized> Deref for Verified<'_, Evidence> { /* facts only */ }
+impl<Evidence: ?Sized> AsRef<Evidence> for Verified<'_, Evidence> { /* exact owner */ }
+```
+
+The retained evidence type is earned even with one current store: it removes owner substitution and
+keeps mutation/drop excluded for the witness lifetime. Do not add generic policy parameters around
+it. A publication adapter still needs the stable receipt that names its real effect.
+
 Prototype owner work compares borrowed callback, caller-retained bytes, exact heap bytes, mmap/lease,
 and a self-referential adapter only when a view must escape. Measure validation repetition, pointer
 depth, construction/drop, peak simultaneous owners, and code size before promoting any shape.
