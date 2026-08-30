@@ -1,0 +1,26 @@
+schema = 1
+capability_id = "wave-c7-application-service"
+state = "phase0"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = "workspace2/TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+collaboration_task_id = "01a04a90-d810-7d71-8bea-44cda7e5b969"
+role = "nudox_terra_orchestrator"
+config_path = "workspace2/.codex/agents/nudox-terra-orchestrator.toml"
+model = "gpt-5.6-terra"
+effort = "xhigh"
+checkout = "/Users/mileswirht/.config/codex/worktrees/762f/backend"
+branch = "codex/wave-c7-unified-app"
+sandbox = "danger-full-access (runtime profile supplied by parent; no separate sidecar receipt yet)"
+
+[artifacts]
+brief = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/brief.md", sha256 = "54fb295ecfe95eb77c7cd728d90385c79c20179581535180f134b90065a4806c" }
+matrix = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/proof-matrix.md", sha256 = "66bca0bc1f2e20301a9f25cd086354b3938259bdea52e22b40b67f862735223b" }
+research = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/research.md", sha256 = "0a89b8f01fac51bced8fd4411bf91b6d6ccc2932d75019f851a7347d6c3c769b" }
+closure = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/closure.md", sha256 = "ed91f57747b7e4a154e18274b3a0d47d8cd4929bff30c2c1308b93fd7a750d22" }
+coupling = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/coupling-skeleton.md", sha256 = "9a0f6faf76283ce0450e3d78db6bb1f724e1d04b53794f97f367d94dd8f0a93a" }
+testing_map = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/testing-map.md", sha256 = "470dd7736c28ed1a69dc5a770700f4e7a3a04b9db49dfea59c63a98903ec90bc" }
+pre_edit_packet = { path = "workspace2/.codex/evidence/capabilities/wave-c7-application-service/packets/pre-edit.md", sha256 = "dbf8df6bd4a0255a672fdde18328abe92309c01f188fe76d3373e579af4e47b1" }
