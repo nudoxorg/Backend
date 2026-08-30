@@ -614,6 +614,7 @@ impl QdrantBlockingAdapter {
                     physical_id,
                     usize::from(self.authority.dimension()),
                 )?
+                .to_vec()
             } else {
                 Vec::new()
             };

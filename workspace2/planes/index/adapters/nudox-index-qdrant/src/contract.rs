@@ -358,26 +358,6 @@ pub enum RequestPhase {
 /// The required part of a successful Qdrant response that was absent or had an invalid shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MalformedResponseCause {
-    /// An acknowledgement omitted its result member.
-    AcknowledgementResult,
-    /// The collection configuration parameters were absent.
-    CollectionParameters,
-    /// The collection vector configuration was absent.
-    CollectionVectors,
-    /// The collection vector dimension was absent or not an unsigned integer.
-    CollectionVectorSize,
-    /// The collection vector metric was absent or not a string.
-    CollectionVectorMetric,
-    /// The collection replication factor was absent or not an unsigned integer.
-    ReplicationFactor,
-    /// The collection write consistency factor was absent or not an unsigned integer.
-    WriteConsistencyFactor,
-    /// The collection payload schema was absent or not an object.
-    PayloadSchema,
-    /// A retrieve response did not contain its point list.
-    RetrievedPoints,
-    /// A query response did not contain its point list.
-    QueryPoints,
     /// A point list exceeded the adapter's bounded batch shape.
     PointBatchExceeded,
     /// A response repeated one physical point identifier.
@@ -435,15 +415,7 @@ pub enum CollectionField {
 
 /// A rejected endpoint retained by configuration errors.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RejectedEndpoint(pub(crate) String);
-
-impl RejectedEndpoint {
-    /// Returns the complete rejected endpoint without losing diagnostic bytes.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub struct RejectedEndpoint(pub String);
 
 impl std::fmt::Display for RejectedEndpoint {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

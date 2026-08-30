@@ -134,7 +134,7 @@ pub(super) fn parse_query_hits(
             authority,
             partition: key.partition(),
             entity: key.entity(),
-            score: projected_score(authority.metric(), query_coordinates, &coordinates),
+            score: projected_score(authority.metric(), query_coordinates, coordinates),
             physical_id,
         });
     }
@@ -165,7 +165,7 @@ pub(super) fn decode_vector(
     phase: RequestPhase,
     physical_id: PhysicalPointId,
     expected_dimension: usize,
-) -> Result<Vec<f64>, QdrantError> {
+) -> Result<&[f64], QdrantError> {
     let Some(vector) = point.vector.as_ref() else {
         return Err(QdrantError::MalformedResponse {
             phase,
@@ -175,7 +175,7 @@ pub(super) fn decode_vector(
     if vector.len() != expected_dimension {
         return Err(QdrantError::VectorMismatch { phase, physical_id });
     }
-    Ok(vector.clone())
+    Ok(vector)
 }
 
 /// Typed request body for collection creation.
