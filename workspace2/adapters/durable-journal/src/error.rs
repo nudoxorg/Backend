@@ -1,4 +1,4 @@
-use std::io;
+use std::{fs::TryLockError, io};
 
 use nudox_workflow::{ReductionError, WorkflowRecord, WorkflowRecordError};
 use thiserror::Error;
@@ -15,6 +15,8 @@ pub enum JournalIoStep {
     WriteHeader,
     ReadFrame,
     RepairTail,
+    OpenParentDirectory,
+    SyncParentDirectory,
     SyncHeader,
     SyncTailRepair,
 }
@@ -58,6 +60,8 @@ pub enum JournalError {
         #[source]
         source: io::Error,
     },
+    #[error("journal already has or cannot establish an exclusive physical owner")]
+    ExclusiveOwnership(#[source] TryLockError),
     #[error(transparent)]
     Header(#[from] HeaderError),
     #[error("journal frame checksum is invalid at {offset:?} for {sequence:?}")]

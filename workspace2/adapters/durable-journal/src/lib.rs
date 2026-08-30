@@ -78,9 +78,8 @@ pub struct ReceiptFacts {
 /// let _forged = StableReceipt {
 ///     facts: ReceiptFacts {
 ///         sequence: FrameSequence::FIRST,
-///         durable_end: JournalOffset(124),
+///         durable_end: JournalOffset::from(124),
 ///     },
-///     committed: (),
 /// };
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

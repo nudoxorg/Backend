@@ -155,3 +155,28 @@ const _: () = {
     assert!(JOURNAL_FRAME_BYTES == 92);
     assert!(WORKFLOW_RECORD_BYTES == 68);
 };
+
+#[cfg(test)]
+mod tests {
+    use nudox_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowRecord, WorkflowVersion};
+    use zerocopy::IntoBytes;
+
+    use super::{FRAME_PAYLOAD_BYTES, FrameRecord};
+    use crate::FrameSequence;
+
+    #[test]
+    fn every_payload_byte_is_covered_by_the_frame_checksum() {
+        let record = WorkflowRecord::from(WorkflowEvent {
+            version: WorkflowVersion::WAVE1,
+            key: StageKey::from([19; 32]),
+            kind: EventKind::Requested,
+        });
+        let canonical = FrameRecord::encode(FrameSequence::FIRST, record);
+        for offset in 0..FRAME_PAYLOAD_BYTES {
+            let mut bytes = [0; super::JOURNAL_FRAME_BYTES];
+            bytes.copy_from_slice(canonical.as_bytes());
+            bytes[offset] ^= 1;
+            assert!(!FrameRecord::decode(bytes).checksum_is_valid());
+        }
+    }
+}

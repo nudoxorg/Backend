@@ -2,22 +2,17 @@ mod harness;
 
 use std::{fs, io::Write};
 
-use blake3::Hasher;
-use harness::{Fixture, ScenarioError, receipt_end};
+use harness::{
+    ExpectedFailure, Fixture, ScenarioError, expect_commit, expect_journal, receipt_end,
+};
 use nudox_durable_journal::{
     CommitError, FileJournal, FrameSequence, HeaderError, JOURNAL_FRAME_BYTES,
     JOURNAL_HEADER_BYTES, JournalError, JournalOffset,
 };
 use nudox_workflow::{
     Effect, EffectAction, EventKind, FailureCode, Phase, Recovery, StageKey, StageOutput,
-    WORKFLOW_RECORD_BYTES, WorkflowEvent, WorkflowRecordError, WorkflowState, WorkflowVersion,
+    WorkflowEvent, WorkflowState, WorkflowVersion,
 };
-
-const FRAME_SEQUENCE_BYTES: usize = 8;
-const FRAME_CHECKSUM_BYTES: usize = 16;
-const WORKFLOW_VERSION_BYTES: usize = 2;
-const STAGE_KEY_BYTES: usize = 32;
-const WORKFLOW_EVENT_OFFSET: usize = WORKFLOW_VERSION_BYTES + STAGE_KEY_BYTES;
 
 fn event(key: StageKey, kind: EventKind) -> WorkflowEvent {
     WorkflowEvent {
@@ -47,8 +42,11 @@ fn expect_header(
     result: Result<FileJournal, JournalError>,
     expected: HeaderError,
 ) -> Result<(), ScenarioError> {
-    assert!(matches!(result, Err(JournalError::Header(observed)) if observed == expected));
-    Ok(())
+    expect_journal(
+        result,
+        ExpectedFailure::Header,
+        |observed| matches!(observed, JournalError::Header(actual) if *actual == expected),
+    )
 }
 
 #[test]
@@ -123,13 +121,19 @@ fn duplicate_is_durable_but_conflicting_key_writes_nothing() -> Result<(), Scena
     let durable_bytes = fs::metadata(fixture.path())?.len();
 
     let conflicting = event(StageKey::from([8; 32]), EventKind::Requested);
-    let result = journal.append(conflicting);
-    assert!(matches!(
-        result,
-        Err(CommitError::Reduction(nudox_workflow::ReductionError::StageKeyMismatch {
-            expected, observed,
-        })) if expected == key && observed == conflicting.key
-    ));
+    expect_commit(
+        journal.append(conflicting),
+        ExpectedFailure::Reduction,
+        |observed| {
+            matches!(
+                observed,
+                CommitError::Reduction(nudox_workflow::ReductionError::StageKeyMismatch {
+                    expected,
+                    observed,
+                }) if *expected == key && *observed == conflicting.key
+            )
+        },
+    )?;
     assert_eq!(fs::metadata(fixture.path())?.len(), durable_bytes);
     assert_eq!(
         journal.replay()?,
@@ -251,66 +255,27 @@ fn each_header_field_class_has_an_exact_diagnosis() -> Result<(), ScenarioError>
 }
 
 #[test]
-fn every_workflow_record_byte_is_covered_by_the_complete_frame_checksum()
--> Result<(), ScenarioError> {
-    let key = StageKey::from([13; 32]);
-    let (fixture, canonical) = one_frame(event(key, EventKind::Requested))?;
-    let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
-    for record_byte in 0..WORKFLOW_RECORD_BYTES {
-        let mut mutated = canonical.clone();
-        mutated[record_start + record_byte] ^= 1;
-        fixture.replace(&mutated)?;
-        let result = FileJournal::open(fixture.path());
-        assert!(matches!(
-            result,
-            Err(JournalError::FrameChecksum {
-                sequence: FrameSequence::FIRST,
-                offset,
-            }) if offset == JournalOffset::from(u64::try_from(JOURNAL_HEADER_BYTES)?)
-        ));
-        assert_eq!(fs::metadata(fixture.path())?.len(), receipt_end(0)?);
-    }
+fn a_second_physical_owner_is_rejected_before_it_can_issue_a_receipt() -> Result<(), ScenarioError>
+{
+    let fixture = Fixture::new("exclusive-owner");
+    let mut owner = FileJournal::create(fixture.path())?;
+    expect_journal(
+        FileJournal::open(fixture.path()),
+        ExpectedFailure::ExclusiveOwnership,
+        |observed| matches!(observed, JournalError::ExclusiveOwnership(_)),
+    )?;
+    let receipt = owner.append(event(StageKey::from([17; 32]), EventKind::Requested))?;
+    assert_eq!(receipt.sequence, FrameSequence::FIRST);
+    drop(owner);
+    let mut reopened = FileJournal::open(fixture.path())?;
+    assert_eq!(
+        reopened.replay()?,
+        recovery(
+            StageKey::from([17; 32]),
+            Phase::Requested,
+            Some(EffectAction::Admit),
+        )
+    );
     fixture.remove()?;
     Ok(())
-}
-
-#[test]
-fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), ScenarioError> {
-    let key = StageKey::from([15; 32]);
-    let (fixture, canonical) = one_frame(event(key, EventKind::Requested))?;
-    let mut wrong_sequence = canonical.clone();
-    wrong_sequence[JOURNAL_HEADER_BYTES] = 1;
-    fixture.replace(&wrong_sequence)?;
-    let result = FileJournal::open(fixture.path());
-    assert!(matches!(
-        result,
-        Err(JournalError::Sequence {
-            expected: FrameSequence::FIRST,
-            observed,
-        }) if observed == FrameSequence::from(1)
-    ));
-
-    let mut unknown_event = canonical;
-    let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
-    unknown_event[record_start + WORKFLOW_EVENT_OFFSET] = u8::MAX;
-    rewrite_frame_checksum(&mut unknown_event);
-    fixture.replace(&unknown_event)?;
-    let result = FileJournal::open(fixture.path());
-    assert!(matches!(
-        result,
-        Err(JournalError::Decode(WorkflowRecordError::UnknownEvent { observed }))
-            if observed == u8::MAX
-    ));
-    fixture.remove()?;
-    Ok(())
-}
-
-fn rewrite_frame_checksum(file: &mut [u8]) {
-    let frame_start = JOURNAL_HEADER_BYTES;
-    let checksum_start = frame_start + JOURNAL_FRAME_BYTES - FRAME_CHECKSUM_BYTES;
-    let mut hasher = Hasher::new();
-    hasher.update(b"nudox.journal.frame.v1\0");
-    hasher.update(&1_u16.to_le_bytes());
-    hasher.update(&file[frame_start..checksum_start]);
-    file[checksum_start..].copy_from_slice(&hasher.finalize().as_bytes()[..FRAME_CHECKSUM_BYTES]);
 }

@@ -31,7 +31,7 @@ pub(crate) struct PersistFailure {
 
 impl FileJournal {
     pub fn create(path: impl AsRef<Path>) -> Result<Self, JournalError> {
-        Self::create_using(path.as_ref(), persist_header)
+        Self::create_using(path.as_ref(), persist_header, sync_parent_directory)
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, JournalError> {
@@ -40,6 +40,7 @@ impl FileJournal {
             .write(true)
             .open(path)
             .map_err(|source| JournalError::io(JournalIoStep::Open, source))?;
+        file.try_lock().map_err(JournalError::ExclusiveOwnership)?;
         let bytes = file
             .metadata()
             .map(|metadata| JournalOffset::from(metadata.len()))
@@ -76,6 +77,7 @@ impl FileJournal {
     fn create_using(
         path: &Path,
         persist: impl FnOnce(&mut File, &HeaderRecord) -> Result<(), JournalError>,
+        persist_parent: impl FnOnce(&Path) -> Result<(), JournalError>,
     ) -> Result<Self, JournalError> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -83,7 +85,9 @@ impl FileJournal {
             .create_new(true)
             .open(path)
             .map_err(|source| JournalError::io(JournalIoStep::Create, source))?;
+        file.try_lock().map_err(JournalError::ExclusiveOwnership)?;
         persist(&mut file, &HeaderRecord::canonical())?;
+        persist_parent(parent(path))?;
         Ok(Self {
             file,
             state: WorkflowState::empty(),
@@ -120,6 +124,35 @@ impl FileJournal {
         self.next = next;
         Ok(StableReceipt::committed(sequence, durable_end))
     }
+}
+
+fn parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn sync_parent_directory(path: &Path) -> Result<(), JournalError> {
+    parent_directory(path)?
+        .sync_all()
+        .map_err(|source| JournalError::io(JournalIoStep::SyncParentDirectory, source))
+}
+
+#[cfg(unix)]
+fn parent_directory(path: &Path) -> Result<File, JournalError> {
+    File::open(path).map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
+}
+
+#[cfg(windows)]
+fn parent_directory(path: &Path) -> Result<File, JournalError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|source| JournalError::io(JournalIoStep::OpenParentDirectory, source))
 }
 
 fn persist_header(file: &mut File, header: &HeaderRecord) -> Result<(), JournalError> {
