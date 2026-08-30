@@ -1,0 +1,9 @@
+error[E0081]: discriminant value `73` assigned more than once
+ --> tests/ui/duplicate_encoding_code.rs:2:1
+  |
+2 | enum GeneratedEncodingCode {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+3 |     Existing = 73,
+  |                -- `73` assigned here
+4 |     Duplicate = 73,
+  |                 -- `73` assigned here

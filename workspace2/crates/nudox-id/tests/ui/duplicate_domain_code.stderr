@@ -1,0 +1,9 @@
+error[E0081]: discriminant value `41` assigned more than once
+ --> tests/ui/duplicate_domain_code.rs:2:1
+  |
+2 | enum GeneratedDomainCode {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+3 |     Existing = 41,
+  |                -- `41` assigned here
+4 |     Duplicate = 41,
+  |                 -- `41` assigned here

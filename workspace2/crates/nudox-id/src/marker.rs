@@ -2,64 +2,6 @@ use core::ops::Deref;
 
 use crate::TAG_BYTES;
 
-/// Closed protocol registry code for a content identity domain.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum DomainCode {
-    /// Immutable object content.
-    Object = 1,
-    /// Published generation root.
-    Root = 2,
-    /// Workflow operation.
-    Operation = 3,
-    /// Dependency-set content.
-    DependencySet = 4,
-    /// Capability content.
-    Capability = 5,
-    /// Configuration content.
-    Configuration = 6,
-    /// Workflow stage key.
-    StageKey = 7,
-    /// Index snapshot content.
-    IndexSnapshot = 8,
-    /// Exact index segment content.
-    IndexExactSegment = 9,
-    /// Lexical index segment content.
-    IndexLexicalSegment = 10,
-}
-
-impl From<DomainCode> for u8 {
-    #[allow(
-        clippy::as_conversions,
-        reason = "closed repr(u8) registry discriminant"
-    )]
-    fn from(code: DomainCode) -> Self {
-        code as u8
-    }
-}
-
-/// Closed protocol registry code for an encoded artifact representation.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EncodingCode {
-    /// Frame encoding.
-    Frame = 1,
-    /// Locality-sorted encoding.
-    LocalitySorted = 2,
-    /// Object-pack encoding.
-    ObjectPack = 3,
-}
-
-impl From<EncodingCode> for u8 {
-    #[allow(
-        clippy::as_conversions,
-        reason = "closed repr(u8) registry discriminant"
-    )]
-    fn from(code: EncodingCode) -> Self {
-        code as u8
-    }
-}
-
 /// Exact fixed-width label that names one content-identity namespace.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -138,128 +80,72 @@ pub trait Encoding: sealed::Encoding {
     const CODE: EncodingCode;
 }
 
-macro_rules! protocol_markers {
-    ($(($marker:ident, $trait_name:ident, $tag_type:ident, $code_type:ident, $label:literal, $code:ident)),+ $(,)?) => {
+macro_rules! protocol_registry {
+    (
+        domains { $(($marker:ident, $variant:ident, $code:literal, $label:literal)),+ $(,)? }
+        encodings { $(($encoding:ident, $variant_encoding:ident, $encoding_code:literal, $encoding_label:literal)),+ $(,)? }
+    ) => {
+        #[repr(u8)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        /// Closed protocol registry code for a content identity domain.
+        pub enum DomainCode { $( #[doc = concat!("Registered domain code `", stringify!($code), ".")] $variant = $code ),+ }
+
+        #[repr(u8)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        /// Closed protocol registry code for an encoded artifact representation.
+        pub enum EncodingCode { $( #[doc = concat!("Registered encoding code `", stringify!($encoding_code), ".")] $variant_encoding = $encoding_code ),+ }
+
+        impl From<DomainCode> for u8 {
+            #[allow(clippy::as_conversions, reason = "closed repr(u8) registry discriminant")]
+            fn from(code: DomainCode) -> Self { code as u8 }
+        }
+
+        impl From<EncodingCode> for u8 {
+            #[allow(clippy::as_conversions, reason = "closed repr(u8) registry discriminant")]
+            fn from(code: EncodingCode) -> Self { code as u8 }
+        }
+
         $(
             #[doc = concat!("Protocol-owned marker for `", stringify!($marker), "`.")]
             #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
             pub enum $marker {}
-
-            impl sealed::$trait_name for $marker {}
-
-            impl $trait_name for $marker {
-                const TAG: $tag_type = $tag_type::new(*$label);
-                const CODE: $code_type = $code_type::$code;
+            impl sealed::Domain for $marker {}
+            impl Domain for $marker {
+                const TAG: DomainTag = DomainTag::new(*$label);
+                const CODE: DomainCode = DomainCode::$variant;
+            }
+        )+
+        $(
+            #[doc = concat!("Protocol-owned marker for `", stringify!($encoding), "`.")]
+            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+            pub enum $encoding {}
+            impl sealed::Encoding for $encoding {}
+            impl Encoding for $encoding {
+                const TAG: EncodingTag = EncodingTag::new(*$encoding_label);
+                const CODE: EncodingCode = EncodingCode::$variant_encoding;
             }
         )+
     };
 }
 
-protocol_markers!(
-    (
-        ObjectDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.object.v1\0",
-        Object
-    ),
-    (
-        RootDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.root.v1\0\0\0",
-        Root
-    ),
-    (
-        OperationDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.op.v1\0\0\0\0\0",
-        Operation
-    ),
-    (
-        DependencySetDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.depset.v1\0",
-        DependencySet
-    ),
-    (
-        CapabilityDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.cap.v1\0\0\0\0",
-        Capability
-    ),
-    (
-        ConfigurationDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.config.v1\0",
-        Configuration
-    ),
-    (
-        StageKeyDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.stage.v1\0\0",
-        StageKey
-    ),
-    (
-        IndexSnapshotDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.idx.snap.1",
-        IndexSnapshot
-    ),
-    (
-        IndexExactSegmentDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.idx.exact1",
-        IndexExactSegment
-    ),
-    (
-        IndexLexicalSegmentDomain,
-        Domain,
-        DomainTag,
-        DomainCode,
-        b"nudox.idx.lexic1",
-        IndexLexicalSegment
-    ),
-    (
-        FrameEncoding,
-        Encoding,
-        EncodingTag,
-        EncodingCode,
-        b"nudox.frame.v1\0\0",
-        Frame
-    ),
-    (
-        LocalitySortedEncoding,
-        Encoding,
-        EncodingTag,
-        EncodingCode,
-        b"nudox.locsort.v1",
-        LocalitySorted
-    ),
-    (
-        ObjectPackEncoding,
-        Encoding,
-        EncodingTag,
-        EncodingCode,
-        b"nudox.objpack.v1",
-        ObjectPack
-    ),
+protocol_registry!(
+    domains {
+        (ObjectDomain, Object, 1, b"nudox.object.v1\0"),
+        (RootDomain, Root, 2, b"nudox.root.v1\0\0\0"),
+        (OperationDomain, Operation, 3, b"nudox.op.v1\0\0\0\0\0"),
+        (DependencySetDomain, DependencySet, 4, b"nudox.depset.v1\0"),
+        (CapabilityDomain, Capability, 5, b"nudox.cap.v1\0\0\0\0"),
+        (ConfigurationDomain, Configuration, 6, b"nudox.config.v1\0"),
+        (StageKeyDomain, StageKey, 7, b"nudox.stage.v1\0\0"),
+        (IndexSnapshotDomain, IndexSnapshot, 8, b"nudox.idx.snap.1"),
+        (IndexExactSegmentDomain, IndexExactSegment, 9, b"nudox.idx.exact1"),
+        (IndexLexicalSegmentDomain, IndexLexicalSegment, 10, b"nudox.idx.lexic1")
+    }
+    encodings {
+        (FrameEncoding, Frame, 1, b"nudox.frame.v1\0\0"),
+        (LocalitySortedEncoding, LocalitySorted, 2, b"nudox.locsort.v1"),
+        (ObjectPackEncoding, ObjectPack, 3, b"nudox.objpack.v1")
+    }
 );
 
 #[cfg(test)]
