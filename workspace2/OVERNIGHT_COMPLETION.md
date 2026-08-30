@@ -1,25 +1,64 @@
 # Overnight completion program
 
 This is the execution ledger for taking the greenfield workspace from its current foundation to one
-end-to-end product proof. It supersedes the prototype-only portfolio as the active dispatch plan; the
-prototype prompts remain historical design input.
+end-to-end product proof. It supersedes the prototype-only portfolio and the failed evidence-first
+overnight run. Prototype branches and task transcripts remain design and attack input, but progress
+is measured only by integrated code, a newly red falsifier, or a reproduced product gate.
 
 “Complete” means the public terminal and evidence below exist on a clean committed candidate. It does
 not mean a task reports success, a crate compiles, or a happy-path test passes. Each stage has one Sol
-controller. Sol controllers may commission capability-scoped Terra managers, who use explicit Luna
-implementers and independent Terra reviewers according to `ORCHESTRATION.md`.
+controller. Sol controllers may commission capability-scoped Terra managers, Luna implementers, and
+independent Terra reviewers according to `ORCHESTRATION.md`; role availability strengthens review but
+never gates reversible implementation or promotion of an independently green candidate.
+
+## Recovery corrections from the failed overnight run
+
+The task transcripts exposed six repeatable sources of token waste. These are planning defects, not
+product blockers.
+
+| Observed failure | Enforceable correction | Immediate salvage |
+| --- | --- | --- |
+| Thousands of lines of plans and skills were reread before the first red test. | Read the common idiom skill plus the narrow owning skill. Read supplemental material only when a named uncertainty appears. The first cycle ends in a red test or production edit. | Preserve existing research notes as searchable references; do not replay their reading ceremony. |
+| A committed Phase-0 packet and source-isolated pre-edit review were treated as production gates. | Start from a compact contract and one red falsifier. Review begins after the first coherent checkpoint, when concrete code exists to attack. | Foundation, index, application, adaptive, and system packets become test inputs, not authorization tokens. |
+| Model routing, reviewer custody, and exact receipt formatting caused `EVIDENCE_BLOCKED`. | Missing roles fall back to the available reviewer or controller review. Only a product dependency, unavailable external system, missing authority, or reproducible toolchain failure may block product work. | Reopen every custody-only terminal without regenerating its packet. |
+| Research and packet revisions continued without intervening code or tests. | Each research tranche names the changed decision and is bracketed by a commit, red test, reproduced failure, or integration verdict. A second tranche without one stops research. | Graph/vector freezes its V17 packet; later learning lands as tests or code. |
+| Circular calibration and evidence-size rules rejected working compiler code. | The worker result creates its calibration receipt. Generated LLVM, assembly, corpora, and traces are measured by bytes/digests, separate from authored-code review. | Re-evaluate C1 commits `e61f34e9`, `6be0bd2c`, and checkpoint `38662cf5` on current APIs before redesigning them. |
+| Agent-thread exhaustion caused green candidates to be abandoned. | Thread exhaustion collapses review into the controller and triggers local integration; it never discards a passing candidate. | Close existing worktrees and commits before dispatching duplicate implementations. |
+
+The terminal branch histories quantify the failure without using source-volume targets. By commit
+subject, foundation produced 10 commits with no production-shaped commit; durable 16 with none;
+index 6 with none; adaptive 10 with none; application 7 with none; system 3 with none; and graph/vector
+reached 21 evidence commits before its first live implementation checkpoint. The compiler branch made
+206 commits: 9 production-shaped, 6 test-shaped, and 191 evidence/documentation-shaped. These counts
+are not quality scores. They show that the workflow repeatedly allowed multiple bookkeeping cycles
+between executable changes, which the progress clock below now forbids.
+
+### Progress clock
+
+- A work cycle is one bounded sequence ending in a commit, a new red falsifier, a reproduced product
+  failure, or an integration verdict over concrete code.
+- Research may run concurrently with a cycle. It must change the next test, representation, or
+  implementation decision before another research tranche begins.
+- Evidence describes work already performed. It cannot authorize the start of work, substitute for
+  code, or turn missing reviewer infrastructure into product closure.
+- After two cycles without a progress receipt, reduce scope to the smallest end-to-end vertical
+  slice and implement it directly. Do not write another packet.
+- Review returns one ranked patch-or-reject report. A new case strengthens the owning abstraction
+  and its test; it does not restart planning.
 
 ## Shared laws
 
-- Start from the recorded `orchestra-shared` baseline in an isolated worktree. Never edit or clean the
-  dirty canonical checkout under `/Users/mileswirht/Downloads/backend`.
+- `canonical` is the merge center. Isolated implementation worktrees start from its recorded commit;
+  only the designated integration steward writes or merges in the canonical checkout. Never clean,
+  reset, or discard unclassified canonical changes.
 - Read `ORCHESTRATION.md`, `ROADMAP.md`, `TESTING.md`,
   `.codex/skills/steward-greenfield-rust-program/SKILL.md`,
   `.codex/skills/deliver-reviewed-rust-slice/SKILL.md`,
   `.codex/skills/manage-rust-swarm/SKILL.md`, and the named domain skills completely.
-- Explicitly select the registered roles. Sol is `gpt-5.6-sol`/`xhigh`; Terra manager and reviewer are
-  `gpt-5.6-terra`/`xhigh`; implementation workers are `gpt-5.6-luna`/`max`. Record runtime task/model/
-  effort/config/checkout receipts. A role label is not evidence.
+- Explicitly select the requested registered roles when available. Sol is `gpt-5.6-sol`/`xhigh`;
+  Terra manager and reviewer are `gpt-5.6-terra`/`xhigh`; implementation workers are
+  `gpt-5.6-luna`/`max`. Record task/model/effort/checkout once in the final integration receipt. A
+  missing router receipt is never a reason to stop production work.
 - Unit, property, fault, Loom, Miri, and compile-fail tests live with their owning crate. Cross-crate
   journeys live in ordinary top-level `tests/` directories. No test-only crate, support API in a
   shipping graph, or giant scenario file is allowed.
@@ -38,6 +77,20 @@ implementers and independent Terra reviewers according to `ORCHESTRATION.md`.
 - Controllers commit coherent passing increments, keep a current salvage ledger, and return one exact
   candidate commit plus raw gates. They do not merge another controller's branch or weaken a law to
   finish overnight.
+
+## Recovery checkpoint before new waves
+
+1. The canonical steward classifies and commits the saved checkout without deleting any useful
+   mechanism, then semantically merges `orchestra-shared` through its latest verified commit.
+2. The recovery Sol audits existing branches by commit and symbol, not by dumping complete
+   transcripts into context. It ports green mechanisms in dependency order and replays at least one
+   old falsifier for every accepted mechanism.
+3. Candidate priority is: compiler C1 borrowed writer/reader; foundation and object-plane closure;
+   durable-journal controls; any concrete graph/vector implementation; then adaptive/index/interface
+   scaffolds only where they own a real invariant. Documentation-only branches supply attacks and do
+   not receive compatibility treatment.
+4. Only after this salvage pass records the exact integrated baseline may new stage controllers
+   start. Their first checkpoint is a thin working vertical, not a full public API proposal.
 
 ## Dependency waves
 
@@ -145,6 +198,9 @@ rejected mechanisms, and unresolved platform evidence. Any overlap is resolved b
 strongest single invariant owner and refactoring consumers; parallel branches do not create API
 compatibility obligations.
 
-The overnight run is successful only if every terminal is either integrated or represented by an
-honest `EVIDENCE_BLOCKED` receipt after two distinct bounded attempts. Time elapsed, agent completion,
-test count, and line count cannot convert missing evidence into closure.
+The program is successful only when every terminal is integrated. `EVIDENCE_BLOCKED` is an honest
+temporary state, not a successful terminal: it requires two distinct implementation attempts against
+the same reproducible product, authority, external-system, or toolchain blocker. Reviewer/model
+availability, packet format, elapsed time, agent completion, test count, and line count cannot create
+a block or convert missing implementation into closure. Every blocked row retains its best candidate
+and exact next executable action.

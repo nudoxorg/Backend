@@ -14,25 +14,24 @@ instead of copying it.
 | Terra hostile reviewer | counterexamples, semantic tripwires, deletion opportunities, evidence gaps, performance trade-offs | edits, repair design, acceptance, scores without an adopted rubric |
 | Terra rubric writer | observable anchors, caps, calibration artifacts, anti-gaming mutations | implementation, architecture invention, scoring the artifact used to author the rubric |
 
-Role resolution is part of evidence. Every dispatch names the registered role and expected model/
-effort from `.codex/config.toml`; neither a task label nor a model string alone proves that the role's
-instructions, sandbox, checkout, and skill contract were loaded. The capability index records the
-runtime task ID, resolved config path, model, effort, sandbox, baseline, and checkout.
+Role resolution is useful provenance, not product authority. Every dispatch names the registered role
+and expected model/effort from `.codex/config.toml`, but missing router or sandbox telemetry cannot
+make otherwise reviewable code inadmissible. Record the runtime identity once when available and keep
+moving against executable product evidence.
 
 ## Capability cycle
 
 1. **Chief boundary.** Sol names one public terminal and writes a concise red integration/fault test
    or executable oracle for it. The brief states product laws, negative space, shared baseline, and
    paths owned by concurrent work. Sol does not select the internal representation.
-2. **Terra Phase 0—sequential and pre-edit.** Terra traces current consumers, commits the brief,
-   coupling skeleton, proof matrix, resource controls, and red falsifiers, maps every applicable
-   `TESTING.md` clause to a matrix row or evidenced exclusion, and passes the frozen packet through a
-   source-isolated pre-edit Terra review launched by the distinct review sidecar below. No
-   production-writing Luna starts before Phase 0 closes.
-3. **Parallel proposal and research.** Immediately after Phase 0, Terra launches registered Luna
-   workers on independent rows and spends the same interval studying primary sources, upstream
-   production code, and measured local controls. Every useful finding enters the committed journal;
-   changed laws version the matrix and invalidate stale worker cards.
+2. **First executable checkpoint.** Terra traces the owning consumer, writes one red falsifier, and
+   immediately starts the narrowest reversible implementation. A brief or matrix may clarify the
+   contract, but neither is a gate and neither needs a pre-edit review.
+3. **Parallel proposal and research.** Terra launches workers on independent rows when useful and
+   studies primary sources, production code, and measured controls concurrently. Every research
+   tranche must alter the next test, representation, or implementation decision and be bracketed by
+   a commit, red test, reproduced failure, or integration verdict. Two tranches without such progress
+   stop research and return the manager to implementation.
 4. **Luna convergence.** Luna workers receive disjoint paths or isolated branches, one or more red rows, exact
    commands, and a stopping boundary. They commit each proof-bearing checkpoint. They may simplify
    repeatedly, but cannot broaden the public contract or turn a failed design into a weaker claim.
@@ -40,25 +39,22 @@ runtime task ID, resolved config path, model, effort, sandbox, baseline, and che
    the strongest mechanisms, and updates the journal and proof matrix. Losing prototypes remain
    inspectable until a symbol-level salvage ledger accounts for their invariants, algorithms,
    diagnostics, tests, and measurements.
-6. **Independent attack.** At the pre-edit design, first material candidate, and closure candidate,
-   a separate Terra receives the frozen artifacts without the builder's rationale and with no write
-   access to the source snapshot. Because
-   live parent permissions override child profile defaults, the writable manager invokes a distinct
-   Codex parent process whose `workspace-write` root is a disposable build directory, with implicit
-   `$TMPDIR` and `/tmp` writes disabled, while the source snapshot is a separate readable path and is
-   not added as writable. That parent only spawns the
-   registered reviewer and returns its raw JSON receipt. Terra
-   converts accepted findings into new falsifiers; Luna receives the bounded repair, never the
-   reviewer's prose as architectural authority.
+6. **Independent attack.** At the first material checkpoint and closure candidate, a separate Terra
+   attacks concrete code without write access when the role is available. Terra converts accepted
+   findings into falsifiers and bounded repairs. Reviewer routing or source-isolation telemetry may
+   qualify an independence claim, but failure to obtain it never stops implementation, local review,
+   or integration of a candidate whose product evidence is otherwise reproducible.
 7. **Candidate return.** The primary Terra returns one committed candidate with zero unresolved
    blocker/major findings, the research journal, proof matrix, reviewer output, exact gates, and the
    strongest surviving counterexample. It returns early only for a genuine product-authority fork or
-   a bounded `EVIDENCE_BLOCKED` receipt containing raw operational failures and an external owner.
+   a bounded `EVIDENCE_BLOCKED` receipt for a reproducible product, authority, external-system, or
+   toolchain blocker after two distinct implementation attempts. Missing agents and receipt-format
+   failures are orchestration incidents, not product blockers.
 8. **Chief integration.** Sol reviews the candidate in the context of every affected crate. It may
    transplant a few mechanisms, refactor surrounding owners, or reject most of the surface. It does
    not repeat Terra's whole unit-test campaign; it runs the public red journey, affected workspace
-   gates, semantic lints, and novel cross-cutting attacks. Any Sol shipping repair gets a fresh blind
-   Terra review before merge.
+   gates, semantic lints, and novel cross-cutting attacks. A fresh blind Terra review strengthens a
+   risky shipping repair when available; its absence does not suspend the repair behind ceremony.
 
 ## Durable artifacts
 
@@ -67,8 +63,8 @@ Each capability has a stable lowercase kebab-case ID and lives under
 candidate identities, every worker/reviewer runtime receipt, and retention/supersession state. The
 schema lives in `.codex/skills/manage-rust-swarm/references/capability-evidence.md`.
 
-The directory keeps four small committed artifacts, updated in place rather than through amendment
-chains:
+The directory may keep four small committed artifacts when they reduce ambiguity. They are updated
+in place rather than through amendment chains:
 
 - **brief:** public terminal, laws, negative space, baseline, concurrent path ownership, `TESTING.md`
   digest and applicable-clause mapping;
@@ -76,10 +72,9 @@ chains:
 - **research journal:** source, mechanism, experiment, decision changed, saturation signal;
 - **closure receipt:** candidate identity, exact evidence, reviewer custody, remaining uncertainty.
 
-Every research row names the unresolved matrix or representation decision it informs. Research on
-that decision stops only after two independent relevant sources or experiments add no falsifier,
-candidate, resource bound, or decision change; remaining uncertainty stays explicit. Two nearby or
-irrelevant sources cannot manufacture saturation.
+Every research row names the unresolved matrix or representation decision it informs and the code or
+test changed by the finding. Once a tranche changes no decision, research on that question stops;
+remaining uncertainty stays explicit.
 
 ## Evidence, not volume
 
