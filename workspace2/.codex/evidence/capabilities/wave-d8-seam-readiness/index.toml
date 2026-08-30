@@ -1,0 +1,36 @@
+schema = 1
+capability_id = "wave-d8-seam-readiness"
+state = "phase0"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+baseline_status = "clean"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = "TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+
+[manager]
+role = "nudox_terra_orchestrator"
+runtime_task_id = "UNVERIFIED"
+config_path = ".codex/agents/nudox-terra-orchestrator.toml"
+configured_model = "gpt-5.6-terra"
+configured_effort = "xhigh"
+actual_model = "UNVERIFIED"
+actual_effort = "UNVERIFIED"
+sandbox = "UNVERIFIED"
+checkout = "/private/tmp/nudox-wave-d8-seam-readiness-f2565a9f"
+branch = "codex/wave-d8-seam-readiness-terra"
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/brief.md", sha256 = "46bf7687bcdec17abd3be10dd7b0ed2e79daf7e5762a395d3e66fbb565450632" }
+matrix = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/proof-matrix.md", sha256 = "662fdaf3ec3340e5147fadd16f988cba1c7c0ce66bb5a71f578b3980c842609e" }
+research = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/research.md", sha256 = "c1773de0e0261307bb908db68b9360887eac5ef30e2cd75dca8494f2b9e67f4d" }
+red_falsifiers = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/red-falsifiers.md", sha256 = "1c1744eb411e967e2c6a88f67607106d982ccc2969e9242a36f5a4d87cf62d58" }
+resource_controls = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/resource-controls.md", sha256 = "9c4a577d5d4e188215e0154492afd9923da157cec238ddf564a50cf8e299b904" }
+closure = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/closure.md", sha256 = "1c48b07669bc423f751a4cff925ebb829f862398a4d3f81a691b6b273f698e12" }
+
+[[packets]]
+id = "pre-edit-1"
+path = ".codex/evidence/capabilities/wave-d8-seam-readiness/packets/pre-edit-1.md"
+sha256 = "0fdd48398b64d89736962a8665776bfae8577619af6cc42d5866ae81ca627571"
+kind = "rationale-free-review-contract"
