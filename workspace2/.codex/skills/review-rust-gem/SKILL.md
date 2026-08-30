@@ -5,12 +5,29 @@ description: Perform one hostile, evidence-backed review of a concrete workspace
 
 # Review a Rust gem
 
-Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then the one applicable domain skill. The
-shared craft laws are the review standard. Do not invent a second style guide.
+Read the supplied rubric and diff, then the relevant sections of
+`../deliver-reviewed-rust-slice/SKILL.md` and one owning domain skill. Do not preload manager history,
+builder rationale, unrelated passes, or the whole roadmap. The shared craft laws are the review
+standard; do not invent a second style guide.
 
 The reviewer is adversarial toward claims and collaborative toward the implementation. Find the
 smallest design that actually proves the contract. Green tests and clever types are inputs, not
-approval. Review follows a concrete checkpoint; lack of pre-edit reviewer custody never blocks code.
+approval. Review follows concrete code; lack of pre-edit reviewer custody never blocks code.
+
+## Review modes
+
+The caller selects one mode. Do not run the universal closure deck against an early slice.
+
+- **Early structure review:** first material vertical implementation. Attack invariant ownership,
+  dependency direction, public API, file/module boundaries, test falsifiability, needless ownership,
+  and obvious deletion opportunities. The purpose is to prevent a large weak shape from hardening.
+- **Closure review:** attacked mandatory rubric candidate. Recheck early findings and run only the
+  applicable correctness, resource, concurrency, protocol/durability, diagnostics, and integration
+  passes below.
+- **Simplification review:** behavior is green. Seek a strictly smaller/stronger representation:
+  direct fields for independent facts, typed DTOs/errors, borrowed/reused storage, dead-state/API
+  deletion, standard traits, responsibility-based modules, and tests with visible laws. Preserve every
+  falsifier and quantify any retained allocation, copy, indirection, or branch.
 
 ## Required inputs
 
@@ -27,9 +44,9 @@ Search for public errors, types, dependencies, and reexports that have no consum
 in this checkpoint; delete them rather than calling them preparation for the next one. Judge scope by
 invariant ownership, state space, dependencies, retained resources, and reviewability—not source size.
 
-## Review passes
+## Closure review passes
 
-Run all applicable passes in this order:
+Run only applicable passes in this order:
 
 1. **Contract:** map every preserve/prove row to code and a falsifying test. Reject deferred rows or
    substituted capabilities.
@@ -69,7 +86,7 @@ wire decoding with domain validation and service orchestration. For every immuta
 constructor, record its asymptotic validation cost and reject quadratic duplicate scans when canonical
 ordering or an earned bounded index can make the invariant linear.
 
-## Finding format
+## Finding and simplification format
 
 Every finding contains:
 
@@ -82,6 +99,11 @@ Consequence: correctness, safety, ownership, work, memory, API, or operability
 Smallest correction: deletion or redesign boundary, not a patch recipe by default
 Falsifier: exact test/measurement that proves the correction
 ```
+
+A simplification proposal additionally names the deleted symbol/state/allocation, the retained law,
+and the exact existing falsifier that must remain green. Prefer one coherent ranked packet over a
+sequence of style comments. The reviewer stays read-only to preserve independence; Terra owns the
+repair or dispatches one bounded Luna repair card.
 
 `BLOCKER` means violated semantics, unsafe/durability uncertainty, lost errors/owners, unbounded state,
 or a missing contract capability. `MAJOR` means unjustified allocation/generic/dependency, material hot
@@ -123,3 +145,7 @@ Before handoff, state:
 
 Return findings first, ordered by severity, with a short approval status last. Do not write a score
 unless an independently validated rubric was explicitly supplied.
+Record any finding that escaped both builder self-review and manager review in
+`.codex/learning/capabilities/<capability-id>/insights.md`: one fingerprint, exact artifact, why the
+current rubric allowed it, and the smallest enforceable prevention. Append to the shared journal;
+do not create a parallel reviewer narrative or delay the code review for documentation.

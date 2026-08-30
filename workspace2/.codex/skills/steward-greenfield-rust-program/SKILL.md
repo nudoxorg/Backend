@@ -5,10 +5,10 @@ description: "Act as the workspace2 Sol chief steward: own capability architectu
 
 # Steward the greenfield Rust program
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, and the applicable domain
-skill and roadmap section completely. Read `../manage-rust-swarm/SKILL.md` when delegating and
-`../review-rust-gem/SKILL.md` when reviewing a concrete checkpoint. Read supplemental references only
-for a named unresolved question; never front-load the whole doctrine before the first red or edit.
+Read the capability graph, the shared craft skill, and the relevant roadmap/domain sections. Read
+`../manage-rust-swarm/SKILL.md` before delegation and the relevant review mode before final review.
+Do not preload historical evidence, every role skill, or unrelated references. Sol has the widest
+system context, but still loads detail progressively around live cross-crate decisions.
 
 The Sol chief owns the system between capabilities: public contract, cross-crate composition,
 integration tests, semantic enforcement, final merge, and learning. Terra owns the inside of one
@@ -44,28 +44,29 @@ A red journey must:
 
 ## Dispatch autonomous Terra managers
 
-Dispatch the registered `nudox_terra_orchestrator` role, expecting `gpt-5.6-terra`/`xhigh`, and bind
-its resolved config/model/effort/sandbox/runtime identity to the capability evidence index:
+Dispatch the registered `nudox_terra_orchestrator` role, expecting `gpt-5.6-terra`/`xhigh`, with one
+compact manager packet:
 
 ```text
 named capability and public red journey
 non-negotiable product laws and negative space
 shared baseline and skill/domain paths
 paths owned by concurrent work
-return contract: CHECKPOINT | CLOSED | AUTHORITY_FORK | EVIDENCE_BLOCKED
+return contract: CANDIDATE | AUTHORITY_FORK | PRODUCT_BLOCKED
 ```
 
-Terra derives baselines, consumers, worker cards, unit oracles, measurements, exact commands, and
-repair loops. If it returns a discoverable path, command, dependency fact, or next worker decision as
-an authority fork, treat that as role failure and improve the Terra contract; do not quietly supply
-its job. `EVIDENCE_BLOCKED` is valid only with two bounded distinct implementation attempts against a
+Terra owns a living executable rubric, stays ahead through focused research, keeps Luna continuously
+implementing, commissions early and closure review, and performs final capability simplification.
+Sol does not schedule Luna or approve intermediate commits. If Terra returns a discoverable path,
+command, dependency fact, or worker decision as an authority fork, treat that as role failure and
+improve the Terra contract. `PRODUCT_BLOCKED` is valid only with two distinct attempts against a
 reproducible product, authority, external-system, or toolchain failure, affected rows, and an external
 resolution owner. Missing agent capacity, reviewer custody, router metadata, or packet formatting is
 an orchestration incident and triggers controller fallback, not a product block.
 
-Limit simultaneous Terra managers by useful child capacity. Luna probes and an independent Terra
-reviewer are accelerators, not gates. A manager without child capacity implements the smallest slice
-directly, reviews it explicitly, and returns concrete code rather than an evidence-only terminal.
+Limit simultaneous Terra managers by useful child capacity. A manager without child capacity
+implements directly; it never waits for a preferred topology. Luna is an implementation engine, not
+a calibration reader. The reviewer attacks and simplifies concrete code; it does not authorize work.
 
 ## Chief's continuous lane
 
@@ -104,15 +105,27 @@ failure as one of:
 - non-general incident that belongs only in the capability journal.
 
 Update the narrowest single authority before the next dispatch. Delete superseded rules; never repeat
-the same law in the orchestration document, role skill, common craft skill, and domain skill. Test a
-material role-contract change with `calibrate-rust-agent-contract` before calling it stable.
+the same law in the orchestration document, role skill, common craft skill, and domain skill. Validate
+skills structurally and forward-test only the specific ambiguity that actually recurred; calibration
+is never a pre-edit gate.
+
+At every Terra return, inspect its shared
+`.codex/learning/capabilities/<capability-id>/insights.md` alongside representative raw Luna diffs and
+reviewer findings. Promote urgent correctness/authority/safety patterns immediately. After every
+three returns, or whenever a fingerprint repeats across capabilities, run a cross-capability trend
+review and update `../../../AGENT_LEARNING.md` with only enforceable promotions or explicit
+task-local dispositions.
+Promote correctness/authority/safety failures immediately and cross-capability complexity/churn after
+two independent occurrences. Periodically sample raw Luna diffs and reviewer findings to find latent
+patterns the summaries missed. Close a learning row only with a type, lint, test, repository gate, or
+demonstrably clearer single skill rule.
 
 ## Integrate a Terra candidate
 
 When a manager returns:
 
-1. Resolve the candidate identity, baseline, owned paths, tests, known findings, and clean gate
-   receipt. Role/config/model/sandbox metadata is provenance, not admission authority. Trust
+1. Resolve the candidate identity, baseline, owned paths, rubric, tests, known findings, and clean
+   gate receipt. Role/config/model/sandbox metadata is provenance, not admission authority. Trust
    reproduced unit evidence as Terra's responsibility; do not rerun the entire worker campaign.
 2. Review the complete candidate in the context of every affected current consumer. Reopen old
    abstractions when the new capability reveals duplicate or weaker invariant ownership.

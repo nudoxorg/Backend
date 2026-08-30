@@ -1,116 +1,92 @@
 ---
 name: write-evidence-rubric
-description: Design and calibrate a future evidence-based 0–10 rubric for a stable workspace2 architecture or implementation plan. Use only after contracts, reviewer behavior, baselines, and terminal integration evidence exist. This skill writes rubrics; it never scores the product it helped define.
+description: Create or refine a workspace2 executable capability rubric that Luna can implement continuously, Terra can strengthen through research and hostile review, and Sol can use for final integration. Use for living capability rubrics and stable 0–10 closure rubrics; never use as pre-edit authorization or self-scoring ceremony.
 ---
 
-# Write an evidence rubric
+# Write an executable Rust rubric
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md` and
-`../review-rust-gem/SKILL.md` completely. A rubric
-is downstream of stable contracts and a trustworthy reviewer. It must make gaming harder, not turn
-aspirations into points.
+A rubric is a collection of falsifiable engineering laws, not prose goals or a reason to delay code.
+Start from the public terminal, current red, direct consumer, and resource/authority boundaries. Load
+the shared craft/domain sections relevant to those rows; do not require full-plan rereads.
 
-## Readiness gate
+## Row schema
 
-Do not write the rubric until all exist:
-
-- stable capability graph and explicit non-goals;
-- approved contract cards for each coherent plane;
-- reproducible client and remote baselines;
-- named public integration/fault/performance evidence;
-- a separate read-only Terra reviewer and reviewer skill forward-tested on deficient, complete, and
-  stretch implementations without receiving the intended answer;
-- definitions for “plan complete” and “same-direction extra mile.”
-
-If any is absent, return a readiness gap list and the smallest calibration work. Never invent weights
-to create a feeling of completeness.
-
-Prototype branches are rubric inputs, not scoreable products. They return retain/reject/promote
-evidence under `orchestrate-greenfield-rust-prototype`; they cannot be labeled 8/10, stretch, complete,
-or production-ready until rebuilt on current shared state and the readiness gate above closes.
-
-## Criterion schema
-
-Every criterion is independently observable:
+Every row is independently executable:
 
 ```text
-ID and capability
-Why it matters
-Evidence source and exact command/artifact
-0/2/4/6/8/9/10 anchors
-Weight and justification
-Hard caps triggered by missing prerequisites
-Dependencies and non-overlap with other criteria
-Same-direction stretch goal
-Known measurement uncertainty
+ID and observable law
+why user/system behavior depends on it
+exact falsifier or command
+exact expected evidence
+anti-cheat mutant that must fail
+resource/error/ownership bound
+mandatory or same-direction stretch
+dependencies and non-overlap
+state: RED | IMPLEMENTING | GREEN | ATTACKED | SUPERSEDED
+research decision and remaining uncertainty
 ```
 
-No criterion uses “elegant,” “fast,” “robust,” “well tested,” or “production ready” without a numeric
-or executable definition. Do not score both the mechanism and its consequence twice.
+“Elegant,” “fast,” “robust,” “well tested,” “low allocation,” or “production ready” are invalid
+without an observable definition. Compilation and test totals prove no row. A row must distinguish
+the desired capability from a constant body, ignored input, mixed authority, weak error, unbounded
+owner, or other plausible substitute.
 
-## Scale semantics
+## Living refinement
+
+Terra owns the rubric during implementation. Research may add a missing row, strengthen a falsifier,
+or supersede one representation-specific row. It never makes unrelated green evidence stale. A
+change to the public terminal, permanent wire semantics, authority owner, or cross-capability
+dependency returns to Sol; implementation choices remain Terra's job.
+
+Luna receives only assigned rows and continues until they are green and self-attacked. Luna does not
+edit anchors or score itself. The Terra reviewer tries to falsify rows and finds missing rows,
+especially simplification, file-boundary, negative-API, and resource cases. Terra adjudicates and
+repairs; Sol performs the final system-level pass.
+
+## 0–10 semantics
 
 - **0:** absent, inverted, or unverifiable.
-- **2:** local demo/happy path; boundary or failure laws missing.
-- **4:** coherent component proof; integration, hostile cases, or measurements incomplete.
-- **6:** integrated primary path with meaningful negative evidence; material declared gaps remain.
-- **8:** the complete approved plan, all mandatory public/fault/performance evidence reproducible.
-- **9:** a measured same-direction stretch across another workload/profile/platform without weakening 8.
-- **10:** the robust extra-mile form of the same capability: independently reproduced, breakage-resistant,
-  and materially better on predeclared measures. Ten is never “more features” or more abstraction.
+- **2:** local happy path or weak test that a plausible mutant passes.
+- **4:** coherent component behavior; boundary/failure/resource evidence materially incomplete.
+- **6:** integrated primary path with hostile cases; named mandatory gaps remain.
+- **8:** the complete approved capability: every mandatory row is `ATTACKED`, exact public/fault/
+  resource evidence reproduces, and no blocker/major finding survives.
+- **9:** the same capability wins under one predeclared harder workload, fault, platform, or resource
+  target without weakening eight.
+- **10:** independently reproduced stretch evidence plus materially tighter predeclared measures and
+  breakage-resistant enforcement. Ten is never more features or more abstraction.
 
-Full completion is exactly eight. A score above eight cannot compensate for a missing mandatory law.
+No weighted average can compensate for a missing mandatory row. Full plan completion is exactly
+eight; stretch begins only after eight.
 
-## Caps and anti-gaming
+## Hard caps
 
-Apply explicit maximums before weighted aggregation:
+- correctness, source/owner loss, unsound authority, unsafe uncertainty, or false durability: below 4;
+- missing public integration, restart/fault, or cancellation proof where applicable: below 6;
+- unbounded memory/work/export or remote machinery in the portable client: below 6;
+- performance claim without raw end-to-end control: that row at most 4;
+- tests that assert only success/no panic or survive the anti-cheat mutant: testing at most 2;
+- unresolved blocker/major: no closure score.
 
-- unproved correctness, source loss, unsafe invariant, or durability claim: product cap below 4;
-- missing end-to-end public integration or restart/fault proof: affected plane cap below 6;
-- unbounded memory/work/export or server dependency in portable client: affected plane cap below 6;
-- missing raw performance evidence for a performance claim: that criterion cap 4;
-- green tests with weak assertions: testing criterion cap 2;
-- unresolved reviewer blocker/major: no final score.
-- missing or role-mixed proof chain—builder self-review, Luna substituted for the required Terra
-  reviewer, reviewer edits, or primary Terra delegating acceptance: affected evidence is inadmissible
-  and no final score is issued.
+Do not score source length, test count, generic count, dependency count, allocation count, SIMD,
+unsafe, agent activity, or documentation volume. Score the observable consequence and charge the
+mechanism through its resource/coupling rows.
 
-Source compression, genericity, SIMD, unsafe, dependency totals, allocation totals, test totals, and
-agent activity are never standalone points. They matter only through the contract's invalid-state,
-memory, work, coupling, correctness, and operability evidence.
+## Calibration without ceremony
 
-## Weighting and calibration
+Before calling a reusable rubric stable, blind one fresh reviewer on three small concrete artifacts:
+a compiling weak mutant, a complete-to-plan candidate, and a legitimate same-direction stretch. The
+rubric must place them below eight, at eight, and above eight for the correct reasons. Also try a
+source-compression patch, duplicated easy tests, and benchmark-only optimization; none may improve
+the result without capability evidence.
 
-Weights follow user harm and architectural dependency, not implementation effort. Correctness,
-ownership, error fidelity, durability, and boundedness are usually caps; performance and ergonomics
-score only after them. Keep criteria orthogonal and sum weights exactly once.
-
-Calibrate before adoption:
-
-1. Two independent rubric writers receive the same frozen contracts/baselines and produce criterion,
-   anchor, cap, and non-overlap tables without seeing each other's work. Reconcile only when each row
-   agrees within one anchor step and names the same hard caps; otherwise rewrite the input contract.
-2. Select three frozen artifacts: deliberately deficient, complete-to-plan, and legitimate stretch.
-   The deficient artifact must compile and pass plausible weak tests while containing at least one
-   seeded invariant leak; prose descriptions are not calibration artifacts.
-3. Blind the artifact labels. Two reviewers independently apply the rubric without discussing scores.
-4. Any criterion divergence greater than one point or any total that places the artifacts outside
-   `<8`, `=8`, and `>8` respectively requires rewriting anchors/evidence.
-5. Try gaming patches: superficial source compression, duplicated easy tests, parameter-bag
-   coupling, and a benchmark-only optimization. The score must not rise without capability evidence.
-6. Version the rubric when contracts or baselines change; never silently edit anchors mid-review.
-
-Before adoption, run the contract itself through `../calibrate-rust-agent-contract/SKILL.md`. If fresh
-readers disagree on the first slice, allowed paths, terminal evidence, or a hard cap, the rubric is not
-ready even when its arithmetic is internally consistent.
+Calibrate only ambiguous rows. Do not require two rubric writers, multiple cold readers, source
+custody, model receipts, or full-deck reruns for every edit. If two attempts still disagree by more
+than one anchor, split or rewrite that row and prefer a tool/test over more prose.
 
 ## Output
 
-Return readiness decision, criterion table, caps, aggregation formula, calibration artifacts/results,
-gaming tests, version/change policy, and open ambiguity. The rubric writer must not score the current
-implementation; hand the validated rubric to an independent reviewer.
-
-The active rubric artifact begins with `NOT ADOPTED`, `CALIBRATING`, or `ADOPTED`, plus the contract
-digests, calibration artifact commits, reviewer identities/model proof, and adoption date. Only
-`ADOPTED` permits a numeric product score. Replacing a stale score with a readiness ledger is required,
-not loss of history: Git retains the old opinion without letting agents cite it as current evidence.
+Return the living row table, current states, hard caps, raw evidence links, anti-cheat results,
+research-driven changes, reviewer disagreements, and unverified boundaries. The writer does not
+score its own implementation; Terra maintains capability state and an independent reviewer/Sol uses
+the stable rubric for acceptance.

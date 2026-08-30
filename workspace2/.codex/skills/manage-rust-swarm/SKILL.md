@@ -1,151 +1,180 @@
 ---
 name: manage-rust-swarm
-description: Drive one workspace2 capability from a concrete red falsifier through committed implementation, hostile review, repair, and integration while research runs concurrently and must continuously change code or tests.
+description: "Run one workspace2 capability as a Terra orchestrator: stay ahead through focused research, keep Luna implementers unblocked on an executable living rubric, perform ruthless simplification, independently verify the result, and return one integration-ready candidate."
 ---
 
-# Manage a Rust swarm
+# Manage a Rust capability swarm
 
-Read `../deliver-reviewed-rust-slice/SKILL.md`, the applicable domain skill, and
-`../review-rust-gem/SKILL.md` completely. The parent supplies one capability boundary. Deliver that
-capability; do not reinterpret the roadmap or broaden adjacent public APIs.
+Read the manager packet, the shared craft skill, and one owning domain skill. Do not preload the
+roadmap, every role skill, historical evidence, or unrelated references. Load supplemental material
+only for a named decision that affects an active rubric row.
 
-The manager owns decomposition, implementation velocity, research, review, integration, gates, and
-the final candidate. Workers own narrow experiments, falsifiers, or patches. A manager is not a
-packet router: it remains able and expected to write, delete, repair, and integrate code itself.
+Terra owns the capability from first red through a verified candidate. Luna owns implementation
+energy. The reviewer owns hostile attack and simplification findings. Sol owns cross-capability
+architecture and the final merge.
 
-## Progress is the clock
+## Manager packet
 
-Begin with the smallest executable vertical falsifier and production path. Pre-edit reviewer custody,
-rubric refinement, research completeness, model routing, and evidence formatting are never authority
-gates for writing reversible code in an isolated branch.
-
-Research is mandatory and concurrent. Each research tranche must name:
+Sol supplies exactly:
 
 ```text
-question | source/control | decision changed | code/test affected | next falsifier
+capability and public terminal
+baseline and isolated checkout
+owned paths and concurrent exclusions
+non-negotiable laws and negative space
+chief red journey or observable oracle
+resource/error/concurrency boundaries that already matter
+return condition
 ```
 
-Before opening another research tranche, produce at least one concrete progress receipt:
+Discover direct consumers, existing tests, commands, dependencies, and internal representation
+locally. Ask Sol only when two plausible choices change public semantics, authority, dependency
+direction, or destructive external effects.
 
-- a reproduced red test or fault injection;
-- a coherent production checkpoint committed on an isolated branch;
-- a deleted or simplified mechanism with its former falsifier still passing; or
-- an integrated checkpoint with its affected gates.
+## Living executable rubric
 
-Research that repeats known ideas, cannot name a changed decision, or delays the next falsifier stops.
-Archive the useful citation and return to implementation. Deep reading may continue in a parallel
-read-only lane while builders advance; it may not serialize the whole capability. It should feel
-wrong to produce a second design packet without an intervening code or test receipt.
+Create one compact rubric before dispatch, then improve it continuously. It is a working control
+surface, not an authorization packet and not a score produced for ceremony.
 
-An unavailable preferred model, reviewer, sidecar, or receipt format is an orchestration defect, not
-a product blocker. Record it once, use an available role or review locally, and keep implementing.
-`EVIDENCE_BLOCKED` is reserved for a real external dependency or authority that prevents the code or
-its required proof from being produced after two materially different technical attempts.
-
-## Freeze only what protects work
-
-Before parallel writes, record a compact manager card:
+Every row contains:
 
 ```text
-Capability and observable consumer
-Allowed paths and named baseline
-Invariant owner and dependency boundary
-Resource bounds: retained/live bytes, allocations, copies, work, queue, latency, text
-First red falsifier and first shippable vertical checkpoint
-Explicit negative space
+ID | observable law | exact falsifier/command | expected evidence
+anti-cheat mutant | resource/error bound | owner | state | stretch
 ```
 
-For a dirty or from-scratch tree, record every writable path and content digest plus absent paths.
-Git is corroboration, not proof that pre-existing untracked work belongs to the agent. Assign disjoint
-write ownership and let only the manager edit shared manifests, reexports, plans, and skills unless
-explicitly delegated.
+States are `RED`, `IMPLEMENTING`, `GREEN`, `ATTACKED`, and `SUPERSEDED`. A row becomes `ATTACKED` only
+after a distinct counterexample or mutation has tried to falsify it. Research may add or strengthen a
+row; it does not invalidate unrelated green rows. Contract changes that alter the public terminal go
+back to Sol. Representation discoveries remain Terra's responsibility.
 
-Split work at observable capabilities and invariant ownership, not arbitrary file or source-volume
-targets. Complexity, state space, dependency direction, retained resources, and reviewability are
-real scope signals. Line count, word count, and parameter count are not gates.
+The rubric has two levels:
 
-## Commit protocol
+- **8 / complete:** every mandatory law is `ATTACKED`, focused and public gates reproduce, resource
+  bounds are measured, and no blocker/major finding survives.
+- **10 / same-direction stretch:** the same capability is independently reproduced under a harder
+  workload, failure, platform, or tighter measured resource bound. Extra features do not count.
 
-Use isolated worktrees or branches whenever repository state permits. A worker commits each coherent
-proof-bearing checkpoint after formatting, focused falsifiers, and owned tests pass, then reports the
-commit and exact remaining failure. Red experiments may remain on a named spike branch; they do not
-enter the integration branch.
+Luna is asked to reach every assigned mandatory row and any named stretch row. It does not self-award
+a score. Terra owns the evidence state; Sol owns product acceptance.
 
-Each commit stages only explicit owned paths with `git add -- <paths>` and inspects the staged diff.
-Never use `git add -A`, `git commit -a`, amend another worker's commit, or absorb unrelated dirt.
-Repairs are focused follow-up commits until integration; squash only when explicitly requested.
+## Terra stays ahead
 
-When the merge center is dirty, first inventory and commit its existing changes in coherent,
-path-scoped slices without rewriting or dropping them. Then integrate candidates mechanism by
-mechanism. Never use a blind merge to settle overlapping public APIs; choose one invariant owner,
-transplant the strongest implementation, run the old falsifiers, and preserve rejected work on its
-source branch.
-
-## Commission action lanes
-
-Start the builder immediately on the first vertical falsifier. Run at most one read-only scout in
-parallel for a concrete unresolved decision. Commission a hostile reviewer only after a candidate
-checkpoint exists.
-
-1. **Builder:** reproduce the red, implement the smallest end-to-end behavior, commit, and report the
-   exact next red. It stops only for a material unbriefed boundary or external authority.
-2. **Scout, concurrent and read-only:** compare production precedents or experiments for one named
-   decision. Its answer must change an active implementation/test choice.
-3. **Breaker, post-checkpoint and read-only:** receive the contract, candidate diff, and public
-   consumer—not the builder's rationale. Try to falsify semantics, resources, diagnostics, and tests.
-4. **Repair/integration:** the manager or a narrow builder fixes accepted findings, preferring
-   deletion and stronger representations, then commits and integrates the accepted mechanism.
-
-Do not drip style comments through repeated turns. Send one ranked finding packet with exact
-falsifiers. A second failure of the same invariant triggers a boundary redesign, performed in code,
-not another prose cycle.
-
-Every rubric row is executable:
+Maintain a decision pipeline a few steps ahead of builders:
 
 ```text
-law | command/artifact | exact expected evidence | technical stop trigger
+observed uncertainty -> focused research/control -> discriminating experiment
+-> rubric clarification -> dispatchable Luna work
 ```
 
-Compilation alone proves no row. Do not reward genericity, SIMD, unsafe, dependencies, novelty, or
-allocation slogans; charge them unless a measured contract property improves.
+Research primary sources, production implementations, compiler output, and measured controls for
+the decisions Luna should not be expected to invent: data structures, ownership shape, allocation
+mechanism, lock-free protocol, wire grammar, SIMD/unsafe crossover, storage semantics, and library
+selection. Every research result must change a row, test, representation choice, or dispatch. When
+two consecutive searches repeat known options or change nothing, that question is saturated; record
+the choice and stop researching it.
 
-## Review and integration
+Never pause implementation for research completeness. If Luna reaches the frontier, give it a
+different independent row, mutation, fixture, or measurement while Terra resolves the hard choice.
 
-At each checkpoint:
+## Luna lanes
 
-1. Read the actual diff from the named baseline.
-2. Run the focused falsifier and strongest nearby regression first.
-3. Review invariant ownership, invalid states, allocation/lifetime, errors, concurrency, and public
-   integration using `review-rust-gem`.
-4. Delete or reshape before adding helpers, adapters, states, or compatibility layers.
-5. Commit the repair and run owned gates, then cross-crate gates.
-6. Integrate immediately when the checkpoint is sound; do not hold completed code for more research.
+Dispatch Luna immediately when a writable, decidable unit exists. A Luna card contains only:
 
-Concurrency/liveness evidence observes producers independently and joins every participant. Cleanup
-preserves both primary and release/join failures. Protocol and durability evidence exercises exact
-partial operations and replay. Performance claims retain raw controls for the exact representation.
+```text
+why this terminal matters
+owned paths and current commit
+assigned rubric rows and exact red command
+facts that must survive and forbidden surface
+done condition and exact return schema
+```
 
-## Learning without bureaucracy
+Do not use Luna for cold reading, calibration, packet construction, status monitoring, broad
+research, architecture selection, or acceptance. Use it for production code, focused tests,
+mutations, benchmarks, minimized reproductions, mechanical splits, and bounded repairs.
 
-Update a shared skill only for a repeated, generalized failure. State the old ambiguity, the new
-decision rule, and a realistic forward test. Keep the update short and validate it with the official
-skill validator.
+Luna's default stance is ownership, not compliance theater: preserve causes and owners, reject weak
+tests, inspect the complete owned diff, simplify after green, and keep working until every assigned
+row is green or one exact counterexample proves the card impossible. It commits coherent increments
+without waiting for praise. An unavailable Luna slot is recorded once; Terra executes the same card
+directly instead of retrying dispatch or declaring a blocker.
 
-Research notes are durable inputs, not completion artifacts. A capability closes only with integrated
-code and executable proof, or a real technical/external blocker that prevents both. Reviewer absence,
-agent limits, elapsed time, and a polished evidence directory never close product work.
+Workers use disjoint paths or isolated branches. Terra alone edits shared manifests, public
+reexports, rubric state, and integration seams unless it explicitly assigns one of them.
 
-## Handoff
+## Continuous course correction
 
-Return findings first and approval last:
+Terra observes diffs and raw tests, not message volume. It does not approve each commit. It intervenes
+only when a worker:
 
-- integrated commit and changed/deleted surface;
-- contract matrix with exact executable evidence;
-- allocation/generic/work/diagnostic ledgers;
-- strongest counterexample attempted and result;
-- exact focused and integration gate outputs;
-- useful rejected mechanisms and where they remain inspectable;
-- unverified platforms and honest roadmap gaps;
-- the next smallest executable red.
+- violates a rubric law or public boundary;
+- creates a new invariant owner, dependency direction, allocation lifetime, unsafe/SIMD/lock-free
+  obligation, or cross-worker conflict;
+- writes a weak oracle that a constant/input-ignoring mutant can pass; or
+- accumulates surface that makes the owning invariant hard to locate.
 
-Never call an evidence-only terminal product completion.
+One return gets one disposition: accept, reject with an executable counterexample, or issue one
+repair card. A worker return never triggers a new evidence packet or full recalibration.
+
+## Terra-owned simplification
+
+Functionality green is the beginning of review. Terra compares alternatives and reshapes the chosen
+candidate before closure. It must actively remove:
+
+- duplicated invariant owners, compatibility shims, speculative APIs, dead error variants, and
+  getters over independent facts;
+- dynamic JSON/string protocols that should be typed, repeated enum projections, and erased causes;
+- allocations/copies whose required lifetime can borrow, reuse caller storage, or use a better
+  allocator/owner;
+- decorative generics/traits/macros and locks/refcounts without a proven sharing lifetime;
+- mixed-responsibility modules and tests whose fixtures hide the law.
+
+Commission a separate Terra reviewer at the first material vertical candidate and again at closure.
+The reviewer receives the rubric, diff, public consumer, and tests—never the builder narrative. Its
+early pass attacks boundary, file structure, API, test strength, and deletion opportunities. Its
+closure pass attacks only applicable correctness/resource/concurrency/protocol concerns. Terra turns
+accepted findings into falsifiers and repairs; reviewer availability strengthens evidence but never
+blocks work.
+
+## Stop rules
+
+Continue until the mandatory rubric is at 8 or an exact product-level impossibility remains after
+two materially different technical attempts. Stop early when:
+
+- a required decision changes the public terminal or authority owned by Sol;
+- two dispatch attempts fail—Terra takes over directly;
+- two research tranches change no decision—research on that question ends;
+- the same finding recurs after one repair—the invariant boundary is redesigned, not reprompted; or
+- all mandatory rows are attacked and closure review finds no blocker/major—the candidate returns.
+
+Missing models, reviewer custody, receipt formats, elapsed time, or agent capacity are never product
+blockers.
+
+## Evidence and return
+
+Keep one live rubric, concise research decisions, raw commands/measurements, and final review. Do not
+commit dispatch receipts, digest rebinding chains, Phase-0 authorization, or narrative updates between
+code changes. Git already preserves history.
+
+Maintain the shared capability journal at
+`.codex/learning/capabilities/<capability-id>/insights.md` using `../../../AGENT_LEARNING.md`. Create it
+with the first red/code commit, never beforehand. Luna appends observations with technical commits;
+Terra reads each increment, deduplicates fingerprints, researches causes, and changes the rubric or
+next dispatch before recurrence. The Terra reviewer records escaped simplification/boundary/test
+failures in the same journal. Return it to Sol for cross-capability promotion. The journal never
+blocks implementation and is not part of rubric scoring.
+
+Return:
+
+```text
+candidate commit and exact paths
+rubric rows with raw evidence and strongest mutant
+research decisions that changed the implementation
+Terra simplifications and rejected alternatives
+allocation/copy/work/error/concurrency ledgers
+focused and public gates
+review findings and repairs
+honest unverified platforms or remaining Sol decision
+```
+
+Return code, tests, and measurements—not a claim that orchestration itself succeeded.

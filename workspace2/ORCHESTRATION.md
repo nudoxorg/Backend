@@ -9,9 +9,9 @@ instead of copying it.
 | Role | Owns | Must not own |
 | --- | --- | --- |
 | Sol chief steward | capability graph, public red integrations, cross-crate architecture, semantic policy lints, final integration, shared-skill learning | a Terra's worker queue, repeated unit-gate reproduction, scoring its own merge |
-| Terra capability orchestrator | proposal space, research journal, evolving proof matrix, Luna dispatch, unit/fault oracles, measurements, candidate integration and verification | product-wide architecture, final shared merge, independent review of its own work |
-| Luna proof implementer | one frozen card, proof-bearing code, focused tests/measurements, small commits, relentless self-check against the matrix | changing the contract, choosing product architecture, declaring a capability complete |
-| Terra hostile reviewer | counterexamples, semantic tripwires, deletion opportunities, evidence gaps, performance trade-offs | edits, repair design, acceptance, scores without an adopted rubric |
+| Terra capability orchestrator | focused research, living executable rubric, Luna dispatch, unit/fault oracles, alternative comparison, ruthless simplification, candidate integration and verification | product-wide architecture, final shared merge, independent review of its own work |
+| Luna proof implementer | assigned rubric rows, proof-bearing code, focused tests/mutations/measurements, coherent commits, relentless self-check and post-green cleanup | changing the public contract, choosing product architecture, declaring a capability complete |
+| Terra hostile reviewer | early boundary attack, closure counterexamples, deletion/simplification opportunities, evidence gaps, performance trade-offs | edits, acceptance, scores without an adopted rubric |
 | Terra rubric writer | observable anchors, caps, calibration artifacts, anti-gaming mutations | implementation, architecture invention, scoring the artifact used to author the rubric |
 
 Role resolution is useful provenance, not product authority. Every dispatch names the registered role
@@ -24,30 +24,29 @@ moving against executable product evidence.
 1. **Chief boundary.** Sol names one public terminal and writes a concise red integration/fault test
    or executable oracle for it. The brief states product laws, negative space, shared baseline, and
    paths owned by concurrent work. Sol does not select the internal representation.
-2. **First executable checkpoint.** Terra traces the owning consumer, writes one red falsifier, and
-   immediately starts the narrowest reversible implementation. A brief or matrix may clarify the
-   contract, but neither is a gate and neither needs a pre-edit review.
-3. **Parallel proposal and research.** Terra launches workers on independent rows when useful and
-   studies primary sources, production code, and measured controls concurrently. Every research
-   tranche must alter the next test, representation, or implementation decision and be bracketed by
-   a commit, red test, reproduced failure, or integration verdict. Two tranches without such progress
-   stop research and return the manager to implementation.
-4. **Luna convergence.** Luna workers receive disjoint paths or isolated branches, one or more red rows, exact
-   commands, and a stopping boundary. They commit each proof-bearing checkpoint. They may simplify
-   repeatedly, but cannot broaden the public contract or turn a failed design into a weaker claim.
-5. **Terra verification.** Terra reproduces worker evidence, compares alternatives, integrates only
-   the strongest mechanisms, and updates the journal and proof matrix. Losing prototypes remain
-   inspectable until a symbol-level salvage ledger accounts for their invariants, algorithms,
-   diagnostics, tests, and measurements.
-6. **Independent attack.** At the first material checkpoint and closure candidate, a separate Terra
+2. **Living rubric and immediate dispatch.** Terra traces the owning consumer, writes the first red,
+   creates executable mandatory rows, and immediately dispatches or implements them. The rubric
+   evolves row by row and never authorizes work; unchanged green rows survive clarification.
+3. **Terra foresight.** Terra stays ahead of Luna by researching the next hard representation,
+   storage, concurrency, allocation, protocol, or library decisions. Each result becomes a
+   discriminating experiment, stronger row, or dispatch. Two consecutive searches that change
+   nothing saturate that question.
+4. **Luna convergence.** Luna continuously implements assigned rows, tests anti-cheat mutants,
+   simplifies the complete owned diff after green, commits coherent recovery points, and continues
+   without requesting approval. It stops only at the assigned boundary or an exact authority fork.
+5. **Terra verification and compaction.** Terra observes real diffs and raw gates, compares
+   alternatives, integrates the strongest mechanisms, and performs the hard simplification Luna is
+   least suited to discover. One return receives one accept, falsifier-bound repair, or rejection;
+   it never triggers a new packet/calibration cycle.
+6. **Independent attack.** At the first material vertical candidate and closure candidate, a separate Terra
    attacks concrete code without write access when the role is available. Terra converts accepted
    findings into falsifiers and bounded repairs. Reviewer routing or source-isolation telemetry may
    qualify an independence claim, but failure to obtain it never stops implementation, local review,
    or integration of a candidate whose product evidence is otherwise reproducible.
 7. **Candidate return.** The primary Terra returns one committed candidate with zero unresolved
-   blocker/major findings, the research journal, proof matrix, reviewer output, exact gates, and the
+   blocker/major findings, the living rubric, research decisions, reviewer output, exact gates, and the
    strongest surviving counterexample. It returns early only for a genuine product-authority fork or
-   a bounded `EVIDENCE_BLOCKED` receipt for a reproducible product, authority, external-system, or
+   a bounded `PRODUCT_BLOCKED` receipt for a reproducible product, authority, external-system, or
    toolchain blocker after two distinct implementation attempts. Missing agents and receipt-format
    failures are orchestration incidents, not product blockers.
 8. **Chief integration.** Sol reviews the candidate in the context of every affected crate. It may
@@ -58,23 +57,16 @@ moving against executable product evidence.
 
 ## Durable artifacts
 
-Each capability has a stable lowercase kebab-case ID and lives under
-`.codex/evidence/capabilities/<capability-id>/`. Its `index.toml` binds artifact digests, baseline and
-candidate identities, every worker/reviewer runtime receipt, and retention/supersession state. The
-schema lives in `.codex/skills/manage-rust-swarm/references/capability-evidence.md`.
+Keep only artifacts that help the next technical decision: one compact manager packet, one living
+executable rubric, concise research decisions, raw measurements, and one final closure receipt.
+Worker/reviewer runtime metadata is optional provenance recorded once at return, not an admission
+gate. Do not commit Phase-0 authorization, dispatch receipts, digest rebinding chains, amendment
+stacks, or evidence-only progress between code/test commits. Git already retains history.
 
-The directory may keep four small committed artifacts when they reduce ambiguity. They are updated
-in place rather than through amendment chains:
-
-- **brief:** public terminal, laws, negative space, baseline, concurrent path ownership, `TESTING.md`
-  digest and applicable-clause mapping;
-- **proof matrix:** one falsifiable row per law and its current state;
-- **research journal:** source, mechanism, experiment, decision changed, saturation signal;
-- **closure receipt:** candidate identity, exact evidence, reviewer custody, remaining uncertainty.
-
-Every research row names the unresolved matrix or representation decision it informs and the code or
-test changed by the finding. Once a tranche changes no decision, research on that question stops;
-remaining uncertainty stays explicit.
+Progressive context is mandatory: Sol holds the capability graph and system history; Terra receives
+one capability packet plus shared/domain craft; Luna receives assigned rubric rows and direct source;
+the reviewer receives rubric, diff, consumer, and tests without builder rationale. More advanced
+context is loaded only when a live decision needs it.
 
 ## Evidence, not volume
 

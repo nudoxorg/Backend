@@ -10,17 +10,17 @@ description = "Cross-program architect and final integrator for the workspace2 m
 config_file = "./agents/nudox-sol-steward.toml"
 
 [agents.nudox_terra_orchestrator]
-description = "Autonomous capability manager that researches, dispatches Luna workers, proves, and integrates one candidate."
+description = "Autonomous capability manager that stays ahead through research, evolves an executable rubric, keeps Luna implementing, simplifies ruthlessly, and returns one verified candidate."
 config_file = "./agents/nudox-terra-orchestrator.toml"
 
 [agents.nudox_luna_implementer]
-description = "Narrow proof implementer that iterates relentlessly against one frozen evidence matrix."
+description = "Relentless implementation engineer that owns assigned executable rubric rows through code, hostile tests, measurement, and post-green simplification."
 config_file = "./agents/nudox-luna-implementer.toml"
 
 [agents.nudox_terra_reviewer]
-description = "Independent source-read-only hostile reviewer for correctness, simplicity, typing, and measured performance."
+description = "Independent hostile reviewer for early boundaries, closure counterexamples, and ruthless simplification of concrete Rust candidates."
 config_file = "./agents/nudox-terra-reviewer.toml"
 
 [agents.nudox_terra_rubric_writer]
-description = "Independent evidence-rubric author and calibrator; never scores its own specimen."
+description = "Executable-rubric author that makes capability laws, mutants, evidence, caps, and same-direction stretch unambiguous."
 config_file = "./agents/nudox-terra-rubric-writer.toml"

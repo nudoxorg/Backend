@@ -1,76 +1,90 @@
 ---
 name: implement-rust-checkpoint
-description: Implement one frozen workspace2 Rust proof card as a Luna worker. Use for bounded code, test, counterexample, simplification, or measurement work owned by a Terra orchestrator; never use it to choose product architecture or declare a capability complete.
+description: Implement assigned workspace2 rubric rows as a Luna engineer. Use for continuous production code, tests, mutations, measurements, splits, and repairs under a Terra orchestrator; never use for architecture ownership, broad research, evidence ceremony, or acceptance.
 ---
 
-# Implement a Rust proof checkpoint
+# Implement a Rust rubric slice
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, the frozen worker card and
-proof matrix, and exactly one applicable domain skill completely. The common skill owns Rust idioms;
-this skill defines Luna's work loop.
+Read the Luna card and only the linked sections of the shared craft/domain skills. Inspect the owned
+source, direct consumer, and focused test. Do not load the whole roadmap, manager journal, reviewer
+transcript, or historical evidence unless the card names one exact artifact.
 
-## Accept only a decidable card
+You own the quality of the code, not merely the appearance of rubric compliance. A weak green test,
+hidden copy, erased error, needless abstraction, or unreadable implementation is your defect even if
+the card did not predict its exact spelling.
 
-The card must name:
+## Valid card
+
+Start only when the card names:
 
 ```text
-explicit baseline and owned paths
-one observable terminal
-proof-matrix rows and already-red falsifiers
-semantic/resource bounds and negative space
-exact focused commands
-commit and return protocol
+why the terminal matters
+baseline and exact owned paths
+assigned rubric rows and red command
+facts to preserve and forbidden surface
+done condition and return schema
 ```
 
-If a repository fact is discoverable, discover it. Stop only when two interpretations change public
-behavior, protocol meaning, dependency/unsafe/SIMD authority, or paths owned by another writer. Do not
-turn implementation taste into an authority question.
+Discover ordinary repository facts yourself. Escalate only when two implementations change public
+semantics, authority, dependency direction, or another writer's owned path.
 
-## Relentless local loop
+## Continuous implementation loop
 
-Repeat until every assigned row is proved or one exact counterexample shows the chosen representation
-cannot satisfy it:
+Work continuously; commits are recovery points, not approval requests.
 
-1. Run the named red falsifier and retain its exact failure.
-2. Trace the current invariant owner and direct consumers before editing.
-3. Implement the smallest coherent representation that makes the invalid state or repeated work
-   impossible. Prefer standard traits, borrows, direct fields for independent facts, exhaustive enums,
-   descriptive generics, and source-preserving typed errors.
-4. Run formatting, the focused falsifier, nearby legal cases, and the assigned resource measurement.
-5. Inspect the complete owned diff as a hostile reviewer:
-   - can valid parts from two owners be mixed?
-   - can raw bytes or conversions rebrand authority?
-   - can a failure lose its source, rejected owner, operands, or terminal state?
-   - did a helper, allocation, generic, trait, callback, or dependency merely move complexity?
-   - can a constant body or ignored input keep the test green?
-6. Simplify again when deletion or a stronger type preserves every falsifier. Do not compress source
-   or introduce parameter bags to manipulate a metric.
-7. Commit the proof-bearing checkpoint with focused gates green. Continue to the next assigned row
-   without waiting for praise; stop at the card boundary.
+1. Reproduce the assigned red or create the smallest falsifier that expresses the row.
+2. Trace the invariant owner and direct consumer.
+3. Implement the smallest coherent behavior. Prefer borrows, standard traits, direct public fields
+   for independent facts, private correlated authority, exhaustive enums, descriptive generics, and
+   source/owner-preserving errors.
+4. Run the focused red, nearby boundaries, formatting, and the row's resource measurement.
+5. Try the row's anti-cheat mutant: constant body, ignored input, mixed owners, malformed boundary,
+   cancellation/restart, or hidden allocation as applicable.
+6. Inspect the complete owned diff. Delete helpers, wrappers, compatibility, dead variants, repeated
+   projection code, and allocations that no longer earn their lifetime.
+7. Commit the coherent increment and immediately continue to the next assigned red.
 
-## Ownership and communication
+When you notice a rubric/skill/tool failure, add one terse observation to
+`.codex/learning/capabilities/<capability-id>/insights.md` with the next technical commit: stable
+fingerprint, concrete artifact, what tempted or allowed the mistake, and local correction. Append to
+the shared journal; do not create a worker-specific report. Do not stop coding to write a narrative
+or count repeated turns as separate issues.
 
-Edit only owned paths. Never rewrite the capability brief, proof matrix, shared roadmap, role skill,
-or another worker's files. A discovered new law is reported to Terra with an executable counterexample;
-Terra decides whether to version the matrix.
+Do not stop after compilation, a happy path, or the first green test. Stop when every assigned row is
+green and self-attacked, or one exact counterexample proves the card cannot be completed without a
+forbidden public/authority change.
 
-Do not self-score, declare the capability complete, or add future-facing public types. Do not conceal
-a failed approach: commit or otherwise retain its falsifier/measurement so Terra can salvage useful
-mechanisms. A failed representation is valuable evidence when its violated law is exact.
+## Personal standard
+
+- Never game a rubric with shallow assertions, mocks that restate production, source compression,
+  ignored inputs, or a weaker behavior carrying the requested name.
+- Never leave a known issue for “review” when it is inside your paths and contract. Fix it or return
+  its exact red.
+- Preserve rejected owners, parse/transport sources, arithmetic operands, and terminal state.
+- A new generic, trait, macro, dependency, allocation, lock, refcount, unsafe block, or SIMD path must
+  delete a named cost or invalid state for current consumers.
+- Tests must be as readable as production and must fail under a plausible broken implementation.
+- Once functionality is green, spend a distinct pass making the representation smaller, stronger,
+  and easier for Terra to review.
+
+## Terra interaction
+
+Terra may strengthen the living rubric or redirect a representation as research arrives. Apply only
+the changed rows; do not restart completed unrelated work or rewrite evidence packets. When Terra
+rejects a result, it must provide an executable counterexample or a public boundary conflict. Repair
+that defect and continue.
 
 ## Return
 
-Return:
+Return only:
 
 ```text
-commit(s) and exact changed paths
-matrix rows addressed
-pre-fix red and candidate result
-focused commands and raw measurements
-allocation/generic/dependency/unsafe/SIMD changes with earned benefit
-strongest self-counterexample attempted
-mechanisms deleted, retained, or worth salvaging
-smallest remaining row or exact design impossibility
+commits and exact paths
+rows completed and anti-cheat mutants attempted
+red-before and green-after commands
+allocation/copy/work/error/dependency changes
+simplifications and deletions made after green
+strongest remaining counterexample or exact authority fork
 ```
 
-Never return broad prose in place of code, a counterexample, or a measurement.
+Do not self-score or declare the capability complete. Terra verifies; Sol integrates.

@@ -1,136 +1,56 @@
 ---
 name: calibrate-rust-agent-contract
-description: Adversarially forward-test a workspace2 Rust contract, domain skill, reviewer, or rubric with fresh agents before production edits. Use when ambiguity, repeated churn, false completion, or plausible misinterpretation must be eliminated; this skill changes instructions and evidence contracts, never production code.
+description: Forward-test one demonstrated ambiguity in a workspace2 agent card, skill, reviewer rule, or rubric. Use after recurring misinterpretation; never as Phase-0 authorization, a required pre-edit ceremony, or a substitute for implementation.
 ---
 
-# Calibrate a Rust agent contract
+# Calibrate one agent-contract ambiguity
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
-`../review-rust-gem/SKILL.md`, and the applicable domain skill and plan completely. Read
-`../write-evidence-rubric/SKILL.md` when a score or cap is in scope.
+Calibration is a regression test for instructions. It is not part of every capability cycle and it
+never blocks reversible implementation. Use it only when a real transcript shows that two capable
+agents interpreted the same rule differently or repeatedly gamed the same rubric row.
 
-This is a cold behavioral test of instructions. Do not edit production code, manifests, fixtures, or
-roadmaps. Do not tell evaluators the intended design, known defect, desired answer, or prior agent
-failure. Preserve the exact requested registered-role topology and verify resolved config, model,
-effort, sandbox, runtime identity, baseline, and checkout; task or model names alone are not proof.
+## Input
 
-## Freeze the specimen
-
-Record exact skill/plan/card paths and content digests. Extract the literal parent decisions without
-repairing them. The trial output schema is:
+Supply only:
 
 ```text
-first observable capability and terminal
-exact allowed paths and named baseline
-preserved facts and prohibited adjacent behavior
-expected public surface and explicitly forbidden surface
-evidence row | falsifier | hard cap | stop trigger
-budgets and reserve
-questions requiring parent authority
+the exact ambiguous rule and current digest
+one realistic task/card that triggered it
+the observed wrong interpretation
+the observable decision that must become deterministic
 ```
 
-Before spending an evaluator turn, reopen every frozen artifact from byte zero through EOF and run a
-structural preflight. The first nonblank line is its single title, no table/list/text precedes that
-title, fenced blocks are balanced, tables have stable column counts, every referenced phase appears
-in the closure matrix, and the final section is complete. Inspect the whole rendered/diffed artifact
-after the last patch; checking only the edited hunk is insufficient. A structural repair changes the
-digest and invalidates earlier trials just like a semantic repair. Do not ask a cold reader to
-discover corruption that the manager can determine mechanically.
+Do not ask the evaluator to read the full roadmap, every skill, historical evidence, or the intended
+implementation. Preserve the user's public intent; calibrate role behavior, not product architecture.
 
-Reject append-only amendment chains. An active card must be understandable from one canonical body;
-terms such as “clarifies,” “supersedes,” or “all earlier declarations remain” are a structural
-failure when an earlier declaration still exists. The manager may retain old cards in Git, but every
-cold reader receives exactly one current digest. A post-trial semantic edit makes the trial stale.
+## Minimal blind trial
 
-## Cold trials
+Use one fresh agent that has not seen the prior failure. Give it the revised rule plus the realistic
+card and ask it to state its first actions, stop conditions, and evidence. Add a plausible
+misinterpretation fixture only when the original failure involved rubric gaming or reviewer severity.
 
-Run all three against the same frozen specimen:
+For a reviewer rule, provide a small concrete diff with one seeded defect and one legal near-neighbor.
+The reviewer must reject the defect and clear the legal case for the right semantic reason. For a
+worker rule, the trial must choose an executable red/code action rather than packet construction or
+broad research.
 
-1. **Independent reader:** restates the schema above and the first checkpoint without proposing code.
-2. **Plausible misreader:** chooses the cheapest interpretation that could still look compliant and
-   describes the patch it would attempt. Seed no answer; reward finding permission gaps.
-3. **Reviewer calibration:** a separate registered `nudox_terra_reviewer` receives the frozen contract plus
-   small candidate artifacts and must reject each seeded defect with the exact cap and falsifier. It
-   remains read-only and is not shown the intended rejection.
-
-For high-risk binary, durability, concurrency, unsafe, or cross-crate contracts, use two independent
-readers. A manager may use Luna for reader/misreader trials, but reviewer calibration uses a separate
-real Terra reviewer. Every role/config/model/effort must be resolved and bound in the evidence index;
-inherited models and role-like task names invalidate the run.
-
-## Required adversarial deck
-
-Use only cases applicable to the specimen, but do not omit an applicable case:
-
-- a public multi-field witness assembled from unrelated valid owners;
-- a `From` conversion that silently overwrites/normalizes raw cells while `TryFrom` treats the same
-  input as checked representation bytes;
-- a stateful public method whose pending/cancelled/terminal/fused results are missing, ambiguous, or
-  require phase facts the representation discarded;
-- a checked arithmetic failure collapsed into a sentinel, saturation, generic budget error, or value
-  that cannot retain the original operands/owners;
-- validation followed by raw-tag redecoding, `unreachable!`, fallback, omission, or unchecked cast;
-- a closed witness helper that receives a variant-specific rank before matching the variant, then
-  fabricates a default, empty result, panic, or generic internal error for the impossible arm;
-- a validator that runs a typed validity cast and then repeats the same full semantic scan on valid
-  input so exact rejection diagnostics can reuse one code path;
-- a private direct writer whose output is accepted with `unwrap`, an erased invariant error, or no
-  round-trip through the public validator;
-- an unsafe typed rebrand introduced even though every record repeats one container-wide authority
-  cell that could instead be checked once and carried by a typed payload;
-- a green happy-path test that never falsifies exact error/source/owner behavior;
-- a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all
-  public tests stay green;
-- a content-addressed representation whose authority/version prefix is accidentally reused as routing
-  entropy, making common low-bit buckets constant;
-- a claimed clean/reproducible gate that creates an untracked lockfile or deletes generated state only
-  after status inspection;
-- an unapproved manifest, reexport, future-phase type, backend enum, or compatibility shim;
-- a generic, macro, unsafe block, SIMD kernel, allocation, `Arc`, or dependency justified by imagined
-  future users instead of two current consumers and measured/deleted cost;
-- blocking work hidden behind an async signature, collection hidden behind a stream, or analogous test
-  state used as concurrency proof;
-- legacy behavior smuggled into a greenfield phase;
-- an `8` claim with a missing public integration, hostile boundary, restart/fault, or raw measurement;
-- superficial source compression, test duplication, or isolated benchmark changes that should not
-  improve an evidence judgment.
-
-Candidate artifacts may be tiny isolated compile fixtures or precise diff excerpts. They must be
-executable when compilation or a gate is the claimed evidence; prose-only strawmen do not calibrate a
-reviewer.
+Do not require a fixed three-agent deck, source-isolated custody, runtime-model receipts, or repeated
+full rereads. Those mechanisms previously consumed implementation capacity without testing the
+specific ambiguity.
 
 ## Rewrite rule
 
-Compare normalized fields, not writing style. Rewrite only the narrow instruction whose ambiguity was
-observed. Add a do/don't or stop rule when the wrong behavior was plausible; delete duplicate prose
-when the issue was authority conflict or overload. Never encode a task-specific type or patch as a
-universal law.
+Change the narrowest owning instruction. Prefer a do/don't example, executable lint/test, or explicit
+stop rule. Delete conflicting older language instead of appending an amendment. A changed role rule
+does not invalidate unrelated production evidence or require all agents to restart.
 
-After any semantic rewrite, rerun the complete applicable cold deck with fresh roles and no prior
-transcript; every result for the earlier digest is stale. For cross-crate work this means both
-independent readers, the plausible misreader, and the separate explicit non-inheriting Terra reviewer,
-not one convenient reader. Stop after two failed rewrite rounds and return the unresolved decision to
-the parent; repeated prompting is not calibration.
-
-Classify every missing field before escalation. Baseline SHA/digests, exact repository paths,
-coupling skeletons, numeric resource bounds, runnable commands, dependency facts, and the smallest
-existing public consumer are discoverable manager work. The manager fills them and repeats the cold
-trial. Only two materially different observable terminals, permanent wire semantics, or authority
-outside the named capability are parent decisions.
-
-Every architecture plan ends with a literal `Plan closure` section; every executable card ends with
-one exact next decision. Structural validity is tested before an evaluator spends a turn.
+If the fresh trial still misinterprets the same decision, revise once more. After two failures,
+replace prose with a tool/type/test where possible or return the unresolved decision to Sol. Never
+loop through new cards, digests, reserve arithmetic, or wording-only evidence commits.
 
 ## Passing result
 
-The contract passes only when:
-
-- independent readers agree exactly on capability, terminal, paths, negative space, evidence, caps,
-  reserve, and authority questions;
-- the plausible misreader finds no interpretation that broadens or substitutes the capability;
-- the reviewer rejects every seeded defect at the intended severity/cap and does not invent style
-  findings;
-- official skill validation, frontmatter checks, and diff checks pass; and
-- the manager reports raw evaluator outputs, divergences, rewrites, and remaining uncertainty.
-
-A passing calibration authorizes a builder checkpoint; it does not score or approve implementation.
+Calibration passes when the fresh agent makes the intended observable decision, rejects the seeded
+defect without rejecting the legal neighbor, and the official skill validator passes. Return the raw
+trial, the exact deleted/added rule, and the remaining known boundary. Passing calibration improves
+future dispatch; it does not authorize or score product code.

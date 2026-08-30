@@ -5,10 +5,9 @@ description: Direct one isolated workspace2 greenfield prototype portfolio as a 
 
 # Orchestrate a greenfield Rust prototype
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
-`../review-rust-gem/SKILL.md`, `../calibrate-rust-agent-contract/SKILL.md`, and the one applicable
-domain skill and plan completely. Read `../audit-data-layout/SKILL.md` when the prototype changes a
-numerous/hot representation or makes an allocation, codegen, unsafe, or SIMD claim.
+Read the prototype objective, shared craft skill, manager skill, and one owning domain skill. Load
+the relevant review mode when code exists. Load data-layout or calibration references only for a
+named active decision; never front-load every role skill and plan before implementation.
 
 This is an evidence-producing prototype mode, not an integration shortcut. The Sol master owns one
 named objective, decomposes it into observable experiments, and returns committed alternatives plus
@@ -24,10 +23,9 @@ score, or broadens the product contract to make an experiment pass.
 - Record that source-candidate commit/tree, then create a separate `codex/prototype-*` worktree and
   branch. Never edit, merge, rebase, or cherry-pick into the shared branch.
 - The Sol master selects the registered `nudox_terra_orchestrator` role, expecting
-  `gpt-5.6-terra`/`xhigh`. The manager follows `manage-rust-swarm`: after Phase 0 it selects registered
-  `nudox_luna_implementer` workers and a separate registered `nudox_terra_reviewer`. Runtime receipts
-  bind resolved role config, model, effort, sandbox, task identity, baseline, and checkout; a role or
-  model name alone is not evidence.
+  `gpt-5.6-terra`/`xhigh`. The manager immediately builds a living rubric and dispatches registered
+  `nudox_luna_implementer` workers, while a separate `nudox_terra_reviewer` attacks the first material
+  and closure candidates. Runtime identity is provenance recorded once, never an implementation gate.
 - Inspect live capacity before dispatch. Reserve a slot for independent review and do not start idle
   managers that leave no Luna implementation capacity. Time-slice at committed proof boundaries.
 - Workers commit passing exact-path checkpoints. Rejected variants remain committed on their
@@ -59,14 +57,13 @@ starts as a charged candidate, not as the premise. Preserve a simplest safe cont
    counterexample corpus.
 2. Turn the objective into ordered public/lab terminals. Commission one Terra manager for the first
    terminal; do not give it a representation recipe.
-3. While Terra orchestrates, independently research only live decisions from primary sources and
-   search accepted code for abstractions the prototype could delete. Sol's concurrent work is read-only
-   or occurs on a separate isolated branch; it cannot alter the manager's frozen worktree or transitive
-   dependencies. Adopt a Sol test or measurement only at a committed boundary, then name the rebase and
-   recalibrate the changed card before another worker starts.
-4. At each Terra return, reproduce its evidence, inspect all Luna/reviewer artifacts and actual model
-   calls, and either retain the experiment, reject it, or commission the next terminal. Do not repair
-   broad worker work silently.
+3. While Terra orchestrates, research only live cross-capability decisions and search accepted code
+   for abstractions the prototype could delete. Sol works in disjoint paths or a separate branch.
+   Feed a useful result back as one rubric-row/test update; do not invalidate unrelated Luna work or
+   restart calibration.
+4. At Terra's candidate return, inspect its living rubric, research decisions, representative Luna
+   diffs, reviewer findings, and exact gates. Do not manage its worker queue or replay every worker
+   turn. Retain, reject, or commission the next observable terminal.
 5. After the chosen prototype closes, run a final cross-cutting Sol review against the exact commit.
    Attempt a simpler standard-library representation, raw authority/owner mixing, mutation of every
    trusted coordinate/tag, phase×method totality, input-removal mutants, and resource-claim controls.

@@ -6,11 +6,12 @@ description: The mandatory workspace2 Rust craft, performance, structure, testin
 # Deliver a reviewed Rust gem
 
 This is the single authority for workspace2 Rust idioms, patterns, structure, evidence, and review.
-Read it completely before a domain skill. Domain skills add scope; they do not redefine these laws.
+Read the sections linked by the role card before the owning domain skill; load advanced sections when
+their mechanism becomes a live decision. Domain skills add scope; they do not redefine these laws.
 
-Deliver one capability, not an interpretation of the roadmap. The parent owns architecture and the
-eventual rubric. The agent owns one executable proof and keeps advancing it without waiting for
-ceremonial approval.
+Deliver one capability, not an interpretation of the roadmap. Sol owns architecture, Terra owns the
+living capability rubric and simplification, and Luna continuously implements assigned rows without
+waiting for ceremonial approval.
 
 ## Contract and first red
 
@@ -24,7 +25,7 @@ Must prove: exact tests, traces, and measurements
 Out of scope: explicit adjacent work
 Budget: retained bytes, allocations, copies, work, latency, and text
 First red: the smallest executable falsifier
-First checkpoint: the smallest shippable vertical behavior
+First vertical: the smallest shippable end-to-end behavior
 ```
 
 If a row is missing, inspect the direct path and choose the narrowest reversible interpretation.
@@ -32,41 +33,16 @@ Stop for the parent only when the ambiguity changes external semantics, authorit
 effects, or the permitted boundary. Never fill ambiguity with a framework, compatibility layer,
 copied type, backend enum, or broad refactor.
 
-Reproduce the first red and begin the vertical implementation in the same cycle. Research may run in
-parallel, but every additional research tranche requires an intervening red, committed code
-checkpoint, simplification, or integration receipt. Pre-edit review, rubric refinement, preferred
-model availability, and evidence formatting do not gate reversible implementation.
-
-## Action checkpoints
-
-### Checkpoint 1 — direct path and executable falsifier
-
-Record the current consumer, invariant owner, simplest safe/std baseline, ownership/allocation and
-work ledger, exact falsifier, and decisions that genuinely require parent authority. Then write or
-reproduce that falsifier. Do not return a second design packet before code or a test has changed.
-
-### Checkpoint 2 — smallest vertical proof
-
-Implement the minimum end-to-end behavior and commit it after focused tests pass. Stop before a
-second policy/backend/format case or speculative optimization. Return:
-
-- public API diff and deletion ledger;
-- exact tests and commands;
-- allocations, copies, retained owners, logical work, and text-size delta;
-- largest control-flow offender before/after;
-- exact typed diagnostic trace;
-- remaining flaws and next executable red.
+Reproduce the first red and begin the vertical implementation in the same cycle. Research runs ahead
+in Terra's lane and continuously sharpens the rubric; Luna keeps implementing other decidable rows.
+Commits are recovery/integration points, not approval requests. Pre-edit review, rubric refinement,
+preferred model availability, and evidence formatting never gate reversible implementation.
 
 Scope is governed by invariant ownership, state-space complexity, dependency direction, retained
-resources, and reviewability—not line, word, file, or parameter counts. Split a large plane into
-vertical proofs when responsibilities or proof surfaces diverge. Keep normally formatted readable
-code; never compress source, omit diagnostics, or hide branches to manufacture simplicity.
-
-### Checkpoint 3 — integration and closure
-
-After hostile review of the concrete checkpoint, repair accepted findings and integrate immediately.
-Run focused gates first, then affected cross-crate and full gates. Do not hold sound code while waiting
-for more research. The agent scores its slice only if asked; the parent owns product completion.
+resources, and reviewability—not line, word, file, parameter, or commit counts. Split a plane when
+responsibilities or proof surfaces diverge. After behavior becomes green, Terra performs a distinct
+simplification review before closure. Keep normally formatted readable code; never compress source,
+omit diagnostics, or hide branches to manufacture simplicity.
 
 ## Abstraction and boundary laws
 
@@ -83,6 +59,10 @@ for more research. The agent scores its slice only if asked; the parent owns pro
 - In a glob-member workspace, never leave a new crate directory without a valid manifest and target.
   Stage experiments outside the glob or create/remove the complete scaffold atomically so unrelated
   Cargo gates remain runnable.
+- A Cargo workspace has one `crates/` directory for member crates. Do not create parallel `adapters/`,
+  `services/`, `backends/`, or test-only crate roots; express responsibility in crate/module names.
+  Root-package workspaces remain valid. Existing exceptions are enumerated by the repository layout
+  gate and are migration debt, not precedent.
 - Public fields are correct only for plain facts whose replacement cannot invalidate behavior. Never
   make a prepared length, offset, witness, capacity, checksum, or other derived authority publicly
   mutable when production code trusts it. In that case keep one private invariant owner and expose an

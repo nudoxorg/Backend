@@ -18,7 +18,7 @@ product blockers.
 
 | Observed failure | Enforceable correction | Immediate salvage |
 | --- | --- | --- |
-| Thousands of lines of plans and skills were reread before the first red test. | Read the common idiom skill plus the narrow owning skill. Read supplemental material only when a named uncertainty appears. The first cycle ends in a red test or production edit. | Preserve existing research notes as searchable references; do not replay their reading ceremony. |
+| Thousands of lines of plans and skills were reread before the first red test. | Use progressive context: Sol holds the capability graph, Terra receives one manager packet plus common/domain craft, and Luna receives assigned executable rubric rows. Load supplemental material only for a live decision. | Preserve existing research notes as searchable references; do not replay their reading ceremony. |
 | A committed Phase-0 packet and source-isolated pre-edit review were treated as production gates. | Start from a compact contract and one red falsifier. Review begins after the first coherent checkpoint, when concrete code exists to attack. | Foundation, index, application, adaptive, and system packets become test inputs, not authorization tokens. |
 | Model routing, reviewer custody, and exact receipt formatting caused `EVIDENCE_BLOCKED`. | Missing roles fall back to the available reviewer or controller review. Only a product dependency, unavailable external system, missing authority, or reproducible toolchain failure may block product work. | Reopen every custody-only terminal without regenerating its packet. |
 | Research and packet revisions continued without intervening code or tests. | Each research tranche names the changed decision and is bracketed by a commit, red test, reproduced failure, or integration verdict. A second tranche without one stops research. | Graph/vector freezes its V17 packet; later learning lands as tests or code. |
@@ -41,8 +41,9 @@ between executable changes, which the progress clock below now forbids.
   implementation decision before another research tranche begins.
 - Evidence describes work already performed. It cannot authorize the start of work, substitute for
   code, or turn missing reviewer infrastructure into product closure.
-- After two cycles without a progress receipt, reduce scope to the smallest end-to-end vertical
-  slice and implement it directly. Do not write another packet.
+- Terra keeps Luna implementing continuously while its own research stays several decisions ahead.
+  After two research tranches that change no rubric row, experiment, or dispatch, that question is
+  saturated and research stops.
 - Review returns one ranked patch-or-reject report. A new case strengthens the owning abstraction
   and its test; it does not restart planning.
 
@@ -51,10 +52,10 @@ between executable changes, which the progress clock below now forbids.
 - `canonical` is the merge center. Isolated implementation worktrees start from its recorded commit;
   only the designated integration steward writes or merges in the canonical checkout. Never clean,
   reset, or discard unclassified canonical changes.
-- Read `ORCHESTRATION.md`, `ROADMAP.md`, `TESTING.md`,
-  `.codex/skills/steward-greenfield-rust-program/SKILL.md`,
-  `.codex/skills/deliver-reviewed-rust-slice/SKILL.md`,
-  `.codex/skills/manage-rust-swarm/SKILL.md`, and the named domain skills completely.
+- Read only the documents owned by the active role: Sol reads the capability graph and shared craft;
+  Terra reads its manager packet, shared craft, and one domain skill; Luna reads its assigned rubric
+  rows and linked craft sections; reviewers read the rubric, diff, consumer, and applicable review
+  mode. Load broader plans or references only for a named live decision.
 - Explicitly select the requested registered roles when available. Sol is `gpt-5.6-sol`/`xhigh`;
   Terra manager and reviewer are `gpt-5.6-terra`/`xhigh`; implementation workers are
   `gpt-5.6-luna`/`max`. Record task/model/effort/checkout once in the final integration receipt. A
@@ -224,7 +225,7 @@ rejected mechanisms, and unresolved platform evidence. Any overlap is resolved b
 strongest single invariant owner and refactoring consumers; parallel branches do not create API
 compatibility obligations.
 
-The program is successful only when every terminal is integrated. `EVIDENCE_BLOCKED` is an honest
+The program is successful only when every terminal is integrated. `PRODUCT_BLOCKED` is an honest
 temporary state, not a successful terminal: it requires two distinct implementation attempts against
 the same reproducible product, authority, external-system, or toolchain blocker. Reviewer/model
 availability, packet format, elapsed time, agent completion, test count, and line count cannot create
