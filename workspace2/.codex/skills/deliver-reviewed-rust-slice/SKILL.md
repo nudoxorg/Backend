@@ -238,6 +238,14 @@ manual expansion and maintained crates; report which branch, invalid state, or r
 macro removes. A procedural macro additionally requires source-spanned compile-fail tests and an
 auditable expansion. A declarative macro wins when a deliberately narrow internal grammar suffices.
 
+A closed protocol registry has one declaration of rows, not a marker list plus independently chosen
+codes. Generate the `repr` code enum and every marker binding from that declaration so duplicate
+numeric codes are rejected by rustc's duplicate-discriminant check. A sealed trait prevents external
+implementations; it does **not** prove unique built-in assignments. Do not accept `$code:expr` in a
+marker macro, a runtime uniqueness test, or a reviewer-maintained table as the authority. Compile-fail
+mutations must introduce one duplicate domain code and one duplicate encoding code and fail for that
+reason. Delete raw-code decoders until a real dynamic consumer needs them.
+
 ```rust
 // DON'T: one user and pure delegation.
 trait BytesBackend { fn bytes(&self) -> &[u8]; }
@@ -324,6 +332,11 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
   silent omission, or an unchecked narrowing cast to recover facts validation supposedly proved.
   If projection remains fallible, validation has not produced the right representation. Write exact
   caller output only after total preflight; insufficient output leaves every byte unchanged.
+- A generic validated view must validate and project the same type parameter. A validator fixed to
+  one concrete domain behind a generic witness is unsound API theater. Either prove two real domains
+  through the complete writer -> validator -> infallible projection path or remove the generic. Tests
+  that mutate supposedly immutable post-validation bytes do not justify fallible trusted projection;
+  they prove the witness failed to retain its facts.
 - A packed collection is binary-searchable/range-addressable and states whether it is complete or
   sparse. A one-object envelope or a subrange of one payload is not a pack.
 - Do not add nom/binrw/winnow for fixed records. Consider one only when a genuinely variable grammar

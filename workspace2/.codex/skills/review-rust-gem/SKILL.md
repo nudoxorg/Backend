@@ -110,7 +110,11 @@ Run all applicable passes in this order:
 8. **Protocol/durability:** recompute every byte and preimage. Mutate every cell. Trace write/sync/
    directory/receipt/crash/replay semantics and partial operations. Reject duplicated metadata and
    undefined authentication. When authority/version cells occupy digest bytes, verify routing and
-   partition words draw from actual digest entropy rather than the fixed prefix.
+   partition words draw from actual digest entropy rather than the fixed prefix. For every closed
+   registry, introduce duplicate numeric domain and encoding codes: rustc must reject both by
+   construction. Sealing alone and runtime uniqueness tests are insufficient. For every generic
+   validated view, prove writer -> validation -> infallible projection for a second real type or
+   require removal of the unearned generic.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.
