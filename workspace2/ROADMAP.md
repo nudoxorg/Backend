@@ -49,6 +49,9 @@ The remaining gaps are architectural, not polish:
 - Wave A.1 froze a cross-plane foundation falsifier but stopped before production after two empty
   reviewer receipts. Its evidence is retained; the large deliberately-red fixture is not part of the
   passing shared test graph and must be decomposed at invariant owners on restart.
+- Wave A.2 obtained a valid source-isolated Terra BLOCK and therefore added no publication API. Its
+  frozen contracts and fresh-cache tooling counterexample are retained, while the reproduced warmed
+  journal-append control now proves an exact second receipt with zero measured heap activity.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
@@ -120,6 +123,12 @@ The remaining gaps are architectural, not polish:
   prove exact receipt fan-out, cancellation, poison, shutdown, and no producer-side file/probe sharing.
 - [ ] Immutable publication log plus compact CAS head/index; only a stable receipt can release the
   publication effect and convert verified authority to published authority.
+
+Wave A.2 deliberately stopped before these unchecked boxes: the reviewer found that the proposed
+contract still mixed publication ownership with leased-range concerns and that the complete pinned
+offline closure could not be reproduced from fresh caches. Its feature-gated red API sketch is not a
+shipping dependency. The accepted residue is the reviewed evidence packet plus the focused warmed
+append allocation/offset control in the existing journal.
 
 ### 5. Leased async range transport
 
