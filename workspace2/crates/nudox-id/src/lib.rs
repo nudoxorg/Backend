@@ -15,15 +15,17 @@
 extern crate std;
 
 mod artifact;
+mod authority;
 mod content;
 mod generation;
 mod marker;
 mod raw;
 
 pub use artifact::{ArtifactHasher, ArtifactId, ArtifactIdDecodeError};
+pub use authority::{ContentAuthority, ContentAuthorityError};
 pub use content::{
-    CONTENT_PAYLOAD_BYTES, ContentHasher, ContentId, ContentIdDecodeError, ContentPayload,
-    ContentRoutingWord, FixedCanonicalRecord,
+    CONTENT_PAYLOAD_BYTES, ContentHasher, ContentId, ContentIdDecodeError, ContentRoutingWord,
+    FixedCanonicalRecord,
 };
 pub use generation::{GenerationHasher, GenerationId};
 pub use marker::{

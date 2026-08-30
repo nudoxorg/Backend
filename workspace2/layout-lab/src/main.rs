@@ -13,7 +13,7 @@ use nudox_hydration::{
     VerificationError, VerifiedGeneration,
 };
 use nudox_id::{
-    ArtifactHasher, ArtifactId, ContentHasher, ContentId, ContentPayload, ContentRoutingWord,
+    ArtifactHasher, ArtifactId, ContentAuthority, ContentHasher, ContentId, ContentRoutingWord,
     DomainTag, EncodingTag, FrameEncoding, GenerationId, ObjectDomain,
 };
 use nudox_object::{
@@ -114,8 +114,8 @@ fn main() {
     );
     layout!(
         "identity",
-        ContentPayload<ObjectDomain>,
-        "repr(transparent), artifact-global authority payload"
+        ContentAuthority<ObjectDomain>,
+        "zero-sized checked artifact-global authority proof"
     );
     layout!(
         "identity",

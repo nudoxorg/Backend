@@ -37,79 +37,6 @@ pub struct ContentId<DomainTag> {
     domain: PhantomData<fn() -> DomainTag>,
 }
 
-/// Exact serialized digest payload with its domain retained in the Rust type.
-///
-/// Artifact grammars can store one domain authority per artifact and stream
-/// these compact payloads without making every descriptor repeat it.
-#[repr(transparent)]
-pub struct ContentPayload<DomainTag> {
-    bytes: [u8; CONTENT_PAYLOAD_BYTES],
-    domain: PhantomData<fn() -> DomainTag>,
-}
-
-impl<DomainTag> Copy for ContentPayload<DomainTag> {}
-
-impl<DomainTag> Clone for ContentPayload<DomainTag> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<DomainTag> Deref for ContentPayload<DomainTag> {
-    type Target = [u8; CONTENT_PAYLOAD_BYTES];
-
-    fn deref(&self) -> &Self::Target {
-        &self.bytes
-    }
-}
-
-impl<DomainTag> AsRef<[u8; CONTENT_PAYLOAD_BYTES]> for ContentPayload<DomainTag> {
-    fn as_ref(&self) -> &[u8; CONTENT_PAYLOAD_BYTES] {
-        self
-    }
-}
-
-impl<DomainTag> Borrow<[u8; CONTENT_PAYLOAD_BYTES]> for ContentPayload<DomainTag> {
-    fn borrow(&self) -> &[u8; CONTENT_PAYLOAD_BYTES] {
-        self
-    }
-}
-
-impl<DomainTag> From<[u8; CONTENT_PAYLOAD_BYTES]> for ContentPayload<DomainTag> {
-    fn from(bytes: [u8; CONTENT_PAYLOAD_BYTES]) -> Self {
-        Self {
-            bytes,
-            domain: PhantomData,
-        }
-    }
-}
-
-impl<DomainTag> From<ContentPayload<DomainTag>> for [u8; CONTENT_PAYLOAD_BYTES] {
-    fn from(payload: ContentPayload<DomainTag>) -> Self {
-        payload.bytes
-    }
-}
-
-impl<DomainTag> From<ContentId<DomainTag>> for ContentPayload<DomainTag> {
-    fn from(content: ContentId<DomainTag>) -> Self {
-        let mut bytes = [0; CONTENT_PAYLOAD_BYTES];
-        bytes.copy_from_slice(&content.bytes[1..]);
-        Self::from(bytes)
-    }
-}
-
-impl<DomainTag: Domain> From<ContentPayload<DomainTag>> for ContentId<DomainTag> {
-    fn from(payload: ContentPayload<DomainTag>) -> Self {
-        let mut bytes = [0; HASH_BYTES];
-        bytes[0] = u8::from(DomainTag::CODE);
-        bytes[1..].copy_from_slice(&payload.bytes);
-        Self {
-            bytes,
-            domain: PhantomData,
-        }
-    }
-}
-
 /// Rejection while decoding a serialized content identity.
 #[derive(Debug, thiserror::Error)]
 pub enum ContentIdDecodeError {
@@ -219,7 +146,17 @@ impl<DomainTag: Domain> ContentId<DomainTag> {
     pub fn from_digest(digest: [u8; HASH_BYTES]) -> Self {
         let mut payload = [0; CONTENT_PAYLOAD_BYTES];
         payload.copy_from_slice(&digest[..CONTENT_PAYLOAD_BYTES]);
-        ContentPayload::from(payload).into()
+        Self::assemble(payload)
+    }
+
+    fn assemble(payload: [u8; CONTENT_PAYLOAD_BYTES]) -> Self {
+        let mut bytes = [0; HASH_BYTES];
+        bytes[0] = u8::from(DomainTag::CODE);
+        bytes[1..].copy_from_slice(&payload);
+        Self {
+            bytes,
+            domain: PhantomData,
+        }
     }
 
     fn decode(bytes: [u8; HASH_BYTES]) -> Result<Self, ContentIdDecodeError> {
@@ -235,6 +172,15 @@ impl<DomainTag: Domain> ContentId<DomainTag> {
             bytes,
             domain: PhantomData,
         })
+    }
+}
+
+impl<DomainTag: Domain> ContentId<DomainTag> {
+    pub(crate) fn bind_authority(
+        _authority: crate::ContentAuthority<DomainTag>,
+        payload: [u8; CONTENT_PAYLOAD_BYTES],
+    ) -> Self {
+        Self::assemble(payload)
     }
 }
 
@@ -399,10 +345,7 @@ mod tests {
         mem::{align_of, size_of},
     };
 
-    use crate::{
-        ContentHasher, ContentId, ContentPayload, ContentRoutingWord, FixedCanonicalRecord,
-        ObjectDomain,
-    };
+    use crate::{ContentHasher, ContentId, ContentRoutingWord, FixedCanonicalRecord, ObjectDomain};
 
     struct FixedRecord([u8; 3]);
 
@@ -441,11 +384,6 @@ mod tests {
             }
         };
         assert_eq!(exact, ContentId::from_digest([0; 32]));
-        let payload = ContentPayload::from(exact);
-        assert_eq!(size_of::<ContentPayload<ObjectDomain>>(), 31);
-        assert_eq!(align_of::<ContentPayload<ObjectDomain>>(), 1);
-        assert_eq!(payload.as_ref(), &raw[1..]);
-        assert_eq!(ContentId::from(payload), exact);
         let long = [0; 33];
         assert!(matches!(
             ContentId::<ObjectDomain>::try_from(&long[..]),

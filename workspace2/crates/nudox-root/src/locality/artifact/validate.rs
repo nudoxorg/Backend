@@ -71,7 +71,8 @@ fn parse_with_level<DomainTag: nudox_id::Domain>(
             available: source.into_src().len().into(),
         }
     })?;
-    validate_content_domain::<DomainTag>(header.content_domain)?;
+    let content_authority =
+        nudox_id::ContentAuthority::<DomainTag>::try_from(header.content_domain)?;
     validate_declared_cardinality(header)?;
     let layout = LocalityLayout::new(
         header.exception_count.get().into(),
@@ -106,6 +107,7 @@ fn parse_with_level<DomainTag: nudox_id::Domain>(
     Ok(ValidatedLocality::from_validated(
         bytes,
         nudox_id::GenerationId::try_from(header.generation)?,
+        content_authority,
         header.root_count.get().into(),
         header.exception_count.get(),
         BorrowedLanes {
@@ -214,17 +216,6 @@ const fn validate_declared_cardinality(header: &HeaderWireRecord) -> Result<(), 
         });
     }
     Ok(())
-}
-
-fn validate_content_domain<DomainTag: nudox_id::Domain>(observed: u8) -> Result<(), LocalityError> {
-    if observed == u8::from(DomainTag::CODE) {
-        Ok(())
-    } else {
-        Err(LocalityError::ContentDomain {
-            expected: DomainTag::CODE,
-            observed,
-        })
-    }
 }
 
 fn require_complete(bytes: &[u8], complete: usize) -> Result<(), LocalityError> {

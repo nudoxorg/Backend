@@ -1,7 +1,7 @@
 use core::mem::{align_of, offset_of, size_of};
 
-use nudox_id::{CONTENT_PAYLOAD_BYTES, ContentId, ContentPayload, Domain};
-use nudox_object::{ObjectKind, ObjectLength, ObjectRef};
+use nudox_id::CONTENT_PAYLOAD_BYTES;
+use nudox_object::ObjectRef;
 use nudox_schema::SchemaId;
 use zerocopy::{
     Immutable, IntoBytes, KnownLayout, TryFromBytes, Unalign, Unaligned,
@@ -29,24 +29,19 @@ pub(super) const SCHEMA_OFFSET: usize = offset_of!(LocalityDescriptorWireRecord,
 const _: [(); 1] = [(); align_of::<LocalityDescriptorWireRecord>()];
 const _: [(); 45] = [(); LOCALITY_DESCRIPTOR_BYTES];
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "ContentId is an exact 32-byte array and CONTENT_PAYLOAD_BYTES reserves its first authority cell"
+)]
 impl<DomainTag> From<&ObjectRef<DomainTag>> for LocalityDescriptorWireRecord {
     fn from(reference: &ObjectRef<DomainTag>) -> Self {
+        let mut content = [0; CONTENT_PAYLOAD_BYTES];
+        content.copy_from_slice(&reference.content[1..]);
         Self {
-            content: ContentPayload::from(reference.content).into(),
+            content,
             length: U64::new(*reference.length),
             schema: Unalign::new(reference.schema),
             kind: U16::new(*reference.kind),
-        }
-    }
-}
-
-impl<DomainTag: Domain> From<&LocalityDescriptorWireRecord> for ObjectRef<DomainTag> {
-    fn from(record: &LocalityDescriptorWireRecord) -> Self {
-        ObjectRef {
-            content: ContentId::from(ContentPayload::from(record.content)),
-            length: ObjectLength::from(record.length.get()),
-            schema: record.schema.get(),
-            kind: ObjectKind::from(record.kind.get()),
         }
     }
 }

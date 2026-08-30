@@ -122,7 +122,7 @@ impl<'locality, DomainTag: Domain> LocalityCursor<'locality, DomainTag> {
             ExceptionRoute::OverlayPresent { basis, descriptor } => {
                 Locality::Overlaid(RemoteBase::Present {
                     generation: basis,
-                    object: project_descriptor::<DomainTag>(descriptor),
+                    object: project_descriptor(descriptor, self.locality.content_authority),
                 })
             }
         }

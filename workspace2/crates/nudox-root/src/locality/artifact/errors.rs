@@ -1,6 +1,6 @@
 use core::num::TryFromIntError;
 
-use nudox_id::{ContentIdDecodeError, DomainCode, GenerationId};
+use nudox_id::{ContentAuthorityError, ContentIdDecodeError, GenerationId};
 use nudox_object::ProviderSetError;
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
@@ -44,12 +44,11 @@ pub enum LocalityError {
     #[error("locality generation identity failed checked decode")]
     Generation(#[from] ContentIdDecodeError),
     /// The artifact-global descriptor domain differs from the requested typed view.
-    #[error("locality content domain code is {observed}, expected {expected:?}")]
+    #[error("locality descriptor authority failed checked decode")]
     ContentDomain {
-        /// Expected closed content-domain code.
-        expected: DomainCode,
-        /// Complete observed header cell.
-        observed: u8,
+        /// Checked header-authority rejection with both complete operands.
+        #[from]
+        source: ContentAuthorityError,
     },
     /// One required artifact region ends beyond the supplied byte range.
     #[error("locality {region:?} needs {required:?} bytes but only {available:?} are available")]

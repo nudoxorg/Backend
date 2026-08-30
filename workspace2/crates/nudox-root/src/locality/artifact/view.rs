@@ -1,10 +1,12 @@
-use core::{marker::PhantomData, num::NonZeroU64};
+use core::num::NonZeroU64;
 
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
 use fearless_simd::Level;
-use nudox_id::{Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding};
-use nudox_object::{ObjectRef, ProviderSet, RemoteBase};
+use nudox_id::{
+    ContentAuthority, Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding,
+};
+use nudox_object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
 use zerocopy::{
     Immutable, KnownLayout, TryFromBytes, Unalign, Unaligned,
     byteorder::{BigEndian, U32},
@@ -55,11 +57,12 @@ pub struct ValidatedLocality<'bytes, DomainTag> {
     pub bytes: &'bytes [u8],
     /// Generation identity bound into the fixed header.
     pub generation: GenerationId,
+    /// Checked artifact-wide authority shared by every descriptor payload.
+    pub content_authority: ContentAuthority<DomainTag>,
     /// Root cardinality bound into the fixed header.
     pub root_count: RootEntryCount,
     exception_count: u32,
     lanes: BorrowedLanes<'bytes>,
-    domain: PhantomData<fn() -> DomainTag>,
 }
 
 /// Reusable accelerated locality-validation engine.
@@ -110,6 +113,7 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
     pub(super) const fn from_validated(
         bytes: &'bytes [u8],
         generation: GenerationId,
+        content_authority: ContentAuthority<DomainTag>,
         root_count: RootEntryCount,
         exception_count: u32,
         lanes: BorrowedLanes<'bytes>,
@@ -117,10 +121,10 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
         Self {
             bytes,
             generation,
+            content_authority,
             root_count,
             exception_count,
             lanes,
-            domain: PhantomData,
         }
     }
 
@@ -172,7 +176,12 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
                 }
                 let promise_before =
                     work.rank(self.lanes.promise_bits, self.lanes.promise_ranks, exception);
-                overlay_at::<DomainTag, _>(overlays, exception - promise_before, work)
+                overlay_at::<DomainTag, _>(
+                    overlays,
+                    self.content_authority,
+                    exception - promise_before,
+                    work,
+                )
             }
         }
     }
@@ -281,6 +290,7 @@ fn binary_search_row<WorkPolicy: LookupWorkPolicy>(
 )]
 fn overlay_at<DomainTag: Domain, WorkPolicy: LookupWorkPolicy>(
     lanes: &OverlayLanes<'_>,
+    authority: ContentAuthority<DomainTag>,
     overlay: u32,
     work: &mut WorkPolicy,
 ) -> Locality<DomainTag> {
@@ -292,14 +302,20 @@ fn overlay_at<DomainTag: Domain, WorkPolicy: LookupWorkPolicy>(
     let present = work.rank(lanes.presence_bits, lanes.presence_ranks, overlay);
     Locality::Overlaid(RemoteBase::Present {
         generation: lanes.basis,
-        object: project_descriptor(&lanes.descriptors[native(present)]),
+        object: project_descriptor(&lanes.descriptors[native(present)], authority),
     })
 }
 
 pub(in crate::locality) fn project_descriptor<DomainTag: Domain>(
     record: &LocalityDescriptorWireRecord,
+    authority: ContentAuthority<DomainTag>,
 ) -> ObjectRef<DomainTag> {
-    ObjectRef::from(record)
+    ObjectRef {
+        content: authority.bind(record.content),
+        length: ObjectLength::from(record.length.get()),
+        schema: record.schema.get(),
+        kind: ObjectKind::from(record.kind.get()),
+    }
 }
 
 #[allow(

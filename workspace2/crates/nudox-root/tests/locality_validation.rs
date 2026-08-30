@@ -3,17 +3,19 @@
 use core::mem::size_of;
 
 use nudox_id::{
-    CONTENT_PAYLOAD_BYTES, ContentPayload, DependencySetDomain, Domain, GenerationId, ObjectDomain,
+    CONTENT_PAYLOAD_BYTES, ContentAuthorityError, DependencySetDomain, Domain, GenerationId,
+    ObjectDomain,
 };
 use nudox_object::{
-    ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase,
+    ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderIdError, ProviderSet,
+    ProviderSetError, RemoteBase,
 };
 use nudox_root::{
     EntryKey, GenerationEntry, GenerationRoot, GenerationView, Locality, LocalityError,
     LocalityException, LocalityScanWork, LocalityValidator, NonResident, PreparedLocality,
     RootBuildError, RootEntry, ValidatedLocality,
 };
-use nudox_schema::SchemaId;
+use nudox_schema::{SchemaId, UnknownSchemaId};
 use thiserror::Error;
 
 const LONG_LANE_ROWS: u8 = 64;
@@ -214,10 +216,9 @@ fn second_domain_round_trips_exact_authority_through_writer_and_parser()
     let mut bytes = vec![0; usize::from(prepared.required_bytes)];
     write_and_compare(&root, prepared, &mut bytes)?;
     match ValidatedLocality::<ObjectDomain>::try_from(bytes.as_slice()) {
-        Err(LocalityError::ContentDomain { expected, observed })
-            if expected == ObjectDomain::CODE
-                && observed == u8::from(DependencySetDomain::CODE) =>
-        {
+        Err(LocalityError::ContentDomain {
+            source: ContentAuthorityError { expected, observed },
+        }) if expected == ObjectDomain::CODE && observed == u8::from(DependencySetDomain::CODE) => {
             Ok(())
         }
         Err(observed) => Err(wrong_rejection(FixtureCell::ContentAuthority, observed)),
@@ -277,8 +278,13 @@ fn mutation_fixture() -> Result<MutationFixture, LocalityTestError> {
     let mut bytes = vec![0; usize::from(prepared.required_bytes)];
     write_and_compare(&root, prepared, &mut bytes)?;
     let provider_offset = wire_offset(&bytes, &providers.to_be_bytes(), FixtureCell::Provider)?;
-    let descriptor = ContentPayload::from(remote.content);
-    let descriptor_offset = wire_offset(&bytes, descriptor.as_ref(), FixtureCell::Descriptor)?;
+    let descriptor = remote
+        .content
+        .get(1..)
+        .ok_or(LocalityTestError::MissingWireCell {
+            cell: FixtureCell::Descriptor,
+        })?;
+    let descriptor_offset = wire_offset(&bytes, descriptor, FixtureCell::Descriptor)?;
     Ok(MutationFixture {
         root,
         bytes,
@@ -343,7 +349,7 @@ fn reject_empty_provider(fixture: &MutationFixture) -> Result<(), LocalityTestEr
         LocalityError::EmptyProvider {
             ordinal: 0,
             observed: 0,
-            ..
+            source: ProviderSetError::Empty,
         } => Ok(()),
         observed => Err(wrong_rejection(FixtureCell::Provider, observed)),
     }
@@ -365,11 +371,9 @@ fn reject_wrong_authority(fixture: &MutationFixture) -> Result<(), LocalityTestE
     *authority ^= u8::MAX;
     let observed_authority = *authority;
     match rejection(&bytes, FixtureCell::ContentAuthority)? {
-        LocalityError::ContentDomain { expected, observed }
-            if expected == ObjectDomain::CODE && observed == observed_authority =>
-        {
-            Ok(())
-        }
+        LocalityError::ContentDomain {
+            source: ContentAuthorityError { expected, observed },
+        } if expected == ObjectDomain::CODE && observed == observed_authority => Ok(()),
         observed => Err(wrong_rejection(FixtureCell::ContentAuthority, observed)),
     }
 }
@@ -383,7 +387,10 @@ fn reject_unknown_schema(mut fixture: MutationFixture) -> Result<(), LocalityTes
     )?
     .fill(u8::MAX);
     match rejection(&fixture.bytes, FixtureCell::Schema)? {
-        LocalityError::PresentOverlaySchema { ordinal: 0, .. } => Ok(()),
+        LocalityError::PresentOverlaySchema {
+            ordinal: 0,
+            source: UnknownSchemaId(observed),
+        } if observed == u32::MAX => Ok(()),
         observed => Err(wrong_rejection(FixtureCell::Schema, observed)),
     }
 }
