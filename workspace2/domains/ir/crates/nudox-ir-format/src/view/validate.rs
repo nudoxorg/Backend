@@ -1,106 +1,20 @@
-use core::num::TryFromIntError;
-
 use nudox_ir_vocab::{EntityId, TypeId};
-use thiserror::Error;
 
 use crate::{
-    EntityType, TypeNode, TypeNodeFault,
+    view::{DirectoryFault, FragmentError, FragmentView, WireField},
     wire::{
         ByteLength, ByteOffset, DIRECTORY_ENTRY_BYTES, ENTITY_BYTES, FragmentLayout, HEADER_BYTES,
-        ItemCount, LaneLayout, SectionRequirement, TYPE_NODE_BYTES, decode_type_node,
-        decode_validated_type_node, entity_fault, read_u16, read_u32, type_node_fault,
+        ItemCount, LaneLayout, SectionCount, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
+        decode_type_node, entity_fault, read_u16, read_u32, type_node_fault,
     },
 };
-
-pub use crate::wire::SectionKind;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WireField {
-    DeclaredLength,
-    SectionItemCount { ordinal: u16 },
-    SectionOffset { ordinal: u16 },
-    SectionByteLength { ordinal: u16 },
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum DirectoryFault {
-    #[error("section kind {actual} does not follow {previous}")]
-    Order { previous: u16, actual: u16 },
-    #[error("section {kind} has invalid flags {actual}")]
-    Flags { kind: u16, actual: u16 },
-    #[error("unknown section {kind} is marked required")]
-    RequiredUnknown { kind: u16 },
-    #[error("section {kind} starts at {actual}, not canonical offset {expected}")]
-    Offset {
-        kind: u16,
-        expected: usize,
-        actual: u32,
-    },
-    #[error("section {kind} has {actual} bytes, not {expected}")]
-    ByteLength {
-        kind: u16,
-        expected: usize,
-        actual: u32,
-    },
-    #[error("section {kind} count {count} times width {width} overflows")]
-    CountWidthOverflow { kind: u16, count: u32, width: usize },
-    #[error("section {kind} range {start}+{length} overflows")]
-    RangeOverflow { kind: u16, start: u32, length: u32 },
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum FragmentError {
-    #[error("fragment header needs {required} bytes but only {actual} are present")]
-    TruncatedHeader { required: usize, actual: usize },
-    #[error("fragment magic {actual:?} is unknown")]
-    Magic { actual: [u8; 4] },
-    #[error("fragment schema {actual} is unknown")]
-    Schema { actual: u16 },
-    #[error("fragment declares {declared} bytes but received {actual}")]
-    DeclaredLength { declared: usize, actual: usize },
-    #[error("fragment requires extent {required} but received {actual} bytes")]
-    Extent { required: usize, actual: usize },
-    #[error("wire field {field:?} value {actual} does not fit this platform")]
-    WireWidth {
-        field: WireField,
-        actual: u32,
-        #[source]
-        source: TryFromIntError,
-    },
-    #[error("directory entry {ordinal} is invalid: {fault}")]
-    Directory {
-        ordinal: u16,
-        #[source]
-        fault: DirectoryFault,
-    },
-    #[error("required section {section:?} is missing")]
-    MissingSection { section: SectionKind },
-    #[error("entity {ordinal:?} is invalid: {fault}")]
-    Entity {
-        ordinal: EntityId,
-        #[source]
-        fault: crate::EntityFault,
-    },
-    #[error("type node {ordinal:?} is invalid: {fault}")]
-    TypeNode {
-        ordinal: TypeId,
-        #[source]
-        fault: TypeNodeFault,
-    },
-}
-
-pub struct FragmentView<'fragment> {
-    envelope: &'fragment [u8],
-    entities: &'fragment [u8],
-    type_nodes: &'fragment [u8],
-}
 
 impl<'fragment> FragmentView<'fragment> {
     pub fn validate(envelope: &'fragment [u8]) -> Result<Self, FragmentError> {
         let layout = validate_layout(envelope)?;
         let entity_lane = &envelope[layout.entities.range()];
         for (ordinal, record) in
-            (0..layout.entities.count.get()).zip(entity_lane.chunks_exact(ENTITY_BYTES))
+            (0..u32::from(layout.entities.count)).zip(entity_lane.chunks_exact(ENTITY_BYTES))
         {
             let target = TypeId::new(read_u32(record, 0));
             if let Some(fault) = entity_fault(target, layout.type_nodes.count) {
@@ -113,7 +27,7 @@ impl<'fragment> FragmentView<'fragment> {
 
         let type_lane = &envelope[layout.type_nodes.range()];
         for (ordinal, record) in
-            (0..layout.type_nodes.count.get()).zip(type_lane.chunks_exact(TYPE_NODE_BYTES))
+            (0..u32::from(layout.type_nodes.count)).zip(type_lane.chunks_exact(TYPE_NODE_BYTES))
         {
             let node = match decode_type_node(record) {
                 Ok(node) => node,
@@ -137,76 +51,7 @@ impl<'fragment> FragmentView<'fragment> {
             type_nodes: type_lane,
         })
     }
-
-    pub fn entities(&self) -> EntityCursor<'fragment> {
-        EntityCursor {
-            remaining: self.entities,
-            next_ordinal: 0,
-        }
-    }
-
-    pub fn type_nodes(&self) -> TypeNodeCursor<'fragment> {
-        TypeNodeCursor {
-            remaining: self.type_nodes,
-        }
-    }
 }
-
-impl AsRef<[u8]> for FragmentView<'_> {
-    fn as_ref(&self) -> &[u8] {
-        self.envelope
-    }
-}
-
-pub struct EntityCursor<'fragment> {
-    remaining: &'fragment [u8],
-    next_ordinal: u32,
-}
-
-impl Iterator for EntityCursor<'_> {
-    type Item = EntityType;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (record, remaining) = self.remaining.split_first_chunk::<ENTITY_BYTES>()?;
-        let entity = EntityId::new(self.next_ordinal);
-        self.next_ordinal += 1;
-        self.remaining = remaining;
-        Some(EntityType {
-            entity,
-            semantic_type: TypeId::new(u32::from_le_bytes(*record)),
-        })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = self.remaining.len() / ENTITY_BYTES;
-        (count, Some(count))
-    }
-}
-
-impl ExactSizeIterator for EntityCursor<'_> {}
-impl core::iter::FusedIterator for EntityCursor<'_> {}
-
-pub struct TypeNodeCursor<'fragment> {
-    remaining: &'fragment [u8],
-}
-
-impl Iterator for TypeNodeCursor<'_> {
-    type Item = TypeNode;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (record, remaining) = self.remaining.split_first_chunk::<TYPE_NODE_BYTES>()?;
-        self.remaining = remaining;
-        Some(decode_validated_type_node(record))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = self.remaining.len() / TYPE_NODE_BYTES;
-        (count, Some(count))
-    }
-}
-
-impl ExactSizeIterator for TypeNodeCursor<'_> {}
-impl core::iter::FusedIterator for TypeNodeCursor<'_> {}
 
 fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     if envelope.len() < HEADER_BYTES {
@@ -225,24 +70,21 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     if schema != crate::FRAGMENT_SCHEMA {
         return Err(FragmentError::Schema { actual: schema });
     }
-    let section_count = crate::wire::SectionCount::from(read_u16(envelope, 6));
+    let section_count = SectionCount::from(read_u16(envelope, 6));
     let declared_wire_length = ByteLength::from(read_u32(envelope, 8));
     let declared_length =
-        declared_wire_length
-            .as_usize()
-            .map_err(|source| FragmentError::WireWidth {
-                field: WireField::DeclaredLength,
-                actual: declared_wire_length.get(),
-                source,
-            })?;
+        usize::try_from(declared_wire_length).map_err(|source| FragmentError::WireWidth {
+            field: WireField::DeclaredLength,
+            actual: u32::from(declared_wire_length),
+            source,
+        })?;
     if declared_length != envelope.len() {
         return Err(FragmentError::DeclaredLength {
             declared: declared_length,
             actual: envelope.len(),
         });
     }
-    let directory_bytes = section_count
-        .as_usize()
+    let directory_bytes = usize::from(section_count)
         .checked_mul(DIRECTORY_ENTRY_BYTES)
         .ok_or(FragmentError::Extent {
             required: usize::MAX,
@@ -265,7 +107,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut expected_offset = directory_end;
     let mut entities = None;
     let mut type_nodes = None;
-    for ordinal in 0..section_count.get() {
+    for ordinal in 0..u16::from(section_count) {
         let entry = HEADER_BYTES + usize::from(ordinal) * DIRECTORY_ENTRY_BYTES;
         let raw_kind = read_u16(envelope, entry);
         let raw_requirement = read_u16(envelope, entry + 2);
@@ -293,28 +135,25 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 },
             }
         })?;
-        let start_index = start
-            .as_usize()
-            .map_err(|source| FragmentError::WireWidth {
-                field: WireField::SectionOffset { ordinal },
-                actual: start.get(),
-                source,
-            })?;
+        let start_index = usize::try_from(start).map_err(|source| FragmentError::WireWidth {
+            field: WireField::SectionOffset { ordinal },
+            actual: u32::from(start),
+            source,
+        })?;
         if start_index != expected_offset {
             return Err(FragmentError::Directory {
                 ordinal,
                 fault: DirectoryFault::Offset {
                     kind: raw_kind,
                     expected: expected_offset,
-                    actual: start.get(),
+                    actual: u32::from(start),
                 },
             });
         }
-        let byte_len_index = byte_len
-            .as_usize()
-            .map_err(|source| FragmentError::WireWidth {
+        let byte_len_index =
+            usize::try_from(byte_len).map_err(|source| FragmentError::WireWidth {
                 field: WireField::SectionByteLength { ordinal },
-                actual: byte_len.get(),
+                actual: u32::from(byte_len),
                 source,
             })?;
         let end_index =
@@ -324,8 +163,8 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                     ordinal,
                     fault: DirectoryFault::RangeOverflow {
                         kind: raw_kind,
-                        start: start.get(),
-                        length: byte_len.get(),
+                        start: u32::from(start),
+                        length: u32::from(byte_len),
                     },
                 })?;
         if end_index > envelope.len() {
@@ -392,7 +231,7 @@ fn require_known(
             ordinal,
             fault: DirectoryFault::Flags {
                 kind,
-                actual: requirement.code(),
+                actual: u16::from(requirement),
             },
         });
     }
@@ -406,37 +245,33 @@ fn validate_known_length(
     width: usize,
     actual: ByteLength,
 ) -> Result<(), FragmentError> {
-    let count_index = count
-        .as_usize()
-        .map_err(|source| FragmentError::WireWidth {
-            field: WireField::SectionItemCount { ordinal },
-            actual: count.get(),
-            source,
-        })?;
+    let count_index = usize::try_from(count).map_err(|source| FragmentError::WireWidth {
+        field: WireField::SectionItemCount { ordinal },
+        actual: u32::from(count),
+        source,
+    })?;
     let expected = count_index
         .checked_mul(width)
         .ok_or(FragmentError::Directory {
             ordinal,
             fault: DirectoryFault::CountWidthOverflow {
                 kind,
-                count: count.get(),
+                count: u32::from(count),
                 width,
             },
         })?;
-    let actual_index = actual
-        .as_usize()
-        .map_err(|source| FragmentError::WireWidth {
-            field: WireField::SectionByteLength { ordinal },
-            actual: actual.get(),
-            source,
-        })?;
+    let actual_index = usize::try_from(actual).map_err(|source| FragmentError::WireWidth {
+        field: WireField::SectionByteLength { ordinal },
+        actual: u32::from(actual),
+        source,
+    })?;
     if expected != actual_index {
         return Err(FragmentError::Directory {
             ordinal,
             fault: DirectoryFault::ByteLength {
                 kind,
                 expected,
-                actual: actual.get(),
+                actual: u32::from(actual),
             },
         });
     }

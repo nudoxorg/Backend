@@ -80,11 +80,11 @@ impl<'facts> PreparedFragment<'facts> {
         type_nodes: &'facts [TypeNode],
     ) -> Result<Self, PrepareError> {
         let entity_count =
-            ItemCount::from_len(entities.len()).map_err(|source| PrepareError::EntityCount {
+            ItemCount::try_from(entities.len()).map_err(|source| PrepareError::EntityCount {
                 actual: entities.len(),
                 source,
             })?;
-        let type_node_count = ItemCount::from_len(type_nodes.len()).map_err(|source| {
+        let type_node_count = ItemCount::try_from(type_nodes.len()).map_err(|source| {
             PrepareError::TypeNodeCount {
                 actual: type_nodes.len(),
                 source,
@@ -92,7 +92,7 @@ impl<'facts> PreparedFragment<'facts> {
         })?;
         let layout = layout(entity_count, type_node_count)?;
 
-        for (ordinal, entity) in (0..entity_count.get()).zip(entities) {
+        for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
             if let Some(fault) = entity_fault(entity.semantic_type, type_node_count) {
                 return Err(PrepareError::Entity {
                     ordinal: EntityId::new(ordinal),
@@ -100,7 +100,7 @@ impl<'facts> PreparedFragment<'facts> {
                 });
             }
         }
-        for (ordinal, node) in (0..type_node_count.get()).zip(type_nodes.iter().copied()) {
+        for (ordinal, node) in (0..u32::from(type_node_count)).zip(type_nodes.iter().copied()) {
             if let Some(fault) = type_node_fault(node, type_node_count) {
                 return Err(PrepareError::TypeNode {
                     ordinal: TypeId::new(ordinal),
@@ -134,8 +134,8 @@ impl<'facts> PreparedFragment<'facts> {
         let written = &mut output[..self.layout.output_len];
         written[..4].copy_from_slice(&crate::FRAGMENT_MAGIC);
         write_u16(written, 4, crate::FRAGMENT_SCHEMA);
-        write_u16(written, 6, WRITTEN_SECTION_COUNT.get());
-        write_u32(written, 8, self.layout.output_wire_len.get());
+        write_u16(written, 6, u16::from(WRITTEN_SECTION_COUNT));
+        write_u32(written, 8, u32::from(self.layout.output_wire_len));
         write_directory_entry(written, 0, SectionKind::EntityTypes, self.layout.entities);
         write_directory_entry(written, 1, SectionKind::TypeNodes, self.layout.type_nodes);
 
@@ -160,24 +160,22 @@ fn layout(
     entity_count: ItemCount,
     type_node_count: ItemCount,
 ) -> Result<FragmentLayout, PrepareError> {
-    let directory_bytes = WRITTEN_SECTION_COUNT
-        .as_usize()
+    let directory_bytes = usize::from(WRITTEN_SECTION_COUNT)
         .checked_mul(DIRECTORY_ENTRY_BYTES)
         .ok_or(PrepareError::LayoutOverflow {
             step: LayoutStep::Directory,
-            entity_count: entity_count.get(),
-            type_node_count: type_node_count.get(),
+            entity_count: u32::from(entity_count),
+            type_node_count: u32::from(type_node_count),
         })?;
     let directory_end =
         HEADER_BYTES
             .checked_add(directory_bytes)
             .ok_or(PrepareError::LayoutOverflow {
                 step: LayoutStep::Directory,
-                entity_count: entity_count.get(),
-                type_node_count: type_node_count.get(),
+                entity_count: u32::from(entity_count),
+                type_node_count: u32::from(type_node_count),
             })?;
-    let entity_bytes = entity_count
-        .as_usize()
+    let entity_bytes = usize::try_from(entity_count)
         .map_err(|source| PrepareError::OutputLength {
             actual: usize::MAX,
             source,
@@ -185,19 +183,18 @@ fn layout(
         .checked_mul(ENTITY_BYTES)
         .ok_or(PrepareError::LayoutOverflow {
             step: LayoutStep::EntityLane,
-            entity_count: entity_count.get(),
-            type_node_count: type_node_count.get(),
+            entity_count: u32::from(entity_count),
+            type_node_count: u32::from(type_node_count),
         })?;
     let entity_end =
         directory_end
             .checked_add(entity_bytes)
             .ok_or(PrepareError::LayoutOverflow {
                 step: LayoutStep::EntityLane,
-                entity_count: entity_count.get(),
-                type_node_count: type_node_count.get(),
+                entity_count: u32::from(entity_count),
+                type_node_count: u32::from(type_node_count),
             })?;
-    let type_node_bytes = type_node_count
-        .as_usize()
+    let type_node_bytes = usize::try_from(type_node_count)
         .map_err(|source| PrepareError::OutputLength {
             actual: usize::MAX,
             source,
@@ -205,39 +202,39 @@ fn layout(
         .checked_mul(TYPE_NODE_BYTES)
         .ok_or(PrepareError::LayoutOverflow {
             step: LayoutStep::TypeNodeLane,
-            entity_count: entity_count.get(),
-            type_node_count: type_node_count.get(),
+            entity_count: u32::from(entity_count),
+            type_node_count: u32::from(type_node_count),
         })?;
     let output_len =
         entity_end
             .checked_add(type_node_bytes)
             .ok_or(PrepareError::LayoutOverflow {
                 step: LayoutStep::TypeNodeLane,
-                entity_count: entity_count.get(),
-                type_node_count: type_node_count.get(),
+                entity_count: u32::from(entity_count),
+                type_node_count: u32::from(type_node_count),
             })?;
     let output_wire_len =
-        ByteLength::from_usize(output_len).map_err(|source| PrepareError::OutputLength {
+        ByteLength::try_from(output_len).map_err(|source| PrepareError::OutputLength {
             actual: output_len,
             source,
         })?;
     let entity_start =
-        ByteOffset::from_usize(directory_end).map_err(|source| PrepareError::OutputLength {
+        ByteOffset::try_from(directory_end).map_err(|source| PrepareError::OutputLength {
             actual: directory_end,
             source,
         })?;
     let entity_length =
-        ByteLength::from_usize(entity_bytes).map_err(|source| PrepareError::OutputLength {
+        ByteLength::try_from(entity_bytes).map_err(|source| PrepareError::OutputLength {
             actual: entity_bytes,
             source,
         })?;
     let type_node_start =
-        ByteOffset::from_usize(entity_end).map_err(|source| PrepareError::OutputLength {
+        ByteOffset::try_from(entity_end).map_err(|source| PrepareError::OutputLength {
             actual: entity_end,
             source,
         })?;
     let type_node_length =
-        ByteLength::from_usize(type_node_bytes).map_err(|source| PrepareError::OutputLength {
+        ByteLength::try_from(type_node_bytes).map_err(|source| PrepareError::OutputLength {
             actual: type_node_bytes,
             source,
         })?;
@@ -264,9 +261,9 @@ fn layout(
 
 fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, lane: LaneLayout) {
     let start = HEADER_BYTES + ordinal * DIRECTORY_ENTRY_BYTES;
-    write_u16(output, start, kind.code());
-    write_u16(output, start + 2, SectionRequirement::Required.code());
-    write_u32(output, start + 4, lane.count.get());
-    write_u32(output, start + 8, lane.start.get());
-    write_u32(output, start + 12, lane.length.get());
+    write_u16(output, start, u16::from(kind));
+    write_u16(output, start + 2, u16::from(SectionRequirement::Required));
+    write_u32(output, start + 4, u32::from(lane.count));
+    write_u32(output, start + 8, u32::from(lane.start));
+    write_u32(output, start + 12, u32::from(lane.length));
 }

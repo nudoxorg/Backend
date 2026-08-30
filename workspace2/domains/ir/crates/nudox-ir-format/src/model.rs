@@ -19,10 +19,11 @@ pub struct EntityType {
     pub semantic_type: TypeId,
 }
 
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrimitiveType {
-    Bool,
-    I32,
+    Bool = 0,
+    I32 = 1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,15 +44,16 @@ pub enum TypeNodeFault {
     Edge { target: TypeId, node_count: u32 },
 }
 
-impl PrimitiveType {
-    pub(crate) const fn code(self) -> u32 {
-        match self {
-            Self::Bool => 0,
-            Self::I32 => 1,
-        }
+impl From<PrimitiveType> for u32 {
+    fn from(primitive: PrimitiveType) -> Self {
+        primitive as Self
     }
+}
 
-    pub(crate) const fn decode(actual: u32) -> Result<Self, TypeNodeFault> {
+impl TryFrom<u32> for PrimitiveType {
+    type Error = TypeNodeFault;
+
+    fn try_from(actual: u32) -> Result<Self, Self::Error> {
         match actual {
             0 => Ok(Self::Bool),
             1 => Ok(Self::I32),

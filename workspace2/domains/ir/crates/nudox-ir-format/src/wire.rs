@@ -8,23 +8,21 @@ pub(crate) const HEADER_BYTES: usize = 12;
 pub(crate) const DIRECTORY_ENTRY_BYTES: usize = 16;
 pub(crate) const ENTITY_BYTES: usize = 4;
 pub(crate) const TYPE_NODE_BYTES: usize = 8;
-pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount(2);
+pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 2 };
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
 
+#[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SectionKind {
-    EntityTypes,
-    TypeNodes,
+    EntityTypes = 1,
+    TypeNodes = 2,
 }
 
-impl SectionKind {
-    pub(crate) const fn code(self) -> u16 {
-        match self {
-            Self::EntityTypes => 1,
-            Self::TypeNodes => 2,
-        }
+impl From<SectionKind> for u16 {
+    fn from(kind: SectionKind) -> Self {
+        kind as Self
     }
 }
 
@@ -40,18 +38,16 @@ impl TryFrom<u16> for SectionKind {
     }
 }
 
+#[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SectionRequirement {
-    Optional,
-    Required,
+    Optional = 0,
+    Required = 1,
 }
 
-impl SectionRequirement {
-    pub(crate) const fn code(self) -> u16 {
-        match self {
-            Self::Optional => 0,
-            Self::Required => 1,
-        }
+impl From<SectionRequirement> for u16 {
+    fn from(requirement: SectionRequirement) -> Self {
+        requirement as Self
     }
 }
 
@@ -67,93 +63,71 @@ impl TryFrom<u16> for SectionRequirement {
     }
 }
 
+#[repr(transparent)]
 #[derive(Clone, Copy)]
-pub(crate) struct SectionCount(u16);
-
-impl SectionCount {
-    pub(crate) const fn get(self) -> u16 {
-        self.0
-    }
-
-    pub(crate) fn as_usize(self) -> usize {
-        usize::from(self.0)
-    }
+pub(crate) struct SectionCount {
+    wire: u16,
 }
 
 impl From<u16> for SectionCount {
     fn from(value: u16) -> Self {
-        Self(value)
+        Self { wire: value }
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ItemCount(u32);
-
-impl ItemCount {
-    pub(crate) fn from_len(actual: usize) -> Result<Self, TryFromIntError> {
-        u32::try_from(actual).map(Self)
-    }
-
-    pub(crate) const fn get(self) -> u32 {
-        self.0
-    }
-
-    pub(crate) fn as_usize(self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.0)
+impl From<SectionCount> for usize {
+    fn from(count: SectionCount) -> Self {
+        usize::from(count.wire)
     }
 }
 
-impl From<u32> for ItemCount {
-    fn from(value: u32) -> Self {
-        Self(value)
+impl From<SectionCount> for u16 {
+    fn from(count: SectionCount) -> Self {
+        count.wire
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ByteOffset(u32);
+macro_rules! transparent_wire_u32 {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            #[repr(transparent)]
+            #[derive(Clone, Copy)]
+            pub(crate) struct $name {
+                wire: u32,
+            }
 
-impl ByteOffset {
-    pub(crate) fn from_usize(value: usize) -> Result<Self, TryFromIntError> {
-        u32::try_from(value).map(Self)
-    }
+            impl From<u32> for $name {
+                fn from(value: u32) -> Self {
+                    Self { wire: value }
+                }
+            }
 
-    pub(crate) const fn get(self) -> u32 {
-        self.0
-    }
+            impl TryFrom<usize> for $name {
+                type Error = TryFromIntError;
 
-    pub(crate) fn as_usize(self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.0)
-    }
+                fn try_from(value: usize) -> Result<Self, Self::Error> {
+                    u32::try_from(value).map(|wire| Self { wire })
+                }
+            }
+
+            impl TryFrom<$name> for usize {
+                type Error = TryFromIntError;
+
+                fn try_from(value: $name) -> Result<Self, Self::Error> {
+                    usize::try_from(value.wire)
+                }
+            }
+
+            impl From<$name> for u32 {
+                fn from(value: $name) -> Self {
+                    value.wire
+                }
+            }
+        )+
+    };
 }
 
-impl From<u32> for ByteOffset {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ByteLength(u32);
-
-impl ByteLength {
-    pub(crate) fn from_usize(value: usize) -> Result<Self, TryFromIntError> {
-        u32::try_from(value).map(Self)
-    }
-
-    pub(crate) const fn get(self) -> u32 {
-        self.0
-    }
-
-    pub(crate) fn as_usize(self) -> Result<usize, TryFromIntError> {
-        usize::try_from(self.0)
-    }
-}
-
-impl From<u32> for ByteLength {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
+transparent_wire_u32!(ItemCount, ByteOffset, ByteLength);
 
 #[derive(Clone, Copy)]
 pub(crate) struct LaneLayout {
@@ -199,28 +173,21 @@ pub(crate) fn write_u32(output: &mut [u8], offset: usize, value: u32) {
     output[offset..offset + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) const fn entity_fault(target: TypeId, node_count: ItemCount) -> Option<EntityFault> {
-    if target.raw < node_count.get() {
+pub(crate) fn entity_fault(target: TypeId, node_count: ItemCount) -> Option<EntityFault> {
+    let node_count = u32::from(node_count);
+    if target.raw < node_count {
         None
     } else {
-        Some(EntityFault {
-            target,
-            node_count: node_count.get(),
-        })
+        Some(EntityFault { target, node_count })
     }
 }
 
-pub(crate) const fn type_node_fault(
-    node: TypeNode,
-    node_count: ItemCount,
-) -> Option<TypeNodeFault> {
+pub(crate) fn type_node_fault(node: TypeNode, node_count: ItemCount) -> Option<TypeNodeFault> {
+    let node_count = u32::from(node_count);
     match node {
         TypeNode::Primitive(_) => None,
-        TypeNode::Reference(target) if target.raw < node_count.get() => None,
-        TypeNode::Reference(target) => Some(TypeNodeFault::Edge {
-            target,
-            node_count: node_count.get(),
-        }),
+        TypeNode::Reference(target) if target.raw < node_count => None,
+        TypeNode::Reference(target) => Some(TypeNodeFault::Edge { target, node_count }),
     }
 }
 
@@ -229,7 +196,7 @@ pub(crate) fn write_type_node(output: &mut [u8], node: TypeNode) {
     match node {
         TypeNode::Primitive(primitive) => {
             output[0] = PRIMITIVE_TAG;
-            write_u32(output, 4, primitive.code());
+            write_u32(output, 4, u32::from(primitive));
         }
         TypeNode::Reference(target) => {
             output[0] = REFERENCE_TAG;
@@ -245,7 +212,7 @@ pub(crate) fn decode_type_node(record: &[u8]) -> Result<TypeNode, TypeNodeFault>
     }
     let operand = read_u32(record, 4);
     match record[0] {
-        PRIMITIVE_TAG => PrimitiveType::decode(operand).map(TypeNode::Primitive),
+        PRIMITIVE_TAG => PrimitiveType::try_from(operand).map(TypeNode::Primitive),
         REFERENCE_TAG => Ok(TypeNode::Reference(TypeId::new(operand))),
         actual => Err(TypeNodeFault::Tag { actual }),
     }
