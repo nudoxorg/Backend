@@ -1,6 +1,7 @@
 use nudox_index_core::{
-    IndexSnapshot, LexicalDocumentId, LexicalManifest, LexicalOperation, LexicalQueryError,
-    LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit, LexicalTerminal, LexicalTopK,
+    IndexSnapshot, LexicalDocumentId, LexicalManifest, LexicalOperation, LexicalOutputError,
+    LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
+    LexicalTerminal, LexicalTopK,
 };
 
 fn placeholder(segment: nudox_index_core::LexicalSegmentId) -> LexicalSnapshotHit<'static> {
@@ -191,6 +192,55 @@ fn insufficient_dedup_scratch_precedes_output_mutation() {
         })
     );
     assert_eq!(output, before);
+}
+
+#[test]
+fn insufficient_output_precedes_scratch_and_output_mutation() {
+    let rows = [
+        LexicalRow::new(b"needle", 1, LexicalScore::new(2)),
+        LexicalRow::new(b"needle", 2, LexicalScore::new(1)),
+    ];
+    let segment = LexicalSegment::new(&rows);
+    assert!(segment.is_ok());
+    let Some(segment) = segment.ok() else {
+        return;
+    };
+    let segments = [segment];
+    let lexical_ids = [segment.id()];
+    let snapshot = IndexSnapshot::new(&[], &lexical_ids);
+    assert!(snapshot.is_ok());
+    let Some(snapshot) = snapshot.ok() else {
+        return;
+    };
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]);
+    let top_k = LexicalTopK::new(2);
+    assert!(manifest.is_ok() && top_k.is_ok());
+    let (Some(manifest), Some(top_k)) = (manifest.ok(), top_k.ok()) else {
+        return;
+    };
+    let mut scratch = [
+        Some(LexicalDocumentId::new(91)),
+        Some(LexicalDocumentId::new(92)),
+    ];
+    let before_scratch = scratch;
+    let mut output = [placeholder(segment.id())];
+    let before_output = output;
+    let error = manifest.execute(
+        LexicalOperation::new(b"needle"),
+        top_k,
+        &mut scratch,
+        &mut output,
+    );
+
+    assert_eq!(
+        error,
+        Err(LexicalQueryError::OutputCapacity(LexicalOutputError {
+            required: 2,
+            available: 1,
+        }))
+    );
+    assert_eq!(scratch, before_scratch);
+    assert_eq!(output, before_output);
 }
 
 #[test]

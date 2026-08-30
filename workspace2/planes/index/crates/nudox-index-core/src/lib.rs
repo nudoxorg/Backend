@@ -493,6 +493,30 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         self.snapshot
     }
 
+    /// Borrows the validated reachable segments in snapshot update order.
+    #[must_use]
+    pub const fn segments(&self) -> &'manifest [LexicalSegment<'segment>] {
+        self.segments
+    }
+
+    /// Returns whether every selected segment is present through a healthy route.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.missing.is_empty() && matches!(self.availability, LexicalAvailability::Healthy)
+    }
+
+    /// Returns the number of selected lexical segments unavailable to this manifest.
+    #[must_use]
+    pub const fn missing_len(&self) -> usize {
+        self.missing.len()
+    }
+
+    /// Returns whether the manifest reached its snapshot through a degraded route.
+    #[must_use]
+    pub const fn is_degraded(&self) -> bool {
+        matches!(self.availability, LexicalAvailability::Degraded(_))
+    }
+
     /// Executes one deterministic manifest-wide ranking into caller-owned output.
     ///
     /// Selected segments are ordered newest first. The first occurrence of a stable document
@@ -520,11 +544,21 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
 
         let mut unique_documents = 0_usize;
-        for segment in self.segments {
+        for (segment_position, segment) in self.segments.iter().enumerate() {
             if let Some(rows) = segment.lookup(operation) {
-                for row in rows {
-                    if !seen_documents[..unique_documents].contains(&Some(row.document())) {
-                        seen_documents[unique_documents] = Some(row.document());
+                for (row_position, row) in rows.iter().enumerate() {
+                    let was_seen = self
+                        .segments
+                        .iter()
+                        .take(segment_position)
+                        .filter_map(|previous| previous.lookup(operation))
+                        .flat_map(|previous_rows| previous_rows.iter())
+                        .any(|previous| previous.document() == row.document())
+                        || rows
+                            .iter()
+                            .take(row_position)
+                            .any(|previous| previous.document() == row.document());
+                    if !was_seen {
                         unique_documents += 1;
                     }
                 }
