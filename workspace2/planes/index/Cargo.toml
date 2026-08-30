@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "adapters/nudox-index-tantivy",
   "crates/nudox-index-core",
   "crates/nudox-index-graph-vector",
   "crates/nudox-index-vocab",
