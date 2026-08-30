@@ -110,9 +110,9 @@ bytes remain red.
 | B3 compiler/IR | C0 plus C1 wire/borrow foundation integrated | Add the first hash-consed product/atom representation and a permutation-canonicality falsifier, then extend to pooled lists and external references. |
 | B4 immutable index | Borrowed exact/lexical manifests and real Tantivy projection integrated through `ff55b02a` | Connect compiler-published deltas to immutable snapshot construction and replay compaction/stale-route journeys across the real publication seam. |
 | B5 graph/vector | Functional pinned graph/vector, leased async edge, and verified real Qdrant projection integrated through `ff55b02a` | Preserve the now-green wake, lossless-remainder, provenance, hostile-bound, and live-service falsifiers while measuring whether the current `Arc<Mutex<_>>` completion owner earns its cost or should be replaced by the forthcoming lock-free transport control. |
-| C6 adaptive local-first | Absent | Implement the smallest deterministic `next_action` over bounded `FactKey` inputs after the graph/vector seam is real. |
-| C7 application/interfaces | Absent | Build one in-process typed command/query path; add CLI, MCP, and GPUI only as thin consumers. |
-| D8 system closure | Absent | Add ordinary cross-crate integration coverage as each real seam lands; the 200-package terminal remains deliberately unclaimed. |
+| C6 adaptive local-first | Integrated through `691960dd` | Deterministic bounded policy, typed pins, explicit residence, resource budgets, inconsistency recovery, and safe contraction are present. Next connect decisions to live remote/index/transport health and prove an executor-visible wake stream. |
+| C7 application/interfaces | Integrated through `691960dd` | One typed in-process service now drives CLI, framed MCP, and GPUI, including canonical identity parsing and typed cancellation. Next replace the local lifecycle stand-ins with real compiler/index operations. |
+| D8 system closure | Partial through `7de1fb50` | A deterministic 204-package multilingual corpus and exact fault/resource oracle are present. The real compiler-to-publication-to-index-to-query terminal remains deliberately unclaimed. |
 
 No wave is externally blocked. A missing reviewer/model route is a controller fallback. The former
 Dylint temporary-path and read-only generated-header failures are closed and cannot excuse delay of a
