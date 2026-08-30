@@ -27,6 +27,11 @@ const QUERY_SCAN_LIMIT: usize = MAX_BATCH_POINTS + 1;
 const MAX_QUERY_PARTITIONS: usize = 4;
 const MAX_VECTOR_DIMENSION: usize = 4096;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
+const READ_POINTS_PATH: &str = "/points?consistency=all";
+const QUERY_POINTS_PATH: &str = "/points/query?consistency=all";
+const UPSERT_POINTS_PATH: &str = "/points?wait=true&ordering=strong";
+const DELETE_POINTS_PATH: &str = "/points/delete?wait=true&ordering=strong";
+const CREATE_PAYLOAD_INDEX_PATH: &str = "/index?wait=true&ordering=strong";
 const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
 const FNV_PRIME: u64 = 1_099_511_628_211;
 const PHYSICAL_ID_ZERO_REPLACEMENT: u64 = 1;
@@ -912,7 +917,7 @@ impl QdrantBlockingAdapter {
         let response = self.request_json(
             RequestPhase::UpsertPoints,
             Method::Put,
-            &self.url("/points?wait=true"),
+            &self.url(UPSERT_POINTS_PATH),
             request,
         )?;
         if !is_success(response.status) {
@@ -982,7 +987,7 @@ impl QdrantBlockingAdapter {
         let response = self.request_json(
             RequestPhase::DeletePoints,
             Method::Post,
-            &self.url("/points/delete?wait=true"),
+            &self.url(DELETE_POINTS_PATH),
             delete_request(&prepared),
         )?;
         if !is_success(response.status) {
@@ -1014,7 +1019,7 @@ impl QdrantBlockingAdapter {
         let response = self.request_json(
             RequestPhase::QueryPoints,
             Method::Post,
-            &self.url("/points/query"),
+            &self.url(QUERY_POINTS_PATH),
             query_request(self.authority, selected, query_coordinates),
         )?;
         if !is_success(response.status) {
@@ -1086,11 +1091,16 @@ impl QdrantBlockingAdapter {
             return Err(status_error(RequestPhase::ReadCollection, response));
         }
         let value = decode_json(RequestPhase::ReadCollection, &response.body)?;
-        let vectors = value
+        let params = value
             .get("result")
             .and_then(|result| result.get("config"))
             .and_then(|config| config.get("params"))
-            .and_then(|params| params.get("vectors"))
+            .ok_or(QdrantError::MalformedResponse {
+                phase: RequestPhase::ReadCollection,
+                detail: "result.config.params",
+            })?;
+        let vectors = params
+            .get("vectors")
             .ok_or(QdrantError::MalformedResponse {
                 phase: RequestPhase::ReadCollection,
                 detail: "result.config.params.vectors",
@@ -1122,6 +1132,26 @@ impl QdrantBlockingAdapter {
                 field: "vectors.distance",
             });
         }
+        let replication_factor = params
+            .get("replication_factor")
+            .and_then(Value::as_u64)
+            .ok_or(QdrantError::MalformedResponse {
+                phase: RequestPhase::ReadCollection,
+                detail: "result.config.params.replication_factor",
+            })?;
+        let write_consistency_factor = params
+            .get("write_consistency_factor")
+            .and_then(Value::as_u64)
+            .ok_or(QdrantError::MalformedResponse {
+                phase: RequestPhase::ReadCollection,
+                detail: "result.config.params.write_consistency_factor",
+            })?;
+        if write_consistency_factor < replication_factor {
+            return Err(QdrantError::CollectionMismatch {
+                phase: RequestPhase::ReadCollection,
+                field: "write_consistency_factor",
+            });
+        }
         Ok(())
     }
 
@@ -1130,7 +1160,7 @@ impl QdrantBlockingAdapter {
             let response = self.request_json(
                 RequestPhase::CreatePayloadIndex,
                 Method::Put,
-                &self.url("/index?wait=true"),
+                &self.url(CREATE_PAYLOAD_INDEX_PATH),
                 serde_json::json!({
                     "field_name": field,
                     "field_schema": schema,
@@ -1340,7 +1370,7 @@ impl QdrantBlockingAdapter {
         let response = self.request_json(
             phase,
             Method::Post,
-            &self.url("/points"),
+            &self.url(READ_POINTS_PATH),
             retrieve_request(keys, require_vectors),
         )?;
         if !is_success(response.status) {
@@ -1434,7 +1464,7 @@ impl QdrantBlockingAdapter {
         let response = self.request_json(
             phase,
             Method::Post,
-            &self.url("/points"),
+            &self.url(READ_POINTS_PATH),
             retrieve_request(keys, false),
         )?;
         if !is_success(response.status) {
@@ -1862,6 +1892,8 @@ fn collection_request(authority: VectorAuthority) -> Value {
             "size": authority.dimension(),
             "distance": metric_name(authority.metric()),
         },
+        "replication_factor": 1,
+        "write_consistency_factor": 1,
     })
 }
 
@@ -2543,6 +2575,27 @@ mod tests {
         assert_eq!(
             query.get("params").and_then(|params| params.get("exact")),
             Some(&Value::from(true))
+        );
+    }
+
+    #[test]
+    fn replica_lag_requires_all_reads_and_strong_ordered_writes() {
+        assert_eq!(READ_POINTS_PATH, "/points?consistency=all");
+        assert_eq!(QUERY_POINTS_PATH, "/points/query?consistency=all");
+        assert_eq!(UPSERT_POINTS_PATH, "/points?wait=true&ordering=strong");
+        assert_eq!(
+            DELETE_POINTS_PATH,
+            "/points/delete?wait=true&ordering=strong"
+        );
+        assert_eq!(
+            CREATE_PAYLOAD_INDEX_PATH,
+            "/index?wait=true&ordering=strong"
+        );
+        let collection = collection_request(authority(3));
+        assert_eq!(collection.get("replication_factor"), Some(&Value::from(1)));
+        assert_eq!(
+            collection.get("write_consistency_factor"),
+            Some(&Value::from(1))
         );
     }
 
