@@ -12,6 +12,7 @@ roadmap invariant and passes the current chief journey.
 | P5 compiler and compact IR | active task `01a05042-316b-72c0-8839-bdcbdaf7dd3f`, branch `codex/prototype-real-compiler-ir` | **Active authority.** No duplicate compiler controller may write the same surface. | Monitor to a clean committed closure, preserve its final evidence, then integrate mechanism-by-mechanism before the 200-package system corpus is admitted. |
 | P6 declarative registry | `evidence/p6/`; candidate `c50a1d16`; review `d7c0a8a1` | **Reject premature abstraction.** A registry generator with one real consumer is unearned. | Reconsider only after two independent shipping consumers expose the same closed declaration. Until then use explicit concrete enums and matches at one boundary. |
 | GUI review | `GUI_REVAMP_PLAN.md` | **Plan evidence only.** No runtime implementation was returned. | Build the first real GPUI surface over the same typed application service used by CLI and MCP. The overnight contract explicitly excludes accessibility automation and unbounded/global search. |
+| Wave C.7 unified application | evidence under `.codex/evidence/capabilities/wave-c7-{application-service,unified-application}/`; blocked branch terminal `24645a1d` | **Preserve contract; implementation never started.** Two bounded source-isolated reviewer attempts produced no registered reviewer, so production and Luna authority correctly remained closed. | Restart as a fresh capability cycle only from the corrected sidecar skill at `b3473581` or later. The new cycle must obtain a nonempty Terra reviewer task receipt before reusing the frozen application terminal; the old block cannot be relabeled approval. |
 
 ## Integration law
 
@@ -20,4 +21,3 @@ representation, invariant, algorithm, diagnostic, oracle, or measurement. For ev
 name its new owner and replay an old falsifier. For every rejected row, keep the evidence and name the
 counterexample that makes it unsuitable. Historical branches and documents are never rewritten to
 manufacture a cleaner story.
-

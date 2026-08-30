@@ -37,6 +37,9 @@ The remaining gaps are architectural, not polish:
   view, selected content verification, authenticated partial range, or async leased range adapter.
 - transport, horizontally partitioned remote index, vertically elastic compiler workers, adaptive
   NVMe/object-store placement, and the lean GUI are contracts only.
+- Wave C.7 froze a useful shared application-service contract but stopped before implementation after
+  two reviewer-custody failures. Its evidence is integrated; any restart must use the corrected
+  context-free Sol-sidecar -> Terra-reviewer custody and cannot inherit approval from the blocked run.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
