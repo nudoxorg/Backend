@@ -674,6 +674,34 @@ pub enum QdrantError {
         /// Unexpected physical coordinate.
         physical_id: PhysicalPointId,
     },
+    /// A response point's disposable ID was not derived from its semantic identity.
+    #[error(
+        "Qdrant {phase:?} returned physical point {observed_physical_id:?} for {key:?}; expected {expected_physical_id:?}"
+    )]
+    PhysicalIdentityMismatch {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Full semantic identity decoded from the payload.
+        key: QdrantDataKey,
+        /// Disposable coordinate returned by the service.
+        observed_physical_id: PhysicalPointId,
+        /// Collision-checked coordinate derived from the semantic identity.
+        expected_physical_id: PhysicalPointId,
+    },
+    /// A response repeated one full semantic identity.
+    #[error(
+        "Qdrant {phase:?} repeated {key:?} as points {first_physical_id:?} and {second_physical_id:?}"
+    )]
+    DuplicateSemanticPoint {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Repeated full semantic identity.
+        key: QdrantDataKey,
+        /// First disposable coordinate carrying the identity.
+        first_physical_id: PhysicalPointId,
+        /// Later disposable coordinate carrying the same identity.
+        second_physical_id: PhysicalPointId,
+    },
     /// The response omitted a point required for verification.
     #[error("Qdrant {phase:?} omitted point {physical_id:?} for {key:?}")]
     MissingPoint {
@@ -1554,6 +1582,7 @@ impl QdrantBlockingAdapter {
                         field: PARTITION_PAYLOAD_KEY,
                     });
                 }
+                reject_remote_physical_identity(RequestPhase::ScrollPartition, physical_id, key)?;
             }
         }
         Ok(QdrantQueryTerminal {
@@ -2028,15 +2057,6 @@ fn parse_query_hits(
     let mut hits = Vec::with_capacity(points.len());
     for point in points {
         let physical_id = point_id(point, phase)?;
-        if hits
-            .iter()
-            .any(|hit: &QdrantHit| hit.physical_id == physical_id)
-        {
-            return Err(QdrantError::MalformedResponse {
-                phase,
-                detail: "duplicate result.points[].id",
-            });
-        }
         let key = decode_identity(point, phase, authority)?;
         if key.authority() != authority {
             return Err(QdrantError::PayloadMismatch {
@@ -2050,6 +2070,28 @@ fn parse_query_hits(
                 phase,
                 physical_id,
                 field: PARTITION_PAYLOAD_KEY,
+            });
+        }
+        reject_remote_physical_identity(phase, physical_id, key)?;
+        if let Some(first) = hits.iter().find(|hit: &&QdrantHit| {
+            hit.authority == key.authority()
+                && hit.partition == key.partition()
+                && hit.entity == key.entity()
+        }) {
+            return Err(QdrantError::DuplicateSemanticPoint {
+                phase,
+                key,
+                first_physical_id: first.physical_id,
+                second_physical_id: physical_id,
+            });
+        }
+        if hits
+            .iter()
+            .any(|hit: &QdrantHit| hit.physical_id == physical_id)
+        {
+            return Err(QdrantError::MalformedResponse {
+                phase,
+                detail: "duplicate result.points[].id for distinct payload identities",
             });
         }
         let coordinates = decode_vector(
@@ -2068,6 +2110,23 @@ fn parse_query_hits(
         });
     }
     Ok(hits)
+}
+
+fn reject_remote_physical_identity(
+    phase: RequestPhase,
+    observed_physical_id: PhysicalPointId,
+    key: QdrantDataKey,
+) -> Result<(), QdrantError> {
+    let expected_physical_id = PhysicalPointId::for_key(key);
+    if observed_physical_id == expected_physical_id {
+        return Ok(());
+    }
+    Err(QdrantError::PhysicalIdentityMismatch {
+        phase,
+        key,
+        observed_physical_id,
+        expected_physical_id,
+    })
 }
 
 fn point_id(point: &Value, phase: RequestPhase) -> Result<PhysicalPointId, QdrantError> {
@@ -2614,5 +2673,51 @@ mod tests {
             projected_score(Metric::NegativeDotProduct, &query, &remote),
             local_score(Metric::NegativeDotProduct, &query, &local)
         );
+    }
+
+    #[test]
+    fn query_rejects_alias_physical_id_and_duplicate_semantic_key() {
+        let authority = authority(6);
+        let key = QdrantDataKey::new(authority, PartitionId::new(2), EntityId::new(7));
+        let canonical_id = PhysicalPointId::for_key(key);
+        let alias_id = PhysicalPointId(canonical_id.raw().wrapping_add(1));
+        let point = |physical_id: PhysicalPointId| {
+            serde_json::json!({
+                "id": physical_id.raw(),
+                "payload": identity_payload(key),
+                "vector": [1.0, 2.0],
+            })
+        };
+        let alias_body = serde_json::json!({
+            "result": { "points": [point(alias_id)] },
+        })
+        .to_string();
+        assert!(matches!(
+            parse_query_hits(authority, &[key.partition()], &[0, 0], &alias_body),
+            Err(QdrantError::PhysicalIdentityMismatch {
+                phase: RequestPhase::QueryPoints,
+                key: observed_key,
+                observed_physical_id,
+                expected_physical_id,
+            }) if observed_key == key
+                && observed_physical_id == alias_id
+                && expected_physical_id == canonical_id
+        ));
+
+        let duplicate_body = serde_json::json!({
+            "result": { "points": [point(canonical_id), point(canonical_id)] },
+        })
+        .to_string();
+        assert!(matches!(
+            parse_query_hits(authority, &[key.partition()], &[0, 0], &duplicate_body),
+            Err(QdrantError::DuplicateSemanticPoint {
+                phase: RequestPhase::QueryPoints,
+                key: observed_key,
+                first_physical_id,
+                second_physical_id,
+            }) if observed_key == key
+                && first_physical_id == canonical_id
+                && second_physical_id == canonical_id
+        ));
     }
 }
