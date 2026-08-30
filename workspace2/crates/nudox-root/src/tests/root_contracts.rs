@@ -80,7 +80,7 @@ fn canonical_order_and_every_hierarchy_rejection_are_exact() -> Result<(), Scena
     require_root_error(
         GenerationRoot::new(Vec::from([resident(1, Some(9), object(1))])),
         ScenarioExpectation::MissingParent,
-        |error| matches!(error, RootBuildError::MissingParent { child, parent } if *child == key(1) && *parent == key(9)),
+        |error| matches!(error, RootBuildError::MissingParent { child, parent, insertion: 1 } if *child == key(1) && *parent == key(9)),
     )?;
     require_root_error(
         GenerationRoot::new(Vec::from([resident(1, Some(1), object(1))])),

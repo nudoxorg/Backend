@@ -97,6 +97,7 @@ enum OverlayRejection {
 enum RootErrorKind {
     DuplicateKey,
     MissingParent,
+    InternalInvariant,
     HierarchyCycle,
     IndexConversion,
     RowReservation,
@@ -198,6 +199,9 @@ const fn root_error_kind(error: &RootBuildError) -> RootErrorKind {
     match error {
         RootBuildError::DuplicateKey { .. } => RootErrorKind::DuplicateKey,
         RootBuildError::MissingParent { .. } => RootErrorKind::MissingParent,
+        RootBuildError::UnexpectedRowPhase { .. } | RootBuildError::BrokenHierarchyChain { .. } => {
+            RootErrorKind::InternalInvariant
+        }
         RootBuildError::HierarchyCycle { .. } => RootErrorKind::HierarchyCycle,
         RootBuildError::IndexConversion(_) => RootErrorKind::IndexConversion,
         RootBuildError::RowReservation(_) => RootErrorKind::RowReservation,

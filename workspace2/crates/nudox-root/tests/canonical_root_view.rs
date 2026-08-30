@@ -52,7 +52,11 @@ fn exact_extent_is_required() -> Result<(), CanonicalRootViewTestError> {
     let root = GenerationRoot::new(vec![entry(1, None)])?;
     let mut bytes = vec![0; usize::from(root.canonical_len())];
     root.write_canonical(&mut bytes)?;
-    let error = ValidatedRoot::<ObjectDomain>::try_from(&bytes[..bytes.len() - 1])
+    let truncated = bytes
+        .split_last()
+        .map(|(_, truncated)| truncated)
+        .ok_or(CanonicalRootViewTestError::ExpectedTruncated)?;
+    let error = ValidatedRoot::<ObjectDomain>::try_from(truncated)
         .err()
         .ok_or(CanonicalRootViewTestError::ExpectedTruncated)?;
     if !matches!(error, RootReadError::Truncated { .. }) {

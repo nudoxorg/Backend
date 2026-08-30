@@ -15,7 +15,8 @@ mod packed;
 mod root_view;
 
 pub use builder::{
-    GenerationRootBuilder, RejectedRootEntry, RootBuildError, RootPushError, RootWriteError,
+    GenerationRootBuilder, RejectedRootEntry, RootBuildError, RootBuildStage, RootPushError,
+    RootWriteError,
 };
 pub use closure::{
     ClosureError, ClosureScratch, ClosureScratchFacts, RootProbeEvent, SelectedClosure,
@@ -34,6 +35,7 @@ pub use locality::{
 pub use overlay::{OverlayBuildWork, OverlayError, propagate_overlays};
 pub use packed::{
     GenerationRoot, GenerationRootFacts, HierarchyDepth, MetadataBytes, RootEntryCount,
+    RootRowPhase,
 };
 pub use root_view::{
     BorrowedGenerationScan, BorrowedGenerationView, BorrowedRootFacts, BorrowedSelectedGeneration,

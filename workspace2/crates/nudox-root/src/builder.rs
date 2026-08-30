@@ -7,7 +7,10 @@ use thiserror::Error;
 use crate::MetadataBytes;
 use crate::encode::canonical_id;
 use crate::entry::{EntryKey, RootEntry};
-use crate::packed::{GenerationRoot, HierarchyDepth, HierarchyState, NO_PARENT, RootRow};
+use crate::packed::{
+    GenerationRoot, HierarchyDepth, HierarchyState, NO_PARENT, RootEntryCount, RootRow,
+    RootRowPhase,
+};
 
 /// Builder-validated compact bound consumed by packed root coordinates.
 struct CompactRootLength(u32);
@@ -87,7 +90,13 @@ impl<DomainTag> GenerationRootBuilder<DomainTag> {
         for index in 0..self.rows.len() {
             let _compact_index = CompactRootLength::index(index);
             let key = self.rows[index].key;
-            let parent = match self.rows[index].collected_parent() {
+            let parent = match self.rows[index].collected_parent().map_err(|observed| {
+                RootBuildError::UnexpectedRowPhase {
+                    stage: RootBuildStage::ResolveParents,
+                    key,
+                    observed,
+                }
+            })? {
                 None => NO_PARENT,
                 Some(parent_key) => resolve_parent_key(key, parent_key, &self.rows)?,
             };
@@ -170,6 +179,15 @@ pub struct RootWriteError {
     pub available: MetadataBytes,
 }
 
+/// Canonical construction phase that observed an inconsistent packed row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootBuildStage {
+    /// Resolving collected parent keys into compact row coordinates.
+    ResolveParents,
+    /// Traversing and publishing the checked hierarchy.
+    TraverseHierarchy,
+}
+
 /// Checked root construction failure with retained allocation/conversion sources.
 #[derive(Debug, Error)]
 pub enum RootBuildError {
@@ -180,12 +198,32 @@ pub enum RootBuildError {
         key: EntryKey,
     },
     /// A parent key is absent.
-    #[error("root entry {child:?} has absent parent {parent:?}")]
+    #[error("root entry {child:?} has absent parent {parent:?} at insertion {insertion}")]
     MissingParent {
         /// Child key.
         child: EntryKey,
         /// Absent parent.
         parent: EntryKey,
+        /// Canonical position where the missing parent would be inserted.
+        insertion: usize,
+    },
+    /// A private construction phase was observed outside its owning transition.
+    #[error("root entry {key:?} is in phase {observed:?} during {stage:?}")]
+    UnexpectedRowPhase {
+        /// Transition that owns the expected phase set.
+        stage: RootBuildStage,
+        /// Entry whose packed state was inconsistent.
+        key: EntryKey,
+        /// Exact phase that was observed.
+        observed: RootRowPhase,
+    },
+    /// A measured hierarchy chain ended before every row could be published.
+    #[error("root hierarchy from {start:?} ended with {remaining:?} unpublished rows")]
+    BrokenHierarchyChain {
+        /// First entry in the measured chain.
+        start: EntryKey,
+        /// Rows still requiring publication.
+        remaining: RootEntryCount,
     },
     /// Parent links form a cycle.
     #[error("root hierarchy has a parent cycle at {key:?}")]
@@ -241,7 +279,11 @@ fn resolve_parent_key<DomainTag>(
 ) -> Result<u32, RootBuildError> {
     rows.binary_search_by_key(&parent, |row| row.key)
         .map(CompactRootLength::index)
-        .map_err(|_| RootBuildError::MissingParent { child, parent })
+        .map_err(|insertion| RootBuildError::MissingParent {
+            child,
+            parent,
+            insertion,
+        })
 }
 
 /// Validates a just-built dense hierarchy before rows can become immutable.
@@ -257,7 +299,7 @@ fn resolve_parent_key<DomainTag>(
 )]
 fn validate_hierarchy<DomainTag>(rows: &mut [RootRow<DomainTag>]) -> Result<(), RootBuildError> {
     for start in 0..rows.len() {
-        if rows[start].hierarchy_state() == HierarchyState::Published {
+        if hierarchy_state(&rows[start])? == HierarchyState::Published {
             continue;
         }
         let mut cursor = Some(start);
@@ -266,7 +308,7 @@ fn validate_hierarchy<DomainTag>(rows: &mut [RootRow<DomainTag>]) -> Result<(), 
             let Some(index) = cursor else {
                 break 0_u32.into();
             };
-            match rows[index].hierarchy_state() {
+            match hierarchy_state(&rows[index])? {
                 HierarchyState::Unseen => {
                     rows[index].mark_visiting();
                     chain_length = chain_length
@@ -287,7 +329,10 @@ fn validate_hierarchy<DomainTag>(rows: &mut [RootRow<DomainTag>]) -> Result<(), 
         let mut remaining = chain_length;
         while remaining != 0 {
             let Some(index) = cursor else {
-                unreachable!("resolved hierarchy chain ended before its measured length");
+                return Err(RootBuildError::BrokenHierarchyChain {
+                    start: rows[start].key,
+                    remaining: remaining.into(),
+                });
             };
             let depth = HierarchyDepth::from(
                 (*base_depth)
@@ -300,6 +345,15 @@ fn validate_hierarchy<DomainTag>(rows: &mut [RootRow<DomainTag>]) -> Result<(), 
         }
     }
     Ok(())
+}
+
+fn hierarchy_state<DomainTag>(row: &RootRow<DomainTag>) -> Result<HierarchyState, RootBuildError> {
+    row.hierarchy_state()
+        .map_err(|observed| RootBuildError::UnexpectedRowPhase {
+            stage: RootBuildStage::TraverseHierarchy,
+            key: row.key,
+            observed,
+        })
 }
 
 fn parent_index(parent: u32) -> Result<Option<usize>, RootBuildError> {

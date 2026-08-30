@@ -191,18 +191,24 @@ pub(crate) struct RootRow<DomainTag> {
     length: ObjectLength,
     schema: SchemaId,
     kind: ObjectKind,
-    state: RowState,
+    state: RootRowPhase,
     pub(crate) key: EntryKey,
     payload: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
-enum RowState {
+/// Phase-reused state stored inside one packed root row during construction.
+pub enum RootRowPhase {
+    /// Collected row whose payload is a parent key.
     CollectedParent,
+    /// Collected hierarchy root.
     CollectedRoot,
+    /// Resolved row not yet visited by hierarchy validation.
     Unseen,
+    /// Row on the active hierarchy traversal chain.
     Visiting,
+    /// Validated row carrying its final parent coordinate and depth.
     Published,
 }
 
@@ -233,9 +239,9 @@ impl<DomainTag> RootRow<DomainTag> {
             schema: object.schema,
             kind: object.kind,
             state: if parent.is_some() {
-                RowState::CollectedParent
+                RootRowPhase::CollectedParent
             } else {
-                RowState::CollectedRoot
+                RootRowPhase::CollectedRoot
             },
             key,
             payload: parent.map_or(0, |parent| *parent),
@@ -249,47 +255,47 @@ impl<DomainTag> RootRow<DomainTag> {
             kind: self.kind,
         }
     }
-    pub(crate) fn collected_parent(&self) -> Option<EntryKey> {
+    pub(crate) fn collected_parent(&self) -> Result<Option<EntryKey>, RootRowPhase> {
         match self.state {
-            RowState::CollectedRoot => None,
-            RowState::CollectedParent => Some(EntryKey::from(self.payload)),
-            _ => unreachable!("parent keys are available only during root collection"),
+            RootRowPhase::CollectedRoot => Ok(None),
+            RootRowPhase::CollectedParent => Ok(Some(EntryKey::from(self.payload))),
+            observed => Err(observed),
         }
     }
     pub(crate) const fn parent(&self) -> u32 {
         debug_assert!(matches!(
             self.state,
-            RowState::Unseen | RowState::Visiting | RowState::Published
+            RootRowPhase::Unseen | RootRowPhase::Visiting | RootRowPhase::Published
         ));
         let [first, second, third, fourth, _, _, _, _] = self.payload.to_le_bytes();
         u32::from_le_bytes([first, second, third, fourth])
     }
     pub(crate) const fn depth(&self) -> HierarchyDepth {
-        debug_assert!(matches!(self.state, RowState::Published));
+        debug_assert!(matches!(self.state, RootRowPhase::Published));
         let [_, _, _, _, first, second, third, fourth] = self.payload.to_le_bytes();
         HierarchyDepth(u32::from_le_bytes([first, second, third, fourth]))
     }
-    pub(crate) fn hierarchy_state(&self) -> HierarchyState {
+    pub(crate) const fn hierarchy_state(&self) -> Result<HierarchyState, RootRowPhase> {
         match self.state {
-            RowState::Unseen => HierarchyState::Unseen,
-            RowState::Visiting => HierarchyState::Visiting,
-            RowState::Published => HierarchyState::Published,
-            _ => unreachable!("hierarchy traversal begins only after parent resolution"),
+            RootRowPhase::Unseen => Ok(HierarchyState::Unseen),
+            RootRowPhase::Visiting => Ok(HierarchyState::Visiting),
+            RootRowPhase::Published => Ok(HierarchyState::Published),
+            observed => Err(observed),
         }
     }
     pub(crate) fn set_unseen(&mut self, parent: u32) {
         self.payload = u64::from(parent);
-        self.state = RowState::Unseen;
+        self.state = RootRowPhase::Unseen;
     }
     pub(crate) fn mark_visiting(&mut self) {
-        debug_assert_eq!(self.state, RowState::Unseen);
-        self.state = RowState::Visiting;
+        debug_assert_eq!(self.state, RootRowPhase::Unseen);
+        self.state = RootRowPhase::Visiting;
     }
     pub(crate) fn publish(&mut self, depth: HierarchyDepth) {
-        debug_assert_eq!(self.state, RowState::Visiting);
+        debug_assert_eq!(self.state, RootRowPhase::Visiting);
         let parent = self.parent();
         self.payload = (u64::from(depth.0) << 32) | u64::from(parent);
-        self.state = RowState::Published;
+        self.state = RootRowPhase::Published;
     }
 }
 
