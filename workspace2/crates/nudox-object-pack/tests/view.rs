@@ -66,6 +66,14 @@ fn object<'pack>(
     view.lookup(&content).ok_or(TestError::Missing)
 }
 
+fn verified_body<'pack>(
+    view: &ObjectPackView<'pack>,
+    content: ContentId<ObjectDomain>,
+) -> Result<&'pack [u8], TestError> {
+    let selected = view.lookup(&content).ok_or(TestError::Missing)?;
+    Ok(selected.verify()?)
+}
+
 fn opening_error(bytes: &[u8]) -> Result<ObjectPackError, TestError> {
     match ObjectPackView::try_from(bytes) {
         Err(error) => Ok(error),
@@ -189,6 +197,9 @@ fn view_and_index_are_compact_and_lookup_verify_allocate_nothing() -> Result<(),
     let expected = inputs[1].reference.content;
     let warm = object(&view, expected)?;
     assert_eq!(warm.verify()?, inputs[1].bytes);
+    let verified = verified_body(&view, expected)?;
+    assert_eq!(verified, inputs[1].bytes);
+    assert_eq!(verified.as_ptr(), warm.body.as_ptr());
     let mut result = None;
     let allocations = measure(|| {
         result = Some(

@@ -11,13 +11,13 @@ pub struct ObjectPackObject<'pack> {
     pub body: &'pack [u8],
 }
 
-impl ObjectPackObject<'_> {
+impl<'pack> ObjectPackObject<'pack> {
     /// Verifies this selected body's canonical identity.
     ///
     /// # Errors
     ///
     /// Returns [`ObjectPackError::ObjectContent`] with both identities when this body differs.
-    pub fn verify(&self) -> Result<&[u8], ObjectPackError> {
+    pub fn verify(&self) -> Result<&'pack [u8], ObjectPackError> {
         let actual = ContentId::from_canonical_bytes(self.body);
         if actual != self.reference.content {
             return Err(ObjectPackError::ObjectContent {
