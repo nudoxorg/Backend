@@ -50,11 +50,11 @@ cross-crate representation changes on this target.
 
 | Family / crate | Measured public representation and discovered cost | Nested owner or access shape |
 |---|---|---|
-| `nudox-id` | `ContentId`/`ArtifactId` 32 B, routing word 8 B, tags 16 B; hasher state 1,920 B | Copyable identity values; no heap owner. Hashers are construction-stack cost, not retained identity cost. |
+| `nudox-id` | `ContentId`/`ArtifactId` 32 B, typed content payload 31 B, routing word 8 B, tags 16 B; hasher state 1,920 B | Copyable identity values; no heap owner. Hashers are construction-stack cost, not retained identity cost. |
 | `nudox-schema` | Header 24 B, descriptor 16 B, decode limits 16 B | `repr(C)` wire records are exact and unaligned; scalar semantic limits are inline. |
 | `nudox-frame` / `nudox-view` | `PreparedFrame` 32 B, `ValidatedFrame` 24 B, `Sections` 24 B, yielded section 24 B | Prepared geometry is derived from a compact layout proof; the view stores only three closed-kind coordinates. Bodies remain caller-borrowed. |
 | `nudox-object` | `ObjectRef` 48 B, `RemoteBase` 80 B, provider set 8 B | Descriptor is `repr(C)` and copyable; remote-base payload is an enum carried only for overlays. |
-| `nudox-root` | `RootEntry` 72 B, `GenerationRoot` 64 B, source-asserted `RootRow` 64 B, `GenerationEntry` 152 B, `ValidatedLocality` 136 B on this target | Immutable semantic rows remain one `Box<[RootRow]>`; compact parent and `HierarchyDepth` fields preserve the row law. Locality is one caller-owned canonical byte artifact; its borrowed witness caches decoded header facts and an 80-B lane table, and traversal returns typed read failures. |
+| `nudox-root` | `RootEntry` 72 B, `GenerationRoot` 64 B, source-asserted `RootRow` 64 B, `GenerationEntry` 152 B, `ValidatedLocality` 200 B on this target | Immutable semantic rows remain one `Box<[RootRow]>`; compact parent and `HierarchyDepth` fields preserve the row law. Locality is one caller-owned canonical byte artifact; its witness retains typed borrowed lanes so traversal is infallible and performs no repeated decode. |
 | `nudox-hydration` | Request 56 B, promise 56 B, fetch 64 B, scratch header 40 B in the recorded baseline | Plans borrow descriptors and retain only selected absent `u32` ordinals (4 B per absence) in caller-reusable scratch. |
 | `nudox-store-memory` | Heap-policy `MemoryStore` 104 B; zero-allocation `LeanMemoryStore` 360 B; rejected insert 120 B; view 64 B | The crate is `no_std + alloc`. Entry/bucket backing is selected statically: exact heap vectors for `MemoryStore`, inline arrays for `LeanMemoryStore`/`InlineMemoryStore`. Payload ownership is generic over `AsRef<[u8]>`; `Box<[u8]>` is only the default. |
 | `nudox-operation` | Provider 184 B, run cursor 96 B, request 80 B, batch 48 B | Provider copies one composed entry; a batch borrows the one object descriptor. |
@@ -65,8 +65,8 @@ cross-crate representation changes on this target.
 The same raw result shows `RootEntry` at 72 B and `GenerationEntry` at 152 B, but their
 non-`repr(C)` offsets are discovery data, not contracts. `RootRow` is source-asserted at 64 B.
 `Locality`/`RemoteBase` remain 80 B discovery values, but they are construction/composed semantic
-values rather than retained per-row sidecars. The canonical locality artifact is 48 B when empty;
-the measured all-overlay-absent fixtures are 216 B at 32 exceptions and 352 B at 64. `WorkflowEvent`
+values rather than retained per-row sidecars. The canonical locality artifact is 49 B when empty;
+the all-overlay-absent geometry is 217 B at 32 exceptions and 353 B at 64. `WorkflowEvent`
 is 68 B and a four-slot recorder is 288 B. Those observations do not justify weakening durable
 facts for a niche.
 
@@ -78,7 +78,7 @@ Capacities, not lengths, decide peak live bytes for vectors.
 | Owner | Backing allocations / retained capacity | Lifetime and cancellation/reuse facts |
 |---|---|---|
 | `GenerationRootBuilder` -> `GenerationRoot` | Input `Vec<RootEntry>` (72 B discovery each), then boxed `RootRow` arena (source-asserted 64 B each). Hierarchy validation has bounded temporary marks/path storage. | Input and packed rows overlap during construction; `construction_peak_bytes` exposes the input-plus-row component. Input drops before hierarchy scratch; published root retains only the box. |
-| Prepared/validated locality | `PreparedLocality` measures and writes one canonical sorted-row artifact into caller output (48 B empty, then grammar-derived row/bit/rank/payload/basis lanes); `ValidatedLocality` is a 136-B borrow plus decoded facts and cached geometry. | No production locality sidecar owner is hidden inside root. The caller owns artifact bytes; one 80-B lane table is derived at validation/write and copied once into a sequential cursor instead of being rebuilt per lookup. |
+| Prepared/validated locality | `PreparedLocality` measures and writes one canonical sorted-row artifact into caller output (49 B empty, then grammar-derived row/bit/rank/payload/basis lanes); `ValidatedLocality` is a 200-B borrow plus decoded facts and typed lane borrows. | No production locality sidecar owner is hidden inside root. The header stores content-domain authority once; each present descriptor stores a 31-B typed payload and saves one repeated authority byte. Sequential traversal borrows the witness and advances named sparse ordinals. |
 | `ClosureScratch` | `Vec<u32>` marks plus `Vec<RowIndex>` coordinates: 4 B and 8 B per reserved root coordinate on this target. | Caller owns/reuses it. An epoch avoids common-path mark clearing; wrap clears marks. Returned closure borrows selected coordinates. |
 | `PlanScratch` | One exact-reserved `Vec<u32>` for absent selected ordinals, 4 B per declared selected capacity plus its facts/header. | Caller-owned/reused. Plan views borrow the root selection and compact ordinal prefix; no descriptor vector is materialized. |
 | `MemoryStore` / `LeanMemoryStore` / `InlineMemoryStore` | One statically selected entry table, one statically selected typed one-word bucket table, and caller-selected `PayloadOwner: AsRef<[u8]>` per accepted object. Heap metadata uses exact-reserved vectors; inline metadata uses `ArrayVec`. Index geometry targets half load. | Both metadata tables construct before admission. Accepted owners transfer without conversion/copy. Every rejection returns the exact original owner and descriptor; the default owner remains `Box<[u8]>` only for API convenience. |
@@ -330,11 +330,12 @@ discarded.
 ## Locality artifact and rank laboratory
 
 Production locality is now one allocation-free-to-the-library canonical artifact written into
-caller storage. On the measured 64-bit target, `ValidatedLocality` is 136 B: a 16-B slice, 32-B
-generation, two compact counts, and one cached 80-B `LaneTable`. Retaining that geometry is an
-intentional witness cost: random reads no longer rebuild all lane endpoints, and a sequential
-cursor copies the table once. The empty artifact is 48 B; measured all-overlay-absent fixtures are
-216 B for 32 exceptions and 352 B for 64.
+caller storage. On the measured 64-bit target, `ValidatedLocality` is 200 B: canonical bytes,
+decoded generation/count facts, and typed borrows of row, rank, provider, placement, and descriptor
+lanes. Retaining those slices is an intentional witness cost: random reads and sequential cursors
+perform no raw reconstruction or post-validation error handling. The empty artifact is 49 B;
+all-overlay-absent geometry is 217 B for 32 exceptions and 353 B for 64. Present descriptors are
+45 B because the header owns their shared content-domain authority once.
 
 Strict big-endian exception-row validation has a scalar `TryFrom<&[u8]>` path and a reusable
 root-owned `LocalityValidator` that privately caches one `fearless_simd` level. Three Apple M3 Pro

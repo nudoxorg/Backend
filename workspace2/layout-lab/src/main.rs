@@ -9,12 +9,12 @@ use core::mem::{align_of, offset_of, size_of};
 use nudox_frame::{EncodeError, PreparedFrame, SectionInput};
 use nudox_hydration::{
     BoundNeed, DemandBindError, Fetch, FetchRoute, HydrationPlanView, Need, PlanCoverage,
-    PlanError, PlanScratch, PlanScratchFacts, Projection, Promise, ReadyGeneration,
-    StagedGeneration, VerificationError, VerifiedGeneration,
+    PlanError, PlanScratch, PlanScratchFacts, Projection, Promise, StagedGeneration,
+    VerificationError, VerifiedGeneration,
 };
 use nudox_id::{
-    ArtifactHasher, ArtifactId, ContentHasher, ContentId, ContentRoutingWord, DomainTag,
-    EncodingTag, FrameEncoding, GenerationId, ObjectDomain,
+    ArtifactHasher, ArtifactId, ContentHasher, ContentId, ContentPayload, ContentRoutingWord,
+    DomainTag, EncodingTag, FrameEncoding, GenerationId, ObjectDomain,
 };
 use nudox_object::{
     DepSetId, ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderSet, RemoteBase,
@@ -27,10 +27,10 @@ use nudox_operation::{
 use nudox_root::{
     ClosureScratch, ClosureScratchFacts, EntryKey, EntryRange, GenerationEntry, GenerationRoot,
     GenerationRootBuilder, GenerationRootFacts, GenerationScan, GenerationView, Locality,
-    LocalityException, LocalityLayout, LocalityLookupWork, LocalityReadError, LocalityRow,
-    LocalityScanWork, LocalityValidator, LocalityWriteError, MeasuredGenerationScan, NonResident,
-    PreparedLocality, RootBuildError, RootChange, RootDiff, RootEntry, RootPushError,
-    SelectedClosure, SelectedCount, SelectedGeneration, SelectionWork, ValidatedLocality,
+    LocalityException, LocalityLayout, LocalityLookupWork, LocalityRow, LocalityScanWork,
+    LocalityValidator, LocalityWriteError, MeasuredGenerationScan, NonResident, PreparedLocality,
+    RootBuildError, RootChange, RootDiff, RootEntry, RootPushError, SelectedClosure, SelectedCount,
+    SelectedGeneration, SelectionWork, ValidatedLocality,
 };
 use nudox_runtime::{
     Admission, AdmissionError, AdmissionFuture, ByteBudget, ByteBudgetError, ByteQuantum,
@@ -111,6 +111,11 @@ fn main() {
         "identity",
         ContentId<ObjectDomain>,
         "repr(transparent), explicit exact-layout test"
+    );
+    layout!(
+        "identity",
+        ContentPayload<ObjectDomain>,
+        "repr(transparent), artifact-global authority payload"
     );
     layout!(
         "identity",
@@ -220,11 +225,6 @@ fn main() {
         ValidatedLocality<'static, ObjectDomain>,
         "borrowed canonical locality witness"
     );
-    layout!(
-        "root",
-        LocalityReadError,
-        "typed post-validation drift containment"
-    );
     layout!("root", LocalityWriteError, "typed caller-output rejection");
     layout!(
         "root",
@@ -298,7 +298,6 @@ fn main() {
         "borrowing typestate"
     );
     layout!("hydration", VerifiedGeneration, "sealed typestate witness");
-    layout!("hydration", ReadyGeneration, "sealed typestate witness");
     layout!(
         "hydration",
         VerificationError<ObjectDomain>,

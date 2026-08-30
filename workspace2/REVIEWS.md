@@ -402,10 +402,11 @@ Status: open | verified
 
 ### Verified resolutions
 
-- The native three-owner locality projection is gone. One caller-owned canonical artifact now has a
-  136-B borrowed witness with cached geometry, a forward scan cursor, typed post-validation drift
-  errors, and a measured `fearless_simd` validator. At 16,384 rows the three-run M3 Pro median is
-  10.18× scalar with +328 B text and no release-file growth.
+- The native three-owner locality projection is gone. This historical round measured a 136-B
+  geometry-caching witness. The current replacement is a 200-B typed-lane witness with infallible
+  traversal: one artifact-global content authority replaces repeated per-descriptor authority bytes,
+  and trusted reads carry no drift-error cascade. The retained historical `fearless_simd` result was
+  10.18× scalar at 16,384 rows with +328 B text and no release-file growth.
 - Runtime admission is `no_std + alloc`, monomorphized over heap, const-inline, or caller-arena
   storage. `Arc`, mutex queues, duplicate terminal storage, rollback bundles, and no-op policy structs
   are absent from production. Work and terminal occupy the same permit-addressed cell. Nine Loom
