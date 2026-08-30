@@ -297,7 +297,11 @@ fn main() {
         StagedGeneration<'static, 'static, 'static, ObjectDomain>,
         "borrowing typestate"
     );
-    layout!("hydration", VerifiedGeneration, "sealed typestate witness");
+    layout!(
+        "hydration",
+        VerifiedGeneration<'static, ()>,
+        "sealed facts plus exact evidence borrow"
+    );
     layout!(
         "hydration",
         VerificationError<ObjectDomain>,

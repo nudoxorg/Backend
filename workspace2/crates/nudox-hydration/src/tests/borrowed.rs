@@ -36,6 +36,51 @@ fn borrowed_complete_plan_preserves_order_routes_coverage_and_dependency_identit
 }
 
 #[test]
+fn noncontiguous_absence_advances_sparse_and_selected_cursors_exactly() -> Result<(), ScenarioError>
+{
+    let root = root()?;
+    let locality_bytes = locality(&root)?;
+    let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
+    let mut canonical_root = vec![0; usize::from(root.canonical_len())];
+    root.write_canonical(&mut canonical_root)?;
+    let validated_root = ValidatedRoot::<ObjectDomain>::try_from(canonical_root.as_slice())?;
+    let view = BorrowedGenerationView::new(&validated_root, &locality)?;
+    let mut closure = closure_scratch(&root)?;
+    let mut scratch = plan_scratch(&root)?;
+    let plan = plan_borrowed(
+        Need::new(view.id, Projection::CompleteGeneration).bind_borrowed(&view)?,
+        &mut closure,
+        &mut scratch,
+        |descriptor| descriptor == object(2),
+    )?;
+
+    assert_eq!(
+        plan.required().collect::<Vec<_>>(),
+        Vec::from([object(1), object(2), object(3)])
+    );
+    assert_eq!(plan.present().collect::<Vec<_>>(), Vec::from([object(2)]));
+    assert_eq!(plan.promised().count(), 0);
+    assert_eq!(
+        plan.missing().collect::<Vec<_>>(),
+        Vec::from([object(1), object(3)])
+    );
+    assert_eq!(
+        plan.fetches().collect::<Vec<_>>(),
+        Vec::from([
+            Fetch {
+                object: object(1),
+                route: FetchRoute::Unrouted,
+            },
+            Fetch {
+                object: object(3),
+                route: FetchRoute::Unrouted,
+            },
+        ])
+    );
+    Ok(())
+}
+
+#[test]
 fn borrowed_range_and_verification_keep_partial_and_missing_causes_exact()
 -> Result<(), ScenarioError> {
     let root = root()?;
@@ -70,7 +115,7 @@ fn borrowed_range_and_verification_keep_partial_and_missing_causes_exact()
             missing: 2.into(),
         }
     );
-    let partial_verification = ranged.stage().verify(|_| true);
+    let partial_verification = ranged.stage().verify(&(), |(), _| true);
     require_partial_verification(&partial_verification, view.id)?;
 
     let complete = plan_borrowed(
@@ -79,9 +124,10 @@ fn borrowed_range_and_verification_keep_partial_and_missing_causes_exact()
         &mut scratch,
         |_| false,
     )?;
-    let missing_verification = complete
-        .stage()
-        .verify(|descriptor| descriptor == object(1));
+    let present = [object(1)];
+    let missing_verification = complete.stage().verify(&present, |present, descriptor| {
+        present.contains(&descriptor)
+    });
     require_missing_verification(&missing_verification, view.id)?;
     Ok(())
 }
@@ -182,8 +228,8 @@ fn assert_complete_borrowed_plan(
     Ok((borrowed.dep_set, borrowed.coverage))
 }
 
-fn require_partial_verification(
-    result: &Result<crate::VerifiedGeneration, VerificationError<ObjectDomain>>,
+fn require_partial_verification<Evidence: ?Sized>(
+    result: &Result<crate::VerifiedGeneration<'_, Evidence>, VerificationError<ObjectDomain>>,
     expected_root: GenerationId,
 ) -> Result<(), ScenarioError> {
     match result {
@@ -204,8 +250,8 @@ fn require_partial_verification(
     }
 }
 
-fn require_missing_verification(
-    result: &Result<crate::VerifiedGeneration, VerificationError<ObjectDomain>>,
+fn require_missing_verification<Evidence: ?Sized>(
+    result: &Result<crate::VerifiedGeneration<'_, Evidence>, VerificationError<ObjectDomain>>,
     expected_root: GenerationId,
 ) -> Result<(), ScenarioError> {
     match result {

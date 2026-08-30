@@ -19,7 +19,9 @@ use crate::{BoundBorrowedNeed, BoundNeed, Projection};
 pub use evidence::{
     AbsentCount, PlanCoverage, PlanError, PlanRejection, PlanScratch, PlanScratchFacts,
 };
-pub use output::{BorrowedHydrationPlanView, Fetch, FetchRoute, HydrationPlanView, Promise};
+pub use output::{
+    BorrowedHydrationPlanView, Fetch, FetchRoute, HydrationPlanFacts, HydrationPlanView, Promise,
+};
 
 /// Closed outcome for one completed hydration operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,7 +259,7 @@ const fn plan_outcome<DomainTag>(
     result: &Result<HydrationPlanView<'_, '_, DomainTag>, PlanError>,
 ) -> HydrationOutcome {
     match result {
-        Ok(plan) => HydrationOutcome::Planned(plan.coverage),
+        Ok(plan) => HydrationOutcome::Planned(plan.facts.coverage),
         Err(PlanError::Demand(_)) => HydrationOutcome::Rejected(PlanRejection::DemandMismatch),
         Err(PlanError::Closure(ClosureError::ScratchTooSmall { .. })) => {
             HydrationOutcome::Rejected(PlanRejection::ClosureScratchTooSmall)

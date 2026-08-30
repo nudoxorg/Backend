@@ -1,0 +1,15 @@
+error[E0594]: cannot assign to data in dereference of `HydrationPlanView<'_, '_, ObjectDomain>`
+ --> tests/ui/relabel_hydration_plan.rs:5:5
+  |
+5 |     plan.projection = Projection::CompleteGeneration;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot assign
+  |
+  = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `HydrationPlanView<'_, '_, ObjectDomain>`
+
+error[E0594]: cannot assign to data in dereference of `BorrowedHydrationPlanView<'_, '_, '_, '_, ObjectDomain>`
+  --> tests/ui/relabel_hydration_plan.rs:11:5
+   |
+11 |     plan.projection = Projection::CompleteGeneration;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot assign
+   |
+   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `BorrowedHydrationPlanView<'_, '_, '_, '_, ObjectDomain>`

@@ -1,9 +1,13 @@
 use super::*;
 
 #[test]
-fn verified_generation_has_only_its_two_runtime_facts() {
-    let witness_bytes = size_of::<GenerationId>() + size_of::<nudox_object::DepSetId>();
-    assert_eq!(size_of::<crate::VerifiedGeneration>(), witness_bytes);
+fn verified_generation_retains_facts_and_one_exact_evidence_reference() {
+    let witness_bytes =
+        size_of::<GenerationId>() + size_of::<nudox_object::DepSetId>() + size_of::<&()>();
+    assert_eq!(
+        size_of::<crate::VerifiedGeneration<'static, ()>>(),
+        witness_bytes
+    );
 }
 
 #[test]
@@ -26,7 +30,7 @@ fn binding_and_verification_reject_adjacent_invalid_states() -> Result<(), Scena
     let mut closure = closure_scratch(&root)?;
     let mut planning = plan_scratch(&root)?;
     let partial = plan(bound, &mut closure, &mut planning, |_| true)?;
-    match partial.stage().verify(|_| true) {
+    match partial.stage().verify(&(), |(), _| true) {
         Err(VerificationError::PartialProjection { pinned_root }) => {
             assert_eq!(pinned_root, root.id);
         }
@@ -63,7 +67,10 @@ fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing
         &mut planning,
         |_| false,
     )?;
-    match partial.stage().verify(|descriptor| descriptor == object(1)) {
+    let present = [object(1)];
+    match partial.stage().verify(&present, |present, descriptor| {
+        present.contains(&descriptor)
+    }) {
         Err(VerificationError::MissingObject {
             pinned_root,
             object: missing,
@@ -95,11 +102,18 @@ fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing
     )?;
     assert!(replay.is_complete());
     assert_eq!(replay.fetches().count(), 0);
+    let present = [object(1), object(2), object(3)];
     let verified = replay
         .stage()
-        .verify(|_| true)
+        .verify(&present, |present, descriptor| {
+            present.contains(&descriptor)
+        })
         .map_err(ScenarioError::Verification)?;
     assert_eq!(verified.pinned_root, root.id);
     assert_eq!(verified.dep_set, replay.dep_set);
+    assert!(core::ptr::eq(
+        core::ptr::from_ref(verified.as_ref()),
+        core::ptr::from_ref(&present)
+    ));
     Ok(())
 }

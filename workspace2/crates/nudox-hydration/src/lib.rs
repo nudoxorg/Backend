@@ -10,12 +10,13 @@ mod publication;
 
 pub use need::{BoundBorrowedNeed, BoundNeed, DemandBindError, Need, Projection, demand};
 pub use plan::{
-    AbsentCount, BorrowedHydrationPlanView, Fetch, FetchRoute, HydrationOutcome, HydrationPlanView,
-    HydrationProbeEvent, PlanCoverage, PlanError, PlanRejection, PlanScratch, PlanScratchFacts,
-    Promise, plan, plan_borrowed, plan_with_probe,
+    AbsentCount, BorrowedHydrationPlanView, Fetch, FetchRoute, HydrationOutcome,
+    HydrationPlanFacts, HydrationPlanView, HydrationProbeEvent, PlanCoverage, PlanError,
+    PlanRejection, PlanScratch, PlanScratchFacts, Promise, plan, plan_borrowed, plan_with_probe,
 };
 pub use publication::{
     BorrowedStagedGeneration, StagedGeneration, VerificationError, VerifiedGeneration,
+    VerifiedGenerationFacts,
 };
 
 #[cfg(test)]

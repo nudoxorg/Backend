@@ -1,4 +1,4 @@
-use core::mem::size_of_val;
+use core::{mem::size_of_val, ops::Deref};
 
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef, ProviderSet};
@@ -36,8 +36,9 @@ pub struct Fetch<DomainTag> {
     pub route: FetchRoute,
 }
 
-/// Borrowing, allocation-free hydration plan over explicit caller-owned scratch.
-pub struct HydrationPlanView<'selection, 'storage, DomainTag> {
+/// Read-only semantic facts shared by owned and borrowed hydration plans.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HydrationPlanFacts {
     /// Immutable root this exact plan was derived from.
     pub pinned_root: GenerationId,
     /// Exact projection represented by the plan.
@@ -46,7 +47,20 @@ pub struct HydrationPlanView<'selection, 'storage, DomainTag> {
     pub dep_set: DepSetId,
     /// Exact aggregate coverage gathered while deriving this plan.
     pub coverage: PlanCoverage,
+}
+
+/// Borrowing, allocation-free hydration plan over explicit caller-owned scratch.
+pub struct HydrationPlanView<'selection, 'storage, DomainTag> {
+    pub(super) facts: HydrationPlanFacts,
     absent: OwnedSelectedOrdinals<'selection, 'storage, DomainTag>,
+}
+
+impl<DomainTag> Deref for HydrationPlanView<'_, '_, DomainTag> {
+    type Target = HydrationPlanFacts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'storage, DomainTag> {
@@ -59,10 +73,12 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
         positions: &'storage [u32],
     ) -> Self {
         Self {
-            pinned_root,
-            projection,
-            dep_set,
-            coverage,
+            facts: HydrationPlanFacts {
+                pinned_root,
+                projection,
+                dep_set,
+                coverage,
+            },
             absent: OwnedSelectedOrdinals {
                 selected,
                 positions,
@@ -139,15 +155,16 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
 
 /// Borrowing sparse plan over a validated canonical root and locality map.
 pub struct BorrowedHydrationPlanView<'selection, 'storage, 'root, 'locality, DomainTag> {
-    /// Immutable root this exact plan was derived from.
-    pub pinned_root: GenerationId,
-    /// Exact projection represented by the plan.
-    pub projection: Projection,
-    /// Canonical identity of ordered required descriptors.
-    pub dep_set: DepSetId,
-    /// Exact aggregate coverage gathered while deriving this plan.
-    pub coverage: PlanCoverage,
+    facts: HydrationPlanFacts,
     absent: BorrowedSelectedOrdinals<'selection, 'storage, 'root, 'locality, DomainTag>,
+}
+
+impl<DomainTag> Deref for BorrowedHydrationPlanView<'_, '_, '_, '_, DomainTag> {
+    type Target = HydrationPlanFacts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 impl<'selection, 'storage, 'root, 'locality, DomainTag: Domain>
@@ -162,10 +179,12 @@ impl<'selection, 'storage, 'root, 'locality, DomainTag: Domain>
         positions: &'storage [u32],
     ) -> Self {
         Self {
-            pinned_root,
-            projection,
-            dep_set,
-            coverage,
+            facts: HydrationPlanFacts {
+                pinned_root,
+                projection,
+                dep_set,
+                coverage,
+            },
             absent: BorrowedSelectedOrdinals {
                 selected,
                 positions,
