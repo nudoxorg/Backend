@@ -13,6 +13,7 @@ use nudox_observability_adapter::{
     periodic_meter_provider,
 };
 
+use super::signal_fixture::emit_signal_fixture;
 use super::support::{
     AdapterTestError, EVENTS, ExpectedEvent, ExpectedValue, ScenarioSpan, nudox_interest,
 };
@@ -22,7 +23,7 @@ const TRACE_METADATA_FIELDS: usize = 5;
 #[test]
 #[allow(
     clippy::result_large_err,
-    reason = "the integration test retains exact SDK and scenario sources without boxing"
+    reason = "the integration test retains exact SDK sources without boxing"
 )]
 fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
 -> Result<(), AdapterTestError> {
@@ -36,13 +37,11 @@ fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
         periodic_meter_provider(metric_exporter.clone(), core::time::Duration::from_hours(1));
     let subscriber = dispatch(&trace_provider, &logger_provider, nudox_interest());
 
-    let evidence = tracing::dispatcher::with_default(&subscriber, || {
-        TracingProbe::with_meter(&meter_provider).run_scenario()
+    tracing::dispatcher::with_default(&subscriber, || {
+        let mut probe = TracingProbe::with_meter(&meter_provider);
+        let metrics = probe.within_request(emit_signal_fixture);
+        probe.record_runtime_metrics(metrics)
     })?;
-    assert_eq!(
-        evidence.workflow_phase,
-        nudox_workflow::PhaseName::Published
-    );
     trace_provider.force_flush()?;
     logger_provider.force_flush()?;
     meter_provider.force_flush()?;
@@ -399,6 +398,7 @@ fn filtered_dispatch_does_not_build_root_probe_events() -> Result<(), AdapterTes
                 work: SelectionWork {
                     projected_rows: 1,
                     ancestor_edges: 0,
+                    parent_search_comparisons: 0,
                 },
             }
         });

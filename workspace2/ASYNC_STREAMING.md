@@ -15,6 +15,9 @@ StreamEvent<BatchLease, Terminal>
 ```
 
 - A local source is a unique lending cursor. It never returns `Pending` because no wake source exists.
+- A completion-fed runtime-independent control is not that cursor: before a keyed completion it must
+  return an explicit semantic `Pending`/not-ready state. `Option<Event>` is invalid when `None` could
+  mean either pending or fused.
 - An I/O source has an associated concrete `Stream`/future type. It registers a waker before returning
   `Pending`; it is not boxed or erased in the core contract.
 - `Terminal` is observed exactly once before fused exhaustion. `None` means only “the already-terminal

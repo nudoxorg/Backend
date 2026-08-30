@@ -1,0 +1,3 @@
+[target.'cfg(all())']
+linker = "dylint-link"
+

@@ -1,6 +1,6 @@
 use core::num::TryFromIntError;
 
-use nudox_id::ContentId;
+use nudox_id::{ContentId, ContentIdDecodeError};
 use nudox_object::ObjectLength;
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
@@ -117,6 +117,15 @@ pub enum ObjectPackError {
         #[source]
         source: UnknownSchemaId,
     },
+    /// A directory content cell carries the wrong closed identity authority.
+    #[error("pack directory row {ordinal} has an invalid content identity")]
+    DirectoryContent {
+        /// Directory row containing the rejected content cell.
+        ordinal: usize,
+        /// Exact checked identity decode failure.
+        #[source]
+        source: ContentIdDecodeError,
+    },
     /// Directory content cells are not strictly ascending.
     #[error("pack directory content {current:?} does not follow {previous:?} at row {ordinal}")]
     DirectoryOrder {
@@ -168,5 +177,21 @@ pub enum ObjectPackError {
         expected: ObjectPackBytes,
         /// Exact encoded cumulative end.
         observed: ObjectPackBytes,
+    },
+    /// A complete-pack view was not exactly the validated index plus all bodies.
+    #[error("pack has {actual:?} bytes but requires exactly {expected:?}")]
+    PackExtent {
+        /// Validated complete pack extent.
+        expected: ObjectPackBytes,
+        /// Complete supplied pack extent.
+        actual: ObjectPackBytes,
+    },
+    /// A selected borrowed body did not reproduce its validated content identity.
+    #[error("pack object {expected:?} hashes to {actual:?}")]
+    ObjectContent {
+        /// Identity claimed by the selected validated descriptor.
+        expected: ContentId<nudox_id::ObjectDomain>,
+        /// Identity calculated from the selected borrowed body.
+        actual: ContentId<nudox_id::ObjectDomain>,
     },
 }

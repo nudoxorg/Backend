@@ -74,7 +74,7 @@ older documents, not their dynamic Rust sketches, dependencies, or backend choic
 | Static request/item/terminal pairing and provenance | `nudox-operation` |
 | Parallel bounded admission, generation cancellation | `nudox-runtime` |
 | Changed/idempotent durable execution and recovery | `nudox-workflow` |
-| Local/remote-shaped partial and failure behavior | `nudox-e2e` |
+| Local/remote-shaped partial and failure behavior | `nudox-operation`; ordinary crate integration tests |
 
 ## Later-swath obligations preserved
 

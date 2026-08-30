@@ -23,9 +23,9 @@ pub(crate) fn hydration_fields(outcome: HydrationOutcome) -> (&'static str, u64,
 
 const fn plan_rejection(rejection: PlanRejection) -> &'static str {
     match rejection {
+        PlanRejection::DemandMismatch => "demand_mismatch",
         PlanRejection::ClosureScratchTooSmall => "closure_scratch_too_small",
         PlanRejection::PlanScratchTooSmall => "plan_scratch_too_small",
-        PlanRejection::LocalityRead => "locality_read",
     }
 }
 
@@ -139,5 +139,20 @@ pub(crate) const fn event_name(event: EventName) -> &'static str {
         EventName::Published => "published",
         EventName::Failed => "failed",
         EventName::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nudox_hydration::{HydrationOutcome, PlanRejection};
+
+    use super::hydration_fields;
+
+    #[test]
+    fn demand_mismatch_has_one_static_closed_name_and_zero_coverage() {
+        assert_eq!(
+            hydration_fields(HydrationOutcome::Rejected(PlanRejection::DemandMismatch,)),
+            ("demand_mismatch", 0, 0, 0, 0),
+        );
     }
 }

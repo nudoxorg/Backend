@@ -10,7 +10,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use tracing::{Level, Span};
 
 use crate::{
-    AdapterRunError,
+    MetricReportError,
     metrics::RuntimeMetricReporter,
     names::{
         event_name, hydration_fields, phase_name, runtime_fields, store_name, workflow_disposition,
@@ -29,7 +29,7 @@ impl TracingProbe {
     /// Creates one request span and its root-selection and workflow-stage children.
     #[must_use]
     pub fn new() -> Self {
-        let request = tracing::info_span!(target: "nudox", "nudox.request", scenario = "wave1");
+        let request = tracing::info_span!(target: "nudox", "nudox.request");
         let root = tracing::info_span!(target: "nudox", parent: &request, "nudox.root_selection");
         let workflow =
             tracing::info_span!(target: "nudox", parent: &request, "nudox.workflow_stage");
@@ -41,7 +41,7 @@ impl TracingProbe {
         }
     }
 
-    /// Creates a probe that reports one aggregate runtime snapshot after the scenario completes.
+    /// Creates a probe that can report aggregate runtime snapshots.
     #[must_use]
     pub fn with_meter(provider: &SdkMeterProvider) -> Self {
         let mut probe = Self::new();
@@ -49,22 +49,28 @@ impl TracingProbe {
         probe
     }
 
-    /// Runs the shared scenario under the request parent span.
+    /// Runs one operation under this probe's request parent span.
+    pub fn within_request<Output>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Output,
+    ) -> Output {
+        let request = self.request.clone();
+        request.in_scope(|| operation(self))
+    }
+
+    /// Reports one aggregate runtime snapshot when this probe has a meter.
     ///
     /// # Errors
     ///
-    /// Returns the unchanged typed scenario failure or exact metric conversion failure.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the adapter preserves the scenario's descriptor-rich typed source without allocation"
-    )]
-    pub fn run_scenario(&mut self) -> Result<nudox_e2e::ScenarioEvidence, AdapterRunError> {
-        let request = self.request.clone();
-        let evidence = request.in_scope(|| nudox_e2e::run_wave1_scenario(self))?;
+    /// Returns the exact integer conversion failure when a metric cannot fit its instrument.
+    pub fn record_runtime_metrics(
+        &self,
+        snapshot: nudox_runtime::RuntimeMetrics,
+    ) -> Result<(), MetricReportError> {
         if let Some(metrics) = &self.metrics {
-            metrics.record(evidence.runtime)?;
+            metrics.record(snapshot)?;
         }
-        Ok(evidence)
+        Ok(())
     }
 }
 
@@ -91,6 +97,7 @@ impl Probe<RootProbeEvent> for TracingProbe {
                 selected_rows = event.selected_rows,
                 projected_rows = event.work.projected_rows,
                 ancestor_edges = event.work.ancestor_edges,
+                parent_search_comparisons = event.work.parent_search_comparisons,
                 "root selection completed"
             );
         });

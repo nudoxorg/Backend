@@ -1,13 +1,13 @@
 //! The sole canonical byte record for one immutable object descriptor.
 
-use core::mem::{align_of, size_of};
+use core::mem::{align_of, offset_of, size_of};
 
-use nudox_id::FixedCanonicalRecord;
+use nudox_id::{ContentIdDecodeError, Domain, FixedCanonicalRecord};
 use nudox_schema::{SchemaId, UnknownSchemaId};
 use thiserror::Error;
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::{BigEndian, U16, U32, U64},
+    Immutable, IntoBytes, KnownLayout, TryFromBytes, Unalign, Unaligned,
+    byteorder::{BigEndian, U16, U64},
 };
 
 use crate::{ObjectKind, ObjectLength, ObjectRef};
@@ -18,20 +18,22 @@ pub const OBJECT_DESCRIPTOR_RECORD_BYTES: usize = size_of::<ObjectDescriptorWire
 /// Declarative portable descriptor record shared by hashing, direct output,
 /// streaming adapters, and borrowed artifact regions.
 #[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[derive(Clone, Copy, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned)]
 pub struct ObjectDescriptorWireRecord {
     /// Exact canonical content-identity cell.
     pub content: [u8; 32],
     /// Exact canonical object-length cell.
     pub length: U64<BigEndian>,
     /// Closed schema discriminant cell.
-    pub schema: U32<BigEndian>,
+    pub schema: Unalign<SchemaId>,
     /// Opaque schema-kind cell.
     pub kind: U16<BigEndian>,
 }
 
 const _: [(); 1] = [(); align_of::<ObjectDescriptorWireRecord>()];
 const _: [(); 46] = [(); size_of::<ObjectDescriptorWireRecord>()];
+const SCHEMA_OFFSET: usize = offset_of!(ObjectDescriptorWireRecord, schema);
+const SCHEMA_BYTES: usize = size_of::<SchemaId>();
 
 /// Caller output shorter than the fixed canonical descriptor record.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -44,7 +46,7 @@ pub struct ObjectDescriptorOutputTooSmall {
 }
 
 /// Owned canonical descriptor decoding failure.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum ObjectDescriptorDecodeError {
     /// Input was not exactly one canonical descriptor record.
     #[error(
@@ -57,42 +59,70 @@ pub enum ObjectDescriptorDecodeError {
     /// The record carried an unknown closed schema discriminant.
     #[error("object descriptor schema is unknown")]
     Schema(#[from] UnknownSchemaId),
+    /// The record carried a content identity from another closed domain.
+    #[error("object descriptor content identity is not an object identity")]
+    Content(#[from] ContentIdDecodeError),
 }
+
+impl PartialEq for ObjectDescriptorDecodeError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Width { actual }, Self::Width { actual: other }) => actual == other,
+            (Self::Schema(left), Self::Schema(right)) => left == right,
+            (Self::Content(left), Self::Content(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ObjectDescriptorDecodeError {}
 
 impl<DomainTag> From<&ObjectRef<DomainTag>> for ObjectDescriptorWireRecord {
     fn from(reference: &ObjectRef<DomainTag>) -> Self {
         Self {
             content: *reference.content,
             length: U64::new(*reference.length),
-            schema: U32::new(u32::from(reference.schema)),
+            schema: Unalign::new(reference.schema),
             kind: U16::new(*reference.kind),
         }
     }
 }
 
-impl<DomainTag> TryFrom<&ObjectDescriptorWireRecord> for ObjectRef<DomainTag> {
-    type Error = UnknownSchemaId;
+impl<DomainTag: Domain> TryFrom<&ObjectDescriptorWireRecord> for ObjectRef<DomainTag> {
+    type Error = ObjectDescriptorDecodeError;
 
     fn try_from(record: &ObjectDescriptorWireRecord) -> Result<Self, Self::Error> {
         Ok(Self {
-            content: nudox_id::ContentId::from(record.content),
+            content: nudox_id::ContentId::try_from(record.content)?,
             length: ObjectLength::from(record.length.get()),
-            schema: SchemaId::try_from(record.schema.get())?,
+            schema: record.schema.get(),
             kind: ObjectKind::from(record.kind.get()),
         })
     }
 }
 
-impl<DomainTag> TryFrom<&[u8]> for ObjectRef<DomainTag> {
+impl<DomainTag: Domain> TryFrom<&[u8]> for ObjectRef<DomainTag> {
     type Error = ObjectDescriptorDecodeError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let record = ObjectDescriptorWireRecord::ref_from_bytes(bytes).map_err(|source| {
-            ObjectDescriptorDecodeError::Width {
-                actual: source.into_src().len(),
-            }
-        })?;
-        Self::try_from(record).map_err(ObjectDescriptorDecodeError::from)
+        if bytes.len() != OBJECT_DESCRIPTOR_RECORD_BYTES {
+            return Err(ObjectDescriptorDecodeError::Width {
+                actual: bytes.len(),
+            });
+        }
+        let schema = bytes
+            .get(SCHEMA_OFFSET..SCHEMA_OFFSET + SCHEMA_BYTES)
+            .and_then(|bytes| <&[u8; SCHEMA_BYTES]>::try_from(bytes).ok())
+            .ok_or(ObjectDescriptorDecodeError::Width {
+                actual: bytes.len(),
+            })?;
+        let observed = u32::from_be_bytes(*schema);
+        let Ok(record) = ObjectDescriptorWireRecord::try_ref_from_bytes(bytes) else {
+            return Err(ObjectDescriptorDecodeError::Schema(UnknownSchemaId(
+                observed,
+            )));
+        };
+        Self::try_from(record)
     }
 }
 
@@ -150,7 +180,7 @@ mod tests {
 
     fn object() -> ObjectRef<ObjectDomain> {
         ObjectRef {
-            content: ContentId::from([7; 32]),
+            content: ContentId::from_digest([7; 32]),
             length: 12_u64.into(),
             schema: SchemaId::Object,
             kind: 3_u16.into(),
@@ -162,11 +192,12 @@ mod tests {
         let reference = object();
         let record = ObjectDescriptorWireRecord::from(&reference);
         let mut expected = [7_u8; OBJECT_DESCRIPTOR_RECORD_BYTES];
+        expected[0] = 1;
         expected[32..40].copy_from_slice(&12_u64.to_be_bytes());
         expected[40..44].copy_from_slice(&u32::from(SchemaId::Object).to_be_bytes());
         expected[44..46].copy_from_slice(&3_u16.to_be_bytes());
         assert_eq!(record.as_bytes(), expected);
-        assert_eq!(ObjectRef::try_from(&record), Ok(reference));
+        assert_eq!(ObjectRef::try_from(&record).ok(), Some(reference));
     }
 
     #[test]

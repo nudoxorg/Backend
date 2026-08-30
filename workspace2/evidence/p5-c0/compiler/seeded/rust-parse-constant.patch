@@ -1,0 +1,5 @@
+--- a/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
++++ b/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
+@@ -39,1 +39,1 @@
+-        source
++        b"constant-rust-parse"

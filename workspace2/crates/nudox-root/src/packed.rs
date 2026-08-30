@@ -165,6 +165,13 @@ impl RowIndex {
         Self(position as u32)
     }
 
+    /// Creates the coordinate retained by a validated borrowed wire row.
+    /// The validator proves this ordinal is within the typed slice; it is a
+    /// distinct provenance bridge from the packed C0 arena coordinate.
+    pub(crate) const fn from_validated_borrowed_root_position(position: usize) -> Self {
+        Self::from_arena_position(position)
+    }
+
     /// Decodes a compact parent only after construction verified it against the
     /// exact immutable row arena.
     #[allow(

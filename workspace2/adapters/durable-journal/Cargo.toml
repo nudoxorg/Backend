@@ -1,0 +1,17 @@
+[package]
+name = "nudox-durable-journal"
+version = "0.1.0"
+rust-version = "1.97.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+nudox-workflow = { path = "../../crates/nudox-workflow" }
+blake3 = { version = "1.8.2", default-features = false }
+thiserror = { version = "2", default-features = false }
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+allocation-counter = "0.8.1"
+
+[workspace]

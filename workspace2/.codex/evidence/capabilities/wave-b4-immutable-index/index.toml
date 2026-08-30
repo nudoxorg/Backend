@@ -1,0 +1,101 @@
+schema = 1
+capability_id = "wave-b4-immutable-index"
+state = "evidence-blocked"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = "TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+
+[manager]
+task_id = "/root/wave_b4_terra"
+role = "nudox_terra_orchestrator"
+config_path = ".codex/agents/nudox-terra-orchestrator.toml"
+resolved_config_path = ".codex/config.toml"
+requested_model = "gpt-5.6-terra"
+actual_dispatch_model = "gpt-5.6-terra"
+requested_effort = "xhigh"
+actual_dispatch_effort = "xhigh"
+sandbox = "danger-full-access"
+checkout = "/Users/mileswirht/.config/codex/worktrees/f7b8/backend"
+branch = "codex/wave-b4-immutable-index"
+forbidden_checkout = "/Users/mileswirht/Downloads/backend"
+
+[phase0]
+production_writes = false
+production_luna_started = false
+writable_path_ledger = [".codex/evidence/capabilities/wave-b4-immutable-index/**"]
+affected_consumers = [
+  "planes/index/crates/nudox-index-vocab/src/lib.rs",
+  "planes/index/crates/nudox-index-vocab/tests/vocabulary.rs",
+  "crates/nudox-id/src/marker.rs",
+  "crates/nudox-id/src/lib.rs",
+  "planes/index/Cargo.toml",
+]
+historical_material = [
+  "INDEX_I0_MANAGER_CARD.md",
+  "INDEX_I0_CALIBRATION_RAW.md",
+  "evidence/index-i0/**",
+  "workspace/index/**",
+  "git:b1a59b16",
+]
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/brief.md", sha256 = "e6bb0c2eb7118e35316321b9cf873b140dcf387a2f06f6f87f1f15e084f6696d" }
+matrix = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/proof-matrix.md", sha256 = "8ec68966d8d3f915786ea5691d05c4acfb53841ae7510d113cb08c623d4ad5ab" }
+research = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/research.md", sha256 = "f4ee5d01eb921dfddcb405c8d0301214e1c6de23a38c9cc1ebde31ba1b9cca78" }
+closure = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/closure.md", sha256 = "beef880b507a22333aa6187786c10c8c67e02830336e2249683c79beca2a8b39" }
+phase0_card = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/phase0-card.md", sha256 = "cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00" }
+
+[packets]
+pre_edit = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/pre-edit-1.md", sha256 = "ded9b7ce69a4307fe593448194957ae2cf3b41cc5384abef1826a650e81b19d1" }
+reviewer_calibration = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/reviewer-calibration-deck.md", sha256 = "7d3d6a1d68ff194950d8ac6ecbecaf204d9d5be80ea3d091cf202cd63fbc8f36" }
+calibration_receipts = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/calibration-receipts.md", sha256 = "d97d46376badeebfffa6b3e1d9df8124eaa13087e1a36dcbb04f1c2cb554c42f" }
+sidecar_review_attempts = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/sidecar-review-attempts.md", sha256 = "8be9e29211cb0703d3574229c697c32a26eb40e40f67c4edf031178f2b6b28cf" }
+
+[receipts]
+baseline_status = "clean"
+index_vocabulary_status = "unproved: bounded Nix attempts timed out after fetching git input"
+calibration_status = "incomplete: final reader B interrupted; final reader A and misreader are retained as read-only receipts"
+pre_edit_review_status = "evidence-blocked: three source-isolated sidecars produced no reviewer child; continuation found no rollout"
+source_snapshot_aggregate_sha256 = "13e7bf55ad0ca948e2cf5867f72192d03f58b0c2ac675bc2edc7221477cfd03e"
+
+[[calibration_attempts]]
+task_id = "/root/wave_b4_terra/b4_reader_final_a"
+role = "nudox_luna_implementer"
+requested_model = "gpt-5.6-luna"
+requested_effort = "max"
+card_sha256 = "cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00"
+status = "read-only receipt retained; task-level custody only, host sandbox danger-full-access"
+
+[[calibration_attempts]]
+task_id = "/root/wave_b4_terra/b4_misreader_final"
+role = "nudox_luna_implementer"
+requested_model = "gpt-5.6-luna"
+requested_effort = "max"
+card_sha256 = "cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00"
+status = "read-only misreader receipt retained; identifies prohibited constant-body exact_at shortcut"
+
+[[calibration_attempts]]
+task_id = "/root/wave_b4_terra/b4_reader_final_b"
+role = "nudox_luna_implementer"
+requested_model = "gpt-5.6-luna"
+requested_effort = "max"
+card_sha256 = "cc55f7b9150dc4f90d65f422c7bc977a4482a81fbe28dc93723cc12e563dee00"
+status = "interrupted before final receipt"
+
+[[sidecar_attempts]]
+sidecar_task_id = "01a0514e-3d25-7201-836c-33473be48957"
+parent_model = "gpt-5.6-luna"
+status = "reviewer child not spawned: unsupported configured Luna child model"
+
+[[sidecar_attempts]]
+sidecar_task_id = "01a0514f-3c9c-76d1-bd36-c32a380a2768"
+parent_model = "gpt-5.6-terra"
+status = "reviewer child not spawned: copied config still selected unsupported Luna child model"
+
+[[sidecar_attempts]]
+sidecar_task_id = "01a05150-31ac-7353-bef9-213f969a5443"
+parent_model = "gpt-5.6-terra"
+status = "no child ID/result; continuation failed with no rollout"

@@ -15,6 +15,10 @@ Experiments live in `layout-lab/`; production stays unchanged until a candidate 
 owner approves adoption. Read only the affected type/owners/consumers, matching `LAYOUT_AUDIT.md`
 baseline/hypothesis, and the relevant `TEST_INFRA.md` evidence law.
 
+Under prototype orchestration, commit every control/candidate and raw result on the isolated
+prototype branch. A winning lab row is only `PROMOTE FOR FUTURE INTEGRATION REVIEW`; it does not
+authorize production edits or a shared merge.
+
 ## Experiment card
 
 ```text
@@ -43,6 +47,11 @@ Wait for parent approval before adding candidates.
   rollback.
 - SIMD trials start only after an end-to-end scalar profile and report every alignment/tail,
   crossover, ARM/x86, first-error equivalence, and binary delta.
+- Tagged/content-addressed layouts measure entropy at the actual routing/partition consumer. A smaller
+  digest with fixed prefix cells may preserve cryptographic strength while still destroying low-bit
+  bucket distribution; size/collision claims alone are incomplete.
+- Conversion experiments preserve standard trait semantics. A candidate that compresses source by making
+  `From` mutate/normalize the supplied representation is rejected before measurement.
 - Production instrumentation is not benchmark instrumentation. Counters stay lab-only unless the
   product independently requires the typed aggregate event.
 - Test one ownership axis at a time before chaining mechanisms. Instantiate dependencies rather than

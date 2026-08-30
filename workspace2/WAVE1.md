@@ -25,8 +25,8 @@ framework.
 
 ## Operation runtime
 
-Owns `nudox-operation`, `nudox-runtime`, `nudox-workflow`, `nudox-observe`, `nudox-e2e`, and the
-server-only nested `adapters/observability` workspace.
+Owns `nudox-operation`, `nudox-runtime`, `nudox-workflow`, `nudox-observe`, and the server-only nested
+`adapters/observability` workspace.
 
 Deliver a statically dispatched operation contract, bounded batch/credit runtime, and durable
 idempotent workflow reducer. Integrate the other Wave 1 crates in end-to-end tests once their public

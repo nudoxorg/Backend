@@ -1,0 +1,183 @@
+schema = 1
+capability_id = "canonical-byte-local-closure"
+state = "evidence-blocked"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+candidate_commit = "a2fbc7c9a40f535cd683a24c9a7ba06b8d4057a2"
+candidate_tree = "f77c157799dc53b2d000d042df32050e3a43a197"
+testing_path = "TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/brief.md", sha256 = "11776fd1cf498bdd0fc271dcd20e66c567b9591e288604b30ef6bd0dd90f05ff" }
+matrix = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/proof-matrix.md", sha256 = "262ba33bb6efb4eafa96716eb5e1a34f38f8c0148896987edd664a9a4b11a87e" }
+research = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/research.md", sha256 = "c142cfeb092ead2ba99555ae9da6a980f173137779b4e4c5b0a31eedf5e6906f" }
+closure = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/closure.md", sha256 = "af0c5bbeea2420dbc6e6b2eb56feabac31b8664471dc952289594de06210be6d" }
+
+[supporting_artifacts]
+coupling_skeleton = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/coupling-skeleton.md", sha256 = "c39500b7a7d611f6d32bd444e2e1a5f2412a52ad8dc8bb2242d5154a4b399f2b" }
+testing_mapping = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/testing.md", sha256 = "62e1c43685376115569389c03ea61408701fb1d8468ca2b7f5cbf99532e22c09" }
+red_falsifiers = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/red-falsifiers.md", sha256 = "5f22db4e528c4fff4f2ec653a8df74164863781c387775d865a11aa5ce87ca12" }
+resource_controls = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/resource-controls.md", sha256 = "cae306bef3bdcd94e682830a077e357e4e69cc035c1614a110ac2a1bbf6abf16" }
+pre_edit_packet = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/packets/pre-edit-2.md", sha256 = "493734e07f8f6cb51dd4058c108406475cc9b998007b96b5e1368d5a8a7e82c3" }
+stale_pre_edit_packet = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/packets/pre-edit-1.md", sha256 = "4430a0ffcdd8a7e1fa999c66f98c4a15001ead56667d1b176391d16ccb32ecac" }
+stale_pre_edit_review = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/reviews/pre-edit-direct-1.md", sha256 = "76e711711c00d6ba7f8e146f8af4ac3759bcaa5f7044c5245c8de6dc4f9c0b5a" }
+pre_edit_review_2 = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/reviews/pre-edit-direct-2.md", sha256 = "70e56f33ca96e71f1c04757e7285f84ad2fc33bec9857d4acdfc4fe4f6e7f312" }
+luna_card_1 = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/cards/luna-vertical-1.md", sha256 = "78a01fbdbe7642c14f54d994b0194502cb3a721aedf8a5127fa1a234450ae4c8" }
+review_custody = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/review-custody.md", sha256 = "cc4492fc518e3e0dee31b16efade7c026c62f841b79abcf5bb15d979f9bf14b6" }
+candidate_review_custody = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/reviews/candidate-custody-blocked.md", sha256 = "9eee055685dfb467190ae29977e6961d1d260c53daf5a646fd61ab41f00a785a" }
+salvage_ledger = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/salvage-ledger.md", sha256 = "88c3389365e878193cb532a17dacfffbeaa18a54c046b299352155155e197cf4" }
+root_card_1 = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/cards/luna-root-1.md", sha256 = "af727d36b75e51182e5b8f4f8605843e5ca3c007e026e773357acf1e2650adc5" }
+hydration_card_1 = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/cards/luna-hydration-1.md", sha256 = "265c1e8e5220180f8a2b8e82a65d42e2f538e1619ad2cd7e7b50fed30c45c739" }
+hydration_checkpoint = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/hydration-checkpoint.md", sha256 = "41828b0cbe0913176e47c0cf91aabb9be535f4f24fd9d28ce40f7dac3d8db74f" }
+operation_card_1 = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/cards/luna-operation-1.md", sha256 = "e29cf515f2fe98455285c2f72fab8f939759d8dad8703d6fb733e68694195b10" }
+operation_checkpoint = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/operation-checkpoint.md", sha256 = "0abf4a22774b588f551600dc62ac99134f83116d60621dbaa6df456b87dd29d6" }
+terminal_report = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/terminal-report.md", sha256 = "e19e2b2dd16d4cacefb0708e21b0f773fa6f6c5bb6d7290ae93be9daa1280ff4" }
+changed_paths = { path = ".codex/evidence/capabilities/canonical-byte-local-closure/changed-paths.md", sha256 = "79fdae48ca58692f2bded5f1dc5834518a33dc5b3bfd8ba2af7a84644a8801a7" }
+atlas_card = { path = "layout-lab/ATLAS_IMPLEMENTER_CARD.md", sha256 = "98e2397ddd25f61fde0091ee86f1e560a1a7c97ea82c2b029a9ff87dace8f119" }
+atlas_receipt = { path = "layout-lab/ATLAS_MANAGER_RECEIPT.md", sha256 = "41309d045b0cb87bb79bd7987f90e1aa10a49b58a73f21ca57bb2f92918a9ba4" }
+shipping_atlas = { path = "layout-lab/raw/shipping-atlas-aarch64-apple-darwin.tsv", sha256 = "f45d8209830a08341af4dc052d5555b6d26c0c5575dbfbeb8522e9190145e5c0" }
+closure_resources = { path = "layout-lab/raw/canonical-closure-resources-aarch64-apple-darwin.tsv", sha256 = "a1b6aad0f843b262a3a497e789f679d24ec379af8171d940e9fef411e43d2d72" }
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_vertical_1"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox was not emitted"
+baseline_commit = "622553c9db62c6a52fcf619f63ad36cf0fceef01"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "ca1aa279acde0d07d6ac173d8f1b42cff03d61bfbaf2152dbdcf5f91a955f1dc"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_operation_checkpoint_1"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox receipt pending"
+baseline_commit = "4fdbe439b0d1f29ed5238d1a31cc505b47d5f327"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "e29cf515f2fe98455285c2f72fab8f939759d8dad8703d6fb733e68694195b10"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_operation_checkpoint_2"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox receipt pending"
+baseline_commit = "4fdbe439b0d1f29ed5238d1a31cc505b47d5f327"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "e29cf515f2fe98455285c2f72fab8f939759d8dad8703d6fb733e68694195b10"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_vertical_1_retry"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox was not emitted"
+baseline_commit = "622553c9db62c6a52fcf619f63ad36cf0fceef01"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "ca1aa279acde0d07d6ac173d8f1b42cff03d61bfbaf2152dbdcf5f91a955f1dc"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_vertical_2"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox receipt pending"
+baseline_commit = "b062d77e9805d8be1a4ae85f7efb4b28402e700d"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "78a01fbdbe7642c14f54d994b0194502cb3a721aedf8a5127fa1a234450ae4c8"
+result_commit = ""
+retention = "rejected-with-counterexample"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_root_checkpoint_1"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox receipt pending"
+baseline_commit = "b062d77e9805d8be1a4ae85f7efb4b28402e700d"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "af727d36b75e51182e5b8f4f8605843e5ca3c007e026e773357acf1e2650adc5"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/canonical_byte_local_closure_terra/luna_hydration_checkpoint_1"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "direct outer collaboration shared isolated checkout; effective runtime sandbox receipt pending"
+baseline_commit = "9d9738a1ae7ded73f8e9a532deb4515f88eb4f9f"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "265c1e8e5220180f8a2b8e82a65d42e2f538e1619ad2cd7e7b50fed30c45c739"
+result_commit = ""
+retention = "superseded"
+
+[[workers]]
+task_id = "/root/performance_atlas_terra"
+role = "nudox_terra_orchestrator"
+config_path = ".codex/agents/nudox-terra-orchestrator.toml"
+config_sha256 = "6bb240456d73f9b33f8e15041ac50175a9c3bb4f998285ba600069ec1955e312"
+model = "gpt-5.6-terra"
+effort = "xhigh"
+sandbox = "danger-full-access shared isolated controller checkout"
+baseline_commit = "622cdbe53de81f9339e3901cd301eedc4db3c51b"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "98e2397ddd25f61fde0091ee86f1e560a1a7c97ea82c2b029a9ff87dace8f119"
+result_commit = "1bb01041c935814b623ac92f6cf4e570201fdd74"
+retention = "absorbed"
+
+[[workers]]
+task_id = "/root/performance_atlas_terra/luna_shipping_atlas"
+role = "nudox_luna_implementer"
+config_path = ".codex/agents/nudox-luna-implementer.toml"
+config_sha256 = "84cbe726537be35c948a1a4eb2894247f458ca79b7a9c339a4e1eaf8f57d1975"
+model = "gpt-5.6-luna"
+effort = "max"
+sandbox = "danger-full-access shared isolated controller checkout"
+baseline_commit = "622cdbe53de81f9339e3901cd301eedc4db3c51b"
+checkout = "/Users/mileswirht/.config/codex/worktrees/ab6a/backend"
+card_sha256 = "98e2397ddd25f61fde0091ee86f1e560a1a7c97ea82c2b029a9ff87dace8f119"
+result_commit = ""
+retention = "absorbed"
+
+[[review_attempts]]
+sidecar_task_id = "01a051d5-08a3-7403-a66a-3c5c8e4891c6"
+parent_model = "gpt-5.6-sol"
+parent_effort = "low"
+reviewer_role = "nudox_terra_reviewer"
+reviewer_config_path = ".codex/agents/nudox-terra-reviewer.toml"
+reviewer_config_sha256 = "4ac19e5c151dd3bcd73ea9e175c3fb3f02fde419e245060d4ee65004919f120a"
+requested_reviewer_model = "gpt-5.6-terra"
+requested_reviewer_effort = "xhigh"
+reviewer_task_id = ""
+result = "authentication_failed_before_spawn"
+
+[[review_attempts]]
+sidecar_task_id = "01a051d5-9cf1-7d42-961c-7aae624d4c55"
+parent_model = "gpt-5.6-sol"
+parent_effort = "low"
+reviewer_role = "nudox_terra_reviewer"
+reviewer_config_path = ".codex/agents/nudox-terra-reviewer.toml"
+reviewer_config_sha256 = "4ac19e5c151dd3bcd73ea9e175c3fb3f02fde419e245060d4ee65004919f120a"
+requested_reviewer_model = "gpt-5.6-terra"
+requested_reviewer_effort = "xhigh"
+reviewer_task_id = ""
+result = "empty_receiver_ids_then_invalid_environment_panic"

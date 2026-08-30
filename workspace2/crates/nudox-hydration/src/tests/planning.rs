@@ -15,21 +15,21 @@ fn bound_demand_produces_exact_ordered_coverage_and_fetch_routes() -> Result<(),
         })?;
         let required: Vec<_> = hydrated
             .required()
-            .map(|descriptor| descriptor.map(|descriptor| descriptor.content))
-            .collect::<Result<_, _>>()?;
+            .map(|descriptor| descriptor.content)
+            .collect();
         let present: Vec<_> = hydrated
             .present()
-            .map(|descriptor| descriptor.map(|descriptor| descriptor.content))
-            .collect::<Result<_, _>>()?;
+            .map(|descriptor| descriptor.content)
+            .collect();
         let promised: Vec<_> = hydrated
             .promised()
-            .map(|promise| promise.map(|promise| promise.object.content))
-            .collect::<Result<_, _>>()?;
+            .map(|promise| promise.object.content)
+            .collect();
         let missing: Vec<_> = hydrated
             .missing()
-            .map(|descriptor| descriptor.map(|descriptor| descriptor.content))
-            .collect::<Result<_, _>>()?;
-        let fetches: Vec<_> = hydrated.fetches().collect::<Result<_, _>>()?;
+            .map(|descriptor| descriptor.content)
+            .collect();
+        let fetches: Vec<_> = hydrated.fetches().collect();
         assert_eq!(
             required,
             Vec::from([object(1).content, object(2).content, object(3).content])
@@ -121,16 +121,16 @@ fn overlay_and_range_coverage_remain_exact_and_small_scratch_rolls_back()
     )?;
     let required: Vec<_> = ranged
         .required()
-        .map(|descriptor| descriptor.map(|descriptor| descriptor.content))
-        .collect::<Result<_, _>>()?;
+        .map(|descriptor| descriptor.content)
+        .collect();
     let missing: Vec<_> = ranged
         .missing()
-        .map(|descriptor| descriptor.map(|descriptor| descriptor.content))
-        .collect::<Result<_, _>>()?;
+        .map(|descriptor| descriptor.content)
+        .collect();
     assert_eq!(required, Vec::from([object(1).content, object(3).content]));
     assert_eq!(missing, required);
-    assert_eq!(ranged.promised().collect::<Result<Vec<_>, _>>()?.len(), 0);
-    assert_eq!(ranged.fetches().collect::<Result<Vec<_>, _>>()?.len(), 2);
+    assert_eq!(ranged.promised().count(), 0);
+    assert_eq!(ranged.fetches().count(), 2);
 
     assert_small_scratch_rejected(&view, &mut closure)
 }
@@ -201,16 +201,13 @@ fn sparse_absence_state_reports_logical_and_retained_bytes(
             demand(&view, Projection::CompleteGeneration),
             &mut closure,
             &mut planning,
-            |descriptor| descriptor.content.as_ref()[0] <= 100 - misses,
+            |descriptor| *descriptor.kind <= u16::from(100 - misses),
         )?;
         assert_eq!(planned.coverage.required, 100.into());
         assert_eq!(planned.coverage.missing, expected_misses.into());
         assert_eq!(planned.coverage.promised, 0.into());
         assert_eq!(planned.coverage.present, (100 - expected_misses).into());
-        assert_eq!(
-            planned.fetches().collect::<Result<Vec<_>, _>>()?.len(),
-            usize::from(misses)
-        );
+        assert_eq!(planned.fetches().count(), usize::from(misses));
         planned.sparse_state_bytes()
     };
     assert_eq!(observed_logical_bytes, logical_sparse_bytes);

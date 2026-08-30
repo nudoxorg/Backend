@@ -26,7 +26,7 @@ pub(crate) struct TestIndex<const ROW_COUNT: usize> {
 
 pub(crate) fn row(content: [u8; 32], length: u64, body_end: u64) -> TestDirectoryRow {
     let reference = ObjectRef::<ObjectDomain> {
-        content: content.into(),
+        content: nudox_id::ContentId::from_digest(content),
         length: length.into(),
         schema: SchemaId::Object,
         kind: ObjectKind::from(FIXTURE_OBJECT_KIND),

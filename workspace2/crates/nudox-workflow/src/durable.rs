@@ -7,7 +7,7 @@
 
 use core::{future::Future, mem::size_of};
 
-use nudox_id::{ContentId, FixedCanonicalRecord, ObjectDomain};
+use nudox_id::{ContentId, ContentIdDecodeError, FixedCanonicalRecord, ObjectDomain};
 use thiserror::Error;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
@@ -59,8 +59,17 @@ impl FixedCanonicalRecord<WORKFLOW_RECORD_BYTES> for WorkflowRecord {
     }
 }
 
+impl TryFrom<&[u8]> for WorkflowRecord {
+    type Error = core::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: &[u8; WORKFLOW_RECORD_BYTES] = bytes.try_into()?;
+        Ok(zerocopy::transmute!(*bytes))
+    }
+}
+
 /// Exact canonical decode rejection.
-#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[derive(Debug, Error)]
 pub enum WorkflowRecordError {
     #[error("workflow record version {observed} is unknown")]
     UnknownVersion { observed: u16 },
@@ -68,11 +77,48 @@ pub enum WorkflowRecordError {
     UnknownEvent { observed: u8 },
     #[error("workflow record failure tag {observed} is unknown")]
     UnknownFailure { observed: u8 },
-    #[error("event {event:?} carried unexpected output bytes")]
-    UnexpectedOutput { event: EventName },
+    #[error("event {event:?} carried unexpected output bytes {observed:?}")]
+    UnexpectedOutput {
+        event: EventName,
+        observed: [u8; 32],
+    },
     #[error("event {event:?} carried unexpected failure tag {observed}")]
     UnexpectedFailure { event: EventName, observed: u8 },
+    #[error("workflow output identity failed checked decode")]
+    Output(#[from] ContentIdDecodeError),
 }
+
+impl PartialEq for WorkflowRecordError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::UnknownVersion { observed }, Self::UnknownVersion { observed: other }) => {
+                observed == other
+            }
+            (Self::UnknownEvent { observed }, Self::UnknownEvent { observed: other })
+            | (Self::UnknownFailure { observed }, Self::UnknownFailure { observed: other }) => {
+                observed == other
+            }
+            (
+                Self::UnexpectedOutput { event, observed },
+                Self::UnexpectedOutput {
+                    event: other,
+                    observed: other_observed,
+                },
+            ) => event == other && observed == other_observed,
+            (
+                Self::UnexpectedFailure { event, observed },
+                Self::UnexpectedFailure {
+                    event: other_event,
+                    observed: other_observed,
+                },
+            ) => event == other_event && observed == other_observed,
+            (Self::Output(left), Self::Output(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for WorkflowRecordError {}
 
 impl TryFrom<&WorkflowRecord> for WorkflowEvent {
     type Error = WorkflowRecordError;
@@ -85,17 +131,26 @@ impl TryFrom<&WorkflowRecord> for WorkflowEvent {
         let name = EventName::from_repr(record.event).ok_or(WorkflowRecordError::UnknownEvent {
             observed: record.event,
         })?;
-        let output = ContentId::<ObjectDomain>::from(record.output);
         let kind = match name {
             EventName::Requested => no_payload(record, EventKind::Requested, name)?,
             EventName::Admitted => no_payload(record, EventKind::Admitted, name)?,
             EventName::Cancelled => no_payload(record, EventKind::Cancelled, name)?,
-            EventName::Staged => output_event(record, EventKind::Staged { output }, name)?,
-            EventName::Verified => output_event(record, EventKind::Verified { output }, name)?,
+            EventName::Staged => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Staged { output }, name)?
+            }
+            EventName::Verified => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Verified { output }, name)?
+            }
             EventName::PublicationStarted => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
                 output_event(record, EventKind::PublicationStarted { output }, name)?
             }
-            EventName::Published => output_event(record, EventKind::Published { output }, name)?,
+            EventName::Published => {
+                let output = ContentId::<ObjectDomain>::try_from(record.output)?;
+                output_event(record, EventKind::Published { output }, name)?
+            }
             EventName::Failed => {
                 ensure_zero_output(record, name)?;
                 let code = FailureCode::from_repr(record.failure).ok_or(
@@ -140,7 +195,10 @@ fn ensure_zero_output(
     if record.output == [0; 32] {
         Ok(())
     } else {
-        Err(WorkflowRecordError::UnexpectedOutput { event })
+        Err(WorkflowRecordError::UnexpectedOutput {
+            event,
+            observed: record.output,
+        })
     }
 }
 
@@ -245,7 +303,7 @@ mod tests {
             version: WorkflowVersion::WAVE1,
             key: key(),
             kind: EventKind::Published {
-                output: ContentId::<ObjectDomain>::from([7; 32]),
+                output: ContentId::<ObjectDomain>::from_digest([7; 32]),
             },
         };
         let record = WorkflowRecord::from(event);
@@ -258,5 +316,23 @@ mod tests {
             WorkflowEvent::try_from(&mutated),
             Err(WorkflowRecordError::UnknownEvent { observed: u8::MAX })
         );
+    }
+
+    #[test]
+    fn canonical_bytes_boundary_is_exact() {
+        let event = WorkflowEvent {
+            version: WorkflowVersion::WAVE1,
+            key: key(),
+            kind: EventKind::Requested,
+        };
+        let record = WorkflowRecord::from(event);
+        let canonical = record.canonical_bytes();
+        assert!(
+            matches!(WorkflowRecord::try_from(canonical.as_slice()), Ok(decoded) if decoded == record)
+        );
+        assert!(WorkflowRecord::try_from(&canonical[..WORKFLOW_RECORD_BYTES - 1]).is_err());
+        let mut oversized = canonical.to_vec();
+        oversized.push(0);
+        assert!(WorkflowRecord::try_from(oversized.as_slice()).is_err());
     }
 }

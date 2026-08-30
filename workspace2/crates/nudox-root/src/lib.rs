@@ -25,19 +25,18 @@ pub use diff::{ChangedRootDiff, RootChange, RootDiff};
 pub use entry::{EntryKey, EntryRange, EntryRangeError, RootEntry};
 pub use locality::{
     GenerationEntry, GenerationScan, GenerationView, Locality, LocalityError, LocalityException,
-    LocalityLayout, LocalityLookupWork, LocalityReadError, LocalityRow, LocalityScanWork,
-    LocalityValidator, LocalityWriteError, MeasuredGenerationLookup, MeasuredGenerationScan,
-    NonResident, PreparedLocality, SelectedCount, SelectedGeneration, SelectedOrdinalBuffer,
-    SelectedOrdinalBufferError, SelectedOrdinals, ValidatedLocality, ValidatedLocalityFacts,
-    with_validated_locality,
+    LocalityLayout, LocalityLookupWork, LocalityRow, LocalityScanWork, LocalityValidator,
+    LocalityWriteError, MeasuredGenerationLookup, MeasuredGenerationScan, NonResident,
+    PreparedLocality, SelectedCount, SelectedGeneration, SelectedOrdinalBuffer,
+    SelectedOrdinalBufferError, SelectedOrdinals, ValidatedLocality, with_validated_locality,
 };
 pub use overlay::{OverlayBuildWork, OverlayError, propagate_overlays};
 pub use packed::{
     GenerationRoot, GenerationRootFacts, HierarchyDepth, MetadataBytes, RootEntryCount,
 };
 pub use root_view::{
-    BorrowedGenerationScan, BorrowedGenerationView, BorrowedGenerationViewFacts, RootReadError,
-    ValidatedRoot, ValidatedRootFacts,
+    BorrowedGenerationScan, BorrowedGenerationView, BorrowedRootFacts, BorrowedSelectedGeneration,
+    BorrowedSelectedScan, RootReadError, ValidatedRoot,
 };
 
 #[cfg(test)]

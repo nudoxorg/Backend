@@ -17,8 +17,8 @@ mod view;
 
 pub(crate) use artifact::LocalityEncoder;
 pub use artifact::{
-    LocalityError, LocalityLayout, LocalityReadError, LocalityValidator, LocalityWriteError,
-    PreparedLocality, ValidatedLocality, ValidatedLocalityFacts, with_validated_locality,
+    LocalityError, LocalityLayout, LocalityValidator, LocalityWriteError, PreparedLocality,
+    ValidatedLocality, with_validated_locality,
 };
 pub use cursor::{LocalityLookupWork, LocalityScanWork};
 pub use error::SelectedOrdinalBufferError;
@@ -27,7 +27,7 @@ pub use view::{
     SelectedGeneration,
 };
 
-use cursor::LocalityCursor;
+pub(crate) use cursor::LocalityCursor;
 
 /// Honest placement state composed with one semantic root entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

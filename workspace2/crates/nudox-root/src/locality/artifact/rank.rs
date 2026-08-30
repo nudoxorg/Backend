@@ -7,7 +7,7 @@ use super::layout::{RANK_BLOCK_ROWS, WORD_BITS, WORDS_PER_RANK_BLOCK};
 const WORD_BYTES: usize = size_of::<u64>();
 
 /// Returns the membership bit for one already validated ordinal.
-pub(super) fn member(bits: &[u8], ordinal: u32) -> bool {
+pub(in crate::locality) fn member(bits: &[u8], ordinal: u32) -> bool {
     let word = read_word(bits, ordinal / WORD_BITS);
     word & (1_u64 << (ordinal % WORD_BITS)) != 0
 }

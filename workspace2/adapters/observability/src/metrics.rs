@@ -1,9 +1,4 @@
-//! Periodic metric export and post-scenario aggregate reporting.
-#![allow(
-    clippy::large_enum_variant,
-    clippy::result_large_err,
-    reason = "the server adapter preserves the portable scenario's exact typed source without boxing"
-)]
+//! Periodic metric export and aggregate runtime reporting.
 
 use core::time::Duration;
 
@@ -25,12 +20,9 @@ where
     SdkMeterProvider::builder().with_reader(reader).build()
 }
 
-/// Exact adapter failure while running and reporting one portable scenario.
+/// Exact failure while reporting one runtime metric snapshot.
 #[derive(Debug, Error)]
-pub enum AdapterRunError {
-    /// The portable scenario failed at its original typed boundary.
-    #[error("portable scenario failed")]
-    Scenario(#[from] nudox_e2e::ScenarioError),
+pub enum MetricReportError {
     /// A process-native runtime metric did not fit the OTLP `u64` instrument value.
     #[error("runtime metric {metric} did not fit an OpenTelemetry u64 gauge")]
     MetricValue {
@@ -72,7 +64,7 @@ impl RuntimeMetricReporter {
     pub(crate) fn record(
         &self,
         metrics: nudox_runtime::RuntimeMetrics,
-    ) -> Result<(), AdapterRunError> {
+    ) -> Result<(), MetricReportError> {
         record_gauge(&self.capacity, "nudox.runtime.capacity", metrics.capacity)?;
         record_gauge(
             &self.active_capacity,
@@ -112,9 +104,9 @@ fn record_gauge(
     gauge: &Gauge<u64>,
     metric: &'static str,
     value: usize,
-) -> Result<(), AdapterRunError> {
+) -> Result<(), MetricReportError> {
     let value =
-        u64::try_from(value).map_err(|source| AdapterRunError::MetricValue { metric, source })?;
+        u64::try_from(value).map_err(|source| MetricReportError::MetricValue { metric, source })?;
     gauge.record(value, &[]);
     Ok(())
 }

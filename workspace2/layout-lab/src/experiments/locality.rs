@@ -378,12 +378,12 @@ fn provider() -> Result<ProviderSet, nudox_object::ProviderIdError> {
 }
 
 fn generation() -> GenerationId {
-    GenerationId::from([0x6a; 32])
+    GenerationId::from_digest([0x6a; 32])
 }
 
 fn object(row: usize) -> ObjectRef<ObjectDomain> {
     ObjectRef {
-        content: ContentId::from([row as u8; 32]),
+        content: ContentId::from_digest([row as u8; 32]),
         length: ObjectLength::from(1),
         schema: SchemaId::Object,
         kind: ObjectKind::from(7),
@@ -1313,8 +1313,8 @@ fn sparse_parts(input: &[InputRow]) -> SparseParts {
     let shared_generation = generation();
     for (row, input) in input.iter().enumerate() {
         let row = row as u32;
-        match input.tag {
-            LocalityTag::Resident => {}
+        let remote = match input.tag {
+            LocalityTag::Resident => continue,
             LocalityTag::Promised => {
                 let payload = promises.len() as u32;
                 promises.push(input.provider);
@@ -1324,27 +1324,24 @@ fn sparse_parts(input: &[InputRow]) -> SparseParts {
                     tag: PROMISED,
                     padding: [0; 3],
                 });
+                continue;
             }
-            LocalityTag::OverlayAbsent | LocalityTag::OverlayPresent => {
-                let payload = overlays.len() as u32;
-                overlays.push(match input.tag {
-                    LocalityTag::OverlayAbsent => RemoteBase::Absent {
-                        generation: shared_generation,
-                    },
-                    LocalityTag::OverlayPresent => RemoteBase::Present {
-                        generation: shared_generation,
-                        object: input.object,
-                    },
-                    LocalityTag::Resident | LocalityTag::Promised => unreachable!(),
-                });
-                routes.push(CurrentRoute {
-                    row,
-                    payload,
-                    tag: OVERLAY_ABSENT,
-                    padding: [0; 3],
-                });
-            }
-        }
+            LocalityTag::OverlayAbsent => RemoteBase::Absent {
+                generation: shared_generation,
+            },
+            LocalityTag::OverlayPresent => RemoteBase::Present {
+                generation: shared_generation,
+                object: input.object,
+            },
+        };
+        let payload = overlays.len() as u32;
+        overlays.push(remote);
+        routes.push(CurrentRoute {
+            row,
+            payload,
+            tag: OVERLAY_ABSENT,
+            padding: [0; 3],
+        });
     }
     (routes, promises, overlays)
 }

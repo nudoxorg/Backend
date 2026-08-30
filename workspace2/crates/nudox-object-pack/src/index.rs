@@ -1,8 +1,10 @@
 use core::ops::Deref;
 
-use nudox_object::ObjectLength;
-use nudox_schema::SchemaId;
-use zerocopy::FromBytes;
+use nudox_id::ObjectDomain;
+use nudox_object::{
+    OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectDescriptorDecodeError, ObjectLength, ObjectRef,
+};
+use zerocopy::TryFromBytes;
 
 use crate::{
     OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackHeader,
@@ -25,6 +27,7 @@ pub struct ObjectPackIndexFacts<'bytes> {
 /// Borrowed validation witness for a complete fixed object-pack directory.
 pub struct ObjectPackIndex<'bytes> {
     facts: ObjectPackIndexFacts<'bytes>,
+    pub(crate) directory: &'bytes [DirectoryRecord],
 }
 
 impl<'bytes> Deref for ObjectPackIndex<'bytes> {
@@ -47,8 +50,43 @@ impl<'bytes> TryFrom<&'bytes [u8]> for ObjectPackIndex<'bytes> {
                     available: bytes.len().into(),
                 })?;
         let header = ObjectPackHeader::try_from(header_bytes)?;
+        Self::from_header(bytes, &header)
+    }
+}
+
+impl<'bytes> ObjectPackIndex<'bytes> {
+    pub(crate) fn complete(bytes: &'bytes [u8]) -> Result<Self, ObjectPackError> {
+        let header_bytes =
+            bytes
+                .get(..OBJECT_PACK_HEADER_BYTES)
+                .ok_or(ObjectPackError::HeaderTruncated {
+                    required: OBJECT_PACK_HEADER_BYTES.into(),
+                    available: bytes.len().into(),
+                })?;
+        let header = ObjectPackHeader::try_from(header_bytes)?;
         let index_bytes = usize::from(header.index_bytes);
-        if bytes.len() != index_bytes {
+        let index = bytes
+            .get(..index_bytes)
+            .ok_or(ObjectPackError::DirectoryExtent {
+                expected: header.index_bytes,
+                actual: bytes.len().into(),
+            })?;
+        let index = Self::from_header(index, &header)?;
+        if bytes.len() != usize::from(index.pack_bytes) {
+            return Err(ObjectPackError::PackExtent {
+                expected: index.pack_bytes,
+                actual: bytes.len().into(),
+            });
+        }
+        Ok(index)
+    }
+
+    fn from_header(
+        bytes: &'bytes [u8],
+        header: &ObjectPackHeader<'bytes>,
+    ) -> Result<Self, ObjectPackError> {
+        let index_bytes = usize::from(header.index_bytes);
+        if bytes.len() != usize::from(header.index_bytes) {
             return Err(ObjectPackError::DirectoryExtent {
                 expected: header.index_bytes,
                 actual: bytes.len().into(),
@@ -61,12 +99,15 @@ impl<'bytes> TryFrom<&'bytes [u8]> for ObjectPackIndex<'bytes> {
                     expected: header.index_bytes,
                     actual: bytes.len().into(),
                 })?;
-        let directory =
-            <[DirectoryRecord]>::ref_from_bytes_with_elems(directory_bytes, header.native_count)
-                .map_err(|source| ObjectPackError::DirectoryExtent {
-                    expected: header.index_bytes,
-                    actual: source.into_src().len().into(),
-                })?;
+        validate_directory_schemas(directory_bytes)?;
+        let directory = <[DirectoryRecord]>::try_ref_from_bytes_with_elems(
+            directory_bytes,
+            header.native_count,
+        )
+        .map_err(|source| ObjectPackError::DirectoryExtent {
+            expected: header.index_bytes,
+            actual: source.into_src().len().into(),
+        })?;
         let body_bytes = validate(directory)?;
         Ok(Self {
             facts: ObjectPackIndexFacts {
@@ -75,8 +116,39 @@ impl<'bytes> TryFrom<&'bytes [u8]> for ObjectPackIndex<'bytes> {
                 index_bytes: header.index_bytes,
                 pack_bytes: checked_add(index_bytes, body_bytes)?.into(),
             },
+            directory,
         })
     }
+}
+
+fn validate_directory_schemas(bytes: &[u8]) -> Result<(), ObjectPackError> {
+    for (ordinal, row) in bytes
+        .chunks_exact(super::format::DIRECTORY_BYTES)
+        .enumerate()
+    {
+        let descriptor =
+            row.get(..OBJECT_DESCRIPTOR_RECORD_BYTES)
+                .ok_or(ObjectPackError::DirectoryExtent {
+                    expected: bytes.len().into(),
+                    actual: row.len().into(),
+                })?;
+        match ObjectRef::<ObjectDomain>::try_from(descriptor) {
+            Ok(_) => {}
+            Err(ObjectDescriptorDecodeError::Schema(source)) => {
+                return Err(ObjectPackError::DirectorySchema { ordinal, source });
+            }
+            Err(ObjectDescriptorDecodeError::Width { actual }) => {
+                return Err(ObjectPackError::DirectoryExtent {
+                    expected: OBJECT_DESCRIPTOR_RECORD_BYTES.into(),
+                    actual: actual.into(),
+                });
+            }
+            Err(ObjectDescriptorDecodeError::Content(source)) => {
+                return Err(ObjectPackError::DirectoryContent { ordinal, source });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate(directory: &[DirectoryRecord]) -> Result<usize, ObjectPackError> {
@@ -84,8 +156,6 @@ fn validate(directory: &[DirectoryRecord]) -> Result<usize, ObjectPackError> {
     let mut expected = 0_usize;
     for (ordinal, row) in directory.iter().enumerate() {
         let descriptor = &row.descriptor;
-        SchemaId::try_from(descriptor.schema.get())
-            .map_err(|source| ObjectPackError::DirectorySchema { ordinal, source })?;
         if let Some(previous) = previous
             && previous >= descriptor.content
         {

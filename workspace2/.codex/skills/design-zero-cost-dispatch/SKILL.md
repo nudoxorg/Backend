@@ -26,6 +26,10 @@ measured cost. Search the whole affected workspace before proposing a framework.
 
 Do not edit production at the research checkpoint.
 
+Under prototype orchestration, keep the manual implementation as the retained control and commit each
+macro/crate/tagless/SIMD candidate separately. A result may be promoted for later integration review;
+it never authorizes replacing the shared implementation from the prototype branch.
+
 ## Compare before inventing
 
 Compare the normally formatted manual implementation with no more than three applicable choices:

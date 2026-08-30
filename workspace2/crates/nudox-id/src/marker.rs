@@ -68,59 +68,47 @@ mod sealed {
 pub trait Domain: sealed::Domain + core::fmt::Debug {
     /// Durable identity-domain label included in each content preimage.
     const TAG: DomainTag;
+    /// Closed one-byte authority cell stored in serialized content identities.
+    const CODE: DomainCode;
 }
 
 /// Supplies one precise immutable encoded-artifact label from the finite registry.
 pub trait Encoding: sealed::Encoding {
     /// Durable representation label included in each artifact preimage.
     const TAG: EncodingTag;
+    /// Closed one-byte authority cell stored in serialized artifact identities.
+    const CODE: EncodingCode;
 }
 
-macro_rules! protocol_markers {
-    ($(($marker:ident, $trait_name:ident, $tag_type:ident, $label:literal)),+ $(,)?) => {
-        $(
-            #[doc = concat!("Protocol-owned marker for `", stringify!($marker), "`.")]
-            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-            pub enum $marker {}
+include!("marker_registry.rs");
 
-            impl sealed::$trait_name for $marker {}
-
-            impl $trait_name for $marker {
-                const TAG: $tag_type = $tag_type::new(*$label);
-            }
-        )+
-    };
-}
-
-protocol_markers!(
-    (ObjectDomain, Domain, DomainTag, b"nudox.object.v1\0"),
-    (RootDomain, Domain, DomainTag, b"nudox.root.v1\0\0\0"),
-    (OperationDomain, Domain, DomainTag, b"nudox.op.v1\0\0\0\0\0"),
-    (DependencySetDomain, Domain, DomainTag, b"nudox.depset.v1\0"),
-    (CapabilityDomain, Domain, DomainTag, b"nudox.cap.v1\0\0\0\0"),
-    (ConfigurationDomain, Domain, DomainTag, b"nudox.config.v1\0"),
-    (StageKeyDomain, Domain, DomainTag, b"nudox.stage.v1\0\0"),
-    (FrameEncoding, Encoding, EncodingTag, b"nudox.frame.v1\0\0"),
-    (
-        LocalitySortedEncoding,
-        Encoding,
-        EncodingTag,
-        b"nudox.locsort.v1"
-    ),
-    (
-        ObjectPackEncoding,
-        Encoding,
-        EncodingTag,
-        b"nudox.objpack.v1"
-    ),
+protocol_registry!(
+    domains {
+        (ObjectDomain, Object, 1, b"nudox.object.v1\0"),
+        (RootDomain, Root, 2, b"nudox.root.v1\0\0\0"),
+        (OperationDomain, Operation, 3, b"nudox.op.v1\0\0\0\0\0"),
+        (DependencySetDomain, DependencySet, 4, b"nudox.depset.v1\0"),
+        (CapabilityDomain, Capability, 5, b"nudox.cap.v1\0\0\0\0"),
+        (ConfigurationDomain, Configuration, 6, b"nudox.config.v1\0"),
+        (StageKeyDomain, StageKey, 7, b"nudox.stage.v1\0\0"),
+        (IndexSnapshotDomain, IndexSnapshot, 8, b"nudox.idx.snap.1"),
+        (IndexExactSegmentDomain, IndexExactSegment, 9, b"nudox.idx.exact1"),
+        (IndexLexicalSegmentDomain, IndexLexicalSegment, 10, b"nudox.idx.lexic1")
+    }
+    encodings {
+        (FrameEncoding, Frame, 1, b"nudox.frame.v1\0\0"),
+        (LocalitySortedEncoding, LocalitySorted, 2, b"nudox.locsort.v1"),
+        (ObjectPackEncoding, ObjectPack, 3, b"nudox.objpack.v1")
+    }
 );
 
 #[cfg(test)]
 mod tests {
     use super::{
         CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, Encoding,
-        FrameEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain,
-        RootDomain, StageKeyDomain,
+        FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
+        LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain,
+        StageKeyDomain,
     };
 
     #[test]
@@ -133,6 +121,9 @@ mod tests {
             CapabilityDomain::TAG,
             ConfigurationDomain::TAG,
             StageKeyDomain::TAG,
+            IndexSnapshotDomain::TAG,
+            IndexExactSegmentDomain::TAG,
+            IndexLexicalSegmentDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {

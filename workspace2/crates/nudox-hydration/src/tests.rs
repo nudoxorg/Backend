@@ -1,34 +1,40 @@
-use alloc::{collections::TryReserveError, vec::Vec};
-use core::mem::size_of;
+use alloc::{boxed::Box, collections::TryReserveError, vec::Vec};
+use core::{mem::size_of, num::TryFromIntError};
 
 use nudox_id::{ContentId, GenerationId, ObjectDomain};
 use nudox_object::{ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBase};
 use nudox_observe::{DropNewest, FlightRecorder};
 use nudox_root::{
-    ClosureScratch, EntryKey, EntryRangeError, GenerationRoot, GenerationView, LocalityError,
-    LocalityException, LocalityReadError, LocalityWriteError, MetadataBytes, NonResident,
-    PreparedLocality, RootBuildError, RootEntry, ValidatedLocality,
+    BorrowedGenerationView, ClosureError, ClosureScratch, EntryKey, EntryRangeError,
+    GenerationRoot, GenerationView, LocalityError, LocalityException, LocalityWriteError,
+    MetadataBytes, NonResident, PreparedLocality, RootBuildError, RootEntry, RootReadError,
+    RootWriteError, ValidatedLocality, ValidatedRoot,
 };
 use nudox_schema::SchemaId;
+use nudox_store_memory::{
+    InsertOutcome, MemoryStore, RejectedInsert, StoreCapacity, StoreInitError,
+};
 use rstest::rstest;
 use thiserror::Error;
 
 use crate::{
     AbsentCount, DemandBindError, Fetch, FetchRoute, HydrationOutcome, HydrationProbeEvent, Need,
     PlanCoverage, PlanError, PlanScratch, Projection, VerificationError, demand, plan,
-    plan_with_probe,
+    plan_borrowed, plan_with_probe,
 };
 
 #[derive(Debug, Error)]
 enum ScenarioError {
     #[error("root fixture construction failed")]
     Root(#[from] RootBuildError),
+    #[error("borrowed root fixture decoding failed")]
+    RootRead(#[from] RootReadError),
+    #[error("borrowed root fixture encoding failed")]
+    RootWrite(#[from] RootWriteError),
     #[error("locality fixture binding failed")]
     Locality(#[from] LocalityError),
     #[error("locality fixture output failed")]
     LocalityWrite(#[from] LocalityWriteError),
-    #[error("validated locality fixture read failed")]
-    LocalityRead(#[from] LocalityReadError),
     #[error("locality fixture reservation failed")]
     LocalityReservation(#[source] TryReserveError),
     #[error("root fixture has no locality row for {key:?}")]
@@ -45,6 +51,16 @@ enum ScenarioError {
     Plan(#[from] PlanError),
     #[error("generation verification failed")]
     Verification(#[source] VerificationError<ObjectDomain>),
+    #[error("memory-store fixture construction failed")]
+    StoreInit(#[from] StoreInitError),
+    #[error("memory-store fixture rejected an exact object: {0:?}")]
+    StoreInsert(Box<RejectedInsert<ObjectDomain>>),
+    #[error("memory-store fixture replayed an object that should be newly inserted")]
+    UnexpectedStoreReplay,
+    #[error("memory-store fixture cardinality did not fit its typed capacity")]
+    StoreCardinality(#[source] TryFromIntError),
+    #[error("memory-store fixture byte capacity overflowed")]
+    StoreByteCapacityOverflow,
     #[error("range construction failed")]
     Range(#[from] EntryRangeError),
     #[error("{step:?}: expected {expected:?}, observed {observed:?}")]
@@ -60,6 +76,7 @@ enum ScenarioStep {
     DemandBinding,
     PartialVerification,
     MissingVerification,
+    DescriptorVerification,
     PlanCapacity,
 }
 
@@ -68,6 +85,7 @@ enum ScenarioExpectation {
     GenerationMismatch,
     PartialProjection,
     MissingObject,
+    StoredDescriptorMismatch,
     ScratchTooSmall,
 }
 
@@ -85,11 +103,44 @@ fn key(raw: u64) -> EntryKey {
 }
 
 fn object(byte: u8) -> ObjectRef<ObjectDomain> {
+    let bytes = object_bytes(byte);
     ObjectRef {
-        content: ContentId::from([byte; 32]),
+        content: ContentId::from_canonical_bytes(&bytes),
         length: 4_u64.into(),
         schema: SchemaId::Object,
-        kind: 1_u16.into(),
+        kind: u16::from(byte).into(),
+    }
+}
+
+const fn object_bytes(byte: u8) -> [u8; 4] {
+    [byte; 4]
+}
+
+fn memory_store(bytes: &[u8]) -> Result<MemoryStore<ObjectDomain>, ScenarioError> {
+    let slots = u32::try_from(bytes.len()).map_err(ScenarioError::StoreCardinality)?;
+    let byte_capacity = u64::try_from(bytes.len())
+        .map_err(ScenarioError::StoreCardinality)?
+        .checked_mul(4)
+        .ok_or(ScenarioError::StoreByteCapacityOverflow)?;
+    let mut store = MemoryStore::new(StoreCapacity {
+        bytes: byte_capacity.into(),
+        slots: slots.into(),
+    })?;
+    for &byte in bytes {
+        insert_fixture(&mut store, object(byte), byte)?;
+    }
+    Ok(store)
+}
+
+fn insert_fixture(
+    store: &mut MemoryStore<ObjectDomain>,
+    reference: ObjectRef<ObjectDomain>,
+    byte: u8,
+) -> Result<(), ScenarioError> {
+    match store.insert_owned(reference, Box::from(object_bytes(byte))) {
+        Ok(InsertOutcome::Inserted) => Ok(()),
+        Ok(InsertOutcome::AlreadyPresent) => Err(ScenarioError::UnexpectedStoreReplay),
+        Err(rejected) => Err(ScenarioError::StoreInsert(Box::new(rejected))),
     }
 }
 
@@ -159,7 +210,7 @@ fn require_demand_mismatch(
             requested,
             actual: seen,
         }) => {
-            assert_eq!(*requested, GenerationId::from([9; 32]));
+            assert_eq!(*requested, GenerationId::from_digest([9; 32]));
             assert_eq!(*seen, actual);
             Ok(())
         }
@@ -171,5 +222,6 @@ fn require_demand_mismatch(
     }
 }
 
+mod borrowed;
 mod planning;
 mod publication;

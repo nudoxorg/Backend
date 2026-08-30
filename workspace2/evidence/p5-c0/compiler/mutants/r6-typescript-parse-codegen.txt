@@ -1,0 +1,29 @@
+   Compiling nudox-ir-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r6-mutants.3yhNM4/workspace2/domains/ir/crates/nudox-ir-vocab)
+   Compiling nudox-compile-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r6-mutants.3yhNM4/workspace2/planes/compiler/crates/nudox-compile-vocab)
+   Compiling nudox-compile-registry v0.1.0 (/private/tmp/p5-c0-compiler-r6-mutants.3yhNM4/workspace2/planes/compiler/crates/nudox-compile-registry)
+warning: unused variable: `source`
+  --> crates/nudox-compile-registry/src/lib.rs:46:14
+   |
+46 |     fn parse(source: &[u8]) -> &[u8] {
+   |              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_source`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `nudox-compile-registry` (lib) generated 1 warning (run `cargo fix --lib -p nudox-compile-registry` to apply 1 suggestion)
+warning: field `0` is never read
+ --> crates/nudox-compile-registry/examples/release_consumer.rs:5:14
+  |
+5 |     Frontend(FrontendError),
+  |     -------- ^^^^^^^^^^^^^
+  |     |
+  |     field in this variant
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+  |
+5 -     Frontend(FrontendError),
+5 +     Frontend(()),
+  |
+
+warning: `nudox-compile-registry` (example "release_consumer") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.30s

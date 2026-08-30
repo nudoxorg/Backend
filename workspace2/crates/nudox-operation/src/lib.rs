@@ -7,6 +7,7 @@ mod pinned_object;
 
 pub use contract::{BatchSource, Operation, Provider, SourcePoll, TerminalSummary};
 pub use pinned_object::{
-    LocalObjectError, LocalObjectProvider, LocalObjectRun, MissingObject, ObjectBatch,
-    ObjectProvenance, PinnedObjectOperation, PinnedObjectRequest,
+    BoundLocalObjectProvider, BoundLocalObjectRun, LocalObjectError, LocalObjectProvider,
+    LocalObjectRun, MissingObject, ObjectBatch, ObjectProvenance, PinnedObjectOperation,
+    PinnedObjectRequest, VerifiedObjectBindError,
 };

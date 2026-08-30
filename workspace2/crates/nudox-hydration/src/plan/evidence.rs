@@ -1,9 +1,7 @@
-use alloc::collections::TryReserveError;
+use alloc::{collections::TryReserveError, vec::Vec};
 use core::{mem::size_of, ops::Deref};
 
-use nudox_root::{
-    ClosureError, LocalityReadError, MetadataBytes, SelectedCount, SelectedOrdinalBuffer,
-};
+use nudox_root::{ClosureError, MetadataBytes, SelectedCount};
 use thiserror::Error;
 
 /// Semantic count measured in selected entries that are absent locally.
@@ -62,12 +60,12 @@ pub struct PlanCoverage {
 /// Closed rejection class for a planning operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanRejection {
+    /// Borrowed demand named a different paired generation.
+    DemandMismatch,
     /// Caller closure scratch could not cover the selected root.
     ClosureScratchTooSmall,
     /// Caller plan scratch could not retain every selected descriptor.
     PlanScratchTooSmall,
-    /// Validated locality could not reconstruct one selected entry.
-    LocalityRead,
 }
 
 /// Immutable sparse-plan allocation evidence exposed by dereferencing scratch.
@@ -83,7 +81,7 @@ pub struct PlanScratchFacts {
 
 /// Caller-owned reusable sparse planning memory.
 pub struct PlanScratch {
-    absent: SelectedOrdinalBuffer,
+    absent: Vec<u32>,
     facts: PlanScratchFacts,
 }
 
@@ -103,20 +101,23 @@ impl PlanScratch {
     /// Returns the allocator's exact reservation cause before retaining
     /// partially initialized scratch.
     pub fn new(capacity: SelectedCount) -> Result<Self, TryReserveError> {
-        let absent = SelectedOrdinalBuffer::new(capacity)?;
+        let mut absent = Vec::new();
+        #[allow(
+            clippy::as_conversions,
+            reason = "SelectedCount is a root-bounded compact u32 count"
+        )]
+        absent.try_reserve_exact(u32::from(capacity) as usize)?;
         Ok(Self {
             facts: PlanScratchFacts {
                 capacity,
-                retained_absence_bytes: absent.retained_bytes().into(),
+                retained_absence_bytes: (absent.capacity() * size_of::<u32>()).into(),
                 high_water_absent: AbsentCount::ZERO,
             },
             absent,
         })
     }
 
-    pub(super) const fn begin_plan(
-        &mut self,
-    ) -> (&mut SelectedOrdinalBuffer, &mut PlanScratchFacts) {
+    pub(super) const fn begin_plan(&mut self) -> (&mut Vec<u32>, &mut PlanScratchFacts) {
         (&mut self.absent, &mut self.facts)
     }
 }
@@ -124,12 +125,12 @@ impl PlanScratch {
 /// Pure plan derivation failure.
 #[derive(Debug, Error)]
 pub enum PlanError {
+    /// Borrowed demand did not name the generation paired with its locality.
+    #[error("demand binding failed")]
+    Demand(#[from] crate::DemandBindError),
     /// Caller-owned root-selection scratch was insufficient.
     #[error("closure scratch failure")]
     Closure(#[from] ClosureError),
-    /// Validated locality could not reconstruct one selected entry.
-    #[error("could not read selected locality")]
-    LocalityRead(#[from] LocalityReadError),
     /// Caller-owned plan scratch cannot retain every selected descriptor.
     #[error("plan scratch has {available:?} entries but requires {required:?}")]
     ScratchTooSmall {

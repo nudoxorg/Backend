@@ -19,6 +19,7 @@ fn narrow_projection_selects_only_range_and_checked_ancestors() -> Result<(), Sc
         crate::SelectionWork {
             projected_rows: 1,
             ancestor_edges: 2,
+            parent_search_comparisons: 0,
         }
     );
     Ok(())
@@ -43,6 +44,7 @@ fn closure_probe_records_one_aggregate_selection_event() -> Result<(), ScenarioE
             work: crate::SelectionWork {
                 projected_rows: 1,
                 ancestor_edges: 1,
+                parent_search_comparisons: 0,
             },
         })
     );
@@ -115,12 +117,9 @@ fn sparse_ordinals_remain_bound_to_the_selection_that_emitted_them() -> Result<(
     )?;
     let first_keys: Vec<_> = first_positions
         .absent_entries()
-        .map(|entry| entry.map(|entry| entry.key))
-        .collect::<Result<_, _>>()?;
-    let second_keys: Vec<_> = second
-        .iter()
-        .map(|entry| entry.map(|entry| entry.key))
-        .collect::<Result<_, _>>()?;
+        .map(|entry| entry.key)
+        .collect();
+    let second_keys: Vec<_> = second.iter().map(|entry| entry.key).collect();
     assert_eq!(first_keys, Vec::from([key(1)]));
     assert_eq!(second_keys, Vec::from([key(2)]));
     Ok(())

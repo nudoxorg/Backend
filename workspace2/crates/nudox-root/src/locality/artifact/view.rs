@@ -1,42 +1,68 @@
-use core::{marker::PhantomData, mem::size_of, ops::Deref};
+use core::num::NonZeroU64;
 
 use crate::packed::RowIndex;
 use crate::{Locality, MetadataBytes, RootEntryCount};
 use fearless_simd::Level;
-use nudox_id::{Encoding, EncodingTag, GenerationId, LocalitySortedEncoding};
-use nudox_object::{ObjectRef, ProviderSet, RemoteBase};
-
-use super::{
-    errors::{LocalityError, LocalityReadError},
-    layout::LaneTable,
-    rank, validate,
+use nudox_id::{
+    ContentAuthority, Domain, Encoding, EncodingTag, GenerationId, LocalitySortedEncoding,
 };
+use nudox_object::{ObjectKind, ObjectLength, ObjectRef, ProviderSet, RemoteBase};
+use zerocopy::{
+    Immutable, KnownLayout, TryFromBytes, Unalign, Unaligned,
+    byteorder::{BigEndian, U32},
+};
+
+use super::{descriptor::LocalityDescriptorWireRecord, errors::LocalityError, rank, validate};
+
+pub(in crate::locality) struct BorrowedLanes<'bytes> {
+    pub(in crate::locality) rows: &'bytes [U32<BigEndian>],
+    pub(in crate::locality) promise_bits: &'bytes [u8],
+    pub(in crate::locality) promise_ranks: &'bytes [u8],
+    pub(in crate::locality) providers: &'bytes [ProviderWire],
+    pub(in crate::locality) placement: PlacementLanes<'bytes>,
+}
+
+/// Big-endian provider bits whose non-zero validity is carried by the wire
+/// type itself. Byte order never changes whether an integer is zero.
+#[repr(transparent)]
+#[derive(Immutable, KnownLayout, TryFromBytes, Unaligned)]
+pub(in crate::locality) struct ProviderWire(Unalign<NonZeroU64>);
+
+impl ProviderWire {
+    pub(in crate::locality) fn provider_set(&self) -> ProviderSet {
+        ProviderSet::from_be(self.0.get())
+    }
+}
+
+pub(in crate::locality) enum PlacementLanes<'bytes> {
+    PromisesOnly,
+    Overlays(OverlayLanes<'bytes>),
+}
+
+pub(in crate::locality) struct OverlayLanes<'bytes> {
+    pub(in crate::locality) basis: GenerationId,
+    pub(in crate::locality) presence_bits: &'bytes [u8],
+    pub(in crate::locality) presence_ranks: &'bytes [u8],
+    pub(in crate::locality) descriptors: &'bytes [LocalityDescriptorWireRecord],
+}
 
 /// Borrowed validation witness for one complete locality artifact.
 ///
 /// The canonical bytes remain borrowed. Header facts are decoded once and the
 /// validated lane table is retained, so random reads and sequential cursors
-/// never rebuild the complete grammar geometry. The direct writer supplies
-/// the same already-known facts without recasting its output.
+/// never rebuild the complete grammar geometry. The direct writer traverses
+/// the same validator before returning this witness.
 pub struct ValidatedLocality<'bytes, DomainTag> {
-    facts: ValidatedLocalityFacts<'bytes>,
-    exception_count: u32,
-    lanes: LaneTable,
-    domain: PhantomData<fn() -> DomainTag>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ValidatedLocalityFacts<'bytes> {
+    /// Underlying complete canonical artifact bytes.
     pub bytes: &'bytes [u8],
+    /// Generation identity bound into the fixed header.
     pub generation: GenerationId,
+    /// Checked artifact-wide authority shared by every descriptor payload.
+    pub content_authority: ContentAuthority<DomainTag>,
+    /// Root cardinality bound into the fixed header.
     pub root_count: RootEntryCount,
-}
-
-impl<'bytes, DomainTag> Deref for ValidatedLocality<'bytes, DomainTag> {
-    type Target = ValidatedLocalityFacts<'bytes>;
-    fn deref(&self) -> &Self::Target {
-        &self.facts
-    }
+    exception_count: u32,
+    lanes: BorrowedLanes<'bytes>,
 }
 
 /// Reusable accelerated locality-validation engine.
@@ -69,7 +95,7 @@ impl LocalityValidator {
     /// # Errors
     ///
     /// Returns the exact structural, rank, provider, or schema violation.
-    pub fn validate<'bytes, DomainTag>(
+    pub fn validate<'bytes, DomainTag: Domain>(
         &self,
         bytes: &'bytes [u8],
     ) -> Result<ValidatedLocality<'bytes, DomainTag>, LocalityError> {
@@ -83,19 +109,22 @@ impl Default for LocalityValidator {
     }
 }
 
-impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
+impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
     pub(super) const fn from_validated(
         bytes: &'bytes [u8],
         generation: GenerationId,
+        content_authority: ContentAuthority<DomainTag>,
         root_count: RootEntryCount,
         exception_count: u32,
-        lanes: LaneTable,
+        lanes: BorrowedLanes<'bytes>,
     ) -> Self {
         Self {
-            facts: ValidatedLocalityFacts { bytes, generation, root_count },
+            bytes,
+            generation,
+            content_authority,
+            root_count,
             exception_count,
             lanes,
-            domain: PhantomData,
         }
     }
 
@@ -111,10 +140,7 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         LocalitySortedEncoding::TAG
     }
 
-    pub(crate) fn locality_for(
-        &self,
-        row: RowIndex,
-    ) -> Result<Locality<DomainTag>, LocalityReadError> {
+    pub(crate) fn locality_for(&self, row: RowIndex) -> Locality<DomainTag> {
         self.locality_for_with(row, &mut ())
     }
 
@@ -122,7 +148,7 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         &self,
         row: RowIndex,
         work: &mut crate::LocalityLookupWork,
-    ) -> Result<Locality<DomainTag>, LocalityReadError> {
+    ) -> Locality<DomainTag> {
         self.locality_for_with(row, work)
     }
 
@@ -134,149 +160,50 @@ impl<'bytes, DomainTag> ValidatedLocality<'bytes, DomainTag> {
         &self,
         row: RowIndex,
         work: &mut WorkPolicy,
-    ) -> Result<Locality<DomainTag>, LocalityReadError> {
-        let rows = lane(self.bytes, self.lanes.rows, self.lanes.promise_bits);
-        let Some(exception) = binary_search_row(rows, self.exception_count, row.compact(), work)
+    ) -> Locality<DomainTag> {
+        let Some(exception) =
+            binary_search_row(self.lanes.rows, self.exception_count, row.compact(), work)
         else {
-            return Ok(Locality::Resident);
+            return Locality::Resident;
         };
-        let promise_bits = lane(
-            self.bytes,
-            self.lanes.promise_bits,
-            self.lanes.promise_ranks,
-        );
-        let promise_ranks = lane(self.bytes, self.lanes.promise_ranks, self.lanes.providers);
-        if rank::member(promise_bits, exception) {
-            let promise = work.rank(promise_bits, promise_ranks, exception);
-            return self
-                .provider_at(self.lanes, promise)
-                .map(Locality::Promised);
+        match &self.lanes.placement {
+            PlacementLanes::PromisesOnly => Locality::Promised(self.provider_at(exception)),
+            PlacementLanes::Overlays(overlays) => {
+                if rank::member(self.lanes.promise_bits, exception) {
+                    let promise =
+                        work.rank(self.lanes.promise_bits, self.lanes.promise_ranks, exception);
+                    return Locality::Promised(self.provider_at(promise));
+                }
+                let promise_before =
+                    work.rank(self.lanes.promise_bits, self.lanes.promise_ranks, exception);
+                overlay_at::<DomainTag, _>(
+                    overlays,
+                    self.content_authority,
+                    exception - promise_before,
+                    work,
+                )
+            }
         }
-        let promise_before = work.rank(promise_bits, promise_ranks, exception);
-        self.overlay_from_rank(self.lanes, exception - promise_before, work)
-    }
-
-    fn overlay_from_rank<WorkPolicy: LookupWorkPolicy>(
-        &self,
-        lanes: LaneTable,
-        overlay: u32,
-        work: &mut WorkPolicy,
-    ) -> Result<Locality<DomainTag>, LocalityReadError> {
-        let overlay_bits = lane(self.bytes, lanes.overlay_bits, lanes.overlay_ranks);
-        if !rank::member(overlay_bits, overlay) {
-            return Ok(Locality::Overlaid(RemoteBase::Absent {
-                generation: self.overlay_basis(lanes),
-            }));
-        }
-        let overlay_ranks = lane(self.bytes, lanes.overlay_ranks, lanes.present);
-        let present = work.rank(overlay_bits, overlay_ranks, overlay);
-        self.descriptor_at(lanes, present).map(|object| {
-            Locality::Overlaid(RemoteBase::Present {
-                generation: self.overlay_basis(lanes),
-                object,
-            })
-        })
-    }
-
-    fn provider_at(
-        &self,
-        lanes: LaneTable,
-        promise: u32,
-    ) -> Result<ProviderSet, LocalityReadError> {
-        let providers = lane(self.bytes, lanes.providers, lanes.overlay_bits);
-        let raw = read_u64(providers, promise);
-        super::trusted_decode::provider(raw, promise)
     }
 
     #[allow(
         clippy::indexing_slicing,
-        reason = "a non-promise validated exception proves the measured shared overlay-basis lane is present"
+        reason = "validated rank populations prove every projected promise ordinal is in the typed provider lane"
     )]
-    fn overlay_basis(&self, lanes: LaneTable) -> GenerationId {
-        let mut bytes = [0_u8; 32];
-        bytes.copy_from_slice(&self.bytes[lanes.basis..lanes.complete]);
-        GenerationId::from(bytes)
-    }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "a validated present-overlay rank is within the exact fixed-width descriptor lane"
-    )]
-    fn descriptor_at(
-        &self,
-        lanes: LaneTable,
-        present: u32,
-    ) -> Result<ObjectRef<DomainTag>, LocalityReadError> {
-        let descriptors = lane(self.bytes, lanes.present, lanes.basis);
-        let start = native(present) * nudox_object::OBJECT_DESCRIPTOR_RECORD_BYTES;
-        super::trusted_decode::descriptor(
-            &descriptors[start..start + nudox_object::OBJECT_DESCRIPTOR_RECORD_BYTES],
-            present,
-        )
-    }
-
-    pub(in crate::locality) fn exception_row(&self, lanes: LaneTable, exception: u32) -> u32 {
-        read_u32(lane(self.bytes, lanes.rows, lanes.promise_bits), exception)
+    fn provider_at(&self, promise: u32) -> ProviderSet {
+        self.lanes.providers[native(promise)].provider_set()
     }
 
     pub(crate) const fn exception_count(&self) -> u32 {
         self.exception_count
     }
 
-    pub(in crate::locality) fn cursor_is_promise(&self, lanes: LaneTable, exception: u32) -> bool {
-        rank::member(
-            lane(self.bytes, lanes.promise_bits, lanes.promise_ranks),
-            exception,
-        )
-    }
-
-    pub(in crate::locality) fn cursor_overlay_is_present(
-        &self,
-        lanes: LaneTable,
-        overlay: u32,
-    ) -> bool {
-        rank::member(
-            lane(self.bytes, lanes.overlay_bits, lanes.overlay_ranks),
-            overlay,
-        )
-    }
-
-    pub(in crate::locality) fn cursor_promise(
-        &self,
-        lanes: LaneTable,
-        promise: u32,
-    ) -> Result<ProviderSet, LocalityReadError> {
-        self.provider_at(lanes, promise)
-    }
-
-    pub(in crate::locality) fn cursor_overlay_absent(
-        &self,
-        lanes: LaneTable,
-    ) -> Locality<DomainTag> {
-        Locality::Overlaid(RemoteBase::Absent {
-            generation: self.overlay_basis(lanes),
-        })
-    }
-
-    pub(in crate::locality) fn cursor_overlay_present(
-        &self,
-        lanes: LaneTable,
-        present: u32,
-    ) -> Result<Locality<DomainTag>, LocalityReadError> {
-        self.descriptor_at(lanes, present).map(|object| {
-            Locality::Overlaid(RemoteBase::Present {
-                generation: self.overlay_basis(lanes),
-                object,
-            })
-        })
-    }
-
-    pub(in crate::locality) const fn lane_table(&self) -> LaneTable {
-        self.lanes
+    pub(in crate::locality) const fn cursor_lanes(&self) -> &BorrowedLanes<'bytes> {
+        &self.lanes
     }
 }
 
-impl<'bytes, DomainTag> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, DomainTag> {
+impl<'bytes, DomainTag: Domain> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, DomainTag> {
     type Error = LocalityError;
 
     fn try_from(bytes: &'bytes [u8]) -> Result<Self, Self::Error> {
@@ -290,7 +217,7 @@ impl<'bytes, DomainTag> TryFrom<&'bytes [u8]> for ValidatedLocality<'bytes, Doma
 /// # Errors
 ///
 /// Returns the exact validation failure for the bytes borrowed for this call.
-pub fn with_validated_locality<ByteOwner, DomainTag, Output>(
+pub fn with_validated_locality<ByteOwner, DomainTag: Domain, Output>(
     owner: &ByteOwner,
     visit: impl for<'bytes> FnOnce(ValidatedLocality<'bytes, DomainTag>) -> Output,
 ) -> Result<Output, LocalityError>
@@ -332,8 +259,12 @@ impl LookupWorkPolicy for crate::LocalityLookupWork {
     }
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the binary-search interval is initialized from and remains bounded by the exact typed row count"
+)]
 fn binary_search_row<WorkPolicy: LookupWorkPolicy>(
-    rows: &[u8],
+    rows: &[U32<BigEndian>],
     count: u32,
     target: u32,
     work: &mut WorkPolicy,
@@ -344,7 +275,7 @@ fn binary_search_row<WorkPolicy: LookupWorkPolicy>(
     while start < end {
         let middle = start + (end - start) / 2;
         work.compared();
-        match read_u32(rows, middle).cmp(&target) {
+        match rows[native(middle)].get().cmp(&target) {
             core::cmp::Ordering::Less => start = middle + 1,
             core::cmp::Ordering::Greater => end = middle,
             core::cmp::Ordering::Equal => return Some(middle),
@@ -355,42 +286,36 @@ fn binary_search_row<WorkPolicy: LookupWorkPolicy>(
 
 #[allow(
     clippy::indexing_slicing,
-    reason = "the validated artifact proves every temporary lane start/end and fixed record window"
+    reason = "validated descriptor ranks prove every projection ordinal is in the typed lane"
 )]
-fn lane(bytes: &[u8], start: usize, end: usize) -> &[u8] {
-    &bytes[start..end]
+fn overlay_at<DomainTag: Domain, WorkPolicy: LookupWorkPolicy>(
+    lanes: &OverlayLanes<'_>,
+    authority: ContentAuthority<DomainTag>,
+    overlay: u32,
+    work: &mut WorkPolicy,
+) -> Locality<DomainTag> {
+    if !rank::member(lanes.presence_bits, overlay) {
+        return Locality::Overlaid(RemoteBase::Absent {
+            generation: lanes.basis,
+        });
+    }
+    let present = work.rank(lanes.presence_bits, lanes.presence_ranks, overlay);
+    Locality::Overlaid(RemoteBase::Present {
+        generation: lanes.basis,
+        object: project_descriptor(&lanes.descriptors[native(present)], authority),
+    })
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "a validated fixed-width u32 lane has exactly four bytes for every semantic ordinal"
-)]
-fn read_u32(bytes: &[u8], ordinal: u32) -> u32 {
-    let start = native(ordinal) * size_of::<u32>();
-    u32::from_be_bytes([
-        bytes[start],
-        bytes[start + 1],
-        bytes[start + 2],
-        bytes[start + 3],
-    ])
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "a validated fixed-width provider lane has exactly eight bytes for every promise rank"
-)]
-fn read_u64(bytes: &[u8], ordinal: u32) -> u64 {
-    let start = native(ordinal) * size_of::<u64>();
-    u64::from_be_bytes([
-        bytes[start],
-        bytes[start + 1],
-        bytes[start + 2],
-        bytes[start + 3],
-        bytes[start + 4],
-        bytes[start + 5],
-        bytes[start + 6],
-        bytes[start + 7],
-    ])
+pub(in crate::locality) fn project_descriptor<DomainTag: Domain>(
+    record: &LocalityDescriptorWireRecord,
+    authority: ContentAuthority<DomainTag>,
+) -> ObjectRef<DomainTag> {
+    ObjectRef {
+        content: authority.bind(record.content),
+        length: ObjectLength::from(record.length.get()),
+        schema: record.schema.get(),
+        kind: ObjectKind::from(record.kind.get()),
+    }
 }
 
 #[allow(

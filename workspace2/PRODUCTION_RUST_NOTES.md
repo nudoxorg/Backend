@@ -205,6 +205,30 @@ state or invalid instantiations enough to justify compiler coupling. Every const
 reports monomorphized text size—runtime bytes saved by emitting many near-identical functions is not a
 lean-client win.
 
+## Compile-time protocol registry, not distributed runtime registration
+
+Independent planes adding identity domains create merge pressure on the sealed `nudox-id` table, but
+the obvious distributed-registry mechanisms weaken the actual invariant. `linkme` gathers const
+elements into linker sections and exposes a runtime slice; it does not make duplicate durable labels
+a type error, depends on platform linker behavior, and has documented dead-section edge cases:
+https://github.com/dtolnay/linkme and https://github.com/dtolnay/linkme/issues/36. `inventory` owns an
+atomic linked registry behind erased nodes and unsafe initialization machinery, which is the opposite
+of a zero-state canonical identity vocabulary: https://github.com/dtolnay/inventory/blob/master/src/lib.rs.
+
+Do not turn linker symbol collisions into a uniqueness proof. Rust 2024 marks `export_name`,
+`no_mangle`, and `link_section` unsafe because collisions can cause undefined behavior, not a portable
+diagnostic: https://doc.rust-lang.org/reference/abi.html#the-no_mangle-attribute. Stable const-generic
+parameters also cannot directly use `[u8; 16]`; packing a readable durable label into `u128` would move
+the same registry burden into less auditable literals:
+https://doc.rust-lang.org/reference/items/generics.html#const-generics.
+
+Keep protocol-domain labels in one declarative compile-time table until an extension requirement
+falsifies that choice. Plane managers may propose one row, but the root integrates registry changes
+serially and reruns pairwise domain/encoding uniqueness. Revisit only with a cross-platform specimen
+where two isolated crates declaring the same 16-byte label fail deterministically before execution,
+without a runtime registry, erased node, unsafe collision, or shipping dependency. Merge contention
+alone does not justify runtime state or weaker canonical identity.
+
 ## Packed borrowed ownership
 
 `zerocopy` 0.8's `KnownLayout`, `FromBytes`/`TryFromBytes`, `Immutable`, endian cells, and typed

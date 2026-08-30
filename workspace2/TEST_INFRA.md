@@ -32,7 +32,8 @@ Test strength is assessed by the defects a suite would catch, not test count.
    into a corpus.
 6. Snapshot tests cover large stable diagnostics only. Exact typed variants and fields are asserted
    before rendering; snapshot updates require human diff review.
-7. Tests live in focused files/crates. Production modules do not become 400-line test containers.
+7. Tests live in focused files under ordinary crates or their top-level `tests/` trees. Do not create
+   a dedicated test-only crate, and do not turn production modules into 400-line test containers.
 8. No acceptance assertion is merely `is_err`, wildcard `matches!`, nonzero length, or “didn't panic.”
 9. Scenario drivers return a compact typed evidence record or a concrete `ScenarioError`. Fallible
    setup, polling, joins, and teardown use `?`; an unexpected variant becomes structured

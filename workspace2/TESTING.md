@@ -4,15 +4,18 @@
 
 - Assert exact `size_of`, alignment, and important field offsets from the actual field types; golden
   protocol bytes are the only independent constants. Tests must not repeat production arithmetic.
-- Instrument the allocator around the borrowed/inline central path and prove zero allocations after
-  setup. Exercise the explicit bounded spill path separately when one exists.
+- Instrument the allocator around the representative borrowed/inline path. Assert zero allocations
+  only when the capability contract requires it; otherwise assert the exact mechanism, bound,
+  lifetime, reuse, and peak. Exercise bounded spill paths separately.
 - For every retained `Box`, `Vec`, or reference-counted owner, hit exact capacity, one beyond capacity,
   rejection/rollback, repeated reuse, and drop. Report peak retained bytes rather than container count.
 - Closed discriminants round-trip through `From`/`TryFrom`; every unnamed raw bit pattern rejects with
   the original value preserved.
 - Error tests match structured fields and causal `source`, not formatted strings alone.
-- Identity conversions test `From<[u8; N]>` and standard `TryFrom<&[u8]>` at N-1/N/N+1; no custom
-  fixed-width length error is reimplemented.
+- Identity representation tests use standard checked `TryFrom<[u8; N]>`/`TryFrom<&[u8]>` at
+  N-1/N/N+1 and every wrong authority cell. A named digest projection is tested separately.
+  `From<[u8; N]>` is allowed only when all bytes are preserved as the same value; it never normalizes
+  or overwrites a tag.
 - Typed wire record tests prove read/write share the same bytes, exact size/alignment has no padding,
   borrowed descriptor pointers lie inside the input, and semantic access performs no scalar reparse.
 
@@ -39,13 +42,16 @@ one accessor is documentation, not acceptance evidence.
   cross-domain substitution/forged witnesses where a runtime negative test cannot express the law.
 - A validated iterator's exact cardinality must hold under every legal extension record. No internal
   conversion may turn an expected item into early `None`, a shorter stream, or an `Internal` result.
-- Grep every `map_err` site. A conversion failure test asserts the exact attempted operand and
-  traversable source error; a rejected ownership transfer asserts the original value is returned
-  unchanged. Do not restrict this audit to lines a human reviewer happened to notice.
+- Run the semantic error-conversion lint over every shipping target. A conversion failure test asserts
+  the exact attempted operand and traversable source error; a rejected ownership transfer asserts the
+  original value is returned unchanged. Text search may inventory sites but cannot decide whether a
+  source was erased.
 - Enumerate the typed identity-domain registry, prove tag uniqueness, and compare incremental and
   one-shot canonical hashing. Application crates contain no raw `b"nudox..."` personalization
   literals. Semantic-root identity is invariant under locality-only changes, while a semantic
   object/parent/key change alters it.
+- Compile-fail the former unchecked raw identity constructor/cross-authority conversion. Also prove
+  routing and partition words exclude fixed authority/version cells from their entropy.
 
 ## Foundation fabric
 
@@ -95,6 +101,10 @@ one accessor is documentation, not acceptance evidence.
   preserves the exact terminal fact.
 
 ## End to end
+
+The Sol chief owns these public red journeys before capability dispatch. Terra owns focused unit and
+fault oracles discovered inside the slice; Luna implements against both and may add only card-scoped
+cases. Every end-to-end test must remain capable of killing an input-ignoring or constant-body mutant.
 
 - Use actual canonical bytes, frame validation, root, planner, owned store admission, readiness,
   operation cursor, concurrent runtime, and durable recovery—no integer/shadow domain.

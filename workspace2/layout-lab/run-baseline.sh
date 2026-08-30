@@ -8,5 +8,5 @@ output_root="$lab_root/raw"
 {
     printf 'collector\tstable-size-align-offset-inventory\n'
     printf 'rustc\t%s\n' "$(rustc --version)"
-    nix shell nixpkgs#clang -c cargo run --quiet --manifest-path "$lab_root/Cargo.toml"
+    nix shell nixpkgs#clang -c cargo run --quiet --manifest-path "$lab_root/Cargo.toml" --bin nudox-layout-lab
 } > "$output_root/baseline-aarch64-apple-darwin.tsv"

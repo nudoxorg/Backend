@@ -2,14 +2,14 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
-use nudox_observability_adapter::{AdapterRunError, BatchLimitsError};
+use nudox_observability_adapter::{BatchLimitsError, MetricReportError};
 
 #[derive(Debug, Error)]
 pub(super) enum AdapterTestError {
     #[error("invalid batch test configuration")]
     Limits(#[from] BatchLimitsError),
-    #[error("adapter scenario failed")]
-    Run(#[from] AdapterRunError),
+    #[error("runtime metric reporting failed")]
+    Metrics(#[from] MetricReportError),
     #[error("OpenTelemetry SDK operation failed")]
     Sdk(#[from] opentelemetry_sdk::error::OTelSdkError),
     #[error("export omitted span {name}")]
@@ -109,6 +109,7 @@ pub(super) const EVENTS: [ExpectedEvent; 15] = [
             ("selected_rows", count(1)),
             ("projected_rows", count(1)),
             ("ancestor_edges", count(0)),
+            ("parent_search_comparisons", count(0)),
         ],
         ScenarioSpan::Root,
     ),

@@ -5,7 +5,42 @@ Host for local measurements: Apple M3 Pro, aarch64 macOS
 Scope: memory layout, SIMD, construction, lock-free coordination, object-pack I/O, and future
 S3/search-index tiers.
 
-## Executive result
+## Controller revalidation (2026-08-30)
+
+This section supersedes the shipping-status and benchmark claims in the historical pass below. The
+historical text remains as candidate provenance; it is not a description of the current source.
+
+- Current `GenerationRootBuilder` still retains separate 72-byte input entries and 64-byte packed
+  rows at its construction peak. The repaired locked/offline production harness reports exactly
+  13,600,000 construction bytes and 6,400,000 retained bytes for both owned and streaming entry at
+  100,000 rows, with identical canonical IDs (18,614,542 ns and 18,387,750 ns medians in the
+  checked-in reproduction).
+  The separate phase-reuse lab candidate reports 6,408,000--7,200,000 bytes depending on root
+  density; it is not shipping.
+- Current `PreparedObjectPack` writes one contiguous caller buffer. Its complete borrowed view and
+  selected-body verification are zero-copy, but there is no shipping scatter/gather prefix/segment
+  writer. The prior scatter/gather description is an unlanded candidate claim.
+- Current runtime byte credits use acquire loads, acquire/release CAS, and release restoration; a
+  zero-credit reservation still performs atomic operations. The isolated relaxed-ordering control
+  was 1.23--2.89x faster in the reproduced cells, but has no shipping correctness proof. In the
+  separate public-runtime run, optional atomic accounting was 7.9--19.1% slower in all 12 matched
+  cells; every cell still conserved 20,000 completions and drained credits/terminals to zero.
+- The shipping locality validator remains the supported SIMD win. Reproduction found short losses
+  at 0, 4, and 16 rows, then 2.97x at the 32-row dispatch boundary and 13.0x at 16,384 rows. Dispatch
+  stays outside the hot loop and scalar behavior remains the oracle.
+- The scratch SoA control remains workload-specific, not shipping. At one million rows it used the
+  same aggregate 64 MB, improved key-only scan 10.55x, binary lookup 1.79x, and full scan 1.12x.
+  AoSoA used 65 MB and regressed lookup/key scans; the same-size in-place permutation cost
+  177,044,041 ns and remains rejected.
+- The reproduced grouped-NEON index used 37.5% less metadata and improved hit-only lookup 1.12x,
+  but made misses 37.7% slower; it remains a rejected universal store representation.
+
+The current executable authority is `layout-lab` plus `.perf-scratch`, not the historical prose or
+checked-in old medians. Measured values are host samples, while sizes, passes, copies, allocations,
+and atomic counts are reported as analytic facts unless an allocation or concurrency harness
+directly observes them.
+
+## Historical executive result (superseded)
 
 This pass found real order-of-magnitude kernels, but it did **not** establish a 10x end-to-end
 system result. The adopted production changes are deliberately those whose invariants and
@@ -31,7 +66,7 @@ rows, a contiguous key lane made key-only scans 10.5x faster and binary lookup 3
 same aggregate 64 bytes/row. It is not yet production because arbitrary-order construction either
 adds a second peak allocation or pays an unacceptable in-place transposition cost.
 
-## Production changes
+## Historical candidate claims (not current shipping)
 
 ### Root row: padding becomes proof state
 

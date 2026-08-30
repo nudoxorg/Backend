@@ -2,7 +2,7 @@ use core::{mem::size_of, ops::Deref};
 
 use nudox_object::ObjectDescriptorWireRecord;
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+    FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
     byteorder::{BigEndian, U64},
 };
 
@@ -11,7 +11,7 @@ use zerocopy::{
 pub(crate) struct ObjectCountRecord(pub(crate) U64<BigEndian>);
 
 #[repr(C)]
-#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[derive(Clone, Copy, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned)]
 pub(crate) struct DirectoryRecord {
     pub(crate) descriptor: ObjectDescriptorWireRecord,
     pub(crate) body_end: U64<BigEndian>,

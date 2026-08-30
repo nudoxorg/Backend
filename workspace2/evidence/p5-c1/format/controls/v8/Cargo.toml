@@ -1,0 +1,14 @@
+[package]
+name = "nudox-ir-format-v8-control"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "fragment"
+path = "tests/fragment.rs"
+
+[workspace]
+resolver = "2"

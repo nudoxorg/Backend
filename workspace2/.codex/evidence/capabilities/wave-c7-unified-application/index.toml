@@ -1,0 +1,56 @@
+schema = 1
+capability_id = "wave-c7-unified-application"
+state = "evidence-blocked"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = "TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+controller_source_thread_id = "01a04a90-d810-7d71-8bea-44cda7e5b969"
+role = "nudox_sol_steward"
+config_path = ".codex/agents/nudox-sol-steward.toml"
+model = "gpt-5.6-sol"
+effort = "xhigh"
+sandbox = "danger-full-access"
+checkout = "/Users/mileswirht/.config/codex/worktrees/762f/backend"
+branch = "codex/wave-c7-unified-app"
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/wave-c7-unified-application/brief.md", sha256 = "c81549f9caa18aef7422dc82148385e0dda38932b59b51a464a6ffa42ab6f89c" }
+matrix = { path = ".codex/evidence/capabilities/wave-c7-unified-application/proof-matrix.md", sha256 = "806c71d2444e3d656c85ee5a9b8c431bd61f4e301f66924a6fc4ae1846871610" }
+research = { path = ".codex/evidence/capabilities/wave-c7-unified-application/research.md", sha256 = "00c525b7bf0e384f21f9ed96ce9632e3790909fa1fa48e6808477a792d18078c" }
+closure = { path = ".codex/evidence/capabilities/wave-c7-unified-application/closure.md", sha256 = "2f28cdf3d3f7bb1d97d35fe13756471b1cb003c38e04e3a268af432ac862f155" }
+
+[[managers]]
+task_id = "/root/nudox_terra_orchestrator (opaque runtime UUID unavailable)"
+role = "nudox_terra_orchestrator"
+config_path = ".codex/agents/nudox-terra-orchestrator.toml"
+model = "gpt-5.6-terra"
+effort = "xhigh"
+sandbox = "danger-full-access"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+checkout = "/Users/mileswirht/.config/codex/worktrees/762f/backend"
+phase0_commit = "91c938d4a6afdc5b8dd65e0415766c72725cf9c4"
+result_commit = "6dca42226e138ddd41d2015067282978fdc320a1"
+result = "evidence-blocked"
+evidence_index = ".codex/evidence/capabilities/wave-c7-application-service/index.toml"
+
+[[blocked_attempts]]
+task_id = "01a0513e-951d-7721-83b8-31f5f43dd0bb"
+raw_receipt = "/private/tmp/c7-preedit-review-v2.KhEdon"
+result = "router rejected full-history reviewer override; empty receiver_thread_ids"
+source_digest_before = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+source_digest_after = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+
+[[blocked_attempts]]
+task_id = "01a05140-753b-7003-b7c9-16616993c57b"
+raw_receipt = "/private/tmp/c7-preedit-review-v3.dMOiEx/sidecar-final.md"
+raw_jsonl = "/private/tmp/c7-preedit-review-v3.dMOiEx/sidecar-events.jsonl"
+result = "Unknown model gpt-5.6-luna; available gpt-5.6-sol,gpt-5.6-terra"
+source_digest_before = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+source_digest_after = "1199b20def1ff63c010cdd5c12f485e5c62b03fe7a4d7c25d8f1aa311980f878"
+
+[external_owner]
+system = "sidecar role-routing configuration"
+required_action = "expose registered gpt-5.6-luna parent and registered gpt-5.6-terra/xhigh reviewer under source-isolated dispatch"

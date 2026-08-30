@@ -10,10 +10,9 @@ use thiserror::Error;
 
 use crate::{
     ClosureError, ClosureScratch, EntryKey, EntryRangeError, GenerationRoot, GenerationView,
-    Locality, LocalityError, LocalityException, LocalityReadError, LocalityWriteError, NonResident,
-    OverlayError, PreparedLocality, RootBuildError, RootChange, RootEntry, RootProbeEvent,
-    RootWriteError, SelectedOrdinalBuffer, SelectedOrdinalBufferError, ValidatedLocality,
-    propagate_overlays,
+    Locality, LocalityError, LocalityException, LocalityWriteError, NonResident, OverlayError,
+    PreparedLocality, RootBuildError, RootChange, RootEntry, RootProbeEvent, RootWriteError,
+    SelectedOrdinalBuffer, SelectedOrdinalBufferError, ValidatedLocality, propagate_overlays,
 };
 
 const LARGE_ROOT_ROWS: u64 = 100_000;
@@ -32,8 +31,6 @@ enum ScenarioError {
     Locality(#[from] LocalityError),
     #[error("locality output failed")]
     LocalityWrite(#[from] LocalityWriteError),
-    #[error("validated locality fixture read failed")]
-    LocalityRead(#[from] LocalityReadError),
     #[error("closure selection failed")]
     Closure(#[from] ClosureError),
     #[error("range construction failed")]
@@ -124,7 +121,7 @@ fn key(raw: u64) -> EntryKey {
 
 fn object(byte: u8) -> ObjectRef<ObjectDomain> {
     ObjectRef {
-        content: ContentId::from([byte; 32]),
+        content: ContentId::from_digest([byte; 32]),
         length: u64::from(byte).into(),
         schema: SchemaId::Object,
         kind: 1_u16.into(),

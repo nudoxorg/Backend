@@ -1,0 +1,279 @@
+# I0 vocabulary card calibration — raw record
+
+## Frozen specimen
+
+The calibrated specimen is the exact pair below at Git
+`f9419673f451ec8796d3f9462f3bace667c13435` plus this record. No evaluator receives an intended
+implementation beyond the executable manager card.
+
+| Path | SHA-256 before calibration rewrite |
+| --- | --- |
+| `workspace2/INDEX_GREENFIELD_PLAN.md` | `1e394ad715e732a6af96f762e39f3afa6a2620b6d432d1f4219c1ece1dba2b02` |
+| `workspace2/INDEX_I0_MANAGER_CARD.md` | `d0c954a31047d03ac4721a2bfe7d92ace60294abee24bb0a2f01800614f5edfa` |
+| `workspace2/PACKED_COLLECTIONS.md` | `32d1b9f63718b96c38fb82a967d3fbea621a6e53a52ae2e783152ba47ba26a1b` |
+| `workspace2/TESTING.md` | `1d24abcd200346c65944ca33b1283e49b68f059a33c30aee1eb17f08ac2033b6` |
+| `steward-greenfield-rust-program/SKILL.md` | `839177af0ae7d21d5550c02726c0df0df183825f3c37a97dfba16246b9ed47a9` |
+| `deliver-reviewed-rust-slice/SKILL.md` | `812088beb50ecd1c9dd3973ace8a39692852c39ba4bd404af110351f628d32d3` |
+| `manage-rust-swarm/SKILL.md` | `7ccd529b1dba37a5def845668afa4867aa4b3664a1dfffa44d4454596506f6b3` |
+| `calibrate-rust-agent-contract/SKILL.md` | `fd19aa8c8017b1203b0b648e74b33841b28d6d28ebdab96b2ab82e8c60637d5c` |
+| `review-rust-gem/SKILL.md` | `095cd443ed0c776b3de86c8d6c44977777ffc709a7d1fe4fc0485e78ab89469e` |
+| `write-evidence-rubric/SKILL.md` | `ad3d520e9148889b943831ce8c6342e45da2dded1ad2afadf004fe2b23d52a8c` |
+| `build-greenfield-index-plane/SKILL.md` | `4484f5ac59a0718b8e58996d738897a879dff937094ef8a51e15bb3340729da6` |
+
+## Trial schema sent verbatim to readers
+
+```text
+first observable capability and terminal
+exact allowed paths and named baseline
+preserved facts and prohibited adjacent behavior
+expected public surface and explicitly forbidden surface
+evidence row | falsifier | hard cap | stop trigger
+budgets and reserve
+questions requiring parent authority
+```
+
+## Reviewer deck
+
+The calibration reviewer receives three standalone, executable deliberately deficient candidates in
+`/private/tmp/i0-reviewer-deck` and the card, but not the manager's design rationale. Their source
+and command output hashes are recorded with the reviewer response below. The deck has no workspace2
+production, manifest, test-fixture, or roadmap files.
+
+## Formatted skeleton and deck command output
+
+The revised no-production scratch skeleton at `/private/tmp/i0-skeleton` ran
+`RUSTC_WRAPPER= cargo fmt --all -- --check` and `RUSTC_WRAPPER= cargo check --workspace` successfully.
+Its narrowed vocabulary source is 120 normally formatted Rust lines with SHA-256
+`b0d871c55e33e1547b143ed9035fe6ed8ea43d83b164f430282f3e52ccd3b0d2`; adding the two public
+compile-fail doctests and docs yields the card's 141-line source forecast. The executable reviewer
+deck ran `RUSTC_WRAPPER= cargo fmt --all -- --check` and `RUSTC_WRAPPER= cargo test --no-fail-fast`
+successfully after its initial missing-`Debug` fixture compile failure was repaired. Its frozen source
+digests are `Cargo.toml` `05e947586f1d061727ec989822f552627cb82c757e34cc324ec8faff91890afa`,
+`src/lib.rs` `2a425f7d9d515f0a70a532e0a4a6501082cd35b8731136676eba65e795240ba6`, and
+`tests/weak_green.rs` `d0fcb918f7b9e8b667674919fb40634cf786e4c2387a9fce432584291a3562f4`.
+
+## Raw evaluator outputs
+
+Evaluator messages are appended verbatim under dated role headings. Normalized comparison and any
+card rewrite follow the raw messages; no message is silently replaced or paraphrased.
+
+### Reader one — raw `gpt-5.6-luna` response
+
+```text
+Capability: portable closed index vocabulary naming snapshots and family-specific segments without cross-family identity substitution. Terminal: external nudox-index-vocab consumer hashes equal borrowed [u8; 24] bytes from independent local/remote owners to equal IndexSnapshotId and IndexSegmentId<Exact> values; IndexSegmentId<Lexical> -> IndexSegmentId<Exact> assignment fails externally. Requested model is gpt-5.6-luna; runtime model selection is not independently visible in the frozen files.
+
+Writable paths are exactly the nine paths in the first card: crates/nudox-id/src/{marker.rs,lib.rs}; nested index and crate manifests; vocabulary src/lib.rs; three Rust tests; and one stderr golden. Manager-only exceptions: this record and the card. Baseline: Git f9419673f451ec8796d3f9462f3bace667c13435, branch autonomous-index-contract.
+
+Canonical borrowed bytes are the sole identity source; owner locality must not affect hashes. SegmentFamily is sealed/closed: Exact, Lexical, Relation, Usage, Vector. IDs are typed ContentIds, not strings/raw hashes/public multi-field witnesses. Add only snapshot plus five family domains to the central nudox-id registry. Prohibited: allocation/copy, parsing, manifest/directory/scan/query/publication/range/I/O/async, backend/compatibility, unsafe/SIMD/macro/dyn/dynamic schema/new dependency, root workspace edits, and future identities.
+
+Expected: sealed family trait; five ZST markers; IndexSnapshotId; generic IndexSegmentId<Family>; closed SegmentFamilyCode with From/TryFrom and rejected raw u8; canonical byte constructors; marker reexports. Forbidden: caller-assembled family/bytes witness, one untyped domain, public raw labels, manifest/wire/query/view/publication/backend types, extra identities, or unapproved public items.
+
+Evidence: canonical parity changes with a byte but not owner; external typed assignment fails; named codes round-trip and unknown preserves raw u8; IDs are 32/1 and markers 0/1; isolated serial non-empty allocation run is zero after setup; diff/path ledger has only approved surface. Fallback, retention/allocation, parallel/empty-only measurement, or extra API/dependency stops.
+
+Production forecast 181 LOC, ceiling 230, reserve 49; test forecast 132 including golden, ceiling 160, reserve 28. Caller retains two 24-byte owners; one BLAKE3 pass per supplied 24 bytes; no queue/latency claim.
+
+No product-authority fork. Missing: the seven governing skill identities and pre-cycle digests are not enumerated; runtime model selection is not visible. These are calibration-record gaps.
+```
+
+### Reader two — raw `gpt-5.6-luna` response
+
+```text
+Independent frozen-specimen contract evaluation (read-only). Requested model: gpt-5.6-luna; actual runtime selection is not visible in this filesystem/read-only context.
+
+It agreed on the same terminal, baseline, nine allowed paths, preserved borrowed-byte/typed-family laws, expected aliases/closed code, negative space, and 181/230/49 production and 132/160/28 test budget. It found these missing literals: the seven governing skill paths; exact domain names and raw code; exact public signatures/visibility/error fields; relation/usage/vector constructor scope; whether one BLAKE3 pass is per independent call; allocation harness/command and unavailable-report format; clean-baseline meaning after documentation edits; worktree-relative path base; and exact raw error evidence. None is a parent-authority question.
+```
+
+### Plausible misreader — raw `gpt-5.6-luna` response
+
+```text
+The cheapest patch would add central marker domains, one nested vocabulary crate, sealed family
+markers and a generic identity alias, thin ContentId constructors, a repr(u8) code enum, one parity
+test, and a compile_fail doctest. It would look green because distinct associated domains reject a
+direct assignment, ContentId hashes borrowed slices, and the nested workspace avoids a root manifest.
+
+It found these permission gaps: SegmentFamily was ambiguous between an enum and trait; conversion
+pairs were not literal; allocator counts cannot prove absence of canonical-input copying; the serial
+harness and source-audit rule were weak; digest output must not be confused with an input-byte copy;
+raw 6/255 and lexical construction were untested; doctest externality and generic conversion needed
+stronger proof; lockfile packages/versions needed exact audit; thiserror/package scope and a newly
+allowed crate needed wording; the plan wildcard could be misread as extra-file authority; new marker
+labels needed pairwise uniqueness; no_std/unsafe, one-pass hashing, relation/usage/vector constructors,
+and helper/raw-label public surface needed explicit stop rules.
+```
+
+### Reviewer calibration — raw `gpt-5.6-luna` response
+
+```text
+The executable deck formats and tests green while hiding three blockers. (1) Its public
+SegmentId { family: u8, bytes: [u8; 32] } lets a family-2 lexical value enter exact_consumer; delete
+the multi-field witness and use typed aliases, falsified by external exact/lexical compile failure.
+(2) Its fallback maps every raw value other than 2, including 99, to Exact; replace it with exhaustive
+1..=5 mapping and UnknownSegmentFamily(raw), falsified by raw 0/6/255 assertions. (3) BorrowedId
+owns Vec<u8> and calls to_vec; return only the fixed-size ID, falsified by serial allocation evidence
+and a source audit for Vec/to_vec/Box/Arc/input-byte fields. Its only weak test asserts all three bad
+behaviors, so that green test is a MAJOR non-evidence.
+
+The reviewer found no card semantic blocker beyond runtime-model evidence visibility: the explicit
+request names gpt-5.6-luna but the live filesystem/status interface has no actual-model field. This
+must be recorded as a tooling limitation alongside the successful explicit override, not faked by a
+task name.
+```
+
+The manager recorded the exact successful explicit calls: reader one, reader two, plausible misreader,
+and reviewer each used `model: "gpt-5.6-luna"` with `fork_turns: "none"`; each service response created
+the named child task. The live-agent API exposes no selected-model property. This is the available
+runtime evidence and limitation; no inherited worker was accepted.
+
+### Post-rewrite reader — raw `gpt-5.6-luna` response
+
+```text
+Requested model gpt-5.6-luna. The successful record confirms explicit gpt-5.6-luna overrides with
+non-inheriting forks; live inspection exposes task/status but not the selected model, and this is
+honestly recorded rather than inferred from a task name.
+
+The reader restated the external local/remote borrowed-byte terminal; exact seven writable child
+paths and f9419673 baseline; typed ContentId/no-input-copy and closed SegmentFamily laws; the exact
+enum, aliases, UnknownSegmentFamily, sealed marker, and two downstream compile-fail public surface;
+all parity, direct/Into mismatch, raw 1..5 plus 0/6/255, layout, serial allocation/source-audit,
+one-hash, registry/no_std, and negative-space falsifiers; and 155/230/75 production plus 100/120/20
+test budgets. It found no parent-authority question and returned PASS: no cheapest compliant-looking
+interpretation can broaden, substitute, or omit the child proof.
+```
+
+## Normalized comparison and rewrite one
+
+The readers agreed on the terminal, path set, negative space, evidence rows, and numeric reserve. The manager rewrote only discoverable omissions: literal seven-skill input list; worktree path base; domains/tags/codes/error; public constructor scope; independent hash work; nested lockfile; exact measurement boundary; doctest mechanism; and clean-baseline meaning. It removed the accidental `trybuild`/UI fixture claim.
+
+## Rewrite two after plausible misread
+
+`SegmentFamily` now names only the public closed enum; sealed `IndexSegmentFamily` names the generic
+marker relation. The card now fixes conversion pairs, source-copy audit, serial measurement command,
+input-copy meaning, raw 0/6/255 cases, lexical parity, two downstream doctests, lockfile auditing,
+registry uniqueness/no_std evidence, and forbidden helper surface. The shared-protocol authority then
+narrowed the registry to the three rows this first proof consumes: snapshot, exact, and lexical.
+Relation/usage/vector retain enum codes but no premature identity marker or constructor.
+
+The reviewer rejected every seeded defect at blocker severity and invented no style-only finding.
+One fresh post-rewrite reader remains required before passing calibration.
+
+## Resolution
+
+Calibration passes. The two independent readers discovered and caused the first rewrite; the plausible
+misreader discovered and caused the second rewrite; the fresh reviewer rejected every executable
+seeded defect at blocker severity; and the fresh post-rewrite reader passed the rewritten literal
+contract. Successful explicit `gpt-5.6-luna`/`fork_turns: "none"` creation is recorded for every
+role; selected-model inspection is unavailable in this runtime and remains an honest tooling gap, not
+a model substitution. No product-authority choice is unresolved.
+
+## Implementation checkpoint and role record
+
+The bounded Luna builder was explicitly spawned with `model: "gpt-5.6-luna"` and
+`fork_turns: "none"`; it made the vocabulary checkpoint later committed by the manager as
+`a8486a1b`. Its online test gate could not resolve `index.crates.io`; the exact failure is preserved
+in its handoff. The identical lockfile-resolved gate passed with `--offline`, as did format, doctest,
+clippy, documentation, and `nudox-id` marker tests. The Luna repair worker was separately and
+explicitly spawned with the same model/fork and implementation-only one-file scope; it committed
+`660b8c5f` (delete the direct `nudox-id` external-test import) and `0afd1140` (add byte-mutation
+falsifiers and replace a valid-code `unwrap`). Neither Luna was asked to review or approve.
+
+The separate read-only acceptance reviewer was explicitly spawned with `model: "gpt-5.6-terra"` and
+`fork_turns: "none"` as `i0_vocab_terra_review`. It made no edits, rejected the first candidate for
+the two test-evidence findings, then reread `0afd1140`, reran focused offline gates, and accepted it
+with zero blockers/majors. Live model inspection exposes no selected-model field; these successful
+explicit model-override invocations and the reviewers' recorded limitation are the durable transport
+evidence, not task names.
+
+The manager's `16c8993f` closure ledger reported production 118 lines
+(`marker.rs` +17, `lib.rs` +1, vocabulary +100) under the 230 ceiling with 112 lines unused; tests
+73 lines after the deletion repair under the 120 ceiling with 47 lines unused. The +5-line marker
+forecast variance is recorded as normal formatting within the protected phase reserve. Nested
+lockfile registry packages/version/checksum entries all occur in `workspace2/Cargo.lock`; the only
+new package is local `nudox-index-vocab`. Root later disproved the test count, so these numbers are
+historical manager evidence rather than the final candidate ledger.
+
+## Root hostile review
+
+The manager acceptance was rejected before integration:
+
+```text
+MAJOR — vocabulary.rs and the closed-code evidence row
+Evidence: the Luna repair removed unwrap by replacing the round-trip loop with one-way TryFrom
+assertions. From<SegmentFamily> for u8 could be broken or deleted while every test stayed green.
+Consequence: the recorded round-trip protocol law was not proved.
+Smallest correction: one typed (raw, family) table exercises both directions plus exact unknowns.
+Falsifier: swap one From result; the table must fail.
+
+MAJOR — INDEX_I0_CALIBRATION_RAW.md retained-size ledger
+Evidence: the final test file is 83 formatted lines, but the closure record reports 73 and 47 lines
+unused. It counted the deletion repair and omitted the later ten-line Terra-finding repair.
+Consequence: acceptance relied on a false test/reserve ledger.
+Smallest correction: recount the final artifact after every repair; retain the corrected number.
+Falsifier: the formatted count must equal the closure record at the final commit.
+
+MAJOR — index vocabulary public marker relation
+Evidence: IndexSegmentFamily::FAMILY has no production or test consumer, and Exact/Lexical duplicate
+zero-sized brands already owned by IndexExactSegmentDomain/IndexLexicalSegmentDomain.
+Consequence: future-phase public surface and duplicate representation crossed the first proof.
+Smallest correction: delete the unused associated constant and reuse the registered domain types as
+the semantic Exact/Lexical brands while retaining the sealed associated-domain projection that
+prevents arbitrary Domain values from becoming segment IDs.
+Falsifier: both cross-family compile-fail doctests remain red; RootDomain must not satisfy the family
+projection.
+
+MINOR — UnknownSegmentFamily and the allocation test
+Evidence: the error exposes an unnamed tuple field; allocation setup uses discarded results, a
+test-only Option, is_some, and a verbose zero-valued struct literal even though AllocationInfo is
+Default.
+Consequence: raw error provenance and the hottest evidence test are harder to read than the code.
+Smallest correction: name the raw code field; black_box warmup/measured values and compare Default.
+Falsifier: unknown codes retain the exact named operand and a deliberate allocation changes the
+single exact comparison.
+```
+
+The separate Terra reviewer did not return the mandatory mechanical-tripwire/cleared-suspicion table
+and missed these production/evidence findings. Its two useful test findings remain evidence, but its
+zero-major acceptance is not root acceptance.
+
+## Root repair evidence
+
+Root repaired all four findings without adding a dependency or allocation mechanism:
+
+- exact and lexical reuse the centrally registered domain types; the public sealed projection is the
+  only remaining family whitelist and its unused associated code was deleted;
+- `UnknownSegmentFamily { code }` retains the raw operand as a named public fact;
+- one five-row table exercises both conversion directions and exact unknown operands;
+- allocation evidence uses `black_box` plus the complete `AllocationInfo::default()` fact; and
+- the public journey now asserts that its equal local and remote byte owners have distinct addresses.
+
+Three deliberate mutants proved that the tests are causal rather than green decoration:
+
+| Mutant | Exact observed failure |
+| --- | --- |
+| shared `ContentId::from_canonical_bytes` hashes an empty slice instead of its input | the public local/remote journey's byte-mutation assertion failed with equal digests; exit 101 |
+| `From<SegmentFamily>` maps `Exact` to `u8::MAX` | `unknown_segment_family_retains_the_raw_value` failed `left: 255`, `right: 1`; exit 101 |
+| `RootDomain` is added to the sealed family projection | the RootDomain `compile_fail` doctest compiled and therefore failed; exit 101 |
+| one `Box<u8>` is allocated inside the measured closure | allocation evidence observed one allocation/one byte instead of zero; exit 101 |
+
+Changing lexical's projected domain to `Exact` additionally made both cross-family doctests compile;
+the doctest gate failed two of three cases with exit 101. Every mutant was removed before formatting
+and the clean candidate gates.
+
+The fresh root-closure Terra independently found the stale LOC ledger and no semantic blocker, but
+its raw scan used a different tripwire taxonomy and omitted mandatory zero-hit rows despite the
+literal prompt. Its LOC finding and reproduced commands remain useful observations; its review is
+not treated as complete acceptance evidence. This repeatable miss caused the shared reviewer skill's
+literal required table and root closure receipt at shared commit `82febc40`.
+
+Final normally formatted Rust delta versus `f9419673`: production 120 lines (`marker.rs` +17,
+`nudox-id/lib.rs` +1, vocabulary +102) under the 230 ceiling with 110 lines unused; tests 92 lines
+under the 120 ceiling with 28 lines unused. The final content digests are:
+
+```text
+e4605086118ab1b59053b58cfa44e1c9a784734bde2b4d70d6320284427a5a89  crates/nudox-id/src/marker.rs
+0ace08325b0e2b3625a8b95c601d81d32d8c2990a6e973567a03573b00831c7d  crates/nudox-id/src/lib.rs
+c7cf64e579299466c4b6fefe5ab78ad38ce1381f61b0b61811ae4e2359504421  planes/index/Cargo.toml
+54be2323fc59fcb85fb64fd7388ba76d4a6be30c393895b6fd619621070d4714  planes/index/Cargo.lock
+960d297d2abfa0be6bff5375e4d7654a897dcac1e7447d17c440392b5f7e09d2  planes/index/crates/nudox-index-vocab/Cargo.toml
+2c250ae33f2e9839a9c52a624528dba6133e207901c960768204ea8663230af2  planes/index/crates/nudox-index-vocab/src/lib.rs
+47c1d1f44a2a3d74c35528f13080a7c1deaeed0312e2a57a049435ec89303cd4  planes/index/crates/nudox-index-vocab/tests/vocabulary.rs
+```

@@ -26,11 +26,11 @@ pub(crate) fn key() -> StageKey {
         OperationId::PinnedObject,
         StageId::HydrateObject,
         &StageInput {
-            generation: GenerationId::from([1; 32]),
-            content: ContentId::<ObjectDomain>::from([2; 32]),
+            generation: GenerationId::from_digest([1; 32]),
+            content: ContentId::<ObjectDomain>::from_digest([2; 32]),
         },
-        ContentId::<CapabilityDomain>::from([3; 32]),
-        ContentId::<ConfigurationDomain>::from([4; 32]),
+        ContentId::<CapabilityDomain>::from_digest([3; 32]),
+        ContentId::<ConfigurationDomain>::from_digest([4; 32]),
     )
 }
 
@@ -51,11 +51,11 @@ fn compact_key_and_event_do_not_repeat_verbose_stage_inputs() {
         OperationId::PinnedObject,
         StageId::HydrateObject,
         &StageInput {
-            generation: GenerationId::from([1; 32]),
-            content: ContentId::<ObjectDomain>::from([9; 32]),
+            generation: GenerationId::from_digest([1; 32]),
+            content: ContentId::<ObjectDomain>::from_digest([9; 32]),
         },
-        ContentId::<CapabilityDomain>::from([3; 32]),
-        ContentId::<ConfigurationDomain>::from([4; 32]),
+        ContentId::<CapabilityDomain>::from_digest([3; 32]),
+        ContentId::<ConfigurationDomain>::from_digest([4; 32]),
     );
     assert_ne!(base, changed);
 }
@@ -63,7 +63,7 @@ fn compact_key_and_event_do_not_repeat_verbose_stage_inputs() {
 #[test]
 fn every_durable_crash_prefix_derives_only_its_pending_effect() -> Result<(), TestError> {
     let key = key();
-    let output = ContentId::<ObjectDomain>::from([9; 32]);
+    let output = ContentId::<ObjectDomain>::from_digest([9; 32]);
     let events = [
         EventKind::Requested,
         EventKind::Admitted,
@@ -108,8 +108,8 @@ fn every_durable_crash_prefix_derives_only_its_pending_effect() -> Result<(), Te
 #[test]
 fn conflicts_and_cancellation_after_publication_start_fail_closed() -> Result<(), TestError> {
     let key = key();
-    let first = ContentId::<ObjectDomain>::from([9; 32]);
-    let second = ContentId::<ObjectDomain>::from([8; 32]);
+    let first = ContentId::<ObjectDomain>::from_digest([9; 32]);
+    let second = ContentId::<ObjectDomain>::from_digest([8; 32]);
     let mut log = MemoryWorkflowLog::new(6)?;
     for kind in [
         EventKind::Requested,
@@ -143,7 +143,7 @@ type ReductionCase = (WorkflowState, EventKind, Result<Reduction, ReductionError
 #[test]
 fn forward_transitions_return_exact_state_and_next_effect() {
     let key = key();
-    let output = ContentId::<ObjectDomain>::from([7; 32]);
+    let output = ContentId::<ObjectDomain>::from_digest([7; 32]);
     let cases = [
         (
             WorkflowState::New,
@@ -197,8 +197,8 @@ fn forward_transitions_return_exact_state_and_next_effect() {
 #[test]
 fn duplicate_and_output_conflict_are_exact() {
     let key = key();
-    let output = ContentId::<ObjectDomain>::from([7; 32]);
-    let different_output = ContentId::<ObjectDomain>::from([8; 32]);
+    let output = ContentId::<ObjectDomain>::from_digest([7; 32]);
+    let different_output = ContentId::<ObjectDomain>::from_digest([8; 32]);
     let cases = [
         (
             keyed(key, Phase::Staged(output)),
@@ -226,7 +226,7 @@ fn duplicate_and_output_conflict_are_exact() {
 #[test]
 fn failure_cancel_and_impossible_classes_are_exact() {
     let key = key();
-    let output = ContentId::<ObjectDomain>::from([7; 32]);
+    let output = ContentId::<ObjectDomain>::from_digest([7; 32]);
     let cases = [
         (
             keyed(

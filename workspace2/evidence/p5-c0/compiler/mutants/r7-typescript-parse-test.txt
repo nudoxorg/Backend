@@ -1,0 +1,33 @@
+   Compiling nudox-ir-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r7-mutants.nOAjON/workspace2/domains/ir/crates/nudox-ir-vocab)
+   Compiling nudox-compile-vocab v0.1.0 (/private/tmp/p5-c0-compiler-r7-mutants.nOAjON/workspace2/planes/compiler/crates/nudox-compile-vocab)
+   Compiling nudox-compile-registry v0.1.0 (/private/tmp/p5-c0-compiler-r7-mutants.nOAjON/workspace2/planes/compiler/crates/nudox-compile-registry)
+warning: unused variable: `source`
+  --> crates/nudox-compile-registry/src/lib.rs:46:14
+   |
+46 |     fn parse(source: &[u8]) -> &[u8] {
+   |              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_source`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `nudox-compile-registry` (lib) generated 1 warning (run `cargo fix --lib -p nudox-compile-registry` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running tests/dispatch.rs (/private/tmp/p5-c0-compiler-r7-mutants.nOAjON/target-typescript-parse/debug/deps/dispatch-2269ecb5bc8cb095)
+
+running 1 test
+test typescript_parse_forwards_its_own_pointer_and_length ... FAILED
+
+failures:
+
+---- typescript_parse_forwards_its_own_pointer_and_length stdout ----
+
+thread 'typescript_parse_forwards_its_own_pointer_and_length' (466485929) panicked at crates/nudox-compile-registry/tests/dispatch.rs:5:5:
+assertion failed: core::ptr::eq(output, source)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    typescript_parse_forwards_its_own_pointer_and_length
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nudox-compile-registry --test dispatch`

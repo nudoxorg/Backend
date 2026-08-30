@@ -1,3 +1,4 @@
+use core::num::NonZeroU64;
 use core::ops::Deref;
 
 use thiserror::Error;
@@ -73,6 +74,12 @@ impl ProviderSet {
     pub const fn contains(self, provider: ProviderId) -> bool {
         (self.0 & Self::only(provider).0) != 0
     }
+
+    /// Projects a non-zero big-endian wire cell into host-order provider bits.
+    #[must_use]
+    pub const fn from_be(bits: NonZeroU64) -> Self {
+        Self(bits.get().to_be())
+    }
 }
 
 impl TryFrom<u64> for ProviderSet {
@@ -85,6 +92,13 @@ impl TryFrom<u64> for ProviderSet {
         } else {
             Ok(Self(bits))
         }
+    }
+}
+
+impl From<NonZeroU64> for ProviderSet {
+    /// Converts a non-zero provider bitmap after its non-emptiness proof.
+    fn from(bits: NonZeroU64) -> Self {
+        Self(bits.get())
     }
 }
 

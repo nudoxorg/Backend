@@ -44,6 +44,12 @@ pub struct SelectionWork {
     pub projected_rows: usize,
     /// Parent edges followed while adding ancestor closure.
     pub ancestor_edges: usize,
+    /// Canonical-key comparisons spent resolving borrowed parent coordinates.
+    ///
+    /// Owned roots retain parent coordinates and therefore report zero. Borrowed
+    /// canonical roots trade retained parent metadata for binary-search work and
+    /// report that work explicitly instead of hiding it behind the edge count.
+    pub parent_search_comparisons: usize,
 }
 
 /// One completed closure selection, with no key or descriptor cardinality.
@@ -78,17 +84,19 @@ impl ClosureScratch {
                 work: SelectionWork {
                     projected_rows: 0,
                     ancestor_edges: 0,
+                    parent_search_comparisons: 0,
                 },
             },
         })
     }
 
-    fn begin_selection(&mut self) {
+    pub(crate) fn begin_selection(&mut self) {
         self.selected_indices.clear();
         self.selected_count = 0;
         self.facts.work = SelectionWork {
             projected_rows: 0,
             ancestor_edges: 0,
+            parent_search_comparisons: 0,
         };
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
@@ -101,13 +109,45 @@ impl ClosureScratch {
         clippy::indexing_slicing,
         reason = "select_closure checked scratch capacity against this exact root before every private RowIndex mark access"
     )]
-    fn mark(&mut self, index: RowIndex) {
+    pub(crate) fn mark(&mut self, index: RowIndex) {
         if self.marks[index.array_index()] != self.epoch {
             self.marks[index.array_index()] = self.epoch;
             self.selected_indices.push(index);
             // A selection is a subset of the root builder's compact row bound.
             self.selected_count += 1;
         }
+    }
+
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "borrowed and owned selectors preflight this exact root against scratch capacity before querying a validated row coordinate"
+    )]
+    pub(crate) fn is_marked(&self, index: RowIndex) -> bool {
+        self.marks[index.array_index()] == self.epoch
+    }
+
+    pub(crate) const fn record_projected_row(&mut self) {
+        self.facts.work.projected_rows += 1;
+    }
+
+    pub(crate) const fn record_ancestor_edge(&mut self) {
+        self.facts.work.ancestor_edges += 1;
+    }
+
+    pub(crate) const fn record_parent_search_comparisons(&mut self, comparisons: usize) {
+        self.facts.work.parent_search_comparisons += comparisons;
+    }
+
+    pub(crate) fn selected_indices(&self) -> &[RowIndex] {
+        &self.selected_indices
+    }
+
+    pub(crate) fn sort_selected_indices(&mut self) {
+        self.selected_indices.sort_unstable();
+    }
+
+    pub(crate) const fn selected_count(&self) -> u32 {
+        self.selected_count
     }
 }
 

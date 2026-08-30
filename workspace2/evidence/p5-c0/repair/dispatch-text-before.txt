@@ -1,0 +1,37 @@
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: aarch64-apple-darwin
+release: 1.97.1
+LLVM version: 22.1.6
+
+command: RUSTC_WRAPPER= cargo test --locked --release --no-run --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry --test dispatch
+resolved executable: workspace2/planes/compiler/target/release/deps/dispatch-2b8c6cf37f396d83
+32e4b91a6771c0354fc45cc3bcad6261078c42ef85368a75d1133153905ab244  workspace2/planes/compiler/target/release/deps/dispatch-2b8c6cf37f396d83
+Segment __PAGEZERO: 4294967296 (zero fill)
+Segment __TEXT: 655360
+	Section __text: 494508
+	Section __stubs: 1416
+	Section __stub_helper: 1440
+	Section __cstring: 14857
+	Section __const: 30764
+	Section __gcc_except_tab: 17660
+	Section __unwind_info: 11632
+	Section __eh_frame: 65180
+	total 637457
+Segment __DATA_CONST: 32768
+	Section __got: 16
+	Section __const: 30664
+	total 30680
+Segment __DATA: 16384
+	Section __la_symbol_ptr: 944
+	Section __data: 2512
+	Section __thread_vars: 240
+	Section __thread_data: 40
+	Section __thread_bss: 112 (zerofill)
+	Section __common: 80 (zerofill)
+	Section __bss: 136 (zerofill)
+	total 4064
+Segment __LINKEDIT: 245760
+total 4295917568

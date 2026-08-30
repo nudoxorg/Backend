@@ -13,8 +13,8 @@ use nudox_hydration::{
     VerificationError, VerifiedGeneration,
 };
 use nudox_id::{
-    ArtifactHasher, ArtifactId, ContentHasher, ContentId, ContentRoutingWord, DomainTag,
-    EncodingTag, FrameEncoding, GenerationId, ObjectDomain,
+    ArtifactHasher, ArtifactId, ContentAuthority, ContentHasher, ContentId, ContentRoutingWord,
+    DomainTag, EncodingTag, FrameEncoding, GenerationId, ObjectDomain,
 };
 use nudox_object::{
     DepSetId, ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderSet, RemoteBase,
@@ -27,10 +27,10 @@ use nudox_operation::{
 use nudox_root::{
     ClosureScratch, ClosureScratchFacts, EntryKey, EntryRange, GenerationEntry, GenerationRoot,
     GenerationRootBuilder, GenerationRootFacts, GenerationScan, GenerationView, Locality,
-    LocalityException, LocalityLayout, LocalityLookupWork, LocalityReadError, LocalityRow,
-    LocalityScanWork, LocalityValidator, LocalityWriteError, MeasuredGenerationScan, NonResident,
-    PreparedLocality, RootBuildError, RootChange, RootDiff, RootEntry, RootPushError,
-    SelectedClosure, SelectedCount, SelectedGeneration, SelectionWork, ValidatedLocality,
+    LocalityException, LocalityLayout, LocalityLookupWork, LocalityRow, LocalityScanWork,
+    LocalityValidator, LocalityWriteError, MeasuredGenerationScan, NonResident, PreparedLocality,
+    RootBuildError, RootChange, RootDiff, RootEntry, RootPushError, SelectedClosure, SelectedCount,
+    SelectedGeneration, SelectionWork, ValidatedLocality,
 };
 use nudox_runtime::{
     Admission, AdmissionError, AdmissionFuture, ByteBudget, ByteBudgetError, ByteQuantum,
@@ -111,6 +111,11 @@ fn main() {
         "identity",
         ContentId<ObjectDomain>,
         "repr(transparent), explicit exact-layout test"
+    );
+    layout!(
+        "identity",
+        ContentAuthority<ObjectDomain>,
+        "zero-sized checked artifact-global authority proof"
     );
     layout!(
         "identity",
@@ -220,11 +225,6 @@ fn main() {
         ValidatedLocality<'static, ObjectDomain>,
         "borrowed canonical locality witness"
     );
-    layout!(
-        "root",
-        LocalityReadError,
-        "typed post-validation drift containment"
-    );
     layout!("root", LocalityWriteError, "typed caller-output rejection");
     layout!(
         "root",
@@ -297,7 +297,11 @@ fn main() {
         StagedGeneration<'static, 'static, 'static, ObjectDomain>,
         "borrowing typestate"
     );
-    layout!("hydration", VerifiedGeneration, "sealed typestate witness");
+    layout!(
+        "hydration",
+        VerifiedGeneration<'static, ObjectDomain, Box<[u8]>>,
+        "sealed facts plus exact evidence borrow"
+    );
     layout!(
         "hydration",
         VerificationError<ObjectDomain>,

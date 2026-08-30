@@ -1,0 +1,11 @@
+--- a/src/type_dag.rs
++++ b/src/type_dag.rs
+@@ -200,7 +200,7 @@
+                 actual => Err(node_error(source, TypeNodeFault::Primitive { actual })),
+             },
+             Self::Reference if raw < node_count => {
+-                Ok(TypeNode::Reference(TypeId::new(u32::from(raw))))
++                Ok(TypeNode::Reference(TypeId::new(0)))
+             }
+             Self::Reference => Err(node_error(
+                 source,

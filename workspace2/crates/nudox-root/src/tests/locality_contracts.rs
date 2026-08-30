@@ -32,7 +32,7 @@ fn overlay_propagation_marks_root_path_and_preserves_absence() -> Result<(), Sce
     let mut marks = vec![false; local.len()];
     let mut output = [0_u8; 512];
     let (propagated, work) = propagate_overlays(&view, &base, &mut marks, &mut output)
-        .map_err(|error| overlay_error(ScenarioStep::PropagatedLocality, error))?;
+        .map_err(|error| overlay_error(ScenarioStep::PropagatedLocality, &error))?;
     assert_eq!(local.id, propagated.generation);
     assert_eq!(work.mark_bytes, local.len().into());
     assert_eq!(work.final_metadata_bytes, propagated.metadata_bytes());
@@ -52,7 +52,7 @@ fn assert_propagated_overlay(
     base: &GenerationRoot<ObjectDomain>,
     selected_key: EntryKey,
 ) -> Result<(), ScenarioError> {
-    let entry = view.get(selected_key)?.ok_or(ScenarioError::MissingEntry {
+    let entry = view.get(selected_key).ok_or(ScenarioError::MissingEntry {
         step: ScenarioStep::PropagatedLocality,
         key: selected_key,
     })?;
@@ -82,14 +82,9 @@ fn assert_propagated_overlay(
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the test wrapper moves the exact locality-read source into its source-bearing scenario error"
-)]
-fn overlay_error(step: ScenarioStep, error: OverlayError<ObjectDomain>) -> ScenarioError {
+fn overlay_error(step: ScenarioStep, error: &OverlayError<ObjectDomain>) -> ScenarioError {
     let rejection = match error {
         OverlayError::Locality(_) => OverlayRejection::Locality,
-        OverlayError::LocalityRead(source) => return ScenarioError::LocalityRead(source),
         OverlayError::BaseGenerationMismatch { .. } => OverlayRejection::BaseGenerationMismatch,
         OverlayError::BaseObjectMismatch { .. } => OverlayRejection::BaseObjectMismatch,
         OverlayError::ExpectedAbsentBase { .. } => OverlayRejection::ExpectedAbsentBase,
@@ -112,7 +107,7 @@ fn locality_scan_uses_one_ordered_sparse_route_cursor() -> Result<(), ScenarioEr
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
     let view = GenerationView::new(&root, &locality)?;
     let mut scan = view.measured_closure();
-    let composed: Vec<_> = scan.by_ref().collect::<Result<_, _>>()?;
+    let composed: Vec<_> = scan.by_ref().collect();
     assert_eq!(composed, routed_entries(&root, provider));
     assert_eq!(scan.rows, 3);
     assert_eq!(scan.sparse_comparisons, 3);
@@ -132,7 +127,7 @@ fn locality_lookup_and_selected_cursor_have_exact_sparse_bounds() -> Result<(), 
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
     let view = GenerationView::new(&root, &locality)?;
 
-    let (found, lookup) = view.measured_get(key(2))?;
+    let (found, lookup) = view.measured_get(key(2));
     let found = found.ok_or(ScenarioError::MissingEntry {
         step: ScenarioStep::PropagatedLocality,
         key: key(2),
@@ -150,8 +145,8 @@ fn locality_lookup_and_selected_cursor_have_exact_sparse_bounds() -> Result<(), 
     let mut work = crate::LocalityScanWork::default();
     let keys: Vec<_> = selected
         .measured_iter(&mut work)
-        .map(|entry| entry.map(|entry| entry.key))
-        .collect::<Result<_, _>>()?;
+        .map(|entry| entry.key)
+        .collect();
     assert_eq!(keys, Vec::from([key(1), key(3)]));
     assert_eq!(work.rows, 2);
     assert_eq!(work.sparse_comparisons, 3);
@@ -260,10 +255,12 @@ fn locality_changes_preserve_identity_and_narrow_large_ranges_touch_only_demand(
 #[test]
 fn remote_tombstone_is_a_distinct_preserved_fact() -> Result<(), ScenarioError> {
     let remote: RemoteBase<ObjectDomain> = RemoteBase::Absent {
-        generation: GenerationId::from([8; 32]),
+        generation: GenerationId::from_digest([8; 32]),
     };
     match remote {
-        RemoteBase::Absent { generation } => assert_eq!(generation, GenerationId::from([8; 32])),
+        RemoteBase::Absent { generation } => {
+            assert_eq!(generation, GenerationId::from_digest([8; 32]));
+        }
         RemoteBase::Present { .. } => {
             return Err(ScenarioError::Transition {
                 step: ScenarioStep::RemoteTombstone,

@@ -12,6 +12,7 @@ use zerocopy::{
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 pub(super) struct HeaderWireRecord {
     pub(super) generation: [u8; 32],
+    pub(super) content_domain: u8,
     pub(super) root_count: U32<BigEndian>,
     pub(super) exception_count: U32<BigEndian>,
     pub(super) promise_count: U32<BigEndian>,
@@ -20,5 +21,5 @@ pub(super) struct HeaderWireRecord {
 
 pub(super) const HEADER_BYTES: usize = size_of::<HeaderWireRecord>();
 
-const _: [(); 48] = [(); HEADER_BYTES];
+const _: [(); 49] = [(); HEADER_BYTES];
 const _: [(); 1] = [(); align_of::<HeaderWireRecord>()];
