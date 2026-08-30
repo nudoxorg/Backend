@@ -175,7 +175,6 @@
               dylintTools
               pkgs.clang
               pkgs.libiconv
-              pkgs.pkg-config
               pkgs.rustup
               pkgs.zlib
             ];

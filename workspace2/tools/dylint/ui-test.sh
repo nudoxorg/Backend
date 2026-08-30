@@ -11,6 +11,17 @@ lint_workspace="$project_dir/tools/dylint"
 # shellcheck source=../../pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
+# libgit2-sys preserves the read-only mode of headers copied from the Nix
+# store. Cargo may legitimately rerun that build script after an input change,
+# so restore owner write permission inside this generated target before it
+# replaces those copies.
+if [[ -d "$CARGO_TARGET_DIR/debug/build" ]]; then
+  find "$CARGO_TARGET_DIR/debug/build" \
+    -path '*/libgit2-sys-*/out/include/*' \
+    -type f \
+    -exec chmod u+w {} +
+fi
+
 (
   cd "$lint_workspace"
   dylint_cargo fmt --all -- --check
