@@ -174,7 +174,9 @@
             packages = [
               dylintTools
               pkgs.clang
+              pkgs.curl
               pkgs.libiconv
+              pkgs.qdrant
               pkgs.rustup
               pkgs.zlib
             ];

@@ -84,6 +84,10 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
         local.map(|hit| hit.map(|hit| hit.entity())),
         remote.map(|hit| hit.map(|hit| hit.entity()))
     );
+    assert_eq!(
+        local.map(|hit| hit.map(|hit| hit.score())),
+        remote.map(|hit| hit.map(|hit| hit.score()))
+    );
 
     let repeat = adapter.upsert(&points)?;
     assert_eq!(repeat.attempted(), 2);

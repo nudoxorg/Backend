@@ -22,7 +22,8 @@ const DEFAULT_MAX_ATTEMPTS: NonZeroU8 = match NonZeroU8::new(3) {
     Some(value) => value,
     None => NonZeroU8::MIN,
 };
-const MAX_BATCH_POINTS: usize = 256;
+const MAX_BATCH_POINTS: usize = 16;
+const QUERY_SCAN_LIMIT: usize = MAX_BATCH_POINTS + 1;
 const MAX_QUERY_PARTITIONS: usize = 4;
 const MAX_VECTOR_DIMENSION: usize = 4096;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
@@ -40,6 +41,13 @@ pub const METRIC_PAYLOAD_KEY: &str = "nudox_metric";
 pub const PARTITION_PAYLOAD_KEY: &str = "nudox_partition";
 /// Payload key carrying the semantic entity coordinate.
 pub const ENTITY_PAYLOAD_KEY: &str = "nudox_entity";
+
+const PAYLOAD_INDEXES: [(&str, &str); 4] = [
+    (SNAPSHOT_PAYLOAD_KEY, "keyword"),
+    (MODEL_PAYLOAD_KEY, "keyword"),
+    (METRIC_PAYLOAD_KEY, "keyword"),
+    (PARTITION_PAYLOAD_KEY, "integer"),
+];
 
 /// A bounded retry policy for idempotent Qdrant requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,6 +378,8 @@ pub enum RequestPhase {
     CreateCollection,
     /// Collection metadata readback.
     ReadCollection,
+    /// Payload index creation or idempotent verification.
+    CreatePayloadIndex,
     /// Existing point identity preflight.
     ReadPoints,
     /// Batched point upload.
@@ -386,6 +396,42 @@ pub enum RequestPhase {
     DeleteCollection,
 }
 
+/// A rejected endpoint retained by configuration errors.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RejectedEndpoint(String);
+
+impl RejectedEndpoint {
+    /// Returns the complete rejected endpoint without losing diagnostic bytes.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RejectedEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// A rejected collection name retained by configuration errors.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RejectedCollectionName(String);
+
+impl RejectedCollectionName {
+    /// Returns the complete rejected collection name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RejectedCollectionName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// Adapter construction failure before any remote effect.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum QdrantConfigError {
@@ -396,13 +442,13 @@ pub enum QdrantConfigError {
     #[error("Qdrant endpoint must use http or https: {observed}")]
     UnsupportedScheme {
         /// Complete rejected endpoint.
-        observed: String,
+        observed: RejectedEndpoint,
     },
     /// Endpoint contains a URI character that would make path joining ambiguous.
     #[error("Qdrant endpoint contains whitespace or a query/fragment: {observed}")]
     InvalidEndpoint {
         /// Complete rejected endpoint.
-        observed: String,
+        observed: RejectedEndpoint,
     },
     /// Collection name is empty.
     #[error("Qdrant collection name is empty")]
@@ -411,7 +457,7 @@ pub enum QdrantConfigError {
     #[error("Qdrant collection name is not a single safe path component: {observed}")]
     InvalidCollection {
         /// Complete rejected collection name.
-        observed: String,
+        observed: RejectedCollectionName,
     },
     /// Model dimension is outside the bounded request shape.
     #[error("Qdrant model dimension {observed} is outside 1..={maximum}")]
@@ -612,6 +658,14 @@ pub enum QdrantError {
         /// Stable shape detail.
         detail: &'static str,
     },
+    /// More authority-filtered points exist than the exact bounded adapter can rank.
+    #[error("Qdrant exact projection has at least {observed} points; maximum is {maximum}")]
+    ProjectionCapacity {
+        /// Maximum points this adapter can retrieve and rerank exactly.
+        maximum: usize,
+        /// Minimum complete point count proven by the overflowing scan.
+        observed: usize,
+    },
     /// The service returned a point that was not one of the requested identities.
     #[error("Qdrant {phase:?} returned an unrequested point {physical_id:?}")]
     UnexpectedPoint {
@@ -799,7 +853,9 @@ impl QdrantBlockingAdapter {
         } else if !is_success(response.status) {
             return Err(status_error(RequestPhase::CreateCollection, response));
         }
-        self.verify_collection()
+        self.verify_collection()?;
+        self.ensure_payload_indexes()?;
+        self.verify_payload_indexes()
     }
 
     /// Deletes the caller-selected collection and verifies a successful service response.
@@ -933,13 +989,14 @@ impl QdrantBlockingAdapter {
             RequestPhase::QueryPoints,
             Method::Post,
             &self.url("/points/query"),
-            query_request(self.authority, selected, query_coordinates, requested_limit),
+            query_request(self.authority, selected, query_coordinates),
         )?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::QueryPoints, response));
         }
-        let mut hits = parse_query_hits(self.authority, selected, &response.body)?;
-        hits.sort_by(|left, right| compare_hits(*left, *right, self.authority.metric()));
+        let mut hits =
+            parse_query_hits(self.authority, selected, query_coordinates, &response.body)?;
+        hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
         let written = hits.len();
         let terminal = self.query_terminal(selected)?;
@@ -979,7 +1036,7 @@ impl QdrantBlockingAdapter {
                 });
             }
         }
-        hits.sort_by(|left, right| compare_hits(*left, *right, self.authority.metric()));
+        hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
         let written = hits.len();
         let terminal = local_terminal(self.authority, selected, &prepared);
@@ -1038,6 +1095,65 @@ impl QdrantBlockingAdapter {
                 phase: RequestPhase::ReadCollection,
                 field: "vectors.distance",
             });
+        }
+        Ok(())
+    }
+
+    fn ensure_payload_indexes(&self) -> Result<(), QdrantError> {
+        for (field, schema) in PAYLOAD_INDEXES {
+            let response = self.request_json(
+                RequestPhase::CreatePayloadIndex,
+                Method::Put,
+                &self.url("/index?wait=true"),
+                serde_json::json!({
+                    "field_name": field,
+                    "field_schema": schema,
+                }),
+            )?;
+            if !is_success(response.status) && response.status != 409 {
+                return Err(status_error(RequestPhase::CreatePayloadIndex, response));
+            }
+            if is_success(response.status) {
+                parse_ack(RequestPhase::CreatePayloadIndex, &response.body)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_payload_indexes(&self) -> Result<(), QdrantError> {
+        let response = self.request_json(
+            RequestPhase::ReadCollection,
+            Method::Get,
+            &self.url(""),
+            Value::Null,
+        )?;
+        if !is_success(response.status) {
+            return Err(status_error(RequestPhase::ReadCollection, response));
+        }
+        let value = decode_json(RequestPhase::ReadCollection, &response.body)?;
+        let schema = value
+            .get("result")
+            .and_then(|result| result.get("payload_schema"))
+            .and_then(Value::as_object)
+            .ok_or(QdrantError::MalformedResponse {
+                phase: RequestPhase::ReadCollection,
+                detail: "result.payload_schema",
+            })?;
+        for (field, expected_type) in PAYLOAD_INDEXES {
+            let observed_type = schema
+                .get(field)
+                .and_then(|entry| entry.get("data_type"))
+                .and_then(Value::as_str)
+                .ok_or(QdrantError::CollectionMismatch {
+                    phase: RequestPhase::ReadCollection,
+                    field,
+                })?;
+            if observed_type != expected_type {
+                return Err(QdrantError::CollectionMismatch {
+                    phase: RequestPhase::ReadCollection,
+                    field,
+                });
+            }
         }
         Ok(())
     }
@@ -1629,17 +1745,17 @@ fn normalize_endpoint(endpoint: &str) -> Result<String, QdrantConfigError> {
     }
     if trimmed.chars().any(char::is_whitespace) || trimmed.contains(['?', '#']) {
         return Err(QdrantConfigError::InvalidEndpoint {
-            observed: endpoint.to_owned(),
+            observed: RejectedEndpoint(endpoint.to_owned()),
         });
     }
     if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
         return Err(QdrantConfigError::UnsupportedScheme {
-            observed: endpoint.to_owned(),
+            observed: RejectedEndpoint(endpoint.to_owned()),
         });
     }
     if trimmed.ends_with("://") {
         return Err(QdrantConfigError::InvalidEndpoint {
-            observed: endpoint.to_owned(),
+            observed: RejectedEndpoint(endpoint.to_owned()),
         });
     }
     Ok(trimmed.to_owned())
@@ -1654,7 +1770,7 @@ fn validate_collection(collection: &str) -> Result<String, QdrantConfigError> {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
     {
         return Err(QdrantConfigError::InvalidCollection {
-            observed: collection.to_owned(),
+            observed: RejectedCollectionName(collection.to_owned()),
         });
     }
     Ok(collection.to_owned())
@@ -1823,13 +1939,13 @@ fn query_request(
     authority: VectorAuthority,
     selected: &[PartitionId],
     coordinates: &[i16],
-    requested_limit: usize,
 ) -> Value {
     serde_json::json!({
         "query": coordinates.iter().map(|coordinate| f64::from(*coordinate)).collect::<Vec<_>>(),
-        "limit": requested_limit,
+        "limit": QUERY_SCAN_LIMIT,
         "with_payload": true,
-        "with_vector": false,
+        "with_vector": true,
+        "params": { "exact": true },
         "filter": identity_filter(authority, selected),
     })
 }
@@ -1890,6 +2006,7 @@ fn identity_filter(authority: VectorAuthority, selected: &[PartitionId]) -> Valu
 fn parse_query_hits(
     authority: VectorAuthority,
     selected: &[PartitionId],
+    query_coordinates: &[i16],
     body: &str,
 ) -> Result<Vec<QdrantHit>, QdrantError> {
     let phase = RequestPhase::QueryPoints;
@@ -1903,9 +2020,9 @@ fn parse_query_hits(
             detail: "result.points[]",
         })?;
     if points.len() > MAX_BATCH_POINTS {
-        return Err(QdrantError::MalformedResponse {
-            phase,
-            detail: "result.points[] exceeds bounded query",
+        return Err(QdrantError::ProjectionCapacity {
+            maximum: MAX_BATCH_POINTS,
+            observed: points.len(),
         });
     }
     let mut hits = Vec::with_capacity(points.len());
@@ -1935,14 +2052,13 @@ fn parse_query_hits(
                 field: PARTITION_PAYLOAD_KEY,
             });
         }
-        let score =
-            point
-                .get("score")
-                .and_then(Value::as_f64)
-                .ok_or(QdrantError::MalformedResponse {
-                    phase,
-                    detail: "result.points[].score",
-                })?;
+        let coordinates = decode_vector(
+            point,
+            phase,
+            physical_id,
+            usize::from(authority.dimension()),
+        )?;
+        let score = projected_score(authority.metric(), query_coordinates, &coordinates);
         hits.push(QdrantHit {
             authority,
             partition: key.partition(),
@@ -2198,12 +2314,27 @@ fn local_score(metric: Metric, query: &[i16], coordinates: &[i16]) -> f64 {
     }
 }
 
-fn compare_hits(left: QdrantHit, right: QdrantHit, metric: Metric) -> std::cmp::Ordering {
-    let score = match metric {
-        Metric::SquaredEuclidean => left.score.total_cmp(&right.score),
-        Metric::NegativeDotProduct => right.score.total_cmp(&left.score),
-    };
-    score
+fn projected_score(metric: Metric, query: &[i16], coordinates: &[f64]) -> f64 {
+    match metric {
+        Metric::SquaredEuclidean => query
+            .iter()
+            .zip(coordinates)
+            .map(|(left, right)| {
+                let difference = f64::from(*left) - *right;
+                difference * difference
+            })
+            .sum(),
+        Metric::NegativeDotProduct => -query
+            .iter()
+            .zip(coordinates)
+            .map(|(left, right)| f64::from(*left) * *right)
+            .sum::<f64>(),
+    }
+}
+
+fn compare_hits(left: QdrantHit, right: QdrantHit) -> std::cmp::Ordering {
+    left.score
+        .total_cmp(&right.score)
         .then_with(|| left.entity.raw.cmp(&right.entity.raw))
         .then_with(|| left.partition.raw.cmp(&right.partition.raw))
 }
@@ -2399,6 +2530,13 @@ mod tests {
             retrieve_request(&keys, true).get("with_vector"),
             Some(&Value::from(true))
         );
+        let query = query_request(authority(3), &[PartitionId::new(1)], &[0, 0]);
+        assert_eq!(query.get("limit"), Some(&Value::from(QUERY_SCAN_LIMIT)));
+        assert_eq!(query.get("with_vector"), Some(&Value::from(true)));
+        assert_eq!(
+            query.get("params").and_then(|params| params.get("exact")),
+            Some(&Value::from(true))
+        );
     }
 
     #[test]
@@ -2460,6 +2598,21 @@ mod tests {
         assert_eq!(
             output.first().copied().flatten().map(QdrantHit::authority),
             Some(authority)
+        );
+    }
+
+    #[test]
+    fn backend_coordinates_reconstruct_portable_metric_scores() {
+        let query = [1_i16, -2];
+        let local = [4_i16, 2];
+        let remote = [4.0_f64, 2.0];
+        assert_eq!(
+            projected_score(Metric::SquaredEuclidean, &query, &remote),
+            local_score(Metric::SquaredEuclidean, &query, &local)
+        );
+        assert_eq!(
+            projected_score(Metric::NegativeDotProduct, &query, &remote),
+            local_score(Metric::NegativeDotProduct, &query, &local)
         );
     }
 }
