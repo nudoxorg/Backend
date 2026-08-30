@@ -1,4 +1,5 @@
 mod cursor;
+mod directory;
 mod error;
 mod validate;
 

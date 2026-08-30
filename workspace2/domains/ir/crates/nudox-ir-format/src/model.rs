@@ -46,7 +46,10 @@ pub enum TypeNodeFault {
 
 impl From<PrimitiveType> for u32 {
     fn from(primitive: PrimitiveType) -> Self {
-        primitive as Self
+        match primitive {
+            PrimitiveType::Bool => 0,
+            PrimitiveType::I32 => 1,
+        }
     }
 }
 

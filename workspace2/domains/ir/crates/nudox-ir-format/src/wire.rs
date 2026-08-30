@@ -4,62 +4,105 @@ use nudox_ir_vocab::TypeId;
 
 use crate::{EntityFault, PrimitiveType, TypeNode, TypeNodeFault};
 
-pub(crate) const HEADER_BYTES: usize = 12;
-pub(crate) const DIRECTORY_ENTRY_BYTES: usize = 16;
-pub(crate) const ENTITY_BYTES: usize = 4;
-pub(crate) const TYPE_NODE_BYTES: usize = 8;
+pub(crate) struct HeaderLayout {
+    pub(crate) magic: usize,
+    pub(crate) schema: usize,
+    pub(crate) section_count: usize,
+    pub(crate) declared_length: usize,
+    pub(crate) encoded_len: usize,
+}
+
+pub(crate) const HEADER_LAYOUT: HeaderLayout = HeaderLayout {
+    magic: 0,
+    schema: size_of::<[u8; 4]>(),
+    section_count: size_of::<[u8; 4]>() + size_of::<u16>(),
+    declared_length: size_of::<[u8; 4]>() + size_of::<u16>() + size_of::<u16>(),
+    encoded_len: size_of::<[u8; 4]>() + size_of::<u16>() + size_of::<u16>() + size_of::<u32>(),
+};
+
+pub(crate) struct DirectoryEntryLayout {
+    pub(crate) kind: usize,
+    pub(crate) requirement: usize,
+    pub(crate) item_count: usize,
+    pub(crate) byte_offset: usize,
+    pub(crate) byte_length: usize,
+    pub(crate) encoded_len: usize,
+}
+
+pub(crate) const DIRECTORY_ENTRY_LAYOUT: DirectoryEntryLayout = DirectoryEntryLayout {
+    kind: 0,
+    requirement: size_of::<u16>(),
+    item_count: size_of::<u16>() + size_of::<u16>(),
+    byte_offset: size_of::<u16>() + size_of::<u16>() + size_of::<u32>(),
+    byte_length: size_of::<u16>() + size_of::<u16>() + size_of::<u32>() + size_of::<u32>(),
+    encoded_len: size_of::<u16>()
+        + size_of::<u16>()
+        + size_of::<u32>()
+        + size_of::<u32>()
+        + size_of::<u32>(),
+};
+
+pub(crate) struct TypeNodeLayout {
+    pub(crate) tag: usize,
+    pub(crate) reserved: usize,
+    pub(crate) operand: usize,
+    pub(crate) encoded_len: usize,
+}
+
+pub(crate) const TYPE_NODE_LAYOUT: TypeNodeLayout = TypeNodeLayout {
+    tag: 0,
+    reserved: size_of::<u8>(),
+    operand: size_of::<u8>() + size_of::<[u8; 3]>(),
+    encoded_len: size_of::<u8>() + size_of::<[u8; 3]>() + size_of::<u32>(),
+};
+
+pub(crate) const ENTITY_BYTES: usize = size_of::<u32>();
+pub(crate) const TYPE_NODE_BYTES: usize = TYPE_NODE_LAYOUT.encoded_len;
 pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 2 };
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
 
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SectionKind {
-    EntityTypes = 1,
-    TypeNodes = 2,
-}
-
-impl From<SectionKind> for u16 {
-    fn from(kind: SectionKind) -> Self {
-        kind as Self
-    }
-}
-
-impl TryFrom<u16> for SectionKind {
-    type Error = u16;
-
-    fn try_from(actual: u16) -> Result<Self, Self::Error> {
-        match actual {
-            1 => Ok(Self::EntityTypes),
-            2 => Ok(Self::TypeNodes),
-            actual => Err(actual),
+macro_rules! wire_enum_u16 {
+    ($visibility:vis enum $name:ident { $($variant:ident = $wire:literal),+ $(,)? }) => {
+        #[repr(u16)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        $visibility enum $name {
+            $($variant = $wire),+
         }
-    }
-}
 
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SectionRequirement {
-    Optional = 0,
-    Required = 1,
-}
-
-impl From<SectionRequirement> for u16 {
-    fn from(requirement: SectionRequirement) -> Self {
-        requirement as Self
-    }
-}
-
-impl TryFrom<u16> for SectionRequirement {
-    type Error = u16;
-
-    fn try_from(actual: u16) -> Result<Self, Self::Error> {
-        match actual {
-            0 => Ok(Self::Optional),
-            1 => Ok(Self::Required),
-            actual => Err(actual),
+        impl From<$name> for u16 {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => $wire),+
+                }
+            }
         }
+
+        impl TryFrom<u16> for $name {
+            type Error = u16;
+
+            fn try_from(actual: u16) -> Result<Self, Self::Error> {
+                match actual {
+                    $($wire => Ok($name::$variant)),+,
+                    actual => Err(actual),
+                }
+            }
+        }
+    };
+}
+
+wire_enum_u16! {
+    pub enum SectionKind {
+        EntityTypes = 1,
+        TypeNodes = 2,
+    }
+}
+
+wire_enum_u16! {
+    pub(crate) enum SectionRequirement {
+        Optional = 0,
+        Required = 1,
     }
 }
 
@@ -195,23 +238,27 @@ pub(crate) fn write_type_node(output: &mut [u8], node: TypeNode) {
     output.fill(0);
     match node {
         TypeNode::Primitive(primitive) => {
-            output[0] = PRIMITIVE_TAG;
-            write_u32(output, 4, u32::from(primitive));
+            output[TYPE_NODE_LAYOUT.tag] = PRIMITIVE_TAG;
+            write_u32(output, TYPE_NODE_LAYOUT.operand, u32::from(primitive));
         }
         TypeNode::Reference(target) => {
-            output[0] = REFERENCE_TAG;
-            write_u32(output, 4, target.raw);
+            output[TYPE_NODE_LAYOUT.tag] = REFERENCE_TAG;
+            write_u32(output, TYPE_NODE_LAYOUT.operand, target.raw);
         }
     }
 }
 
 pub(crate) fn decode_type_node(record: &[u8]) -> Result<TypeNode, TypeNodeFault> {
-    let reserved = [record[1], record[2], record[3]];
+    let reserved = [
+        record[TYPE_NODE_LAYOUT.reserved],
+        record[TYPE_NODE_LAYOUT.reserved + 1],
+        record[TYPE_NODE_LAYOUT.reserved + 2],
+    ];
     if reserved != [0; 3] {
         return Err(TypeNodeFault::Reserved { actual: reserved });
     }
-    let operand = read_u32(record, 4);
-    match record[0] {
+    let operand = read_u32(record, TYPE_NODE_LAYOUT.operand);
+    match record[TYPE_NODE_LAYOUT.tag] {
         PRIMITIVE_TAG => PrimitiveType::try_from(operand).map(TypeNode::Primitive),
         REFERENCE_TAG => Ok(TypeNode::Reference(TypeId::new(operand))),
         actual => Err(TypeNodeFault::Tag { actual }),
@@ -219,8 +266,8 @@ pub(crate) fn decode_type_node(record: &[u8]) -> Result<TypeNode, TypeNodeFault>
 }
 
 pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
-    let operand = read_u32(record, 4);
-    match (record[0], operand) {
+    let operand = read_u32(record, TYPE_NODE_LAYOUT.operand);
+    match (record[TYPE_NODE_LAYOUT.tag], operand) {
         (PRIMITIVE_TAG, 0) => TypeNode::Primitive(PrimitiveType::Bool),
         (PRIMITIVE_TAG, _) => TypeNode::Primitive(PrimitiveType::I32),
         _ => TypeNode::Reference(TypeId::new(operand)),

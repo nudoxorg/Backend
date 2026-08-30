@@ -6,8 +6,8 @@ use thiserror::Error;
 use crate::{
     EntityFault, EntityRecord, TypeNode, TypeNodeFault,
     wire::{
-        ByteLength, ByteOffset, DIRECTORY_ENTRY_BYTES, ENTITY_BYTES, FragmentLayout, HEADER_BYTES,
-        ItemCount, LaneLayout, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
+        ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout,
+        HEADER_LAYOUT, ItemCount, LaneLayout, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
         WRITTEN_SECTION_COUNT, entity_fault, type_node_fault, write_type_node, write_u16,
         write_u32,
     },
@@ -69,6 +69,7 @@ pub enum WriteError {
 }
 
 pub struct PreparedFragment<'facts> {
+    pub encoded_len: usize,
     entities: &'facts [EntityRecord],
     type_nodes: &'facts [TypeNode],
     layout: FragmentLayout,
@@ -110,32 +111,37 @@ impl<'facts> PreparedFragment<'facts> {
         }
 
         Ok(Self {
+            encoded_len: layout.output_len,
             entities,
             type_nodes,
             layout,
         })
     }
 
-    pub const fn output_len(&self) -> usize {
-        self.layout.output_len
-    }
-
     pub fn write_into<'output>(
         &self,
         output: &'output mut [u8],
     ) -> Result<&'output [u8], WriteError> {
-        if output.len() < self.layout.output_len {
+        if output.len() < self.encoded_len {
             return Err(WriteError::OutputTooSmall {
-                required: self.layout.output_len,
+                required: self.encoded_len,
                 available: output.len(),
             });
         }
 
-        let written = &mut output[..self.layout.output_len];
-        written[..4].copy_from_slice(&crate::FRAGMENT_MAGIC);
-        write_u16(written, 4, crate::FRAGMENT_SCHEMA);
-        write_u16(written, 6, u16::from(WRITTEN_SECTION_COUNT));
-        write_u32(written, 8, u32::from(self.layout.output_wire_len));
+        let written = &mut output[..self.encoded_len];
+        written[HEADER_LAYOUT.magic..HEADER_LAYOUT.schema].copy_from_slice(&crate::FRAGMENT_MAGIC);
+        write_u16(written, HEADER_LAYOUT.schema, crate::FRAGMENT_SCHEMA);
+        write_u16(
+            written,
+            HEADER_LAYOUT.section_count,
+            u16::from(WRITTEN_SECTION_COUNT),
+        );
+        write_u32(
+            written,
+            HEADER_LAYOUT.declared_length,
+            u32::from(self.layout.output_wire_len),
+        );
         write_directory_entry(written, 0, SectionKind::EntityTypes, self.layout.entities);
         write_directory_entry(written, 1, SectionKind::TypeNodes, self.layout.type_nodes);
 
@@ -161,20 +167,20 @@ fn layout(
     type_node_count: ItemCount,
 ) -> Result<FragmentLayout, PrepareError> {
     let directory_bytes = usize::from(WRITTEN_SECTION_COUNT)
-        .checked_mul(DIRECTORY_ENTRY_BYTES)
+        .checked_mul(DIRECTORY_ENTRY_LAYOUT.encoded_len)
         .ok_or(PrepareError::LayoutOverflow {
             step: LayoutStep::Directory,
             entity_count: u32::from(entity_count),
             type_node_count: u32::from(type_node_count),
         })?;
-    let directory_end =
-        HEADER_BYTES
-            .checked_add(directory_bytes)
-            .ok_or(PrepareError::LayoutOverflow {
-                step: LayoutStep::Directory,
-                entity_count: u32::from(entity_count),
-                type_node_count: u32::from(type_node_count),
-            })?;
+    let directory_end = HEADER_LAYOUT
+        .encoded_len
+        .checked_add(directory_bytes)
+        .ok_or(PrepareError::LayoutOverflow {
+            step: LayoutStep::Directory,
+            entity_count: u32::from(entity_count),
+            type_node_count: u32::from(type_node_count),
+        })?;
     let entity_bytes = usize::try_from(entity_count)
         .map_err(|source| PrepareError::OutputLength {
             actual: usize::MAX,
@@ -260,10 +266,26 @@ fn layout(
 }
 
 fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, lane: LaneLayout) {
-    let start = HEADER_BYTES + ordinal * DIRECTORY_ENTRY_BYTES;
-    write_u16(output, start, u16::from(kind));
-    write_u16(output, start + 2, u16::from(SectionRequirement::Required));
-    write_u32(output, start + 4, u32::from(lane.count));
-    write_u32(output, start + 8, u32::from(lane.start));
-    write_u32(output, start + 12, u32::from(lane.length));
+    let start = HEADER_LAYOUT.encoded_len + ordinal * DIRECTORY_ENTRY_LAYOUT.encoded_len;
+    write_u16(output, start + DIRECTORY_ENTRY_LAYOUT.kind, u16::from(kind));
+    write_u16(
+        output,
+        start + DIRECTORY_ENTRY_LAYOUT.requirement,
+        u16::from(SectionRequirement::Required),
+    );
+    write_u32(
+        output,
+        start + DIRECTORY_ENTRY_LAYOUT.item_count,
+        u32::from(lane.count),
+    );
+    write_u32(
+        output,
+        start + DIRECTORY_ENTRY_LAYOUT.byte_offset,
+        u32::from(lane.start),
+    );
+    write_u32(
+        output,
+        start + DIRECTORY_ENTRY_LAYOUT.byte_length,
+        u32::from(lane.length),
+    );
 }

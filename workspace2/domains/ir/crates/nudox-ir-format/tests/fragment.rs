@@ -66,7 +66,7 @@ fn zero_one_two_cartesian_consumers_preserve_caller_regions() -> Result<(), Test
                     Err(error) => return Err(error.into()),
                 };
             let mut output = [0xa5; 128];
-            let prefix_len = prepared.output_len();
+            let prefix_len = prepared.encoded_len;
             let prefix = prepared.write_into(&mut output)?;
             assert_eq!(prefix.len(), prefix_len);
             let view = FragmentView::validate(prefix)?;
@@ -129,7 +129,7 @@ fn every_undersized_output_is_byte_for_byte_unchanged() -> Result<(), TestFailur
         TypeNode::Primitive(PrimitiveType::Bool),
         TypeNode::Reference(TypeId::new(0)),
     ];
-    let required = PreparedFragment::prepare(&entities, &nodes)?.output_len();
+    let required = PreparedFragment::prepare(&entities, &nodes)?.encoded_len;
     let prepared = PreparedFragment::prepare(&entities, &nodes)?;
     for available in 0..required {
         let mut output = [0xa5; 128];
