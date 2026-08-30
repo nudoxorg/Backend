@@ -11,6 +11,8 @@ shipping_workspaces=(
   "layout-lab/Cargo.toml|layout-lab"
   "planes/compiler/Cargo.toml|planes/compiler"
   "planes/index/Cargo.toml|planes/index"
+  "planes/adaptive/Cargo.toml|planes/adaptive"
+  "planes/application/Cargo.toml|planes/application"
 )
 
 shipping_workspace_manifests=()

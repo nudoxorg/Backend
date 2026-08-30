@@ -83,6 +83,8 @@
             ./layout-lab/Cargo.lock
             ./planes/compiler/Cargo.lock
             ./planes/index/Cargo.lock
+            ./planes/adaptive/Cargo.lock
+            ./planes/application/Cargo.lock
             ./tools/dylint/Cargo.lock
             (dylintSource + "/Cargo.lock")
             (dylintSource + "/driver/Cargo.lock")
@@ -111,6 +113,16 @@
             lockFile = qualityLock;
             outputHashes = {
               "clippy_utils-0.1.98" = "sha256-eapzfPvyUcGAtl6RsImvQl4FsIYYjW1Hl/hjFqbLk5Y=";
+              "gpui-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_ce_util-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_collections-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_derive_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_macros-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_media-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_refineable-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_scheduler-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_shared_string-0.1.0" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
+              "gpui_sum_tree-0.2.2" = "sha256-Jjn4gCrqt/VgrraeKX+d4dA23q9y/teId6SFvEkrUqc=";
             };
           };
           qualityCargoDeps = pkgs.symlinkJoin {

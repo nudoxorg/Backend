@@ -6,7 +6,7 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 source "$project_dir/tools/dylint/shipping-workspaces.sh"
 
 if [[ "${NUDOX_QUALITY_NIX_ENV:-}" != 1 ]]; then
-  exec nix develop "$project_dir#quality" -c env \
+  exec nix develop "path:$project_dir#quality" -c env \
     NUDOX_QUALITY_NIX_ENV=1 \
     NUDOX_DYLINT_NIX_ENV=1 \
     "$0" "$@"
@@ -64,7 +64,7 @@ done
 # shipping graph. Resolve normal edges independently for every inventoried Cargo
 # workspace so nested workspaces cannot fall outside the root graph silently.
 for relative_manifest in "${shipping_workspace_manifests[@]}"; do
-  if [[ "$relative_manifest" == "planes/index/Cargo.toml" ]]; then
+  if [[ "$relative_manifest" == "planes/index/Cargo.toml" || "$relative_manifest" == "planes/application/Cargo.toml" ]]; then
     continue
   fi
   normal_tree="$(
@@ -81,6 +81,31 @@ for relative_manifest in "${shipping_workspace_manifests[@]}"; do
     exit 1
   fi
 done
+
+# The application aggregate intentionally contains JSON-RPC and GPUI adapters. Keep those edges
+# out of the concrete protocol-neutral behavior owner instead of pretending the whole application
+# graph is portable.
+application_manifest="$project_dir/planes/application/Cargo.toml"
+application_core_tree="$(
+  stable_cargo tree \
+    --manifest-path "$application_manifest" \
+    --package wave-application-core \
+    --edges normal \
+    --prefix none \
+    --locked \
+    --offline
+)"
+if printf '%s\n' "$application_core_tree" | rg '^(serde|serde_json|tokio|async-trait|futures|gpui|tracing|opentelemetry) v'; then
+  echo 'adapter dependency resolved in portable application core' >&2
+  exit 1
+fi
+stable_cargo test \
+  --manifest-path "$application_manifest" \
+  --workspace \
+  --all-targets \
+  --all-features \
+  --locked \
+  --offline
 
 # The index plane deliberately permits runtime/query-engine SDKs only below its
 # nested adapters. Every portable package under planes/index/crates is checked
@@ -107,3 +132,5 @@ for portable_manifest in "$project_dir"/planes/index/crates/*/Cargo.toml; do
     exit 1
   fi
 done
+
+"$project_dir/planes/application/scripts/check-client-budget.sh"

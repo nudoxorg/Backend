@@ -4,7 +4,7 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
 if [[ "${NUDOX_DYLINT_NIX_ENV:-}" != 1 ]]; then
-  exec nix develop "$project_dir#quality" -c env NUDOX_DYLINT_NIX_ENV=1 "$0" "$@"
+  exec nix develop "path:$project_dir#quality" -c env NUDOX_DYLINT_NIX_ENV=1 "$0" "$@"
 fi
 
 lint_workspace="$project_dir/tools/dylint"
