@@ -15,13 +15,6 @@ fn hit(term: &'static [u8], document: u32, units: u32) -> LexicalHit<'static> {
     LexicalHit::new(term, LexicalDocumentId::new(document), score(units))
 }
 
-fn top_k(value: usize) -> LexicalTopK {
-    match LexicalTopK::new(value) {
-        Ok(top_k) => top_k,
-        Err(error) => panic!("valid test TopK was rejected: {error:?}"),
-    }
-}
-
 #[test]
 fn input_permutation_is_rejected_and_ties_rank_by_document() {
     let permuted = [row(b"alpha", 9, 4), row(b"alpha", 3, 4)];
@@ -41,14 +34,19 @@ fn input_permutation_is_rejected_and_ties_rank_by_document() {
         row(b"beta", 1, 100),
     ];
     let segment = LexicalSegment::new(b"ties", &rows);
-    let segment = match segment {
-        Ok(segment) => segment,
-        Err(error) => panic!("valid test segment was rejected: {error:?}"),
+    let top_k = LexicalTopK::new(3);
+    assert!(segment.is_ok());
+    assert!(top_k.is_ok());
+    let Some(segment) = segment.ok() else {
+        return;
+    };
+    let Some(top_k) = top_k.ok() else {
+        return;
     };
 
     let mut output = [hit(b"placeholder", 99, 0); 3];
     assert_eq!(
-        segment.rank(LexicalOperation::new(b"alpha"), top_k(3), &mut output),
+        segment.rank(LexicalOperation::new(b"alpha"), top_k, &mut output),
         Ok(3)
     );
     assert_eq!(
@@ -93,22 +91,28 @@ fn term_lookup_and_ranked_hits_borrow_original_term_bytes() {
         row(b"beta", 3, 9),
     ];
     let segment = LexicalSegment::new(b"borrowed", &rows);
-    let segment = match segment {
-        Ok(segment) => segment,
-        Err(error) => panic!("valid test segment was rejected: {error:?}"),
+    let top_k = LexicalTopK::new(2);
+    assert!(segment.is_ok());
+    assert!(top_k.is_ok());
+    let Some(segment) = segment.ok() else {
+        return;
+    };
+    let Some(top_k) = top_k.ok() else {
+        return;
     };
 
-    let found = match segment.lookup(LexicalOperation::new(alpha)) {
-        Some(found) => found,
-        None => panic!("valid test term was not found"),
-    };
-    assert_eq!(found.len(), 2);
-    assert!(core::ptr::eq(found.as_ptr(), rows.as_ptr()));
-    assert!(core::ptr::eq(found[0].term().as_ptr(), alpha.as_ptr()));
+    let found = segment.lookup(LexicalOperation::new(alpha));
+    assert!(matches!(
+        found,
+        Some(found)
+            if found.len() == 2
+                && core::ptr::eq(found.as_ptr(), rows.as_ptr())
+                && core::ptr::eq(found[0].term().as_ptr(), alpha.as_ptr())
+    ));
 
     let mut output = [hit(b"placeholder", 0, 0); 2];
     assert_eq!(
-        segment.rank(LexicalOperation::new(alpha), top_k(2), &mut output),
+        segment.rank(LexicalOperation::new(alpha), top_k, &mut output),
         Ok(2)
     );
     assert!(core::ptr::eq(output[0].term().as_ptr(), alpha.as_ptr()));
@@ -123,16 +127,21 @@ fn insufficient_output_reports_exact_capacity_and_remains_unchanged() {
         row(b"alpha", 3, 1),
     ];
     let segment = LexicalSegment::new(b"short", &rows);
-    let segment = match segment {
-        Ok(segment) => segment,
-        Err(error) => panic!("valid test segment was rejected: {error:?}"),
+    let top_k = LexicalTopK::new(3);
+    assert!(segment.is_ok());
+    assert!(top_k.is_ok());
+    let Some(segment) = segment.ok() else {
+        return;
+    };
+    let Some(top_k) = top_k.ok() else {
+        return;
     };
 
     let placeholder = hit(b"placeholder", 77, 11);
     let mut output = [placeholder; 2];
     let before = output;
     assert_eq!(
-        segment.rank(LexicalOperation::new(b"alpha"), top_k(3), &mut output),
+        segment.rank(LexicalOperation::new(b"alpha"), top_k, &mut output,),
         Err(LexicalOutputError {
             required: 3,
             available: 2,
