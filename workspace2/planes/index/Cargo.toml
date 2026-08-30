@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/nudox-index-vocab"]
+members = [
+  "crates/nudox-index-graph-vector",
+  "crates/nudox-index-vocab",
+]
 
 [workspace.package]
 version = "0.1.0"
