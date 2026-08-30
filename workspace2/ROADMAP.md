@@ -29,9 +29,9 @@ The remaining gaps are architectural, not polish:
   control until its callers migrate.
 - complete local closure yields one non-forgeable verified capability, but no durable publication
   head consumes it and releases a distinct published capability after a stable receipt.
-- `PinnedObjectRequest` is rebound after the provider was already selected. The first no-request
-  candidate was rejected because its generation witness could be relabeled and was not tied to a
-  store; operation binding must happen once against the exact retained evidence snapshot or lease.
+- The exact `MemoryStore` now mints and remains borrowed by `VerifiedGeneration`; verified object
+  binding happens once and starts without a second request. The old request/recheck provider remains
+  compatibility-only until its callers migrate, and durable publication still needs a stable receipt.
 - `nudox-workflow` now has a crash-safe, single-owner file journal with sync receipts, reopen,
   torn-tail repair, exclusive ownership, directory durability, and fault injection; bounded MPSC
   group commit and atomic publication remain open.
@@ -90,9 +90,11 @@ The remaining gaps are architectural, not polish:
 - [x] Add a canonical-byte-first borrowed root/locality view with checked authority, one transient
   parent lane, caller-owned closure scratch, explicit parent-search work, and no retained native row
   or descriptor arena. Concrete mmap and leased owners remain adapter work, not root grammar.
-- [ ] Bind operation requests once at the `GenerationView` boundary; delete provider/request equality
-  rechecks and make the exact verified store snapshot/lease reach the publication/operation consumer
-  that requires it. Copied descriptor facts or an arbitrary predicate are insufficient authority.
+- [x] Bind the verified operation once at the borrowed `GenerationView` boundary, reject stale roots
+  before lookup, retain the exact checked store through execution, and start without another request.
+  Arbitrary predicates and copied descriptor facts no longer mint verified authority.
+- [ ] Delete the compatibility `PinnedObjectRequest` equality-recheck route after its callers migrate;
+  make durable publication consume the retained witness plus a stable receipt.
 
 ### 2. Server observability adapter — bounded seam proven; health plane remains
 

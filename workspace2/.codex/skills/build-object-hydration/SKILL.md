@@ -81,6 +81,37 @@ The retained evidence type is earned even with one current store: it removes own
 keeps mutation/drop excluded for the witness lifetime. Do not add generic policy parameters around
 it. A publication adapter still needs the stable receipt that names its real effect.
 
+### Store-bound completion and consumption
+
+A pure planner may use a caller predicate to classify wanted/have work, but that predicate never
+mints completion authority. The completion transition must query the exact immutable evidence owner
+for every descriptor in the complete projection. A content-key hit is insufficient: compare the
+retained length, schema, and kind with the root descriptor before issuing the witness. Reject a
+partial projection before any lookup.
+
+The first consumer binds the retained witness, validated generation view, and requested row once.
+Check generation equality before row lookup, then return a provider that retains the witness and can
+start without another request or presence check. Keep the legacy request-checked provider separate
+until it is deleted; do not widen its error type with failures impossible on the verified route.
+
+```rust
+// DON'T: planning policy is treated as storage evidence, then rechecked through another request.
+let verified = complete_plan.verify(|descriptor| policy_says_present(descriptor))?;
+provider.start(Request { generation: verified.root, required: descriptor })?;
+
+// DO: exact owner proves all descriptor facts and remains borrowed through execution.
+let verified = complete_plan.stage().verify_store(&store)?;
+let provider = Provider::bind_verified(&view, key, &verified)?;
+let run = provider.start();
+```
+
+Exact missing/conflicting descriptor reports may be larger than a hot `Result`. Preserve every
+operand in one boxed cold-path report when that keeps the successful path compact; never box the
+witness, store, provider, or ordinary success data merely to silence a lint. Tests must prove empty
+store rejection, same-content/different-metadata rejection, partial-before-lookup ordering, stale-
+before-missing ordering, exact owner pointer identity, fused execution, and compile-time failure when
+the store is dropped or substituted while the witness is live.
+
 Prototype owner work compares borrowed callback, caller-retained bytes, exact heap bytes, mmap/lease,
 and a self-referential adapter only when a view must escape. Measure validation repetition, pointer
 depth, construction/drop, peak simultaneous owners, and code size before promoting any shape.
