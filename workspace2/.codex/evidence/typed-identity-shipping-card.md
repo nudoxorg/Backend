@@ -21,7 +21,7 @@ The card owns the following exact writable set:
 
 | Area | Exact writable paths |
 | --- | --- |
-| identity | `workspace2/crates/nudox-id/src/{authority,content,lib}.rs` |
+| identity | `workspace2/crates/nudox-id/src/{authority,content,lib}.rs`, `workspace2/crates/nudox-id/tests/compile_fail.rs`, `workspace2/crates/nudox-id/tests/ui/cross_domain_authority_bind.{rs,stderr}` |
 | locality | `workspace2/crates/nudox-root/src/locality/cursor.rs`, `workspace2/crates/nudox-root/src/locality/artifact/{descriptor,errors,validate,view}.rs`, `workspace2/crates/nudox-root/tests/locality_validation.rs` |
 | measurement | `workspace2/layout-lab/src/{main.rs,bin/locality-validation-size.rs}`, `workspace2/layout-lab/raw/baseline-aarch64-apple-darwin.tsv`, `workspace2/layout-lab/evidence/locality-validation-m3-pro.jsonl`, `workspace2/LAYOUT_AUDIT.md` |
 | evidence | `workspace2/.codex/evidence/{typed-identity-shipping-card,salvage-ledger,typed-identity-shipping-closure}.md` |

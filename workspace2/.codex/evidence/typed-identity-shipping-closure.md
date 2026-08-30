@@ -70,8 +70,9 @@ in `layout-lab/evidence/locality-validation-m3-pro.jsonl`; no timing is inferred
 ## Tripwires
 
 The exact changed-Rust-path scan finds no panic/unwrap/expect/unreachable, unsafe, `dyn`, production
-`Box`/`Vec`/`Arc`/`Rc`, one-letter generic, unit namespace struct, or new public tuple field. The seven
-`Vec` hits are caller/test fixture storage. Existing `map_err` sites either retain their structural
+`Box`/`Vec`/`Arc`/`Rc`, one-letter generic, unit namespace struct, or new public tuple field. The six
+`Vec` identifier hits (`rg -n '\bVec\b'` over the changed Rust set) are caller/test fixture storage.
+Existing `map_err` sites either retain their structural
 source or re-walk zerocopy's non-semantic cast error into the exact provider/schema error asserted by
 the public mutation tests. The only new public items are the checked proof and its complete two-operand
 error.
