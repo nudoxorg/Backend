@@ -1,3 +1,4 @@
+use core::num::NonZeroU64;
 use core::ops::Deref;
 
 use thiserror::Error;
@@ -85,6 +86,13 @@ impl TryFrom<u64> for ProviderSet {
         } else {
             Ok(Self(bits))
         }
+    }
+}
+
+impl From<NonZeroU64> for ProviderSet {
+    /// Converts a non-zero provider bitmap after its non-emptiness proof.
+    fn from(bits: NonZeroU64) -> Self {
+        Self(bits.get())
     }
 }
 
