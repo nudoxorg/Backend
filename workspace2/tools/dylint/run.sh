@@ -8,7 +8,8 @@ if [[ "${NUDOX_DYLINT_NIX_ENV:-}" != 1 ]]; then
 fi
 
 lint_workspace="$project_dir/tools/dylint"
-lint_target_dir="${CARGO_TARGET_DIR:-$lint_workspace/target}"
+lint_target_dir="${CARGO_TARGET_DIR:-$project_dir/target/dylint}"
+export CARGO_TARGET_DIR="$lint_target_dir"
 # shellcheck source=shipping-workspaces.sh
 source "$lint_workspace/shipping-workspaces.sh"
 # shellcheck source=../../pinned-toolchains.sh
