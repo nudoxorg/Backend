@@ -8,10 +8,10 @@ mapping, and research controls. No capability law is claimed closed.
 Bounded review attempts:
 
 1. Sidecar task `01a0513e-951d-7721-83b8-31f5f43dd0bb`, raw output
-   `/private/tmp/c7-preedit-review-v2.KhEdon`: registered sidecar/reviewer resolution began, but all
-   required read-only commands failed before execution because the inherited environment contained
-   a non-Unicode value (`JoinError::Panic`, `Result::unwrap()` on `"â\\x88\\x99"`). No findings,
-   digest proof, or sandbox proof was possible; source was not mutated.
+   `/private/tmp/c7-preedit-review-v2.KhEdon`: the sidecar used a full-history fork while overriding
+   the reviewer type, which the router rejected. The runtime collaboration receipt has empty
+   `receiver_thread_ids`; despite later reviewer-like narration, no registered reviewer task
+   existed, so there is no admissible finding or sandbox receipt.
 2. Sidecar task `01a05140-753b-7003-b7c9-16616993c57b`, raw output
    `/private/tmp/c7-preedit-review-v3.dMOiEx/sidecar-final.md` and its JSONL: clean `env -i` launch
    passed source-free `/bin/zsh -lc true`, but context-free registered-role dispatch failed with
