@@ -386,8 +386,6 @@ pub enum RequestPhase {
     UpsertPoints,
     /// Batched vector query.
     QueryPoints,
-    /// Partition presence probe.
-    ScrollPartition,
     /// Batched point deletion.
     DeletePoints,
     /// Delete readback verification.
@@ -1024,10 +1022,10 @@ impl QdrantBlockingAdapter {
         }
         let mut hits =
             parse_query_hits(self.authority, selected, query_coordinates, &response.body)?;
+        let terminal = remote_terminal(self.authority, selected, &hits);
         hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
         let written = hits.len();
-        let terminal = self.query_terminal(selected)?;
         for slot in output.iter_mut().take(requested_limit) {
             *slot = None;
         }
@@ -1529,69 +1527,6 @@ impl QdrantBlockingAdapter {
         Ok(keys.len())
     }
 
-    fn query_terminal(&self, selected: &[PartitionId]) -> Result<QdrantQueryTerminal, QdrantError> {
-        let mut missing = [None; MAX_QUERY_PARTITIONS];
-        let mut missing_len = 0;
-        for partition in selected.iter().copied() {
-            let response = self.request_json(
-                RequestPhase::ScrollPartition,
-                Method::Post,
-                &self.url("/points/scroll"),
-                scroll_request(self.authority, partition),
-            )?;
-            if !is_success(response.status) {
-                return Err(status_error(RequestPhase::ScrollPartition, response));
-            }
-            let value = decode_json(RequestPhase::ScrollPartition, &response.body)?;
-            let points = value
-                .get("result")
-                .and_then(|result| result.get("points"))
-                .and_then(Value::as_array)
-                .ok_or(QdrantError::MalformedResponse {
-                    phase: RequestPhase::ScrollPartition,
-                    detail: "result.points[]",
-                })?;
-            if points.len() > 1 {
-                return Err(QdrantError::MalformedResponse {
-                    phase: RequestPhase::ScrollPartition,
-                    detail: "result.points[] exceeds presence bound",
-                });
-            }
-            if points.is_empty() {
-                let Some(slot) = missing.get_mut(missing_len) else {
-                    return Err(QdrantError::MalformedResponse {
-                        phase: RequestPhase::ScrollPartition,
-                        detail: "missing partition capacity",
-                    });
-                };
-                *slot = Some(partition);
-                missing_len += 1;
-            } else {
-                let Some(point) = points.first() else {
-                    return Err(QdrantError::MalformedResponse {
-                        phase: RequestPhase::ScrollPartition,
-                        detail: "result.points[0]",
-                    });
-                };
-                let physical_id = point_id(point, RequestPhase::ScrollPartition)?;
-                let key = decode_identity(point, RequestPhase::ScrollPartition, self.authority)?;
-                if key.authority() != self.authority || key.partition() != partition {
-                    return Err(QdrantError::PayloadMismatch {
-                        phase: RequestPhase::ScrollPartition,
-                        physical_id,
-                        field: PARTITION_PAYLOAD_KEY,
-                    });
-                }
-                reject_remote_physical_identity(RequestPhase::ScrollPartition, physical_id, key)?;
-            }
-        }
-        Ok(QdrantQueryTerminal {
-            authority: self.authority,
-            missing,
-            missing_len,
-        })
-    }
-
     fn url(&self, suffix: &str) -> String {
         format!(
             "{}/collections/{}{}",
@@ -1976,15 +1911,6 @@ fn query_request(
         "with_vector": true,
         "params": { "exact": true },
         "filter": identity_filter(authority, selected),
-    })
-}
-
-fn scroll_request(authority: VectorAuthority, partition: PartitionId) -> Value {
-    serde_json::json!({
-        "limit": 1,
-        "with_payload": true,
-        "with_vector": false,
-        "filter": identity_filter(authority, &[partition]),
     })
 }
 
@@ -2422,6 +2348,28 @@ fn local_terminal(
     }
 }
 
+fn remote_terminal(
+    authority: VectorAuthority,
+    selected: &[PartitionId],
+    hits: &[QdrantHit],
+) -> QdrantQueryTerminal {
+    let mut missing = [None; MAX_QUERY_PARTITIONS];
+    let mut missing_len = 0;
+    for partition in selected.iter().copied() {
+        if !hits.iter().any(|hit| hit.partition == partition)
+            && let Some(slot) = missing.get_mut(missing_len)
+        {
+            *slot = Some(partition);
+            missing_len += 1;
+        }
+    }
+    QdrantQueryTerminal {
+        authority,
+        missing,
+        missing_len,
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -2719,5 +2667,24 @@ mod tests {
                 && first_physical_id == canonical_id
                 && second_physical_id == canonical_id
         ));
+    }
+
+    #[test]
+    fn remote_terminal_uses_the_complete_pre_truncation_scan() {
+        let authority = authority(8);
+        let present = PartitionId::new(2);
+        let absent = PartitionId::new(3);
+        let key = QdrantDataKey::new(authority, present, EntityId::new(9));
+        let hits = [QdrantHit {
+            authority,
+            partition: present,
+            entity: key.entity(),
+            score: 4.0,
+            physical_id: PhysicalPointId::for_key(key),
+        }];
+        let terminal = remote_terminal(authority, &[present, absent], &hits);
+        assert_eq!(terminal.authority(), authority);
+        assert_eq!(terminal.missing_len(), 1);
+        assert_eq!(terminal.missing_at(0), Some(absent));
     }
 }
