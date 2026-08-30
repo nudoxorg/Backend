@@ -1,12 +1,13 @@
 # Typed identity and locality closure receipt
 
-Verdict: **SOURCE CANDIDATE — final shared-tree review pending**
+Verdict: **ACCEPTED — shared typed identity/locality boundary closed**
 
 ## Identity and scope
 
 ```text
 cold-review baseline: 789974d47387ca42eae45f56377db5aef55cd0d2
-source candidate: 6d23b21c
+implementation candidate: 6d23b21c
+final source/test candidate: 93e394ffc3e27434fb74a9131fa677223ec121fc
 capability: checked compact identity authority and infallible locality projection
 unsafe: none
 new shipping dependency: none
@@ -19,7 +20,7 @@ only the four independent cold-review findings and their exact measurement repai
 
 | Finding | Correction | Falsifier/evidence |
 | --- | --- | --- |
-| Public 31-byte `ContentPayload` could inject caller-selected authority | Delete the wrapper and both raw `From` paths. `TryFrom<u8>` now mints a zero-sized `ContentAuthority<DomainTag>` proof; only that proof binds compact payloads. | compile-fail arbitrary 31-byte conversion, exact wrong-authority unit test, second-domain writer/parser round trip |
+| Public 31-byte `ContentPayload` could inject caller-selected authority | Delete the wrapper and both raw `From` paths. `TryFrom<u8>` now mints a zero-sized `ContentAuthority<DomainTag>` proof; only that proof binds compact payloads. | compile-fail arbitrary 31-byte conversion and dependency-set-to-object binding, exact wrong-authority unit test, second-domain writer/parser round trip |
 | Original card did not authorize the actual cold repair | Reissue one canonical card at clean shared baseline `789974d4` with exact source, test, lab, and evidence paths. | changed-path comparison against this receipt and clean status at candidate commit |
 | Layout/SIMD JSONL measured the old 136-byte/48-byte grammar | Regenerate baseline inventory, three release timing runs, and scalar/SIMD size binaries against the exact candidate. | JSONL reports 200-byte witness and 49/217/353-byte grammar; source fixture is the current 353-byte format |
 | Provider/schema mutation assertions elided nested sources | Compare `ProviderSetError::Empty` and `UnknownSchemaId(u32::MAX)` explicitly. | full `LocalityError` pattern assertions in the public locality integration test |
@@ -79,12 +80,18 @@ error.
 
 ## Gates
 
-Passed at source candidate `6d23b21c`:
+Passed at final source/test candidate `93e394ff`:
 
 - root `nudox-id`/`nudox-root` all-target locked/offline tests and strict Clippy;
 - root `nudox-id`/`nudox-root` locked/offline doctests, including the compact-payload compile failure;
 - layout-lab all-target locked/offline tests, strict Clippy, and formatting;
 - exact release benchmark and scalar/SIMD size-driver execution.
+- two complete shared-root formatting, strict all-target Clippy, all-target test, and doctest passes;
+- formatting, strict all-target Clippy, all-target tests, and doctests in durable-journal,
+  observability, IR, layout-lab, compiler, and index nested workspaces.
 
-Full shared-root/nested gates and a fresh read-only Terra review remain required before changing this
-receipt to accepted.
+A fresh explicit `gpt-5.6-terra` read-only review found one missing cross-domain UI falsifier and one
+incorrect tripwire count. Commit `93e394ff` closes both; the same reviewer reproduced the focused
+trybuild failure, the six-hit scan, clean status, and found no new P0–P2 findings. The strongest
+surviving attack—binding a dependency-set authority then assigning it as an object identity—fails
+with E0308 at the public boundary.

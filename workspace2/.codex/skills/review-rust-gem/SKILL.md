@@ -132,6 +132,11 @@ Run all applicable passes in this order:
    value for all records, require a comparison against one header cell plus a typed payload; measure
    bytes and deleted checks. Conversely, reject hoisting when a record must remain self-authenticating
    outside the container.
+   Trace public conversions as chains, not isolated methods. A checked full-width decoder is still
+   bypassed when `raw payload -> typed payload -> typed identity` injects the omitted authority from a
+   generic parameter. For hoisted authority, require observed cell -> checked proof -> payload bind,
+   then compile-fail a proof/bind from one real domain into a second. A zero-sized proof is legitimate
+   only when its constructor checks the runtime cell and its type fixes every later authority use.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.

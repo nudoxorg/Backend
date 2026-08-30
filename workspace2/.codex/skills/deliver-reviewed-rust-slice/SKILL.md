@@ -188,6 +188,22 @@ impl From<[u8; 32]> for TypedId {
 impl TryFrom<[u8; 32]> for TypedId { /* validate the authority cell */ }
 impl TypedId { fn from_digest(digest: Digest) -> Self { /* named projection */ } }
 ```
+
+When a container hoists one authority cell and stores compact payloads, the payload wrapper must not
+recreate the same bypass in two steps. A public `From<[u8; N - 1]> for Payload<Domain>` followed by
+`From<Payload<Domain>> for TypedId<Domain>` still lets the caller select authority without observing
+wire authority. Validate the observed header cell into a sealed proof, require that proof to bind the
+payload, and keep the proof zero-sized when its only runtime fact is already fixed by the type. Add a
+downstream compile-fail test that a proof for one real domain cannot bind or assign as another.
+
+```rust
+// DON'T: the generic parameter injects the missing wire authority.
+let id: TypedId<ObjectDomain> = Payload::<ObjectDomain>::from(raw_payload).into();
+
+// DO: one observed cell creates the proof; the proof fixes the bind result domain.
+let authority = ContentAuthority::<ObjectDomain>::try_from(observed_domain)?;
+let id: TypedId<ObjectDomain> = authority.bind(raw_payload);
+```
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.
