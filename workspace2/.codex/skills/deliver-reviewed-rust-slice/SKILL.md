@@ -83,9 +83,13 @@ for more research. The agent scores its slice only if asked; the parent owns pro
 - In a glob-member workspace, never leave a new crate directory without a valid manifest and target.
   Stage experiments outside the glob or create/remove the complete scaffold atomically so unrelated
   Cargo gates remain runnable.
-- Public fields are correct for plain validated facts. Use `Deref`, `AsRef`, `Borrow`, `From`, and
-  `TryFrom` where their standard meaning is exact. Do not add `.get()`, `.wire()`, `.content()`,
-  `from_bytes()`, or namespace/stateless structs for discoverability.
+- Public fields are correct only for plain facts whose replacement cannot invalidate behavior. Never
+  make a prepared length, offset, witness, capacity, checksum, or other derived authority publicly
+  mutable when production code trusts it. In that case keep one private invariant owner and expose an
+  earned read-only semantic query or standard trait. Use `Deref`, `AsRef`, `Borrow`, `From`, and
+  `TryFrom` only where their standard meaning is exact; do not force `Deref` onto a plan merely to
+  avoid a justified query. Do not add `.get()`, `.wire()`, `.content()`, `from_bytes()`, or
+  namespace/stateless structs for discoverability.
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.

@@ -40,7 +40,9 @@ Run all applicable passes in this order:
    can remove. Reject `rustfmt::skip`, one-line functions, or statement packing used to hide complexity.
 4. **Types:** inspect raw primitives, tuple coordinates, optional correlated state, string stages,
    catch-all variants, generic ledgers, lifetime truth, conversions, field visibility, and invalid
-   states. Demand descriptive generic names.
+   states. Mutate every public derived fact in a test or thought experiment: if production trusts it,
+   the field is authority and must remain behind one read-only invariant boundary. Demand descriptive
+   generic names.
 5. **Ownership/layout:** account for owner plus backing, peak live memory, pointer depth, allocation,
    copies, stable-address need, rejection/drop, `Arc` churn, stack/thread-stack cost, fragmentation,
    and text-size monomorphs. Compare the real lifetime alternatives.
