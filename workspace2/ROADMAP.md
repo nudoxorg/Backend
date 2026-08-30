@@ -43,6 +43,9 @@ The remaining gaps are architectural, not polish:
 - Wave B.4 likewise froze a materially stronger immutable-index/Tantivy falsifier set but stopped
   before production after three unverifiable reviewer-sidecar attempts. Its proof rows remain red;
   only the earlier I0 vocabulary is shipping.
+- Wave D.8 froze the final 200-package/system fault matrix and correctly stopped because the required
+  product seams do not yet exist. Its harness must follow those capabilities rather than fabricate
+  parallel test-only logic.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
