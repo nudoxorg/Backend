@@ -64,6 +64,9 @@ done
 # shipping graph. Resolve normal edges independently for every inventoried Cargo
 # workspace so nested workspaces cannot fall outside the root graph silently.
 for relative_manifest in "${shipping_workspace_manifests[@]}"; do
+  if [[ "$relative_manifest" == "planes/index/Cargo.toml" ]]; then
+    continue
+  fi
   normal_tree="$(
     stable_cargo tree \
       --manifest-path "$project_dir/$relative_manifest" \
@@ -75,6 +78,32 @@ for relative_manifest in "${shipping_workspace_manifests[@]}"; do
   )"
   if printf '%s\n' "$normal_tree" | rg '^(serde|serde_json|tokio|async-trait|futures) v'; then
     echo "forbidden normal dependency resolved in $relative_manifest" >&2
+    exit 1
+  fi
+done
+
+# The index plane deliberately permits runtime/query-engine SDKs only below its
+# nested adapters. Every portable package under planes/index/crates is checked
+# independently so adding one server adapter cannot make the aggregate
+# workspace tree look portable.
+index_manifest="$project_dir/planes/index/Cargo.toml"
+for portable_manifest in "$project_dir"/planes/index/crates/*/Cargo.toml; do
+  portable_package="$(rg -m 1 '^name = "[^"]+"$' "$portable_manifest" | sed -n 's/^name = "\([^"]*\)"$/\1/p')"
+  if [[ -z "$portable_package" ]]; then
+    echo "cannot resolve portable package name from $portable_manifest" >&2
+    exit 1
+  fi
+  normal_tree="$(
+    stable_cargo tree \
+      --manifest-path "$index_manifest" \
+      --package "$portable_package" \
+      --edges normal \
+      --prefix none \
+      --locked \
+      --offline
+  )"
+  if printf '%s\n' "$normal_tree" | rg '^(serde|serde_json|tokio|async-trait|futures|trustfall|qdrant-client|tonic|tracing|opentelemetry) v'; then
+    echo "adapter dependency resolved in portable index package $portable_package" >&2
     exit 1
   fi
 done
