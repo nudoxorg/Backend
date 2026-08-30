@@ -162,9 +162,14 @@ fn exported_rlib_keeps_views_private_typed_and_caller_borrowing() -> Result<(), 
             symbols: &["Entity", "Type"],
         },
         RejectedProbe {
-            source: b"use nudox_ir_format::{EntityRecord, PreparedFragment, TypeNode}; use nudox_ir_vocab::TypeId; fn bad() -> usize { let prepared; { let entities = [EntityRecord { semantic_type: TypeId::new(0) }]; let nodes = [TypeNode::Reference(TypeId::new(0))]; prepared = match PreparedFragment::prepare(&entities, &nodes) { Ok(value) => value, Err(_) => return 0 }; } prepared.encoded_len }",
+            source: b"use nudox_ir_format::{EntityRecord, PreparedFragment, TypeNode}; use nudox_ir_vocab::TypeId; fn bad() -> usize { let prepared; { let entities = [EntityRecord { semantic_type: TypeId::new(0) }]; let nodes = [TypeNode::Reference(TypeId::new(0))]; prepared = match PreparedFragment::prepare(&entities, &nodes) { Ok(value) => value, Err(_) => return 0 }; } prepared.required_capacity() }",
             code: "error[E0597]",
             symbols: &["entities", "nodes"],
+        },
+        RejectedProbe {
+            source: b"use nudox_ir_format::PreparedFragment; fn bad() { let entities = []; let nodes = []; let mut prepared = match PreparedFragment::prepare(&entities, &nodes) { Ok(value) => value, Err(_) => return }; prepared.encoded_len = usize::MAX; }",
+            code: "error[E0609]",
+            symbols: &["encoded_len", "PreparedFragment"],
         },
     ];
     for probe in rejected {

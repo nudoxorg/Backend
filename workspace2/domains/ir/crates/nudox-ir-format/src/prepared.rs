@@ -42,6 +42,13 @@ pub enum PrepareError {
         entity_count: u32,
         type_node_count: u32,
     },
+    #[error("{step:?} item count {actual} exceeds the native address width")]
+    NativeCount {
+        step: LayoutStep,
+        actual: u32,
+        #[source]
+        source: TryFromIntError,
+    },
     #[error("fragment output length {actual} exceeds the wire byte-coordinate width")]
     OutputLength {
         actual: usize,
@@ -69,7 +76,6 @@ pub enum WriteError {
 }
 
 pub struct PreparedFragment<'facts> {
-    pub encoded_len: usize,
     entities: &'facts [EntityRecord],
     type_nodes: &'facts [TypeNode],
     layout: FragmentLayout,
@@ -111,25 +117,29 @@ impl<'facts> PreparedFragment<'facts> {
         }
 
         Ok(Self {
-            encoded_len: layout.output_len,
             entities,
             type_nodes,
             layout,
         })
     }
 
+    #[must_use]
+    pub const fn required_capacity(&self) -> usize {
+        self.layout.output_len
+    }
+
     pub fn write_into<'output>(
         &self,
         output: &'output mut [u8],
     ) -> Result<&'output [u8], WriteError> {
-        if output.len() < self.encoded_len {
+        if output.len() < self.layout.output_len {
             return Err(WriteError::OutputTooSmall {
-                required: self.encoded_len,
+                required: self.layout.output_len,
                 available: output.len(),
             });
         }
 
-        let written = &mut output[..self.encoded_len];
+        let written = &mut output[..self.layout.output_len];
         written[HEADER_LAYOUT.magic..HEADER_LAYOUT.schema].copy_from_slice(&crate::FRAGMENT_MAGIC);
         write_u16(written, HEADER_LAYOUT.schema, crate::FRAGMENT_SCHEMA);
         write_u16(
@@ -166,103 +176,99 @@ fn layout(
     entity_count: ItemCount,
     type_node_count: ItemCount,
 ) -> Result<FragmentLayout, PrepareError> {
-    let directory_bytes = usize::from(WRITTEN_SECTION_COUNT)
-        .checked_mul(DIRECTORY_ENTRY_LAYOUT.encoded_len)
-        .ok_or(PrepareError::LayoutOverflow {
-            step: LayoutStep::Directory,
-            entity_count: u32::from(entity_count),
-            type_node_count: u32::from(type_node_count),
-        })?;
-    let directory_end = HEADER_LAYOUT
-        .encoded_len
-        .checked_add(directory_bytes)
-        .ok_or(PrepareError::LayoutOverflow {
-            step: LayoutStep::Directory,
-            entity_count: u32::from(entity_count),
-            type_node_count: u32::from(type_node_count),
-        })?;
-    let entity_bytes = usize::try_from(entity_count)
-        .map_err(|source| PrepareError::OutputLength {
-            actual: usize::MAX,
-            source,
-        })?
-        .checked_mul(ENTITY_BYTES)
-        .ok_or(PrepareError::LayoutOverflow {
-            step: LayoutStep::EntityLane,
-            entity_count: u32::from(entity_count),
-            type_node_count: u32::from(type_node_count),
-        })?;
-    let entity_end =
-        directory_end
-            .checked_add(entity_bytes)
-            .ok_or(PrepareError::LayoutOverflow {
-                step: LayoutStep::EntityLane,
-                entity_count: u32::from(entity_count),
-                type_node_count: u32::from(type_node_count),
-            })?;
-    let type_node_bytes = usize::try_from(type_node_count)
-        .map_err(|source| PrepareError::OutputLength {
-            actual: usize::MAX,
-            source,
-        })?
-        .checked_mul(TYPE_NODE_BYTES)
-        .ok_or(PrepareError::LayoutOverflow {
-            step: LayoutStep::TypeNodeLane,
-            entity_count: u32::from(entity_count),
-            type_node_count: u32::from(type_node_count),
-        })?;
-    let output_len =
-        entity_end
-            .checked_add(type_node_bytes)
-            .ok_or(PrepareError::LayoutOverflow {
-                step: LayoutStep::TypeNodeLane,
-                entity_count: u32::from(entity_count),
-                type_node_count: u32::from(type_node_count),
-            })?;
-    let output_wire_len =
-        ByteLength::try_from(output_len).map_err(|source| PrepareError::OutputLength {
-            actual: output_len,
-            source,
-        })?;
-    let entity_start =
-        ByteOffset::try_from(directory_end).map_err(|source| PrepareError::OutputLength {
-            actual: directory_end,
-            source,
-        })?;
-    let entity_length =
-        ByteLength::try_from(entity_bytes).map_err(|source| PrepareError::OutputLength {
-            actual: entity_bytes,
-            source,
-        })?;
-    let type_node_start =
-        ByteOffset::try_from(entity_end).map_err(|source| PrepareError::OutputLength {
-            actual: entity_end,
-            source,
-        })?;
-    let type_node_length =
-        ByteLength::try_from(type_node_bytes).map_err(|source| PrepareError::OutputLength {
-            actual: type_node_bytes,
-            source,
-        })?;
+    let mut cursor = LayoutCursor::new(entity_count, type_node_count)?;
+    let entities = cursor.lane(LayoutStep::EntityLane, entity_count, ENTITY_BYTES)?;
+    let type_nodes = cursor.lane(LayoutStep::TypeNodeLane, type_node_count, TYPE_NODE_BYTES)?;
+    cursor.finish(entities, type_nodes)
+}
 
-    Ok(FragmentLayout {
-        entities: LaneLayout {
-            count: entity_count,
-            start: entity_start,
-            length: entity_length,
-            start_index: directory_end,
-            end_index: entity_end,
-        },
-        type_nodes: LaneLayout {
-            count: type_node_count,
-            start: type_node_start,
-            length: type_node_length,
-            start_index: entity_end,
-            end_index: output_len,
-        },
-        output_len,
-        output_wire_len,
-    })
+struct LayoutCursor {
+    next_index: usize,
+    entity_count: ItemCount,
+    type_node_count: ItemCount,
+}
+
+impl LayoutCursor {
+    fn new(entity_count: ItemCount, type_node_count: ItemCount) -> Result<Self, PrepareError> {
+        let mut cursor = Self {
+            next_index: HEADER_LAYOUT.encoded_len,
+            entity_count,
+            type_node_count,
+        };
+        let directory_bytes = usize::from(WRITTEN_SECTION_COUNT)
+            .checked_mul(DIRECTORY_ENTRY_LAYOUT.encoded_len)
+            .ok_or_else(|| cursor.overflow(LayoutStep::Directory))?;
+        cursor.advance(LayoutStep::Directory, directory_bytes)?;
+        Ok(cursor)
+    }
+
+    fn lane(
+        &mut self,
+        step: LayoutStep,
+        count: ItemCount,
+        item_width: usize,
+    ) -> Result<LaneLayout, PrepareError> {
+        let native_count = usize::try_from(count).map_err(|source| PrepareError::NativeCount {
+            step,
+            actual: u32::from(count),
+            source,
+        })?;
+        let length = native_count
+            .checked_mul(item_width)
+            .ok_or_else(|| self.overflow(step))?;
+        let start_index = self.next_index;
+        self.advance(step, length)?;
+        let start =
+            ByteOffset::try_from(start_index).map_err(|source| PrepareError::OutputLength {
+                actual: start_index,
+                source,
+            })?;
+        let length = ByteLength::try_from(length).map_err(|source| PrepareError::OutputLength {
+            actual: length,
+            source,
+        })?;
+        Ok(LaneLayout {
+            count,
+            start,
+            length,
+            start_index,
+            end_index: self.next_index,
+        })
+    }
+
+    fn advance(&mut self, step: LayoutStep, length: usize) -> Result<(), PrepareError> {
+        self.next_index = self
+            .next_index
+            .checked_add(length)
+            .ok_or_else(|| self.overflow(step))?;
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        entities: LaneLayout,
+        type_nodes: LaneLayout,
+    ) -> Result<FragmentLayout, PrepareError> {
+        let output_wire_len =
+            ByteLength::try_from(self.next_index).map_err(|source| PrepareError::OutputLength {
+                actual: self.next_index,
+                source,
+            })?;
+        Ok(FragmentLayout {
+            entities,
+            type_nodes,
+            output_len: self.next_index,
+            output_wire_len,
+        })
+    }
+
+    fn overflow(&self, step: LayoutStep) -> PrepareError {
+        PrepareError::LayoutOverflow {
+            step,
+            entity_count: u32::from(self.entity_count),
+            type_node_count: u32::from(self.type_node_count),
+        }
+    }
 }
 
 fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, lane: LaneLayout) {
