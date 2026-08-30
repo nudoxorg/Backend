@@ -13,8 +13,8 @@ pub use graph::{
     GraphRow, TrustfallGraph,
 };
 pub use lease::{
-    Cancellation, EdgeBatchStream, GraphStreamEvent, GraphTerminal, InsufficientOutput,
-    LeasedGraphBatch, StreamCapacityError,
+    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphStreamEvent, GraphTerminal,
+    InsufficientOutput, LeasedGraphBatch, StreamCapacityError,
 };
 pub use trace::{GraphTraceEvent, TraceProbe, TraceRecorder};
 pub use vector::{

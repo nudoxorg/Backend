@@ -8,7 +8,7 @@ use std::hint::black_box;
 use allocation_counter::{AllocationInfo, measure};
 use nudox_index_graph_vector::{
     Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphRow, Metric, ModelId,
-    PartitionId, ProjectionId, TrustfallGraph, VectorAuthority, VectorFact, VectorRow,
+    PartitionId, ProjectionId, TraceProbe, TrustfallGraph, VectorAuthority, VectorFact, VectorRow,
     exact_vector_query,
 };
 use nudox_index_vocab::IndexSnapshotId;
@@ -50,25 +50,30 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
     let vector_rows = [VectorRow::new(partition, &vector_facts)];
     let mut graph_output = [None; 1];
     let mut vector_output = [None; 1];
-    let stream = EdgeBatchStream::new(graph_authority, 1, size_of::<GraphEdge>());
-    assert!(stream.is_ok());
-    let Ok(mut stream) = stream else {
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let channel = EdgeBatchStream::channel(
+        graph_authority,
+        &[partition],
+        1,
+        size_of::<GraphEdge>(),
+        &cancellation,
+        &mut trace,
+    );
+    assert!(channel.is_ok());
+    let Ok((_producer, mut stream)) = channel else {
         return;
     };
-    let cancellation = Cancellation::new();
     let waker = core::task::Waker::noop();
     let mut context = Context::from_waker(waker);
     assert!(matches!(
-        Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Pending
     ));
 
     let allocations = measure(|| {
-        let graph_result = black_box(graph.neighbors(
-            &[partition],
-            EntityId::new(1),
-            &mut graph_output,
-        ));
+        let graph_result =
+            black_box(graph.neighbors(&[partition], EntityId::new(1), &mut graph_output));
         assert!(graph_result.is_ok());
         let vector_result = black_box(exact_vector_query(
             vector_authority,
@@ -80,7 +85,7 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
         ));
         assert!(vector_result.is_ok());
         assert!(matches!(
-            black_box(Pin::new(&mut stream).poll_batch(&mut context, &cancellation)),
+            black_box(Pin::new(&mut stream).poll_batch(&mut context, &mut trace)),
             Poll::Pending
         ));
     });

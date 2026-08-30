@@ -1,72 +1,130 @@
 use core::{
-    mem::size_of,
+    mem::{size_of, size_of_val},
     pin::Pin,
     sync::atomic::Ordering,
     task::{Context, Poll, Waker},
 };
 
 #[cfg(all(test, feature = "loom-model"))]
-use loom::sync::{Mutex, atomic::AtomicBool};
+use loom::sync::{Arc, Mutex, MutexGuard, atomic::AtomicBool};
 #[cfg(not(all(test, feature = "loom-model")))]
-use std::sync::{Mutex, atomic::AtomicBool};
+use std::sync::{Arc, Mutex, MutexGuard, atomic::AtomicBool};
 
-use crate::{GraphAuthority, GraphEdge, PartitionId};
+use crate::{GraphAuthority, GraphEdge, GraphTraceEvent, MAX_PARTITIONS, PartitionId, TraceProbe};
 
 const MAX_LEASED_EDGES: usize = 16;
+const MAX_CANCEL_WAITERS: usize = MAX_PARTITIONS;
 
-/// Cancellation authority that owns the wake registration for pending work.
+#[derive(Debug)]
+struct CancelSlot {
+    occupied: bool,
+    waker: Option<Waker>,
+}
+
+impl CancelSlot {
+    const fn vacant() -> Self {
+        Self {
+            occupied: false,
+            waker: None,
+        }
+    }
+}
+
+/// Cancellation authority with one independently removable wake slot per admitted stream.
 #[derive(Debug)]
 pub struct Cancellation {
     cancelled: AtomicBool,
-    waiter: Mutex<Option<Waker>>,
+    waiters: Mutex<[CancelSlot; MAX_CANCEL_WAITERS]>,
 }
 
 impl Cancellation {
-    /// Creates a clear cancellation authority.
+    /// Creates a clear cancellation authority with bounded wake storage.
     #[must_use]
     pub fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
-            waiter: Mutex::new(None),
+            waiters: Mutex::new(core::array::from_fn(|_| CancelSlot::vacant())),
         }
     }
 
-    /// Publishes cancellation and wakes the registered pending consumer once.
+    /// Publishes cancellation and wakes every independently registered pending stream.
     pub fn cancel(&self) {
-        if !self.cancelled.swap(true, Ordering::AcqRel) {
-            let wake = match self.waiter.lock() {
-                Ok(mut waiter) => waiter.take(),
-                Err(poisoned) => poisoned.into_inner().take(),
+        if self.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut wakes: [Option<Waker>; MAX_CANCEL_WAITERS] = core::array::from_fn(|_| None);
+        {
+            let mut waiters = match self.waiters.lock() {
+                Ok(waiters) => waiters,
+                Err(poisoned) => poisoned.into_inner(),
             };
-            if let Some(waker) = wake {
-                waker.wake();
+            for (destination, slot) in wakes.iter_mut().zip(waiters.iter_mut()) {
+                *destination = slot.waker.take();
             }
+        }
+        for waker in wakes.into_iter().flatten() {
+            waker.wake();
+        }
+    }
+
+    fn reserve(&self) -> Result<usize, StreamCapacityError> {
+        let mut waiters = match self.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let Some((index, slot)) = waiters
+            .iter_mut()
+            .enumerate()
+            .find(|(_, slot)| !slot.occupied)
+        else {
+            return Err(StreamCapacityError::CancellationCapacity {
+                maximum: MAX_CANCEL_WAITERS,
+            });
+        };
+        slot.occupied = true;
+        Ok(index)
+    }
+
+    fn register(&self, slot_index: usize, waker: &Waker) {
+        let mut waiters = match self.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let Some(slot) = waiters.get_mut(slot_index) else {
+            return;
+        };
+        if slot
+            .waker
+            .as_ref()
+            .is_none_or(|current| !current.will_wake(waker))
+        {
+            slot.waker = Some(waker.clone());
+        }
+    }
+
+    fn clear(&self, slot_index: usize) {
+        let mut waiters = match self.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(slot) = waiters.get_mut(slot_index) {
+            slot.waker = None;
+        }
+    }
+
+    fn release(&self, slot_index: usize) {
+        let mut waiters = match self.waiters.lock() {
+            Ok(waiters) => waiters,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(slot) = waiters.get_mut(slot_index) {
+            slot.waker = None;
+            slot.occupied = false;
         }
     }
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-    }
-
-    fn register(&self, waker: &Waker) {
-        let mut waiter = match self.waiter.lock() {
-            Ok(waiter) => waiter,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if waiter
-            .as_ref()
-            .is_none_or(|current| !current.will_wake(waker))
-        {
-            *waiter = Some(waker.clone());
-        }
-    }
-
-    fn clear_registration(&self) {
-        let mut waiter = match self.waiter.lock() {
-            Ok(waiter) => waiter,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *waiter = None;
     }
 }
 
@@ -76,7 +134,7 @@ impl Default for Cancellation {
     }
 }
 
-/// Exact capacity rejection before a lease is accepted.
+/// Exact capacity or authority rejection before stream state is changed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamCapacityError {
     /// Configured item capacity is invalid.
@@ -93,8 +151,31 @@ pub enum StreamCapacityError {
         /// Rejected requested bytes.
         observed: usize,
     },
-    /// A second settled batch would exceed the single bounded completion slot.
+    /// No independent cancellation wake slot remained.
+    CancellationCapacity {
+        /// Maximum simultaneous streams sharing one cancellation authority.
+        maximum: usize,
+    },
+    /// Selected partition fanout exceeded the fixed bound.
+    PartitionCapacity {
+        /// Maximum selected partitions.
+        maximum: usize,
+        /// Complete observed selected partitions.
+        observed: usize,
+    },
+    /// One selected partition occurred twice.
+    DuplicatePartition {
+        /// Earlier selected position.
+        first_index: usize,
+        /// Later selected position.
+        index: usize,
+        /// Repeated partition.
+        partition: PartitionId,
+    },
+    /// The completion slot still owns the preceding batch.
     BatchAlreadySettled,
+    /// The stream has a queued terminal or has been cancelled/dropped.
+    StreamClosed,
     /// Settled data exceeds the configured item reserve.
     ItemCapacity {
         /// Configured item reserve.
@@ -108,6 +189,11 @@ pub enum StreamCapacityError {
         maximum: usize,
         /// Complete observed byte charge.
         observed: usize,
+    },
+    /// A completion named a partition outside the admitted selection.
+    UnselectedPartition {
+        /// Rejected partition.
+        observed: PartitionId,
     },
     /// One settled edge belongs to another stream authority.
     WrongAuthority {
@@ -126,6 +212,22 @@ pub enum StreamCapacityError {
         expected: PartitionId,
         /// Rejected edge partition.
         observed: PartitionId,
+    },
+    /// Exact missing-partition terminal exceeded the selected fanout.
+    MissingPartitionCapacity {
+        /// Maximum selected partitions.
+        maximum: usize,
+        /// Complete observed missing partitions.
+        observed: usize,
+    },
+    /// One missing partition occurred twice.
+    DuplicateMissingPartition {
+        /// Earlier missing position.
+        first_index: usize,
+        /// Later missing position.
+        index: usize,
+        /// Repeated missing partition.
+        partition: PartitionId,
     },
 }
 
@@ -168,7 +270,7 @@ pub enum GraphTerminal {
         /// Complete graph authority.
         authority: GraphAuthority,
         /// Exact absent partition coordinates in semantic order.
-        missing: [Option<PartitionId>; crate::MAX_PARTITIONS],
+        missing: [Option<PartitionId>; MAX_PARTITIONS],
         /// Number of occupied entries in `missing`.
         missing_len: usize,
     },
@@ -184,6 +286,19 @@ impl GraphTerminal {
             | Self::Partial { authority, .. } => authority,
         }
     }
+
+    /// Borrows the exact absent partition prefix, empty for complete or cancelled terminals.
+    #[must_use]
+    pub fn missing(&self) -> &[Option<PartitionId>] {
+        match self {
+            Self::Partial {
+                missing,
+                missing_len,
+                ..
+            } => &missing[..*missing_len],
+            Self::Complete { .. } | Self::Cancelled { .. } => &[],
+        }
+    }
 }
 
 /// One runtime-independent leased stream observation.
@@ -197,82 +312,104 @@ pub enum GraphStreamEvent<'stream> {
     Fused,
 }
 
-/// One bounded completion slot and its wake/credit owner.
 #[derive(Debug)]
-pub struct EdgeBatchStream {
+struct CompletionState {
     authority: GraphAuthority,
+    selected: [Option<PartitionId>; MAX_PARTITIONS],
+    selected_len: usize,
     item_capacity: usize,
     byte_capacity: usize,
     edges: [Option<GraphEdge>; MAX_LEASED_EDGES],
     len: usize,
     charged_bytes: usize,
     ready: bool,
+    closed: bool,
     terminal: Option<GraphTerminal>,
     terminal_emitted: bool,
-    waiter: Option<Waker>,
+    consumer_waiter: Option<Waker>,
+    producer_waiter: Option<Waker>,
 }
 
-impl EdgeBatchStream {
-    /// Creates one fixed-storage stream with explicit item and byte reserves.
-    pub fn new(
-        authority: GraphAuthority,
-        item_capacity: usize,
-        byte_capacity: usize,
-    ) -> Result<Self, StreamCapacityError> {
-        if item_capacity > MAX_LEASED_EDGES {
-            return Err(StreamCapacityError::InvalidItemCapacity {
-                maximum: MAX_LEASED_EDGES,
-                observed: item_capacity,
-            });
+impl CompletionState {
+    fn release_batch(&mut self) {
+        for slot in self.edges.iter_mut().take(self.len) {
+            *slot = None;
         }
-        let required = item_capacity.saturating_mul(size_of::<GraphEdge>());
-        if byte_capacity < required {
-            return Err(StreamCapacityError::InvalidByteCapacity {
-                required,
-                observed: byte_capacity,
-            });
+        self.len = 0;
+        self.charged_bytes = 0;
+        self.ready = false;
+        if let Some(waker) = self.producer_waiter.take() {
+            waker.wake();
         }
-        Ok(Self {
-            authority,
-            item_capacity,
-            byte_capacity,
-            edges: [None; MAX_LEASED_EDGES],
-            len: 0,
-            charged_bytes: 0,
-            ready: false,
-            terminal: None,
-            terminal_emitted: false,
-            waiter: None,
-        })
     }
 
-    /// Transfers one complete settled provider batch into the fixed lease slot.
+    fn selected_contains(&self, partition: PartitionId) -> bool {
+        self.selected[..self.selected_len].contains(&Some(partition))
+    }
+}
+
+/// Concurrent completion owner for one bounded graph edge stream.
+#[derive(Debug)]
+pub struct EdgeBatchProducer {
+    shared: Arc<Mutex<CompletionState>>,
+}
+
+impl EdgeBatchProducer {
+    /// Polls for one free completion credit; consuming a batch wakes this registration.
+    pub fn poll_ready(&self, context: &mut Context<'_>) -> Poll<Result<(), StreamCapacityError>> {
+        let mut state = lock_state(&self.shared);
+        if state.closed {
+            return Poll::Ready(Err(StreamCapacityError::StreamClosed));
+        }
+        if !state.ready {
+            return Poll::Ready(Ok(()));
+        }
+        if state
+            .producer_waiter
+            .as_ref()
+            .is_none_or(|current| !current.will_wake(context.waker()))
+        {
+            state.producer_waiter = Some(context.waker().clone());
+        }
+        Poll::Pending
+    }
+
+    /// Transfers one complete provider batch into the fixed lease slot.
     pub fn settle(
-        &mut self,
+        &self,
         partition: PartitionId,
         edges: &[GraphEdge],
     ) -> Result<(), StreamCapacityError> {
-        if self.ready || self.len != 0 {
+        let mut state = lock_state(&self.shared);
+        if state.closed {
+            return Err(StreamCapacityError::StreamClosed);
+        }
+        if state.ready || state.len != 0 {
             return Err(StreamCapacityError::BatchAlreadySettled);
         }
-        if edges.len() > self.item_capacity {
+        if !state.selected_contains(partition) {
+            return Err(StreamCapacityError::UnselectedPartition {
+                observed: partition,
+            });
+        }
+        if edges.len() > state.item_capacity {
             return Err(StreamCapacityError::ItemCapacity {
-                maximum: self.item_capacity,
+                maximum: state.item_capacity,
                 observed: edges.len(),
             });
         }
-        let observed_bytes = edges.len().saturating_mul(size_of::<GraphEdge>());
-        if observed_bytes > self.byte_capacity {
+        let observed_bytes = size_of_val(edges);
+        if observed_bytes > state.byte_capacity {
             return Err(StreamCapacityError::ByteCapacity {
-                maximum: self.byte_capacity,
+                maximum: state.byte_capacity,
                 observed: observed_bytes,
             });
         }
         for (edge_index, edge) in edges.iter().copied().enumerate() {
-            if edge.authority() != self.authority {
+            if edge.authority() != state.authority {
                 return Err(StreamCapacityError::WrongAuthority {
                     edge_index,
-                    expected: self.authority,
+                    expected: state.authority,
                     observed: edge.authority(),
                 });
             }
@@ -284,114 +421,282 @@ impl EdgeBatchStream {
                 });
             }
         }
-        for (slot, edge) in self.edges.iter_mut().zip(edges.iter().copied()) {
+        for (slot, edge) in state.edges.iter_mut().zip(edges.iter().copied()) {
             *slot = Some(edge);
         }
-        self.len = edges.len();
-        self.charged_bytes = observed_bytes;
-        self.ready = true;
-        if let Some(waker) = self.waiter.take() {
+        state.len = edges.len();
+        state.charged_bytes = observed_bytes;
+        state.ready = true;
+        if let Some(waker) = state.consumer_waiter.take() {
             waker.wake();
         }
         Ok(())
     }
 
     /// Queues complete termination after every settled batch is consumed.
-    pub fn finish(&mut self) {
-        self.terminal = Some(GraphTerminal::Complete {
-            authority: self.authority,
+    pub fn finish(&self) -> Result<(), StreamCapacityError> {
+        let mut state = lock_state(&self.shared);
+        if state.closed {
+            return Err(StreamCapacityError::StreamClosed);
+        }
+        state.closed = true;
+        state.terminal = Some(GraphTerminal::Complete {
+            authority: state.authority,
         });
-        if let Some(waker) = self.waiter.take() {
+        if let Some(waker) = state.consumer_waiter.take() {
             waker.wake();
         }
+        Ok(())
     }
 
-    /// Polls the bounded completion slot with register-before-pending and recheck.
+    /// Queues a terminal retaining every exactly absent selected partition.
+    pub fn finish_partial(&self, missing: &[PartitionId]) -> Result<(), StreamCapacityError> {
+        let mut state = lock_state(&self.shared);
+        if state.closed {
+            return Err(StreamCapacityError::StreamClosed);
+        }
+        if missing.len() > state.selected_len {
+            return Err(StreamCapacityError::MissingPartitionCapacity {
+                maximum: state.selected_len,
+                observed: missing.len(),
+            });
+        }
+        for (index, partition) in missing.iter().copied().enumerate() {
+            if !state.selected_contains(partition) {
+                return Err(StreamCapacityError::UnselectedPartition {
+                    observed: partition,
+                });
+            }
+            if let Some(first_index) = missing[..index]
+                .iter()
+                .position(|first| *first == partition)
+            {
+                return Err(StreamCapacityError::DuplicateMissingPartition {
+                    first_index,
+                    index,
+                    partition,
+                });
+            }
+        }
+        let mut exact_missing = [None; MAX_PARTITIONS];
+        for (slot, partition) in exact_missing.iter_mut().zip(missing.iter().copied()) {
+            *slot = Some(partition);
+        }
+        state.closed = true;
+        state.terminal = Some(GraphTerminal::Partial {
+            authority: state.authority,
+            missing: exact_missing,
+            missing_len: missing.len(),
+        });
+        if let Some(waker) = state.consumer_waiter.take() {
+            waker.wake();
+        }
+        Ok(())
+    }
+}
+
+/// Bounded stream consumer with a unique cancellation wake registration.
+#[derive(Debug)]
+pub struct EdgeBatchStream<'cancellation> {
+    shared: Arc<Mutex<CompletionState>>,
+    cancellation: &'cancellation Cancellation,
+    cancellation_slot: usize,
+}
+
+impl<'cancellation> EdgeBatchStream<'cancellation> {
+    /// Admits selected partitions and returns separate producer and consumer ownership.
+    pub fn channel(
+        authority: GraphAuthority,
+        selected: &[PartitionId],
+        item_capacity: usize,
+        byte_capacity: usize,
+        cancellation: &'cancellation Cancellation,
+        trace: &mut TraceProbe<'_>,
+    ) -> Result<(EdgeBatchProducer, Self), StreamCapacityError> {
+        if item_capacity > MAX_LEASED_EDGES {
+            return Err(StreamCapacityError::InvalidItemCapacity {
+                maximum: MAX_LEASED_EDGES,
+                observed: item_capacity,
+            });
+        }
+        let required = item_capacity * size_of::<GraphEdge>();
+        if byte_capacity < required {
+            return Err(StreamCapacityError::InvalidByteCapacity {
+                required,
+                observed: byte_capacity,
+            });
+        }
+        if selected.len() > MAX_PARTITIONS {
+            return Err(StreamCapacityError::PartitionCapacity {
+                maximum: MAX_PARTITIONS,
+                observed: selected.len(),
+            });
+        }
+        for (index, partition) in selected.iter().copied().enumerate() {
+            if let Some(first_index) = selected[..index]
+                .iter()
+                .position(|first| *first == partition)
+            {
+                return Err(StreamCapacityError::DuplicatePartition {
+                    first_index,
+                    index,
+                    partition,
+                });
+            }
+        }
+        let cancellation_slot = cancellation.reserve()?;
+        let mut selected_storage = [None; MAX_PARTITIONS];
+        for (slot, partition) in selected_storage.iter_mut().zip(selected.iter().copied()) {
+            *slot = Some(partition);
+        }
+        let shared = Arc::new(Mutex::new(CompletionState {
+            authority,
+            selected: selected_storage,
+            selected_len: selected.len(),
+            item_capacity,
+            byte_capacity,
+            edges: [None; MAX_LEASED_EDGES],
+            len: 0,
+            charged_bytes: 0,
+            ready: false,
+            closed: false,
+            terminal: None,
+            terminal_emitted: false,
+            consumer_waiter: None,
+            producer_waiter: None,
+        }));
+        trace.record_with(|| GraphTraceEvent::Admitted {
+            authority,
+            partitions: selected.len() as u8,
+        });
+        Ok((
+            EdgeBatchProducer {
+                shared: Arc::clone(&shared),
+            },
+            Self {
+                shared,
+                cancellation,
+                cancellation_slot,
+            },
+        ))
+    }
+
+    /// Polls with register-before-pending and rechecks both cancellation and completion.
     pub fn poll_batch<'stream>(
         self: Pin<&'stream mut Self>,
         context: &mut Context<'_>,
-        cancellation: &Cancellation,
+        trace: &mut TraceProbe<'_>,
     ) -> Poll<GraphStreamEvent<'stream>> {
         let stream = self.get_mut();
-        if stream.terminal_emitted {
+        let mut state = lock_state(&stream.shared);
+        if state.terminal_emitted {
             return Poll::Ready(GraphStreamEvent::Fused);
         }
-        if cancellation.is_cancelled() {
-            stream.release_batch();
-            stream.terminal = None;
-            stream.terminal_emitted = true;
-            cancellation.clear_registration();
-            return Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
-                authority: stream.authority,
-            }));
-        }
-        if stream.ready {
-            cancellation.clear_registration();
-            return Poll::Ready(GraphStreamEvent::Batch(LeasedGraphBatch { stream }));
-        }
-        if let Some(terminal) = stream.terminal.take() {
-            stream.terminal_emitted = true;
-            cancellation.clear_registration();
+        if stream.cancellation.is_cancelled() {
+            state.release_batch();
+            state.closed = true;
+            state.terminal = None;
+            state.terminal_emitted = true;
+            stream.cancellation.clear(stream.cancellation_slot);
+            let terminal = GraphTerminal::Cancelled {
+                authority: state.authority,
+            };
+            trace.record_with(|| GraphTraceEvent::Terminal {
+                authority: state.authority,
+                cancelled: true,
+            });
             return Poll::Ready(GraphStreamEvent::Terminal(terminal));
         }
-        stream.waiter = Some(context.waker().clone());
-        cancellation.register(context.waker());
-        if cancellation.is_cancelled() {
-            stream.waiter = None;
-            stream.release_batch();
-            stream.terminal_emitted = true;
-            cancellation.clear_registration();
-            return Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
-                authority: stream.authority,
-            }));
+        if state.ready {
+            stream.cancellation.clear(stream.cancellation_slot);
+            trace.record_with(|| GraphTraceEvent::BatchReady {
+                authority: state.authority,
+                edges: state.len as u8,
+            });
+            return Poll::Ready(GraphStreamEvent::Batch(LeasedGraphBatch { state }));
+        }
+        if let Some(terminal) = state.terminal.take() {
+            state.terminal_emitted = true;
+            stream.cancellation.clear(stream.cancellation_slot);
+            trace.record_with(|| GraphTraceEvent::Terminal {
+                authority: state.authority,
+                cancelled: false,
+            });
+            return Poll::Ready(GraphStreamEvent::Terminal(terminal));
+        }
+        if state
+            .consumer_waiter
+            .as_ref()
+            .is_none_or(|current| !current.will_wake(context.waker()))
+        {
+            state.consumer_waiter = Some(context.waker().clone());
+        }
+        stream
+            .cancellation
+            .register(stream.cancellation_slot, context.waker());
+        if stream.cancellation.is_cancelled() {
+            state.consumer_waiter = None;
+            state.release_batch();
+            state.closed = true;
+            state.terminal_emitted = true;
+            stream.cancellation.clear(stream.cancellation_slot);
+            let terminal = GraphTerminal::Cancelled {
+                authority: state.authority,
+            };
+            trace.record_with(|| GraphTraceEvent::Terminal {
+                authority: state.authority,
+                cancelled: true,
+            });
+            return Poll::Ready(GraphStreamEvent::Terminal(terminal));
         }
         Poll::Pending
     }
 
     /// Reports currently charged item slots.
     #[must_use]
-    pub const fn charged_items(&self) -> usize {
-        self.len
+    pub fn charged_items(&self) -> usize {
+        lock_state(&self.shared).len
     }
 
     /// Reports currently charged bytes.
     #[must_use]
-    pub const fn charged_bytes(&self) -> usize {
-        self.charged_bytes
+    pub fn charged_bytes(&self) -> usize {
+        lock_state(&self.shared).charged_bytes
     }
+}
 
-    fn release_batch(&mut self) {
-        for slot in self.edges.iter_mut().take(self.len) {
-            *slot = None;
-        }
-        self.len = 0;
-        self.charged_bytes = 0;
-        self.ready = false;
+impl Drop for EdgeBatchStream<'_> {
+    fn drop(&mut self) {
+        self.cancellation.release(self.cancellation_slot);
+        let mut state = lock_state(&self.shared);
+        state.closed = true;
+        state.release_batch();
+        state.consumer_waiter = None;
     }
 }
 
 /// Exclusive lending authority over one complete settled provider batch.
 #[derive(Debug)]
 pub struct LeasedGraphBatch<'stream> {
-    stream: &'stream mut EdgeBatchStream,
+    state: MutexGuard<'stream, CompletionState>,
 }
 
 impl LeasedGraphBatch<'_> {
     /// Returns the complete retained batch size.
     #[must_use]
-    pub const fn len(&self) -> usize {
-        self.stream.len
+    pub fn len(&self) -> usize {
+        self.state.len
     }
 
     /// Returns true only for an empty provider batch.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.stream.len == 0
+    pub fn is_empty(&self) -> bool {
+        self.state.len == 0
     }
 
     /// Copies only after proving the destination can retain every leased edge.
     pub fn copy_into(&mut self, output: &mut [GraphEdge]) -> Result<usize, InsufficientOutput> {
-        let required = self.stream.len;
+        let required = self.state.len;
         if output.len() < required {
             return Err(InsufficientOutput {
                 required,
@@ -400,15 +705,22 @@ impl LeasedGraphBatch<'_> {
         }
         for (destination, source) in output
             .iter_mut()
-            .zip(self.stream.edges.iter())
+            .zip(self.state.edges.iter())
             .take(required)
         {
             if let Some(edge) = source {
                 *destination = *edge;
             }
         }
-        self.stream.release_batch();
+        self.state.release_batch();
         Ok(required)
+    }
+}
+
+fn lock_state(shared: &Mutex<CompletionState>) -> MutexGuard<'_, CompletionState> {
+    match shared.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -430,7 +742,7 @@ mod loom_tests {
     use nudox_ir_vocab::EntityId;
 
     use super::{Cancellation, EdgeBatchStream, GraphStreamEvent, GraphTerminal};
-    use crate::{GraphAuthority, GraphEdge, PartitionId, ProjectionId};
+    use crate::{GraphAuthority, GraphEdge, PartitionId, ProjectionId, TraceProbe};
 
     struct WakeCount(AtomicUsize);
 
@@ -452,76 +764,121 @@ mod loom_tests {
     }
 
     #[test]
-    fn pending_cancel_wakes_and_releases_the_exact_credit_owner() {
+    fn concurrent_completion_wakes_consumer_and_releases_exact_credit() {
         loom::model(|| {
             let authority = authority();
             let cancellation = Arc::new(Cancellation::new());
-            let stream = EdgeBatchStream::new(authority, 1, size_of::<GraphEdge>());
-            assert!(stream.is_ok());
-            let Ok(mut stream) = stream else {
-                return;
-            };
-            let partition = PartitionId::new(0);
-            let edge = [GraphEdge::new(
+            let mut trace = TraceProbe::disabled();
+            let channel = EdgeBatchStream::channel(
                 authority,
-                partition,
-                EntityId::new(1),
-                EntityId::new(2),
-            )];
-            assert_eq!(stream.settle(partition, &edge), Ok(()));
-            let wake_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
-            let waker = Waker::from(StandardArc::clone(&wake_count));
-            let mut context = Context::from_waker(&waker);
-            let cancellation_for_thread = Arc::clone(&cancellation);
-            let cancel = thread::spawn(move || cancellation_for_thread.cancel());
-
-            let first_cancelled = matches!(
-                Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
-                Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
-                    authority: observed,
-                })) if observed == authority
+                &[PartitionId::new(0)],
+                1,
+                size_of::<GraphEdge>(),
+                &cancellation,
+                &mut trace,
             );
-            assert!(cancel.join().is_ok());
-            if first_cancelled {
-                assert!(matches!(
-                    Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
-                    Poll::Ready(GraphStreamEvent::Fused)
-                ));
-            } else {
-                assert!(matches!(
-                    Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
-                    Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
-                        authority: observed,
-                    })) if observed == authority
-                ));
-            }
-            assert_eq!(stream.charged_items(), 0);
-            assert_eq!(stream.charged_bytes(), 0);
-            assert!(wake_count.0.load(Ordering::SeqCst) <= 1);
-        });
-    }
-
-    #[test]
-    fn pending_registration_is_woken_exactly_once() {
-        loom::model(|| {
-            let authority = authority();
-            let cancellation = Arc::new(Cancellation::new());
-            let stream = EdgeBatchStream::new(authority, 0, 0);
-            assert!(stream.is_ok());
-            let Ok(mut stream) = stream else {
+            assert!(channel.is_ok());
+            let Ok((producer, mut stream)) = channel else {
                 return;
             };
             let wake_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
             let waker = Waker::from(StandardArc::clone(&wake_count));
             let mut context = Context::from_waker(&waker);
             assert!(matches!(
-                Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+                Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
+                Poll::Pending
+            ));
+            let producer = Arc::new(producer);
+            let completion = Arc::clone(&producer);
+            let settle = thread::spawn(move || {
+                completion.settle(
+                    PartitionId::new(0),
+                    &[GraphEdge::new(
+                        authority,
+                        PartitionId::new(0),
+                        EntityId::new(1),
+                        EntityId::new(2),
+                    )],
+                )
+            });
+            assert!(settle.join().is_ok());
+            {
+                let event = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
+                let Poll::Ready(GraphStreamEvent::Batch(mut batch)) = event else {
+                    return;
+                };
+                let mut output = [GraphEdge::new(
+                    authority,
+                    PartitionId::new(0),
+                    EntityId::new(0),
+                    EntityId::new(0),
+                )];
+                assert_eq!(batch.copy_into(&mut output), Ok(1));
+            }
+            assert_eq!(stream.charged_items(), 0);
+            assert!(matches!(
+                producer.poll_ready(&mut context),
+                Poll::Ready(Ok(()))
+            ));
+            assert!(wake_count.0.load(Ordering::SeqCst) <= 1);
+        });
+    }
+
+    #[test]
+    fn shared_cancellation_wakes_every_stream_registration() {
+        loom::model(|| {
+            let authority = authority();
+            let cancellation = Arc::new(Cancellation::new());
+            let mut trace = TraceProbe::disabled();
+            let first = EdgeBatchStream::channel(
+                authority,
+                &[PartitionId::new(0)],
+                0,
+                0,
+                &cancellation,
+                &mut trace,
+            );
+            let second = EdgeBatchStream::channel(
+                authority,
+                &[PartitionId::new(1)],
+                0,
+                0,
+                &cancellation,
+                &mut trace,
+            );
+            assert!(first.is_ok() && second.is_ok());
+            let (Ok((_first_producer, mut first)), Ok((_second_producer, mut second))) =
+                (first, second)
+            else {
+                return;
+            };
+            let first_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
+            let second_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
+            let first_waker = Waker::from(StandardArc::clone(&first_count));
+            let second_waker = Waker::from(StandardArc::clone(&second_count));
+            let mut first_context = Context::from_waker(&first_waker);
+            let mut second_context = Context::from_waker(&second_waker);
+            assert!(matches!(
+                Pin::new(&mut first).poll_batch(&mut first_context, &mut trace),
+                Poll::Pending
+            ));
+            assert!(matches!(
+                Pin::new(&mut second).poll_batch(&mut second_context, &mut trace),
                 Poll::Pending
             ));
             let cancellation_for_thread = Arc::clone(&cancellation);
             let cancel = thread::spawn(move || cancellation_for_thread.cancel());
             assert!(cancel.join().is_ok());
-            assert_eq!(wake_count.0.load(Ordering::SeqCst), 1);
+            assert_eq!(first_count.0.load(Ordering::SeqCst), 1);
+            assert_eq!(second_count.0.load(Ordering::SeqCst), 1);
+            assert!(matches!(
+                Pin::new(&mut first).poll_batch(&mut first_context, &mut trace),
+                Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled { .. }))
+            ));
+            assert!(matches!(
+                Pin::new(&mut second).poll_batch(&mut second_context, &mut trace),
+                Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled { .. }))
+            ));
         });
     }
 }

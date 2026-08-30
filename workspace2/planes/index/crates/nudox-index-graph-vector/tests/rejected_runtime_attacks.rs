@@ -38,9 +38,17 @@ impl Wake for WakeCount {
 fn cancellation_owns_and_reaches_pending_wake_registration() {
     let authority = graph_authority(1);
     let cancellation = Cancellation::new();
-    let stream = EdgeBatchStream::new(authority, 2, size_of::<GraphEdge>() * 2);
-    assert!(stream.is_ok());
-    let Ok(mut stream) = stream else {
+    let mut trace = TraceProbe::disabled();
+    let channel = EdgeBatchStream::channel(
+        authority,
+        &[PartitionId::new(0)],
+        2,
+        size_of::<GraphEdge>() * 2,
+        &cancellation,
+        &mut trace,
+    );
+    assert!(channel.is_ok());
+    let Ok((_producer, mut stream)) = channel else {
         return;
     };
     let wake_count = Arc::new(WakeCount(AtomicUsize::new(0)));
@@ -48,13 +56,13 @@ fn cancellation_owns_and_reaches_pending_wake_registration() {
     let mut context = Context::from_waker(&waker);
 
     assert!(matches!(
-        Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Pending
     ));
     cancellation.cancel();
     assert_eq!(wake_count.0.load(Ordering::SeqCst), 1);
     assert!(matches!(
-        Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
             authority: observed,
         })) if observed == authority
@@ -66,9 +74,17 @@ fn cancellation_owns_and_reaches_pending_wake_registration() {
 fn insufficient_output_retains_the_entire_leased_batch_for_retry() {
     let authority = graph_authority(2);
     let cancellation = Cancellation::new();
-    let stream = EdgeBatchStream::new(authority, 2, size_of::<GraphEdge>() * 2);
-    assert!(stream.is_ok());
-    let Ok(mut stream) = stream else {
+    let mut trace = TraceProbe::disabled();
+    let channel = EdgeBatchStream::channel(
+        authority,
+        &[PartitionId::new(0)],
+        2,
+        size_of::<GraphEdge>() * 2,
+        &cancellation,
+        &mut trace,
+    );
+    assert!(channel.is_ok());
+    let Ok((producer, mut stream)) = channel else {
         return;
     };
     let edges = [
@@ -85,15 +101,15 @@ fn insufficient_output_retains_the_entire_leased_batch_for_retry() {
             EntityId::new(3),
         ),
     ];
-    assert_eq!(stream.settle(PartitionId::new(0), &edges), Ok(()));
+    assert_eq!(producer.settle(PartitionId::new(0), &edges), Ok(()));
     let waker = Waker::noop();
     let mut context = Context::from_waker(waker);
     assert!(matches!(
-        Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Ready(GraphStreamEvent::Batch(_))
     ));
     let Poll::Ready(GraphStreamEvent::Batch(mut batch)) =
-        Pin::new(&mut stream).poll_batch(&mut context, &cancellation)
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace)
     else {
         return;
     };
@@ -195,17 +211,68 @@ fn disabled_trace_has_no_queue_and_enabled_trace_is_drainable() {
 
     let mut recorder = TraceRecorder::new();
     let mut enabled = TraceProbe::enabled(&mut recorder);
-    enabled.record_with(|| GraphTraceEvent::Admitted {
+    let cancellation = Cancellation::new();
+    let present = PartitionId::new(0);
+    let missing = PartitionId::new(1);
+    let channel = EdgeBatchStream::channel(
         authority,
-        partitions: 1,
-    });
-    let mut output = [None; 2];
-    assert_eq!(enabled.drain_into(&mut output), 1);
+        &[present, missing],
+        1,
+        size_of::<GraphEdge>(),
+        &cancellation,
+        &mut enabled,
+    );
+    assert!(channel.is_ok());
+    let Ok((producer, mut stream)) = channel else {
+        return;
+    };
+    let edges = [GraphEdge::new(
+        authority,
+        present,
+        EntityId::new(1),
+        EntityId::new(2),
+    )];
+    assert_eq!(producer.settle(present, &edges), Ok(()));
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    {
+        let event = Pin::new(&mut stream).poll_batch(&mut context, &mut enabled);
+        let Poll::Ready(GraphStreamEvent::Batch(mut batch)) = event else {
+            return;
+        };
+        let mut copied = [edges[0]];
+        assert_eq!(batch.copy_into(&mut copied), Ok(1));
+        assert_eq!(copied, edges);
+    }
+    assert_eq!(producer.finish_partial(&[missing]), Ok(()));
+    let terminal = Pin::new(&mut stream).poll_batch(&mut context, &mut enabled);
+    let Poll::Ready(GraphStreamEvent::Terminal(terminal)) = terminal else {
+        return;
+    };
+    assert_eq!(terminal.authority(), authority);
+    assert_eq!(terminal.missing(), &[Some(missing)]);
+
+    let mut output = [None; 4];
+    assert_eq!(enabled.drain_into(&mut output), 3);
     assert_eq!(
         output[0],
         Some(GraphTraceEvent::Admitted {
             authority,
-            partitions: 1,
+            partitions: 2,
+        })
+    );
+    assert_eq!(
+        output[1],
+        Some(GraphTraceEvent::BatchReady {
+            authority,
+            edges: 1,
+        })
+    );
+    assert_eq!(
+        output[2],
+        Some(GraphTraceEvent::Terminal {
+            authority,
+            cancelled: false,
         })
     );
 }
