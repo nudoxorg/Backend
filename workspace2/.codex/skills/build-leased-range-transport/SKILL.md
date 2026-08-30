@@ -18,8 +18,9 @@ proof boundary.
 
 ## Invariant map
 
-Draw this before edit authority and label every owner, borrow, byte/item credit, wake edge, sequence,
-and terminal transition:
+Draft this during the first bounded red-test/implementation cycle and finish it before promotion.
+It does not authorize edits. Label every owner, borrow, byte/item credit, wake edge, sequence, and
+terminal transition:
 
 ```text
 demand + physical credits
@@ -51,7 +52,11 @@ cache tier, retry, or physical range-placement facts.
   and fused must remain distinguishable even in the runtime-independent semantic control.
 - Pending registers its waker before returning and rechecks state after registration. Cancellation
   and readiness have a named linearization order; stale wakes and repeated polls cannot duplicate a
-  lease or terminal.
+  lease or terminal. Any cancellation source that can resolve pending work owns or reaches the wake
+  registration. A flag with no wake path is not cancellation authority.
+- Insufficient caller output is decided before consuming a batch. It returns an exact typed capacity
+  failure with destination and every lease unchanged, or returns a typed remainder that still owns
+  the unconsumed leases. Truncate-and-release is data loss.
 - Pure prefix parsing, full validation, hashing, and store admission are synchronous over borrows from
   the same owner. The adapter never invents a second decoder or copies bytes into a protocol DTO.
 - Core async types are concrete associated futures/streams or finite static composition. No public
@@ -83,8 +88,11 @@ Terminal(Partial { delivered, missing })
 DON'T: allocate one task/buffer per requested range and count only the request queue
 DO: reserve item + bytes -> start at most reserved work -> charge completion/reorder/consumer owners
 
-DON'T: cancel flag + best-effort drop
-DO: named cancel/readiness race -> exact winning owner -> deterministic credit conservation proof
+DON'T: cancel flag with no registered wake + best-effort drop
+DO: cancel authority reaches the waiter -> exact winning owner -> deterministic credit conservation proof
+
+DON'T: copy until output fills, release the remaining leases, and return a shorter count
+DO: preflight exact output capacity or return a remainder that still owns every unconsumed lease
 
 DON'T: HTTP error -> empty stream or zero hits
 DO: exact Failed/Degraded/Partial terminal carrying requested range and source
@@ -130,7 +138,8 @@ falsifier:
 lease uniqueness | compile-fail duplicate/clone/borrow escape + drop counter | exact owner once
 validation authority | raw borrow versus proof-bearing view compile/runtime cases | no dishonest validated API
 capacity conservation | model snapshot after every scheduled action | items and bytes both exact
-wake correctness | deterministic `Wake`/`Waker` schedule | register-before-pending, recheck, no stale duplicate
+wake correctness | deterministic `Wake`/`Waker` schedule including a source that never self-wakes | register-before-pending, cancellation wakes, recheck, no stale duplicate
+short output | settled multi-lease batch into limit-1 destination, then exact retry | destination and leases unchanged before retry
 terminal law | complete/partial/degraded/cancel/failed plus repeated poll | once then fused
 reorder law | reverse/random completions at 0/1/limit/limit+1 | exact bounded work and storage
 allocation | isolated nonempty repeated poll/completion | zero per poll after setup

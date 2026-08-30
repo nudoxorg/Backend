@@ -9,8 +9,10 @@ Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then
 `../../../INDEX_GREENFIELD_PLAN.md`. A manager also reads `../manage-rust-swarm/SKILL.md`,
 `../write-evidence-rubric/SKILL.md`, and `../review-rust-gem/SKILL.md`. Read
 `../../../PACKED_COLLECTIONS.md` and `../../../TESTING.md` for any format/view task.
-Before the first production edit in a new phase, the manager applies
-`../calibrate-rust-agent-contract/SKILL.md` to the exact phase card.
+Within the first bounded work cycle, the manager applies
+`../calibrate-rust-agent-contract/SKILL.md` to the exact phase card while a red falsifier or reversible
+implementation is already moving. Calibration may refine promotion criteria; it never authorizes the
+start of work or delays the first executable receipt.
 
 The plan is greenfield. Legacy `workspace/index` can supply counterexamples and candidate product
 ideas only. Never preserve an old trait, table, DTO, query behavior, backend, or test by default.
@@ -38,9 +40,10 @@ and derives numeric resource/text bounds before a worker sees it. Discoverable o
 repaired autonomously under `manage-rust-swarm`; only a materially different index semantic returns
 to root.
 
-## Required design packet
+## Compact working card
 
-Return before code:
+Record these facts as the first slice makes them concrete and finish them before promotion. Do not
+pause a red test or production checkpoint to complete a speculative packet:
 
 ```text
 query consumer and exact terminal
@@ -59,7 +62,12 @@ explicit legacy ideas rejected
 - Truth is canonical objects/generations plus an immutable publication log. Indexes are disposable.
 - Every query pins one snapshot. Routing, node, cache, and provider identity never enter semantics.
 - Exact, lexical, relation, usage, and vector are distinct typed families. Share only proven substrate.
+- Every escaped request, result, missing-partition fact, and terminal retains the snapshot and family
+  authority needed to interpret it without caller-maintained coherence. Graph and vector terminals
+  are not substitutable; vector authority also retains model, dimension, and metric.
 - Manifest metadata prunes before segment I/O. Plans reserve fan-out/range/TopK credits up front.
+- Enforce the smallest selected-row/fan-out/work bound before duplicate detection, sorting, hashing,
+  or any other attacker-amplified work. A bounded output does not excuse unbounded admission work.
 - Views validate once and borrow original bytes. Lookup does not deserialize documents or build IDs in
   comparisons.
 - Segment family types exist only for current family consumers. Do not ship relation/usage/vector
@@ -70,6 +78,9 @@ explicit legacy ideas rejected
 - Rendezvous placement is cache affinity only. A stale route can waste one attempt, never change truth.
 - Local and remote use identical snapshot/segment bytes and pure query code with different I/O owners.
 - SIMD is opt-in after a scalar work profile identifies posting, bitset, or vector kernels.
+- A public remote adapter must execute and independently verify at least one real remote operation.
+  A client handle, local fallback, caller-supplied preflight metadata, or typed `Unavailable` stub is
+  not a remote capability and must not pull its SDK into the shipping adapter graph.
 
 ## Do / don't
 
@@ -98,6 +109,7 @@ Stop and return exact file/type evidence before:
 - adding `dyn`, boxed streams, a generic `Value`, dynamic schema reflection, or backend enums to core;
 - retaining an allocation without owner lifetime/bound and borrowed/caller-scratch alternatives;
 - adding a query variant that weakens snapshot/family/terminal invariants;
+- exposing a remote adapter before a real pinned-service write/readback/query falsifier passes;
 - editing portable foundation types beyond a named registry addition;
 - inventing compatibility with legacy index behavior;
 - claiming horizontal or lock-free scale without failure/model evidence.
