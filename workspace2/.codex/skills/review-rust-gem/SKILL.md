@@ -19,6 +19,12 @@ suspected answer. It never implements a repair, changes the contract, or owns ac
 strongest simple design that actually proves the contract. Green tests and clever types are inputs,
 not approval.
 
+The dispatch-only sidecar parent is `gpt-5.6-sol`/`low` and spawns this reviewer with
+`fork_turns = "none"`. A full-history fork inherits the parent role; a Luna parent may be accepted for
+its own turn while being absent from the child router. Custody exists only when the runtime returns a
+nonempty reviewer task ID and resolves this registered role as `gpt-5.6-terra`/`xhigh`. An empty
+receiver list or parent narration that a reviewer is running is a blocker, not partial evidence.
+
 ## Required inputs
 
 Require: capability index, approved contract card/digest, `TESTING.md` mapping, snapshot and review

@@ -164,8 +164,12 @@ Request the registered `nudox_terra_reviewer` role, expecting `gpt-5.6-terra`/`x
 Create a fresh `git archive`/export of the exact candidate without `.git` history or the manager
 journal. Add only the hashed rationale-free review packet. The writable Terra manager must not spawn
 the reviewer as its direct child: live parent permissions can override the custom role's sandbox
-default. Instead invoke a distinct Codex parent process rooted at a disposable build directory. Copy
-only the project agent configuration/skills needed for role discovery into that directory; pass the
+default. Instead invoke a distinct Codex parent process rooted at a disposable build directory. The
+dispatch-only parent uses `gpt-5.6-sol` at `low`: it performs no review or implementation, and its
+collaboration router must expose the Terra reviewer model. Do not use a Luna parent for this
+cross-role spawn; a runtime may accept Luna for the parent turn while omitting it from the child
+router. Copy only the project agent configuration/skills needed for role discovery into that
+directory; pass the
 separate source snapshot as a readable absolute path and never as `-C` or `--add-dir`.
 
 Create `<disposable-build-root>/tmp` and `<disposable-build-root>/target`, then use this verified CLI
@@ -175,7 +179,7 @@ the sandbox:
 ```text
 TMPDIR=<disposable-build-root>/tmp \
 CARGO_TARGET_DIR=<disposable-build-root>/target \
-codex --ask-for-approval never exec --model gpt-5.6-luna \
+codex --ask-for-approval never exec --model gpt-5.6-sol \
   -c model_reasoning_effort=low \
   -c 'sandbox_workspace_write.writable_roots=[]' \
   -c sandbox_workspace_write.exclude_tmpdir_env_var=true \
@@ -184,8 +188,11 @@ codex --ask-for-approval never exec --model gpt-5.6-luna \
   -C <disposable-build-root> <sidecar-prompt>
 ```
 
-Its only prompt is to spawn the registered
-`nudox_terra_reviewer`, wait for it, and return the raw receipt. The sidecar parent and reviewer write
+Its only prompt is to spawn the registered `nudox_terra_reviewer` with `fork_turns = "none"`, wait
+for that exact child, and return the raw receipt. Full-history forks inherit the parent role and
+cannot prove a role override. The parent must retain a nonempty runtime child task ID before saying
+the reviewer exists; narration, a task label, or a `wait` receipt with no receiver IDs is a custody
+failure. The sidecar parent and reviewer write
 compiler output and temporary files only under that build root; commands name manifests inside the
 separate snapshot and inherit the explicit `TMPDIR` and `CARGO_TARGET_DIR` beneath the build root.
 
@@ -196,6 +203,9 @@ report effective `workspace-write` restricted to the disposable build root, `$TM
 remains an implicit writable root, the snapshot is writable or passed as a writable root, the
 reviewer is a direct child of the manager, source hashes differ, or the child role cannot be verified. Return
 `EVIDENCE_BLOCKED` after the bounded alternate attempt; never replace custody with an index assertion.
+The alternate changes one operational variable only and retains both raw failure streams. It cannot
+silently change the reviewer model, make the source writable, or reinterpret a failed spawn as a
+review.
 
 Give the reviewer the frozen contract, candidate, consumers, controls, and evidence—never the
 builder's rationale, your suspected defect, or intended correction. It applies
