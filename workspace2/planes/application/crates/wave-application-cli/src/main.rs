@@ -7,7 +7,8 @@ use std::{
 
 use wave_application_core::{ApplicationService, Terminal};
 use wave_application_protocol::{
-    collect_cli_arguments, decode_cli, encode_cli_adapter_error, encode_cli_reply,
+    CLI_COMMAND_SEPARATOR, collect_cli_arguments, decode_cli, encode_cli_adapter_error,
+    encode_cli_reply,
 };
 
 fn main() -> ExitCode {
@@ -15,20 +16,23 @@ fn main() -> ExitCode {
         Ok(arguments) => arguments,
         Err(error) => return transport_failure(&error),
     };
-    match decode_cli(&arguments) {
-        Ok(input) => {
-            let mut service = ApplicationService::new();
-            let reply = service.execute(&input);
-            if write_json(encode_cli_reply(reply)).is_err() {
-                return ExitCode::from(1);
-            }
-            if reply.terminal == Terminal::Failed {
-                ExitCode::from(2)
-            } else {
-                ExitCode::SUCCESS
-            }
+    let mut service = ApplicationService::new();
+    let mut business_failure = false;
+    for command in arguments.split(|argument| argument == CLI_COMMAND_SEPARATOR) {
+        let input = match decode_cli(command) {
+            Ok(input) => input,
+            Err(error) => return transport_failure(&error),
+        };
+        let reply = service.execute(&input);
+        if write_json(encode_cli_reply(reply)).is_err() {
+            return ExitCode::from(1);
         }
-        Err(error) => transport_failure(&error),
+        business_failure |= reply.terminal == Terminal::Failed;
+    }
+    if business_failure {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
