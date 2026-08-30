@@ -8,15 +8,15 @@
 //! are deliberately synchronous: callers that need an async stream can place this named blocking
 //! edge behind their bounded runtime adapter.
 
-use std::{
-    num::{NonZeroU8, TryFromIntError},
-    time::Duration,
-};
+use std::{num::NonZeroU8, time::Duration};
 
-use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority, VectorFact};
-use nudox_index_vocab::IndexSnapshotId;
-use nudox_ir_vocab::EntityId;
-use serde_json::{Map, Value};
+use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
+use serde::Serialize;
+
+mod contract;
+mod wire;
+
+pub use contract::*;
 
 const DEFAULT_MAX_ATTEMPTS: NonZeroU8 = match NonZeroU8::new(3) {
     Some(value) => value,
@@ -47,740 +47,12 @@ pub const PARTITION_PAYLOAD_KEY: &str = "nudox_partition";
 /// Payload key carrying the semantic entity coordinate.
 pub const ENTITY_PAYLOAD_KEY: &str = "nudox_entity";
 
-const PAYLOAD_INDEXES: [(&str, &str); 4] = [
-    (SNAPSHOT_PAYLOAD_KEY, "keyword"),
-    (MODEL_PAYLOAD_KEY, "keyword"),
-    (METRIC_PAYLOAD_KEY, "keyword"),
-    (PARTITION_PAYLOAD_KEY, "integer"),
+const PAYLOAD_INDEXES: [(PayloadField, &str); 4] = [
+    (PayloadField::Snapshot, "keyword"),
+    (PayloadField::Model, "keyword"),
+    (PayloadField::Metric, "keyword"),
+    (PayloadField::Partition, "integer"),
 ];
-
-/// A bounded retry policy for idempotent Qdrant requests.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RetryPolicy {
-    attempts: NonZeroU8,
-}
-
-impl RetryPolicy {
-    /// Returns the default three-attempt policy.
-    #[must_use]
-    pub const fn default_policy() -> Self {
-        Self {
-            attempts: DEFAULT_MAX_ATTEMPTS,
-        }
-    }
-
-    /// Builds a policy with an explicit positive attempt bound.
-    pub const fn new(attempts: NonZeroU8) -> Self {
-        Self { attempts }
-    }
-
-    /// Returns the complete attempt bound.
-    #[must_use]
-    pub const fn attempts(self) -> NonZeroU8 {
-        self.attempts
-    }
-}
-
-/// A disposable physical integer coordinate in one Qdrant collection.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PhysicalPointId(u64);
-
-impl PhysicalPointId {
-    /// Returns the integer sent to Qdrant.
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-
-    /// Derives a deterministic physical coordinate from complete semantic authority.
-    #[must_use]
-    pub fn for_key(key: QdrantDataKey) -> Self {
-        let mut hasher = FnvHasher::new();
-        hasher.write(key.snapshot().as_ref());
-        hasher.write(key.model().as_ref());
-        hasher.write(&key.dimension().to_be_bytes());
-        hasher.write(&[metric_tag(key.metric())]);
-        hasher.write(&key.partition.raw.to_be_bytes());
-        hasher.write(&key.entity.raw.to_be_bytes());
-        let raw = hasher.finish();
-        Self(if raw == 0 {
-            PHYSICAL_ID_ZERO_REPLACEMENT
-        } else {
-            raw
-        })
-    }
-}
-
-/// The full immutable identity carried by each projected point and delete key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantDataKey {
-    authority: VectorAuthority,
-    partition: PartitionId,
-    entity: EntityId,
-}
-
-impl QdrantDataKey {
-    /// Binds one semantic entity to the complete vector authority.
-    #[must_use]
-    pub const fn new(authority: VectorAuthority, partition: PartitionId, entity: EntityId) -> Self {
-        Self {
-            authority,
-            partition,
-            entity,
-        }
-    }
-
-    /// Returns snapshot, model, dimension, and metric authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the immutable snapshot identity.
-    #[must_use]
-    pub const fn snapshot(self) -> IndexSnapshotId {
-        self.authority.snapshot()
-    }
-
-    /// Returns the embedding model identity.
-    #[must_use]
-    pub const fn model(self) -> ModelId {
-        self.authority.model()
-    }
-
-    /// Returns the model dimension.
-    #[must_use]
-    pub const fn dimension(self) -> u16 {
-        self.authority.dimension()
-    }
-
-    /// Returns the distance metric.
-    #[must_use]
-    pub const fn metric(self) -> Metric {
-        self.authority.metric()
-    }
-
-    /// Returns the immutable projection partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the semantic entity coordinate.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
-    }
-}
-
-/// One borrowed vector row admitted for remote projection or local comparison.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantPoint<'coordinates> {
-    key: QdrantDataKey,
-    coordinates: &'coordinates [i16],
-}
-
-impl<'coordinates> QdrantPoint<'coordinates> {
-    /// Creates a borrowed point without performing remote I/O.
-    #[must_use]
-    pub const fn new(
-        authority: VectorAuthority,
-        partition: PartitionId,
-        entity: EntityId,
-        coordinates: &'coordinates [i16],
-    ) -> Self {
-        Self {
-            key: QdrantDataKey::new(authority, partition, entity),
-            coordinates,
-        }
-    }
-
-    /// Returns the complete semantic key.
-    #[must_use]
-    pub const fn key(self) -> QdrantDataKey {
-        self.key
-    }
-
-    /// Returns the borrowed coordinates.
-    #[must_use]
-    pub const fn coordinates(self) -> &'coordinates [i16] {
-        self.coordinates
-    }
-
-    /// Projects this borrowed point into the portable graph/vector fact vocabulary.
-    #[must_use]
-    pub const fn as_vector_fact(self) -> VectorFact<'coordinates> {
-        VectorFact::new(
-            self.key.authority(),
-            self.key.partition(),
-            self.key.entity(),
-            self.coordinates,
-        )
-    }
-
-    /// Returns this point's disposable physical coordinate.
-    #[must_use]
-    pub fn physical_id(self) -> PhysicalPointId {
-        PhysicalPointId::for_key(self.key)
-    }
-}
-
-/// The deterministic score and complete provenance returned by a remote query.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct QdrantHit {
-    authority: VectorAuthority,
-    partition: PartitionId,
-    entity: EntityId,
-    score: f64,
-    physical_id: PhysicalPointId,
-}
-
-impl QdrantHit {
-    /// Returns snapshot, model, dimension, and metric authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the source partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the semantic entity coordinate.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
-    }
-
-    /// Returns Qdrant's metric-specific score.
-    #[must_use]
-    pub const fn score(self) -> f64 {
-        self.score
-    }
-
-    /// Returns the disposable physical coordinate observed in the response.
-    #[must_use]
-    pub const fn physical_id(self) -> PhysicalPointId {
-        self.physical_id
-    }
-}
-
-/// A remote query terminal retaining exact absence facts for selected partitions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantQueryTerminal {
-    authority: VectorAuthority,
-    missing: [Option<PartitionId>; MAX_QUERY_PARTITIONS],
-    missing_len: usize,
-}
-
-impl QdrantQueryTerminal {
-    /// Returns the complete vector authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the number of absent selected partitions.
-    #[must_use]
-    pub const fn missing_len(self) -> usize {
-        self.missing_len
-    }
-
-    /// Returns one absent selected partition by semantic position.
-    #[must_use]
-    pub const fn missing_at(self, index: usize) -> Option<PartitionId> {
-        if index < self.missing_len {
-            self.missing[index]
-        } else {
-            None
-        }
-    }
-
-    /// Returns whether the query had no absent selected partition.
-    #[must_use]
-    pub const fn is_complete(self) -> bool {
-        self.missing_len == 0
-    }
-}
-
-/// A bounded remote query result and its typed terminal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantQueryOutcome {
-    written: usize,
-    terminal: QdrantQueryTerminal,
-}
-
-impl QdrantQueryOutcome {
-    /// Returns the number of initialized output slots.
-    #[must_use]
-    pub const fn written(self) -> usize {
-        self.written
-    }
-
-    /// Returns the complete/partial terminal.
-    #[must_use]
-    pub const fn terminal(self) -> QdrantQueryTerminal {
-        self.terminal
-    }
-}
-
-/// A successful mutation receipt after the remote operation and readback verification.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantMutationReceipt {
-    attempted: usize,
-    verified: usize,
-}
-
-impl QdrantMutationReceipt {
-    /// Returns the number of submitted keys.
-    #[must_use]
-    pub const fn attempted(self) -> usize {
-        self.attempted
-    }
-
-    /// Returns the number independently verified after the operation.
-    #[must_use]
-    pub const fn verified(self) -> usize {
-        self.verified
-    }
-}
-
-/// A verified remote point readback, retaining its identity and coordinates.
-#[derive(Clone, Debug, PartialEq)]
-pub struct QdrantReadback {
-    key: QdrantDataKey,
-    physical_id: PhysicalPointId,
-    coordinates: Vec<f64>,
-}
-
-impl QdrantReadback {
-    /// Returns the complete semantic key.
-    #[must_use]
-    pub const fn key(&self) -> QdrantDataKey {
-        self.key
-    }
-
-    /// Returns the disposable physical coordinate.
-    #[must_use]
-    pub const fn physical_id(&self) -> PhysicalPointId {
-        self.physical_id
-    }
-
-    /// Returns the remotely stored coordinates.
-    #[must_use]
-    pub fn coordinates(&self) -> &[f64] {
-        &self.coordinates
-    }
-}
-
-/// Exact request phase retained by transport, status, and decode failures.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RequestPhase {
-    /// Collection creation or collision handling.
-    CreateCollection,
-    /// Collection metadata readback.
-    ReadCollection,
-    /// Payload index creation or idempotent verification.
-    CreatePayloadIndex,
-    /// Existing point identity preflight.
-    ReadPoints,
-    /// Batched point upload.
-    UpsertPoints,
-    /// Batched vector query.
-    QueryPoints,
-    /// Batched point deletion.
-    DeletePoints,
-    /// Delete readback verification.
-    VerifyDelete,
-    /// Collection deletion.
-    DeleteCollection,
-}
-
-/// A rejected endpoint retained by configuration errors.
-#[derive(Debug, PartialEq, Eq)]
-pub struct RejectedEndpoint(String);
-
-impl RejectedEndpoint {
-    /// Returns the complete rejected endpoint without losing diagnostic bytes.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for RejectedEndpoint {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// A rejected collection name retained by configuration errors.
-#[derive(Debug, PartialEq, Eq)]
-pub struct RejectedCollectionName(String);
-
-impl RejectedCollectionName {
-    /// Returns the complete rejected collection name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for RejectedCollectionName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Adapter construction failure before any remote effect.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum QdrantConfigError {
-    /// Endpoint is empty.
-    #[error("Qdrant endpoint is empty")]
-    EmptyEndpoint,
-    /// Endpoint has no supported HTTP scheme.
-    #[error("Qdrant endpoint must use http or https: {observed}")]
-    UnsupportedScheme {
-        /// Complete rejected endpoint.
-        observed: RejectedEndpoint,
-    },
-    /// Endpoint contains a URI character that would make path joining ambiguous.
-    #[error("Qdrant endpoint contains whitespace or a query/fragment: {observed}")]
-    InvalidEndpoint {
-        /// Complete rejected endpoint.
-        observed: RejectedEndpoint,
-    },
-    /// Collection name is empty.
-    #[error("Qdrant collection name is empty")]
-    EmptyCollection,
-    /// Collection name contains a path/control character.
-    #[error("Qdrant collection name is not a single safe path component: {observed}")]
-    InvalidCollection {
-        /// Complete rejected collection name.
-        observed: RejectedCollectionName,
-    },
-    /// Model dimension is outside the bounded request shape.
-    #[error("Qdrant model dimension {observed} is outside 1..={maximum}")]
-    InvalidDimension {
-        /// Maximum supported coordinate count.
-        maximum: usize,
-        /// Rejected coordinate count.
-        observed: usize,
-    },
-}
-
-/// Local admission or remote identity validation failure.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum QdrantAdmissionError {
-    /// A batch exceeds the bounded request shape.
-    #[error("Qdrant batch has {observed} items; maximum is {maximum}")]
-    BatchTooLarge {
-        /// Maximum admitted item count.
-        maximum: usize,
-        /// Complete observed item count.
-        observed: usize,
-    },
-    /// A point belongs to another immutable snapshot.
-    #[error("point {index} belongs to snapshot {observed:?}; expected {expected:?}")]
-    WrongSnapshot {
-        /// Rejected point position.
-        index: usize,
-        /// Adapter snapshot.
-        expected: IndexSnapshotId,
-        /// Rejected point snapshot.
-        observed: IndexSnapshotId,
-    },
-    /// A point belongs to another embedding model.
-    #[error("point {index} belongs to model {observed:?}; expected {expected:?}")]
-    WrongModel {
-        /// Rejected point position.
-        index: usize,
-        /// Adapter model.
-        expected: ModelId,
-        /// Rejected point model.
-        observed: ModelId,
-    },
-    /// A point belongs to another model dimension.
-    #[error("point {index} has model dimension {observed}; expected {expected}")]
-    WrongModelDimension {
-        /// Rejected point position.
-        index: usize,
-        /// Adapter dimension.
-        expected: u16,
-        /// Rejected point dimension.
-        observed: u16,
-    },
-    /// A point belongs to another metric authority.
-    #[error("point {index} has metric {observed:?}; expected {expected:?}")]
-    WrongMetric {
-        /// Rejected point position.
-        index: usize,
-        /// Adapter metric.
-        expected: Metric,
-        /// Rejected point metric.
-        observed: Metric,
-    },
-    /// A point's coordinates do not match its model dimension.
-    #[error("point {index} has {observed} coordinates; expected {expected}")]
-    WrongDimension {
-        /// Rejected point position.
-        index: usize,
-        /// Required coordinate count.
-        expected: usize,
-        /// Complete observed coordinate count.
-        observed: usize,
-    },
-    /// A query coordinate slice does not match the pinned model dimension.
-    #[error("query has {observed} coordinates; expected {expected}")]
-    WrongQueryDimension {
-        /// Required coordinate count.
-        expected: usize,
-        /// Complete observed coordinate count.
-        observed: usize,
-    },
-    /// The selected query output is too short and remains untouched.
-    #[error("query output has {available} slots; requested {required}")]
-    InsufficientOutput {
-        /// Requested output count.
-        required: usize,
-        /// Caller-provided output capacity.
-        available: usize,
-    },
-    /// Too many selected partitions were admitted.
-    #[error("selected partition fanout has {observed}; maximum is {maximum}")]
-    TooManyPartitions {
-        /// Maximum selected partition fanout.
-        maximum: usize,
-        /// Complete observed fanout.
-        observed: usize,
-    },
-    /// A selected partition was repeated.
-    #[error("selected partition {partition:?} appears at {first_index} and {index}")]
-    DuplicatePartition {
-        /// First occurrence position.
-        first_index: usize,
-        /// Later occurrence position.
-        index: usize,
-        /// Repeated partition coordinate.
-        partition: PartitionId,
-    },
-    /// A batch key was repeated.
-    #[error("batch key {key:?} appears at {first_index} and {index}")]
-    DuplicateKey {
-        /// First occurrence position.
-        first_index: usize,
-        /// Later occurrence position.
-        index: usize,
-        /// Repeated full key.
-        key: QdrantDataKey,
-    },
-    /// Two distinct semantic keys mapped to one disposable point ID.
-    #[error(
-        "physical point id {physical_id:?} collides for ({first_partition:?}, {first_entity:?}) and ({second_partition:?}, {second_entity:?})"
-    )]
-    PhysicalIdCollision {
-        /// Colliding disposable physical coordinate.
-        physical_id: PhysicalPointId,
-        /// First partition coordinate under the already-validated adapter authority.
-        first_partition: PartitionId,
-        /// First entity coordinate under the already-validated adapter authority.
-        first_entity: EntityId,
-        /// Later partition coordinate under the same authority.
-        second_partition: PartitionId,
-        /// Later entity coordinate under the same authority.
-        second_entity: EntityId,
-    },
-    /// A remote point ID was reused for a different full payload identity.
-    #[error("remote point {physical_id:?} has a different payload identity for {key:?}")]
-    RemoteIdentityMismatch {
-        /// Reused disposable physical coordinate.
-        physical_id: PhysicalPointId,
-        /// Expected full semantic key.
-        key: QdrantDataKey,
-    },
-}
-
-/// Failure while a concrete Qdrant request was encoded, sent, or decoded.
-#[derive(Debug, thiserror::Error)]
-pub enum QdrantError {
-    /// Construction failed before I/O.
-    #[error("Qdrant adapter configuration failed")]
-    Configuration(#[from] QdrantConfigError),
-    /// Admission or physical identity failed before I/O.
-    #[error("Qdrant request admission failed")]
-    Admission(#[from] QdrantAdmissionError),
-    /// Request JSON could not be encoded.
-    #[error("Qdrant {phase:?} request encoding failed")]
-    Encode {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Original JSON source.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// The service returned a non-success status after bounded retry.
-    #[error("Qdrant {phase:?} returned HTTP {status} after {attempts} attempt(s)")]
-    HttpStatus {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Number of attempts made.
-        attempts: u8,
-        /// HTTP status code.
-        status: u16,
-        /// Bounded response body for diagnosis.
-        body: String,
-    },
-    /// The transport failed after bounded retry.
-    #[error("Qdrant {phase:?} transport failed after {attempts} attempt(s)")]
-    Transport {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Number of attempts made.
-        attempts: u8,
-        /// Original transport source from the final attempt.
-        #[source]
-        source: ureq::Error,
-    },
-    /// A successful HTTP body was not valid JSON.
-    #[error("Qdrant {phase:?} response decode failed")]
-    Decode {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Original JSON source.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// The response was JSON but did not contain the required shape.
-    #[error("Qdrant {phase:?} response is malformed: {detail}")]
-    MalformedResponse {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Stable shape detail.
-        detail: &'static str,
-    },
-    /// More authority-filtered points exist than the exact bounded adapter can rank.
-    #[error("Qdrant exact projection has at least {observed} points; maximum is {maximum}")]
-    ProjectionCapacity {
-        /// Maximum points this adapter can retrieve and rerank exactly.
-        maximum: usize,
-        /// Minimum complete point count proven by the overflowing scan.
-        observed: usize,
-    },
-    /// The service returned a point that was not one of the requested identities.
-    #[error("Qdrant {phase:?} returned an unrequested point {physical_id:?}")]
-    UnexpectedPoint {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Unexpected physical coordinate.
-        physical_id: PhysicalPointId,
-    },
-    /// A response point's disposable ID was not derived from its semantic identity.
-    #[error(
-        "Qdrant {phase:?} returned physical point {observed_physical_id:?} for {key:?}; expected {expected_physical_id:?}"
-    )]
-    PhysicalIdentityMismatch {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Full semantic identity decoded from the payload.
-        key: QdrantDataKey,
-        /// Disposable coordinate returned by the service.
-        observed_physical_id: PhysicalPointId,
-        /// Collision-checked coordinate derived from the semantic identity.
-        expected_physical_id: PhysicalPointId,
-    },
-    /// A response repeated one full semantic identity.
-    #[error(
-        "Qdrant {phase:?} repeated {key:?} as points {first_physical_id:?} and {second_physical_id:?}"
-    )]
-    DuplicateSemanticPoint {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Repeated full semantic identity.
-        key: QdrantDataKey,
-        /// First disposable coordinate carrying the identity.
-        first_physical_id: PhysicalPointId,
-        /// Later disposable coordinate carrying the same identity.
-        second_physical_id: PhysicalPointId,
-    },
-    /// The response omitted a point required for verification.
-    #[error("Qdrant {phase:?} omitted point {physical_id:?} for {key:?}")]
-    MissingPoint {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Missing physical coordinate.
-        physical_id: PhysicalPointId,
-        /// Expected semantic key.
-        key: QdrantDataKey,
-    },
-    /// The service returned a payload that disagreed with the requested identity.
-    #[error("Qdrant {phase:?} payload identity disagrees for point {physical_id:?}: {field}")]
-    PayloadMismatch {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Physical point coordinate.
-        physical_id: PhysicalPointId,
-        /// Mismatched payload field.
-        field: &'static str,
-    },
-    /// Collection metadata disagreed with the pinned model shape or metric.
-    #[error("Qdrant {phase:?} collection metadata disagrees in {field}")]
-    CollectionMismatch {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Mismatched collection field.
-        field: &'static str,
-    },
-    /// A remote vector was malformed or differed from the uploaded coordinates.
-    #[error("Qdrant {phase:?} vector differs for point {physical_id:?}")]
-    VectorMismatch {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Physical point coordinate.
-        physical_id: PhysicalPointId,
-    },
-    /// A numeric response field exceeded its semantic coordinate range.
-    #[error("Qdrant {phase:?} field {field} is outside its semantic range")]
-    InvalidFieldRange {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Field whose range was invalid.
-        field: &'static str,
-    },
-    /// Snapshot bytes had the right width but failed the typed domain conversion.
-    #[error("Qdrant {phase:?} snapshot payload conversion failed")]
-    SnapshotDecode {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Original typed snapshot conversion failure.
-        #[source]
-        source: <IndexSnapshotId as TryFrom<[u8; 32]>>::Error,
-    },
-    /// A fixed-width model payload could not be represented as its typed byte array.
-    #[error("Qdrant {phase:?} model payload conversion failed")]
-    ModelDecode {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Original fixed-width conversion failure.
-        #[source]
-        source: core::array::TryFromSliceError,
-    },
-    /// An integer payload field could not fit its typed coordinate owner.
-    #[error("Qdrant {phase:?} field {field} value {observed} is outside its semantic range")]
-    IntegerRange {
-        /// Operation phase.
-        phase: RequestPhase,
-        /// Payload field whose integer conversion failed.
-        field: &'static str,
-        /// Complete observed unsigned value.
-        observed: u64,
-        /// Original integer conversion failure.
-        #[source]
-        source: TryFromIntError,
-    },
-}
 
 /// A named blocking Qdrant adapter owning endpoint, collection, authority, and connection pool.
 pub struct QdrantBlockingAdapter {
@@ -862,7 +134,7 @@ impl QdrantBlockingAdapter {
 
     /// Creates the collection when absent and verifies its dimension and metric when present.
     pub fn ensure_collection(&self) -> Result<(), QdrantError> {
-        let body = collection_request(self.authority);
+        let body = wire::CollectionRequest::new(self.authority);
         let response = self.request_json(
             RequestPhase::CreateCollection,
             Method::Put,
@@ -875,7 +147,7 @@ impl QdrantBlockingAdapter {
                     RequestPhase::CreateCollection,
                     Method::Put,
                     &self.url("?wait=true"),
-                    collection_request(self.authority),
+                    wire::CollectionRequest::new(self.authority),
                 )?;
                 if !is_success(create.status) && create.status != 409 {
                     return Err(status_error(RequestPhase::CreateCollection, create));
@@ -895,12 +167,12 @@ impl QdrantBlockingAdapter {
             RequestPhase::DeleteCollection,
             Method::Delete,
             &self.url(""),
-            Value::Null,
+            (),
         )?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::DeleteCollection, response));
         }
-        parse_ack(RequestPhase::DeleteCollection, &response.body)
+        wire::parse_ack(RequestPhase::DeleteCollection, &response.body)
     }
 
     /// Upserts a bounded batch, then independently reads every physical point back.
@@ -913,7 +185,7 @@ impl QdrantBlockingAdapter {
             });
         }
         self.ensure_existing_ids_are_compatible(&prepared)?;
-        let request = upsert_request(&prepared);
+        let request = wire::UpsertRequest::from_points(&prepared);
         let response = self.request_json(
             RequestPhase::UpsertPoints,
             Method::Put,
@@ -923,7 +195,7 @@ impl QdrantBlockingAdapter {
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::UpsertPoints, response));
         }
-        parse_ack(RequestPhase::UpsertPoints, &response.body)?;
+        wire::parse_ack(RequestPhase::UpsertPoints, &response.body)?;
         let mut readback = vec![None; prepared.len()];
         let verified = self.readback_into(&prepared, &mut readback)?;
         Ok(QdrantMutationReceipt {
@@ -966,7 +238,7 @@ impl QdrantBlockingAdapter {
             let Some(slot) = output.get_mut(index) else {
                 return Err(QdrantError::MalformedResponse {
                     phase: RequestPhase::ReadPoints,
-                    detail: "readback output index",
+                    cause: MalformedResponseCause::ReadbackOutputIndex,
                 });
             };
             *slot = Some(point);
@@ -988,12 +260,12 @@ impl QdrantBlockingAdapter {
             RequestPhase::DeletePoints,
             Method::Post,
             &self.url(DELETE_POINTS_PATH),
-            delete_request(&prepared),
+            wire::DeleteRequest::new(&prepared),
         )?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::DeletePoints, response));
         }
-        parse_ack(RequestPhase::DeletePoints, &response.body)?;
+        wire::parse_ack(RequestPhase::DeletePoints, &response.body)?;
         let remaining = self.fetch_points_allow_missing(&prepared, RequestPhase::VerifyDelete)?;
         if let Some(point) = remaining.first() {
             return Err(QdrantError::VectorMismatch {
@@ -1020,13 +292,13 @@ impl QdrantBlockingAdapter {
             RequestPhase::QueryPoints,
             Method::Post,
             &self.url(QUERY_POINTS_PATH),
-            query_request(self.authority, selected, query_coordinates),
+            wire::QueryRequest::new(self.authority, selected, query_coordinates),
         )?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::QueryPoints, response));
         }
         let mut hits =
-            parse_query_hits(self.authority, selected, query_coordinates, &response.body)?;
+            wire::parse_query_hits(self.authority, selected, query_coordinates, &response.body)?;
         let terminal = remote_terminal(self.authority, selected, &hits);
         hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
@@ -1081,75 +353,29 @@ impl QdrantBlockingAdapter {
     }
 
     fn verify_collection(&self) -> Result<(), QdrantError> {
-        let response = self.request_json(
-            RequestPhase::ReadCollection,
-            Method::Get,
-            &self.url(""),
-            Value::Null,
-        )?;
+        let response =
+            self.request_json(RequestPhase::ReadCollection, Method::Get, &self.url(""), ())?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::ReadCollection, response));
         }
-        let value = decode_json(RequestPhase::ReadCollection, &response.body)?;
-        let params = value
-            .get("result")
-            .and_then(|result| result.get("config"))
-            .and_then(|config| config.get("params"))
-            .ok_or(QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "result.config.params",
-            })?;
-        let vectors = params
-            .get("vectors")
-            .ok_or(QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "result.config.params.vectors",
-            })?;
-        let size =
-            vectors
-                .get("size")
-                .and_then(Value::as_u64)
-                .ok_or(QdrantError::MalformedResponse {
-                    phase: RequestPhase::ReadCollection,
-                    detail: "vectors.size",
-                })?;
-        let distance = vectors.get("distance").and_then(Value::as_str).ok_or(
-            QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "vectors.distance",
-            },
-        )?;
+        let metadata = wire::collection_metadata(RequestPhase::ReadCollection, &response.body)?;
         let expected_size = u64::from(self.authority.dimension());
-        if size != expected_size {
+        if metadata.dimension != expected_size {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
-                field: "vectors.size",
+                field: CollectionField::VectorDimension,
             });
         }
-        if distance != metric_name(self.authority.metric()) {
+        if metadata.metric != metric_name(self.authority.metric()) {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
-                field: "vectors.distance",
+                field: CollectionField::VectorMetric,
             });
         }
-        let replication_factor = params
-            .get("replication_factor")
-            .and_then(Value::as_u64)
-            .ok_or(QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "result.config.params.replication_factor",
-            })?;
-        let write_consistency_factor = params
-            .get("write_consistency_factor")
-            .and_then(Value::as_u64)
-            .ok_or(QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "result.config.params.write_consistency_factor",
-            })?;
-        if write_consistency_factor < replication_factor {
+        if metadata.write_consistency_factor < metadata.replication_factor {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
-                field: "write_consistency_factor",
+                field: CollectionField::WriteConsistency,
             });
         }
         Ok(())
@@ -1161,57 +387,29 @@ impl QdrantBlockingAdapter {
                 RequestPhase::CreatePayloadIndex,
                 Method::Put,
                 &self.url(CREATE_PAYLOAD_INDEX_PATH),
-                serde_json::json!({
-                    "field_name": field,
-                    "field_schema": schema,
-                }),
+                wire::PayloadIndexRequest::new(field, schema),
             )?;
             if !is_success(response.status) && response.status != 409 {
                 return Err(status_error(RequestPhase::CreatePayloadIndex, response));
             }
             if is_success(response.status) {
-                parse_ack(RequestPhase::CreatePayloadIndex, &response.body)?;
+                wire::parse_ack(RequestPhase::CreatePayloadIndex, &response.body)?;
             }
         }
         Ok(())
     }
 
     fn verify_payload_indexes(&self) -> Result<(), QdrantError> {
-        let response = self.request_json(
-            RequestPhase::ReadCollection,
-            Method::Get,
-            &self.url(""),
-            Value::Null,
-        )?;
+        let response =
+            self.request_json(RequestPhase::ReadCollection, Method::Get, &self.url(""), ())?;
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::ReadCollection, response));
         }
-        let value = decode_json(RequestPhase::ReadCollection, &response.body)?;
-        let schema = value
-            .get("result")
-            .and_then(|result| result.get("payload_schema"))
-            .and_then(Value::as_object)
-            .ok_or(QdrantError::MalformedResponse {
-                phase: RequestPhase::ReadCollection,
-                detail: "result.payload_schema",
-            })?;
-        for (field, expected_type) in PAYLOAD_INDEXES {
-            let observed_type = schema
-                .get(field)
-                .and_then(|entry| entry.get("data_type"))
-                .and_then(Value::as_str)
-                .ok_or(QdrantError::CollectionMismatch {
-                    phase: RequestPhase::ReadCollection,
-                    field,
-                })?;
-            if observed_type != expected_type {
-                return Err(QdrantError::CollectionMismatch {
-                    phase: RequestPhase::ReadCollection,
-                    field,
-                });
-            }
-        }
-        Ok(())
+        wire::verify_payload_indexes(
+            RequestPhase::ReadCollection,
+            &response.body,
+            &PAYLOAD_INDEXES,
+        )
     }
 
     fn validate_query(
@@ -1371,34 +569,28 @@ impl QdrantBlockingAdapter {
             phase,
             Method::Post,
             &self.url(READ_POINTS_PATH),
-            retrieve_request(keys, require_vectors),
+            wire::RetrieveRequest::new(keys, require_vectors),
         )?;
         if !is_success(response.status) {
             return Err(status_error(phase, response));
         }
-        let value = decode_json(phase, &response.body)?;
-        let points = value.get("result").and_then(Value::as_array).ok_or(
-            QdrantError::MalformedResponse {
-                phase,
-                detail: "result[]",
-            },
-        )?;
+        let points = wire::retrieve_points(phase, &response.body)?;
         if points.len() > MAX_BATCH_POINTS {
             return Err(QdrantError::MalformedResponse {
                 phase,
-                detail: "result[] exceeds bounded batch",
+                cause: MalformedResponseCause::PointBatchExceeded,
             });
         }
         let mut readbacks = Vec::with_capacity(points.len());
-        for point in points {
-            let physical_id = point_id(point, phase)?;
+        for point in &points {
+            let physical_id = PhysicalPointId(point.id);
             if readbacks
                 .iter()
                 .any(|readback: &QdrantReadback| readback.physical_id == physical_id)
             {
                 return Err(QdrantError::MalformedResponse {
                     phase,
-                    detail: "duplicate result[].id",
+                    cause: MalformedResponseCause::DuplicatePhysicalPoint,
                 });
             }
             let Some(expected) = keys
@@ -1407,16 +599,16 @@ impl QdrantBlockingAdapter {
             else {
                 return Err(QdrantError::UnexpectedPoint { phase, physical_id });
             };
-            let key = decode_identity(point, phase, self.authority)?;
+            let key = wire::decode_identity(point, phase, self.authority.dimension())?;
             if key != expected.key() {
                 return Err(QdrantError::PayloadMismatch {
                     phase,
                     physical_id,
-                    field: SNAPSHOT_PAYLOAD_KEY,
+                    cause: PayloadMismatchCause::RequestedIdentity,
                 });
             }
             let coordinates = if require_vectors {
-                decode_vector(
+                wire::decode_vector(
                     point,
                     phase,
                     physical_id,
@@ -1465,28 +657,22 @@ impl QdrantBlockingAdapter {
             phase,
             Method::Post,
             &self.url(READ_POINTS_PATH),
-            retrieve_request(keys, false),
+            wire::RetrieveRequest::new(keys, false),
         )?;
         if !is_success(response.status) {
             return Err(status_error(phase, response));
         }
-        let value = decode_json(phase, &response.body)?;
-        let points = value.get("result").and_then(Value::as_array).ok_or(
-            QdrantError::MalformedResponse {
-                phase,
-                detail: "result[]",
-            },
-        )?;
+        let points = wire::retrieve_points(phase, &response.body)?;
         if points.len() > MAX_BATCH_POINTS {
             return Err(QdrantError::MalformedResponse {
                 phase,
-                detail: "result[] exceeds bounded batch",
+                cause: MalformedResponseCause::PointBatchExceeded,
             });
         }
         let mut readbacks = Vec::with_capacity(points.len());
-        for point in points {
-            let physical_id = point_id(point, phase)?;
-            let key = decode_identity(point, phase, self.authority)?;
+        for point in &points {
+            let physical_id = PhysicalPointId(point.id);
+            let key = wire::decode_identity(point, phase, self.authority.dimension())?;
             if !keys
                 .iter()
                 .any(|expected| expected.physical_id() == physical_id)
@@ -1499,7 +685,7 @@ impl QdrantBlockingAdapter {
             {
                 return Err(QdrantError::MalformedResponse {
                     phase,
-                    detail: "duplicate result[].id",
+                    cause: MalformedResponseCause::DuplicatePhysicalPoint,
                 });
             }
             readbacks.push(QdrantReadback {
@@ -1540,7 +726,7 @@ impl QdrantBlockingAdapter {
             let Some(slot) = output.get_mut(index) else {
                 return Err(QdrantError::MalformedResponse {
                     phase: RequestPhase::ReadPoints,
-                    detail: "readback output index",
+                    cause: MalformedResponseCause::ReadbackOutputIndex,
                 });
             };
             *slot = Some(readback);
@@ -1564,12 +750,12 @@ impl QdrantBlockingAdapter {
         )
     }
 
-    fn request_json(
+    fn request_json<T: Serialize>(
         &self,
         phase: RequestPhase,
         method: Method,
         url: &str,
-        body: Value,
+        body: T,
     ) -> Result<ResponseEnvelope, QdrantError> {
         let encoded =
             serde_json::to_vec(&body).map_err(|source| QdrantError::Encode { phase, source })?;
@@ -1643,7 +829,7 @@ impl QdrantBlockingAdapter {
             }),
             None => Err(QdrantError::MalformedResponse {
                 phase,
-                detail: "retry loop terminated without response",
+                cause: MalformedResponseCause::RetryExhaustionWithoutResponse,
             }),
         }
     }
@@ -1871,419 +1057,6 @@ fn status_error(phase: RequestPhase, response: ResponseEnvelope) -> QdrantError 
     }
 }
 
-fn parse_ack(phase: RequestPhase, body: &str) -> Result<(), QdrantError> {
-    let value = decode_json(phase, body)?;
-    if value.get("result").is_none() {
-        return Err(QdrantError::MalformedResponse {
-            phase,
-            detail: "result",
-        });
-    }
-    Ok(())
-}
-
-fn decode_json(phase: RequestPhase, body: &str) -> Result<Value, QdrantError> {
-    serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })
-}
-
-fn collection_request(authority: VectorAuthority) -> Value {
-    serde_json::json!({
-        "vectors": {
-            "size": authority.dimension(),
-            "distance": metric_name(authority.metric()),
-        },
-        "replication_factor": 1,
-        "write_consistency_factor": 1,
-    })
-}
-
-fn upsert_request(points: &[PreparedPoint<'_>]) -> Value {
-    let values = points
-        .iter()
-        .map(|point| {
-            serde_json::json!({
-                "id": point.physical_id.raw(),
-                "vector": point.coordinates.iter().map(|coordinate| f64::from(*coordinate)).collect::<Vec<_>>(),
-                "payload": identity_payload(point.key),
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({ "points": values })
-}
-
-fn retrieve_request(keys: &[impl PreparedIdentity], require_vectors: bool) -> Value {
-    let ids = keys
-        .iter()
-        .map(|key| Value::from(key.physical_id().raw()))
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "ids": ids,
-        "with_payload": true,
-        "with_vector": require_vectors,
-    })
-}
-
-fn delete_request(keys: &[impl PreparedIdentity]) -> Value {
-    let ids = keys
-        .iter()
-        .map(|key| Value::from(key.physical_id().raw()))
-        .collect::<Vec<_>>();
-    serde_json::json!({ "points": ids })
-}
-
-fn query_request(
-    authority: VectorAuthority,
-    selected: &[PartitionId],
-    coordinates: &[i16],
-) -> Value {
-    serde_json::json!({
-        "query": coordinates.iter().map(|coordinate| f64::from(*coordinate)).collect::<Vec<_>>(),
-        "limit": QUERY_SCAN_LIMIT,
-        "with_payload": true,
-        "with_vector": true,
-        "params": { "exact": true },
-        "filter": identity_filter(authority, selected),
-    })
-}
-
-fn identity_payload(key: QdrantDataKey) -> Value {
-    serde_json::json!({
-        SNAPSHOT_PAYLOAD_KEY: hex(key.snapshot().as_ref()),
-        MODEL_PAYLOAD_KEY: hex(key.model().as_ref()),
-        METRIC_PAYLOAD_KEY: metric_payload_name(key.metric()),
-        PARTITION_PAYLOAD_KEY: key.partition.raw,
-        ENTITY_PAYLOAD_KEY: key.entity.raw,
-    })
-}
-
-fn identity_filter(authority: VectorAuthority, selected: &[PartitionId]) -> Value {
-    let mut must = vec![
-        serde_json::json!({ "key": SNAPSHOT_PAYLOAD_KEY, "match": { "value": hex(authority.snapshot().as_ref()) } }),
-        serde_json::json!({ "key": MODEL_PAYLOAD_KEY, "match": { "value": hex(authority.model().as_ref()) } }),
-        serde_json::json!({ "key": METRIC_PAYLOAD_KEY, "match": { "value": metric_payload_name(authority.metric()) } }),
-    ];
-    let mut filter = Map::new();
-    if let [partition] = selected {
-        must.push(serde_json::json!({
-            "key": PARTITION_PAYLOAD_KEY,
-            "match": { "value": partition.raw },
-        }));
-    } else if selected.len() > 1 {
-        filter.insert(
-            "min_should".to_owned(),
-            serde_json::json!({
-                "conditions":
-                selected
-                    .iter()
-                    .map(|partition| {
-                        serde_json::json!({
-                            "key": PARTITION_PAYLOAD_KEY,
-                            "match": { "value": partition.raw },
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-                "min_count": 1,
-            }),
-        );
-    }
-    filter.insert("must".to_owned(), Value::Array(must));
-    Value::Object(filter)
-}
-
-fn parse_query_hits(
-    authority: VectorAuthority,
-    selected: &[PartitionId],
-    query_coordinates: &[i16],
-    body: &str,
-) -> Result<Vec<QdrantHit>, QdrantError> {
-    let phase = RequestPhase::QueryPoints;
-    let value = decode_json(phase, body)?;
-    let points = value
-        .get("result")
-        .and_then(|result| result.get("points"))
-        .and_then(Value::as_array)
-        .ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: "result.points[]",
-        })?;
-    if points.len() > MAX_BATCH_POINTS {
-        return Err(QdrantError::ProjectionCapacity {
-            maximum: MAX_BATCH_POINTS,
-            observed: points.len(),
-        });
-    }
-    let mut hits = Vec::with_capacity(points.len());
-    for point in points {
-        let physical_id = point_id(point, phase)?;
-        let key = decode_identity(point, phase, authority)?;
-        if key.authority() != authority {
-            return Err(QdrantError::PayloadMismatch {
-                phase,
-                physical_id,
-                field: SNAPSHOT_PAYLOAD_KEY,
-            });
-        }
-        if !selected.is_empty() && !selected.contains(&key.partition()) {
-            return Err(QdrantError::PayloadMismatch {
-                phase,
-                physical_id,
-                field: PARTITION_PAYLOAD_KEY,
-            });
-        }
-        reject_remote_physical_identity(phase, physical_id, key)?;
-        if let Some(first) = hits.iter().find(|hit: &&QdrantHit| {
-            hit.authority == key.authority()
-                && hit.partition == key.partition()
-                && hit.entity == key.entity()
-        }) {
-            return Err(QdrantError::DuplicateSemanticPoint {
-                phase,
-                key,
-                first_physical_id: first.physical_id,
-                second_physical_id: physical_id,
-            });
-        }
-        if hits
-            .iter()
-            .any(|hit: &QdrantHit| hit.physical_id == physical_id)
-        {
-            return Err(QdrantError::MalformedResponse {
-                phase,
-                detail: "duplicate result.points[].id for distinct payload identities",
-            });
-        }
-        let coordinates = decode_vector(
-            point,
-            phase,
-            physical_id,
-            usize::from(authority.dimension()),
-        )?;
-        let score = projected_score(authority.metric(), query_coordinates, &coordinates);
-        hits.push(QdrantHit {
-            authority,
-            partition: key.partition(),
-            entity: key.entity(),
-            score,
-            physical_id,
-        });
-    }
-    Ok(hits)
-}
-
-fn reject_remote_physical_identity(
-    phase: RequestPhase,
-    observed_physical_id: PhysicalPointId,
-    key: QdrantDataKey,
-) -> Result<(), QdrantError> {
-    let expected_physical_id = PhysicalPointId::for_key(key);
-    if observed_physical_id == expected_physical_id {
-        return Ok(());
-    }
-    Err(QdrantError::PhysicalIdentityMismatch {
-        phase,
-        key,
-        observed_physical_id,
-        expected_physical_id,
-    })
-}
-
-fn point_id(point: &Value, phase: RequestPhase) -> Result<PhysicalPointId, QdrantError> {
-    let raw = point
-        .get("id")
-        .and_then(Value::as_u64)
-        .ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: "result[].id as u64",
-        })?;
-    Ok(PhysicalPointId(raw))
-}
-
-fn decode_identity(
-    point: &Value,
-    phase: RequestPhase,
-    expected_authority: VectorAuthority,
-) -> Result<QdrantDataKey, QdrantError> {
-    let payload =
-        point
-            .get("payload")
-            .and_then(Value::as_object)
-            .ok_or(QdrantError::MalformedResponse {
-                phase,
-                detail: "result[].payload",
-            })?;
-    let snapshot = decode_snapshot(payload, phase)?;
-    let model = decode_model(payload, phase)?;
-    let metric = decode_metric(payload, phase)?;
-    let partition = decode_partition(payload, phase)?;
-    let entity = decode_entity(payload, phase)?;
-    let key = QdrantDataKey::new(
-        VectorAuthority::new(snapshot, model, expected_authority.dimension(), metric),
-        partition,
-        entity,
-    );
-    if key.authority().dimension() != expected_authority.dimension() {
-        return Err(QdrantError::PayloadMismatch {
-            phase,
-            physical_id: PhysicalPointId(0),
-            field: MODEL_PAYLOAD_KEY,
-        });
-    }
-    Ok(key)
-}
-
-fn decode_snapshot(
-    payload: &Map<String, Value>,
-    phase: RequestPhase,
-) -> Result<IndexSnapshotId, QdrantError> {
-    let bytes = decode_hex_field(payload, SNAPSHOT_PAYLOAD_KEY, 32, phase)?;
-    match IndexSnapshotId::try_from(bytes.as_slice()) {
-        Ok(snapshot) => Ok(snapshot),
-        Err(source) => Err(QdrantError::SnapshotDecode { phase, source }),
-    }
-}
-
-fn decode_model(payload: &Map<String, Value>, phase: RequestPhase) -> Result<ModelId, QdrantError> {
-    let bytes = decode_hex_field(payload, MODEL_PAYLOAD_KEY, 16, phase)?;
-    let bytes: [u8; 16] = match bytes.as_slice().try_into() {
-        Ok(bytes) => bytes,
-        Err(source) => return Err(QdrantError::ModelDecode { phase, source }),
-    };
-    Ok(ModelId::new(bytes))
-}
-
-fn decode_metric(payload: &Map<String, Value>, phase: RequestPhase) -> Result<Metric, QdrantError> {
-    match payload
-        .get(METRIC_PAYLOAD_KEY)
-        .and_then(Value::as_str)
-        .ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: METRIC_PAYLOAD_KEY,
-        })? {
-        "squared_euclidean" => Ok(Metric::SquaredEuclidean),
-        "negative_dot_product" => Ok(Metric::NegativeDotProduct),
-        _ => Err(QdrantError::MalformedResponse {
-            phase,
-            detail: "known metric",
-        }),
-    }
-}
-
-fn decode_partition(
-    payload: &Map<String, Value>,
-    phase: RequestPhase,
-) -> Result<PartitionId, QdrantError> {
-    let value = payload
-        .get(PARTITION_PAYLOAD_KEY)
-        .and_then(Value::as_u64)
-        .ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: PARTITION_PAYLOAD_KEY,
-        })?;
-    let raw = match u16::try_from(value) {
-        Ok(raw) => raw,
-        Err(source) => {
-            return Err(QdrantError::IntegerRange {
-                phase,
-                field: PARTITION_PAYLOAD_KEY,
-                observed: value,
-                source,
-            });
-        }
-    };
-    Ok(PartitionId::new(raw))
-}
-
-fn decode_entity(
-    payload: &Map<String, Value>,
-    phase: RequestPhase,
-) -> Result<EntityId, QdrantError> {
-    let value = payload
-        .get(ENTITY_PAYLOAD_KEY)
-        .and_then(Value::as_u64)
-        .ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: ENTITY_PAYLOAD_KEY,
-        })?;
-    let raw = match u32::try_from(value) {
-        Ok(raw) => raw,
-        Err(source) => {
-            return Err(QdrantError::IntegerRange {
-                phase,
-                field: ENTITY_PAYLOAD_KEY,
-                observed: value,
-                source,
-            });
-        }
-    };
-    Ok(EntityId::new(raw))
-}
-
-fn decode_hex_field(
-    payload: &Map<String, Value>,
-    field: &'static str,
-    expected_bytes: usize,
-    phase: RequestPhase,
-) -> Result<Vec<u8>, QdrantError> {
-    let value =
-        payload
-            .get(field)
-            .and_then(Value::as_str)
-            .ok_or(QdrantError::MalformedResponse {
-                phase,
-                detail: field,
-            })?;
-    if value.len() != expected_bytes * 2 {
-        return Err(QdrantError::InvalidFieldRange { phase, field });
-    }
-    let mut bytes = Vec::with_capacity(expected_bytes);
-    let raw = value.as_bytes();
-    for pair in raw.chunks_exact(2) {
-        let [high_raw, low_raw] = pair else {
-            return Err(QdrantError::MalformedResponse {
-                phase,
-                detail: field,
-            });
-        };
-        let high = hex_nibble(*high_raw).ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: field,
-        })?;
-        let low = hex_nibble(*low_raw).ok_or(QdrantError::MalformedResponse {
-            phase,
-            detail: field,
-        })?;
-        bytes.push((high << 4) | low);
-    }
-    Ok(bytes)
-}
-
-fn decode_vector(
-    point: &Value,
-    phase: RequestPhase,
-    physical_id: PhysicalPointId,
-    expected_dimension: usize,
-) -> Result<Vec<f64>, QdrantError> {
-    let vector =
-        point
-            .get("vector")
-            .and_then(Value::as_array)
-            .ok_or(QdrantError::MalformedResponse {
-                phase,
-                detail: "result[].vector[]",
-            })?;
-    if vector.len() != expected_dimension {
-        return Err(QdrantError::VectorMismatch { phase, physical_id });
-    }
-    vector
-        .iter()
-        .map(|value| {
-            value
-                .as_f64()
-                .ok_or(QdrantError::VectorMismatch { phase, physical_id })
-        })
-        .collect()
-}
-
 fn vector_matches(expected: &[i16], observed: &[f64]) -> bool {
     expected.len() == observed.len()
         && expected
@@ -2445,6 +1218,8 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nudox_index_vocab::IndexSnapshotId;
+    use nudox_ir_vocab::EntityId;
 
     fn authority(byte: u8) -> VectorAuthority {
         VectorAuthority::new(
@@ -2497,31 +1272,45 @@ mod tests {
     #[test]
     fn identity_payload_and_filter_include_full_authority() {
         let key = QdrantDataKey::new(authority(7), PartitionId::new(11), EntityId::new(13));
-        let payload = identity_payload(key);
+        let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
+        assert!(payload.is_ok());
+        let Ok(payload) = payload else {
+            return;
+        };
         assert_eq!(
             payload.get(SNAPSHOT_PAYLOAD_KEY),
-            Some(&Value::from(hex(key.snapshot().as_ref())))
+            Some(&serde_json::Value::from(hex(key.snapshot().as_ref())))
         );
         assert_eq!(
             payload.get(MODEL_PAYLOAD_KEY),
-            Some(&Value::from(hex(key.model().as_ref())))
+            Some(&serde_json::Value::from(hex(key.model().as_ref())))
         );
         assert_eq!(
             payload.get(METRIC_PAYLOAD_KEY),
-            Some(&Value::from("squared_euclidean"))
+            Some(&serde_json::Value::from("squared_euclidean"))
         );
         assert_eq!(
             payload.get(PARTITION_PAYLOAD_KEY),
-            Some(&Value::from(11_u16))
+            Some(&serde_json::Value::from(11_u16))
         );
-        assert_eq!(payload.get(ENTITY_PAYLOAD_KEY), Some(&Value::from(13_u32)));
-        let filter = identity_filter(key.authority(), &[key.partition()]);
-        let must = filter.get("must").and_then(Value::as_array);
+        assert_eq!(
+            payload.get(ENTITY_PAYLOAD_KEY),
+            Some(&serde_json::Value::from(13_u32))
+        );
+        let filter = serde_json::to_value(wire::IdentityFilter::new(
+            key.authority(),
+            &[key.partition()],
+        ));
+        assert!(filter.is_ok());
+        let Ok(filter) = filter else {
+            return;
+        };
+        let must = filter.get("must").and_then(serde_json::Value::as_array);
         assert!(must.is_some_and(|must| must.len() == 4));
         assert_eq!(
             must.and_then(|must| must.get(3))
                 .and_then(|condition| condition.get("key")),
-            Some(&Value::from(PARTITION_PAYLOAD_KEY))
+            Some(&serde_json::Value::from(PARTITION_PAYLOAD_KEY))
         );
     }
 
@@ -2540,41 +1329,72 @@ mod tests {
             coordinates: point.coordinates(),
             physical_id: point.physical_id(),
         }];
-        let upsert = upsert_request(&prepared);
+        let upsert = serde_json::to_value(wire::UpsertRequest::from_points(&prepared));
+        assert!(upsert.is_ok());
+        let Ok(upsert) = upsert else {
+            return;
+        };
         assert_eq!(
-            upsert.get("points").and_then(Value::as_array).map(Vec::len),
+            upsert
+                .get("points")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
             Some(1)
         );
         assert_eq!(
             upsert
                 .get("points")
-                .and_then(Value::as_array)
+                .and_then(serde_json::Value::as_array)
                 .and_then(|points| points.first())
                 .and_then(|point| point.get("id")),
-            Some(&Value::from(point.physical_id().raw()))
+            Some(&serde_json::Value::from(point.physical_id().raw()))
         );
         let keys = [PreparedKey {
             index: 0,
             key: point.key(),
             physical_id: point.physical_id(),
         }];
+        let delete = serde_json::to_value(wire::DeleteRequest::new(&keys));
+        assert!(delete.is_ok());
+        let Ok(delete) = delete else {
+            return;
+        };
         assert_eq!(
-            delete_request(&keys)
+            delete
                 .get("points")
-                .and_then(Value::as_array)
+                .and_then(serde_json::Value::as_array)
                 .and_then(|points| points.first()),
-            Some(&Value::from(point.physical_id().raw()))
+            Some(&serde_json::Value::from(point.physical_id().raw()))
+        );
+        let retrieve = serde_json::to_value(wire::RetrieveRequest::new(&keys, true));
+        assert!(retrieve.is_ok());
+        let Ok(retrieve) = retrieve else {
+            return;
+        };
+        assert_eq!(
+            retrieve.get("with_vector"),
+            Some(&serde_json::Value::from(true))
+        );
+        let query = serde_json::to_value(wire::QueryRequest::new(
+            authority(3),
+            &[PartitionId::new(1)],
+            &[0, 0],
+        ));
+        assert!(query.is_ok());
+        let Ok(query) = query else {
+            return;
+        };
+        assert_eq!(
+            query.get("limit"),
+            Some(&serde_json::Value::from(QUERY_SCAN_LIMIT))
         );
         assert_eq!(
-            retrieve_request(&keys, true).get("with_vector"),
-            Some(&Value::from(true))
+            query.get("with_vector"),
+            Some(&serde_json::Value::from(true))
         );
-        let query = query_request(authority(3), &[PartitionId::new(1)], &[0, 0]);
-        assert_eq!(query.get("limit"), Some(&Value::from(QUERY_SCAN_LIMIT)));
-        assert_eq!(query.get("with_vector"), Some(&Value::from(true)));
         assert_eq!(
             query.get("params").and_then(|params| params.get("exact")),
-            Some(&Value::from(true))
+            Some(&serde_json::Value::from(true))
         );
     }
 
@@ -2591,11 +1411,18 @@ mod tests {
             CREATE_PAYLOAD_INDEX_PATH,
             "/index?wait=true&ordering=strong"
         );
-        let collection = collection_request(authority(3));
-        assert_eq!(collection.get("replication_factor"), Some(&Value::from(1)));
+        let collection = serde_json::to_value(wire::CollectionRequest::new(authority(3)));
+        assert!(collection.is_ok());
+        let Ok(collection) = collection else {
+            return;
+        };
+        assert_eq!(
+            collection.get("replication_factor"),
+            Some(&serde_json::Value::from(1))
+        );
         assert_eq!(
             collection.get("write_consistency_factor"),
-            Some(&Value::from(1))
+            Some(&serde_json::Value::from(1))
         );
     }
 
@@ -2682,10 +1509,15 @@ mod tests {
         let key = QdrantDataKey::new(authority, PartitionId::new(2), EntityId::new(7));
         let canonical_id = PhysicalPointId::for_key(key);
         let alias_id = PhysicalPointId(canonical_id.raw().wrapping_add(1));
+        let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
+        assert!(payload.is_ok());
+        let Ok(payload) = payload else {
+            return;
+        };
         let point = |physical_id: PhysicalPointId| {
             serde_json::json!({
                 "id": physical_id.raw(),
-                "payload": identity_payload(key),
+                "payload": payload,
                 "vector": [1.0, 2.0],
             })
         };
@@ -2694,7 +1526,7 @@ mod tests {
         })
         .to_string();
         assert!(matches!(
-            parse_query_hits(authority, &[key.partition()], &[0, 0], &alias_body),
+            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &alias_body),
             Err(QdrantError::PhysicalIdentityMismatch {
                 phase: RequestPhase::QueryPoints,
                 key: observed_key,
@@ -2710,7 +1542,7 @@ mod tests {
         })
         .to_string();
         assert!(matches!(
-            parse_query_hits(authority, &[key.partition()], &[0, 0], &duplicate_body),
+            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &duplicate_body),
             Err(QdrantError::DuplicateSemanticPoint {
                 phase: RequestPhase::QueryPoints,
                 key: observed_key,
@@ -2719,6 +1551,56 @@ mod tests {
             }) if observed_key == key
                 && first_physical_id == canonical_id
                 && second_physical_id == canonical_id
+        ));
+    }
+
+    #[test]
+    fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() {
+        let authority = authority(12);
+        let key = QdrantDataKey::new(authority, PartitionId::new(2), EntityId::new(7));
+        let point_id = PhysicalPointId::for_key(key);
+        let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
+        assert!(payload.is_ok());
+        let Ok(mut invalid_metric) = payload else {
+            return;
+        };
+        let Some(payload) = invalid_metric.as_object_mut() else {
+            return;
+        };
+        payload.insert(
+            METRIC_PAYLOAD_KEY.to_owned(),
+            serde_json::Value::from("cosine"),
+        );
+        let unknown_metric = serde_json::json!({
+            "result": { "points": [{
+                "id": point_id.raw(), "payload": invalid_metric, "vector": [1.0, 2.0],
+            }] },
+        })
+        .to_string();
+        assert!(matches!(
+            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &unknown_metric),
+            Err(QdrantError::MalformedResponse {
+                phase: RequestPhase::QueryPoints,
+                cause: MalformedResponseCause::UnknownMetric,
+            })
+        ));
+
+        let missing_payload = r#"{\"result\":{\"points\":[{\"id\":1,\"vector\":[1.0,2.0]}]}}"#;
+        assert!(matches!(
+            wire::parse_query_hits(authority, &[], &[0, 0], missing_payload),
+            Err(QdrantError::Decode {
+                phase: RequestPhase::QueryPoints,
+                ..
+            })
+        ));
+
+        let points_not_array = r#"{\"result\":{\"points\":{}}}"#;
+        assert!(matches!(
+            wire::parse_query_hits(authority, &[], &[0, 0], points_not_array),
+            Err(QdrantError::Decode {
+                phase: RequestPhase::QueryPoints,
+                ..
+            })
         ));
     }
 

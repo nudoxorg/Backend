@@ -5,7 +5,7 @@ use std::{
 };
 
 use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
-use nudox_index_qdrant::{QdrantBlockingAdapter, QdrantError, QdrantPoint};
+use nudox_index_qdrant::{MalformedResponseCause, QdrantBlockingAdapter, QdrantError, QdrantPoint};
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
 
@@ -53,7 +53,7 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
     let Some(first_readback) = readback.first().and_then(Option::as_ref) else {
         return Err(QdrantError::MalformedResponse {
             phase: nudox_index_qdrant::RequestPhase::ReadPoints,
-            detail: "first readback",
+            cause: MalformedResponseCause::ReadbackOutputIndex,
         });
     };
     assert_eq!(first_readback.key(), first.key());

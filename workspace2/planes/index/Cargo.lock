@@ -691,6 +691,7 @@ dependencies = [
  "nudox-index-graph-vector",
  "nudox-index-vocab",
  "nudox-ir-vocab",
+ "serde",
  "serde_json",
  "thiserror",
  "ureq",
