@@ -24,12 +24,14 @@ The remaining gaps are architectural, not polish:
 - typed identity authority now survives raw wire/index round trips and locality validates one
   artifact-wide authority before lending typed payloads; the next foundation gap is canonical-byte
   ownership for roots rather than another identity repair.
-- `GenerationRoot` still owns a boxed native row arena instead of making canonical bytes the primary
-  owner with borrowed/mmap/lease adapters.
+- Canonical root bytes now have a checked borrowed primary view with no retained native row or
+  descriptor arena; the older `GenerationRoot` remains as the construction owner and compatibility
+  control until its callers migrate.
 - complete local closure yields one non-forgeable verified capability, but no durable publication
   head consumes it and releases a distinct published capability after a stable receipt.
-- `PinnedObjectRequest` is rebound after the provider was already selected; operation binding should
-  happen once and eliminate the duplicate generation/object comparisons.
+- `PinnedObjectRequest` is rebound after the provider was already selected. The first no-request
+  candidate was rejected because its generation witness could be relabeled and was not tied to a
+  store; operation binding must happen once against the exact retained evidence snapshot or lease.
 - `nudox-workflow` now has a crash-safe, single-owner file journal with sync receipts, reopen,
   torn-tail repair, exclusive ownership, directory durability, and fault injection; bounded MPSC
   group commit and atomic publication remain open.
@@ -85,10 +87,12 @@ The remaining gaps are architectural, not polish:
 - [x] Complete local closure produces one two-fact `VerifiedGeneration` that external code cannot
   forge; the effect-free `Verified -> Ready` marker transition was deleted rather than called
   typestate.
-- [ ] Replace the retained native root row owner with canonical-byte-first borrowed views and concrete
-  optional owners; measure HRTB callback, `self_cell`/Yoke-style owner, mmap, and leased-buffer shapes.
+- [x] Add a canonical-byte-first borrowed root/locality view with checked authority, one transient
+  parent lane, caller-owned closure scratch, explicit parent-search work, and no retained native row
+  or descriptor arena. Concrete mmap and leased owners remain adapter work, not root grammar.
 - [ ] Bind operation requests once at the `GenerationView` boundary; delete provider/request equality
-  rechecks and make the verified capability reach the publication/operation consumer that requires it.
+  rechecks and make the exact verified store snapshot/lease reach the publication/operation consumer
+  that requires it. Copied descriptor facts or an arbitrary predicate are insufficient authority.
 
 ### 2. Server observability adapter — bounded seam proven; health plane remains
 
