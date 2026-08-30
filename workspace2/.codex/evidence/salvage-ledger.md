@@ -12,7 +12,7 @@ inspectable in Git; a row permits deletion only after the named destination and 
 | Canonical scans advance a forward sparse cursor with no random lookup per row | original `LocalityCursor` | absorb | named `CursorOrdinals` and closed `ExceptionRoute` carrying actual provider/basis/descriptor borrows | scan-work tests require one sparse comparison per exception and no per-row rank query |
 | Provider and descriptor faults retain exact ordinal and source | deleted `artifact/trusted_decode.rs` and `LocalityReadError` | supersede with proof | `LocalityError` at the sole validation boundary | zero provider and unknown schema mutations assert ordinal and complete nested source before any witness exists; artifact-global domain mismatch retains expected and observed codes |
 | A validated immutable witness never silently omits corrupt post-validation data | `trusted_decode` attempted to contain hypothetical byte drift after validation | reject as false capability | immutable borrow ownership plus `with_validated_locality` revalidates each potentially interior-mutable `AsRef` visit | safe callers cannot mutate borrowed bytes; HRTB visit cannot cache a witness across another borrow; domain-mismatch and writer/parser differential tests cover projection |
-| Projection does not re-decode provider/schema/content cells or allocate sidecars | rejected 74-line Luna draft tried infallible accessors with fallback reconstruction | absorb | `ProviderWire`, compact locality descriptor records, `PlacementLanes`, and typed `ContentPayload` projection | source scan finds no post-validation `Result`, fallback, raw decoder, `Box`, or `Vec`; second-domain round trip preserves exact content identity |
+| Projection does not re-decode provider/schema/content cells or allocate sidecars | rejected 74-line Luna draft tried infallible accessors with fallback reconstruction | absorb | `ProviderWire`, compact locality descriptor records, `PlacementLanes`, and a checked zero-sized `ContentAuthority` proof | source scan finds no post-validation `Result`, fallback, raw decoder, `Box`, or `Vec`; arbitrary 31-byte payloads cannot bind without checked header authority; second-domain round trip preserves exact content identity |
 | Direct writes reject short output before changing any byte | original `PreparedLocality::write` | retain | unchanged total preflight and exact `OutputTooSmall` operands | public canonical-writer test checks prefix/tail transactional behavior |
 | A private encoder cannot mint a weaker witness than untrusted bytes receive | earlier `validate::from_writer` checked only Rust lane validity | supersede with proof | direct writer traverses the complete public grammar once after emission | returned writer witness and reparsed witness project identical entries for object and dependency-set domains |
 | Scalar validation defines semantics while SIMD is only an acceleration | original scalar/SIMD row validator | retain | scalar oracle plus detected `fearless_simd` level | public differential tests require identical first error and identical long-lane projection/work |
@@ -21,6 +21,8 @@ inspectable in Git; a row permits deletion only after the named destination and 
 
 The rejected unsafe projection remains visible in the pre-review diff but is not retained. Its useful
 insight—authority must be proved once, then projection must be total—moved into the wire grammar:
-`HeaderWireRecord` stores one content-domain code, while each descriptor stores a typed 31-byte
-`ContentPayload`. This removes one byte and one authority branch per present overlay while keeping the
-entire implementation safe, allocation-free, and independently reviewable.
+`HeaderWireRecord` stores one content-domain code, while each descriptor stores its remaining 31
+payload bytes. Validation converts the observed header cell into a zero-sized `ContentAuthority`
+proof; only that proof can bind payloads during infallible projection. This removes one byte and one
+authority branch per present overlay while keeping arbitrary payloads from becoming typed identities
+without checked wire authority.

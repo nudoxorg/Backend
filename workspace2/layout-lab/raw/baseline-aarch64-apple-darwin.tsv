@@ -9,7 +9,7 @@ columns	kind	family	type	size_bytes	align_bytes	cache_lines	contract
 type	identity	DomainTag	16	1	1	repr(transparent), protocol-label width
 type	identity	EncodingTag	16	1	1	repr(transparent), protocol-label width
 type	identity	ContentId<ObjectDomain>	32	1	1	repr(transparent), explicit exact-layout test
-type	identity	ContentPayload<ObjectDomain>	31	1	1	repr(transparent), artifact-global authority payload
+type	identity	ContentAuthority<ObjectDomain>	0	1	0	zero-sized checked artifact-global authority proof
 type	identity	ArtifactId<FrameEncoding, ObjectDomain>	32	1	1	repr(transparent), explicit exact-layout test
 type	identity	ContentRoutingWord	8	8	1	repr(transparent), explicit exact-layout test
 type	identity	GenerationId	32	1	1	ContentId alias

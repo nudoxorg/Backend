@@ -339,10 +339,10 @@ all-overlay-absent geometry is 217 B for 32 exceptions and 353 B for 64. Present
 
 Strict big-endian exception-row validation has a scalar `TryFrom<&[u8]>` path and a reusable
 root-owned `LocalityValidator` that privately caches one `fearless_simd` level. Three Apple M3 Pro
-runs put the stable crossover at 32 rows: median full-artifact validation was 24,815 µs scalar vs
-8,392 µs SIMD for 250,000 parses (2.96×), and 18,338 µs vs 1,801 µs at 16,384 rows (10.18× for 488
-parses). Counts 0–16 stay scalar. The release fixture added 328 B of Mach-O `__text` and 16 B of
-`__const`; file size was unchanged after section padding. Differential tests cover every length through
+runs put the stable crossover at 32 rows: median full-artifact validation was 33,223 µs scalar vs
+11,966 µs SIMD for 250,000 parses (2.78×), and 22,088 µs vs 1,786 µs at 16,384 rows (12.37× for 488
+parses). Counts 0–16 stay scalar. The release fixture added 324 B of Mach-O `__text`, 16 B of
+`__const`, and 16,544 B of padded file size. Differential tests cover every length through
 33, every alignment 0–15, every malformed short lane, long deterministic tails, exact error
 priority, forced fallback/baseline, and detected execution. Raw timings and sizes are in the linked
 JSONL artifact.
