@@ -1,18 +1,26 @@
 //! Actual GPUI entity/view adapter, kept behind an explicit feature.
 
-use crate::{ApplicationReply, ApplyError, BatchReceipt, ShellState};
+use crate::{ApplicationInput, ApplicationReply, ApplicationService, ApplyError, ShellState};
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*};
 
 /// Entity-backed GPUI view for the bounded application shell.
+///
+/// The entity owns the one concrete application service used by the UI. A caller supplies typed
+/// [`ApplicationInput`] values; this view never decodes a second command vocabulary or searches
+/// for a backend. The service reply is projected into fixed state and emits one bounded notify.
 pub struct GpuiShellView {
+    service: ApplicationService,
     state: ShellState,
 }
 
 impl GpuiShellView {
-    /// Creates a shell with stable first-frame checking states.
+    /// Creates a shell around one application service owner.
     #[must_use]
-    pub fn new(state: ShellState) -> Self {
-        Self { state }
+    pub fn new(service: ApplicationService) -> Self {
+        Self {
+            service,
+            state: ShellState::default(),
+        }
     }
 
     /// Borrows the projected state for assertions or parent composition.
@@ -21,28 +29,31 @@ impl GpuiShellView {
         &self.state
     }
 
-    /// Applies one bounded core reply slice and requests at most one GPUI notify.
+    /// Executes one typed application command and projects its exact reply.
+    ///
+    /// The service is entity-owned, so sequential GPUI inputs share operation ownership and
+    /// cancellation state. No task, timer, global lookup, or accessibility driver is introduced
+    /// by the shell.
     ///
     /// # Errors
     ///
-    /// Returns [`ApplyError::BatchTooLarge`] when the slice exceeds the fixed shell boundary, or
-    /// [`ApplyError::NotificationEpochExhausted`] when the notification counter cannot advance.
-    pub fn apply_replies(
+    /// Returns [`ApplyError::NotificationEpochExhausted`] only if the fixed notification epoch
+    /// cannot advance.
+    pub fn execute(
         &mut self,
-        replies: &[ApplicationReply],
+        input: &ApplicationInput,
         cx: &mut Context<Self>,
-    ) -> Result<BatchReceipt, ApplyError> {
-        let receipt = self.state.apply_batch(replies)?;
-        if receipt.notifications() != 0 {
-            cx.notify();
-        }
-        Ok(receipt)
+    ) -> Result<ApplicationReply, ApplyError> {
+        let reply = self.service.execute(input);
+        self.state.apply_batch(&[reply])?;
+        cx.notify();
+        Ok(reply)
     }
 }
 
 impl Default for GpuiShellView {
     fn default() -> Self {
-        Self::new(ShellState::default())
+        Self::new(ApplicationService::new())
     }
 }
 

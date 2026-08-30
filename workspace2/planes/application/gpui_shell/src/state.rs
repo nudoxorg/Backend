@@ -1,21 +1,25 @@
 //! Fixed-capacity state projection for core application replies.
 
 use wave_application_core::{
-    ApplicationReply, Capability, CapabilityHealth, CorrelationId, DiagnosticCode, OperationKey,
-    ProgressPage, ReplyBody, Terminal,
+    AdaptiveDisposition, ApplicationReply, Capability, CapabilityHealth, CorrelationId,
+    DiagnosticCode, ExecutionState, OperationKey, ReplyBody, Terminal,
 };
 
 /// Maximum number of replies accepted at one UI boundary.
 pub const MAX_BATCH_REPLIES: usize = 8;
 
 /// Number of stable rows rendered by the shell.
-pub const SURFACE_COUNT: usize = 6;
+pub const SURFACE_COUNT: usize = 7;
 
 /// A stable presentation surface in the application shell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Surface {
-    /// Compiler generation results.
+    /// Compiler registry output.
     Generation,
+    /// Pure adaptive placement decisions.
+    Adaptive,
+    /// Service-owned local capability execution.
+    Execution,
     /// Snapshot/index-backed results.
     Index,
     /// Graph-backed results.
@@ -24,8 +28,6 @@ pub enum Surface {
     Vector,
     /// Capability health facts.
     Health,
-    /// Cursor-based progress facts.
-    Progress,
 }
 
 impl Surface {
@@ -34,11 +36,12 @@ impl Surface {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Generation => "Generation",
+            Self::Adaptive => "Adaptive",
+            Self::Execution => "Execution",
             Self::Index => "Index",
             Self::Graph => "Graph",
             Self::Vector => "Vector",
             Self::Health => "Health",
-            Self::Progress => "Progress",
         }
     }
 
@@ -47,11 +50,12 @@ impl Surface {
     pub const fn element_id(self) -> &'static str {
         match self {
             Self::Generation => "generation",
+            Self::Adaptive => "adaptive",
+            Self::Execution => "execution",
             Self::Index => "index",
             Self::Graph => "graph",
             Self::Vector => "vector",
             Self::Health => "health",
-            Self::Progress => "progress",
         }
     }
 }
@@ -61,6 +65,8 @@ impl Surface {
 pub enum ProjectionState {
     /// No core reply has reached this surface yet.
     Checking,
+    /// A bounded operation was accepted for a separate execution owner.
+    Accepted,
     /// The surface has usable local facts.
     Ready,
     /// The surface has useful facts but a named capability is unavailable.
@@ -69,7 +75,7 @@ pub enum ProjectionState {
     Cancelled,
     /// The core rejected or failed the operation.
     Failed,
-    /// The surface has observed a nonterminal progress page.
+    /// The surface has observed a nonterminal execution state.
     Active,
 }
 
@@ -79,6 +85,7 @@ impl ProjectionState {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Checking => "Checking",
+            Self::Accepted => "Accepted",
             Self::Ready => "Ready",
             Self::Degraded(_) => "Degraded",
             Self::Cancelled => "Cancelled",
@@ -88,11 +95,16 @@ impl ProjectionState {
     }
 }
 
-/// Presentation status for a non-health, non-progress surface.
+/// Presentation status for a non-health, non-adaptive, non-execution surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfaceStatus {
     /// No reply has reached this surface yet.
     Checking,
+    /// A separate bounded operation was accepted.
+    Accepted {
+        /// Core terminal retained unchanged.
+        terminal: Terminal,
+    },
     /// A complete terminal was projected.
     Ready {
         /// Core terminal retained unchanged.
@@ -123,10 +135,94 @@ impl SurfaceStatus {
     const fn projection(self) -> ProjectionState {
         match self {
             Self::Checking => ProjectionState::Checking,
+            Self::Accepted { .. } => ProjectionState::Accepted,
             Self::Ready { .. } => ProjectionState::Ready,
             Self::Degraded { capability, .. } => ProjectionState::Degraded(capability),
             Self::Cancelled { .. } => ProjectionState::Cancelled,
             Self::Failed { .. } => ProjectionState::Failed,
+        }
+    }
+}
+
+/// Direct projection of a pure adaptive policy decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveProjection {
+    /// No adaptive decision has reached the shell yet.
+    Checking,
+    /// The exact C6 decision and terminal retained without conversion.
+    Reported {
+        /// Pure policy disposition.
+        disposition: AdaptiveDisposition,
+        /// Core terminal retained unchanged.
+        terminal: Terminal,
+    },
+}
+
+impl AdaptiveProjection {
+    /// Returns the retained adaptive disposition, if present.
+    #[must_use]
+    pub const fn disposition(self) -> Option<AdaptiveDisposition> {
+        match self {
+            Self::Checking => None,
+            Self::Reported { disposition, .. } => Some(disposition),
+        }
+    }
+
+    /// Returns the visible state of the adaptive surface.
+    #[must_use]
+    pub const fn projection(self) -> ProjectionState {
+        match self {
+            Self::Checking => ProjectionState::Checking,
+            Self::Reported { terminal, .. } => terminal_projection(terminal),
+        }
+    }
+}
+
+/// Direct projection of a service-owned adaptive execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionProjection {
+    /// No execution reply has reached the shell yet.
+    Checking,
+    /// The local action was accepted and is owned by the service future.
+    Started {
+        /// Core operation identity retained unchanged.
+        operation: OperationKey,
+        /// Exact selected local transition retained unchanged.
+        transition: wave_application_core::CapabilityTransition,
+        /// Core accepted terminal retained unchanged.
+        terminal: Terminal,
+    },
+    /// The exact service-owned execution state and terminal.
+    Reported {
+        /// Finite execution observation.
+        state: ExecutionState,
+        /// Core terminal retained unchanged.
+        terminal: Terminal,
+    },
+}
+
+impl ExecutionProjection {
+    /// Returns the retained execution observation, if polling has happened.
+    #[must_use]
+    pub const fn state(self) -> Option<ExecutionState> {
+        match self {
+            Self::Checking | Self::Started { .. } => None,
+            Self::Reported { state, .. } => Some(state),
+        }
+    }
+
+    /// Returns the visible state of the execution surface.
+    #[must_use]
+    pub const fn projection(self) -> ProjectionState {
+        match self {
+            Self::Checking => ProjectionState::Checking,
+            Self::Started { .. } => ProjectionState::Accepted,
+            Self::Reported { state, .. } => match state {
+                ExecutionState::Pending { .. } => ProjectionState::Active,
+                ExecutionState::Completed { .. } => ProjectionState::Ready,
+                ExecutionState::Cancelled { .. } => ProjectionState::Cancelled,
+                ExecutionState::Failed { .. } => ProjectionState::Failed,
+            },
         }
     }
 }
@@ -139,7 +235,7 @@ pub enum HealthProjection {
     /// The exact core health array and terminal.
     Reported {
         /// Core capability facts retained without conversion.
-        facts: [CapabilityHealth; 4],
+        facts: [CapabilityHealth; 6],
         /// Core terminal retained unchanged.
         terminal: Terminal,
     },
@@ -148,7 +244,7 @@ pub enum HealthProjection {
 impl HealthProjection {
     /// Returns the retained core health facts, if present.
     #[must_use]
-    pub const fn facts(self) -> Option<[CapabilityHealth; 4]> {
+    pub const fn facts(self) -> Option<[CapabilityHealth; 6]> {
         match self {
             Self::Checking => None,
             Self::Reported { facts, .. } => Some(facts),
@@ -157,7 +253,7 @@ impl HealthProjection {
 
     /// Returns the health surface's visible state.
     #[must_use]
-    pub fn projection(self) -> ProjectionState {
+    pub const fn projection(self) -> ProjectionState {
         match self {
             Self::Checking => ProjectionState::Checking,
             Self::Reported { facts, terminal } => {
@@ -167,53 +263,6 @@ impl HealthProjection {
                     terminal_projection(terminal)
                 }
             }
-        }
-    }
-}
-
-/// Direct projection of the core progress page.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProgressProjection {
-    /// No progress reply has reached the shell yet.
-    Checking,
-    /// A core-owned progress operation was admitted.
-    Started {
-        /// Core operation handle retained unchanged.
-        operation: OperationKey,
-    },
-    /// The exact core cursor page retained without conversion.
-    Reported(ProgressPage),
-    /// A core-owned progress operation was cancelled.
-    Cancelled {
-        /// Core operation handle retained unchanged.
-        operation: OperationKey,
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-    },
-}
-
-impl ProgressProjection {
-    /// Returns the retained core progress page, if present.
-    #[must_use]
-    pub const fn page(self) -> Option<ProgressPage> {
-        match self {
-            Self::Checking | Self::Started { .. } | Self::Cancelled { .. } => None,
-            Self::Reported(page) => Some(page),
-        }
-    }
-
-    fn projection(self) -> ProjectionState {
-        match self {
-            Self::Checking => ProjectionState::Checking,
-            Self::Started { .. }
-            | Self::Reported(ProgressPage::Events { .. } | ProgressPage::Pending { .. }) => {
-                ProjectionState::Active
-            }
-            Self::Reported(ProgressPage::Terminal { terminal, .. }) => {
-                terminal_projection(terminal)
-            }
-            Self::Reported(ProgressPage::Finished) => ProjectionState::Ready,
-            Self::Cancelled { .. } => ProjectionState::Cancelled,
         }
     }
 }
@@ -238,11 +287,12 @@ struct LastReply {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShellState {
     generation: SurfaceStatus,
+    adaptive: AdaptiveProjection,
+    execution: ExecutionProjection,
     index: SurfaceStatus,
     graph: SurfaceStatus,
     vector: SurfaceStatus,
     health: HealthProjection,
-    progress: ProgressProjection,
     last_reply: Option<LastReply>,
     notification_epoch: u64,
 }
@@ -300,6 +350,14 @@ impl ShellState {
                 state: self.generation.projection(),
             },
             SurfaceSummary {
+                surface: Surface::Adaptive,
+                state: self.adaptive.projection(),
+            },
+            SurfaceSummary {
+                surface: Surface::Execution,
+                state: self.execution.projection(),
+            },
+            SurfaceSummary {
                 surface: Surface::Index,
                 state: self.index.projection(),
             },
@@ -315,23 +373,31 @@ impl ShellState {
                 surface: Surface::Health,
                 state: self.health.projection(),
             },
-            SurfaceSummary {
-                surface: Surface::Progress,
-                state: self.progress.projection(),
-            },
         ]
+    }
+
+    /// Returns the compiler generation projection.
+    #[must_use]
+    pub const fn generation(&self) -> SurfaceStatus {
+        self.generation
+    }
+
+    /// Returns the pure adaptive decision projection.
+    #[must_use]
+    pub const fn adaptive(&self) -> AdaptiveProjection {
+        self.adaptive
+    }
+
+    /// Returns the service-owned execution projection.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionProjection {
+        self.execution
     }
 
     /// Returns the projected health body.
     #[must_use]
     pub const fn health(&self) -> HealthProjection {
         self.health
-    }
-
-    /// Returns the projected progress body.
-    #[must_use]
-    pub const fn progress(&self) -> ProgressProjection {
-        self.progress
     }
 
     /// Returns the last core correlation, if a reply was applied.
@@ -375,12 +441,13 @@ impl ShellState {
         });
 
         match reply.body {
-            ReplyBody::Generated { .. } => {
+            ReplyBody::CompilerPassthrough { .. } => {
                 self.generation = status_from_terminal(reply.terminal, reply.diagnostic);
             }
             ReplyBody::DependencyUnavailable { capability } => {
-                self.status_for(capability)
-                    .set_degraded(reply.terminal, capability);
+                if let Some(status) = self.status_for(capability) {
+                    status.set_degraded(reply.terminal, capability);
+                }
             }
             ReplyBody::Health(facts) => {
                 self.health = HealthProjection::Reported {
@@ -389,15 +456,25 @@ impl ShellState {
                 };
                 self.project_health_status(facts, reply.terminal);
             }
-            ReplyBody::Progress(page) => {
-                self.progress = ProgressProjection::Reported(page);
+            ReplyBody::Adaptive(disposition) => {
+                self.adaptive = AdaptiveProjection::Reported {
+                    disposition,
+                    terminal: reply.terminal,
+                };
             }
-            ReplyBody::ProgressStarted { operation } => {
-                self.progress = ProgressProjection::Started { operation };
-            }
-            ReplyBody::Cancelled { operation } => {
-                self.progress = ProgressProjection::Cancelled {
+            ReplyBody::ExecutionStarted {
+                operation,
+                transition,
+            } => {
+                self.execution = ExecutionProjection::Started {
                     operation,
+                    transition,
+                    terminal: reply.terminal,
+                };
+            }
+            ReplyBody::Execution(state) => {
+                self.execution = ExecutionProjection::Reported {
+                    state,
                     terminal: reply.terminal,
                 };
             }
@@ -405,26 +482,30 @@ impl ShellState {
         }
     }
 
-    fn project_health_status(&mut self, facts: [CapabilityHealth; 4], terminal: Terminal) {
+    fn project_health_status(&mut self, facts: [CapabilityHealth; 6], terminal: Terminal) {
         for fact in facts {
             match fact {
                 CapabilityHealth::LocalReady(capability) => {
-                    self.status_for(capability).set_ready(terminal);
+                    if let Some(status) = self.status_for(capability) {
+                        status.set_ready(terminal);
+                    }
                 }
                 CapabilityHealth::Unavailable(capability) => {
-                    self.status_for(capability)
-                        .set_degraded(terminal, capability);
+                    if let Some(status) = self.status_for(capability) {
+                        status.set_degraded(terminal, capability);
+                    }
                 }
             }
         }
     }
 
-    fn status_for(&mut self, capability: Capability) -> &mut SurfaceStatus {
+    fn status_for(&mut self, capability: Capability) -> Option<&mut SurfaceStatus> {
         match capability {
-            Capability::Compiler => &mut self.generation,
-            Capability::Index => &mut self.index,
-            Capability::Graph => &mut self.graph,
-            Capability::Vector => &mut self.vector,
+            Capability::CompilerRegistry | Capability::CompilerOutput => Some(&mut self.generation),
+            Capability::Index => Some(&mut self.index),
+            Capability::Graph => Some(&mut self.graph),
+            Capability::Vector => Some(&mut self.vector),
+            Capability::LocalAnalyzer | Capability::Remote => None,
         }
     }
 }
@@ -433,11 +514,12 @@ impl Default for ShellState {
     fn default() -> Self {
         Self {
             generation: SurfaceStatus::Checking,
+            adaptive: AdaptiveProjection::Checking,
+            execution: ExecutionProjection::Checking,
             index: SurfaceStatus::Checking,
             graph: SurfaceStatus::Checking,
             vector: SurfaceStatus::Checking,
             health: HealthProjection::Checking,
-            progress: ProgressProjection::Checking,
             last_reply: None,
             notification_epoch: 0,
         }
@@ -499,11 +581,12 @@ pub enum ApplyError {
     NotificationEpochExhausted,
 }
 
-fn status_from_terminal(
+const fn status_from_terminal(
     terminal: Terminal,
     diagnostic: Option<wave_application_core::Diagnostic>,
 ) -> SurfaceStatus {
     match terminal {
+        Terminal::Accepted { .. } => SurfaceStatus::Accepted { terminal },
         Terminal::Complete { .. } => SurfaceStatus::Ready { terminal },
         Terminal::Partial { unavailable, .. } | Terminal::Degraded { unavailable, .. } => {
             SurfaceStatus::Degraded {
@@ -514,14 +597,18 @@ fn status_from_terminal(
         Terminal::Cancelled { .. } => SurfaceStatus::Cancelled { terminal },
         Terminal::Failed => SurfaceStatus::Failed {
             terminal,
-            diagnostic: diagnostic.map(|value| value.code),
+            diagnostic: match diagnostic {
+                Some(value) => Some(value.code),
+                None => None,
+            },
         },
     }
 }
 
-fn terminal_projection(terminal: Terminal) -> ProjectionState {
+const fn terminal_projection(terminal: Terminal) -> ProjectionState {
     match status_from_terminal(terminal, None) {
         SurfaceStatus::Checking => ProjectionState::Checking,
+        SurfaceStatus::Accepted { .. } => ProjectionState::Accepted,
         SurfaceStatus::Ready { .. } => ProjectionState::Ready,
         SurfaceStatus::Degraded { capability, .. } => ProjectionState::Degraded(capability),
         SurfaceStatus::Cancelled { .. } => ProjectionState::Cancelled,
@@ -529,9 +616,13 @@ fn terminal_projection(terminal: Terminal) -> ProjectionState {
     }
 }
 
-fn first_unavailable(facts: [CapabilityHealth; 4]) -> Option<Capability> {
-    facts.into_iter().find_map(|fact| match fact {
-        CapabilityHealth::LocalReady(_) => None,
-        CapabilityHealth::Unavailable(capability) => Some(capability),
-    })
+const fn first_unavailable(facts: [CapabilityHealth; 6]) -> Option<Capability> {
+    let mut index = 0;
+    while index < facts.len() {
+        if let CapabilityHealth::Unavailable(capability) = facts[index] {
+            return Some(capability);
+        }
+        index += 1;
+    }
+    None
 }
