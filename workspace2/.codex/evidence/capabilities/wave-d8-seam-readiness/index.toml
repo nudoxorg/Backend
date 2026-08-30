@@ -1,6 +1,6 @@
 schema = 1
 capability_id = "wave-d8-seam-readiness"
-state = "phase0"
+state = "evidence-blocked"
 baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
 baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
 baseline_status = "clean"
@@ -27,10 +27,52 @@ matrix = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/proof-mat
 research = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/research.md", sha256 = "c1773de0e0261307bb908db68b9360887eac5ef30e2cd75dca8494f2b9e67f4d" }
 red_falsifiers = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/red-falsifiers.md", sha256 = "1c1744eb411e967e2c6a88f67607106d982ccc2969e9242a36f5a4d87cf62d58" }
 resource_controls = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/resource-controls.md", sha256 = "9c4a577d5d4e188215e0154492afd9923da157cec238ddf564a50cf8e299b904" }
-closure = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/closure.md", sha256 = "1c48b07669bc423f751a4cff925ebb829f862398a4d3f81a691b6b273f698e12" }
+closure = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/closure.md", sha256 = "dfe210955c8ac1dce4445bddcc58347fe29c5420fb005a401402825d5e42a316" }
+pre_edit_attempt_1 = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/receipts/pre-edit-attempt-1.md", sha256 = "1e9f4f3741282a72d6cd86a3f3e6bc3da6d8a47be7d26123842b451516f5db29" }
+pre_edit_attempt_2 = { path = ".codex/evidence/capabilities/wave-d8-seam-readiness/receipts/pre-edit-attempt-2.md", sha256 = "690f2db95da2de29e5ab9eede83f4ee0aa1754287f1a031c9ae367506611b644" }
 
 [[packets]]
 id = "pre-edit-1"
 path = ".codex/evidence/capabilities/wave-d8-seam-readiness/packets/pre-edit-1.md"
 sha256 = "0fdd48398b64d89736962a8665776bfae8577619af6cc42d5866ae81ca627571"
 kind = "rationale-free-review-contract"
+
+[[reviews]]
+review_id = "pre-edit-1-attempt-1"
+sidecar_task_id = "01a0513d-e809-7bd1-a597-9282bbb0c7ad"
+task_id = "UNVERIFIED"
+role = "nudox_terra_reviewer"
+config_path = ".codex/agents/nudox-terra-reviewer.toml"
+model = "UNVERIFIED"
+effort = "UNVERIFIED"
+sandbox = "UNVERIFIED"
+writable_roots = []
+requested_writable_root = "/private/tmp/nudox-wave-d8-preedit-build-f08b4c56"
+implicit_tmp_writes_excluded = true
+effective_sandbox_event = "UNVERIFIED"
+snapshot_tree = "exported-source-sha256:261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+packet_path = ".codex/evidence/capabilities/wave-d8-seam-readiness/packets/pre-edit-1.md"
+packet_sha256 = "0fdd48398b64d89736962a8665776bfae8577619af6cc42d5866ae81ca627571"
+source_before_sha256 = "261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+source_after_sha256 = "261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+result = "evidence-blocked"
+
+[[reviews]]
+review_id = "pre-edit-1-attempt-2"
+sidecar_task_id = "01a05140-a448-7052-a784-a9a14f4348b4"
+task_id = "UNVERIFIED"
+role = "nudox_terra_reviewer"
+config_path = ".codex/agents/nudox-terra-reviewer.toml"
+model = "UNVERIFIED"
+effort = "UNVERIFIED"
+sandbox = "UNVERIFIED"
+writable_roots = []
+requested_writable_root = "/private/tmp/nudox-wave-d8-preedit-build-f08b4c56-v2"
+implicit_tmp_writes_excluded = true
+effective_sandbox_event = "UNVERIFIED"
+snapshot_tree = "exported-source-sha256:261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+packet_path = ".codex/evidence/capabilities/wave-d8-seam-readiness/packets/pre-edit-1.md"
+packet_sha256 = "0fdd48398b64d89736962a8665776bfae8577619af6cc42d5866ae81ca627571"
+source_before_sha256 = "261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+source_after_sha256 = "261ecea710ae6bd73c69642d601d69750640b47b7549a308330a7bdb97bb476b"
+result = "evidence-blocked"
