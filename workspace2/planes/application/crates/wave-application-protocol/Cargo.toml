@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 nudox-adaptive = { path = "../../../adaptive/crates/nudox-adaptive" }
+nudox-id = { path = "../../../../crates/nudox-id" }
 nudox-compile-vocab = { path = "../../../compiler/crates/nudox-compile-vocab" }
 serde_json.workspace = true
 wave-application-core = { path = "../wave-application-core" }

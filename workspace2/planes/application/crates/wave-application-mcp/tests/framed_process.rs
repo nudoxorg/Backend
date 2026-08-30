@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use wave_application_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
 use wave_application_protocol::{read_frame, write_frame};
 
 #[derive(Debug)]
@@ -37,7 +38,12 @@ impl From<serde_json::Error> for TestError {
     }
 }
 
-fn request(id: u64, action: &str, arguments: &Value) -> Result<Value, TestError> {
+fn request(
+    id: &Value,
+    correlation: u64,
+    action: &str,
+    arguments: &Value,
+) -> Result<Value, TestError> {
     let request_arguments = arguments.as_object().ok_or_else(|| {
         TestError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -46,7 +52,7 @@ fn request(id: u64, action: &str, arguments: &Value) -> Result<Value, TestError>
     })?;
     let mut request_arguments = request_arguments.clone();
     request_arguments.insert("action".to_owned(), json!(action));
-    request_arguments.insert("correlation".to_owned(), json!(id));
+    request_arguments.insert("correlation".to_owned(), json!(correlation));
     Ok(json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -81,12 +87,72 @@ fn generate(
     source: &str,
 ) -> Result<Value, TestError> {
     let generation = request(
+        &json!(id),
         id,
         "generate",
         &json!({"language": "rust", "stage": "parse", "package": "mcp-package", "source": source}),
     )?;
     send(stdin, &generation)?;
     receive(stdout)
+}
+
+fn policy_arguments() -> Value {
+    json!({
+        "generation": GenerationId::from_digest([11; 32]).to_string(),
+        "snapshot": IndexSnapshotId::from_digest([13; 32]).to_string(),
+        "bundle": ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
+        "ram_free": 4096,
+        "nvme_free": 8192,
+        "operations": 1,
+        "retries": 1,
+        "memory_pressure": "relaxed",
+        "storage_pressure": "relaxed",
+        "battery": "normal",
+    })
+}
+
+fn effect(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: &Value,
+    correlation: u64,
+    action: &str,
+    arguments: &Value,
+) -> Result<Value, TestError> {
+    let begin_request = request(id, correlation, action, arguments)?;
+    send(stdin, &begin_request)?;
+    receive(stdout)
+}
+
+fn recover(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: &Value,
+    correlation: u64,
+) -> Result<Value, TestError> {
+    effect(
+        stdin,
+        stdout,
+        id,
+        correlation,
+        "recover-local",
+        &policy_arguments(),
+    )
+}
+
+fn release_arguments() -> Value {
+    json!({
+        "generation": GenerationId::from_digest([11; 32]).to_string(),
+        "snapshot": IndexSnapshotId::from_digest([13; 32]).to_string(),
+        "bundle": ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
+        "ram_free": 4096,
+        "nvme_free": 8192,
+        "operations": 1,
+        "retries": 0,
+        "memory_pressure": "relaxed",
+        "storage_pressure": "relaxed",
+        "battery": "critical",
+    })
 }
 
 fn assert_generation(
@@ -108,28 +174,48 @@ fn assert_generation(
         .ok_or_else(|| TestError::Io(io::Error::new(io::ErrorKind::InvalidData, "source missing")))
 }
 
+fn assert_first_completed(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<(), TestError> {
+    let admitted = recover(stdin, stdout, &json!(82), 82)?;
+    assert_eq!(
+        admitted["result"]["structuredContent"]["body"]["kind"],
+        "execution_started"
+    );
+
+    let pending_request = request(&json!(83), 83, "poll-execution", &json!({"operation": "1"}))?;
+    send(stdin, &pending_request)?;
+    let pending = receive(stdout)?;
+    assert_eq!(pending["id"], 83);
+    assert_eq!(
+        pending["result"]["structuredContent"]["body"]["state"]["kind"],
+        "pending"
+    );
+
+    let completed_request = request(&json!(84), 84, "poll-execution", &json!({"operation": "1"}))?;
+    send(stdin, &completed_request)?;
+    let completed = receive(stdout)?;
+    assert_eq!(completed["id"], 84);
+    assert_eq!(
+        completed["result"]["structuredContent"]["body"]["state"]["kind"],
+        "completed"
+    );
+    Ok(())
+}
+
 fn assert_cancelled(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
 ) -> Result<(), TestError> {
-    let begin_request = request(
-        82,
-        "recover-local",
-        &json!({
-            "generation": "application-generation",
-            "snapshot": "application-snapshot",
-            "bundle": "verified-analyzer-bundle",
-            "ram_free": 4096,
-            "nvme_free": 8192,
-            "operations": 1,
-            "retries": 1,
-            "memory_pressure": "relaxed",
-            "storage_pressure": "relaxed",
-            "battery": "normal",
-        }),
+    let admitted = effect(
+        stdin,
+        stdout,
+        &json!("second-operation"),
+        85,
+        "release-local",
+        &release_arguments(),
     )?;
-    send(stdin, &begin_request)?;
-    let admitted = receive(stdout)?;
     assert_eq!(
         admitted["result"]["structuredContent"]["body"]["kind"],
         "execution_started"
@@ -138,14 +224,14 @@ fn assert_cancelled(
     let cancellation_request = json!({
         "jsonrpc": "2.0",
         "method": "$/cancelRequest",
-        "params": {"requestId": 82},
+        "params": {"requestId": "second-operation"},
     });
     send(stdin, &cancellation_request)?;
 
-    let progress_request = request(83, "poll-execution", &json!({"operation": "1"}))?;
+    let progress_request = request(&json!(86), 86, "poll-execution", &json!({"operation": "2"}))?;
     send(stdin, &progress_request)?;
     let progress = receive(stdout)?;
-    assert_eq!(progress["id"], 83);
+    assert_eq!(progress["id"], 86);
     assert_eq!(
         progress["result"]["structuredContent"]["body"]["state"]["kind"],
         "cancelled"
@@ -159,13 +245,13 @@ fn assert_malformed(
 ) -> Result<(), TestError> {
     let malformed = json!({
         "jsonrpc": "2.0",
-        "id": 84,
+        "id": 87,
         "method": "tools/call",
         "params": {"name": "nudox.application"},
     });
     send(stdin, &malformed)?;
     let error = receive(stdout)?;
-    assert_eq!(error["id"], 84);
+    assert_eq!(error["id"], 87);
     assert_eq!(error["error"]["data"]["code"], "missing_field");
     Ok(())
 }
@@ -190,6 +276,7 @@ fn framed_mcp_process_preserves_structured_results_and_named_cancellation() -> R
     let first_source = assert_generation(&mut stdin, &mut stdout, 81, "fn mcp() {}")?;
     let second_source = assert_generation(&mut stdin, &mut stdout, 811, "fn mcp_second() {}")?;
     assert_ne!(first_source, second_source);
+    assert_first_completed(&mut stdin, &mut stdout)?;
     assert_cancelled(&mut stdin, &mut stdout)?;
     assert_malformed(&mut stdin, &mut stdout)?;
 

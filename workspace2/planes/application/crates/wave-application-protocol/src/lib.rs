@@ -8,13 +8,14 @@ mod frame;
 mod json;
 
 pub use cli::{
-    AdapterError, AdapterErrorCause, AdapterErrorCode, CLI_COMMAND_SEPARATOR, MAX_CLI_ARGUMENTS,
+    AdapterError, AdapterErrorCause, AdapterErrorCode, CANONICAL_CONTENT_ID_TEXT_BYTES,
+    CLI_COMMAND_SEPARATOR, CanonicalContentId, CanonicalContentIdDecodeError, MAX_CLI_ARGUMENTS,
     collect_cli_arguments, decode_cli,
 };
 pub use frame::{
     MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,
 };
 pub use json::{
-    McpDecode, McpDecodeError, McpEnvelope, decode_mcp, encode_cli_adapter_error, encode_cli_reply,
-    mcp_error, mcp_reply, reply_json,
+    CancellationTarget, McpDecode, McpDecodeError, McpEnvelope, McpRequest, McpRequestId,
+    decode_mcp, encode_cli_adapter_error, encode_cli_reply, mcp_error, mcp_reply, reply_json,
 };

@@ -3901,6 +3901,7 @@ version = "0.1.0"
 dependencies = [
  "nudox-adaptive",
  "nudox-compile-vocab",
+ "nudox-id",
  "serde_json",
  "wave-application-core",
 ]

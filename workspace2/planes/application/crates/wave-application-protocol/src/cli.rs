@@ -2,14 +2,17 @@
 
 use std::{error::Error, fmt, num::ParseIntError};
 
+use nudox_id::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDomain, RootDomain};
 use wave_application_core::{
-    ApplicationInput, BatteryState, ByteCount, CapabilityDomain, ContentId, CorrelationId,
-    GenerationId, INPUT_TEXT_BYTES, IndexSnapshotId, InputText, InputTextError, OperationBudget,
-    OperationKey, Pin, Pressure, ResourceBudget, RetryBudget,
+    ApplicationInput, BatteryState, ByteCount, ContentId, CorrelationId, InconsistentRecovery,
+    InputText, InputTextError, OperationBudget, OperationKey, Pin, Pressure, ResourceBudget,
+    RetryBudget,
 };
 
 /// Largest positional CLI field count for the closed application command vocabulary.
-pub const MAX_CLI_ARGUMENTS: usize = 12;
+pub const MAX_CLI_ARGUMENTS: usize = 14;
+/// Exact text width of one formatted content identity (`content:` plus 32 lower-hex bytes).
+pub const CANONICAL_CONTENT_ID_TEXT_BYTES: usize = 8 + HASH_BYTES * 2;
 /// Largest number of commands sharing one bounded CLI service session.
 const MAX_CLI_COMMANDS: usize = 4;
 /// Token that separates commands while retaining one in-process service owner.
@@ -43,6 +46,8 @@ pub enum AdapterErrorCause {
     Number(ParseIntError),
     /// A transport field exceeded fixed retained input capacity.
     TextLength(InputTextError),
+    /// A formatted content identity failed exact syntax or typed domain validation.
+    CanonicalContentId(CanonicalContentIdDecodeError),
 }
 
 impl fmt::Display for AdapterErrorCause {
@@ -55,6 +60,7 @@ impl fmt::Display for AdapterErrorCause {
                 "field length {} exceeds {}",
                 source.actual, source.maximum
             ),
+            Self::CanonicalContentId(source) => source.fmt(formatter),
         }
     }
 }
@@ -72,6 +78,127 @@ pub struct AdapterError {
     pub actual: Option<usize>,
     /// Preserved parser or width cause, never an erased mapper closure.
     pub cause: Option<AdapterErrorCause>,
+}
+
+/// Exact rejection while parsing the string-only canonical content-identity encoding.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CanonicalContentIdDecodeError {
+    /// The complete formatted identity width was not retained exactly.
+    Width {
+        /// Observed UTF-8 byte width.
+        actual: usize,
+        /// Required formatted width.
+        expected: usize,
+    },
+    /// The fixed textual authority prefix was not present.
+    Prefix {
+        /// Observed prefix bytes.
+        observed: [u8; 8],
+    },
+    /// One formatted digest nibble was not lower hexadecimal.
+    Hex {
+        /// Byte offset in the complete formatted value.
+        offset: usize,
+        /// Observed non-hex byte.
+        observed: u8,
+    },
+    /// The decoded fixed-width identity failed typed authority validation.
+    ContentId(ContentIdDecodeError),
+}
+
+impl fmt::Display for CanonicalContentIdDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Width { actual, expected } => write!(
+                formatter,
+                "canonical content identity has {actual} text bytes, expected {expected}"
+            ),
+            Self::Prefix { observed } => {
+                write!(
+                    formatter,
+                    "canonical content identity prefix is not `content:`: "
+                )?;
+                for byte in observed {
+                    write!(formatter, "{byte:02x}")?;
+                }
+                Ok(())
+            }
+            Self::Hex { offset, observed } => write!(
+                formatter,
+                "canonical content identity byte {offset} is not lower hexadecimal: {observed:02x}"
+            ),
+            Self::ContentId(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for CanonicalContentIdDecodeError {}
+
+/// One typed content identity carried through a fixed string-only adapter boundary.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanonicalContentId<DomainTag>(ContentId<DomainTag>);
+
+impl<DomainTag> CanonicalContentId<DomainTag> {
+    /// Returns the decoded identity while retaining its compile-time domain marker.
+    #[must_use]
+    pub const fn into_inner(self) -> ContentId<DomainTag> {
+        self.0
+    }
+}
+
+impl<DomainTag> From<ContentId<DomainTag>> for CanonicalContentId<DomainTag> {
+    fn from(value: ContentId<DomainTag>) -> Self {
+        Self(value)
+    }
+}
+
+impl<DomainTag> fmt::Display for CanonicalContentId<DomainTag> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl<DomainTag: Domain> TryFrom<&str> for CanonicalContentId<DomainTag> {
+    type Error = CanonicalContentIdDecodeError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let bytes = value.as_bytes();
+        if bytes.len() != CANONICAL_CONTENT_ID_TEXT_BYTES {
+            return Err(CanonicalContentIdDecodeError::Width {
+                actual: bytes.len(),
+                expected: CANONICAL_CONTENT_ID_TEXT_BYTES,
+            });
+        }
+        if &bytes[..8] != b"content:" {
+            let mut observed = [0; 8];
+            observed.copy_from_slice(&bytes[..8]);
+            return Err(CanonicalContentIdDecodeError::Prefix { observed });
+        }
+
+        let mut raw = [0; HASH_BYTES];
+        for (index, byte) in raw.iter_mut().enumerate() {
+            let high_offset = 8 + index * 2;
+            let high = hex_nibble(bytes[high_offset], high_offset)?;
+            let low_offset = high_offset + 1;
+            let low = hex_nibble(bytes[low_offset], low_offset)?;
+            *byte = (high << 4) | low;
+        }
+        ContentId::<DomainTag>::try_from(raw)
+            .map(Self)
+            .map_err(CanonicalContentIdDecodeError::ContentId)
+    }
+}
+
+fn hex_nibble(byte: u8, offset: usize) -> Result<u8, CanonicalContentIdDecodeError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(CanonicalContentIdDecodeError::Hex {
+            offset,
+            observed: byte,
+        }),
+    }
 }
 
 impl AdapterError {
@@ -99,6 +226,18 @@ impl AdapterError {
             field,
             actual: None,
             cause: Some(AdapterErrorCause::Number(source)),
+        }
+    }
+
+    pub(crate) fn invalid_content_id(
+        field: &'static str,
+        source: CanonicalContentIdDecodeError,
+    ) -> Self {
+        Self {
+            code: AdapterErrorCode::InvalidShape,
+            field,
+            actual: None,
+            cause: Some(AdapterErrorCause::CanonicalContentId(source)),
         }
     }
 
@@ -165,6 +304,7 @@ pub fn decode_cli(arguments: &[String]) -> Result<ApplicationInput, AdapterError
         }),
         "health" => Ok(ApplicationInput::Health { correlation }),
         "recover-local" => policy_command(arguments, correlation, true),
+        "recover-inconsistent" => inconsistent_policy_command(arguments, correlation),
         "release-local" => policy_command(arguments, correlation, false),
         "poll-execution" => Ok(ApplicationInput::PollExecution {
             correlation,
@@ -189,6 +329,7 @@ fn expected_fields(action: &str) -> Option<usize> {
         "graph" | "vector" => Some(4),
         "health" => Some(2),
         "recover-local" | "release-local" => Some(12),
+        "recover-inconsistent" => Some(14),
         _ => None,
     }
 }
@@ -246,12 +387,12 @@ pub fn collect_cli_arguments(
                 cause: None,
             });
         }
-        if argument.len() > INPUT_TEXT_BYTES {
+        if argument.len() > CANONICAL_CONTENT_ID_TEXT_BYTES {
             return Err(AdapterError::field_too_long(
                 "argument",
                 InputTextError {
                     actual: argument.len(),
-                    maximum: INPUT_TEXT_BYTES,
+                    maximum: CANONICAL_CONTENT_ID_TEXT_BYTES,
                 },
             ));
         }
@@ -277,62 +418,154 @@ pub(crate) fn input_from_json(
 ) -> Result<ApplicationInput, AdapterError> {
     let correlation = CorrelationId(correlation);
     match action {
-        "generate" => Ok(ApplicationInput::Generate {
-            correlation,
-            language: input_text(&argument("language")?, "language")?,
-            stage: input_text(&argument("stage")?, "stage")?,
-            package: input_text(&argument("package")?, "package")?,
-            source: input_text(&argument("source")?, "source")?,
-        }),
-        "status" => Ok(ApplicationInput::SnapshotStatus {
-            correlation,
-            snapshot: input_text(&argument("snapshot")?, "snapshot")?,
-        }),
-        "search" => Ok(ApplicationInput::Search {
-            correlation,
-            snapshot: input_text(&argument("snapshot")?, "snapshot")?,
-            query: input_text(&argument("query")?, "query")?,
-            limit: number_text(&argument("limit")?, "limit")?,
-        }),
-        "graph" => Ok(ApplicationInput::Graph {
-            correlation,
-            snapshot: input_text(&argument("snapshot")?, "snapshot")?,
-            limit: number_text(&argument("limit")?, "limit")?,
-        }),
-        "vector" => Ok(ApplicationInput::Vector {
-            correlation,
-            snapshot: input_text(&argument("snapshot")?, "snapshot")?,
-            limit: number_text(&argument("limit")?, "limit")?,
-        }),
-        "locality" => Ok(ApplicationInput::Locality {
-            correlation,
-            snapshot: input_text(&argument("snapshot")?, "snapshot")?,
-        }),
+        "generate" => generate_input(correlation, &argument),
+        "status" => status_input(correlation, &argument),
+        "search" => search_input(correlation, &argument),
+        "graph" => graph_input(correlation, &argument),
+        "vector" => vector_input(correlation, &argument),
+        "locality" => locality_input(correlation, &argument),
         "health" => Ok(ApplicationInput::Health { correlation }),
-        "recover-local" => Ok(ApplicationInput::RecoverLocal {
-            correlation,
-            pin: pin_from_text(&argument("generation")?, &argument("snapshot")?),
-            bundle: ContentId::from_canonical_bytes(argument("bundle")?.as_bytes()),
-            budget: budget_from_text(&argument)?,
-        }),
-        "release-local" => Ok(ApplicationInput::ReleaseLocal {
-            correlation,
-            pin: pin_from_text(&argument("generation")?, &argument("snapshot")?),
-            bundle: ContentId::from_canonical_bytes(argument("bundle")?.as_bytes()),
-            budget: budget_from_text(&argument)?,
-        }),
-        "poll-execution" => Ok(ApplicationInput::PollExecution {
-            correlation,
-            operation: OperationKey(number_text(&argument("operation")?, "operation")?),
-        }),
-        "cancel" => Ok(ApplicationInput::Cancel {
-            correlation,
-            operation: OperationKey(number_text(&argument("operation")?, "operation")?),
-        }),
+        "recover-local" => policy_input(correlation, &argument, true),
+        "recover-inconsistent" => inconsistent_input(correlation, &argument),
+        "release-local" => policy_input(correlation, &argument, false),
+        "poll-execution" => operation_input(correlation, &argument, false),
+        "cancel" => operation_input(correlation, &argument, true),
         _ => Err(AdapterError::simple(
             AdapterErrorCode::UnknownAction,
             "action",
         )),
+    }
+}
+
+fn generate_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::Generate {
+        correlation,
+        language: input_text(&argument("language")?, "language")?,
+        stage: input_text(&argument("stage")?, "stage")?,
+        package: input_text(&argument("package")?, "package")?,
+        source: input_text(&argument("source")?, "source")?,
+    })
+}
+
+fn status_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::SnapshotStatus {
+        correlation,
+        snapshot: input_text(&argument("snapshot")?, "snapshot")?,
+    })
+}
+
+fn search_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::Search {
+        correlation,
+        snapshot: input_text(&argument("snapshot")?, "snapshot")?,
+        query: input_text(&argument("query")?, "query")?,
+        limit: number_text(&argument("limit")?, "limit")?,
+    })
+}
+
+fn graph_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::Graph {
+        correlation,
+        snapshot: input_text(&argument("snapshot")?, "snapshot")?,
+        limit: number_text(&argument("limit")?, "limit")?,
+    })
+}
+
+fn vector_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::Vector {
+        correlation,
+        snapshot: input_text(&argument("snapshot")?, "snapshot")?,
+        limit: number_text(&argument("limit")?, "limit")?,
+    })
+}
+
+fn locality_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::Locality {
+        correlation,
+        snapshot: input_text(&argument("snapshot")?, "snapshot")?,
+    })
+}
+
+fn policy_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+    recover: bool,
+) -> Result<ApplicationInput, AdapterError> {
+    let pin = pin_from_text(&argument("generation")?, &argument("snapshot")?)?;
+    let bundle = canonical_content_id(&argument("bundle")?, "bundle")?;
+    let budget = budget_from_text(argument)?;
+    if recover {
+        Ok(ApplicationInput::RecoverLocal {
+            correlation,
+            pin,
+            bundle,
+            budget,
+        })
+    } else {
+        Ok(ApplicationInput::ReleaseLocal {
+            correlation,
+            pin,
+            bundle,
+            budget,
+        })
+    }
+}
+
+fn inconsistent_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::RecoverInconsistent(
+        InconsistentRecovery {
+            correlation,
+            expected: pin_from_text(
+                &argument("expected_generation")?,
+                &argument("expected_snapshot")?,
+            )?,
+            observed: pin_from_text(
+                &argument("observed_generation")?,
+                &argument("observed_snapshot")?,
+            )?,
+            bundle: canonical_content_id(&argument("bundle")?, "bundle")?,
+            budget: budget_from_text(argument)?,
+        },
+    ))
+}
+
+fn operation_input(
+    correlation: CorrelationId,
+    argument: &impl Fn(&'static str) -> Result<String, AdapterError>,
+    cancel: bool,
+) -> Result<ApplicationInput, AdapterError> {
+    let operation = OperationKey(number_text(&argument("operation")?, "operation")?);
+    if cancel {
+        Ok(ApplicationInput::Cancel {
+            correlation,
+            operation,
+        })
+    } else {
+        Ok(ApplicationInput::PollExecution {
+            correlation,
+            operation,
+        })
     }
 }
 
@@ -379,10 +612,8 @@ fn policy_command(
     let pin = pin_from_text(
         field(arguments, 2, "generation")?,
         field(arguments, 3, "snapshot")?,
-    );
-    let bundle = ContentId::<CapabilityDomain>::from_canonical_bytes(
-        field(arguments, 4, "bundle")?.as_bytes(),
-    );
+    )?;
+    let bundle = canonical_content_id(field(arguments, 4, "bundle")?, "bundle")?;
     let budget = ResourceBudget {
         ram_free: bytes(arguments, 5, "ram_free")?,
         nvme_free: bytes(arguments, 6, "nvme_free")?,
@@ -412,11 +643,56 @@ fn policy_command(
     }
 }
 
-fn pin_from_text(generation: &str, snapshot: &str) -> Pin {
-    Pin {
-        generation: GenerationId::from_canonical_bytes(generation.as_bytes()),
-        snapshot: IndexSnapshotId::from_canonical_bytes(snapshot.as_bytes()),
-    }
+fn inconsistent_policy_command(
+    arguments: &[String],
+    correlation: CorrelationId,
+) -> Result<ApplicationInput, AdapterError> {
+    let expected = pin_from_text(
+        field(arguments, 2, "expected_generation")?,
+        field(arguments, 3, "expected_snapshot")?,
+    )?;
+    let observed = pin_from_text(
+        field(arguments, 4, "observed_generation")?,
+        field(arguments, 5, "observed_snapshot")?,
+    )?;
+    let bundle = canonical_content_id(field(arguments, 6, "bundle")?, "bundle")?;
+    let budget = ResourceBudget {
+        ram_free: bytes(arguments, 7, "ram_free")?,
+        nvme_free: bytes(arguments, 8, "nvme_free")?,
+        operations: operations(arguments, 9)?,
+        retries: retries(arguments, 10)?,
+        memory_pressure: pressure(field(arguments, 11, "memory_pressure")?, "memory_pressure")?,
+        storage_pressure: pressure(
+            field(arguments, 12, "storage_pressure")?,
+            "storage_pressure",
+        )?,
+        battery: battery(field(arguments, 13, "battery")?)?,
+    };
+    Ok(ApplicationInput::RecoverInconsistent(
+        InconsistentRecovery {
+            correlation,
+            expected,
+            observed,
+            bundle,
+            budget,
+        },
+    ))
+}
+
+fn pin_from_text(generation: &str, snapshot: &str) -> Result<Pin, AdapterError> {
+    Ok(Pin {
+        generation: canonical_content_id::<RootDomain>(generation, "generation")?,
+        snapshot: canonical_content_id::<IndexSnapshotDomain>(snapshot, "snapshot")?,
+    })
+}
+
+fn canonical_content_id<DomainTag: Domain>(
+    value: &str,
+    field: &'static str,
+) -> Result<ContentId<DomainTag>, AdapterError> {
+    CanonicalContentId::<DomainTag>::try_from(value)
+        .map(CanonicalContentId::into_inner)
+        .map_err(|source| AdapterError::invalid_content_id(field, source))
 }
 
 fn budget_from_text(
