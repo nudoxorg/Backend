@@ -40,6 +40,9 @@ The remaining gaps are architectural, not polish:
 - Wave C.7 froze a useful shared application-service contract but stopped before implementation after
   two reviewer-custody failures. Its evidence is integrated; any restart must use the corrected
   context-free Sol-sidecar -> Terra-reviewer custody and cannot inherit approval from the blocked run.
+- Wave B.4 likewise froze a materially stronger immutable-index/Tantivy falsifier set but stopped
+  before production after three unverifiable reviewer-sidecar attempts. Its proof rows remain red;
+  only the earlier I0 vocabulary is shipping.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
