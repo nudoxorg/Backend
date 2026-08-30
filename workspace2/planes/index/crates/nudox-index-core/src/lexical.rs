@@ -33,12 +33,21 @@ fn write_bytes(hasher: &mut ContentHasher<IndexLexicalSegmentDomain>, bytes: &[u
 
 fn segment_id(rows: &[LexicalRow<'_>]) -> LexicalSegmentId {
     let mut hasher = ContentHasher::<IndexLexicalSegmentDomain>::new();
-    hasher.write_record(&CanonicalRecord(*b"nudox.lexical.rows.v1"));
+    hasher.write_record(&CanonicalRecord(*b"nudox.lexical.rows.v2"));
     hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
     for row in rows {
         write_bytes(&mut hasher, row.term());
         hasher.write_record(&CanonicalRecord(row.document().ordinal().to_le_bytes()));
-        hasher.write_record(&CanonicalRecord(row.score().units().to_le_bytes()));
+        let value = match row.value() {
+            LexicalRowValue::Present(score) => {
+                let mut value = [0_u8; 5];
+                value[0] = 1;
+                value[1..].copy_from_slice(&score.units().to_le_bytes());
+                value
+            }
+            LexicalRowValue::Tombstone => [0_u8; 5],
+        };
+        hasher.write_record(&CanonicalRecord(value));
     }
     hasher.finalize()
 }
@@ -125,6 +134,15 @@ pub enum LexicalTopKError {
     },
 }
 
+/// The immutable fact carried by one lexical term/document row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LexicalRowValue {
+    /// The document is a member of the term with this deterministic score.
+    Present(LexicalScore),
+    /// The document is no longer a member of the term.
+    Tombstone,
+}
+
 /// One borrowed lexical term/document row.
 ///
 /// Rows supplied to [`LexicalSegment::new`] must be ordered by term bytes and
@@ -134,7 +152,7 @@ pub enum LexicalTopKError {
 pub struct LexicalRow<'bytes> {
     term: &'bytes [u8],
     document: LexicalDocumentId,
-    score: LexicalScore,
+    value: LexicalRowValue,
 }
 
 impl<'bytes> LexicalRow<'bytes> {
@@ -144,7 +162,17 @@ impl<'bytes> LexicalRow<'bytes> {
         Self {
             term,
             document: LexicalDocumentId::new(document),
-            score,
+            value: LexicalRowValue::Present(score),
+        }
+    }
+
+    /// Creates an immutable deletion fact for one term/document membership.
+    #[must_use]
+    pub const fn tombstone(term: &'bytes [u8], document: u32) -> Self {
+        Self {
+            term,
+            document: LexicalDocumentId::new(document),
+            value: LexicalRowValue::Tombstone,
         }
     }
 
@@ -160,10 +188,25 @@ impl<'bytes> LexicalRow<'bytes> {
         self.document
     }
 
-    /// Returns the row's fixed-width score.
+    /// Returns the row's typed membership fact.
     #[must_use]
-    pub const fn score(self) -> LexicalScore {
-        self.score
+    pub const fn value(self) -> LexicalRowValue {
+        self.value
+    }
+
+    /// Returns the fixed-width score for a present membership.
+    #[must_use]
+    pub const fn score(self) -> Option<LexicalScore> {
+        match self.value {
+            LexicalRowValue::Present(score) => Some(score),
+            LexicalRowValue::Tombstone => None,
+        }
+    }
+
+    /// Returns whether this row deletes a prior term/document membership.
+    #[must_use]
+    pub const fn is_tombstone(self) -> bool {
+        matches!(self.value, LexicalRowValue::Tombstone)
     }
 }
 
@@ -427,7 +470,10 @@ impl<'bytes> LexicalSegment<'bytes> {
     ) -> Result<usize, LexicalOutputError> {
         let range = self.term_range(operation.term);
         let matches = &self.rows[range];
-        let required = core::cmp::min(matches.len(), top_k.limit());
+        let required = core::cmp::min(
+            matches.iter().filter(|row| !row.is_tombstone()).count(),
+            top_k.limit(),
+        );
         if output.len() < required {
             return Err(LexicalOutputError {
                 required,
@@ -442,7 +488,10 @@ impl<'bytes> LexicalSegment<'bytes> {
         let selected = &mut output[..required];
         let mut selected_len = 0;
         for row in matches.iter().copied() {
-            let candidate = LexicalHit::new(row.term, row.document, row.score);
+            let Some(score) = row.score() else {
+                continue;
+            };
+            let candidate = LexicalHit::new(row.term, row.document, score);
             if selected_len < required {
                 selected[selected_len] = candidate;
                 selected_len += 1;

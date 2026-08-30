@@ -190,9 +190,9 @@ pub struct TantivyLexical {
 impl TantivyLexical {
     /// Builds a real in-memory index directly from a validated immutable lexical manifest.
     ///
-    /// Each canonical lexical row becomes one nested Tantivy document. The snapshot authority is
-    /// therefore inherited from content-derived segment identities rather than accepted as an
-    /// unrelated caller label.
+    /// Each newest live canonical lexical membership becomes one nested Tantivy document. The
+    /// snapshot authority is therefore inherited from content-derived segment identities rather
+    /// than accepted as an unrelated caller label.
     pub fn build(manifest: LexicalManifest<'_, '_>) -> Result<Self, TantivyAdapterError> {
         if !manifest.is_complete() {
             return Err(TantivyAdapterError::IncompleteManifest {
@@ -240,8 +240,17 @@ impl TantivyLexical {
                     phase: TantivyPhase::Writer,
                     source,
                 })?;
-        for segment in manifest.segments() {
+        for (segment_position, segment) in manifest.segments().iter().enumerate() {
             for (row_index, row) in segment.rows().iter().copied().enumerate() {
+                let shadowed = manifest
+                    .segments()
+                    .iter()
+                    .take(segment_position)
+                    .flat_map(|newer| newer.rows())
+                    .any(|newer| newer.term() == row.term() && newer.document() == row.document());
+                if shadowed || row.is_tombstone() {
+                    continue;
+                }
                 let text = core::str::from_utf8(row.term()).map_err(|source| {
                     TantivyAdapterError::NonUtf8Term {
                         segment: segment.id(),

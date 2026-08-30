@@ -155,6 +155,62 @@ fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
 }
 
 #[test]
+fn term_change_tombstone_hides_old_membership_and_publishes_new_membership() {
+    let old_rows = [LexicalRow::new(b"alpha", 1, LexicalScore::new(9))];
+    let update_rows = [
+        LexicalRow::tombstone(b"alpha", 1),
+        LexicalRow::new(b"beta", 1, LexicalScore::new(7)),
+    ];
+    let old = LexicalSegment::new(&old_rows);
+    let update = LexicalSegment::new(&update_rows);
+    assert!(old.is_ok() && update.is_ok());
+    let (Some(old), Some(update)) = (old.ok(), update.ok()) else {
+        return;
+    };
+    let segments = [update, old];
+    let selected = [update.id(), old.id()];
+    let snapshot = IndexSnapshot::new(&[], &selected);
+    assert!(snapshot.is_ok());
+    let Some(snapshot) = snapshot.ok() else {
+        return;
+    };
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]);
+    let top_k = LexicalTopK::new(1);
+    assert!(manifest.is_ok() && top_k.is_ok());
+    let (Some(manifest), Some(top_k)) = (manifest.ok(), top_k.ok()) else {
+        return;
+    };
+
+    let mut old_term_scratch = [None; 2];
+    let mut old_term_output = [placeholder(update.id())];
+    let old_term = manifest.execute(
+        LexicalOperation::new(b"alpha"),
+        top_k,
+        &mut old_term_scratch,
+        &mut old_term_output,
+    );
+    assert!(matches!(
+        old_term,
+        Ok(LexicalTerminal::Complete { hits: [], .. })
+    ));
+
+    let mut new_term_scratch = [None; 1];
+    let mut new_term_output = [placeholder(update.id())];
+    let new_term = manifest.execute(
+        LexicalOperation::new(b"beta"),
+        top_k,
+        &mut new_term_scratch,
+        &mut new_term_output,
+    );
+    assert!(matches!(
+        new_term,
+        Ok(LexicalTerminal::Complete { hits: [hit], .. })
+            if hit.document() == LexicalDocumentId::new(1)
+                && hit.score() == LexicalScore::new(7)
+    ));
+}
+
+#[test]
 fn insufficient_dedup_scratch_precedes_output_mutation() {
     let rows = [LexicalRow::new(b"needle", 1, LexicalScore::new(1))];
     let segment = LexicalSegment::new(&rows);

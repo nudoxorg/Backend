@@ -72,6 +72,32 @@ fn hostile_row_bound_precedes_duplicate_order_and_identity_work() {
 }
 
 #[test]
+fn tombstone_identity_and_ranking_are_distinct_from_zero_score_membership() {
+    let present_rows = [row(b"alpha", 1, 0)];
+    let tombstone_rows = [LexicalRow::tombstone(b"alpha", 1)];
+    let present = LexicalSegment::new(&present_rows);
+    let tombstone = LexicalSegment::new(&tombstone_rows);
+    assert!(present.is_ok() && tombstone.is_ok());
+    let (Some(present), Some(tombstone)) = (present.ok(), tombstone.ok()) else {
+        return;
+    };
+    assert_ne!(present.id(), tombstone.id());
+
+    let top_k = LexicalTopK::new(1);
+    assert!(top_k.is_ok());
+    let Some(top_k) = top_k.ok() else {
+        return;
+    };
+    let sentinel = hit(b"sentinel", 99, 3);
+    let mut output = [sentinel];
+    assert_eq!(
+        tombstone.rank(LexicalOperation::new(b"alpha"), top_k, &mut output),
+        Ok(0)
+    );
+    assert_eq!(output, [sentinel]);
+}
+
+#[test]
 fn invalid_top_k_retains_the_bound_and_precedes_ranking() {
     assert_eq!(
         LexicalTopK::new(MAX_LEXICAL_ROWS + 1),

@@ -15,9 +15,9 @@ pub use exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, MAX_EXACT_PAYLOAD_BYTES,
 };
 pub use lexical::{
-    LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,
-    LexicalSegment, LexicalSegmentError, LexicalSnapshotHit, LexicalTopK, LexicalTopKError,
-    MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
+    LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow,
+    LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSnapshotHit,
+    LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
 };
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 pub use snapshot::{IndexSnapshot, IndexSnapshotError};
@@ -558,7 +558,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                             .iter()
                             .take(row_position)
                             .any(|previous| previous.document() == row.document());
-                    if !was_seen {
+                    if !was_seen && !row.is_tombstone() {
                         unique_documents += 1;
                     }
                 }
@@ -582,12 +582,11 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                     }
                     seen_documents[emitted_documents] = Some(row.document());
                     emitted_documents += 1;
-                    let candidate = LexicalSnapshotHit::new(
-                        segment.id(),
-                        row.term(),
-                        row.document(),
-                        row.score(),
-                    );
+                    let Some(score) = row.score() else {
+                        continue;
+                    };
+                    let candidate =
+                        LexicalSnapshotHit::new(segment.id(), row.term(), row.document(), score);
                     let position = output[..hit_count]
                         .iter()
                         .position(|current| lexical_snapshot_order(&candidate, current).is_lt())

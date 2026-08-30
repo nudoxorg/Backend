@@ -52,6 +52,36 @@ fn real_tantivy_document_set_matches_the_borrowed_lexical_core() {
 }
 
 #[test]
+fn tantivy_projects_only_newest_live_term_memberships() {
+    let old_rows = [LexicalRow::new(b"alpha", 1, LexicalScore::new(9))];
+    let update_rows = [
+        LexicalRow::tombstone(b"alpha", 1),
+        LexicalRow::new(b"beta", 1, LexicalScore::new(7)),
+    ];
+    let old = LexicalSegment::new(&old_rows).expect("old segment");
+    let update = LexicalSegment::new(&update_rows).expect("term-change segment");
+    let selected = [update.id(), old.id()];
+    let snapshot = IndexSnapshot::new(&[], &selected).expect("updated snapshot");
+    let snapshot_id = snapshot.id();
+    let segments = [update, old];
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("updated manifest");
+    let adapter = TantivyLexical::build(manifest).expect("updated Tantivy projection");
+
+    let mut old_term_output = [None];
+    let old_term = adapter
+        .search(snapshot_id, "alpha", 1, &mut old_term_output)
+        .expect("deleted term query");
+    assert_eq!(old_term.written(), 0);
+
+    let mut new_term_output = [None];
+    let new_term = adapter
+        .search(snapshot_id, "beta", 1, &mut new_term_output)
+        .expect("new term query");
+    assert_eq!(new_term.written(), 1);
+    assert_eq!(new_term_output, [Some(TantivyHit { document: 1 })]);
+}
+
+#[test]
 fn a_different_corpus_cannot_claim_the_same_snapshot() {
     let first_rows = [LexicalRow::new(b"rust", 1, LexicalScore::new(1))];
     let second_rows = [LexicalRow::new(b"systems", 2, LexicalScore::new(1))];
