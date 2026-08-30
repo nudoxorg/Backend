@@ -2,7 +2,7 @@
 
 stable_toolchain="1.97.1"
 dylint_toolchain="nightly-2026-05-28"
-export RUSTUP_HOME="$project_dir/target/nix-rustup"
+export RUSTUP_HOME="${NUDOX_RUSTUP_HOME:-$project_dir/target/nix-rustup}"
 
 register_pinned_toolchain() {
   local name="$1"
@@ -18,6 +18,10 @@ register_pinned_toolchain() {
     ln -s "$expected_root" "$toolchain_link"
   fi
   linked_root="$(readlink "$toolchain_link" 2>/dev/null || true)"
+  if [[ -L "$toolchain_link" && "$linked_root" != "$expected_root" ]]; then
+    ln -sfn "$expected_root" "$toolchain_link"
+    linked_root="$(readlink "$toolchain_link")"
+  fi
   if [[ "$linked_root" != "$expected_root" ]]; then
     echo "$toolchain_link points to $linked_root instead of $expected_root" >&2
     exit 1

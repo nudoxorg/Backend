@@ -8,6 +8,7 @@ if [[ "${NUDOX_DYLINT_NIX_ENV:-}" != 1 ]]; then
 fi
 
 lint_workspace="$project_dir/tools/dylint"
+lint_target_dir="${CARGO_TARGET_DIR:-$lint_workspace/target}"
 # shellcheck source=shipping-workspaces.sh
 source "$lint_workspace/shipping-workspaces.sh"
 # shellcheck source=../../pinned-toolchains.sh
@@ -20,7 +21,7 @@ source "$project_dir/tools/pinned-toolchains.sh"
 )
 
 shopt -s nullglob
-lint_libraries=("$lint_workspace"/target/debug/*"nudox_semantic_lints@$dylint_toolchain-"*)
+lint_libraries=("$lint_target_dir"/debug/*"nudox_semantic_lints@$dylint_toolchain-"*)
 if ((${#lint_libraries[@]} != 1)); then
   echo 'Dylint UI gate did not produce the pinned semantic lint library' >&2
   exit 1
