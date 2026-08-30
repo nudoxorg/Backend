@@ -1,7 +1,7 @@
 use core::num::TryFromIntError;
 
-use nudox_id::{ContentIdDecodeError, GenerationId};
-use nudox_object::{ObjectDescriptorDecodeError, ProviderSetError};
+use nudox_id::{ContentIdDecodeError, DomainCode, GenerationId};
+use nudox_object::ProviderSetError;
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
 
@@ -33,17 +33,23 @@ pub enum LocalityRegion {
 /// Validation or input-measure rejection for one locality artifact.
 #[derive(Debug, Error, PartialEq)]
 pub enum LocalityError {
+    /// Exact lane geometry passed, but the bytes could not inhabit the typed
+    /// wire representation and no public semantic violation explained it.
+    #[error("locality {region:?} bytes violated their typed wire representation")]
+    TypedLaneInvariant {
+        /// Typed lane whose representation proof failed.
+        region: LocalityRegion,
+    },
     /// The fixed header carried a generation identity from another closed domain.
     #[error("locality generation identity failed checked decode")]
     Generation(#[from] ContentIdDecodeError),
-    /// A present overlay descriptor carried the wrong content-domain authority.
-    #[error("locality present overlay {ordinal} content identity failed checked decode")]
-    PresentOverlayContent {
-        /// Present-overlay descriptor ordinal.
-        ordinal: u32,
-        /// Exact checked identity decode failure.
-        #[source]
-        source: ContentIdDecodeError,
+    /// The artifact-global descriptor domain differs from the requested typed view.
+    #[error("locality content domain code is {observed}, expected {expected:?}")]
+    ContentDomain {
+        /// Expected closed content-domain code.
+        expected: DomainCode,
+        /// Complete observed header cell.
+        observed: u8,
     },
     /// One required artifact region ends beyond the supplied byte range.
     #[error("locality {region:?} needs {required:?} bytes but only {available:?} are available")]
@@ -248,45 +254,18 @@ pub enum LocalityError {
     },
 }
 
-/// A semantic lane changed after validation or the reader drifted from the
-/// validator's grammar.
-///
-/// Ordinary immutable witnesses cannot produce this error. Keeping the read
-/// boundary fallible contains implementation drift without manufacturing a
-/// placement, panicking, or relying on invalid enum representations.
-#[derive(Debug, Error, Eq, PartialEq)]
-pub enum LocalityReadError {
-    /// A validated locality's shared generation basis failed checked reconstruction.
-    #[error("validated locality generation identity changed")]
-    Generation(#[from] ContentIdDecodeError),
-    /// A provider payload no longer preserves promise non-emptiness.
-    #[error("validated locality provider ordinal {ordinal} contains invalid bits {observed:#018x}")]
-    Provider {
-        /// Promise-rank ordinal being reconstructed.
-        ordinal: u32,
-        /// Raw provider bitmap retained for diagnostics.
-        observed: u64,
-        /// Non-empty provider-set invariant rejection.
-        #[source]
-        source: ProviderSetError,
+/// Direct locality emission failure.
+#[derive(Debug, Error, PartialEq)]
+pub enum LocalityWriteError {
+    /// Caller output is shorter than the already measured exact layout.
+    #[error("locality output has {available:?} bytes but requires {required:?}")]
+    OutputTooSmall {
+        /// Exact measured locality bytes.
+        required: MetadataBytes,
+        /// Caller-provided capacity.
+        available: MetadataBytes,
     },
-    /// A descriptor payload no longer preserves its exact record or schema.
-    #[error("validated locality descriptor ordinal {ordinal} changed")]
-    Descriptor {
-        /// Present-overlay rank ordinal being reconstructed.
-        ordinal: u32,
-        /// Object-owned exact width or closed-schema rejection.
-        #[source]
-        source: ObjectDescriptorDecodeError,
-    },
-}
-
-/// Caller output is shorter than an already measured exact locality layout.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("locality output has {available:?} bytes but requires {required:?}")]
-pub struct LocalityWriteError {
-    /// Exact measured locality bytes.
-    pub required: MetadataBytes,
-    /// Caller-provided capacity.
-    pub available: MetadataBytes,
+    /// The private direct encoder failed its validation oracle.
+    #[error("direct locality encoder violated its validated grammar")]
+    Invariant(#[from] LocalityError),
 }

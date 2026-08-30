@@ -1,3 +1,5 @@
+//! Compile-fail proofs for the closed marker registry.
+
 #[test]
 fn duplicate_closed_registry_codes_fail_at_enum_construction() {
     let tests = trybuild::TestCases::new();

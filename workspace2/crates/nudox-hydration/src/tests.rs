@@ -6,8 +6,8 @@ use nudox_object::{ObjectRef, ProviderId, ProviderIdError, ProviderSet, RemoteBa
 use nudox_observe::{DropNewest, FlightRecorder};
 use nudox_root::{
     ClosureScratch, EntryKey, EntryRangeError, GenerationRoot, GenerationView, LocalityError,
-    LocalityException, LocalityReadError, LocalityWriteError, MetadataBytes, NonResident,
-    PreparedLocality, RootBuildError, RootEntry, ValidatedLocality,
+    LocalityException, LocalityWriteError, MetadataBytes, NonResident, PreparedLocality,
+    RootBuildError, RootEntry, ValidatedLocality,
 };
 use nudox_schema::SchemaId;
 use rstest::rstest;
@@ -27,8 +27,6 @@ enum ScenarioError {
     Locality(#[from] LocalityError),
     #[error("locality fixture output failed")]
     LocalityWrite(#[from] LocalityWriteError),
-    #[error("validated locality fixture read failed")]
-    LocalityRead(#[from] LocalityReadError),
     #[error("locality fixture reservation failed")]
     LocalityReservation(#[source] TryReserveError),
     #[error("root fixture has no locality row for {key:?}")]

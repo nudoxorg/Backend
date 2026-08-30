@@ -8,7 +8,7 @@ use core::{convert::Infallible, marker::PhantomData, ops::Deref};
 
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{ObjectRef, ProviderSet};
-use nudox_root::{EntryKey, GenerationEntry, GenerationView, Locality, LocalityReadError};
+use nudox_root::{EntryKey, GenerationEntry, GenerationView, Locality};
 use nudox_schema::OperationId;
 use thiserror::Error;
 
@@ -36,8 +36,7 @@ mod tests {
     };
     use nudox_root::{
         EntryKey, GenerationRoot, GenerationView, LocalityError, LocalityException,
-        LocalityReadError, LocalityWriteError, NonResident, PreparedLocality, RootBuildError,
-        RootEntry,
+        LocalityWriteError, NonResident, PreparedLocality, RootBuildError, RootEntry,
     };
     use nudox_schema::SchemaId;
     use thiserror::Error;
@@ -67,8 +66,6 @@ mod tests {
         Locality(#[from] LocalityError),
         #[error("locality output failed")]
         LocalityWrite(#[from] LocalityWriteError),
-        #[error("locality read failed")]
-        LocalityRead(#[from] LocalityReadError),
         #[error("provider identifier setup failed")]
         ProviderId(#[from] ProviderIdError),
         #[error("object operation failed")]
@@ -153,7 +150,7 @@ mod tests {
         required: ObjectRef<ObjectDomain>,
         provenance: ObjectProvenance,
     ) -> Result<(), TestError> {
-        let provider = LocalObjectProvider::from_view(view, EntryKey::from(1))?.ok_or(
+        let provider = LocalObjectProvider::from_view(view, EntryKey::from(1)).ok_or(
             TestError::MissingProvider {
                 step: TestStep::ComposeProvider,
             },
@@ -219,7 +216,7 @@ mod tests {
         let mut locality_bytes = locality_bytes(&root, &facts)?;
         let locality = PreparedLocality::prepare(&root, &facts)?.write(&mut locality_bytes)?;
         let view = GenerationView::new(&root, &locality)?;
-        let provider = LocalObjectProvider::from_view(&view, EntryKey::from(1))?.ok_or(
+        let provider = LocalObjectProvider::from_view(&view, EntryKey::from(1)).ok_or(
             TestError::MissingProvider {
                 step: TestStep::ComposeProvider,
             },
@@ -377,18 +374,12 @@ pub struct LocalObjectProvider<ObjectDomain> {
 }
 impl<ObjectDomain: Domain> LocalObjectProvider<ObjectDomain> {
     /// Selects an actual entry from a generation-coherent view.
-    ///
-    /// # Errors
-    ///
-    /// Returns the exact locality lane read failure before constructing a provider.
-    pub fn from_view(
-        view: &GenerationView<'_, '_, ObjectDomain>,
-        key: EntryKey,
-    ) -> Result<Option<Self>, LocalityReadError> {
-        Ok(view.get(key)?.map(|entry| Self {
+    #[must_use]
+    pub fn from_view(view: &GenerationView<'_, '_, ObjectDomain>, key: EntryKey) -> Option<Self> {
+        view.get(key).map(|entry| Self {
             generation: view.id,
             entry,
-        }))
+        })
     }
 }
 impl<ObjectDomain: Domain> Provider<PinnedObjectOperation<ObjectDomain>>

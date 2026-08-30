@@ -10,9 +10,8 @@ use crate::entry::{EntryKey, EntryRange};
 use crate::packed::{CanonicalRows, GenerationRoot, RowIndex};
 
 use super::{
-    GenerationEntry, LocalityCursor, LocalityError, LocalityLookupWork, LocalityReadError,
-    LocalityScanWork, SelectedCount, SelectedOrdinal, SelectedOrdinalBuffer, SelectedOrdinals,
-    ValidatedLocality,
+    GenerationEntry, LocalityCursor, LocalityError, LocalityLookupWork, LocalityScanWork,
+    SelectedCount, SelectedOrdinal, SelectedOrdinalBuffer, SelectedOrdinals, ValidatedLocality,
 };
 
 /// Borrowed coherent composition of immutable semantic root and locality map.
@@ -51,22 +50,16 @@ impl<DomainTag: Domain> Clone for SelectedGeneration<'_, DomainTag> {
 
 impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
     /// Iterates selected composed entries in canonical key order.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = GenerationEntry<DomainTag>> + '_ {
         self.selected
             .rows()
             .scan(self.locality.scan(), |cursor, (index, entry)| {
-                Some(
-                    cursor
-                        .locality_without_work(index)
-                        .map(|locality| GenerationEntry {
-                            key: entry.key,
-                            parent: entry.parent,
-                            object: entry.object,
-                            locality,
-                        }),
-                )
+                Some(GenerationEntry {
+                    key: entry.key,
+                    parent: entry.parent,
+                    object: entry.object,
+                    locality: cursor.locality_without_work(index),
+                })
             })
     }
 
@@ -95,8 +88,7 @@ impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
             });
         }
         buffer.clear();
-        for item in self.enumerated() {
-            let (ordinal, entry) = item?;
+        for (ordinal, entry) in self.enumerated() {
             if is_absent(entry) {
                 buffer.push(ordinal);
             }
@@ -109,41 +101,32 @@ impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
 
     fn enumerated(
         &self,
-    ) -> impl Iterator<
-        Item = Result<(SelectedOrdinal, GenerationEntry<DomainTag>), LocalityReadError>,
-    > + '_ {
+    ) -> impl Iterator<Item = (SelectedOrdinal, GenerationEntry<DomainTag>)> + '_ {
         self.selected.rows().zip(0_u32..).scan(
             self.locality.scan(),
             |cursor, ((index, entry), position)| {
-                Some(cursor.locality_without_work(index).map(|locality| {
-                    (
-                        SelectedOrdinal::from_compact(position),
-                        GenerationEntry {
-                            key: entry.key,
-                            parent: entry.parent,
-                            object: entry.object,
-                            locality,
-                        },
-                    )
-                }))
+                Some((
+                    SelectedOrdinal::from_compact(position),
+                    GenerationEntry {
+                        key: entry.key,
+                        parent: entry.parent,
+                        object: entry.object,
+                        locality: cursor.locality_without_work(index),
+                    },
+                ))
             },
         )
     }
 
-    fn entry_at_compact(
-        &self,
-        position: u32,
-    ) -> Result<GenerationEntry<DomainTag>, LocalityReadError> {
+    fn entry_at_compact(&self, position: u32) -> GenerationEntry<DomainTag> {
         let ordinal = SelectedOrdinal::from_compact(position);
         let (index, entry) = self.selected.row_at_position(ordinal.array_index());
-        self.locality
-            .locality_for(index)
-            .map(|locality| GenerationEntry {
-                key: entry.key,
-                parent: entry.parent,
-                object: entry.object,
-                locality,
-            })
+        GenerationEntry {
+            key: entry.key,
+            parent: entry.parent,
+            object: entry.object,
+            locality: self.locality.locality_for(index),
+        }
     }
 
     /// Returns the root-proven selected count as a compact canonical field.
@@ -170,21 +153,17 @@ impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
     pub fn measured_iter<'scan>(
         &'scan self,
         work: &'scan mut LocalityScanWork,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + 'scan {
+    ) -> impl Iterator<Item = GenerationEntry<DomainTag>> + 'scan {
         self.selected.rows().scan(
             (self.locality.scan(), work),
             |(cursor, work), (index, entry)| {
                 work.rows += 1;
-                Some(
-                    cursor
-                        .locality_at(index, work)
-                        .map(|locality| GenerationEntry {
-                            key: entry.key,
-                            parent: entry.parent,
-                            object: entry.object,
-                            locality,
-                        }),
-                )
+                Some(GenerationEntry {
+                    key: entry.key,
+                    parent: entry.parent,
+                    object: entry.object,
+                    locality: cursor.locality_at(index, work),
+                })
             },
         )
     }
@@ -199,37 +178,28 @@ impl<DomainTag: Domain> SelectedOrdinals<'_, '_, DomainTag> {
 
     /// Iterates every entry from the exact selected closure that emitted these
     /// sparse positions.
-    pub fn required_entries(
-        &self,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + '_ {
+    pub fn required_entries(&self) -> impl Iterator<Item = GenerationEntry<DomainTag>> + '_ {
         self.selected.iter()
     }
 
     /// Iterates selected entries not retained in this sparse ordinal list.
-    pub fn present_entries(
-        &self,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + '_ {
+    pub fn present_entries(&self) -> impl Iterator<Item = GenerationEntry<DomainTag>> + '_ {
         let mut absent = self.positions.iter().copied().peekable();
         self.selected
             .enumerated()
-            .filter_map(move |item| match item {
-                Ok((ordinal, entry)) => {
-                    if absent.peek().is_some_and(|position| *position == ordinal.0) {
-                        absent.next();
-                        None
-                    } else {
-                        Some(Ok(entry))
-                    }
+            .filter_map(move |(ordinal, entry)| {
+                if absent.peek().is_some_and(|position| *position == ordinal.0) {
+                    absent.next();
+                    None
+                } else {
+                    Some(entry)
                 }
-                Err(error) => Some(Err(error)),
             })
     }
 
     /// Iterates entries retained in this sparse ordinal list without any
     /// per-item checked selected-array access.
-    pub fn absent_entries(
-        &self,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + '_ {
+    pub fn absent_entries(&self) -> impl Iterator<Item = GenerationEntry<DomainTag>> + '_ {
         self.positions
             .iter()
             .copied()
@@ -244,20 +214,16 @@ pub struct GenerationScan<'root, 'locality, DomainTag> {
 }
 
 impl<DomainTag: Domain> Iterator for GenerationScan<'_, '_, DomainTag> {
-    type Item = Result<GenerationEntry<DomainTag>, LocalityReadError>;
+    type Item = GenerationEntry<DomainTag>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let row = self.rows.next()?;
-        Some(
-            self.locality
-                .locality_without_work(row.index)
-                .map(|locality| GenerationEntry {
-                    key: row.entry.key,
-                    parent: row.entry.parent,
-                    object: row.entry.object,
-                    locality,
-                }),
-        )
+        Some(GenerationEntry {
+            key: row.entry.key,
+            parent: row.entry.parent,
+            object: row.entry.object,
+            locality: self.locality.locality_without_work(row.index),
+        })
     }
 }
 
@@ -277,21 +243,17 @@ impl<DomainTag: Domain> Deref for MeasuredGenerationScan<'_, '_, DomainTag> {
 }
 
 impl<DomainTag: Domain> Iterator for MeasuredGenerationScan<'_, '_, DomainTag> {
-    type Item = Result<GenerationEntry<DomainTag>, LocalityReadError>;
+    type Item = GenerationEntry<DomainTag>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let row = self.rows.next()?;
         self.work.rows += 1;
-        Some(
-            self.locality
-                .locality_at(row.index, &mut self.work)
-                .map(|locality| GenerationEntry {
-                    key: row.entry.key,
-                    parent: row.entry.parent,
-                    object: row.entry.object,
-                    locality,
-                }),
-        )
+        Some(GenerationEntry {
+            key: row.entry.key,
+            parent: row.entry.parent,
+            object: row.entry.object,
+            locality: self.locality.locality_at(row.index, &mut self.work),
+        })
     }
 }
 
@@ -303,25 +265,19 @@ pub(crate) struct GenerationRows<'root, 'locality, DomainTag> {
 }
 
 impl<DomainTag: Domain> Iterator for GenerationRows<'_, '_, DomainTag> {
-    type Item = Result<(RowIndex, GenerationEntry<DomainTag>), LocalityReadError>;
+    type Item = (RowIndex, GenerationEntry<DomainTag>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let row = self.rows.next()?;
-        Some(
-            self.locality
-                .locality_without_work(row.index)
-                .map(|locality| {
-                    (
-                        row.index,
-                        GenerationEntry {
-                            key: row.entry.key,
-                            parent: row.entry.parent,
-                            object: row.entry.object,
-                            locality,
-                        },
-                    )
-                }),
-        )
+        Some((
+            row.index,
+            GenerationEntry {
+                key: row.entry.key,
+                parent: row.entry.parent,
+                object: row.entry.object,
+                locality: self.locality.locality_without_work(row.index),
+            },
+        ))
     }
 }
 
@@ -412,49 +368,31 @@ impl<'root, 'locality, DomainTag: Domain> GenerationView<'root, 'locality, Domai
 
     /// Finds a composed entry by semantic key with one sparse-route lookup.
     ///
-    /// # Errors
-    ///
-    /// Returns the exact post-validation provider or descriptor reconstruction
-    /// fault without manufacturing a placement state.
-    pub fn get(
-        &self,
-        key: EntryKey,
-    ) -> Result<Option<GenerationEntry<DomainTag>>, LocalityReadError> {
+    #[must_use]
+    pub fn get(&self, key: EntryKey) -> Option<GenerationEntry<DomainTag>> {
         self.get_without_work(key)
     }
 
     /// Finds one composed entry while exposing the one sparse binary search
     /// needed to resolve its locality.
     ///
-    /// # Errors
-    ///
-    /// Returns the exact post-validation provider or descriptor reconstruction
-    /// fault without manufacturing a placement state.
-    pub fn measured_get(
-        &self,
-        key: EntryKey,
-    ) -> Result<MeasuredGenerationLookup<DomainTag>, LocalityReadError> {
+    #[must_use]
+    pub fn measured_get(&self, key: EntryKey) -> MeasuredGenerationLookup<DomainTag> {
         let mut work = LocalityLookupWork::default();
-        let entry = self.get_with_work(key, &mut work)?;
-        Ok((entry, work))
+        (self.get_with_work(key, &mut work), work)
     }
 
-    fn get_without_work(
-        &self,
-        key: EntryKey,
-    ) -> Result<Option<GenerationEntry<DomainTag>>, LocalityReadError> {
+    fn get_without_work(&self, key: EntryKey) -> Option<GenerationEntry<DomainTag>> {
         let Ok(position) = self.root.rows.binary_search_by_key(&key, |row| row.key) else {
-            return Ok(None);
+            return None;
         };
         let index = RowIndex::from_arena_position(position);
         let entry = self.root.entry_at(index);
-        self.locality.locality_for(index).map(|locality| {
-            Some(GenerationEntry {
-                key: entry.key,
-                parent: entry.parent,
-                object: entry.object,
-                locality,
-            })
+        Some(GenerationEntry {
+            key: entry.key,
+            parent: entry.parent,
+            object: entry.object,
+            locality: self.locality.locality_for(index),
         })
     }
 
@@ -462,22 +400,18 @@ impl<'root, 'locality, DomainTag: Domain> GenerationView<'root, 'locality, Domai
         &self,
         key: EntryKey,
         work: &mut LocalityLookupWork,
-    ) -> Result<Option<GenerationEntry<DomainTag>>, LocalityReadError> {
+    ) -> Option<GenerationEntry<DomainTag>> {
         let Ok(position) = self.root.rows.binary_search_by_key(&key, |row| row.key) else {
-            return Ok(None);
+            return None;
         };
         let index = RowIndex::from_arena_position(position);
         let entry = self.root.entry_at(index);
-        self.locality
-            .measured_locality_for(index, work)
-            .map(|locality| {
-                Some(GenerationEntry {
-                    key: entry.key,
-                    parent: entry.parent,
-                    object: entry.object,
-                    locality,
-                })
-            })
+        Some(GenerationEntry {
+            key: entry.key,
+            parent: entry.parent,
+            object: entry.object,
+            locality: self.locality.measured_locality_for(index, work),
+        })
     }
 
     pub(crate) fn root_rows(&self) -> GenerationRows<'root, 'locality, DomainTag> {

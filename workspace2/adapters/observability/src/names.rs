@@ -25,7 +25,6 @@ const fn plan_rejection(rejection: PlanRejection) -> &'static str {
     match rejection {
         PlanRejection::ClosureScratchTooSmall => "closure_scratch_too_small",
         PlanRejection::PlanScratchTooSmall => "plan_scratch_too_small",
-        PlanRejection::LocalityRead => "locality_read",
     }
 }
 

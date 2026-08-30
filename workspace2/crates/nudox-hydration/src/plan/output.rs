@@ -1,6 +1,6 @@
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef, ProviderSet};
-use nudox_root::{GenerationEntry, Locality, LocalityReadError, MetadataBytes, SelectedOrdinals};
+use nudox_root::{GenerationEntry, Locality, MetadataBytes, SelectedOrdinals};
 
 use super::PlanCoverage;
 use crate::Projection;
@@ -63,47 +63,32 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
     }
 
     /// Iterates exact requested descriptors in canonical root order.
-    pub fn required(
-        &self,
-    ) -> impl Iterator<Item = Result<ObjectRef<DomainTag>, LocalityReadError>> + '_ {
-        self.absent
-            .required_entries()
-            .map(|entry| entry.map(|entry| entry.object))
+    pub fn required(&self) -> impl Iterator<Item = ObjectRef<DomainTag>> + '_ {
+        self.absent.required_entries().map(|entry| entry.object)
     }
 
     /// Iterates descriptors already present under the planner predicate.
-    pub fn present(
-        &self,
-    ) -> impl Iterator<Item = Result<ObjectRef<DomainTag>, LocalityReadError>> + '_ {
-        self.absent
-            .present_entries()
-            .map(|entry| entry.map(|entry| entry.object))
+    pub fn present(&self) -> impl Iterator<Item = ObjectRef<DomainTag>> + '_ {
+        self.absent.present_entries().map(|entry| entry.object)
     }
 
     /// Iterates promise-backed absent descriptors through borrowed locality.
-    pub fn promised(
-        &self,
-    ) -> impl Iterator<Item = Result<Promise<DomainTag>, LocalityReadError>> + '_ {
-        self.absent_entries().filter_map(|item| match item {
-            Ok(entry) => match entry.locality {
-                Locality::Promised(providers) => Some(Ok(Promise {
+    pub fn promised(&self) -> impl Iterator<Item = Promise<DomainTag>> + '_ {
+        self.absent_entries()
+            .filter_map(|entry| match entry.locality {
+                Locality::Promised(providers) => Some(Promise {
                     object: entry.object,
                     providers,
-                })),
+                }),
                 Locality::Resident | Locality::Overlaid(_) => None,
-            },
-            Err(error) => Some(Err(error)),
-        })
+            })
     }
 
     /// Iterates absent descriptors with no provider promise.
-    pub fn missing(
-        &self,
-    ) -> impl Iterator<Item = Result<ObjectRef<DomainTag>, LocalityReadError>> + '_ {
-        self.absent_entries().filter_map(|item| match item {
-            Ok(entry) => matches!(entry.locality, Locality::Resident | Locality::Overlaid(_))
-                .then_some(Ok(entry.object)),
-            Err(error) => Some(Err(error)),
+    pub fn missing(&self) -> impl Iterator<Item = ObjectRef<DomainTag>> + '_ {
+        self.absent_entries().filter_map(|entry| {
+            matches!(entry.locality, Locality::Resident | Locality::Overlaid(_))
+                .then_some(entry.object)
         })
     }
 
@@ -120,20 +105,16 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
     }
 
     /// Iterates exact fetch work in canonical root order, visiting only absent rows.
-    pub fn fetches(
-        &self,
-    ) -> impl Iterator<Item = Result<Fetch<DomainTag>, LocalityReadError>> + '_ {
-        self.absent_entries().map(|entry| {
-            entry.map(|entry| match entry.locality {
-                Locality::Promised(providers) => Fetch {
-                    object: entry.object,
-                    route: FetchRoute::Promised(providers),
-                },
-                Locality::Resident | Locality::Overlaid(_) => Fetch {
-                    object: entry.object,
-                    route: FetchRoute::Unrouted,
-                },
-            })
+    pub fn fetches(&self) -> impl Iterator<Item = Fetch<DomainTag>> + '_ {
+        self.absent_entries().map(|entry| match entry.locality {
+            Locality::Promised(providers) => Fetch {
+                object: entry.object,
+                route: FetchRoute::Promised(providers),
+            },
+            Locality::Resident | Locality::Overlaid(_) => Fetch {
+                object: entry.object,
+                route: FetchRoute::Unrouted,
+            },
         })
     }
 
@@ -143,9 +124,7 @@ impl<'selection, 'storage, DomainTag: Domain> HydrationPlanView<'selection, 'sto
         crate::StagedGeneration::new(self)
     }
 
-    fn absent_entries(
-        &self,
-    ) -> impl Iterator<Item = Result<GenerationEntry<DomainTag>, LocalityReadError>> + '_ {
+    fn absent_entries(&self) -> impl Iterator<Item = GenerationEntry<DomainTag>> + '_ {
         self.absent.absent_entries()
     }
 }

@@ -89,16 +89,15 @@ where
                 true
             }
         })
-        .map_err(|error| match error {
-            nudox_root::SelectedOrdinalBufferError::TooSmall {
-                required,
-                available,
-            } => PlanError::ScratchTooSmall {
+        .map_err(
+            |nudox_root::SelectedOrdinalBufferError::TooSmall {
+                 required,
+                 available,
+             }| PlanError::ScratchTooSmall {
                 required,
                 available,
             },
-            nudox_root::SelectedOrdinalBufferError::Read(source) => PlanError::LocalityRead(source),
-        })?;
+        )?;
     let (coverage, absent_count) = tally.finish();
     if absent_count > facts.high_water_absent {
         facts.high_water_absent = absent_count;
@@ -203,7 +202,6 @@ const fn plan_outcome<DomainTag>(
         Err(PlanError::ScratchTooSmall { .. }) => {
             HydrationOutcome::Rejected(PlanRejection::PlanScratchTooSmall)
         }
-        Err(PlanError::LocalityRead(_)) => HydrationOutcome::Rejected(PlanRejection::LocalityRead),
     }
 }
 

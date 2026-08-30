@@ -1,10 +1,8 @@
 use core::mem::size_of;
 
-use nudox_object::OBJECT_DESCRIPTOR_RECORD_BYTES;
-
 use crate::MetadataBytes;
 
-use super::{errors::LocalityError, header::HEADER_BYTES};
+use super::{descriptor::LOCALITY_DESCRIPTOR_BYTES, errors::LocalityError, header::HEADER_BYTES};
 
 /// Semantic sparse exception-row cardinality.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -217,8 +215,8 @@ impl Geometry {
         let overlay_ranks = overlay_bits + u64::from(bit_bytes(overlays));
         let present =
             overlay_ranks + u64::from(rank_prefix_count(overlays)) * size_of::<u32>() as u64;
-        let basis = present
-            + u64::from(u32::from(present_overlays)) * OBJECT_DESCRIPTOR_RECORD_BYTES as u64;
+        let basis =
+            present + u64::from(u32::from(present_overlays)) * LOCALITY_DESCRIPTOR_BYTES as u64;
         let complete = basis + if u32::from(overlays) == 0 { 0 } else { 32 };
         Self {
             rows,

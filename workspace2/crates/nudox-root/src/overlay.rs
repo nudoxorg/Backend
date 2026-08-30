@@ -10,8 +10,7 @@ use crate::locality::LocalityEncoder;
 use crate::packed::RowIndex;
 use crate::{
     EntryKey, GenerationEntry, GenerationRoot, GenerationView, Locality, LocalityError,
-    LocalityLayout, LocalityReadError, LocalityWriteError, MetadataBytes, NonResident, RootEntry,
-    ValidatedLocality,
+    LocalityLayout, LocalityWriteError, MetadataBytes, NonResident, RootEntry, ValidatedLocality,
 };
 
 /// Overlay-propagation rejection without semantic-root mutation.
@@ -20,9 +19,6 @@ pub enum OverlayError<DomainTag> {
     /// Existing locality cannot be coherently composed with the supplied root.
     #[error("could not compose root and locality")]
     Locality(#[source] LocalityError),
-    /// Validated locality lanes could not reconstruct one exact root entry.
-    #[error("could not read validated locality")]
-    LocalityRead(#[from] LocalityReadError),
     /// Caller mark scratch cannot cover every root coordinate before mutation.
     #[error("overlay marks have {available:?} bytes but require {required:?}")]
     MarkScratchTooSmall {
@@ -97,13 +93,13 @@ pub fn propagate_overlays<'output, DomainTag: Domain>(
 ) -> Result<(ValidatedLocality<'output, DomainTag>, OverlayBuildWork), OverlayError<DomainTag>> {
     let mut marks = OverlayMarks::new(view, marks)?;
     validate_and_mark(view, base, &mut marks)?;
-    let counts = count_output(view, base, &marks)?;
+    let counts = count_output(view, base, &marks);
     let layout = LocalityLayout::from_counts(counts.exceptions, counts.promises, counts.present)
         .map_err(OverlayError::Locality)?;
     let final_metadata_bytes = layout.bytes();
     let required = usize::from(final_metadata_bytes);
     if output.len() < required {
-        return Err(OverlayError::Output(LocalityWriteError {
+        return Err(OverlayError::Output(LocalityWriteError::OutputTooSmall {
             required: final_metadata_bytes,
             available: output.len().into(),
         }));
@@ -115,8 +111,8 @@ pub fn propagate_overlays<'output, DomainTag: Domain>(
     let output = &mut output[..required];
     let basis = (counts.exceptions != counts.promises).then_some(base.id);
     let mut encoder = LocalityEncoder::new(output, view.id, view.entry_count, layout, basis);
-    write_output(view, base, &marks, &mut encoder)?;
-    let locality = encoder.finish();
+    write_output(view, base, &marks, &mut encoder);
+    let locality = encoder.finish().map_err(OverlayError::Locality)?;
     let mark_bytes = marks.bytes();
     let peak_live_bytes = mark_bytes
         .checked_combined(final_metadata_bytes)
@@ -190,7 +186,7 @@ fn validate_and_mark<DomainTag: Domain>(
 ) -> Result<(), OverlayError<DomainTag>> {
     let mut base_rows = base.closure().peekable();
     for item in view.root_rows() {
-        let (index, entry) = item?;
+        let (index, entry) = item;
         if let Locality::Overlaid(remote) = entry.locality {
             validate_overlay(&entry, remote, base.id, &mut base_rows)?;
             mark_ancestors(view, marks, index);
@@ -220,15 +216,11 @@ struct OutputCounts {
     present: u32,
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "validated locality reconstruction preserves exact source and ordinal through the shared overlay rejection"
-)]
 fn count_output<DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &OverlayMarks<'_>,
-) -> Result<OutputCounts, OverlayError<DomainTag>> {
+) -> OutputCounts {
     let mut counts = OutputCounts {
         exceptions: 0,
         promises: 0,
@@ -236,7 +228,7 @@ fn count_output<DomainTag: Domain>(
     };
     let mut base_rows = base.closure().peekable();
     for item in view.root_rows() {
-        let (index, entry) = item?;
+        let (index, entry) = item;
         if marks.contains(index) {
             counts.exceptions += 1;
             if base_object(entry.key, &mut base_rows).is_some() {
@@ -247,22 +239,18 @@ fn count_output<DomainTag: Domain>(
             counts.promises += 1;
         }
     }
-    Ok(counts)
+    counts
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "validated locality reconstruction preserves exact source and ordinal through the shared overlay rejection"
-)]
 fn write_output<DomainTag: Domain>(
     view: &GenerationView<'_, '_, DomainTag>,
     base: &GenerationRoot<DomainTag>,
     marks: &OverlayMarks<'_>,
     encoder: &mut LocalityEncoder<'_, DomainTag>,
-) -> Result<(), OverlayError<DomainTag>> {
+) {
     let mut base_rows = base.closure().peekable();
     for item in view.root_rows() {
-        let (index, entry) = item?;
+        let (index, entry) = item;
         if marks.contains(index) {
             encoder.emit(
                 index,
@@ -272,7 +260,6 @@ fn write_output<DomainTag: Domain>(
             encoder.emit(index, NonResident::Promised(providers));
         }
     }
-    Ok(())
 }
 
 fn remote_base<DomainTag: Domain, Rows>(

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::{LocalityReadError, SelectedCount};
+use super::SelectedCount;
 
 /// Sparse selected-ordinal storage rejected before classification begins.
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -13,7 +13,4 @@ pub enum SelectedOrdinalBufferError {
         /// Declared compact ordinal capacity.
         available: SelectedCount,
     },
-    /// A locality payload changed after its immutable validation boundary.
-    #[error("selected locality read failed")]
-    Read(#[from] LocalityReadError),
 }

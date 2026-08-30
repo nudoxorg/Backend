@@ -1,7 +1,7 @@
 use core::mem::size_of;
 
 use nudox_id::GenerationId;
-use nudox_object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectDescriptorWireRecord, RemoteBase};
+use nudox_object::RemoteBase;
 use zerocopy::{
     IntoBytes,
     byteorder::{BigEndian, U32},
@@ -11,6 +11,7 @@ use crate::locality::{LocalityException, NonResident};
 use crate::{GenerationRoot, MetadataBytes, RootEntryCount};
 
 use super::{
+    descriptor::{LOCALITY_DESCRIPTOR_BYTES, LocalityDescriptorWireRecord},
     errors::{LocalityError, LocalityRegion, LocalityWriteError},
     header::{HEADER_BYTES, HeaderWireRecord},
     layout::{ExceptionCount, LaneTable, LocalityLayout, PresentOverlayCount, PromiseCount},
@@ -21,8 +22,9 @@ use super::{
 /// Validated immutable sparse input and its exact canonical output layout.
 ///
 /// `prepare` performs every input/root/coherence check exactly once. The
-/// consuming `write` method then has one possible failure—insufficient caller
-/// output—and does not allocate, search the root, or revalidate its result.
+/// consuming `write` method does not allocate or search the root. It validates
+/// the completed canonical bytes through the public grammar once so private
+/// encoder drift cannot mint a stronger witness than untrusted input receives.
 pub struct PreparedLocality<'facts, DomainTag> {
     /// Exact byte capacity required for one direct output artifact.
     pub required_bytes: MetadataBytes,
@@ -71,7 +73,7 @@ impl<'facts, DomainTag: nudox_id::Domain> PreparedLocality<'facts, DomainTag> {
     ) -> Result<ValidatedLocality<'_, DomainTag>, LocalityWriteError> {
         let required = usize::from(self.required_bytes);
         if output.len() < required {
-            return Err(LocalityWriteError {
+            return Err(LocalityWriteError::OutputTooSmall {
                 required: self.required_bytes,
                 available: output.len().into(),
             });
@@ -91,7 +93,7 @@ impl<'facts, DomainTag: nudox_id::Domain> PreparedLocality<'facts, DomainTag> {
         for fact in self.facts {
             encoder.emit(fact.row.index, fact.placement);
         }
-        Ok(encoder.finish())
+        encoder.finish().map_err(LocalityWriteError::from)
     }
 }
 
@@ -99,8 +101,6 @@ impl<'facts, DomainTag: nudox_id::Domain> PreparedLocality<'facts, DomainTag> {
 /// overlays. It retains no allocation and accepts only root-issued rows.
 pub(crate) struct LocalityEncoder<'output, DomainTag> {
     output: &'output mut [u8],
-    generation: GenerationId,
-    root_count: RootEntryCount,
     lanes: LaneTable,
     layout: LocalityLayout,
     basis: Option<GenerationId>,
@@ -117,12 +117,10 @@ impl<'output, DomainTag: nudox_id::Domain> LocalityEncoder<'output, DomainTag> {
         basis: Option<GenerationId>,
     ) -> Self {
         let lanes = layout.lanes();
-        write_header(output, generation, root_count, &layout);
+        write_header::<DomainTag>(output, generation, root_count, &layout);
         clear_membership_and_rank_lanes(output, lanes);
         Self {
             output,
-            generation,
-            root_count,
             lanes,
             layout,
             basis,
@@ -143,16 +141,10 @@ impl<'output, DomainTag: nudox_id::Domain> LocalityEncoder<'output, DomainTag> {
         self.cursor.exception += 1;
     }
 
-    pub(crate) fn finish(self) -> ValidatedLocality<'output, DomainTag> {
+    pub(crate) fn finish(self) -> Result<ValidatedLocality<'output, DomainTag>, LocalityError> {
         write_rank_directories(self.output, self.lanes, &self.layout);
         write_shared_basis(self.output, self.lanes, self.basis);
-        ValidatedLocality::from_validated(
-            self.output,
-            self.generation,
-            self.root_count,
-            u32::from(self.layout.exceptions()),
-            self.lanes,
-        )
+        super::validate::from_writer(self.output)
     }
 }
 
@@ -317,7 +309,7 @@ fn normalize_basis(
     clippy::indexing_slicing,
     reason = "the measured layout preflight proves every writer output contains the fixed header prefix"
 )]
-fn write_header(
+fn write_header<DomainTag: nudox_id::Domain>(
     output: &mut [u8],
     generation: GenerationId,
     root_count: RootEntryCount,
@@ -325,6 +317,7 @@ fn write_header(
 ) {
     let header = HeaderWireRecord {
         generation: *generation,
+        content_domain: u8::from(DomainTag::CODE),
         root_count: U32::<BigEndian>::new(u32::from(root_count)),
         exception_count: U32::new(u32::from(layout.exceptions())),
         promise_count: U32::new(u32::from(layout.promises())),
@@ -463,9 +456,9 @@ fn write_descriptor<DomainTag>(
     ordinal: u32,
     object: nudox_object::ObjectRef<DomainTag>,
 ) {
-    let record = ObjectDescriptorWireRecord::from(&object);
-    let start = start + native(ordinal) * OBJECT_DESCRIPTOR_RECORD_BYTES;
-    output[start..start + OBJECT_DESCRIPTOR_RECORD_BYTES].copy_from_slice(record.as_bytes());
+    let record = LocalityDescriptorWireRecord::from(&object);
+    let start = start + native(ordinal) * LOCALITY_DESCRIPTOR_BYTES;
+    output[start..start + LOCALITY_DESCRIPTOR_BYTES].copy_from_slice(record.as_bytes());
 }
 
 #[allow(

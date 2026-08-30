@@ -94,7 +94,7 @@ fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing
         |_| true,
     )?;
     assert!(replay.is_complete());
-    assert_eq!(replay.fetches().collect::<Result<Vec<_>, _>>()?.len(), 0);
+    assert_eq!(replay.fetches().count(), 0);
     let verified = replay
         .stage()
         .verify(|_| true)

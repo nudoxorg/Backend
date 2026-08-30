@@ -74,6 +74,12 @@ impl ProviderSet {
     pub const fn contains(self, provider: ProviderId) -> bool {
         (self.0 & Self::only(provider).0) != 0
     }
+
+    /// Projects a non-zero big-endian wire cell into host-order provider bits.
+    #[must_use]
+    pub const fn from_be(bits: NonZeroU64) -> Self {
+        Self(bits.get().to_be())
+    }
 }
 
 impl TryFrom<u64> for ProviderSet {

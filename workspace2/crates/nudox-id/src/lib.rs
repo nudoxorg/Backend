@@ -22,7 +22,8 @@ mod raw;
 
 pub use artifact::{ArtifactHasher, ArtifactId, ArtifactIdDecodeError};
 pub use content::{
-    ContentHasher, ContentId, ContentIdDecodeError, ContentRoutingWord, FixedCanonicalRecord,
+    CONTENT_PAYLOAD_BYTES, ContentHasher, ContentId, ContentIdDecodeError, ContentPayload,
+    ContentRoutingWord, FixedCanonicalRecord,
 };
 pub use generation::{GenerationHasher, GenerationId};
 pub use marker::{

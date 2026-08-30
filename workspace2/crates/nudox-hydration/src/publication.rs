@@ -1,6 +1,5 @@
 use nudox_id::{Domain, GenerationId};
 use nudox_object::{DepSetId, ObjectRef};
-use nudox_root::LocalityReadError;
 use thiserror::Error;
 
 use crate::HydrationPlanView;
@@ -35,11 +34,7 @@ impl<'plan, 'selection, 'storage, DomainTag: Domain>
                 pinned_root: self.plan.pinned_root,
             });
         }
-        for item in self.plan.required() {
-            let object = item.map_err(|source| VerificationError::LocalityRead {
-                pinned_root: self.plan.pinned_root,
-                source,
-            })?;
+        for object in self.plan.required() {
             if !is_present(object) {
                 return Err(VerificationError::MissingObject {
                     pinned_root: self.plan.pinned_root,
@@ -74,15 +69,6 @@ pub enum VerificationError<DomainTag> {
     PartialProjection {
         /// Incomplete root.
         pinned_root: GenerationId,
-    },
-    /// Validated locality could not reconstruct one required entry.
-    #[error("could not read required locality for generation {pinned_root:?}")]
-    LocalityRead {
-        /// Generation whose selected locality failed reconstruction.
-        pinned_root: GenerationId,
-        /// Exact validated-lane read cause and ordinal.
-        #[source]
-        source: LocalityReadError,
     },
     /// Exact descriptor absent at final closure verification.
     #[error("generation {pinned_root:?} is missing required object {object:?}")]

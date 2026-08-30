@@ -52,7 +52,7 @@ fn expect_header(
 #[test]
 fn every_restart_prefix_has_exact_receipts_and_independent_recovery() -> Result<(), ScenarioError> {
     let key = StageKey::from([3; 32]);
-    let output = StageOutput::from([5; 32]);
+    let output = StageOutput::from_digest([5; 32]);
     let events = [
         EventKind::Requested,
         EventKind::Admitted,
@@ -147,7 +147,7 @@ fn duplicate_is_durable_but_conflicting_key_writes_nothing() -> Result<(), Scena
 fn post_publication_failure_reopens_only_as_reconciliation() -> Result<(), ScenarioError> {
     let fixture = Fixture::new("publication-unknown");
     let key = StageKey::from([9; 32]);
-    let output = StageOutput::from([10; 32]);
+    let output = StageOutput::from_digest([10; 32]);
     let mut journal = FileJournal::create(fixture.path())?;
     for kind in [
         EventKind::Requested,

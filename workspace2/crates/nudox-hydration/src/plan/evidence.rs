@@ -1,9 +1,7 @@
 use alloc::collections::TryReserveError;
 use core::{mem::size_of, ops::Deref};
 
-use nudox_root::{
-    ClosureError, LocalityReadError, MetadataBytes, SelectedCount, SelectedOrdinalBuffer,
-};
+use nudox_root::{ClosureError, MetadataBytes, SelectedCount, SelectedOrdinalBuffer};
 use thiserror::Error;
 
 /// Semantic count measured in selected entries that are absent locally.
@@ -66,8 +64,6 @@ pub enum PlanRejection {
     ClosureScratchTooSmall,
     /// Caller plan scratch could not retain every selected descriptor.
     PlanScratchTooSmall,
-    /// Validated locality could not reconstruct one selected entry.
-    LocalityRead,
 }
 
 /// Immutable sparse-plan allocation evidence exposed by dereferencing scratch.
@@ -127,9 +123,6 @@ pub enum PlanError {
     /// Caller-owned root-selection scratch was insufficient.
     #[error("closure scratch failure")]
     Closure(#[from] ClosureError),
-    /// Validated locality could not reconstruct one selected entry.
-    #[error("could not read selected locality")]
-    LocalityRead(#[from] LocalityReadError),
     /// Caller-owned plan scratch cannot retain every selected descriptor.
     #[error("plan scratch has {available:?} entries but requires {required:?}")]
     ScratchTooSmall {
