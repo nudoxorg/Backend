@@ -87,12 +87,15 @@ implementers and independent Terra reviewers according to `ORCHESTRATION.md`.
      exact and lexical results survive compaction, rebalance, stale routes, and one unavailable node.
 
 5. **Async graph and vector controller**
-   - Project published IR/index facts into a typed async Trustfall query seam with bounded leased
-     batches, cancellation, backpressure, provenance, and exact absent-partition reporting. Runtime
-     types stay in adapters.
+   - Project published IR/index facts through a typed async leased-batch seam with cancellation,
+     backpressure, provenance, and exact absent-partition reporting. A Trustfall adapter queries an
+     already-pinned resident graph view, or uses an explicitly measured bounded bridge; Trustfall's
+     synchronous boxed-iterator API is not described as the async or monomorphized core seam.
    - Implement Qdrant-backed vector segment build/query as a replaceable projection over immutable
-     snapshot identity. Batch ingestion, quantization/filter choices, payload shape, transport, and
-     local fallback are measured; Qdrant never becomes canonical truth.
+     snapshot identity. Full canonical identities live in indexed keyword payload fields; Qdrant
+     point IDs are disposable physical coordinates with collision checks. Batch ingestion,
+     consistency policy, quantization/filter choices, payload shape, transport, exact-versus-
+     approximate provenance, and local fallback are measured; Qdrant never becomes canonical truth.
    - Terminal: the same pinned package snapshot answers graph and vector queries locally or remotely,
      with deterministic typed terminals and fault/pressure evidence.
 
