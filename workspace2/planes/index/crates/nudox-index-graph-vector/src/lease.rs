@@ -5,9 +5,9 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-#[cfg(feature = "loom-model")]
+#[cfg(all(test, feature = "loom-model"))]
 use loom::sync::{Mutex, atomic::AtomicBool};
-#[cfg(not(feature = "loom-model"))]
+#[cfg(not(all(test, feature = "loom-model")))]
 use std::sync::{Mutex, atomic::AtomicBool};
 
 use crate::{GraphAuthority, GraphEdge, PartitionId};
@@ -409,5 +409,119 @@ impl LeasedGraphBatch<'_> {
         }
         self.stream.release_batch();
         Ok(required)
+    }
+}
+
+#[cfg(all(test, feature = "loom-model"))]
+mod loom_tests {
+    use core::{
+        mem::size_of,
+        pin::Pin,
+        sync::atomic::Ordering,
+        task::{Context, Poll, Waker},
+    };
+    use std::{sync::Arc as StandardArc, task::Wake};
+
+    use loom::{
+        sync::{Arc, atomic::AtomicUsize},
+        thread,
+    };
+    use nudox_index_vocab::IndexSnapshotId;
+    use nudox_ir_vocab::EntityId;
+
+    use super::{Cancellation, EdgeBatchStream, GraphStreamEvent, GraphTerminal};
+    use crate::{GraphAuthority, GraphEdge, PartitionId, ProjectionId};
+
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: StandardArc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &StandardArc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn authority() -> GraphAuthority {
+        GraphAuthority::new(
+            IndexSnapshotId::from_canonical_bytes(b"loom graph snapshot"),
+            ProjectionId::new(1),
+        )
+    }
+
+    #[test]
+    fn pending_cancel_wakes_and_releases_the_exact_credit_owner() {
+        loom::model(|| {
+            let authority = authority();
+            let cancellation = Arc::new(Cancellation::new());
+            let stream = EdgeBatchStream::new(authority, 1, size_of::<GraphEdge>());
+            assert!(stream.is_ok());
+            let Ok(mut stream) = stream else {
+                return;
+            };
+            let partition = PartitionId::new(0);
+            let edge = [GraphEdge::new(
+                authority,
+                partition,
+                EntityId::new(1),
+                EntityId::new(2),
+            )];
+            assert_eq!(stream.settle(partition, &edge), Ok(()));
+            let wake_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
+            let waker = Waker::from(StandardArc::clone(&wake_count));
+            let mut context = Context::from_waker(&waker);
+            let cancellation_for_thread = Arc::clone(&cancellation);
+            let cancel = thread::spawn(move || cancellation_for_thread.cancel());
+
+            let first_cancelled = matches!(
+                Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+                Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
+                    authority: observed,
+                })) if observed == authority
+            );
+            assert!(cancel.join().is_ok());
+            if first_cancelled {
+                assert!(matches!(
+                    Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+                    Poll::Ready(GraphStreamEvent::Fused)
+                ));
+            } else {
+                assert!(matches!(
+                    Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+                    Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Cancelled {
+                        authority: observed,
+                    })) if observed == authority
+                ));
+            }
+            assert_eq!(stream.charged_items(), 0);
+            assert_eq!(stream.charged_bytes(), 0);
+            assert!(wake_count.0.load(Ordering::SeqCst) <= 1);
+        });
+    }
+
+    #[test]
+    fn pending_registration_is_woken_exactly_once() {
+        loom::model(|| {
+            let authority = authority();
+            let cancellation = Arc::new(Cancellation::new());
+            let stream = EdgeBatchStream::new(authority, 0, 0);
+            assert!(stream.is_ok());
+            let Ok(mut stream) = stream else {
+                return;
+            };
+            let wake_count = StandardArc::new(WakeCount(AtomicUsize::new(0)));
+            let waker = Waker::from(StandardArc::clone(&wake_count));
+            let mut context = Context::from_waker(&waker);
+            assert!(matches!(
+                Pin::new(&mut stream).poll_batch(&mut context, &cancellation),
+                Poll::Pending
+            ));
+            let cancellation_for_thread = Arc::clone(&cancellation);
+            let cancel = thread::spawn(move || cancellation_for_thread.cancel());
+            assert!(cancel.join().is_ok());
+            assert_eq!(wake_count.0.load(Ordering::SeqCst), 1);
+        });
     }
 }
