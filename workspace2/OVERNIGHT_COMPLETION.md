@@ -25,6 +25,14 @@ product blockers.
 | Circular calibration and evidence-size rules rejected working compiler code. | The worker result creates its calibration receipt. Generated LLVM, assembly, corpora, and traces are measured by bytes/digests, separate from authored-code review. | Re-evaluate C1 commits `e61f34e9`, `6be0bd2c`, and checkpoint `38662cf5` on current APIs before redesigning them. |
 | Agent-thread exhaustion caused green candidates to be abandoned. | Thread exhaustion collapses review into the controller and triggers local integration; it never discards a passing candidate. | Close existing worktrees and commits before dispatching duplicate implementations. |
 
+The terminal branch histories quantify the failure without using source-volume targets. By commit
+subject, foundation produced 10 commits with no production-shaped commit; durable 16 with none;
+index 6 with none; adaptive 10 with none; application 7 with none; system 3 with none; and graph/vector
+reached 21 evidence commits before its first live implementation checkpoint. The compiler branch made
+206 commits: 9 production-shaped, 6 test-shaped, and 191 evidence/documentation-shaped. These counts
+are not quality scores. They show that the workflow repeatedly allowed multiple bookkeeping cycles
+between executable changes, which the progress clock below now forbids.
+
 ### Progress clock
 
 - A work cycle is one bounded sequence ending in a commit, a new red falsifier, a reproduced product
