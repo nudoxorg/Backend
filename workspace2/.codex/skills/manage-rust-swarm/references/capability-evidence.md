@@ -9,7 +9,7 @@ Each managed capability uses a stable lowercase kebab-case ID and one directory:
 |-- proof-matrix.md
 |-- research.md
 |-- closure.md
-`-- packets/
+`-- packets/                 # optional retained reviews
     `-- <review-id>.md
 ```
 
@@ -75,8 +75,9 @@ rewritten to point at a later card or packet.
 
 ## Binding laws
 
-- A worker result is admissible only when its exact card digest, baseline, checkout, role config,
-  runtime identity, model, effort, sandbox, and commit are recorded.
+- A worker result is identified by its baseline, checkout, exact commit, tests, and changed paths.
+  Role config, runtime identity, model, effort, and sandbox are useful provenance when available, but
+  missing telemetry does not make concrete code inadmissible.
 - A review is independent only when its packet excludes builder rationale and suspected fixes, its
   source snapshot has no Git history or manager journal, a distinct Codex parent is launched with
   `workspace-write` restricted to one disposable build root with `$TMPDIR` and `/tmp` implicit writes
@@ -88,5 +89,7 @@ rewritten to point at a later card or packet.
   cannot be cited for changed rows.
 - Rejected branches remain addressable until every salvage row is absorbed or rejected by an
   executable counterexample; then update `retention` without erasing the original commit.
-- `evidence-blocked` records raw command/source/platform failures, two distinct diagnostic attempts,
-  affected matrix rows, and the external owner/action in `closure.md`. It proves no capability law.
+- `evidence-blocked` records a reproducible product, authority, external-system, or toolchain failure,
+  two distinct implementation attempts, affected matrix rows, and the external owner/action in
+  `closure.md`. Missing worker/reviewer/model routing or receipt formatting is never
+  `evidence-blocked`. The state proves no capability law and is not program completion.

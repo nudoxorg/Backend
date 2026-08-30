@@ -5,9 +5,10 @@ description: "Act as the workspace2 Sol chief steward: own capability architectu
 
 # Steward the greenfield Rust program
 
-Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`,
-`../manage-rust-swarm/SKILL.md`, `../review-rust-gem/SKILL.md`, and the applicable domain skill and
-roadmap section completely. Read `../write-evidence-rubric/SKILL.md` only after its readiness gate.
+Read `../../../ORCHESTRATION.md`, `../deliver-reviewed-rust-slice/SKILL.md`, and the applicable domain
+skill and roadmap section completely. Read `../manage-rust-swarm/SKILL.md` when delegating and
+`../review-rust-gem/SKILL.md` when reviewing a concrete checkpoint. Read supplemental references only
+for a named unresolved question; never front-load the whole doctrine before the first red or edit.
 
 The Sol chief owns the system between capabilities: public contract, cross-crate composition,
 integration tests, semantic enforcement, final merge, and learning. Terra owns the inside of one
@@ -51,17 +52,20 @@ named capability and public red journey
 non-negotiable product laws and negative space
 shared baseline and skill/domain paths
 paths owned by concurrent work
-return contract: CLOSED | AUTHORITY_FORK | EVIDENCE_BLOCKED
+return contract: CHECKPOINT | CLOSED | AUTHORITY_FORK | EVIDENCE_BLOCKED
 ```
 
 Terra derives baselines, consumers, worker cards, unit oracles, measurements, exact commands, and
 repair loops. If it returns a discoverable path, command, dependency fact, or next worker decision as
 an authority fork, treat that as role failure and improve the Terra contract; do not quietly supply
-its job. `EVIDENCE_BLOCKED` is valid only with two bounded distinct diagnostic attempts, raw failures,
-affected rows, and an external resolution owner.
+its job. `EVIDENCE_BLOCKED` is valid only with two bounded distinct implementation attempts against a
+reproducible product, authority, external-system, or toolchain failure, affected rows, and an external
+resolution owner. Missing agent capacity, reviewer custody, router metadata, or packet formatting is
+an orchestration incident and triggers controller fallback, not a product block.
 
-Limit simultaneous Terra managers by useful child capacity. Each needs room for parallel Luna probes
-and an independent Terra reviewer. Managers without worker/reviewer capacity are orchestration theater.
+Limit simultaneous Terra managers by useful child capacity. Luna probes and an independent Terra
+reviewer are accelerators, not gates. A manager without child capacity implements the smallest slice
+directly, reviews it explicitly, and returns concrete code rather than an evidence-only terminal.
 
 ## Chief's continuous lane
 
@@ -82,8 +86,9 @@ While Terra works, produce durable shared progress in disjoint paths:
    manager's internal representation.
 
 Status narration and agent management are not background progress. Every cycle leaves at least one
-chief-owned executable oracle, semantic lint, measured control, consolidated abstraction, or
-source-backed decision that survives the current manager branch.
+chief-owned executable oracle, semantic lint, measured control, consolidated abstraction, production
+commit, or integration verdict. Research is allowed only while these receipts continue; after two
+cycles without one, reduce scope and implement directly.
 
 ## Learn without accumulating doctrine
 
@@ -106,10 +111,9 @@ material role-contract change with `calibrate-rust-agent-contract` before callin
 
 When a manager returns:
 
-1. Resolve the canonical capability index and verify candidate identity, TESTING mapping,
-   role/config/model/effort/sandbox custody, path ownership, proof matrix, journal, immutable review
-   packet, reviewer environment, and clean gate receipt. Trust reproduced unit evidence as Terra's responsibility; do not
-   rerun the entire worker campaign.
+1. Resolve the candidate identity, baseline, owned paths, tests, known findings, and clean gate
+   receipt. Role/config/model/sandbox metadata is provenance, not admission authority. Trust
+   reproduced unit evidence as Terra's responsibility; do not rerun the entire worker campaign.
 2. Review the complete candidate in the context of every affected current consumer. Reopen old
    abstractions when the new capability reveals duplicate or weaker invariant ownership.
 3. Run the chief public journey, affected workspace gates, semantic lints, and novel cross-cutting
@@ -120,9 +124,9 @@ When a manager returns:
 4. Decide mechanism by mechanism. It is valid to merge the candidate, refactor surrounding code,
    transplant a few excellent ideas, or reject most of the surface. A symbol-level salvage ledger is
    mandatory before substantial removal.
-5. Put each accepted chief repair behind a failing oracle and commit it separately. Freeze the final
-   source candidate, then commission a fresh blind, source-read-only Terra review of all post-manager
-   shipping changes.
+5. Put each accepted chief repair behind a failing oracle and commit it separately. Commission a
+   fresh blind review for high-risk post-manager changes when available; otherwise perform and record
+   a concrete controller review without delaying integration.
 6. Run complete affected gates from a clean source candidate twice only when closure risk warrants
    independent repeatability. Documentation-only receipt changes do not reopen source closure;
    source, tests, manifests, locks, fixtures, or generated consumers do.
@@ -153,9 +157,9 @@ actual lifetime, workload, and consumers.
 ## Closure
 
 Fill `references/root-closure-receipt.md` for the exact source candidate. Accept only when every
-mandatory law is reproduced, the final independent review has zero blockers/majors, chief repairs
-have red evidence, affected gates and status are clean, and remaining platform/tool uncertainty is
-named.
+mandatory product law is reproduced, concrete review has zero unresolved blockers/majors, chief
+repairs have red evidence, affected gates and status are clean, and remaining platform/tool
+uncertainty is named. Reviewer custody alone is never a mandatory product law.
 
 Report the merged public terminal, strongest counterexample, mechanisms retained from rejected work,
 cross-crate refactors, exact evidence, unresolved uncertainty, learned skill/lint change, and next
