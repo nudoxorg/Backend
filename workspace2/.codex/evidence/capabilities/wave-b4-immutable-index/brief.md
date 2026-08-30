@@ -65,11 +65,12 @@ invocation is permitted.
    waiting is a later leased adapter, never a whole-segment staging or async disguise for CPU work.
 8. Disabled typed probes neither format nor allocate; no exporter owns data-plane credits.
 
-Out of scope: relation/usage/vector, publication-log implementation, real object-store/file adapters,
-runtime SDKs, Tantivy writer/reader integration, Qdrant, Trustfall, serde, SIMD/unsafe, compiler
-integration, schema-wide registry generators, cache policy, and an abstract query family. Tantivy may
-later be a nested lexical differential adapter only; it cannot own logical schema, snapshot truth,
-segment identity, or terminal semantics.
+Out of scope for the first representation candidate: relation/usage/vector, publication-log
+implementation, real object-store/file adapters, runtime SDKs, Qdrant, Trustfall, serde, SIMD/unsafe,
+compiler integration, schema-wide registry generators, cache policy, and an abstract query family.
+The full B4 capability nevertheless includes one bounded Tantivy lexical differential-adapter row or
+an honest `EVIDENCE_BLOCKED` receipt after two distinct Nix/offline dependency attempts. Tantivy can
+never own logical schema, snapshot truth, segment identity, or terminal semantics.
 
 ## Baseline, custody, paths, and consumers
 
@@ -129,8 +130,11 @@ terms only, one measured FST candidate.
 | Dependencies/unsafe/SIMD | none; stop before Cargo change, dependency, unsafe, SIMD, macro, `dyn`, boxed stream, serde, or backend SDK |
 | Diagnostics | later probes use lazy typed construction; disabled builder execution is a direct falsifier |
 
-No timing, allocation, branch, code-size, or layout result is claimed. The first non-empty candidate
-must produce raw isolated measurements and safe-control comparison.
+No timing, allocation, branch, code-size, layout, durable-file, or durable-object-store result is
+claimed. Deterministic local/remote byte owners may prove semantic parity only; file/NVMe/object-store
+range ownership, durability, and outage evidence remain B4-09 red until a later bounded adapter
+card proves them. The first non-empty candidate must produce raw isolated measurements and
+safe-control comparison.
 
 ## TESTING.md mapping
 

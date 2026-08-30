@@ -1,0 +1,55 @@
+schema = 1
+capability_id = "wave-b4-immutable-index"
+state = "phase0"
+baseline_commit = "f2565a9fb33af06053bd19721d4dc2753ec09ed5"
+baseline_tree = "8477cb2ab93763c468d5431740cfb1d5e4c4cf82"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = "TESTING.md"
+testing_sha256 = "c29ae328a26117dd347c9b4952b24774c0cd7a5c6b8cc0b28ae2d7f22fda8e7b"
+
+[manager]
+task_id = "/root/wave_b4_terra"
+role = "nudox_terra_orchestrator"
+config_path = ".codex/agents/nudox-terra-orchestrator.toml"
+resolved_config_path = ".codex/config.toml"
+requested_model = "gpt-5.6-terra"
+actual_dispatch_model = "gpt-5.6-terra"
+requested_effort = "xhigh"
+actual_dispatch_effort = "xhigh"
+sandbox = "danger-full-access"
+checkout = "/Users/mileswirht/.config/codex/worktrees/f7b8/backend"
+branch = "codex/wave-b4-immutable-index"
+forbidden_checkout = "/Users/mileswirht/Downloads/backend"
+
+[phase0]
+production_writes = false
+production_luna_started = false
+writable_path_ledger = [".codex/evidence/capabilities/wave-b4-immutable-index/**"]
+affected_consumers = [
+  "planes/index/crates/nudox-index-vocab/src/lib.rs",
+  "planes/index/crates/nudox-index-vocab/tests/vocabulary.rs",
+  "crates/nudox-id/src/marker.rs",
+  "crates/nudox-id/src/lib.rs",
+  "planes/index/Cargo.toml",
+]
+historical_material = [
+  "INDEX_I0_MANAGER_CARD.md",
+  "INDEX_I0_CALIBRATION_RAW.md",
+  "evidence/index-i0/**",
+  "workspace/index/**",
+  "git:b1a59b16",
+]
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/brief.md", sha256 = "e6bb0c2eb7118e35316321b9cf873b140dcf387a2f06f6f87f1f15e084f6696d" }
+matrix = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/proof-matrix.md", sha256 = "8ec68966d8d3f915786ea5691d05c4acfb53841ae7510d113cb08c623d4ad5ab" }
+research = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/research.md", sha256 = "f4ee5d01eb921dfddcb405c8d0301214e1c6de23a38c9cc1ebde31ba1b9cca78" }
+closure = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/closure.md", sha256 = "3c56609dfbf3928fd7064e6d2ff6b0f22c9b642810d3c4aea1a5ebdb0fb583ea" }
+phase0_card = { path = ".codex/evidence/capabilities/wave-b4-immutable-index/packets/phase0-card.md", sha256 = "24567249b53a683b965ccac79f16eeda6111c384382bae78264e7c8bdd4b9fce" }
+
+[receipts]
+baseline_status = "clean"
+index_vocabulary_status = "not-yet-run-in-this-phase"
+calibration_status = "not-yet-run"
+pre_edit_review_status = "not-yet-run"
