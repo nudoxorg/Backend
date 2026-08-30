@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 nudox-ir-vocab = { path = "../nudox-ir-vocab" }
+thiserror = { version = "2", default-features = false }
 
 [lib]
 path = "src/lib.rs"

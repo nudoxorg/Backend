@@ -1,83 +1,90 @@
+use core::num::TryFromIntError;
+
 use nudox_ir_vocab::{EntityId, TypeId};
+use thiserror::Error;
 
 use crate::{
-    TypeNode, TypeNodeFault,
+    EntityType, TypeNode, TypeNodeFault,
     wire::{
-        DIRECTORY_ENTRY_BYTES, ENTITY_BYTES, ENTITY_SECTION, FragmentLayout, HEADER_BYTES,
-        LaneLayout, REQUIRED_SECTION, TYPE_NODE_BYTES, TYPE_NODE_SECTION, decode_type_node,
-        decode_validated_type_node, read_u16, read_u32, type_node_fault,
+        ByteLength, ByteOffset, DIRECTORY_ENTRY_BYTES, ENTITY_BYTES, FragmentLayout, HEADER_BYTES,
+        ItemCount, LaneLayout, SectionRequirement, TYPE_NODE_BYTES, decode_type_node,
+        decode_validated_type_node, entity_fault, read_u16, read_u32, type_node_fault,
     },
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KnownSection {
-    EntityIds,
-    TypeNodes,
-}
+pub use crate::wire::SectionKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WireField {
+    DeclaredLength,
+    SectionItemCount { ordinal: u16 },
+    SectionOffset { ordinal: u16 },
+    SectionByteLength { ordinal: u16 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum DirectoryFault {
-    Order {
-        previous: u16,
-        actual: u16,
-    },
-    Flags {
-        kind: u16,
-        actual: u16,
-    },
-    RequiredUnknown {
-        kind: u16,
-    },
+    #[error("section kind {actual} does not follow {previous}")]
+    Order { previous: u16, actual: u16 },
+    #[error("section {kind} has invalid flags {actual}")]
+    Flags { kind: u16, actual: u16 },
+    #[error("unknown section {kind} is marked required")]
+    RequiredUnknown { kind: u16 },
+    #[error("section {kind} starts at {actual}, not canonical offset {expected}")]
     Offset {
         kind: u16,
         expected: usize,
         actual: u32,
     },
+    #[error("section {kind} has {actual} bytes, not {expected}")]
     ByteLength {
         kind: u16,
         expected: usize,
         actual: u32,
     },
-    CountWidthOverflow {
-        kind: u16,
-        count: u32,
-        width: usize,
-    },
-    RangeOverflow {
-        kind: u16,
-        start: u32,
-        length: u32,
-    },
+    #[error("section {kind} count {count} times width {width} overflows")]
+    CountWidthOverflow { kind: u16, count: u32, width: usize },
+    #[error("section {kind} range {start}+{length} overflows")]
+    RangeOverflow { kind: u16, start: u32, length: u32 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum FragmentError {
-    TruncatedHeader {
-        required: usize,
-        actual: usize,
+    #[error("fragment header needs {required} bytes but only {actual} are present")]
+    TruncatedHeader { required: usize, actual: usize },
+    #[error("fragment magic {actual:?} is unknown")]
+    Magic { actual: [u8; 4] },
+    #[error("fragment schema {actual} is unknown")]
+    Schema { actual: u16 },
+    #[error("fragment declares {declared} bytes but received {actual}")]
+    DeclaredLength { declared: usize, actual: usize },
+    #[error("fragment requires extent {required} but received {actual} bytes")]
+    Extent { required: usize, actual: usize },
+    #[error("wire field {field:?} value {actual} does not fit this platform")]
+    WireWidth {
+        field: WireField,
+        actual: u32,
+        #[source]
+        source: TryFromIntError,
     },
-    Magic {
-        actual: [u8; 4],
-    },
-    Schema {
-        actual: u16,
-    },
-    Geometry {
-        expected: usize,
-        actual: usize,
-    },
-    DirectoryBytesOverflow {
-        section_count: u16,
-    },
+    #[error("directory entry {ordinal} is invalid: {fault}")]
     Directory {
         ordinal: u16,
+        #[source]
         fault: DirectoryFault,
     },
-    MissingSection {
-        section: KnownSection,
+    #[error("required section {section:?} is missing")]
+    MissingSection { section: SectionKind },
+    #[error("entity {ordinal:?} is invalid: {fault}")]
+    Entity {
+        ordinal: EntityId,
+        #[source]
+        fault: crate::EntityFault,
     },
+    #[error("type node {ordinal:?} is invalid: {fault}")]
     TypeNode {
         ordinal: TypeId,
+        #[source]
         fault: TypeNodeFault,
     },
 }
@@ -91,34 +98,50 @@ pub struct FragmentView<'fragment> {
 impl<'fragment> FragmentView<'fragment> {
     pub fn validate(envelope: &'fragment [u8]) -> Result<Self, FragmentError> {
         let layout = validate_layout(envelope)?;
+        let entity_lane = &envelope[layout.entities.range()];
+        for (ordinal, record) in
+            (0..layout.entities.count.get()).zip(entity_lane.chunks_exact(ENTITY_BYTES))
+        {
+            let target = TypeId::new(read_u32(record, 0));
+            if let Some(fault) = entity_fault(target, layout.type_nodes.count) {
+                return Err(FragmentError::Entity {
+                    ordinal: EntityId::new(ordinal),
+                    fault,
+                });
+            }
+        }
+
         let type_lane = &envelope[layout.type_nodes.range()];
-        for (ordinal, record) in type_lane.chunks_exact(TYPE_NODE_BYTES).enumerate() {
+        for (ordinal, record) in
+            (0..layout.type_nodes.count.get()).zip(type_lane.chunks_exact(TYPE_NODE_BYTES))
+        {
             let node = match decode_type_node(record) {
                 Ok(node) => node,
                 Err(fault) => {
                     return Err(FragmentError::TypeNode {
-                        ordinal: TypeId::new(ordinal as u32),
+                        ordinal: TypeId::new(ordinal),
                         fault,
                     });
                 }
             };
             if let Some(fault) = type_node_fault(node, layout.type_nodes.count) {
                 return Err(FragmentError::TypeNode {
-                    ordinal: TypeId::new(ordinal as u32),
+                    ordinal: TypeId::new(ordinal),
                     fault,
                 });
             }
         }
         Ok(Self {
             envelope,
-            entities: &envelope[layout.entities.range()],
+            entities: entity_lane,
             type_nodes: type_lane,
         })
     }
 
-    pub fn entity_ids(&self) -> EntityCursor<'fragment> {
+    pub fn entities(&self) -> EntityCursor<'fragment> {
         EntityCursor {
             remaining: self.entities,
+            next_ordinal: 0,
         }
     }
 
@@ -137,15 +160,21 @@ impl AsRef<[u8]> for FragmentView<'_> {
 
 pub struct EntityCursor<'fragment> {
     remaining: &'fragment [u8],
+    next_ordinal: u32,
 }
 
 impl Iterator for EntityCursor<'_> {
-    type Item = EntityId;
+    type Item = EntityType;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (record, remaining) = self.remaining.split_first_chunk::<ENTITY_BYTES>()?;
+        let entity = EntityId::new(self.next_ordinal);
+        self.next_ordinal += 1;
         self.remaining = remaining;
-        Some(EntityId::new(u32::from_le_bytes(*record)))
+        Some(EntityType {
+            entity,
+            semantic_type: TypeId::new(u32::from_le_bytes(*record)),
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -196,24 +225,38 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     if schema != crate::FRAGMENT_SCHEMA {
         return Err(FragmentError::Schema { actual: schema });
     }
-    let section_count = read_u16(envelope, 6);
-    let total_len = read_u32(envelope, 8) as usize;
-    if total_len != envelope.len() {
-        return Err(FragmentError::Geometry {
-            expected: total_len,
+    let section_count = crate::wire::SectionCount::from(read_u16(envelope, 6));
+    let declared_wire_length = ByteLength::from(read_u32(envelope, 8));
+    let declared_length =
+        declared_wire_length
+            .as_usize()
+            .map_err(|source| FragmentError::WireWidth {
+                field: WireField::DeclaredLength,
+                actual: declared_wire_length.get(),
+                source,
+            })?;
+    if declared_length != envelope.len() {
+        return Err(FragmentError::DeclaredLength {
+            declared: declared_length,
             actual: envelope.len(),
         });
     }
-    let Some(directory_bytes) = usize::from(section_count).checked_mul(DIRECTORY_ENTRY_BYTES)
-    else {
-        return Err(FragmentError::DirectoryBytesOverflow { section_count });
-    };
-    let Some(directory_end) = HEADER_BYTES.checked_add(directory_bytes) else {
-        return Err(FragmentError::DirectoryBytesOverflow { section_count });
-    };
+    let directory_bytes = section_count
+        .as_usize()
+        .checked_mul(DIRECTORY_ENTRY_BYTES)
+        .ok_or(FragmentError::Extent {
+            required: usize::MAX,
+            actual: envelope.len(),
+        })?;
+    let directory_end = HEADER_BYTES
+        .checked_add(directory_bytes)
+        .ok_or(FragmentError::Extent {
+            required: usize::MAX,
+            actual: envelope.len(),
+        })?;
     if directory_end > envelope.len() {
-        return Err(FragmentError::Geometry {
-            expected: directory_end,
+        return Err(FragmentError::Extent {
+            required: directory_end,
             actual: envelope.len(),
         });
     }
@@ -222,141 +265,178 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut expected_offset = directory_end;
     let mut entities = None;
     let mut type_nodes = None;
-    for ordinal in 0..section_count {
+    for ordinal in 0..section_count.get() {
         let entry = HEADER_BYTES + usize::from(ordinal) * DIRECTORY_ENTRY_BYTES;
-        let kind = read_u16(envelope, entry);
-        let flags = read_u16(envelope, entry + 2);
-        let count = read_u32(envelope, entry + 4);
-        let start = read_u32(envelope, entry + 8);
-        let byte_len = read_u32(envelope, entry + 12);
+        let raw_kind = read_u16(envelope, entry);
+        let raw_requirement = read_u16(envelope, entry + 2);
+        let count = ItemCount::from(read_u32(envelope, entry + 4));
+        let start = ByteOffset::from(read_u32(envelope, entry + 8));
+        let byte_len = ByteLength::from(read_u32(envelope, entry + 12));
         if let Some(previous_kind) = previous
-            && kind <= previous_kind
+            && raw_kind <= previous_kind
         {
             return Err(FragmentError::Directory {
                 ordinal,
                 fault: DirectoryFault::Order {
                     previous: previous_kind,
-                    actual: kind,
+                    actual: raw_kind,
                 },
             });
         }
-        previous = Some(kind);
-        if flags & !REQUIRED_SECTION != 0 {
-            return Err(FragmentError::Directory {
+        previous = Some(raw_kind);
+        let requirement = SectionRequirement::try_from(raw_requirement).map_err(|actual| {
+            FragmentError::Directory {
                 ordinal,
                 fault: DirectoryFault::Flags {
-                    kind,
-                    actual: flags,
+                    kind: raw_kind,
+                    actual,
                 },
-            });
-        }
-        if start as usize != expected_offset {
+            }
+        })?;
+        let start_index = start
+            .as_usize()
+            .map_err(|source| FragmentError::WireWidth {
+                field: WireField::SectionOffset { ordinal },
+                actual: start.get(),
+                source,
+            })?;
+        if start_index != expected_offset {
             return Err(FragmentError::Directory {
                 ordinal,
                 fault: DirectoryFault::Offset {
-                    kind,
+                    kind: raw_kind,
                     expected: expected_offset,
-                    actual: start,
+                    actual: start.get(),
                 },
             });
         }
-        let Some(end) = (start as usize).checked_add(byte_len as usize) else {
-            return Err(FragmentError::Directory {
-                ordinal,
-                fault: DirectoryFault::RangeOverflow {
-                    kind,
-                    start,
-                    length: byte_len,
-                },
-            });
-        };
-        if end > envelope.len() {
-            return Err(FragmentError::Geometry {
-                expected: end,
+        let byte_len_index = byte_len
+            .as_usize()
+            .map_err(|source| FragmentError::WireWidth {
+                field: WireField::SectionByteLength { ordinal },
+                actual: byte_len.get(),
+                source,
+            })?;
+        let end_index =
+            start_index
+                .checked_add(byte_len_index)
+                .ok_or(FragmentError::Directory {
+                    ordinal,
+                    fault: DirectoryFault::RangeOverflow {
+                        kind: raw_kind,
+                        start: start.get(),
+                        length: byte_len.get(),
+                    },
+                })?;
+        if end_index > envelope.len() {
+            return Err(FragmentError::Extent {
+                required: end_index,
                 actual: envelope.len(),
             });
         }
         let lane = LaneLayout {
             count,
-            start: expected_offset,
-            end,
+            start,
+            length: byte_len,
+            start_index,
+            end_index,
         };
-        match kind {
-            ENTITY_SECTION => {
-                validate_known_length(ordinal, kind, count, ENTITY_BYTES, byte_len)?;
-                if flags != REQUIRED_SECTION {
-                    return Err(FragmentError::Directory {
-                        ordinal,
-                        fault: DirectoryFault::Flags {
-                            kind,
-                            actual: flags,
-                        },
-                    });
-                }
+        match SectionKind::try_from(raw_kind) {
+            Ok(SectionKind::EntityTypes) => {
+                validate_known_length(ordinal, raw_kind, count, ENTITY_BYTES, byte_len)?;
+                require_known(ordinal, raw_kind, requirement)?;
                 entities = Some(lane);
             }
-            TYPE_NODE_SECTION => {
-                validate_known_length(ordinal, kind, count, TYPE_NODE_BYTES, byte_len)?;
-                if flags != REQUIRED_SECTION {
-                    return Err(FragmentError::Directory {
-                        ordinal,
-                        fault: DirectoryFault::Flags {
-                            kind,
-                            actual: flags,
-                        },
-                    });
-                }
+            Ok(SectionKind::TypeNodes) => {
+                validate_known_length(ordinal, raw_kind, count, TYPE_NODE_BYTES, byte_len)?;
+                require_known(ordinal, raw_kind, requirement)?;
                 type_nodes = Some(lane);
             }
-            _ if flags == REQUIRED_SECTION => {
+            Err(kind) if requirement == SectionRequirement::Required => {
                 return Err(FragmentError::Directory {
                     ordinal,
                     fault: DirectoryFault::RequiredUnknown { kind },
                 });
             }
-            _ => {}
+            Err(_) => {}
         }
-        expected_offset = end;
+        expected_offset = end_index;
     }
     if expected_offset != envelope.len() {
-        return Err(FragmentError::Geometry {
-            expected: expected_offset,
+        return Err(FragmentError::Extent {
+            required: expected_offset,
             actual: envelope.len(),
         });
     }
     let entities = entities.ok_or(FragmentError::MissingSection {
-        section: KnownSection::EntityIds,
+        section: SectionKind::EntityTypes,
     })?;
     let type_nodes = type_nodes.ok_or(FragmentError::MissingSection {
-        section: KnownSection::TypeNodes,
+        section: SectionKind::TypeNodes,
     })?;
     Ok(FragmentLayout {
         entities,
         type_nodes,
         output_len: envelope.len(),
+        output_wire_len: declared_wire_length,
     })
+}
+
+fn require_known(
+    ordinal: u16,
+    kind: u16,
+    requirement: SectionRequirement,
+) -> Result<(), FragmentError> {
+    if requirement != SectionRequirement::Required {
+        return Err(FragmentError::Directory {
+            ordinal,
+            fault: DirectoryFault::Flags {
+                kind,
+                actual: requirement.code(),
+            },
+        });
+    }
+    Ok(())
 }
 
 fn validate_known_length(
     ordinal: u16,
     kind: u16,
-    count: u32,
+    count: ItemCount,
     width: usize,
-    actual: u32,
+    actual: ByteLength,
 ) -> Result<(), FragmentError> {
-    let Some(expected) = (count as usize).checked_mul(width) else {
-        return Err(FragmentError::Directory {
+    let count_index = count
+        .as_usize()
+        .map_err(|source| FragmentError::WireWidth {
+            field: WireField::SectionItemCount { ordinal },
+            actual: count.get(),
+            source,
+        })?;
+    let expected = count_index
+        .checked_mul(width)
+        .ok_or(FragmentError::Directory {
             ordinal,
-            fault: DirectoryFault::CountWidthOverflow { kind, count, width },
-        });
-    };
-    if expected != actual as usize {
+            fault: DirectoryFault::CountWidthOverflow {
+                kind,
+                count: count.get(),
+                width,
+            },
+        })?;
+    let actual_index = actual
+        .as_usize()
+        .map_err(|source| FragmentError::WireWidth {
+            field: WireField::SectionByteLength { ordinal },
+            actual: actual.get(),
+            source,
+        })?;
+    if expected != actual_index {
         return Err(FragmentError::Directory {
             ordinal,
             fault: DirectoryFault::ByteLength {
                 kind,
                 expected,
-                actual,
+                actual: actual.get(),
             },
         });
     }

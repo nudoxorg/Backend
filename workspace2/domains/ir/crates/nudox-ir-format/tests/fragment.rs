@@ -1,47 +1,40 @@
 use nudox_ir_format::{
-    FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, TypeNode,
-    TypeNodeFault, WriteError,
+    EntityFault, EntityRecord, EntityType, FragmentError, FragmentView, PrepareError,
+    PreparedFragment, PrimitiveType, TypeNode, TypeNodeFault, WriteError,
 };
 use nudox_ir_vocab::{EntityId, TypeId};
-use std::fmt;
+use thiserror::Error;
 
+#[derive(Debug, Error)]
 enum TestFailure {
-    Prepare(PrepareError),
-    Write(WriteError),
-    Validate(FragmentError),
-}
-
-impl fmt::Debug for TestFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Prepare(error) => formatter.debug_tuple("prepare").field(error).finish(),
-            Self::Write(error) => formatter.debug_tuple("write").field(error).finish(),
-            Self::Validate(error) => formatter.debug_tuple("validate").field(error).finish(),
-        }
-    }
-}
-
-impl From<PrepareError> for TestFailure {
-    fn from(error: PrepareError) -> Self {
-        Self::Prepare(error)
-    }
-}
-
-impl From<WriteError> for TestFailure {
-    fn from(error: WriteError) -> Self {
-        Self::Write(error)
-    }
-}
-
-impl From<FragmentError> for TestFailure {
-    fn from(error: FragmentError) -> Self {
-        Self::Validate(error)
-    }
+    #[error(transparent)]
+    Prepare(#[from] PrepareError),
+    #[error(transparent)]
+    Write(#[from] WriteError),
+    #[error(transparent)]
+    Validate(#[from] FragmentError),
 }
 
 #[test]
 fn zero_one_two_cartesian_consumers_preserve_caller_regions() -> Result<(), TestFailure> {
-    let entities = [EntityId::new(7), EntityId::new(11)];
+    let entities = [
+        EntityRecord {
+            semantic_type: TypeId::new(0),
+        },
+        EntityRecord {
+            semantic_type: TypeId::new(0),
+        },
+    ];
+    let expected_entities = [
+        EntityType {
+            entity: EntityId::new(0),
+            semantic_type: TypeId::new(0),
+        },
+        EntityType {
+            entity: EntityId::new(1),
+            semantic_type: TypeId::new(0),
+        },
+    ];
     let nodes = [
         TypeNode::Primitive(PrimitiveType::Bool),
         TypeNode::Reference(TypeId::new(0)),
@@ -54,7 +47,24 @@ fn zero_one_two_cartesian_consumers_preserve_caller_regions() -> Result<(), Test
             } else {
                 &nodes[..type_node_count]
             };
-            let prepared = PreparedFragment::prepare(&entities[..entity_count], selected_nodes)?;
+            let prepared =
+                match PreparedFragment::prepare(&entities[..entity_count], selected_nodes) {
+                    Ok(prepared) => prepared,
+                    Err(error) if entity_count > 0 && type_node_count == 0 => {
+                        assert_eq!(
+                            error,
+                            PrepareError::Entity {
+                                ordinal: EntityId::new(0),
+                                fault: EntityFault {
+                                    target: TypeId::new(0),
+                                    node_count: 0,
+                                },
+                            }
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let mut output = [0xa5; 128];
             let prefix_len = prepared.output_len();
             let prefix = prepared.write_into(&mut output)?;
@@ -62,8 +72,8 @@ fn zero_one_two_cartesian_consumers_preserve_caller_regions() -> Result<(), Test
             let view = FragmentView::validate(prefix)?;
             assert_eq!(view.as_ref().as_ptr(), prefix.as_ptr());
             assert!(
-                view.entity_ids()
-                    .eq(entities[..entity_count].iter().copied())
+                view.entities()
+                    .eq(expected_entities[..entity_count].iter().copied())
             );
             assert!(view.type_nodes().eq(selected_nodes.iter().copied()));
             assert_eq!(&output[prefix_len..], &[0xa5; 128][prefix_len..]);
@@ -107,17 +117,24 @@ fn invalid_edge_keeps_source_target_and_node_count() {
 
 #[test]
 fn every_undersized_output_is_byte_for_byte_unchanged() -> Result<(), TestFailure> {
-    let entities = [EntityId::new(7), EntityId::new(11)];
+    let entities = [
+        EntityRecord {
+            semantic_type: TypeId::new(0),
+        },
+        EntityRecord {
+            semantic_type: TypeId::new(0),
+        },
+    ];
     let nodes = [
         TypeNode::Primitive(PrimitiveType::Bool),
         TypeNode::Reference(TypeId::new(0)),
     ];
     let required = PreparedFragment::prepare(&entities, &nodes)?.output_len();
+    let prepared = PreparedFragment::prepare(&entities, &nodes)?;
     for available in 0..required {
         let mut output = [0xa5; 128];
         let before = output;
-        let result =
-            PreparedFragment::prepare(&entities, &nodes)?.write_into(&mut output[..available]);
+        let result = prepared.write_into(&mut output[..available]);
         assert_eq!(
             result,
             Err(WriteError::OutputTooSmall {
@@ -127,5 +144,8 @@ fn every_undersized_output_is_byte_for_byte_unchanged() -> Result<(), TestFailur
         );
         assert_eq!(output, before);
     }
+    let mut retry_output = [0xa5; 128];
+    let retry = prepared.write_into(&mut retry_output[..required])?;
+    assert_eq!(retry.len(), required);
     Ok(())
 }

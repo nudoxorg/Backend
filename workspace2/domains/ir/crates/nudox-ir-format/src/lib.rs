@@ -5,10 +5,11 @@ mod prepared;
 mod view;
 mod wire;
 
-pub use model::{PrimitiveType, TypeNode, TypeNodeFault};
-pub use prepared::{PrepareError, PreparedFragment, WriteError};
+pub use model::{EntityFault, EntityRecord, EntityType, PrimitiveType, TypeNode, TypeNodeFault};
+pub use prepared::{LayoutStep, PrepareError, PreparedFragment, WriteError};
 pub use view::{
-    DirectoryFault, EntityCursor, FragmentError, FragmentView, KnownSection, TypeNodeCursor,
+    DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind, TypeNodeCursor,
+    WireField,
 };
 
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
