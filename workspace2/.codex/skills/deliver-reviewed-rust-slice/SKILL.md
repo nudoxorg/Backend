@@ -327,6 +327,11 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
   receipts and define exact failure fan-out without releasing effects.
 - Put file-global magic/version/geometry once, not in every fixed record. Derive widths and offsets
   from typed records. Do not ship a bit-at-a-time checksum loop.
+- Treat authority as geometry, not decoration. When every record in one artifact necessarily shares
+  a domain, encoding, generation, or version, test an artifact-global authority cell plus a typed
+  payload newtype before repeating that cell per record. The payload must retain its authority in the
+  Rust type and round-trip through ordinary `From`; the parser checks the shared cell once. Reject
+  this compaction when records can be independently moved or authenticated without their container.
 - Declare fixed endian wire records once with `repr(C)` plus zerocopy where safe. Hash structured
   identity through typed records; arbitrary chunks are for physical artifact identity.
 - Distinguish semantic, artifact, pack, and range-proof identities. Version grammar with a closed
@@ -364,6 +369,11 @@ match &self.placement {
     Placement::Overlay(lanes) => project_overlay(lanes, lanes.rank(ordinal)),
 }
 ```
+- An unsafe post-validation rebrand is not the default escape from an unexpressed proof. First try
+  moving the shared authority into the enclosing grammar, retaining only a typed payload per record,
+  or redesigning the witness so normal safe conversion is total. Unsafe remains eligible only when
+  those representations lose a measured property and the approved contract, safety proof, Miri, and
+  rollback gates all explicitly cover it.
 - A generic validated view must validate and project the same type parameter. A validator fixed to
   one concrete domain behind a generic witness is unsound API theater. Either prove two real domains
   through the complete writer -> validator -> infallible projection path or remove the generic. Tests

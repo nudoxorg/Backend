@@ -123,6 +123,10 @@ Run all applicable passes in this order:
    equivalent semantic scan is duplicate work unless the second pass proves a distinct invariant.
    Exact cell diagnostics may rescan only after the typed cast rejects. Exercise every private direct
    writer through the public validator and require exact typed failure rather than panic or erasure.
+   Inventory authority/version cells repeated in fixed records. When the container requires one
+   value for all records, require a comparison against one header cell plus a typed payload; measure
+   bytes and deleted checks. Conversely, reject hoisting when a record must remain self-authenticating
+   outside the container.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.

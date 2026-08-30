@@ -76,6 +76,8 @@ Use only cases applicable to the specimen, but do not omit an applicable case:
   input so exact rejection diagnostics can reuse one code path;
 - a private direct writer whose output is accepted with `unwrap`, an erased invariant error, or no
   round-trip through the public validator;
+- an unsafe typed rebrand introduced even though every record repeats one container-wide authority
+  cell that could instead be checked once and carried by a typed payload;
 - a green happy-path test that never falsifies exact error/source/owner behavior;
 - a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all
   public tests stay green;
