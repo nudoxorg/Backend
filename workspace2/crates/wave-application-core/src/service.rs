@@ -156,7 +156,7 @@ impl ApplicationService {
         let Some(stage) = Self::stage(stage) else {
             return Self::rejected(correlation, Self::unknown_stage(stage));
         };
-        match FullRegistry.dispatch(language, stage, source.as_bytes()) {
+        match FullRegistry.dispatch(language, stage, source.as_ref()) {
             Ok(compiled) => match InputText::from_compiler_bytes(compiled) {
                 Some(passthrough) => ApplicationReply {
                     correlation,
@@ -632,9 +632,9 @@ impl ApplicationService {
     }
 
     fn language(value: InputText) -> Option<Language> {
-        if value.is("rust") {
+        if value.as_ref() == b"rust" {
             Some(Language::RustSubset)
-        } else if value.is("typescript") {
+        } else if value.as_ref() == b"typescript" {
             Some(Language::TypeScriptSubset)
         } else {
             None
@@ -642,9 +642,9 @@ impl ApplicationService {
     }
 
     fn stage(value: InputText) -> Option<Stage> {
-        if value.is("parse") {
+        if value.as_ref() == b"parse" {
             Some(Stage::Parse)
-        } else if value.is("lower-ir") {
+        } else if value.as_ref() == b"lower-ir" {
             Some(Stage::LowerIr)
         } else {
             None

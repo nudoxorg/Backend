@@ -81,7 +81,7 @@ impl Serialize for Text {
     where
         Output: Serializer,
     {
-        let value = str::from_utf8(self.0.as_bytes()).map_err(Output::Error::custom)?;
+        let value = str::from_utf8(self.0.as_ref()).map_err(Output::Error::custom)?;
         serializer.serialize_str(value)
     }
 }

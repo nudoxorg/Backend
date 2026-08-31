@@ -1,5 +1,7 @@
 //! Fixed-capacity UTF-8 input retained without heap ownership.
 
+use core::{borrow::Borrow, ops::Deref};
+
 /// Maximum retained adapter text width: the semantic bound plus its exact `limit + 1` falsifier.
 pub const INPUT_TEXT_BYTES: usize = crate::model::MAX_SEMANTIC_TEXT_BYTES + 1;
 
@@ -48,36 +50,24 @@ impl InputText {
         let value = core::str::from_utf8(value).ok()?;
         Self::try_from_str(value).ok()
     }
+}
 
-    /// Returns the exact validated UTF-8 bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
+impl Deref for InputText {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
         &self.bytes[..self.length]
     }
+}
 
-    /// Returns the observed byte length.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.length
+impl AsRef<[u8]> for InputText {
+    fn as_ref(&self) -> &[u8] {
+        self
     }
+}
 
-    /// Reports whether the field has no bytes.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.length == 0
-    }
-
-    /// Compares the exact UTF-8 bytes to one protocol-neutral literal.
-    #[must_use]
-    pub fn is(&self, expected: &str) -> bool {
-        self.as_bytes() == expected.as_bytes()
-    }
-
-    /// Checks whether this static/local field contains an input query.
-    #[must_use]
-    pub fn contains(&self, query: &Self) -> bool {
-        self.as_bytes()
-            .windows(query.len())
-            .any(|window| window == query.as_bytes())
+impl Borrow<[u8]> for InputText {
+    fn borrow(&self) -> &[u8] {
+        self
     }
 }

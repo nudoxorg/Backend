@@ -56,7 +56,7 @@ impl McpRequestId {
         match self {
             Self::Number(number) => Value::Number(number.clone()),
             Self::String(text) => {
-                Value::String(String::from_utf8_lossy(text.as_bytes()).into_owned())
+                Value::String(String::from_utf8_lossy(text.as_ref()).into_owned())
             }
         }
     }
