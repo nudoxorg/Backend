@@ -1,5 +1,19 @@
+error: public constructor only assembles independently public fields
+  --> $DIR/redundant_public_accessor.rs:15:5
+   |
+LL | /     pub const fn new(term: usize, document: usize, score: usize) -> Self {
+LL | |         Self {
+LL | |             term,
+LL | |             document,
+...  |
+LL | |     }
+   | |_____^
+   |
+   = help: make the public fields the construction API, or reserve the constructor for validation or normalization
+   = note: requested on the command line with `-F nudox-redundant-public-accessor`
+
 error: crate-visible accessor only returns the field `0`
-  --> $DIR/redundant_public_accessor.rs:10:5
+  --> $DIR/redundant_public_accessor.rs:129:5
    |
 LL | /     pub const fn value(&self) -> &usize {
 LL | |         &self.0
@@ -7,10 +21,9 @@ LL | |     }
    | |_____^
    |
    = help: delete the accessor and use direct field access
-   = note: requested on the command line with `-F nudox-redundant-public-accessor`
 
 error: crate-visible accessor only delegates to an inner method
-  --> $DIR/redundant_public_accessor.rs:30:5
+  --> $DIR/redundant_public_accessor.rs:149:5
    |
 LL | /     pub const fn adjusted(&self, amount: usize) -> usize {
 LL | |         self.inner.adjusted(amount)
@@ -20,7 +33,7 @@ LL | |     }
    = help: expose the inner field directly, or use a public Deref or trait view instead of forwarding each method
 
 error: crate-visible accessor only returns the field `bytes`
-  --> $DIR/redundant_public_accessor.rs:40:5
+  --> $DIR/redundant_public_accessor.rs:159:5
    |
 LL | /     pub const fn bytes(&self) -> usize {
 LL | |         self.bytes
@@ -30,7 +43,7 @@ LL | |     }
    = help: delete the accessor and use direct field access
 
 error: crate-visible accessor only returns the field `bytes`
-  --> $DIR/redundant_public_accessor.rs:44:5
+  --> $DIR/redundant_public_accessor.rs:163:5
    |
 LL | /     pub const fn into_bytes(self) -> usize {
 LL | |         self.bytes
@@ -40,7 +53,7 @@ LL | |     }
    = help: delete the accessor and use direct field access
 
 error: crate-visible accessor only returns the field `bytes`
-  --> $DIR/redundant_public_accessor.rs:55:9
+  --> $DIR/redundant_public_accessor.rs:174:9
    |
 LL | /         pub const fn $name(&self) -> usize {
 LL | |             self.bytes
@@ -54,7 +67,7 @@ LL |       local_accessor!(expanded_bytes);
    = note: this error originates in the macro `local_accessor` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: crate-visible accessor only returns the field `bytes`
-  --> $DIR/redundant_public_accessor.rs:80:5
+  --> $DIR/redundant_public_accessor.rs:199:5
    |
 LL | /     pub const fn bytes(&self) -> usize {
 LL | |         self.bytes
@@ -64,7 +77,7 @@ LL | |     }
    = help: use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant
 
 error: crate-visible accessor only returns the field `bytes`
-  --> $DIR/redundant_public_accessor.rs:90:5
+  --> $DIR/redundant_public_accessor.rs:209:5
    |
 LL | /     pub(crate) const fn bytes(&self) -> usize {
 LL | |         self.bytes
@@ -73,5 +86,5 @@ LL | |     }
    |
    = help: use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant
 
-error: aborting due to 7 previous errors
+error: aborting due to 8 previous errors
 

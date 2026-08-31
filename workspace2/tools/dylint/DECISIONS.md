@@ -49,9 +49,13 @@ provenance.
    test because the compiler cannot infer the vocabulary's source.
 3. `NUDOX_REDUNDANT_PUBLIC_ACCESSOR` finds a public inherent zero-argument receiver method (including
    an owning `self` receiver) whose body
-   only returns an already-public field of the same receiver. `ImplItemImplKind` supplies the
-   compiler-owned inherent-versus-trait distinction, and rustc's associated-item metadata proves
-   that the function has a `self` parameter. Required trait methods and associated functions are
+   only returns an already-public field of the same receiver, or a public `new` function that
+   assembles every independently public field from same-named parameters. `ImplItemImplKind`
+   supplies the compiler-owned inherent-versus-trait distinction, and rustc's associated-item
+   metadata proves that the function has a `self` parameter. The constructor check requires a
+   direct struct literal and permits only a transparent one-argument enum variant wrapper;
+   validation, normalization, unsafe blocks, private fields, renamed parameters, `From`/`TryFrom`,
+   and non-public constructors remain clean. Required trait methods and associated functions are
    therefore excluded regardless of method or trait name. Private fields and transformed or
    validated projections are also excluded.
 4. `NUDOX_DYNAMIC_DISPATCH` finds explicit trait-object types and uses whose aliases resolve to a
