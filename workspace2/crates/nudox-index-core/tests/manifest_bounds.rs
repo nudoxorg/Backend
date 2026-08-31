@@ -1,3 +1,4 @@
+use nudox_id::GenerationId;
 use nudox_index_core::{
     ExactManifest, ExactManifestError, ExactSegment, ExactSegmentError, IndexSnapshot,
     MAX_SELECTED_SEGMENTS,
@@ -11,7 +12,11 @@ fn repeated_segment() -> Result<ExactSegment<'static>, ExactSegmentError<'static
 fn hostile_selection_limit_fails_before_duplicate_validation()
 -> Result<(), ExactSegmentError<'static>> {
     let segments = [repeated_segment()?; MAX_SELECTED_SEGMENTS + 1];
-    let snapshot = IndexSnapshot::new(&[], &[]);
+    let snapshot = IndexSnapshot::new(
+        GenerationId::from_canonical_bytes(b"published-ir-generation"),
+        &[],
+        &[],
+    );
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return Ok(());

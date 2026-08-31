@@ -1,8 +1,13 @@
+use nudox_id::GenerationId;
 use nudox_index_core::{
     IndexSnapshot, LexicalDocumentId, LexicalManifest, LexicalOperation, LexicalOutputError,
     LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
     LexicalTerminal, LexicalTopK,
 };
+
+fn generation() -> GenerationId {
+    GenerationId::from_canonical_bytes(b"published-ir-generation")
+}
 
 fn placeholder(segment: nudox_index_core::LexicalSegmentId) -> LexicalSnapshotHit<'static> {
     LexicalSnapshotHit::new(
@@ -28,7 +33,7 @@ fn lexical_terminal_retains_derived_snapshot_and_segment_provenance() {
     let segment_id = segment.id;
     let segments = [segment];
     let lexical_ids = [segment_id];
-    let snapshot = IndexSnapshot::new(&[], &lexical_ids);
+    let snapshot = IndexSnapshot::new(generation(), &[], &lexical_ids);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
@@ -103,8 +108,8 @@ fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
     let incremental_ids = [update.id, old.id];
     let compacted_segments = [compacted];
     let compacted_ids = [compacted.id];
-    let incremental_snapshot = IndexSnapshot::new(&[], &incremental_ids);
-    let compacted_snapshot = IndexSnapshot::new(&[], &compacted_ids);
+    let incremental_snapshot = IndexSnapshot::new(generation(), &[], &incremental_ids);
+    let compacted_snapshot = IndexSnapshot::new(generation(), &[], &compacted_ids);
     assert!(incremental_snapshot.is_ok() && compacted_snapshot.is_ok());
     let (Some(incremental_snapshot), Some(compacted_snapshot)) =
         (incremental_snapshot.ok(), compacted_snapshot.ok())
@@ -169,7 +174,7 @@ fn term_change_tombstone_hides_old_membership_and_publishes_new_membership() {
     };
     let segments = [update, old];
     let selected = [update.id, old.id];
-    let snapshot = IndexSnapshot::new(&[], &selected);
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
@@ -220,7 +225,7 @@ fn insufficient_dedup_scratch_precedes_output_mutation() {
     };
     let segments = [segment];
     let lexical_ids = [segment.id];
-    let snapshot = IndexSnapshot::new(&[], &lexical_ids);
+    let snapshot = IndexSnapshot::new(generation(), &[], &lexical_ids);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
@@ -263,7 +268,7 @@ fn insufficient_output_precedes_scratch_and_output_mutation() {
     };
     let segments = [segment];
     let lexical_ids = [segment.id];
-    let snapshot = IndexSnapshot::new(&[], &lexical_ids);
+    let snapshot = IndexSnapshot::new(generation(), &[], &lexical_ids);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
@@ -310,7 +315,7 @@ fn lexical_snapshot_rejects_reversed_update_precedence() {
         return;
     };
     let selected = [update.id, old.id];
-    let snapshot = IndexSnapshot::new(&[], &selected);
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;

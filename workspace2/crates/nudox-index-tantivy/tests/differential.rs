@@ -1,5 +1,5 @@
 use nudox_index_core::{
-    IndexSnapshot, IndexSnapshotId, LexicalDocumentId, LexicalHit, LexicalManifest,
+    GenerationId, IndexSnapshot, IndexSnapshotId, LexicalDocumentId, LexicalHit, LexicalManifest,
     LexicalManifestError, LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalTopK,
 };
 use nudox_index_tantivy::{
@@ -8,6 +8,10 @@ use nudox_index_tantivy::{
 
 fn stale_snapshot(byte: u8) -> IndexSnapshotId {
     IndexSnapshotId::from_canonical_bytes(&[byte; 32])
+}
+
+fn generation() -> GenerationId {
+    GenerationId::from_canonical_bytes(b"published-ir-generation")
 }
 
 #[test]
@@ -19,7 +23,7 @@ fn real_tantivy_document_set_matches_the_borrowed_lexical_core() {
     ];
     let segment = LexicalSegment::new(&rows).expect("ordered bounded lexical segment");
     let selected = [segment.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("bounded snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("bounded snapshot");
     let snapshot_id = snapshot.id;
     let segments = [segment];
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("pinned manifest");
@@ -61,7 +65,7 @@ fn tantivy_projects_only_newest_live_term_memberships() {
     let old = LexicalSegment::new(&old_rows).expect("old segment");
     let update = LexicalSegment::new(&update_rows).expect("term-change segment");
     let selected = [update.id, old.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("updated snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("updated snapshot");
     let snapshot_id = snapshot.id;
     let segments = [update, old];
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("updated manifest");
@@ -88,7 +92,8 @@ fn a_different_corpus_cannot_claim_the_same_snapshot() {
     let first = LexicalSegment::new(&first_rows).expect("first segment");
     let second = LexicalSegment::new(&second_rows).expect("second segment");
     let selected = [first.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("content-derived snapshot");
+    let snapshot =
+        IndexSnapshot::new(generation(), &[], &selected).expect("content-derived snapshot");
     let wrong_segments = [second];
     assert!(matches!(
         LexicalManifest::new(snapshot, &wrong_segments, &[]),
@@ -116,7 +121,7 @@ fn partial_manifest_cannot_publish_a_complete_tantivy_claim() {
     let present = LexicalSegment::new(&present_rows).expect("present segment");
     let unavailable = LexicalSegment::new(&missing_rows).expect("unavailable segment identity");
     let selected = [present.id, unavailable.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("partial snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("partial snapshot");
     let segments = [present];
     let missing = [unavailable.id];
     let manifest =
@@ -135,7 +140,7 @@ fn wrong_snapshot_and_short_output_fail_before_mutation() {
     let rows = [LexicalRow::new(b"rust", 1, LexicalScore::from(1))];
     let segment = LexicalSegment::new(&rows).expect("segment");
     let selected = [segment.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("snapshot");
     let pinned = snapshot.id;
     let segments = [segment];
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("manifest");
@@ -172,7 +177,7 @@ fn hostile_corpus_and_query_bounds_precede_backend_work() {
     let first = LexicalSegment::new(&first_rows).expect("maximum-sized core segment");
     let second = LexicalSegment::new(&second_rows).expect("one additional row");
     let selected = [first.id, second.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("snapshot");
     let segments = [first, second];
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("manifest");
     assert!(matches!(
@@ -184,7 +189,7 @@ fn hostile_corpus_and_query_bounds_precede_backend_work() {
     let rows = [LexicalRow::new(b"rust", 7, LexicalScore::from(1))];
     let segment = LexicalSegment::new(&rows).expect("small segment");
     let selected = [segment.id];
-    let snapshot = IndexSnapshot::new(&[], &selected).expect("small snapshot");
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("small snapshot");
     let snapshot_id = snapshot.id;
     let segments = [segment];
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("small manifest");

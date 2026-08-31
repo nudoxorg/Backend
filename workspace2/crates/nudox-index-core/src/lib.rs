@@ -23,6 +23,7 @@ pub use lexical::{
     LexicalSnapshotHit, LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
     MAX_LEXICAL_TOP_K,
 };
+pub use nudox_id::GenerationId;
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 pub use snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotView};
 

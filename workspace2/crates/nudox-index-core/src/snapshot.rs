@@ -2,7 +2,7 @@
 
 use core::ops::Deref;
 
-use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexSnapshotDomain};
+use nudox_id::{ContentHasher, FixedCanonicalRecord, GenerationId, IndexSnapshotDomain};
 use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::MAX_SELECTED_SEGMENTS;
@@ -34,7 +34,9 @@ fn duplicate_positions<SegmentId: Eq>(segments: &[SegmentId]) -> Option<(usize, 
 /// [`IndexSnapshot::new`] creates the validated authority wrapper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndexSnapshotView<'selection> {
-    /// Content identity derived from both selected segment lanes.
+    /// Canonical generation whose published facts these projections describe.
+    pub generation: GenerationId,
+    /// Content identity derived from the generation and both selected segment lanes.
     pub id: IndexSnapshotId,
     /// Selected exact segments in their immutable update order.
     pub exact: &'selection [ExactSegmentId],
@@ -42,7 +44,7 @@ pub struct IndexSnapshotView<'selection> {
     pub lexical: &'selection [LexicalSegmentId],
 }
 
-/// A validated borrowed selection whose identity is derived from every selected segment.
+/// A validated borrowed selection whose identity binds its generation and every selected segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct IndexSnapshot<'selection>(IndexSnapshotView<'selection>);
@@ -58,6 +60,7 @@ impl<'selection> Deref for IndexSnapshot<'selection> {
 impl<'selection> IndexSnapshot<'selection> {
     /// Validates bounded, unique segment selections before deriving the snapshot identity.
     pub fn new(
+        generation: GenerationId,
         exact: &'selection [ExactSegmentId],
         lexical: &'selection [LexicalSegmentId],
     ) -> Result<Self, IndexSnapshotError> {
@@ -89,7 +92,8 @@ impl<'selection> IndexSnapshot<'selection> {
         }
 
         let mut hasher = ContentHasher::<IndexSnapshotDomain>::new();
-        hasher.write_record(&CanonicalRecord(*b"nudox.index.snapshot.v1"));
+        hasher.write_record(&CanonicalRecord(*b"nudox.index.snapshot.v2"));
+        hasher.write_record(&CanonicalRecord(*generation));
         hasher.write_record(&CanonicalRecord((exact.len() as u64).to_le_bytes()));
         for id in exact {
             hasher.write_record(&CanonicalRecord(**id));
@@ -100,6 +104,7 @@ impl<'selection> IndexSnapshot<'selection> {
         }
 
         Ok(Self(IndexSnapshotView {
+            generation,
             id: hasher.finalize(),
             exact,
             lexical,

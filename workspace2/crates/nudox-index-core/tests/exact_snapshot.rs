@@ -1,3 +1,4 @@
+use nudox_id::GenerationId;
 use nudox_index_core::{
     ExactDegradation, ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment,
     ExactTerminal, IndexSnapshot,
@@ -5,6 +6,10 @@ use nudox_index_core::{
 
 const ALPHA: &[u8] = b"alpha";
 const BETA: &[u8] = b"beta";
+
+fn generation() -> GenerationId {
+    GenerationId::from_canonical_bytes(b"published-ir-generation")
+}
 
 #[test]
 fn newest_delta_and_compacted_replacement_have_equivalent_exact_meaning() {
@@ -33,8 +38,8 @@ fn newest_delta_and_compacted_replacement_have_equivalent_exact_meaning() {
     let compacted_segments = [compacted];
     let incremental_ids = [update.id, original.id];
     let compacted_ids = [compacted.id];
-    let incremental_snapshot = IndexSnapshot::new(&incremental_ids, &[]);
-    let compacted_snapshot = IndexSnapshot::new(&compacted_ids, &[]);
+    let incremental_snapshot = IndexSnapshot::new(generation(), &incremental_ids, &[]);
+    let compacted_snapshot = IndexSnapshot::new(generation(), &compacted_ids, &[]);
     assert!(incremental_snapshot.is_ok() && compacted_snapshot.is_ok());
     let (Some(incremental_snapshot), Some(compacted_snapshot)) =
         (incremental_snapshot.ok(), compacted_snapshot.ok())
@@ -96,7 +101,7 @@ fn partial_and_degraded_terminals_keep_the_requested_snapshot_and_missing_identi
     let segments = [present];
     let missing_segments = [missing];
     let selected = [present.id, missing];
-    let snapshot = IndexSnapshot::new(&selected, &[]);
+    let snapshot = IndexSnapshot::new(generation(), &selected, &[]);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
@@ -149,8 +154,8 @@ fn divergent_rows_cannot_enter_the_same_snapshot_authority() {
     };
     let first_ids = [first.id];
     let second_ids = [second.id];
-    let first_snapshot = IndexSnapshot::new(&first_ids, &[]);
-    let second_snapshot = IndexSnapshot::new(&second_ids, &[]);
+    let first_snapshot = IndexSnapshot::new(generation(), &first_ids, &[]);
+    let second_snapshot = IndexSnapshot::new(generation(), &second_ids, &[]);
     assert!(first_snapshot.is_ok() && second_snapshot.is_ok());
     let (Some(first_snapshot), Some(second_snapshot)) = (first_snapshot.ok(), second_snapshot.ok())
     else {
@@ -177,7 +182,7 @@ fn snapshot_authority_rejects_reversed_update_precedence() {
         return;
     };
     let selected = [update.id, old.id];
-    let snapshot = IndexSnapshot::new(&selected, &[]);
+    let snapshot = IndexSnapshot::new(generation(), &selected, &[]);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
