@@ -140,6 +140,7 @@ pub struct EntityType {
 pub enum PrimitiveType {
     Bool = 0,
     I32 = 1,
+    String = 2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,6 +166,7 @@ impl From<PrimitiveType> for u32 {
         match primitive {
             PrimitiveType::Bool => 0,
             PrimitiveType::I32 => 1,
+            PrimitiveType::String => 2,
         }
     }
 }
@@ -176,6 +178,7 @@ impl TryFrom<u32> for PrimitiveType {
         match actual {
             0 => Ok(Self::Bool),
             1 => Ok(Self::I32),
+            2 => Ok(Self::String),
             actual => Err(TypeNodeFault::Primitive { actual }),
         }
     }

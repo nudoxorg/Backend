@@ -35,6 +35,17 @@
   state: closed
   owner and closing artifact: terra / wire attack and range manifest tests
 
+- fingerprint: native-parse-admission-must-not-fabricate-semantic-or-workspace-facts
+  role: terra
+  capability and commit: compiler-ir-publication / typed native-driver seam
+  observed behavior and concrete artifact: a native adapter could borrow a resolved Rust executable for unavailable TypeScript, emit scratch `rmeta*` under the repository cwd, or lower unknown declarations to `I32` after syntax admission.
+  why the current rubric/skill/tool allowed it: static registry rows, process ownership, and compact lowerer facts were tested separately rather than at their shared request boundary.
+  local correction attempted and result: `CompileRequest` now distinguishes `ResolvedNative` from `ExplicitlyUnavailable`, only native lowering derives a persisted recipe, every native child uses an empty caller-owned work directory with exact metadata cleanup, and closed lowerers admit only Bool/I32/String facts or return `LoweringUnsupported`.
+  suggested enforcement: test
+  occurrences: compiler-ir-publication
+  state: closed
+  owner and closing artifact: terra / native compile integration test
+
 ## Explained
 
 ## Corrected

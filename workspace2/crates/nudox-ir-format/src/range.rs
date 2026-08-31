@@ -360,3 +360,96 @@ fn range_identity(
     hasher.write_chunk(bytes);
     hasher.finalize()
 }
+
+#[cfg(test)]
+mod tests {
+    use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
+    use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
+    use nudox_ir_vocab::{AtomId, TypeId};
+    use thiserror::Error;
+
+    use super::{ArtifactId, FragmentRangeManifest, IrFragmentDomain, IrFragmentEncoding};
+    use crate::{
+        AtomInput, EntityKind, EntityRecord, EntityRecordFault, FragmentError,
+        FragmentRangeVerifyError, FragmentView, PrepareError, PreparedFragment, PrimitiveType,
+        SourceIdentity, TypeNode, WriteError,
+    };
+
+    #[derive(Debug, Error)]
+    enum TestFailure {
+        #[error(transparent)]
+        Prepare(#[from] PrepareError),
+        #[error(transparent)]
+        Write(#[from] WriteError),
+        #[error(transparent)]
+        Validate(#[from] FragmentError),
+        #[error(transparent)]
+        Manifest(#[from] super::FragmentRangeManifestError),
+        #[error("fixture source length {actual} does not fit the compact source fact")]
+        SourceLength {
+            actual: usize,
+            #[source]
+            source: core::num::TryFromIntError,
+        },
+        #[error("fixture entity offset {actual} does not fit the current address space")]
+        EntityOffset {
+            actual: u32,
+            #[source]
+            source: core::num::TryFromIntError,
+        },
+    }
+
+    #[test]
+    fn committed_bytes_grammar_is_rejected_after_forced_artifact_identity_match()
+    -> Result<(), TestFailure> {
+        let source_bytes = b"grammar-source";
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+            byte_len: u32::try_from(source_bytes.len()).map_err(|source| {
+                TestFailure::SourceLength {
+                    actual: source_bytes.len(),
+                    source,
+                }
+            })?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            Language::Rust,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"grammar-toolchain"),
+        );
+        let entities = [EntityRecord {
+            semantic_type: TypeId::new(0),
+            name: AtomId::new(0),
+            kind: EntityKind::Constant,
+        }];
+        let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
+        let atoms = [AtomInput { bytes: b"alpha" }];
+        let prepared = PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms)?;
+        let mut bytes = [0; 256];
+        let length = prepared.write_into(&mut bytes)?.len();
+        let view = FragmentView::validate(&bytes[..length])?;
+        let mut manifest = FragmentRangeManifest::from_view(&view)?;
+        let entity_start = usize::try_from(manifest.ranges[0].offset).map_err(|source| {
+            TestFailure::EntityOffset {
+                actual: manifest.ranges[0].offset,
+                source,
+            }
+        })?;
+        let mut corrupted = bytes;
+        corrupted[entity_start + 8] = u8::MAX;
+        manifest.0.fragment =
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                &corrupted[..length],
+            );
+        assert!(matches!(
+            manifest.verify_fragment(&corrupted[..length]),
+            Err(FragmentRangeVerifyError::Fragment(FragmentError::EntityRecord {
+                fault: EntityRecordFault::Kind { actual: 255 },
+                ..
+            }))
+        ));
+        Ok(())
+    }
+}

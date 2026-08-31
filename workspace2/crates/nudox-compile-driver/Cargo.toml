@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-compile-registry = { path = "../nudox-compile-registry" }
 nudox-ir-format = { path = "../nudox-ir-format" }
 nudox-ir-vocab = { path = "../nudox-ir-vocab" }
 nudox-id = { path = "../nudox-id" }

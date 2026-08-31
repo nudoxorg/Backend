@@ -3,30 +3,39 @@ use nudox_compile_vocab::{FrontendError, Language, NativeTool, Stage};
 
 #[test]
 fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
-    assert_eq!(
-        FullRegistry.route(Language::Rust, Stage::LowerIr),
-        Ok(AdapterRoute::Native {
-            tool: NativeTool::Rustc,
-        })
-    );
-    assert_eq!(
-        FullRegistry.route(Language::Python, Stage::LowerIr),
-        Ok(AdapterRoute::Native {
-            tool: NativeTool::Python,
-        })
-    );
-    assert_eq!(
-        FullRegistry.route(Language::Clang, Stage::LowerIr),
-        Ok(AdapterRoute::Native {
-            tool: NativeTool::Clang,
-        })
-    );
-    assert_eq!(
-        FullRegistry.route(Language::TypeScript, Stage::LowerIr),
-        Ok(AdapterRoute::ToolingUnavailable {
-            tool: NativeTool::TypeScriptCompiler,
-        })
-    );
+    let rows = [
+        (Language::Rust, AdapterRoute::Native { tool: NativeTool::Rustc }),
+        (
+            Language::TypeScript,
+            AdapterRoute::ToolingUnavailable {
+                tool: NativeTool::TypeScriptCompiler,
+            },
+        ),
+        (Language::Python, AdapterRoute::Native { tool: NativeTool::Python }),
+        (
+            Language::Go,
+            AdapterRoute::ToolingUnavailable {
+                tool: NativeTool::GoCompiler,
+            },
+        ),
+        (
+            Language::Java,
+            AdapterRoute::ToolingUnavailable {
+                tool: NativeTool::JavaCompiler,
+            },
+        ),
+        (
+            Language::CSharp,
+            AdapterRoute::ToolingUnavailable {
+                tool: NativeTool::CSharpCompiler,
+            },
+        ),
+        (Language::Clang, AdapterRoute::Native { tool: NativeTool::Clang }),
+    ];
+    assert_eq!(rows.map(|(language, _route)| language), Language::ALL);
+    for (language, route) in rows {
+        assert_eq!(FullRegistry.route(language, Stage::LowerIr), Ok(route));
+    }
 }
 
 #[test]

@@ -411,7 +411,8 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
     let operand = read_u32(record, TYPE_NODE_LAYOUT.operand);
     match (record[TYPE_NODE_LAYOUT.tag], operand) {
         (PRIMITIVE_TAG, 0) => TypeNode::Primitive(PrimitiveType::Bool),
-        (PRIMITIVE_TAG, _) => TypeNode::Primitive(PrimitiveType::I32),
+        (PRIMITIVE_TAG, 1) => TypeNode::Primitive(PrimitiveType::I32),
+        (PRIMITIVE_TAG, _) => TypeNode::Primitive(PrimitiveType::String),
         _ => TypeNode::Reference(TypeId::new(operand)),
     }
 }
