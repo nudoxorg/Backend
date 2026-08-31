@@ -18,5 +18,17 @@ serde_json.workspace = true
 wave-application-core = { path = "../wave-application-core" }
 wave-application-protocol = { path = "../wave-application-protocol" }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

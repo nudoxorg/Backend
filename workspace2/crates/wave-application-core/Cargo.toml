@@ -12,5 +12,17 @@ nudox-compile-registry = { path = "../nudox-compile-registry" }
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
 nudox-observe = { path = "../nudox-observe" }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
