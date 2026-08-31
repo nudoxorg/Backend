@@ -67,7 +67,10 @@ Run only applicable passes in this order:
    generic names.
 5. **Ownership/layout:** account for owner plus backing, peak live memory, pointer depth, allocation,
    copies, stable-address need, rejection/drop, `Arc` churn, stack/thread-stack cost, fragmentation,
-   and text-size monomorphs. Compare the real lifetime alternatives.
+   and text-size monomorphs. Compare the real lifetime alternatives. Measure complete enclosing
+   results with compiler layout output: correlated `body + terminal + Option<error>` fields often
+   pay both mutually exclusive maxima and admit invalid combinations. Demand one closed sum type
+   before accepting indirection or a larger ceiling.
 6. **Control/errors:** trace hot and failure paths. Find repeated conditions, unpredictable branches,
    hidden scans, oversized functions, lost sources/values, panic paths, hand-written formatting, and
    error priority drift.
@@ -137,6 +140,9 @@ Do not approve when:
 - a constructor performs quadratic validation without evidence that ordering is semantic and the
   fixed bound makes the measured cost preferable;
 - retained complexity rises without a measured/deleted cost;
+- a layout assertion uses a loose threshold chosen above the current value instead of an exact
+  target or a comparison to a concrete alternative, especially when the type contains correlated
+  optional state;
 - the implementation introduced future-phase public surface without current behavior and tests;
 - full gates are red for an owned finding.
 

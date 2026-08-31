@@ -190,6 +190,7 @@
               pkgs.jdk
               pkgs.libiconv
               pkgs.nodejs_22
+              pkgs.python3Packages.pyyaml
               pkgs.qdrant
               pkgs.rustup
               pkgs.typescript

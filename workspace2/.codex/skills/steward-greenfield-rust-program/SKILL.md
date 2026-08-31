@@ -136,6 +136,14 @@ their APIs or directory layout authoritative.
 
 When a manager returns:
 
+0. Serialize the shared Git index. Exactly one named custodian may stage and commit at a time;
+   every other lane keeps its work unstaged. The custodian removes only a proven-unowned stale
+   `index.lock`, stages its exact allowlisted paths, inspects `git diff --cached --name-only`, and
+   commits immediately—never leaving a staged candidate waiting while another lane works. If a
+   foreign path appears, restore that path in the index to the current parent while preserving its
+   working-tree bytes, then stop and resolve custody. A green source diff is not integration-ready
+   while the shared index can silently mix capabilities.
+
 1. Resolve the candidate identity, baseline, owned paths, rubric, tests, known findings, and clean
    gate receipt. Role/config/model/sandbox metadata is provenance, not admission authority. Trust
    reproduced unit evidence as Terra's responsibility; do not rerun the entire worker campaign.
@@ -175,6 +183,13 @@ Use semantic evidence instead:
 - error/source/owner fidelity and diagnostic chronology;
 - mutation sensitivity and public-terminal coverage;
 - optimized consumer codegen for generic/SIMD decisions.
+
+For public result and protocol types, measure the complete layout rather than only the newly boxed
+field. Use compiler type-layout output or exact `size_of` assertions to find products of mutually
+exclusive maxima (for example, a largest success body stored beside an optional largest failure).
+Replace parallel correlated fields with one closed sum type before accepting a looser byte ceiling.
+A layout test must encode a justified exact size or comparison against a concrete alternative; a
+threshold chosen above the observed regression is not evidence.
 
 The goal is not “zero allocation” or “few generics.” Every mechanism must earn its cost against the
 actual lifetime, workload, and consumers.

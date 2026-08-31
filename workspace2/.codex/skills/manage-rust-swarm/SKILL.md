@@ -107,6 +107,14 @@ directly instead of retrying dispatch or declaring a blocker.
 Workers use disjoint paths or isolated branches. Terra alone edits shared manifests, public
 reexports, rubric state, and integration seams unless it explicitly assigns one of them.
 
+When multiple workers share one checkout, staging is a manager-owned critical section even when
+source paths are disjoint. Workers keep edits unstaged until Terra grants custody. The custodian
+stages an explicit path allowlist, checks the cached path list, and commits in the same short
+operation; it never waits with a populated index. A stale `index.lock` is removed only after no
+process owns it. If another lane's bytes were accidentally committed, separate the commit by
+restoring only the index entries to the parent while leaving working files intact—never discard or
+recreate the other lane's work.
+
 Keep at most two Luna lanes active. A hostile reviewer temporarily uses one slot. When a finding is
 outside the assigned public terminal, record it for Sol with its counterexample instead of spawning a
 new capability. Never turn one manager into lease, storage, compiler, application, and lint programs
@@ -151,6 +159,12 @@ candidate before closure. It must actively remove:
   allocator/owner;
 - decorative generics/traits/macros and locks/refcounts without a proven sharing lifetime;
 - mixed-responsibility modules and tests whose fixtures hide the law.
+
+Measure the enclosing public result types, not just the mechanism under review. A pointer-sized
+cold diagnostic can still leave every success reply hundreds of bytes wide when success and failure
+payloads occupy parallel fields. Prefer a closed outcome enum that makes those states mutually
+exclusive. Reject permissive layout tests; their bound must come from an exact representation or a
+named competing design.
 
 Commission a separate Terra reviewer at the first material vertical candidate and again at closure.
 The reviewer receives the rubric, diff, public consumer, and tests—never the builder narrative. Its
