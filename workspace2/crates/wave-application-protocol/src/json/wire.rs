@@ -2,6 +2,7 @@
 
 mod adaptive;
 mod application;
+mod compiler;
 mod envelope;
 mod scalar;
 

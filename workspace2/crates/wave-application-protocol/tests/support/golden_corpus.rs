@@ -7,11 +7,25 @@
 
 use serde::Deserialize;
 use wave_application_core::{
-    ApplicationInput, ApplicationReply, ApplicationService, BatteryState, ByteCount, Capability,
-    CapabilityDomain, CapabilityHealth, CapabilityKind, CapabilityTransition, ContentId,
-    CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState, GenerationId,
+    ApplicationDisposition, ApplicationInput, ApplicationOutcome, ApplicationReply,
+    ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain, CapabilityHealth,
+    CapabilityKind, CapabilityTransition, ContentId, CorrelationId, Diagnostic, DiagnosticCode,
+    DiagnosticDetail, ExecutionReply, ExecutionState, GeneratedArtifact, GenerationId,
     IndexSnapshotId, InputText, InputTextError, OperationBudget, OperationKey, Pin, Pressure,
-    ReplyBody, ResourceBudget, RetryBudget, Terminal,
+    ReplyBody, ResourceBudget, RetryBudget,
+};
+
+mod compiler;
+
+#[allow(unused_imports)]
+pub use compiler::{
+    GoldenCompileRecipe, GoldenCompilerAttempt, GoldenCompilerCause, GoldenCompilerDiagnostic,
+    GoldenCompilerTerminal, GoldenErrorKind, GoldenFragmentCause, GoldenGeneratedArtifact,
+    GoldenGenerationAuthority, GoldenLanguage, GoldenLoweringCause, GoldenNativeArtifactAction,
+    GoldenNativeArtifactRole, GoldenNativeDirectoryCause, GoldenNativeIoFact, GoldenNativeIoPhase,
+    GoldenNativePrimaryCause, GoldenNativeTool, GoldenNativeWorkCause,
+    GoldenNativeWorkCleanupCause, GoldenNativeWorkPhase, GoldenPublicationAuthority,
+    GoldenPublicationCause, GoldenPublicationPhase, GoldenSourceAuthority, GoldenStage,
 };
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -25,6 +39,9 @@ pub struct GoldenReply {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GoldenBody {
+    Generated {
+        artifact: GoldenGeneratedArtifact,
+    },
     DependencyUnavailable {
         capability: GoldenCapability,
     },
@@ -38,6 +55,7 @@ pub enum GoldenBody {
     Execution {
         state: GoldenExecutionState,
     },
+    Rejected,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -102,6 +120,19 @@ pub enum GoldenExecutionState {
         operation: u64,
         transition: GoldenTransition,
     },
+    Failed {
+        operation: u64,
+        transition: GoldenTransition,
+        phase: GoldenExecutionPhase,
+    },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoldenExecutionPhase {
+    LocalResidence,
+    CapabilityBundle,
+    Remote,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -144,12 +175,16 @@ pub enum GoldenDiagnosticCode {
     UnsupportedCompilerStage,
     OperationUnavailable,
     AdaptivePolicyRejected,
+    CompilerTerminal,
+    ExecutionFailed,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GoldenDiagnosticDetail {
     Capability { value: GoldenCapability },
+    Compiler { terminal: GoldenCompilerTerminal },
+    Execution { state: GoldenExecutionState },
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -187,17 +222,10 @@ pub fn command_arguments() -> [Vec<String>; 4] {
     let snapshot_text = snapshot.to_string();
     let bundle_text = bundle.to_string();
     [
-        [
-            "generate",
-            "101",
-            "rust",
-            "parse",
-            "corpus-package",
-            "fn corpus() {}",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        ["generate", "101", "rust", "lower-ir", "fn corpus() {}"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         ["health", "102"].into_iter().map(str::to_owned).collect(),
         [
             "recover-local",
@@ -235,8 +263,7 @@ pub fn inputs() -> Result<GoldenInputs, GoldenError> {
         generate: ApplicationInput::Generate {
             correlation: CorrelationId(101),
             language: text("rust")?,
-            stage: text("parse")?,
-            package: text("corpus-package")?,
+            stage: text("lower-ir")?,
             source: text("fn corpus() {}")?,
         },
         health: ApplicationInput::Health {
@@ -256,12 +283,12 @@ pub fn inputs() -> Result<GoldenInputs, GoldenError> {
 }
 
 pub fn direct_replies() -> Result<[GoldenReply; 4], GoldenError> {
-    let replies = direct_application_replies()?;
+    let [generate, health, recover, cancel] = direct_application_replies()?;
     Ok([
-        GoldenReply::from_reply(&replies[0])?,
-        GoldenReply::from_reply(&replies[1])?,
-        GoldenReply::from_reply(&replies[2])?,
-        GoldenReply::from_reply(&replies[3])?,
+        GoldenReply::from_reply(generate)?,
+        GoldenReply::from_reply(health)?,
+        GoldenReply::from_reply(recover)?,
+        GoldenReply::from_reply(cancel)?,
     ])
 }
 
@@ -281,7 +308,7 @@ pub fn direct(
     input: &ApplicationInput,
 ) -> Result<GoldenReply, GoldenError> {
     let reply = service.execute(input);
-    GoldenReply::from_reply(&reply)
+    GoldenReply::from_reply(reply)
 }
 
 pub fn decode_reply(bytes: &[u8]) -> Result<GoldenReply, GoldenError> {
@@ -334,18 +361,59 @@ fn budget() -> ResourceBudget {
 }
 
 impl GoldenReply {
-    fn from_reply(reply: &ApplicationReply) -> Result<Self, GoldenError> {
+    fn from_reply(reply: ApplicationReply) -> Result<Self, GoldenError> {
+        let correlation = reply.correlation.0;
+        let (body, terminal, diagnostic) = match reply.outcome {
+            ApplicationOutcome::Resolved(body) => {
+                let terminal = match ApplicationDisposition::from(body) {
+                    ApplicationDisposition::Accepted { operation } => GoldenTerminal::Accepted {
+                        operation: operation.0,
+                    },
+                    ApplicationDisposition::Complete { emitted } => {
+                        GoldenTerminal::Complete { emitted }
+                    }
+                    ApplicationDisposition::Partial {
+                        emitted,
+                        unavailable,
+                    } => GoldenTerminal::Partial {
+                        emitted,
+                        unavailable: unavailable.into(),
+                    },
+                    ApplicationDisposition::Degraded {
+                        emitted,
+                        unavailable,
+                    } => GoldenTerminal::Degraded {
+                        emitted,
+                        unavailable: unavailable.into(),
+                    },
+                    ApplicationDisposition::Cancelled { emitted } => {
+                        GoldenTerminal::Cancelled { emitted }
+                    }
+                };
+                (project_body(&body)?, terminal, None)
+            }
+            ApplicationOutcome::Failed {
+                diagnostic: failure,
+            } => (
+                GoldenBody::Rejected,
+                GoldenTerminal::Failed,
+                Some(diagnostic(failure)?),
+            ),
+        };
         Ok(Self {
-            correlation: reply.correlation.0,
-            body: body(reply.body)?,
-            terminal: terminal(reply.terminal)?,
-            diagnostic: reply.diagnostic.map(diagnostic).transpose()?,
+            correlation,
+            body,
+            terminal,
+            diagnostic,
         })
     }
 }
 
-fn body(body: ReplyBody) -> Result<GoldenBody, GoldenError> {
-    match body {
+fn project_body(body: &ReplyBody) -> Result<GoldenBody, GoldenError> {
+    match *body {
+        ReplyBody::Generated(artifact) => Ok(GoldenBody::Generated {
+            artifact: generated_artifact(&artifact),
+        }),
         ReplyBody::DependencyUnavailable { capability } => Ok(GoldenBody::DependencyUnavailable {
             capability: capability.into(),
         }),
@@ -360,35 +428,44 @@ fn body(body: ReplyBody) -> Result<GoldenBody, GoldenError> {
             transition: transition.into(),
         }),
         ReplyBody::Execution(state) => Ok(GoldenBody::Execution {
-            state: execution_state(state)?,
+            state: execution_reply(state),
         }),
         ReplyBody::Adaptive(_) => Err(GoldenError::Unexpected("adaptive body")),
-        ReplyBody::Rejected => Err(GoldenError::Unexpected("rejected body")),
     }
 }
 
-fn terminal(terminal: Terminal) -> Result<GoldenTerminal, GoldenError> {
-    match terminal {
-        Terminal::Accepted { operation } => Ok(GoldenTerminal::Accepted {
+fn execution_reply(state: ExecutionReply) -> GoldenExecutionState {
+    match state {
+        ExecutionReply::Pending {
+            operation,
+            transition,
+        } => GoldenExecutionState::Pending {
             operation: operation.0,
-        }),
-        Terminal::Partial {
-            emitted,
-            unavailable,
-        } => Ok(GoldenTerminal::Partial {
-            emitted,
-            unavailable: unavailable.into(),
-        }),
-        Terminal::Degraded {
-            emitted,
-            unavailable,
-        } => Ok(GoldenTerminal::Degraded {
-            emitted,
-            unavailable: unavailable.into(),
-        }),
-        Terminal::Cancelled { emitted } => Ok(GoldenTerminal::Cancelled { emitted }),
-        Terminal::Complete { .. } => Err(GoldenError::Unexpected("complete terminal")),
-        Terminal::Failed => Err(GoldenError::Unexpected("failed terminal")),
+            transition: transition.into(),
+        },
+        ExecutionReply::Completed {
+            operation,
+            transition,
+        } => GoldenExecutionState::Completed {
+            operation: operation.0,
+            transition: transition.into(),
+        },
+        ExecutionReply::Cancelled {
+            operation,
+            transition,
+        } => GoldenExecutionState::Cancelled {
+            operation: operation.0,
+            transition: transition.into(),
+        },
+    }
+}
+
+fn generated_artifact(artifact: &GeneratedArtifact) -> GoldenGeneratedArtifact {
+    GoldenGeneratedArtifact {
+        source: artifact.source.into(),
+        recipe: artifact.recipe.into(),
+        fragment: artifact.fragment.to_string(),
+        publication: artifact.publication.into(),
     }
 }
 
@@ -398,6 +475,18 @@ fn diagnostic(diagnostic: Diagnostic) -> Result<GoldenDiagnostic, GoldenError> {
             code: diagnostic.code.into(),
             detail: GoldenDiagnosticDetail::Capability {
                 value: value.into(),
+            },
+        }),
+        DiagnosticDetail::Compiler(terminal) => Ok(GoldenDiagnostic {
+            code: diagnostic.code.into(),
+            detail: GoldenDiagnosticDetail::Compiler {
+                terminal: terminal.into(),
+            },
+        }),
+        DiagnosticDetail::Execution(state) => Ok(GoldenDiagnostic {
+            code: diagnostic.code.into(),
+            detail: GoldenDiagnosticDetail::Execution {
+                state: execution_state(state),
             },
         }),
         DiagnosticDetail::Text(_)
@@ -439,8 +528,8 @@ impl From<CapabilityTransition> for GoldenTransition {
     }
 }
 
-fn execution_state(state: ExecutionState) -> Result<GoldenExecutionState, GoldenError> {
-    Ok(match state {
+fn execution_state(state: ExecutionState) -> GoldenExecutionState {
+    match state {
         ExecutionState::Pending {
             operation,
             transition,
@@ -462,10 +551,26 @@ fn execution_state(state: ExecutionState) -> Result<GoldenExecutionState, Golden
             operation: operation.0,
             transition: transition.into(),
         },
-        ExecutionState::Failed { .. } => {
-            return Err(GoldenError::Unexpected("failed execution"));
+        ExecutionState::Failed {
+            operation,
+            transition,
+            phase,
+        } => GoldenExecutionState::Failed {
+            operation: operation.0,
+            transition: transition.into(),
+            phase: phase.into(),
+        },
+    }
+}
+
+impl From<nudox_adaptive::ExecutionPhase> for GoldenExecutionPhase {
+    fn from(phase: nudox_adaptive::ExecutionPhase) -> Self {
+        match phase {
+            nudox_adaptive::ExecutionPhase::LocalResidence => Self::LocalResidence,
+            nudox_adaptive::ExecutionPhase::CapabilityBundle => Self::CapabilityBundle,
+            nudox_adaptive::ExecutionPhase::Remote => Self::Remote,
         }
-    })
+    }
 }
 
 impl From<Capability> for GoldenCapability {
@@ -504,6 +609,8 @@ impl From<DiagnosticCode> for GoldenDiagnosticCode {
             DiagnosticCode::UnsupportedCompilerStage => Self::UnsupportedCompilerStage,
             DiagnosticCode::OperationUnavailable => Self::OperationUnavailable,
             DiagnosticCode::AdaptivePolicyRejected => Self::AdaptivePolicyRejected,
+            DiagnosticCode::CompilerTerminal => Self::CompilerTerminal,
+            DiagnosticCode::ExecutionFailed => Self::ExecutionFailed,
         }
     }
 }

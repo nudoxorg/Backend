@@ -22,9 +22,6 @@ pub(super) enum AdaptiveDisposition {
     Overloaded {
         overload: OverloadWire,
     },
-    Rejected {
-        error: PolicyErrorWire,
-    },
 }
 
 #[derive(Serialize)]
@@ -135,9 +132,6 @@ impl From<wave_application_core::AdaptiveDisposition> for AdaptiveDisposition {
             }
             wave_application_core::AdaptiveDisposition::Overloaded(overload) => Self::Overloaded {
                 overload: overload.into(),
-            },
-            wave_application_core::AdaptiveDisposition::Rejected(error) => Self::Rejected {
-                error: error.into(),
             },
         }
     }

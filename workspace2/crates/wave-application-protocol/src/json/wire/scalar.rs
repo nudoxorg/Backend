@@ -1,13 +1,14 @@
 use core::{fmt, str};
+use std::io::ErrorKind;
 
 use nudox_adaptive::ContentId;
-use nudox_id::Domain;
+use nudox_id::{ArtifactId, Domain, Encoding};
 use serde::{Serialize, Serializer, ser::Error as _};
 use wave_application_core::{Capability, InputText};
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum Language {
+#[derive(Serialize)]
+#[serde(remote = "nudox_compile_vocab::Language", rename_all = "snake_case")]
+pub(super) enum LanguageWire {
     Rust,
     TypeScript,
     Python,
@@ -17,13 +18,32 @@ pub(super) enum Language {
     Clang,
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub(super) enum Stage {
+#[derive(Serialize)]
+#[serde(remote = "nudox_compile_vocab::Stage")]
+pub(super) enum StageWire {
     #[serde(rename = "parse")]
     Parse,
     #[serde(rename = "lower-ir")]
     LowerIr,
 }
+
+#[derive(Serialize)]
+#[serde(remote = "nudox_compile_vocab::NativeTool", rename_all = "snake_case")]
+pub(super) enum NativeToolWire {
+    Rustc,
+    Clang,
+    Python,
+    TypeScriptCompiler,
+    GoCompiler,
+    JavaCompiler,
+    CSharpCompiler,
+}
+
+/*
+ * The compiler vocabulary is deliberately not made to depend on serde.  These remote definitions
+ * keep the application wire projection coupled to the public vocabulary's exhaustive shape while
+ * avoiding a second set of conversion enums.
+ */
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,27 +130,65 @@ impl<DomainTag: Domain> fmt::Display for DisplayContent<DomainTag> {
     }
 }
 
-impl From<nudox_compile_vocab::Language> for Language {
-    fn from(language: nudox_compile_vocab::Language) -> Self {
-        match language {
-            nudox_compile_vocab::Language::Rust => Self::Rust,
-            nudox_compile_vocab::Language::TypeScript => Self::TypeScript,
-            nudox_compile_vocab::Language::Python => Self::Python,
-            nudox_compile_vocab::Language::Go => Self::Go,
-            nudox_compile_vocab::Language::Java => Self::Java,
-            nudox_compile_vocab::Language::CSharp => Self::CSharp,
-            nudox_compile_vocab::Language::Clang => Self::Clang,
-        }
+struct DisplayArtifact<EncodingTag: Encoding, DomainTag: Domain>(
+    ArtifactId<EncodingTag, DomainTag>,
+);
+
+impl<EncodingTag: Encoding, DomainTag: Domain> fmt::Display
+    for DisplayArtifact<EncodingTag, DomainTag>
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
     }
 }
 
-impl From<nudox_compile_vocab::Stage> for Stage {
-    fn from(stage: nudox_compile_vocab::Stage) -> Self {
-        match stage {
-            nudox_compile_vocab::Stage::Parse => Self::Parse,
-            nudox_compile_vocab::Stage::LowerIr => Self::LowerIr,
-        }
-    }
+/// Serializes an identity without erasing its domain-specific type at the call site.
+pub(super) fn serialize_content<DomainTag: Domain, Output: Serializer>(
+    value: &ContentId<DomainTag>,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    serializer.collect_str(&DisplayContent(*value))
+}
+
+/// Serializes an artifact identity without converting it to an untyped intermediate value.
+pub(super) fn serialize_artifact<EncodingTag: Encoding, DomainTag: Domain, Output: Serializer>(
+    value: &ArtifactId<EncodingTag, DomainTag>,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    serializer.collect_str(&DisplayArtifact(*value))
+}
+
+/// Serializes the standard-library I/O category as the closed wire vocabulary.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+pub(super) fn serialize_error_kind<Output: Serializer>(
+    kind: &ErrorKind,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    let value = match *kind {
+        ErrorKind::NotFound => "not_found",
+        ErrorKind::PermissionDenied => "permission_denied",
+        ErrorKind::ConnectionRefused => "connection_refused",
+        ErrorKind::ConnectionReset => "connection_reset",
+        ErrorKind::HostUnreachable => "host_unreachable",
+        ErrorKind::NetworkUnreachable => "network_unreachable",
+        ErrorKind::ConnectionAborted => "connection_aborted",
+        ErrorKind::NotConnected => "not_connected",
+        ErrorKind::AddrInUse => "addr_in_use",
+        ErrorKind::AddrNotAvailable => "addr_not_available",
+        ErrorKind::BrokenPipe => "broken_pipe",
+        ErrorKind::AlreadyExists => "already_exists",
+        ErrorKind::WouldBlock => "would_block",
+        ErrorKind::InvalidInput => "invalid_input",
+        ErrorKind::InvalidData => "invalid_data",
+        ErrorKind::TimedOut => "timed_out",
+        ErrorKind::WriteZero => "write_zero",
+        ErrorKind::Interrupted => "interrupted",
+        ErrorKind::Unsupported => "unsupported",
+        ErrorKind::UnexpectedEof => "unexpected_eof",
+        ErrorKind::OutOfMemory => "out_of_memory",
+        _ => "other",
+    };
+    serializer.serialize_str(value)
 }
 
 impl From<Capability> for CapabilityName {
@@ -201,7 +259,12 @@ impl From<nudox_adaptive::StorageTier> for StorageTier {
 
 #[cfg(test)]
 mod tests {
-    use super::Language;
+    use super::LanguageWire;
+    use nudox_compile_vocab::Language;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct LanguageProjection(#[serde(with = "LanguageWire")] Language);
 
     #[test]
     fn language_wire_projection_covers_the_closed_vocab() -> Result<(), serde_json::Error> {
@@ -215,10 +278,10 @@ mod tests {
             "clang",
         ];
 
-        assert_eq!(nudox_compile_vocab::Language::ALL.len(), EXPECTED.len());
-        for (language, expected) in nudox_compile_vocab::Language::ALL.into_iter().zip(EXPECTED) {
+        assert_eq!(Language::ALL.len(), EXPECTED.len());
+        for (language, expected) in Language::ALL.into_iter().zip(EXPECTED) {
             assert_eq!(
-                serde_json::to_string(&Language::from(language))?,
+                serde_json::to_string(&LanguageProjection(language))?,
                 format!("\"{expected}\"")
             );
         }

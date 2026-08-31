@@ -5,7 +5,7 @@ use std::{
     process::ExitCode,
 };
 
-use wave_application_core::{ApplicationService, Terminal};
+use wave_application_core::{ApplicationOutcome, ApplicationService};
 use wave_application_protocol::{
     CLI_COMMAND_SEPARATOR, collect_cli_arguments, decode_cli, encode_cli_adapter_error,
     encode_cli_reply,
@@ -24,10 +24,11 @@ fn main() -> ExitCode {
             Err(error) => return transport_failure(&error),
         };
         let reply = service.execute(&input);
+        let failed = matches!(&reply.outcome, ApplicationOutcome::Failed { .. });
         if write_json(encode_cli_reply(reply)).is_err() {
             return ExitCode::from(1);
         }
-        business_failure |= reply.terminal == Terminal::Failed;
+        business_failure |= failed;
     }
     if business_failure {
         ExitCode::from(2)

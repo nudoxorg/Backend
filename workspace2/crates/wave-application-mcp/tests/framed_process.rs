@@ -85,13 +85,8 @@ enum SourceLanguage {
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 enum SourceStage {
-    Parse,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum PackageName {
-    McpPackage,
+    #[serde(rename = "lower-ir")]
+    LowerIr,
 }
 
 #[derive(Serialize)]
@@ -159,7 +154,6 @@ struct ApplicationArguments<Arguments> {
 struct GenerateArguments<'source> {
     language: SourceLanguage,
     stage: SourceStage,
-    package: PackageName,
     source: &'source str,
 }
 
@@ -276,8 +270,7 @@ fn generate(
         ApplicationAction::Generate,
         GenerateArguments {
             language: SourceLanguage::Rust,
-            stage: SourceStage::Parse,
-            package: PackageName::McpPackage,
+            stage: SourceStage::LowerIr,
             source,
         },
     )?;
@@ -357,7 +350,7 @@ fn assert_generation(
     assert_eq!(structured["body"]["capability"], "compiler_output");
     assert_eq!(structured["terminal"]["kind"], "degraded");
     assert_eq!(structured["terminal"]["unavailable"], "compiler_output");
-    assert_eq!(structured["diagnostic"]["code"], "dependency_unavailable");
+    assert_eq!(structured["diagnostic"], Value::Null);
     Ok(())
 }
 
@@ -520,8 +513,7 @@ fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> R
         ApplicationAction::Generate,
         GenerateArguments {
             language: SourceLanguage::Rust,
-            stage: SourceStage::Parse,
-            package: PackageName::McpPackage,
+            stage: SourceStage::LowerIr,
             source: "fn notification() {}",
         },
     )?;
@@ -546,8 +538,7 @@ fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> R
         ApplicationAction::Generate,
         GenerateArguments {
             language: SourceLanguage::Rust,
-            stage: SourceStage::Parse,
-            package: PackageName::McpPackage,
+            stage: SourceStage::LowerIr,
             source: "fn null_id() {}",
         },
     )?;

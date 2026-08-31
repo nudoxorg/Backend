@@ -3,7 +3,8 @@
 use std::io::{self, BufReader};
 
 use wave_application_core::{
-    ApplicationInput, ApplicationReply, ApplicationService, CorrelationId, OperationKey, Terminal,
+    ApplicationInput, ApplicationOutcome, ApplicationReply, ApplicationService, CorrelationId,
+    ExecutionReply, OperationKey, ReplyBody,
 };
 use wave_application_protocol::{
     CancellationTarget, McpDecode, McpRequest, McpRequestId, decode_mcp, mcp_error, mcp_reply,
@@ -36,12 +37,14 @@ impl ActiveRequests {
         reply: &ApplicationReply,
     ) {
         if starts_effect(input) {
-            if let (Some(request_id), Terminal::Accepted { operation }) =
-                (request_id, reply.terminal)
+            if let (
+                Some(request_id),
+                ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted { operation, .. }),
+            ) = (request_id, &reply.outcome)
             {
                 self.0 = Some(ActiveRequest {
                     request_id,
-                    operation,
+                    operation: *operation,
                     correlation: reply.correlation,
                 });
             }
@@ -51,7 +54,13 @@ impl ActiveRequests {
         let Some(operation) = named_operation(input) else {
             return;
         };
-        if !matches!(reply.terminal, Terminal::Accepted { .. }) {
+        if !matches!(
+            &reply.outcome,
+            ApplicationOutcome::Resolved(
+                ReplyBody::ExecutionStarted { .. }
+                    | ReplyBody::Execution(ExecutionReply::Pending { .. }),
+            )
+        ) {
             self.0 = self.0.take().filter(|active| active.operation != operation);
         }
     }

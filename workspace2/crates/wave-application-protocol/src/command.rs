@@ -22,8 +22,6 @@ pub(crate) struct RawGenerate {
     pub(crate) language: String,
     /// Compiler stage token.
     pub(crate) stage: String,
-    /// Package name.
-    pub(crate) package: String,
     /// Source text.
     pub(crate) source: String,
 }

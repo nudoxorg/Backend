@@ -1,6 +1,8 @@
 use serde::Serialize;
 use serde_json::Value;
-use wave_application_core::ApplicationReply;
+use wave_application_core::{
+    ApplicationDisposition, ApplicationOutcome, ApplicationReply, ReplyBody,
+};
 
 use super::application::{DiagnosticWire, ReplyBodyWire, TerminalWire};
 use crate::{AdapterError, AdapterErrorCode};
@@ -107,11 +109,52 @@ impl<'value> McpReply<'value> {
 
 impl From<ApplicationReply> for ApplicationReplyWire {
     fn from(reply: ApplicationReply) -> Self {
+        let correlation = reply.correlation.0;
+        match reply.outcome {
+            ApplicationOutcome::Resolved(body) => Self::resolved(correlation, &body),
+            ApplicationOutcome::Failed { diagnostic } => Self {
+                correlation,
+                body: ReplyBodyWire::Rejected,
+                terminal: TerminalWire::Failed,
+                diagnostic: Some(diagnostic.into()),
+            },
+        }
+    }
+}
+
+impl ApplicationReplyWire {
+    fn resolved(correlation: u64, body: &ReplyBody) -> Self {
         Self {
-            correlation: reply.correlation.0,
-            body: reply.body.into(),
-            terminal: reply.terminal.into(),
-            diagnostic: reply.diagnostic.map(Into::into),
+            correlation,
+            body: (*body).into(),
+            terminal: ApplicationDisposition::from(*body).into(),
+            diagnostic: None,
+        }
+    }
+}
+
+impl From<ApplicationDisposition> for TerminalWire {
+    fn from(disposition: ApplicationDisposition) -> Self {
+        match disposition {
+            ApplicationDisposition::Accepted { operation } => Self::Accepted {
+                operation: operation.0,
+            },
+            ApplicationDisposition::Complete { emitted } => Self::Complete { emitted },
+            ApplicationDisposition::Partial {
+                emitted,
+                unavailable,
+            } => Self::Partial {
+                emitted,
+                unavailable: unavailable.into(),
+            },
+            ApplicationDisposition::Degraded {
+                emitted,
+                unavailable,
+            } => Self::Degraded {
+                emitted,
+                unavailable: unavailable.into(),
+            },
+            ApplicationDisposition::Cancelled { emitted } => Self::Cancelled { emitted },
         }
     }
 }

@@ -19,6 +19,8 @@ wave-application-core = { path = "../wave-application-core" }
 wave-application-protocol = { path = "../wave-application-protocol" }
 
 [dev-dependencies]
+nudox-adaptive = { path = "../nudox-adaptive" }
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
 serde.workspace = true
 
 [lints.rust]

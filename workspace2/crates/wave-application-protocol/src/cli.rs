@@ -302,8 +302,7 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
             correlation,
             language: owned(arguments, 2, "language")?,
             stage: owned(arguments, 3, "stage")?,
-            package: owned(arguments, 4, "package")?,
-            source: owned(arguments, 5, "source")?,
+            source: owned(arguments, 4, "source")?,
         })),
         "status" => Ok(RawApplicationCommand::SnapshotStatus(RawSnapshot {
             correlation,
@@ -350,9 +349,8 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
 
 fn expected_fields(action: &str) -> Option<usize> {
     match action {
-        "generate" => Some(6),
+        "generate" | "search" => Some(5),
         "status" | "locality" | "poll-execution" | "cancel" => Some(3),
-        "search" => Some(5),
         "graph" | "vector" => Some(4),
         "health" => Some(2),
         "recover-local" | "release-local" => Some(12),
@@ -466,7 +464,6 @@ fn generate_input(raw: RawGenerate) -> Result<ApplicationInput, AdapterError> {
         correlation: CorrelationId(raw.correlation),
         language: input_text(raw.language, "language")?,
         stage: input_text(raw.stage, "stage")?,
-        package: input_text(raw.package, "package")?,
         source: input_text(raw.source, "source")?,
     })
 }

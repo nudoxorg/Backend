@@ -120,7 +120,6 @@ struct MissingGenerateArguments<'source> {
     correlation: u64,
     language: &'source str,
     stage: &'source str,
-    package: &'source str,
 }
 
 #[derive(Serialize)]
@@ -308,7 +307,6 @@ fn mcp_missing_required_generate_field_rejects_before_dispatch_with_id() -> Resu
             correlation: 401,
             language: "rust",
             stage: "parse",
-            package: "missing-source",
         },
     )?;
     let McpDecode::Rejected(error) = decode_mcp(body.as_bytes()) else {

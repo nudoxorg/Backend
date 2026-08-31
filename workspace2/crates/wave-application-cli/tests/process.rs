@@ -59,14 +59,7 @@ fn stdout_json(output: &std::process::Output, line: usize) -> Result<Value, CliT
 
 #[test]
 fn child_process_preserves_honest_compiler_unavailable_terminal() -> Result<(), CliTestError> {
-    let output = run(&[
-        "generate",
-        "71",
-        "rust",
-        "parse",
-        "cli-package",
-        "fn cli() {}",
-    ])?;
+    let output = run(&["generate", "71", "rust", "lower-ir", "fn cli() {}"])?;
     assert!(output.status.success());
     let reply = stdout_json(&output, 0)?;
     assert_eq!(reply["correlation"], 71);
@@ -74,7 +67,7 @@ fn child_process_preserves_honest_compiler_unavailable_terminal() -> Result<(), 
     assert_eq!(reply["terminal"]["unavailable"], "compiler_output");
     assert_eq!(reply["body"]["kind"], "dependency_unavailable");
     assert_eq!(reply["body"]["capability"], "compiler_output");
-    assert_eq!(reply["diagnostic"]["code"], "dependency_unavailable");
+    assert_eq!(reply["diagnostic"], Value::Null);
     Ok(())
 }
 
@@ -130,7 +123,7 @@ fn one_process_preserves_the_real_adaptive_future_across_commands() -> Result<()
 #[test]
 fn child_process_distinguishes_business_diagnostic_from_transport_diagnostic()
 -> Result<(), CliTestError> {
-    let semantic = run(&["generate", "72", "go", "parse", "demo", "fn demo() {}"])?;
+    let semantic = run(&["generate", "72", "unknown", "lower-ir", "fn demo() {}"])?;
     assert_eq!(semantic.status.code(), Some(2));
     let semantic_reply = stdout_json(&semantic, 0)?;
     assert_eq!(semantic_reply["terminal"]["kind"], "failed");
@@ -143,19 +136,11 @@ fn child_process_distinguishes_business_diagnostic_from_transport_diagnostic()
         "correlation"
     );
 
-    let too_many = run(&[
-        "generate",
-        "73",
-        "rust",
-        "parse",
-        "demo",
-        "fn demo() {}",
-        "excess",
-    ])?;
+    let too_many = run(&["generate", "73", "rust", "parse", "fn demo() {}", "excess"])?;
     assert_eq!(too_many.status.code(), Some(64));
     let too_many_reply = stdout_json(&too_many, 0)?;
     assert_eq!(too_many_reply["adapter_error"]["code"], "too_many_fields");
-    assert_eq!(too_many_reply["adapter_error"]["actual"], 7);
+    assert_eq!(too_many_reply["adapter_error"]["actual"], 6);
     Ok(())
 }
 

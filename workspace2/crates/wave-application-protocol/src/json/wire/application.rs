@@ -1,18 +1,24 @@
 use nudox_adaptive::CapabilityDomain;
+use nudox_compile_vocab::{Language, Stage};
 use serde::Serialize;
 use wave_application_core::{
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    ExecutionState, ReplyBody, Terminal,
+    ExecutionReply, ExecutionState, GeneratedArtifact, ReplyBody,
 };
 
 use super::{
     adaptive::{AdaptiveDisposition, PolicyErrorWire},
-    scalar::{CapabilityKind, CapabilityName, ContentText, ExecutionPhase, Language, Stage, Text},
+    compiler::{CompilerTerminalWire, GeneratedArtifactWire},
+    scalar::{CapabilityKind, CapabilityName, ContentText, ExecutionPhase, Text},
 };
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum ReplyBodyWire {
+    Generated {
+        #[serde(with = "GeneratedArtifactWire")]
+        artifact: GeneratedArtifact,
+    },
     DependencyUnavailable {
         capability: CapabilityName,
     },
@@ -27,8 +33,9 @@ pub(super) enum ReplyBodyWire {
         transition: CapabilityTransitionWire,
     },
     Execution {
-        state: ExecutionStateWire,
+        state: ExecutionReplyWire,
     },
+    /// Legacy body slot retained by the external envelope for a diagnostic-only outcome.
     Rejected,
 }
 
@@ -72,6 +79,8 @@ enum DiagnosticCodeWire {
     UnsupportedCompilerStage,
     OperationUnavailable,
     AdaptivePolicyRejected,
+    CompilerTerminal,
+    ExecutionFailed,
 }
 
 #[derive(Serialize)]
@@ -90,7 +99,9 @@ enum DiagnosticDetailWire {
         rejected: Text,
     },
     UnsupportedStage {
+        #[serde(with = "super::scalar::LanguageWire")]
         language: Language,
+        #[serde(with = "super::scalar::StageWire")]
         stage: Stage,
     },
     Operation {
@@ -101,6 +112,13 @@ enum DiagnosticDetailWire {
     },
     Policy {
         error: PolicyErrorWire,
+    },
+    Compiler {
+        #[serde(with = "CompilerTerminalWire")]
+        terminal: wave_application_core::CompilerTerminal,
+    },
+    Execution {
+        state: ExecutionStateWire,
     },
 }
 
@@ -132,6 +150,23 @@ pub(super) enum CapabilityTransitionWire {
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum ExecutionReplyWire {
+    Pending {
+        operation: u64,
+        transition: CapabilityTransitionWire,
+    },
+    Completed {
+        operation: u64,
+        transition: CapabilityTransitionWire,
+    },
+    Cancelled {
+        operation: u64,
+        transition: CapabilityTransitionWire,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum ExecutionStateWire {
     Pending {
         operation: u64,
@@ -155,6 +190,7 @@ pub(super) enum ExecutionStateWire {
 impl From<ReplyBody> for ReplyBodyWire {
     fn from(body: ReplyBody) -> Self {
         match body {
+            ReplyBody::Generated(artifact) => Self::Generated { artifact },
             ReplyBody::DependencyUnavailable { capability } => Self::DependencyUnavailable {
                 capability: capability.into(),
             },
@@ -174,34 +210,6 @@ impl From<ReplyBody> for ReplyBodyWire {
             ReplyBody::Execution(state) => Self::Execution {
                 state: state.into(),
             },
-            ReplyBody::Rejected => Self::Rejected,
-        }
-    }
-}
-
-impl From<Terminal> for TerminalWire {
-    fn from(terminal: Terminal) -> Self {
-        match terminal {
-            Terminal::Accepted { operation } => Self::Accepted {
-                operation: operation.0,
-            },
-            Terminal::Complete { emitted } => Self::Complete { emitted },
-            Terminal::Partial {
-                emitted,
-                unavailable,
-            } => Self::Partial {
-                emitted,
-                unavailable: unavailable.into(),
-            },
-            Terminal::Degraded {
-                emitted,
-                unavailable,
-            } => Self::Degraded {
-                emitted,
-                unavailable: unavailable.into(),
-            },
-            Terminal::Cancelled { emitted } => Self::Cancelled { emitted },
-            Terminal::Failed => Self::Failed,
         }
     }
 }
@@ -226,6 +234,8 @@ impl From<DiagnosticCode> for DiagnosticCodeWire {
             DiagnosticCode::UnsupportedCompilerStage => Self::UnsupportedCompilerStage,
             DiagnosticCode::OperationUnavailable => Self::OperationUnavailable,
             DiagnosticCode::AdaptivePolicyRejected => Self::AdaptivePolicyRejected,
+            DiagnosticCode::CompilerTerminal => Self::CompilerTerminal,
+            DiagnosticCode::ExecutionFailed => Self::ExecutionFailed,
         }
     }
 }
@@ -246,10 +256,7 @@ impl From<DiagnosticDetail> for DiagnosticDetailWire {
             },
             DiagnosticDetail::Frontend(source) => match source {
                 nudox_compile_vocab::FrontendError::UnsupportedStage { language, stage } => {
-                    Self::UnsupportedStage {
-                        language: language.into(),
-                        stage: stage.into(),
-                    }
+                    Self::UnsupportedStage { language, stage }
                 }
             },
             DiagnosticDetail::Operation(operation) => Self::Operation { value: operation.0 },
@@ -258,6 +265,10 @@ impl From<DiagnosticDetail> for DiagnosticDetailWire {
             },
             DiagnosticDetail::Policy(error) => Self::Policy {
                 error: error.into(),
+            },
+            DiagnosticDetail::Compiler(terminal) => Self::Compiler { terminal },
+            DiagnosticDetail::Execution(state) => Self::Execution {
+                state: state.into(),
             },
         }
     }
@@ -288,6 +299,34 @@ impl From<CapabilityTransition> for CapabilityTransitionWire {
             CapabilityTransition::Release { capability, bundle } => Self::Release {
                 capability: capability.into(),
                 bundle: ContentText(bundle),
+            },
+        }
+    }
+}
+
+impl From<ExecutionReply> for ExecutionReplyWire {
+    fn from(state: ExecutionReply) -> Self {
+        match state {
+            ExecutionReply::Pending {
+                operation,
+                transition,
+            } => Self::Pending {
+                operation: operation.0,
+                transition: transition.into(),
+            },
+            ExecutionReply::Completed {
+                operation,
+                transition,
+            } => Self::Completed {
+                operation: operation.0,
+                transition: transition.into(),
+            },
+            ExecutionReply::Cancelled {
+                operation,
+                transition,
+            } => Self::Cancelled {
+                operation: operation.0,
+                transition: transition.into(),
             },
         }
     }
