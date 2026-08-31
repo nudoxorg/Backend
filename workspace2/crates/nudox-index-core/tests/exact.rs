@@ -31,7 +31,7 @@ fn immutable_exact_segment_borrows_sorted_rows_and_keeps_tombstones() {
 
     let missing = segment.lookup(ExactOperation::new(b"missing"));
     assert_eq!(missing, None);
-    assert!(core::ptr::eq(segment.rows().as_ptr(), rows.as_ptr()));
+    assert!(core::ptr::eq(segment.rows.as_ptr(), rows.as_ptr()));
 }
 
 #[test]
@@ -83,6 +83,6 @@ fn segment_identity_is_derived_from_every_queried_row() {
     let (Some(first), Some(equal), Some(distinct)) = (first.ok(), equal.ok(), distinct.ok()) else {
         return;
     };
-    assert_eq!(first.id(), equal.id());
-    assert_ne!(first.id(), distinct.id());
+    assert_eq!(first.id, equal.id);
+    assert_ne!(first.id, distinct.id);
 }

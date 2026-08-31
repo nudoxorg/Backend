@@ -4,7 +4,7 @@ use nudox_index_core::{
 };
 
 fn score(units: u32) -> LexicalScore {
-    LexicalScore::new(units)
+    LexicalScore::from(units)
 }
 
 fn row(term: &'static [u8], document: u32, units: u32) -> LexicalRow<'static> {
@@ -12,7 +12,7 @@ fn row(term: &'static [u8], document: u32, units: u32) -> LexicalRow<'static> {
 }
 
 fn hit(term: &'static [u8], document: u32, units: u32) -> LexicalHit<'static> {
-    LexicalHit::new(term, LexicalDocumentId::new(document), score(units))
+    LexicalHit::new(term, LexicalDocumentId::from(document), score(units))
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn tombstone_identity_and_ranking_are_distinct_from_zero_score_membership() {
     let (Some(present), Some(tombstone)) = (present.ok(), tombstone.ok()) else {
         return;
     };
-    assert_ne!(present.id(), tombstone.id());
+    assert_ne!(present.id, tombstone.id);
 
     let top_k = LexicalTopK::new(1);
     assert!(top_k.is_ok());
@@ -133,7 +133,7 @@ fn term_lookup_and_ranked_hits_borrow_original_term_bytes() {
         Some(found)
             if found.len() == 2
                 && core::ptr::eq(found.as_ptr(), rows.as_ptr())
-                && core::ptr::eq(found[0].term().as_ptr(), alpha.as_ptr())
+                && core::ptr::eq(found[0].term.as_ptr(), alpha.as_ptr())
     ));
 
     let mut output = [hit(b"placeholder", 0, 0); 2];
@@ -141,8 +141,8 @@ fn term_lookup_and_ranked_hits_borrow_original_term_bytes() {
         segment.rank(LexicalOperation::new(alpha), top_k, &mut output),
         Ok(2)
     );
-    assert!(core::ptr::eq(output[0].term().as_ptr(), alpha.as_ptr()));
-    assert!(core::ptr::eq(output[1].term().as_ptr(), alpha.as_ptr()));
+    assert!(core::ptr::eq(output[0].term.as_ptr(), alpha.as_ptr()));
+    assert!(core::ptr::eq(output[1].term.as_ptr(), alpha.as_ptr()));
 }
 
 #[test]

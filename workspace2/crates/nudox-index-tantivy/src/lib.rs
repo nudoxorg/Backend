@@ -196,14 +196,14 @@ impl TantivyLexical {
     pub fn build(manifest: LexicalManifest<'_, '_>) -> Result<Self, TantivyAdapterError> {
         if !manifest.is_complete() {
             return Err(TantivyAdapterError::IncompleteManifest {
-                missing: manifest.missing_len(),
+                missing: manifest.missing.len(),
                 degraded: manifest.is_degraded(),
             });
         }
         let document_count = manifest
-            .segments()
+            .segments
             .iter()
-            .map(|segment| segment.rows().len())
+            .map(|segment| segment.rows.len())
             .sum::<usize>();
         if document_count > MAX_TANTIVY_DOCUMENTS {
             return Err(TantivyAdapterError::DocumentLimit {
@@ -213,9 +213,9 @@ impl TantivyLexical {
         }
         let mut text_bytes = 0_usize;
         let mut document_index = 0_usize;
-        for segment in manifest.segments() {
-            for row in segment.rows() {
-                text_bytes = text_bytes.checked_add(row.term().len()).ok_or(
+        for segment in manifest.segments {
+            for row in segment.rows {
+                text_bytes = text_bytes.checked_add(row.term.len()).ok_or(
                     TantivyAdapterError::TextBytesOverflow {
                         index: document_index,
                     },
@@ -240,20 +240,20 @@ impl TantivyLexical {
                     phase: TantivyPhase::Writer,
                     source,
                 })?;
-        for (segment_position, segment) in manifest.segments().iter().enumerate() {
-            for (row_index, row) in segment.rows().iter().copied().enumerate() {
+        for (segment_position, segment) in manifest.segments.iter().enumerate() {
+            for (row_index, row) in segment.rows.iter().copied().enumerate() {
                 let shadowed = manifest
-                    .segments()
+                    .segments
                     .iter()
                     .take(segment_position)
-                    .flat_map(|newer| newer.rows())
-                    .any(|newer| newer.term() == row.term() && newer.document() == row.document());
+                    .flat_map(|newer| newer.rows)
+                    .any(|newer| newer.term == row.term && newer.document == row.document);
                 if shadowed || row.is_tombstone() {
                     continue;
                 }
-                let text = core::str::from_utf8(row.term()).map_err(|source| {
+                let text = core::str::from_utf8(row.term).map_err(|source| {
                     TantivyAdapterError::NonUtf8Term {
-                        segment: segment.id(),
+                        segment: segment.id,
                         row: row_index,
                         source,
                     }
@@ -261,7 +261,7 @@ impl TantivyLexical {
                 writer
                     .add_document(doc!(
                         body_field => text,
-                        document_field => u64::from(row.document().ordinal()),
+                        document_field => u64::from(u32::from(row.document)),
                     ))
                     .map_err(|source| TantivyAdapterError::Tantivy {
                         phase: TantivyPhase::AddDocument,
@@ -282,7 +282,7 @@ impl TantivyLexical {
                 source,
             })?;
         Ok(Self {
-            snapshot: manifest.snapshot(),
+            snapshot: manifest.snapshot,
             index,
             reader,
             body_field,

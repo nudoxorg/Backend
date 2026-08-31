@@ -1,5 +1,7 @@
 //! Borrowed immutable exact-key segments.
 
+use core::ops::Deref;
+
 use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexExactSegmentDomain};
 use nudox_index_vocab::ExactSegmentId;
 
@@ -153,11 +155,29 @@ pub enum ExactSegmentError<'bytes> {
     },
 }
 
+/// Immutable public facts of one validated exact segment.
+///
+/// This view is read-only when reached through [`ExactSegment`].  Constructing a view directly
+/// does not create an [`ExactSegment`] proof; only [`ExactSegment::new`] can do that.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactSegmentView<'bytes> {
+    /// Content identity derived from every admitted row.
+    pub id: ExactSegmentId,
+    /// Validated sorted rows borrowed from the segment owner.
+    pub rows: &'bytes [ExactRow<'bytes>],
+}
+
 /// One immutable exact segment view over caller-owned rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExactSegment<'bytes> {
-    id: ExactSegmentId,
-    rows: &'bytes [ExactRow<'bytes>],
+#[repr(transparent)]
+pub struct ExactSegment<'bytes>(ExactSegmentView<'bytes>);
+
+impl<'bytes> Deref for ExactSegment<'bytes> {
+    type Target = ExactSegmentView<'bytes>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl<'bytes> ExactSegment<'bytes> {
@@ -211,30 +231,19 @@ impl<'bytes> ExactSegment<'bytes> {
             }
         }
 
-        Ok(Self {
+        Ok(Self(ExactSegmentView {
             id: segment_id(rows),
             rows,
-        })
-    }
-
-    /// Returns this segment's typed identity.
-    #[must_use]
-    pub const fn id(&self) -> ExactSegmentId {
-        self.id
-    }
-
-    /// Borrows the validated, sorted rows without reparsing them.
-    #[must_use]
-    pub const fn rows(&self) -> &'bytes [ExactRow<'bytes>] {
-        self.rows
+        }))
     }
 
     /// Finds one key with logarithmic comparisons and returns its borrowed row.
     #[must_use]
     pub fn lookup(&self, operation: ExactOperation<'_>) -> Option<&'bytes ExactRow<'bytes>> {
-        self.rows
+        self.0
+            .rows
             .binary_search_by(|row| row.key.cmp(operation.key))
             .ok()
-            .map(|index| &self.rows[index])
+            .map(|index| &self.0.rows[index])
     }
 }

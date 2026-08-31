@@ -1,6 +1,6 @@
 //! Borrowed immutable lexical segments.
 
-use core::cmp::Ordering;
+use core::{borrow::Borrow, cmp::Ordering, ops::Deref};
 
 use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use nudox_index_vocab::LexicalSegmentId;
@@ -36,13 +36,13 @@ fn segment_id(rows: &[LexicalRow<'_>]) -> LexicalSegmentId {
     hasher.write_record(&CanonicalRecord(*b"nudox.lexical.rows.v2"));
     hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
     for row in rows {
-        write_bytes(&mut hasher, row.term());
-        hasher.write_record(&CanonicalRecord(row.document().ordinal().to_le_bytes()));
-        let value = match row.value() {
+        write_bytes(&mut hasher, row.term);
+        hasher.write_record(&CanonicalRecord(u32::from(row.document).to_le_bytes()));
+        let value = match row.value {
             LexicalRowValue::Present(score) => {
                 let mut value = [0_u8; 5];
                 value[0] = 1;
-                value[1..].copy_from_slice(&score.units().to_le_bytes());
+                value[1..].copy_from_slice(&u32::from(score).to_le_bytes());
                 value
             }
             LexicalRowValue::Tombstone => [0_u8; 5],
@@ -64,17 +64,35 @@ pub const MAX_LEXICAL_TOP_K: usize = MAX_LEXICAL_ROWS;
 #[repr(transparent)]
 pub struct LexicalScore(u32);
 
-impl LexicalScore {
-    /// Creates a score from its fixed-width recipe units.
-    #[must_use]
-    pub const fn new(units: u32) -> Self {
+impl From<u32> for LexicalScore {
+    fn from(units: u32) -> Self {
         Self(units)
     }
+}
 
-    /// Returns the fixed-width recipe units.
-    #[must_use]
-    pub const fn units(self) -> u32 {
-        self.0
+impl From<LexicalScore> for u32 {
+    fn from(score: LexicalScore) -> Self {
+        score.0
+    }
+}
+
+impl Deref for LexicalScore {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<u32> for LexicalScore {
+    fn as_ref(&self) -> &u32 {
+        &self.0
+    }
+}
+
+impl Borrow<u32> for LexicalScore {
+    fn borrow(&self) -> &u32 {
+        &self.0
     }
 }
 
@@ -83,17 +101,35 @@ impl LexicalScore {
 #[repr(transparent)]
 pub struct LexicalDocumentId(u32);
 
-impl LexicalDocumentId {
-    /// Creates a local document identity from its ordinal.
-    #[must_use]
-    pub const fn new(ordinal: u32) -> Self {
+impl From<u32> for LexicalDocumentId {
+    fn from(ordinal: u32) -> Self {
         Self(ordinal)
     }
+}
 
-    /// Returns the local document ordinal.
-    #[must_use]
-    pub const fn ordinal(self) -> u32 {
-        self.0
+impl From<LexicalDocumentId> for u32 {
+    fn from(document: LexicalDocumentId) -> Self {
+        document.0
+    }
+}
+
+impl Deref for LexicalDocumentId {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<u32> for LexicalDocumentId {
+    fn as_ref(&self) -> &u32 {
+        &self.0
+    }
+}
+
+impl Borrow<u32> for LexicalDocumentId {
+    fn borrow(&self) -> &u32 {
+        &self.0
     }
 }
 
@@ -114,11 +150,31 @@ impl LexicalTopK {
             Ok(Self(value))
         }
     }
+}
 
-    /// Returns the checked number of requested results.
-    #[must_use]
-    pub const fn limit(self) -> usize {
-        self.0
+impl From<LexicalTopK> for usize {
+    fn from(top_k: LexicalTopK) -> Self {
+        top_k.0
+    }
+}
+
+impl Deref for LexicalTopK {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<usize> for LexicalTopK {
+    fn as_ref(&self) -> &usize {
+        &self.0
+    }
+}
+
+impl Borrow<usize> for LexicalTopK {
+    fn borrow(&self) -> &usize {
+        &self.0
     }
 }
 
@@ -150,9 +206,12 @@ pub enum LexicalRowValue {
 /// used only when a query ranks the rows for one term.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalRow<'bytes> {
-    term: &'bytes [u8],
-    document: LexicalDocumentId,
-    value: LexicalRowValue,
+    /// Canonical term bytes borrowed from the segment owner.
+    pub term: &'bytes [u8],
+    /// Stable local document identity.
+    pub document: LexicalDocumentId,
+    /// Immutable membership fact for this term/document pair.
+    pub value: LexicalRowValue,
 }
 
 impl<'bytes> LexicalRow<'bytes> {
@@ -161,7 +220,7 @@ impl<'bytes> LexicalRow<'bytes> {
     pub const fn new(term: &'bytes [u8], document: u32, score: LexicalScore) -> Self {
         Self {
             term,
-            document: LexicalDocumentId::new(document),
+            document: LexicalDocumentId(document),
             value: LexicalRowValue::Present(score),
         }
     }
@@ -171,27 +230,9 @@ impl<'bytes> LexicalRow<'bytes> {
     pub const fn tombstone(term: &'bytes [u8], document: u32) -> Self {
         Self {
             term,
-            document: LexicalDocumentId::new(document),
+            document: LexicalDocumentId(document),
             value: LexicalRowValue::Tombstone,
         }
-    }
-
-    /// Borrows the row's term bytes.
-    #[must_use]
-    pub const fn term(self) -> &'bytes [u8] {
-        self.term
-    }
-
-    /// Returns the row's local document identity.
-    #[must_use]
-    pub const fn document(self) -> LexicalDocumentId {
-        self.document
-    }
-
-    /// Returns the row's typed membership fact.
-    #[must_use]
-    pub const fn value(self) -> LexicalRowValue {
-        self.value
     }
 
     /// Returns the fixed-width score for a present membership.
@@ -213,7 +254,8 @@ impl<'bytes> LexicalRow<'bytes> {
 /// A borrowed lexical term query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalOperation<'query> {
-    term: &'query [u8],
+    /// Query term bytes borrowed from the caller.
+    pub term: &'query [u8],
 }
 
 impl<'query> LexicalOperation<'query> {
@@ -222,29 +264,30 @@ impl<'query> LexicalOperation<'query> {
     pub const fn new(term: &'query [u8]) -> Self {
         Self { term }
     }
-
-    /// Borrows the query term.
-    #[must_use]
-    pub const fn term(self) -> &'query [u8] {
-        self.term
-    }
 }
 
 /// One ranked lexical hit borrowed from its source row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalHit<'bytes> {
-    term: &'bytes [u8],
-    document: LexicalDocumentId,
-    score: LexicalScore,
+    /// Matching term bytes borrowed from the source row.
+    pub term: &'bytes [u8],
+    /// Stable local document identity.
+    pub document: LexicalDocumentId,
+    /// Deterministic recipe score.
+    pub score: LexicalScore,
 }
 
 /// One globally ranked lexical hit with immutable segment provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalSnapshotHit<'bytes> {
-    segment: LexicalSegmentId,
-    term: &'bytes [u8],
-    document: LexicalDocumentId,
-    score: LexicalScore,
+    /// Immutable source segment identity.
+    pub segment: LexicalSegmentId,
+    /// Matching term bytes borrowed from the source row.
+    pub term: &'bytes [u8],
+    /// Stable local document identity.
+    pub document: LexicalDocumentId,
+    /// Deterministic recipe score.
+    pub score: LexicalScore,
 }
 
 impl<'bytes> LexicalSnapshotHit<'bytes> {
@@ -263,30 +306,6 @@ impl<'bytes> LexicalSnapshotHit<'bytes> {
             score,
         }
     }
-
-    /// Returns the immutable source segment.
-    #[must_use]
-    pub const fn segment(self) -> LexicalSegmentId {
-        self.segment
-    }
-
-    /// Borrows the matching term bytes.
-    #[must_use]
-    pub const fn term(self) -> &'bytes [u8] {
-        self.term
-    }
-
-    /// Returns the stable document identity.
-    #[must_use]
-    pub const fn document(self) -> LexicalDocumentId {
-        self.document
-    }
-
-    /// Returns the fixed-width recipe score.
-    #[must_use]
-    pub const fn score(self) -> LexicalScore {
-        self.score
-    }
 }
 
 impl<'bytes> LexicalHit<'bytes> {
@@ -298,24 +317,6 @@ impl<'bytes> LexicalHit<'bytes> {
             document,
             score,
         }
-    }
-
-    /// Borrows the hit's term bytes.
-    #[must_use]
-    pub const fn term(self) -> &'bytes [u8] {
-        self.term
-    }
-
-    /// Returns the hit's local document identity.
-    #[must_use]
-    pub const fn document(self) -> LexicalDocumentId {
-        self.document
-    }
-
-    /// Returns the hit's fixed-width score.
-    #[must_use]
-    pub const fn score(self) -> LexicalScore {
-        self.score
     }
 }
 
@@ -370,11 +371,29 @@ pub enum LexicalSegmentError<'bytes> {
     },
 }
 
+/// Immutable public facts of one validated lexical segment.
+///
+/// This view is read-only when reached through [`LexicalSegment`].  Constructing a view directly
+/// does not create a [`LexicalSegment`] proof; only [`LexicalSegment::new`] can do that.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LexicalSegmentView<'bytes> {
+    /// Content identity derived from every admitted row.
+    pub id: LexicalSegmentId,
+    /// Validated rows borrowed from the segment owner.
+    pub rows: &'bytes [LexicalRow<'bytes>],
+}
+
 /// One immutable lexical segment view over caller-owned rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LexicalSegment<'bytes> {
-    id: LexicalSegmentId,
-    rows: &'bytes [LexicalRow<'bytes>],
+#[repr(transparent)]
+pub struct LexicalSegment<'bytes>(LexicalSegmentView<'bytes>);
+
+impl<'bytes> Deref for LexicalSegment<'bytes> {
+    type Target = LexicalSegmentView<'bytes>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl<'bytes> LexicalSegment<'bytes> {
@@ -395,7 +414,7 @@ impl<'bytes> LexicalSegment<'bytes> {
         let mut payload_bytes = 0_usize;
         for (index, row) in rows.iter().enumerate() {
             payload_bytes = payload_bytes
-                .checked_add(row.term().len())
+                .checked_add(row.term.len())
                 .ok_or(LexicalSegmentError::PayloadBytesOverflow { index })?;
         }
         if payload_bytes > MAX_LEXICAL_PAYLOAD_BYTES {
@@ -427,22 +446,10 @@ impl<'bytes> LexicalSegment<'bytes> {
             }
         }
 
-        Ok(Self {
+        Ok(Self(LexicalSegmentView {
             id: segment_id(rows),
             rows,
-        })
-    }
-
-    /// Returns this segment's typed identity.
-    #[must_use]
-    pub const fn id(&self) -> LexicalSegmentId {
-        self.id
-    }
-
-    /// Borrows the validated, sorted rows without reparsing them.
-    #[must_use]
-    pub const fn rows(&self) -> &'bytes [LexicalRow<'bytes>] {
-        self.rows
+        }))
     }
 
     /// Finds all rows for one term as a borrowed contiguous range.
@@ -452,7 +459,7 @@ impl<'bytes> LexicalSegment<'bytes> {
         if range.start == range.end {
             None
         } else {
-            Some(&self.rows[range])
+            Some(&self.0.rows[range])
         }
     }
 
@@ -469,10 +476,10 @@ impl<'bytes> LexicalSegment<'bytes> {
         output: &mut [LexicalHit<'bytes>],
     ) -> Result<usize, LexicalOutputError> {
         let range = self.term_range(operation.term);
-        let matches = &self.rows[range];
+        let matches = &self.0.rows[range];
         let required = core::cmp::min(
             matches.iter().filter(|row| !row.is_tombstone()).count(),
-            top_k.limit(),
+            usize::from(top_k),
         );
         if output.len() < required {
             return Err(LexicalOutputError {

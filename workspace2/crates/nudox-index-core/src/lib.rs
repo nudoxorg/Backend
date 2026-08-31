@@ -7,20 +7,24 @@
 //! and immutable manifests; storage, publication, and backend adapters remain
 //! outside this portable core.
 
+use core::ops::Deref;
+
 mod exact;
 mod lexical;
 mod snapshot;
 
 pub use exact::{
-    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, MAX_EXACT_PAYLOAD_BYTES,
+    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentView,
+    MAX_EXACT_PAYLOAD_BYTES,
 };
 pub use lexical::{
     LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow,
-    LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSnapshotHit,
-    LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
+    LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentView,
+    LexicalSnapshotHit, LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
+    MAX_LEXICAL_TOP_K,
 };
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
-pub use snapshot::{IndexSnapshot, IndexSnapshotError};
+pub use snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotView};
 
 /// Maximum exact or lexical segments a single borrowed manifest can select.
 pub const MAX_SELECTED_SEGMENTS: usize = 8;
@@ -28,10 +32,31 @@ pub const MAX_SELECTED_SEGMENTS: usize = 8;
 /// A checked borrowed manifest for one immutable exact snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ExactManifest<'manifest, 'segment> {
-    snapshot: IndexSnapshotId,
-    segments: &'manifest [ExactSegment<'segment>],
-    missing: &'manifest [ExactSegmentId],
+    view: ExactManifestView<'manifest, 'segment>,
     availability: ExactAvailability,
+}
+
+/// Immutable public facts of one validated exact manifest.
+///
+/// This view is read-only when reached through [`ExactManifest`].  Constructing a view directly
+/// does not create a manifest proof; only [`ExactManifest::new`] or
+/// [`ExactManifest::new_degraded`] can do that.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ExactManifestView<'manifest, 'segment> {
+    /// Immutable snapshot identity pinned by this manifest.
+    pub snapshot: IndexSnapshotId,
+    /// Reachable exact segments in snapshot update order.
+    pub segments: &'manifest [ExactSegment<'segment>],
+    /// Selected exact segment identities that were unavailable.
+    pub missing: &'manifest [ExactSegmentId],
+}
+
+impl<'manifest, 'segment> Deref for ExactManifest<'manifest, 'segment> {
+    type Target = ExactManifestView<'manifest, 'segment>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
 }
 
 impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
@@ -77,7 +102,7 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
                 observed: missing.len(),
             });
         }
-        let selected = snapshot.exact();
+        let selected = snapshot.exact;
         let observed_selection = segments.len() + missing.len();
         if selected.len() != observed_selection {
             return Err(ExactManifestError::SnapshotSelectionWidth {
@@ -87,20 +112,20 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
         }
         for (left_position, left) in segments.iter().enumerate() {
             for (right_position, right) in segments.iter().enumerate().skip(left_position + 1) {
-                if left.id() == right.id() {
+                if left.id == right.id {
                     return Err(ExactManifestError::DuplicatePresentSegment {
                         left_position,
                         right_position,
-                        id: left.id(),
+                        id: left.id,
                     });
                 }
             }
             for (missing_position, missing_id) in missing.iter().enumerate() {
-                if left.id() == *missing_id {
+                if left.id == *missing_id {
                     return Err(ExactManifestError::PresentAndMissing {
                         present_position: left_position,
                         missing_position,
-                        id: left.id(),
+                        id: left.id,
                     });
                 }
             }
@@ -118,10 +143,10 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
         }
         let mut preceding_selected_position = None;
         for (present_position, segment) in segments.iter().enumerate() {
-            let Some(selected_position) = selected.iter().position(|id| *id == segment.id()) else {
+            let Some(selected_position) = selected.iter().position(|id| *id == segment.id) else {
                 return Err(ExactManifestError::PresentNotSelected {
                     present_position,
-                    id: segment.id(),
+                    id: segment.id,
                 });
             };
             if let Some(preceding) = preceding_selected_position
@@ -131,7 +156,7 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
                     present_position,
                     preceding_selected_position: preceding,
                     selected_position,
-                    id: segment.id(),
+                    id: segment.id,
                 });
             }
             preceding_selected_position = Some(selected_position);
@@ -145,29 +170,13 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
             }
         }
         Ok(Self {
-            snapshot: snapshot.id(),
-            segments,
-            missing,
+            view: ExactManifestView {
+                snapshot: snapshot.id,
+                segments,
+                missing,
+            },
             availability,
         })
-    }
-
-    /// Returns the pinned immutable snapshot identity.
-    #[must_use]
-    pub const fn snapshot(&self) -> IndexSnapshotId {
-        self.snapshot
-    }
-
-    /// Returns the selected present exact segments in descending update order.
-    #[must_use]
-    pub const fn segments(&self) -> &'manifest [ExactSegment<'segment>] {
-        self.segments
-    }
-
-    /// Returns the exact selected segment identities that were unavailable.
-    #[must_use]
-    pub const fn missing(&self) -> &'manifest [ExactSegmentId] {
-        self.missing
     }
 
     /// Executes one borrowed exact lookup against the pinned snapshot.
@@ -175,35 +184,35 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
     pub fn execute(&self, operation: ExactOperation<'_>) -> ExactTerminal<'manifest, 'segment> {
         let resolution = self.resolve(operation);
         match self.availability {
-            ExactAvailability::Healthy if self.missing.is_empty() => ExactTerminal::Complete {
-                snapshot: self.snapshot,
+            ExactAvailability::Healthy if self.view.missing.is_empty() => ExactTerminal::Complete {
+                snapshot: self.view.snapshot,
                 resolution,
             },
             ExactAvailability::Healthy => ExactTerminal::Partial {
-                snapshot: self.snapshot,
+                snapshot: self.view.snapshot,
                 resolution,
-                missing: self.missing,
+                missing: self.view.missing,
             },
             ExactAvailability::Degraded(reason) => ExactTerminal::Degraded {
-                snapshot: self.snapshot,
+                snapshot: self.view.snapshot,
                 resolution,
-                missing: self.missing,
+                missing: self.view.missing,
                 reason,
             },
         }
     }
 
     fn resolve(&self, operation: ExactOperation<'_>) -> ExactResolution<'segment> {
-        for segment in self.segments {
+        for segment in self.view.segments {
             if let Some(row) = segment.lookup(operation) {
                 if row.is_tombstone() {
                     return ExactResolution::Deleted {
-                        segment: segment.id(),
+                        segment: segment.id,
                     };
                 }
                 if let Some(value) = row.value_bytes() {
                     return ExactResolution::Present {
-                        segment: segment.id(),
+                        segment: segment.id,
                         value,
                     };
                 }
@@ -363,10 +372,31 @@ pub enum ExactManifestError {
 /// A checked borrowed manifest for one immutable lexical snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct LexicalManifest<'manifest, 'segment> {
-    snapshot: IndexSnapshotId,
-    segments: &'manifest [LexicalSegment<'segment>],
-    missing: &'manifest [LexicalSegmentId],
+    view: LexicalManifestView<'manifest, 'segment>,
     availability: LexicalAvailability,
+}
+
+/// Immutable public facts of one validated lexical manifest.
+///
+/// This view is read-only when reached through [`LexicalManifest`].  Constructing a view directly
+/// does not create a manifest proof; only [`LexicalManifest::new`] or
+/// [`LexicalManifest::new_degraded`] can do that.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct LexicalManifestView<'manifest, 'segment> {
+    /// Immutable snapshot identity pinned by this manifest.
+    pub snapshot: IndexSnapshotId,
+    /// Reachable lexical segments in snapshot update order.
+    pub segments: &'manifest [LexicalSegment<'segment>],
+    /// Selected lexical segment identities that were unavailable.
+    pub missing: &'manifest [LexicalSegmentId],
+}
+
+impl<'manifest, 'segment> Deref for LexicalManifest<'manifest, 'segment> {
+    type Target = LexicalManifestView<'manifest, 'segment>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
 }
 
 impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
@@ -412,7 +442,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                 observed: missing.len(),
             });
         }
-        let selected = snapshot.lexical();
+        let selected = snapshot.lexical;
         let observed_selection = segments.len() + missing.len();
         if selected.len() != observed_selection {
             return Err(LexicalManifestError::SnapshotSelectionWidth {
@@ -422,20 +452,20 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
         for (left_position, left) in segments.iter().enumerate() {
             for (right_position, right) in segments.iter().enumerate().skip(left_position + 1) {
-                if left.id() == right.id() {
+                if left.id == right.id {
                     return Err(LexicalManifestError::DuplicatePresentSegment {
                         left_position,
                         right_position,
-                        id: left.id(),
+                        id: left.id,
                     });
                 }
             }
             for (missing_position, missing_id) in missing.iter().enumerate() {
-                if left.id() == *missing_id {
+                if left.id == *missing_id {
                     return Err(LexicalManifestError::PresentAndMissing {
                         present_position: left_position,
                         missing_position,
-                        id: left.id(),
+                        id: left.id,
                     });
                 }
             }
@@ -453,10 +483,10 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
         let mut preceding_selected_position = None;
         for (present_position, segment) in segments.iter().enumerate() {
-            let Some(selected_position) = selected.iter().position(|id| *id == segment.id()) else {
+            let Some(selected_position) = selected.iter().position(|id| *id == segment.id) else {
                 return Err(LexicalManifestError::PresentNotSelected {
                     present_position,
-                    id: segment.id(),
+                    id: segment.id,
                 });
             };
             if let Some(preceding) = preceding_selected_position
@@ -466,7 +496,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                     present_position,
                     preceding_selected_position: preceding,
                     selected_position,
-                    id: segment.id(),
+                    id: segment.id,
                 });
             }
             preceding_selected_position = Some(selected_position);
@@ -480,35 +510,19 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
             }
         }
         Ok(Self {
-            snapshot: snapshot.id(),
-            segments,
-            missing,
+            view: LexicalManifestView {
+                snapshot: snapshot.id,
+                segments,
+                missing,
+            },
             availability,
         })
-    }
-
-    /// Returns the immutable snapshot identity pinned by this manifest.
-    #[must_use]
-    pub const fn snapshot(&self) -> IndexSnapshotId {
-        self.snapshot
-    }
-
-    /// Borrows the validated reachable segments in snapshot update order.
-    #[must_use]
-    pub const fn segments(&self) -> &'manifest [LexicalSegment<'segment>] {
-        self.segments
     }
 
     /// Returns whether every selected segment is present through a healthy route.
     #[must_use]
     pub const fn is_complete(&self) -> bool {
-        self.missing.is_empty() && matches!(self.availability, LexicalAvailability::Healthy)
-    }
-
-    /// Returns the number of selected lexical segments unavailable to this manifest.
-    #[must_use]
-    pub const fn missing_len(&self) -> usize {
-        self.missing.len()
+        self.view.missing.is_empty() && matches!(self.availability, LexicalAvailability::Healthy)
     }
 
     /// Returns whether the manifest reached its snapshot through a degraded route.
@@ -531,6 +545,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         output: &'output mut [LexicalSnapshotHit<'segment>],
     ) -> Result<LexicalTerminal<'manifest, 'output, 'segment>, LexicalQueryError> {
         let matching_rows = self
+            .view
             .segments
             .iter()
             .filter_map(|segment| segment.lookup(operation))
@@ -544,27 +559,28 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
 
         let mut unique_documents = 0_usize;
-        for (segment_position, segment) in self.segments.iter().enumerate() {
+        for (segment_position, segment) in self.view.segments.iter().enumerate() {
             if let Some(rows) = segment.lookup(operation) {
                 for (row_position, row) in rows.iter().enumerate() {
                     let was_seen = self
+                        .view
                         .segments
                         .iter()
                         .take(segment_position)
                         .filter_map(|previous| previous.lookup(operation))
                         .flat_map(|previous_rows| previous_rows.iter())
-                        .any(|previous| previous.document() == row.document())
+                        .any(|previous| previous.document == row.document)
                         || rows
                             .iter()
                             .take(row_position)
-                            .any(|previous| previous.document() == row.document());
+                            .any(|previous| previous.document == row.document);
                     if !was_seen && !row.is_tombstone() {
                         unique_documents += 1;
                     }
                 }
             }
         }
-        let required = core::cmp::min(unique_documents, top_k.limit());
+        let required = core::cmp::min(unique_documents, usize::from(top_k));
         if output.len() < required {
             return Err(LexicalQueryError::OutputCapacity(LexicalOutputError {
                 required,
@@ -574,19 +590,19 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
 
         let mut emitted_documents = 0_usize;
         let mut hit_count = 0_usize;
-        for segment in self.segments {
+        for segment in self.view.segments {
             if let Some(rows) = segment.lookup(operation) {
                 for row in rows {
-                    if seen_documents[..emitted_documents].contains(&Some(row.document())) {
+                    if seen_documents[..emitted_documents].contains(&Some(row.document)) {
                         continue;
                     }
-                    seen_documents[emitted_documents] = Some(row.document());
+                    seen_documents[emitted_documents] = Some(row.document);
                     emitted_documents += 1;
                     let Some(score) = row.score() else {
                         continue;
                     };
                     let candidate =
-                        LexicalSnapshotHit::new(segment.id(), row.term(), row.document(), score);
+                        LexicalSnapshotHit::new(segment.id, row.term, row.document, score);
                     let position = output[..hit_count]
                         .iter()
                         .position(|current| lexical_snapshot_order(&candidate, current).is_lt())
@@ -604,21 +620,21 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
         let hits = &output[..hit_count];
         match self.availability {
-            LexicalAvailability::Healthy if self.missing.is_empty() => {
+            LexicalAvailability::Healthy if self.view.missing.is_empty() => {
                 Ok(LexicalTerminal::Complete {
-                    snapshot: self.snapshot,
+                    snapshot: self.view.snapshot,
                     hits,
                 })
             }
             LexicalAvailability::Healthy => Ok(LexicalTerminal::Partial {
-                snapshot: self.snapshot,
+                snapshot: self.view.snapshot,
                 hits,
-                missing: self.missing,
+                missing: self.view.missing,
             }),
             LexicalAvailability::Degraded(reason) => Ok(LexicalTerminal::Degraded {
-                snapshot: self.snapshot,
+                snapshot: self.view.snapshot,
                 hits,
-                missing: self.missing,
+                missing: self.view.missing,
                 reason,
             }),
         }
@@ -630,10 +646,10 @@ fn lexical_snapshot_order(
     right: &LexicalSnapshotHit<'_>,
 ) -> core::cmp::Ordering {
     right
-        .score()
-        .cmp(&left.score())
-        .then_with(|| left.document().cmp(&right.document()))
-        .then_with(|| left.segment().cmp(&right.segment()))
+        .score
+        .cmp(&left.score)
+        .then_with(|| left.document.cmp(&right.document))
+        .then_with(|| left.segment.cmp(&right.segment))
 }
 
 /// Health provenance for a selected lexical snapshot route.

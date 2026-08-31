@@ -1,5 +1,7 @@
 //! Opaque authority for one immutable selection of exact and lexical segments.
 
+use core::ops::Deref;
+
 use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexSnapshotDomain};
 use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
@@ -26,12 +28,31 @@ fn duplicate_positions<SegmentId: Eq>(segments: &[SegmentId]) -> Option<(usize, 
         })
 }
 
+/// Immutable public facts of one validated borrowed segment selection.
+///
+/// A view constructed directly is descriptive data, not a snapshot authority.  Only
+/// [`IndexSnapshot::new`] creates the validated authority wrapper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndexSnapshotView<'selection> {
+    /// Content identity derived from both selected segment lanes.
+    pub id: IndexSnapshotId,
+    /// Selected exact segments in their immutable update order.
+    pub exact: &'selection [ExactSegmentId],
+    /// Selected lexical segments in their immutable update order.
+    pub lexical: &'selection [LexicalSegmentId],
+}
+
 /// A validated borrowed selection whose identity is derived from every selected segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IndexSnapshot<'selection> {
-    id: IndexSnapshotId,
-    exact: &'selection [ExactSegmentId],
-    lexical: &'selection [LexicalSegmentId],
+#[repr(transparent)]
+pub struct IndexSnapshot<'selection>(IndexSnapshotView<'selection>);
+
+impl<'selection> Deref for IndexSnapshot<'selection> {
+    type Target = IndexSnapshotView<'selection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl<'selection> IndexSnapshot<'selection> {
@@ -78,25 +99,11 @@ impl<'selection> IndexSnapshot<'selection> {
             hasher.write_record(&CanonicalRecord(**id));
         }
 
-        Ok(Self {
+        Ok(Self(IndexSnapshotView {
             id: hasher.finalize(),
             exact,
             lexical,
-        })
-    }
-
-    /// Returns the content-derived immutable snapshot identity.
-    #[must_use]
-    pub const fn id(self) -> IndexSnapshotId {
-        self.id
-    }
-
-    pub(crate) const fn exact(self) -> &'selection [ExactSegmentId] {
-        self.exact
-    }
-
-    pub(crate) const fn lexical(self) -> &'selection [LexicalSegmentId] {
-        self.lexical
+        }))
     }
 }
 

@@ -31,8 +31,8 @@ fn newest_delta_and_compacted_replacement_have_equivalent_exact_meaning() {
     };
     let incremental_segments = [update, original];
     let compacted_segments = [compacted];
-    let incremental_ids = [update.id(), original.id()];
-    let compacted_ids = [compacted.id()];
+    let incremental_ids = [update.id, original.id];
+    let compacted_ids = [compacted.id];
     let incremental_snapshot = IndexSnapshot::new(&incremental_ids, &[]);
     let compacted_snapshot = IndexSnapshot::new(&compacted_ids, &[]);
     assert!(incremental_snapshot.is_ok() && compacted_snapshot.is_ok());
@@ -95,13 +95,13 @@ fn partial_and_degraded_terminals_keep_the_requested_snapshot_and_missing_identi
     let missing = nudox_index_core::ExactSegmentId::from_canonical_bytes(b"missing");
     let segments = [present];
     let missing_segments = [missing];
-    let selected = [present.id(), missing];
+    let selected = [present.id, missing];
     let snapshot = IndexSnapshot::new(&selected, &[]);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
         return;
     };
-    let snapshot_id = snapshot.id();
+    let snapshot_id = snapshot.id;
     let partial = ExactManifest::new(snapshot, &segments, &missing_segments);
     let degraded = ExactManifest::new_degraded(
         snapshot,
@@ -147,8 +147,8 @@ fn divergent_rows_cannot_enter_the_same_snapshot_authority() {
     let (Some(first), Some(second)) = (first.ok(), second.ok()) else {
         return;
     };
-    let first_ids = [first.id()];
-    let second_ids = [second.id()];
+    let first_ids = [first.id];
+    let second_ids = [second.id];
     let first_snapshot = IndexSnapshot::new(&first_ids, &[]);
     let second_snapshot = IndexSnapshot::new(&second_ids, &[]);
     assert!(first_snapshot.is_ok() && second_snapshot.is_ok());
@@ -156,13 +156,13 @@ fn divergent_rows_cannot_enter_the_same_snapshot_authority() {
     else {
         return;
     };
-    assert_ne!(first_snapshot.id(), second_snapshot.id());
+    assert_ne!(first_snapshot.id, second_snapshot.id);
 
     let wrong_segments = [second];
     assert!(matches!(
         ExactManifest::new(first_snapshot, &wrong_segments, &[]),
         Err(nudox_index_core::ExactManifestError::PresentNotSelected { id, .. })
-            if id == second.id()
+            if id == second.id
     ));
 }
 
@@ -176,7 +176,7 @@ fn snapshot_authority_rejects_reversed_update_precedence() {
     let (Some(old), Some(update)) = (old.ok(), update.ok()) else {
         return;
     };
-    let selected = [update.id(), old.id()];
+    let selected = [update.id, old.id];
     let snapshot = IndexSnapshot::new(&selected, &[]);
     assert!(snapshot.is_ok());
     let Some(snapshot) = snapshot.ok() else {
@@ -190,6 +190,6 @@ fn snapshot_authority_rejects_reversed_update_precedence() {
             preceding_selected_position: 1,
             selected_position: 0,
             id,
-        }) if id == update.id()
+        }) if id == update.id
     ));
 }
