@@ -15,6 +15,7 @@ thiserror.workspace = true
 [dev-dependencies]
 nudox-hydration = { path = "../nudox-hydration" }
 nudox-index-graph-vector = { path = "../nudox-index-graph-vector" }
+nudox-index-qdrant = { path = "../nudox-index-qdrant" }
 nudox-index-tantivy = { path = "../nudox-index-tantivy" }
 nudox-index-trustfall = { path = "../nudox-index-trustfall" }
 nudox-ir-format = { path = "../nudox-ir-format" }

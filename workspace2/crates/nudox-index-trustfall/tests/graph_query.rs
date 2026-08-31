@@ -1,7 +1,14 @@
-use nudox_index_graph_vector::{
-    GraphAuthority, GraphEdge, GraphRow, PartitionId, ProjectionId, ValidatedGraphView,
+use core::{
+    mem::size_of,
+    pin::Pin,
+    task::{Context, Poll, Waker},
 };
-use nudox_index_trustfall::{TrustfallGraph, TrustfallHit};
+use nudox_index_graph_vector::{
+    AdmissionError, Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow,
+    GraphStreamEvent, GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError,
+    TraceProbe, ValidatedGraphView,
+};
+use nudox_index_trustfall::{TrustfallGraph, TrustfallGraphError, TrustfallHit};
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
 
@@ -10,6 +17,87 @@ fn graph_authority() -> GraphAuthority {
         IndexSnapshotId::from_canonical_bytes(b"trustfall-pinned-graph-snapshot"),
         ProjectionId::new(9),
     )
+}
+
+#[derive(Debug)]
+enum LeasedTrustfallError {
+    Admission(AdmissionError),
+    ExpectedBatch,
+    Stream(StreamCapacityError),
+    Trustfall(TrustfallGraphError),
+}
+
+impl core::fmt::Display for LeasedTrustfallError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Admission(cause) => write!(formatter, "graph admission failed: {cause:?}"),
+            Self::ExpectedBatch => formatter.write_str("lease did not yield its admitted batch"),
+            Self::Stream(cause) => write!(formatter, "graph lease failed: {cause:?}"),
+            Self::Trustfall(cause) => write!(formatter, "Trustfall query failed: {cause}"),
+        }
+    }
+}
+
+impl std::error::Error for LeasedTrustfallError {}
+
+#[test]
+fn trustfall_borrows_only_a_batch_admitted_through_the_cancellable_lease()
+-> Result<(), LeasedTrustfallError> {
+    let authority = graph_authority();
+    let partition = PartitionId::new(8);
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let lease = GraphLease::new(
+        authority,
+        &[partition],
+        LeaseCapacity {
+            edges_per_partition: 1,
+            bytes_per_partition: size_of::<GraphEdge>(),
+        },
+        &cancellation,
+        &mut trace,
+    )
+    .map_err(LeasedTrustfallError::Stream)?;
+    let (mut producer, mut stream) = lease.split().map_err(LeasedTrustfallError::Stream)?;
+    let edges = [GraphEdge::new(
+        authority,
+        partition,
+        EntityId::new(5),
+        EntityId::new(13),
+    )];
+    producer
+        .settle(partition, &edges)
+        .and_then(|()| producer.finish())
+        .map_err(LeasedTrustfallError::Stream)?;
+    let mut context = Context::from_waker(Waker::noop());
+
+    {
+        let event = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
+        let Poll::Ready(GraphStreamEvent::Batch(batch)) = event else {
+            return Err(LeasedTrustfallError::ExpectedBatch);
+        };
+        let rows = [GraphRow {
+            partition,
+            edges: batch.as_ref(),
+        }];
+        let view = ValidatedGraphView::try_new(authority, &rows)
+            .map_err(LeasedTrustfallError::Admission)?;
+        let graph = TrustfallGraph::new(&view);
+        let mut output = [None];
+        let terminal = graph
+            .neighbors(EntityId::new(5), &mut output)
+            .map_err(LeasedTrustfallError::Trustfall)?;
+        assert_eq!(terminal.authority, authority);
+        assert_eq!(terminal.written, 1);
+        assert_eq!(output[0].map(|hit| hit.entity), Some(EntityId::new(13)));
+    }
+
+    assert!(matches!(
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
+        Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::Complete { authority: observed }))
+            if observed == authority
+    ));
+    Ok(())
 }
 
 #[test]

@@ -88,8 +88,23 @@ run_ignored() {
       --nocapture
 }
 
+run_published_snapshot() {
+  QDRANT_URL="$qdrant_url" \
+    stable_cargo test \
+      --manifest-path "$project_dir/Cargo.toml" \
+      -p nudox-index-publish \
+      --test published_snapshot \
+      --locked \
+      --offline \
+      durable_ir_publication_seals_exact_and_real_tantivy_queries \
+      -- \
+      --exact \
+      --nocapture
+}
+
 start_qdrant
 run_ignored real_qdrant_service_metric_matrix_isolates_authority_and_stabilizes_ties
+run_published_snapshot
 run_ignored real_qdrant_service_prepare_restart_fixture
 stop_qdrant
 run_ignored real_qdrant_service_reports_transport_during_launcher_outage

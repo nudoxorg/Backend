@@ -12,12 +12,14 @@ use nudox_hydration::{PlanScratch, Projection, demand, plan};
 use nudox_id::{ContentId, GenerationId, ObjectDomain};
 use nudox_index_core::{
     ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment, ExactTerminal,
-    IndexSnapshot, LexicalManifest, LexicalRow, LexicalScore, LexicalSegment,
+    IndexSnapshot, IndexSnapshotId, LexicalManifest, LexicalRow, LexicalScore, LexicalSegment,
 };
 use nudox_index_graph_vector::{
-    GraphAuthority, GraphEdge, GraphRow, PartitionId, ProjectionId, ValidatedGraphView,
+    GraphAuthority, GraphEdge, GraphRow, Metric, ModelId, PartitionId, ProjectionId,
+    ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorPoint, VectorSegmentError,
 };
 use nudox_index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
+use nudox_index_qdrant::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use nudox_index_tantivy::{TantivyHit, TantivyLexical};
 use nudox_index_trustfall::TrustfallGraph;
 use nudox_ir_format::{EntityRecord, FragmentView, PreparedFragment, PrimitiveType, TypeNode};
@@ -35,6 +37,88 @@ fn fixture_path() -> PathBuf {
         "nudox-published-index-{}-{ordinal}",
         std::process::id()
     ))
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PublishedVectorJourneyError {
+    #[error("published vector segment was invalid: {0:?}")]
+    InvalidSegment(VectorSegmentError),
+    #[error("published Qdrant projection failed")]
+    Qdrant(#[from] QdrantError),
+}
+
+#[allow(
+    clippy::result_large_err,
+    clippy::too_many_lines,
+    reason = "the one live cross-crate leg retains concrete cold causes without heap erasure"
+)]
+fn query_qdrant_if_provisioned(
+    snapshot: IndexSnapshotId,
+) -> Result<(), PublishedVectorJourneyError> {
+    let Ok(endpoint) = std::env::var("QDRANT_URL") else {
+        return Ok(());
+    };
+    let collection_ordinal = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let collection = format!(
+        "nudox_published_{}_{}",
+        std::process::id(),
+        collection_ordinal
+    );
+    let authority = VectorAuthority::new(
+        snapshot,
+        ModelId::new([0x61; 16]),
+        2,
+        Metric::SquaredEuclidean,
+    );
+    let first_coordinates = [1_i16, 0];
+    let second_coordinates = [0_i16, 1];
+    let first_points = [VectorPoint::new(EntityId::new(9), &first_coordinates)];
+    let second_points = [VectorPoint::new(EntityId::new(3), &second_coordinates)];
+    let segments = [
+        ValidatedVectorSegment::try_new(authority, PartitionId::new(1), &first_points)
+            .map_err(PublishedVectorJourneyError::InvalidSegment)?,
+        ValidatedVectorSegment::try_new(authority, PartitionId::new(2), &second_points)
+            .map_err(PublishedVectorJourneyError::InvalidSegment)?,
+    ];
+    let adapter = QdrantBlockingAdapter::new(&endpoint, &collection, authority)?;
+    let operation = (|| -> Result<(), PublishedVectorJourneyError> {
+        adapter.ensure_collection()?;
+        let receipt = adapter.upsert(&segments)?;
+        assert_eq!(receipt.verified, 2);
+
+        let descriptors = [segments[0].descriptor(), segments[1].descriptor()];
+        let mut output = [None, None];
+        let candidates = adapter.query(&descriptors, &[0, 0], 2, &mut output)?;
+        assert_eq!(candidates.count, 2);
+        assert_eq!(
+            output.map(|hit| hit.map(|hit| (hit.authority, hit.entity))),
+            [
+                Some((authority, EntityId::new(3))),
+                Some((authority, EntityId::new(9))),
+            ]
+        );
+
+        let keys = [
+            QdrantDataKey::new(
+                authority,
+                segments[0].id,
+                segments[0].partition,
+                EntityId::new(9),
+            ),
+            QdrantDataKey::new(
+                authority,
+                segments[1].id,
+                segments[1].partition,
+                EntityId::new(3),
+            ),
+        ];
+        assert_eq!(adapter.delete(&keys)?.verified, 2);
+        Ok(())
+    })();
+    let cleanup = adapter.delete_collection();
+    operation?;
+    cleanup?;
+    Ok(())
 }
 
 #[test]
@@ -281,6 +365,12 @@ fn durable_ir_publication_seals_exact_and_real_tantivy_queries() {
             .flatten()
             .map(|hit| (hit.entity, hit.partition)),
         Some((EntityId::new(1), partition))
+    );
+
+    let vector_result = query_qdrant_if_provisioned(sealed.snapshot.id);
+    assert!(
+        vector_result.is_ok(),
+        "published Qdrant leg failed: {vector_result:?}"
     );
 
     assert!(publisher.shutdown().is_ok(), "publisher shutdown failed");
