@@ -2,7 +2,6 @@
 
 #![allow(
     clippy::expect_used,
-    clippy::too_many_lines,
     reason = "each function exercises one typed attack family over local checked fixture setup"
 )]
 

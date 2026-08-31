@@ -345,10 +345,6 @@ pub(crate) enum BuildFailureFact {
     },
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exhaustive closed public compiler-error mapping intentionally preserves every terminal cause"
-)]
 pub(crate) fn compile_failure_fact(error: CompileFailure<'_>) -> CompileFailureFact {
     match error {
         CompileFailure::SourceLength { actual, .. } => CompileFailureFact::SourceLength { actual },
@@ -516,10 +512,6 @@ fn native_work_fault(error: NativeWorkError) -> NativeWorkFault {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exhaustive cleanup-aware public compiler-error mapping retains each closed primary cause"
-)]
 fn native_work_primary_fault(error: NativeWorkPrimary<'_>) -> NativeWorkPrimaryFault {
     match error {
         NativeWorkPrimary::Prepare { cause } => NativeWorkPrimaryFault::Prepare {

@@ -213,10 +213,6 @@ fn main() -> Result<(), BenchmarkError> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the bounded closed option parser keeps each accepted spelling and typed rejection visible together"
-)]
 fn parse_command_line() -> Result<Option<CommandLine>, BenchmarkError> {
     let mut corpus_size = 8_usize;
     let mut samples = 1_usize;

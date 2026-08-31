@@ -3,7 +3,6 @@
 #![allow(
     clippy::cognitive_complexity,
     clippy::expect_used,
-    clippy::too_many_lines,
     reason = "each function exercises one typed public terminal family over local checked fixture setup"
 )]
 

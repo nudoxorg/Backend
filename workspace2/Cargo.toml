@@ -74,6 +74,8 @@ str_to_string = "warn"
 todo = "deny"
 # Arity is not coupling evidence. Review semantic ownership and capability shape instead.
 too_many_arguments = "allow"
+# Line count is not complexity evidence. Review ownership, control flow, and semantic cohesion instead.
+too_many_lines = "allow"
 unimplemented = "deny"
 unreachable = "warn"
 unwrap_used = "deny"

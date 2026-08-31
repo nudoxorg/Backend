@@ -2,7 +2,6 @@
 
 #![allow(
     clippy::expect_used,
-    clippy::too_many_lines,
     dead_code,
     reason = "checked fixture setup preserves one borrowing lifetime, and each top-level target imports only the helpers it exercises"
 )]

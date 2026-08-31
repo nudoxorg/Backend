@@ -6,10 +6,6 @@ use super::{
 };
 
 /// Recomputes one plan entirely from supplied workload facts.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the worksheet intentionally keeps typed validation and transparent capacity formulas in one auditable derivation"
-)]
 pub(crate) fn plan(input: &CapacityInput) -> Result<CapacityPlan, CapacityModelError> {
     validate_utilization(
         input.compiler.target_utilization_per_mille,

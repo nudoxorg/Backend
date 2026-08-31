@@ -100,10 +100,6 @@ impl Runtime {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one full public-API journey is intentionally ordered here so selected-stage preparation is identical to the complete pipeline"
-    )]
     fn run_sample(
         &self,
         configuration: &Configuration,
