@@ -10,12 +10,14 @@ mod service;
 mod text;
 
 pub use compiler::{
-    CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic, CompilerReadiness,
-    CompilerRequest, CompilerTerminal, FragmentCause, GeneratedArtifact, GenerationAuthority,
-    LoweringCause, MAX_COMPILER_DIAGNOSTIC_BYTES, NativeArtifactAction, NativeArtifactRole,
+    CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
+    CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerTerminal, FragmentCause,
+    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, NativeArtifactAction,
+    NativeArtifactCause, NativeArtifactRole,
     NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
-    NativeWorkCleanupCause, NativeWorkPhase, PublicationAuthority, PublicationCause,
-    PublicationPhase, SourceAuthority, UnavailableCompiler,
+    NativeWorkCleanupCause, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
+    NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
+    PublicationPhase, SourceAuthority, UnavailableCompiler, MAX_NATIVE_WORKER_PANIC_BYTES,
 };
 pub use model::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
@@ -28,5 +30,6 @@ pub use nudox_adaptive::{
     IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,
     RetryBudget,
 };
+pub use nudox_compile_vocab::{LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES};
 pub use service::ApplicationService;
 pub use text::{INPUT_TEXT_BYTES, InputText, InputTextError, InputTextJoinError};

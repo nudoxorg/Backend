@@ -4,7 +4,7 @@ use std::{ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration};
 
 use nudox_compile_driver::ToolchainSelection;
 use nudox_compile_publication::manifest::StoredFragmentFacts;
-use nudox_compile_vocab::NativeTool;
+use nudox_compile_vocab::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
 use thiserror::Error;
 
 /// Maximum explicit native-tool rows one local compiler configuration may borrow.
@@ -12,8 +12,6 @@ pub const MAX_LOCAL_TOOLCHAINS: usize = NativeTool::ALL.len();
 /// Largest per-invocation native work interval accepted by the portable local adapter.
 pub const MAX_LOCAL_COMPILER_TIMEOUT: Duration = Duration::from_hours(1);
 
-/// Maximum stderr bytes retained by one local native compiler invocation.
-pub const MAX_NATIVE_DIAGNOSTIC_OUTPUT_BYTES: usize = 256;
 /// Maximum compact IR fragment bytes accepted by this single-request adapter.
 pub const MAX_FRAGMENT_OUTPUT_BYTES: usize = 512;
 /// Maximum canonical package-manifest bytes accepted by this one-fragment adapter.
@@ -210,7 +208,7 @@ fn selection_tool(selection: ToolchainSelection<'_>) -> NativeTool {
 /// Fields remain private because their mutual non-aliasing and exact output capacities are the
 /// adapter invariant; the owner passes this value into [`crate::LocalCompiler::create`].
 pub struct LocalCompilerScratch {
-    pub(crate) diagnostic_output: [u8; MAX_NATIVE_DIAGNOSTIC_OUTPUT_BYTES],
+    pub(crate) diagnostic_output: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
     pub(crate) fragment_output: [u8; MAX_FRAGMENT_OUTPUT_BYTES],
     pub(crate) manifest_output: [u8; MAX_MANIFEST_OUTPUT_BYTES],
     pub(crate) manifest_facts: [Option<StoredFragmentFacts>; MAX_MANIFEST_ENTRIES],
@@ -222,7 +220,7 @@ pub struct LocalCompilerScratch {
 impl Default for LocalCompilerScratch {
     fn default() -> Self {
         Self {
-            diagnostic_output: [0; MAX_NATIVE_DIAGNOSTIC_OUTPUT_BYTES],
+            diagnostic_output: [0; MAX_NATIVE_DIAGNOSTIC_BYTES],
             fragment_output: [0; MAX_FRAGMENT_OUTPUT_BYTES],
             manifest_output: [0; MAX_MANIFEST_OUTPUT_BYTES],
             manifest_facts: [None; MAX_MANIFEST_ENTRIES],

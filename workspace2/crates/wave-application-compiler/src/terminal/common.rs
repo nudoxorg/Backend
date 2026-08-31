@@ -43,8 +43,8 @@ pub(crate) const fn source_authority(
     }
 }
 
-pub(super) fn diagnostic_copy(diagnostic: NativeDiagnostic<'_>) -> CompilerDiagnostic {
-    CompilerDiagnostic::copy_from(diagnostic.bytes, diagnostic.truncated)
+pub(super) fn compiler_diagnostic(diagnostic: NativeDiagnostic<'_>) -> Option<CompilerDiagnostic> {
+    CompilerDiagnostic::from_native(diagnostic.bytes, diagnostic.observed, diagnostic.truncated)
 }
 
 pub(super) fn io_fact(error: &std::io::Error) -> NativeIoFact {

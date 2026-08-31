@@ -72,14 +72,16 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
 
     #[allow(
         clippy::result_large_err,
-        reason = "the core boundary deliberately retains exact bounded terminal facts; boxing would allocate on the compilation failure path"
+        reason = "this single outer application boundary retains source, recipe, and publication authorities inline; any emitted native diagnostic is already the only cold boxed fact"
     )]
     fn compile_and_publish(
         &mut self,
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
-        let source = request_source(request)?;
-        let toolchain = self.toolchain(request, source)?;
+        let source = request_source(request).map_err(source_terminal)?;
+        let toolchain = self
+            .toolchain(request)
+            .map_err(|cause| toolchain_terminal(source, request, cause))?;
         let deadline = self.config.control.deadline().map_err(|timeout| {
             CompilerTerminal::DeadlineConstruction {
                 source,
@@ -130,33 +132,28 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         Ok(generated(source, recipe, fragment, &publication))
     }
 
-    #[allow(
-        clippy::result_large_err,
-        reason = "the closed terminal retains source, language, stage, and selected-tool authorities; boxing this early validation path would allocate before native work"
-    )]
     fn toolchain(
         &self,
         request: ApplicationCompilerRequest<'_>,
-        source: SourceAuthority,
-    ) -> Result<ToolchainSelection<'path>, CompilerTerminal> {
+    ) -> Result<ToolchainSelection<'path>, ToolchainRouteError> {
         let route = FullRegistry
             .route(request.language, request.stage)
-            .map_err(|_| CompilerTerminal::UnsupportedStage {
-                source,
-                language: request.language,
-                stage: request.stage,
-            })?;
-        let selected = route_tool(route);
-        self.config
-            .toolchains
-            .select(selected)
-            .ok_or(CompilerTerminal::Toolchain {
-                source,
-                language: request.language,
-                stage: request.stage,
-                selected,
-                configured: None,
-            })
+            .map_err(|_| ToolchainRouteError::UnsupportedStage)?;
+        select_toolchain(self.config.toolchains, route)
+    }
+}
+
+fn select_toolchain(
+    toolchains: crate::LocalToolchainSet<'_>,
+    route: AdapterRoute,
+) -> Result<ToolchainSelection<'_>, ToolchainRouteError> {
+    match route {
+        AdapterRoute::Native { tool } => toolchains
+            .select(tool)
+            .ok_or(ToolchainRouteError::Missing { selected: tool }),
+        AdapterRoute::ToolingUnavailable { tool } => {
+            Err(ToolchainRouteError::ToolingUnavailable { tool })
+        }
     }
 }
 
@@ -165,10 +162,6 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
         CompilerReadiness::Ready
     }
 
-    #[allow(
-        clippy::result_large_err,
-        reason = "the core boundary intentionally returns a fixed-capacity terminal to retain exact facts without failure-path allocation"
-    )]
     fn generate(
         &mut self,
         request: ApplicationCompilerRequest<'_>,
@@ -198,25 +191,111 @@ const fn generated(
     }
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "the closed terminal preserves the exact source-width rejection; boxing would allocate before a compiler capability is selected"
-)]
-fn request_source(
-    request: ApplicationCompilerRequest<'_>,
-) -> Result<SourceAuthority, CompilerTerminal> {
-    let byte_len =
-        u32::try_from(request.source.len()).map_err(|_| CompilerTerminal::SourceLength {
-            actual: request.source.len(),
-        })?;
+fn request_source(request: ApplicationCompilerRequest<'_>) -> Result<SourceAuthority, SourceError> {
+    let byte_len = u32::try_from(request.source.len()).map_err(|_| SourceError::Length {
+        actual: request.source.len(),
+    })?;
     Ok(SourceAuthority {
         identity: ContentId::<SourceFactDomain>::from_canonical_bytes(request.source.as_bytes()),
         byte_len,
     })
 }
 
-const fn route_tool(route: AdapterRoute) -> nudox_compile_vocab::NativeTool {
-    match route {
-        AdapterRoute::Native { tool } | AdapterRoute::ToolingUnavailable { tool } => tool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceError {
+    Length { actual: usize },
+}
+
+const fn source_terminal(cause: SourceError) -> CompilerTerminal {
+    match cause {
+        SourceError::Length { actual } => CompilerTerminal::SourceLength { actual },
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolchainRouteError {
+    UnsupportedStage,
+    Missing {
+        selected: nudox_compile_vocab::NativeTool,
+    },
+    ToolingUnavailable {
+        tool: nudox_compile_vocab::NativeTool,
+    },
+}
+
+const fn toolchain_terminal(
+    source: SourceAuthority,
+    request: ApplicationCompilerRequest<'_>,
+    cause: ToolchainRouteError,
+) -> CompilerTerminal {
+    match cause {
+        ToolchainRouteError::UnsupportedStage => CompilerTerminal::UnsupportedStage {
+            source,
+            language: request.language,
+            stage: request.stage,
+        },
+        ToolchainRouteError::Missing { selected } => CompilerTerminal::Toolchain {
+            source,
+            language: request.language,
+            stage: request.stage,
+            selected,
+            configured: None,
+        },
+        ToolchainRouteError::ToolingUnavailable { tool } => CompilerTerminal::ToolingUnavailable {
+            source,
+            language: request.language,
+            stage: request.stage,
+            tool,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use nudox_compile_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+    use nudox_compile_registry::AdapterRoute;
+    use nudox_compile_vocab::NativeTool;
+    use thiserror::Error;
+
+    use crate::{LocalToolchainSet, LocalToolchainSetError};
+
+    use super::{ToolchainRouteError, select_toolchain};
+
+    #[derive(Debug, Error)]
+    enum RouteTestError {
+        #[error("resolved toolchain fixture was rejected")]
+        Resolved(#[from] ToolchainResolutionError),
+        #[error("toolchain table fixture was rejected")]
+        Table(#[from] LocalToolchainSetError),
+        #[error("registry-unavailable route selected a resolved local toolchain")]
+        Accepted,
+        #[error("registry-unavailable route retained the wrong typed route cause")]
+        Route { observed: ToolchainRouteError },
+    }
+
+    #[test]
+    fn unavailable_registry_route_cannot_execute_a_resolved_local_toolchain()
+    -> Result<(), RouteTestError> {
+        let selections = [ToolchainSelection::ResolvedNative(
+            ResolvedToolchain::from_version(
+                NativeTool::GoCompiler,
+                Path::new("/caller/probed/go"),
+                b"go-version-provenance",
+            )?,
+        )];
+        match select_toolchain(
+            LocalToolchainSet::validate(&selections)?,
+            AdapterRoute::ToolingUnavailable {
+                tool: NativeTool::GoCompiler,
+            },
+        ) {
+            Err(ToolchainRouteError::ToolingUnavailable {
+                tool: NativeTool::GoCompiler,
+            }) => Ok(()),
+            Err(observed) => Err(RouteTestError::Route { observed }),
+            Ok(_) => Err(RouteTestError::Accepted),
+        }
     }
 }

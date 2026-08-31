@@ -329,7 +329,7 @@ pub enum DiagnosticCode {
 }
 
 /// Exact rejected operand/cause retained by a business diagnostic.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum DiagnosticDetail {
     /// A validated transport token that failed closed semantic validation.
     Text(InputText),
@@ -362,7 +362,7 @@ pub enum DiagnosticDetail {
 }
 
 /// One source-preserving service diagnostic.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Diagnostic {
     /// Closed diagnostic code.
     pub code: DiagnosticCode,
@@ -398,7 +398,7 @@ pub enum ReplyBody {
 }
 
 /// Fully structured service result shared by direct, CLI, MCP, and GPUI consumers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ApplicationReply {
     /// Correlation copied unchanged from the input.
     pub correlation: CorrelationId,

@@ -171,11 +171,17 @@ fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_r
     });
     assert!(matches!(rejected.body, ReplyBody::Rejected));
     assert_eq!(
-        rejected.diagnostic.map(|diagnostic| diagnostic.code),
+        rejected
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code),
         Some(DiagnosticCode::UnsupportedCompilerStage)
     );
     assert!(matches!(
-        rejected.diagnostic.map(|diagnostic| diagnostic.detail),
+        rejected
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| &diagnostic.detail),
         Some(wave_application_core::DiagnosticDetail::Frontend(
             nudox_compile_vocab::FrontendError::UnsupportedStage {
                 language: nudox_compile_vocab::Language::Rust,

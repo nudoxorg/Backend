@@ -58,11 +58,17 @@ fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), InputTextE
 
     assert_eq!(rejected.terminal, Terminal::Failed);
     assert_eq!(
-        rejected.diagnostic.map(|diagnostic| diagnostic.code),
+        rejected
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code),
         Some(DiagnosticCode::UnsupportedCompilerStage)
     );
     assert!(matches!(
-        rejected.diagnostic.map(|diagnostic| diagnostic.detail),
+        rejected
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| &diagnostic.detail),
         Some(DiagnosticDetail::Frontend(
             FrontendError::UnsupportedStage {
                 language: Language::Rust,

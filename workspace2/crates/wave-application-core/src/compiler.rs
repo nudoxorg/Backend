@@ -1,8 +1,13 @@
 //! Lean, monomorphized compiler capability boundary for the application service.
 
-use std::{io::ErrorKind, time::Duration};
+use std::{io::ErrorKind, ops::Deref, time::Duration};
 
 use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
+pub use nudox_compile_vocab::{
+    InvalidUtf8Fact, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
+    MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase, NativeWorker,
+    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
+};
 use nudox_id::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
     ContentId, DependencySetDomain, GenerationId, IrFragmentDomain, IrFragmentEncoding,
@@ -93,7 +98,7 @@ pub trait CompilerCapability {
     /// bounded diagnostic fact when no generated durable artifact becomes visible.
     #[allow(
         clippy::result_large_err,
-        reason = "the fixed-capacity terminal deliberately retains exact compiler authorities and bounded diagnostics; boxing it would allocate on the failure path"
+        reason = "the terminal keeps independent source, recipe, and publication authorities inline; only an emitted native diagnostic owns its single cold box, so boxing this outer terminal would introduce a second error-path allocation"
     )]
     fn generate(
         &mut self,
@@ -110,10 +115,6 @@ impl CompilerCapability for UnavailableCompiler {
         CompilerReadiness::Unavailable
     }
 
-    #[allow(
-        clippy::result_large_err,
-        reason = "the fixed-capacity terminal deliberately retains exact compiler authorities and bounded diagnostics; boxing it would allocate on the failure path"
-    )]
     fn generate(
         &mut self,
         request: CompilerRequest<'_>,
@@ -126,7 +127,7 @@ impl CompilerCapability for UnavailableCompiler {
 }
 
 /// Bounded semantic terminal projected from a concrete compiler or publication adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum CompilerTerminal {
     /// Source width exceeded the compiler identity representation before an authority existed.
     SourceLength {
@@ -188,8 +189,8 @@ pub enum CompilerTerminal {
     Cancelled {
         /// Exact source and canonical recipe identity under evaluation.
         attempted: CompilerAttempt,
-        /// Bounded native diagnostic retained before cancellation won.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic retained only when native work emitted one before cancellation won.
+        diagnostic: Option<CompilerDiagnostic>,
     },
     /// Native work, parsing, lowering, or fragment validation failed under exact authorities.
     Compile {
@@ -208,7 +209,7 @@ pub enum CompilerTerminal {
 }
 
 /// Typed non-publication failure class compact enough to cross every application adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum CompilerCause {
     /// A caller-owned native-work directory rejected preparation or cleanup.
     NativeWork(NativeWorkCause),
@@ -223,13 +224,13 @@ pub enum CompilerCause {
     NativeRejected {
         /// Exit status code when the child exposed one.
         code: Option<i32>,
-        /// Bounded diagnostic facts copied out of caller scratch.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic copied out of caller scratch only when one was emitted.
+        diagnostic: Option<CompilerDiagnostic>,
     },
     /// The native child exceeded its explicit deadline.
     DeadlineExceeded {
-        /// Bounded diagnostic facts copied out of caller scratch.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic copied out of caller scratch only when one was emitted.
+        diagnostic: Option<CompilerDiagnostic>,
     },
     /// Native diagnostics exceeded their caller-provided capacity.
     DiagnosticLimit {
@@ -237,17 +238,17 @@ pub enum CompilerCause {
         limit: usize,
         /// Total diagnostic bytes observed before termination.
         observed: usize,
-        /// Bounded diagnostic facts copied out of caller scratch.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic copied out of caller scratch only when one was emitted.
+        diagnostic: Option<CompilerDiagnostic>,
     },
     /// A successful parse had no admitted compact lowering recipe.
-    Lowering(LoweringCause),
+    Lowering(LoweringUnsupported),
     /// Compact IR construction, output writing, or self-validation failed.
     Fragment(FragmentCause),
 }
 
 /// Exact caller-owned native-work phase projected without an allocation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum NativeWorkCause {
     /// One exact caller-owned work-directory phase failed before or after native execution.
     Directory {
@@ -264,8 +265,8 @@ pub enum NativeWorkCause {
         action: NativeArtifactAction,
         /// Closed owned artifact role.
         artifact: NativeArtifactRole,
-        /// Portable and platform I/O facts.
-        cause: NativeIoFact,
+        /// Exact materialization or text-conversion rejection.
+        cause: NativeArtifactCause,
     },
     /// A native child reached one exact terminal without a second work-directory terminal.
     Primary(NativePrimaryCause),
@@ -278,13 +279,13 @@ pub enum NativeWorkCause {
     },
 }
 
-/// Exact caller-owned native work-directory phase.
+/// Exact named-artifact rejection without formatting a filesystem or text error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeWorkPhase {
-    /// The directory was prepared and proved empty before native work.
-    Prepare,
-    /// The directory was cleaned and proved empty after native work.
-    Cleanup,
+pub enum NativeArtifactCause {
+    /// The filesystem operation retained portable and platform I/O facts.
+    Io(NativeIoFact),
+    /// A source-derived artifact name was not valid UTF-8.
+    InvalidText(InvalidUtf8Fact),
 }
 
 /// Closed native work-directory failure cause.
@@ -301,51 +302,14 @@ pub enum NativeDirectoryCause {
 /// Exact filesystem action applied to one named native adapter artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeArtifactAction {
+    /// Converting a source-derived artifact name to its required text representation.
+    ResolveText,
     /// Materializing the artifact before or during native execution.
     Write,
     /// Creating the exact adapter-owned directory that contains an artifact family.
     CreateDirectory,
     /// Removing the artifact after native execution.
     Remove,
-}
-
-/// Closed artifact roles owned by one native adapter invocation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeArtifactRole {
-    /// Rust's metadata-only parser probe output.
-    RustMetadata,
-    /// TypeScript source passed to the explicit compiler.
-    TypeScriptSource,
-    /// TypeScript's fixed adapter-owned work directory.
-    TypeScriptWork,
-    /// C# source passed through the explicit SDK project.
-    CSharpSource,
-    /// C# project that fixes the compilation shape.
-    CSharpProject,
-    /// C# `NuGet` configuration that clears remote package feeds.
-    CSharpNuGetConfig,
-    /// C# SDK restore/intermediate output directory.
-    CSharpIntermediateOutput,
-    /// C# SDK compiler output directory.
-    CSharpBuildOutput,
-    /// C#'s fixed adapter-owned work directory.
-    CSharpWork,
-    /// C#'s isolated .NET CLI home.
-    CSharpDotnetHome,
-    /// C#'s isolated `NuGet` package cache.
-    CSharpNuGetPackages,
-    /// Go source passed to the explicit compiler.
-    GoSource,
-    /// Go object output from the explicit compiler.
-    GoObject,
-    /// Go's fixed adapter-owned work directory.
-    GoWork,
-    /// Java source passed to the explicit compiler.
-    JavaSource,
-    /// Java argument file carrying the selected source name.
-    JavaArguments,
-    /// Java's fixed adapter-owned work directory.
-    JavaWork,
 }
 
 /// Allocation-free native I/O facts that retain both the portable class and platform code.
@@ -358,7 +322,7 @@ pub struct NativeIoFact {
 }
 
 /// Named primary native terminal retained when cleanup also failed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum NativePrimaryCause {
     /// Adapter preparation failed and subsequent cleanup also failed.
     PrepareDirectory(NativeDirectoryCause),
@@ -368,11 +332,13 @@ pub enum NativePrimaryCause {
         action: NativeArtifactAction,
         /// Exact adapter-owned artifact.
         artifact: NativeArtifactRole,
-        /// Portable and platform I/O facts.
-        cause: NativeIoFact,
+        /// Exact materialization or text-conversion rejection.
+        cause: NativeArtifactCause,
     },
     /// Native child startup failed.
     ToolStart(NativeIoFact),
+    /// A scoped native I/O worker panicked after child ownership was established.
+    WorkerPanic(NativeWorkerPanic),
     /// Native standard input was unavailable.
     MissingInput {
         /// Optional child-cleanup I/O category retained from the paired terminal.
@@ -399,27 +365,32 @@ pub enum NativePrimaryCause {
         /// Optional child-cleanup I/O category retained from the paired terminal.
         cleanup: Option<NativeIoFact>,
     },
-    /// Reading native diagnostics failed.
-    DiagnosticRead(NativeIoFact),
-    /// Cancellation won and preserved bounded diagnostics.
-    Cancelled(CompilerDiagnostic),
-    /// Deadline expiry won and preserved bounded diagnostics.
-    DeadlineExceeded(CompilerDiagnostic),
+    /// Reading native diagnostics failed, with any paired child cleanup retained.
+    DiagnosticRead {
+        /// Exact diagnostic-reader I/O category.
+        cause: NativeIoFact,
+        /// Optional child-cleanup I/O category retained from the paired terminal.
+        cleanup: Option<NativeIoFact>,
+    },
+    /// Cancellation won and retained native diagnostics only when native work emitted them.
+    Cancelled(Option<CompilerDiagnostic>),
+    /// Deadline expiry won and retained native diagnostics only when native work emitted them.
+    DeadlineExceeded(Option<CompilerDiagnostic>),
     /// Diagnostic capacity terminated native work with exact observed width.
     DiagnosticLimit {
         /// Retained diagnostic capacity.
         limit: usize,
         /// Total diagnostic bytes observed before termination.
         observed: usize,
-        /// Copied bounded diagnostic facts.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic copied only when native work emitted one.
+        diagnostic: Option<CompilerDiagnostic>,
     },
     /// Native syntax rejection retained its exit code and bounded diagnostics.
     Rejected {
         /// Exit status code when the child exposed one.
         code: Option<i32>,
-        /// Copied bounded diagnostic facts.
-        diagnostic: CompilerDiagnostic,
+        /// Native diagnostic copied only when native work emitted one.
+        diagnostic: Option<CompilerDiagnostic>,
     },
 }
 
@@ -438,8 +409,8 @@ pub enum NativeWorkCleanupCause {
         action: NativeArtifactAction,
         /// Exact adapter-owned artifact.
         artifact: NativeArtifactRole,
-        /// Portable and platform I/O facts.
-        cause: NativeIoFact,
+        /// Exact materialization or text-conversion rejection.
+        cause: NativeArtifactCause,
     },
 }
 
@@ -456,31 +427,6 @@ pub enum NativeIoPhase {
     Wait,
     /// Reading bounded child diagnostics.
     DiagnosticRead,
-}
-
-/// Closed compact-lowering rejection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LoweringCause {
-    /// No declaration recipe is represented.
-    NoSupportedDeclaration,
-    /// Rust function recipes are intentionally separate from constant recipes.
-    RustFunction,
-    /// Rust constant type is outside the compact recipe vocabulary.
-    RustConstantType,
-    /// Python assignment lacks a supported name.
-    PythonAssignmentName,
-    /// Python assignment value is outside the compact recipe vocabulary.
-    PythonAssignmentValue,
-    /// Clang declaration shape is outside the compact recipe vocabulary.
-    ClangDeclarationForm,
-    /// TypeScript declaration shape is outside the compact recipe vocabulary.
-    TypeScriptDeclarationForm,
-    /// TypeScript declaration type is outside the compact recipe vocabulary.
-    TypeScriptDeclarationType,
-    /// C# declaration shape is outside the compact recipe vocabulary.
-    CSharpDeclarationForm,
-    /// C# declaration type is outside the compact recipe vocabulary.
-    CSharpDeclarationType,
 }
 
 /// Closed compact-IR construction phase.
@@ -530,31 +476,50 @@ pub enum PublicationPhase {
     Durable,
 }
 
-/// Fixed-size retained native diagnostic. The source bytes never outlive the caller scratch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CompilerDiagnostic {
+/// One concrete cold allocation retaining a native diagnostic after its scratch lease ends.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CompilerDiagnostic(Box<CompilerDiagnosticFacts>);
+
+/// Full admitted native diagnostic facts exposed through [`CompilerDiagnostic`] dereferencing.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CompilerDiagnosticFacts {
     /// Exact retained diagnostic byte count.
     pub byte_len: usize,
+    /// Exact total native diagnostic bytes drained before this terminal.
+    pub observed: usize,
     /// Whether native output exceeded the retained diagnostic or native-stream bound.
     pub truncated: bool,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
-    pub bytes: [u8; MAX_COMPILER_DIAGNOSTIC_BYTES],
+    pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
 }
 
-/// Fixed copied diagnostic width at the application boundary.
-pub const MAX_COMPILER_DIAGNOSTIC_BYTES: usize = 8;
+impl Deref for CompilerDiagnostic {
+    type Target = CompilerDiagnosticFacts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl CompilerDiagnostic {
-    /// Copies only the bounded diagnostic prefix that can survive the compiler scratch lease.
+    /// Copies an emitted native diagnostic before the compiler scratch lease ends.
+    ///
+    /// An empty, complete native stream has no diagnostic fact and deliberately owns no heap
+    /// allocation. Any retained bytes, truncated stream, or positive observed width owns exactly
+    /// one immutable fact.
     #[must_use]
-    pub fn copy_from(bytes: &[u8], truncated: bool) -> Self {
-        let retained = bytes.len().min(MAX_COMPILER_DIAGNOSTIC_BYTES);
-        let mut output = [0; MAX_COMPILER_DIAGNOSTIC_BYTES];
+    pub fn from_native(bytes: &[u8], observed: usize, truncated: bool) -> Option<Self> {
+        if bytes.is_empty() && observed == 0 && !truncated {
+            return None;
+        }
+        let retained = bytes.len().min(MAX_NATIVE_DIAGNOSTIC_BYTES);
+        let mut output = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
         output[..retained].copy_from_slice(&bytes[..retained]);
-        Self {
+        Some(Self(Box::new(CompilerDiagnosticFacts {
             byte_len: retained,
+            observed,
             truncated: truncated || retained != bytes.len(),
             bytes: output,
-        }
+        })))
     }
 }
