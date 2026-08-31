@@ -127,7 +127,7 @@ impl ApplicationReplyWire {
         Self {
             correlation,
             body: (*body).into(),
-            terminal: ApplicationDisposition::from(*body).into(),
+            terminal: ApplicationDisposition::from(body).into(),
             diagnostic: None,
         }
     }

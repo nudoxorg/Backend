@@ -41,13 +41,9 @@ pub(super) enum LocalCompilerTestError {
     Shutdown(#[from] nudox_durable_journal::ShutdownError),
     #[error("transport fixture text was rejected")]
     Input(wave_application_core::InputTextError),
-    #[error("generated reply facts did not satisfy the public journey")]
-    GeneratedBody {
-        observed: Box<wave_application_core::ReplyBody>,
-    },
-    #[error("generated reply had an unexpected terminal")]
-    GeneratedTerminal {
-        observed: Box<wave_application_core::Terminal>,
+    #[error("generated reply did not retain complete generated facts")]
+    GeneratedOutcome {
+        observed: Box<wave_application_core::ApplicationOutcome>,
     },
     #[error("generated recipe did not retain the requested Rust LowerIr authority")]
     GeneratedRecipe {
@@ -60,7 +56,7 @@ pub(super) enum LocalCompilerTestError {
     GeneratedBindingZero,
     #[error("compiler diagnostic did not preserve the expected closed terminal")]
     CompilerDiagnostic {
-        observed: Box<Option<wave_application_core::Diagnostic>>,
+        observed: Box<wave_application_core::ApplicationOutcome>,
     },
     #[error("toolchain table order did not produce the required typed rejection")]
     ToolchainOrder {
@@ -155,7 +151,8 @@ pub(super) fn open_local_compiler<'path, 'scratch, 'cancel>(
             cancelled,
         },
     };
-    LocalCompiler::create(config, one_slot()?, scratch).map_err(LocalCompilerTestError::CompilerOpen)
+    LocalCompiler::create(config, one_slot()?, scratch)
+        .map_err(LocalCompilerTestError::CompilerOpen)
 }
 
 pub(super) fn generate(

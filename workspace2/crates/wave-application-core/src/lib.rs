@@ -12,18 +12,19 @@ mod text;
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
     CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerTerminal, FragmentCause,
-    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, NativeArtifactAction,
-    NativeArtifactCause, NativeArtifactRole,
-    NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
-    NativeWorkCleanupCause, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
-    NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
-    PublicationPhase, SourceAuthority, UnavailableCompiler, MAX_NATIVE_WORKER_PANIC_BYTES,
+    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
+    NativeArtifactAction, NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause,
+    NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause,
+    NativeWorkPhase, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
+    NativeWorkerPanicMessage, PublicationAuthority, PublicationCause, PublicationPhase,
+    SourceAuthority, UnavailableCompiler,
 };
 pub use model::{
-    AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
-    CapabilityHealth, CapabilityTransition, CorrelationId, Diagnostic, DiagnosticCode,
-    DiagnosticDetail, ExecutionState, InconsistentRecovery, MAX_REPLY_ROWS,
-    MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody, Terminal,
+    AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
+    ApplicationObservation, ApplicationOutcome, ApplicationReply, Capability, CapabilityHealth,
+    CapabilityTransition, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    ExecutionReply, ExecutionState, InconsistentRecovery, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES,
+    OperationKey, ReplyBody,
 };
 pub use nudox_adaptive::{
     BatteryState, ByteCount, CapabilityDomain, CapabilityKind, ContentId, GenerationId,

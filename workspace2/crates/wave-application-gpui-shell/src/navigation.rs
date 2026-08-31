@@ -99,7 +99,7 @@ pub enum CommandId {
 /// A closed action that the shell can expose without parsing a stringly command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceAction {
-    /// Compile one selected package through the canonical compiler seam.
+    /// Compile one selected source through the canonical compiler seam.
     Generate,
     /// Inspect immutable snapshot status.
     SnapshotStatus,
@@ -452,7 +452,7 @@ pub(crate) const fn action_destination(action: ServiceAction) -> Route {
 
 pub(crate) const fn action_label(action: ServiceAction) -> &'static str {
     match action {
-        ServiceAction::Generate => "Generate package",
+        ServiceAction::Generate => "Generate source",
         ServiceAction::SnapshotStatus => "Inspect snapshot status",
         ServiceAction::Search => "Search exact and lexical",
         ServiceAction::Graph => "Search graph",

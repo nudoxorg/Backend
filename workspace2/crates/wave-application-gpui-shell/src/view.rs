@@ -21,8 +21,8 @@ use gpui::{
 };
 use std::{cell::RefCell, future::poll_fn, rc::Rc, time::Duration};
 use wave_application_core::{
-    Capability, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
-    OperationKey, ReplyBody,
+    ApplicationOutcome, Capability, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    ExecutionReply, ExecutionState, OperationKey, ReplyBody,
 };
 
 const SHELL_CONTEXT: &str = "wave-application-shell";
@@ -75,6 +75,40 @@ enum CompletionDelivery {
     ViewReleased,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionDelivery {
+    Drive(OperationKey),
+    Clear(OperationKey),
+    None,
+}
+
+fn execution_delivery(reply: &ApplicationReply) -> ExecutionDelivery {
+    match &reply.outcome {
+        ApplicationOutcome::Resolved(
+            ReplyBody::ExecutionStarted { operation, .. }
+            | ReplyBody::Execution(ExecutionReply::Pending { operation, .. }),
+        ) => ExecutionDelivery::Drive(*operation),
+        ApplicationOutcome::Resolved(ReplyBody::Execution(
+            ExecutionReply::Completed { operation, .. }
+            | ExecutionReply::Cancelled { operation, .. },
+        ))
+        | ApplicationOutcome::Failed {
+            diagnostic:
+                Diagnostic {
+                    detail: DiagnosticDetail::Execution(ExecutionState::Failed { operation, .. }),
+                    ..
+                },
+        } => ExecutionDelivery::Clear(*operation),
+        ApplicationOutcome::Resolved(
+            ReplyBody::Generated(_)
+            | ReplyBody::DependencyUnavailable { .. }
+            | ReplyBody::Health(_)
+            | ReplyBody::Adaptive(_),
+        )
+        | ApplicationOutcome::Failed { .. } => ExecutionDelivery::None,
+    }
+}
+
 impl GpuiShellView {
     /// Creates a focused product shell around the service that owns application behavior.
     #[must_use]
@@ -121,20 +155,16 @@ impl GpuiShellView {
         &mut self,
         input: &ApplicationInput,
         cx: &mut Context<Self>,
-    ) -> Result<ApplicationReply, ApplyError> {
+    ) -> Result<(), ApplyError> {
         let reply = self.service.borrow_mut().execute(input);
-        self.state.apply_batch(&[reply])?;
+        let delivery = execution_delivery(&reply);
+        self.state.apply(reply)?;
         cx.notify();
-        match reply.body {
-            ReplyBody::ExecutionStarted { operation, .. }
-            | ReplyBody::Execution(ExecutionState::Pending { operation, .. }) => {
-                self.drive_admitted_execution(reply.correlation, operation, cx);
+        match delivery {
+            ExecutionDelivery::Drive(operation) => {
+                self.drive_admitted_execution(input.correlation(), operation, cx);
             }
-            ReplyBody::Execution(
-                ExecutionState::Completed { operation, .. }
-                | ExecutionState::Cancelled { operation, .. }
-                | ExecutionState::Failed { operation, .. },
-            ) => {
+            ExecutionDelivery::Clear(operation) => {
                 if self
                     .driven_execution
                     .as_ref()
@@ -144,12 +174,9 @@ impl GpuiShellView {
                     self.state.set_foreground_operation(None);
                 }
             }
-            ReplyBody::DependencyUnavailable { .. }
-            | ReplyBody::Health(_)
-            | ReplyBody::Adaptive(_)
-            | ReplyBody::Rejected => {}
+            ExecutionDelivery::None => {}
         }
-        Ok(reply)
+        Ok(())
     }
 
     fn drive_admitted_execution(
@@ -185,7 +212,7 @@ impl GpuiShellView {
                     }
                     view.state.set_foreground_operation(None);
                 }
-                match view.state.apply_batch(&[reply]) {
+                match view.state.apply(reply) {
                     Ok(_receipt) => cx.notify(),
                     Err(error) => {
                         debug_assert_eq!(view.state.projection_error, Some(error));
@@ -581,6 +608,9 @@ impl GpuiShellView {
                     self.state.pages.home.health,
                 ),
             ])
+            .when_some(self.state.pages.home.generated, |page, generated| {
+                page.child(Self::generated_details(&generated))
+            })
             .child(Self::action_button(
                 ServiceAction::Generate,
                 "Open generation form",
@@ -691,7 +721,15 @@ impl GpuiShellView {
                 "Capability health",
                 self.state.pages.settings.health,
             ))
-            .child(Self::diagnostic_row(self.state.pages.settings.diagnostic))
+            .child(Self::diagnostic_row(
+                self.state.last_reply.as_ref().and_then(|reply| {
+                    if let ApplicationOutcome::Failed { diagnostic } = &reply.outcome {
+                        Some(diagnostic)
+                    } else {
+                        None
+                    }
+                }),
+            ))
             .child(Self::action_button(
                 ServiceAction::Health,
                 "Inspect capability health",
@@ -776,7 +814,45 @@ impl GpuiShellView {
             )
     }
 
-    fn diagnostic_row(diagnostic: Option<Diagnostic>) -> impl IntoElement + use<> {
+    fn generated_details(generated: &crate::GeneratedProjection) -> impl IntoElement {
+        let artifact = generated.artifact;
+        div()
+            .id("home-generated-artifact")
+            .p(px(10.0))
+            .rounded(px(5.0))
+            .bg(rgb(PAGE_BACKGROUND))
+            .child(div().text_sm().child("Published generated artifact"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child("Source bytes: ")
+                    .child(artifact.source.byte_len.to_string()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child("Fragment: ")
+                    .child(artifact.fragment.to_string()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child("Manifest: ")
+                    .child(artifact.publication.manifest.to_string()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child("Binding: ")
+                    .child(artifact.publication.binding.to_string()),
+            )
+    }
+
+    fn diagnostic_row(diagnostic: Option<&Diagnostic>) -> impl IntoElement + use<> {
         let (code, detail) = diagnostic_text(diagnostic);
         div()
             .id("settings-last-diagnostic")
@@ -873,9 +949,8 @@ impl GpuiShellView {
                 focused,
                 language,
                 stage,
-                package,
                 source,
-            } => self.generate_form_fields(focused, language, stage, package, source, cx),
+            } => self.generate_form_fields(focused, language, stage, source, cx),
             FormState::Snapshot {
                 focused, snapshot, ..
             } => self.snapshot_form_fields(focused, snapshot, cx),
@@ -923,7 +998,6 @@ impl GpuiShellView {
         focused: FormField,
         language: Option<wave_application_core::InputText>,
         stage: Option<wave_application_core::InputText>,
-        package: Option<wave_application_core::InputText>,
         source: Option<wave_application_core::InputText>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -935,7 +1009,6 @@ impl GpuiShellView {
             .children([
                 self.form_field(FormField::Language, "Language", language, focused, cx),
                 self.form_field(FormField::Stage, "Stage", stage, focused, cx),
-                self.form_field(FormField::Package, "Package", package, focused, cx),
                 self.form_field(FormField::Source, "Source", source, focused, cx),
             ])
             .into_any_element()
@@ -1292,7 +1365,7 @@ fn command_label(command: CommandId) -> SharedString {
     SharedString::from(facts.label)
 }
 
-fn diagnostic_text(diagnostic: Option<Diagnostic>) -> (&'static str, &'static str) {
+fn diagnostic_text(diagnostic: Option<&Diagnostic>) -> (&'static str, &'static str) {
     let Some(diagnostic) = diagnostic else {
         return (
             "No diagnostic",
@@ -1308,15 +1381,23 @@ fn diagnostic_text(diagnostic: Option<Diagnostic>) -> (&'static str, &'static st
         DiagnosticCode::UnsupportedCompilerStage => "Unsupported compiler stage",
         DiagnosticCode::OperationUnavailable => "Operation unavailable",
         DiagnosticCode::AdaptivePolicyRejected => "Adaptive policy rejected",
+        DiagnosticCode::CompilerTerminal => "Compiler or publication terminal",
+        DiagnosticCode::ExecutionFailed => "Local execution failed",
     };
-    let detail = match diagnostic.detail {
-        DiagnosticDetail::Capability(capability) => capability_label(capability),
+    let detail = match &diagnostic.detail {
+        DiagnosticDetail::Capability(capability) => capability_label(*capability),
         DiagnosticDetail::Frontend(_) => "The compiler vocabulary rejected the selected stage.",
         DiagnosticDetail::Text(_) => "The supplied typed field failed semantic validation.",
         DiagnosticDetail::Limit { .. } => "The requested result bound exceeds this local slice.",
         DiagnosticDetail::TextLength { .. } => "The supplied field exceeds the semantic width.",
         DiagnosticDetail::Operation(_) => "The requested operation is no longer active.",
         DiagnosticDetail::Policy(_) => "The adaptive policy rejected the supplied immutable facts.",
+        DiagnosticDetail::Compiler(_) => {
+            "The compiler or publication owner retained a typed terminal."
+        }
+        DiagnosticDetail::Execution(_) => {
+            "The local capability execution retained its exact failed transition."
+        }
     };
     (code, detail)
 }
@@ -1371,7 +1452,7 @@ const fn action_element_id(action: ServiceAction) -> u64 {
 const fn action_form_hint(action: ServiceAction) -> &'static str {
     match action {
         ServiceAction::Generate => {
-            "Provide language, stage, package, and source; output stays unavailable until the canonical compiler/publication seam arrives."
+            "Provide language, stage, and source; output is available only after canonical compiler/publication succeeds."
         }
         ServiceAction::SnapshotStatus | ServiceAction::Locality => {
             "Select an immutable published snapshot before submitting this typed request."
@@ -1427,10 +1508,9 @@ const fn form_field_id(field: FormField) -> u64 {
     match field {
         FormField::Language => 1,
         FormField::Stage => 2,
-        FormField::Package => 3,
-        FormField::Source => 4,
-        FormField::Snapshot => 5,
-        FormField::Query => 6,
+        FormField::Source => 3,
+        FormField::Snapshot => 4,
+        FormField::Query => 5,
     }
 }
 
@@ -1439,7 +1519,6 @@ const fn text_input_target_label(target: crate::TextInputTarget) -> &'static str
         crate::TextInputTarget::Palette => "Palette",
         crate::TextInputTarget::Form(FormField::Language) => "Language",
         crate::TextInputTarget::Form(FormField::Stage) => "Stage",
-        crate::TextInputTarget::Form(FormField::Package) => "Package",
         crate::TextInputTarget::Form(FormField::Source) => "Source",
         crate::TextInputTarget::Form(FormField::Snapshot) => "Snapshot",
         crate::TextInputTarget::Form(FormField::Query) => "Query",

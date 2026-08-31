@@ -377,13 +377,11 @@ fn form_text(form: Option<&FormState>, field: FormField) -> Option<&InputText> {
         FormState::Generate {
             language,
             stage,
-            package,
             source,
             ..
         } => match field {
             FormField::Language => language.as_ref(),
             FormField::Stage => stage.as_ref(),
-            FormField::Package => package.as_ref(),
             FormField::Source => source.as_ref(),
             FormField::Snapshot | FormField::Query => None,
         },
@@ -393,7 +391,7 @@ fn form_text(form: Option<&FormState>, field: FormField) -> Option<&InputText> {
         } => match field {
             FormField::Snapshot => snapshot.as_ref(),
             FormField::Query => query.as_ref(),
-            FormField::Language | FormField::Stage | FormField::Package | FormField::Source => None,
+            FormField::Language | FormField::Stage | FormField::Source => None,
         },
         FormState::Snapshot { .. }
         | FormState::Health

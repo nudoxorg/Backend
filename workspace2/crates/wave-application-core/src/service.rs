@@ -16,11 +16,12 @@ use nudox_compile_vocab::{Language, Stage};
 use nudox_observe::Probe;
 
 use crate::{
-    AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
-    CapabilityHealth, CapabilityTransition, CompilerCapability, CompilerReadiness, CompilerRequest,
-    CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
-    InconsistentRecovery, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey,
-    ReplyBody, Terminal, UnavailableCompiler, execution::LocalCapabilityExecution,
+    AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationOutcome, ApplicationReply,
+    Capability, CapabilityHealth, CapabilityTransition, CompilerCapability, CompilerReadiness,
+    CompilerRequest, CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    ExecutionReply, ExecutionState, InconsistentRecovery, InputText, MAX_REPLY_ROWS,
+    MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody, UnavailableCompiler,
+    execution::LocalCapabilityExecution,
 };
 
 /// One monomorphized service that owns at most one bounded adaptive effect and compiler seam.
@@ -90,10 +91,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         Observer: Probe<ApplicationEvent>,
     {
         let reply = self.dispatch(input);
-        probe.record_with(|| ApplicationEvent {
-            correlation: reply.correlation,
-            terminal: reply.terminal,
-        });
+        probe.record_with(|| ApplicationEvent::from(&reply));
         reply
     }
 
@@ -112,8 +110,8 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
     ) -> Poll<ApplicationReply> {
         let reply = self.poll_execution(correlation, operation, context.waker());
         if matches!(
-            reply.body,
-            ReplyBody::Execution(ExecutionState::Pending { .. })
+            reply.outcome,
+            ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Pending { .. }))
         ) {
             Poll::Pending
         } else {
@@ -202,9 +200,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
             }) {
                 Ok(generated) => ApplicationReply {
                     correlation,
-                    body: ReplyBody::Generated(generated),
-                    terminal: Terminal::Complete { emitted: 1 },
-                    diagnostic: None,
+                    outcome: ApplicationOutcome::Resolved(ReplyBody::Generated(generated)),
                 },
                 Err(CompilerTerminal::Unavailable { .. }) => {
                     Self::dependency_unavailable(correlation, Capability::CompilerOutput)
@@ -270,15 +266,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
     ) -> ApplicationReply {
         ApplicationReply {
             correlation,
-            body: ReplyBody::DependencyUnavailable { capability },
-            terminal: Terminal::Degraded {
-                emitted: 0,
-                unavailable: capability,
-            },
-            diagnostic: Some(Diagnostic {
-                code: DiagnosticCode::DependencyUnavailable,
-                detail: DiagnosticDetail::Capability(capability),
-            }),
+            outcome: ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable { capability }),
         }
     }
 
@@ -294,30 +282,16 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
             }
             CompilerReadiness::Ready => CapabilityHealth::LocalReady(Capability::CompilerOutput),
         };
-        let compiler_unavailable = matches!(compiler, CapabilityHealth::Unavailable(_));
-        let terminal = if compiler_unavailable {
-            Terminal::Partial {
-                emitted: 2,
-                unavailable: Capability::CompilerOutput,
-            }
-        } else {
-            Terminal::Partial {
-                emitted: 3,
-                unavailable: Capability::Index,
-            }
-        };
         ApplicationReply {
             correlation,
-            body: ReplyBody::Health([
+            outcome: ApplicationOutcome::Resolved(ReplyBody::Health([
                 CapabilityHealth::LocalReady(Capability::CompilerRegistry),
                 compiler,
                 CapabilityHealth::Unavailable(Capability::Index),
                 CapabilityHealth::Unavailable(Capability::Graph),
                 CapabilityHealth::Unavailable(Capability::Vector),
                 analyzer,
-            ]),
-            terminal,
-            diagnostic: None,
+            ])),
         }
     }
 
@@ -432,19 +406,16 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
                 pin,
                 cause,
                 retries_remaining,
-            }) => Self::adaptive_reply(
+            }) => ApplicationReply {
                 correlation,
-                AdaptiveDisposition::RetryRemote {
-                    pin,
-                    cause,
-                    retries_remaining,
-                },
-                Terminal::Degraded {
-                    emitted: 0,
-                    unavailable: Capability::Remote,
-                },
-                None,
-            ),
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Adaptive(
+                    AdaptiveDisposition::RetryRemote {
+                        pin,
+                        cause,
+                        retries_remaining,
+                    },
+                )),
+            },
             PolicyDecision::Act(_unexecutable) => {
                 Self::dependency_unavailable(correlation, Capability::Remote)
             }
@@ -457,56 +428,34 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         decision: PolicyDecision,
     ) -> ApplicationReply {
         match decision {
-            PolicyDecision::NoAction => Self::adaptive_reply(
+            PolicyDecision::NoAction => ApplicationReply {
                 correlation,
-                AdaptiveDisposition::NoAction,
-                Terminal::Complete { emitted: 0 },
-                None,
-            ),
-            PolicyDecision::Overloaded(overload) => Self::adaptive_reply(
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Adaptive(
+                    AdaptiveDisposition::NoAction,
+                )),
+            },
+            PolicyDecision::Overloaded(overload) => ApplicationReply {
                 correlation,
-                AdaptiveDisposition::Overloaded(overload),
-                Terminal::Degraded {
-                    emitted: 0,
-                    unavailable: Capability::LocalAnalyzer,
-                },
-                None,
-            ),
-            PolicyDecision::RecoveryExhausted { pin, cause } => Self::adaptive_reply(
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Adaptive(
+                    AdaptiveDisposition::Overloaded(overload),
+                )),
+            },
+            PolicyDecision::RecoveryExhausted { pin, cause } => ApplicationReply {
                 correlation,
-                AdaptiveDisposition::RecoveryExhausted { pin, cause },
-                Terminal::Degraded {
-                    emitted: 0,
-                    unavailable: Capability::Remote,
-                },
-                None,
-            ),
-            PolicyDecision::Rejected(source) => Self::adaptive_reply(
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Adaptive(
+                    AdaptiveDisposition::RecoveryExhausted { pin, cause },
+                )),
+            },
+            PolicyDecision::Rejected(source) => Self::rejected(
                 correlation,
-                AdaptiveDisposition::Rejected(source),
-                Terminal::Failed,
-                Some(Diagnostic {
+                Diagnostic {
                     code: DiagnosticCode::AdaptivePolicyRejected,
                     detail: DiagnosticDetail::Policy(source),
-                }),
+                },
             ),
             PolicyDecision::Act(_action) => {
                 Self::dependency_unavailable(correlation, Capability::Remote)
             }
-        }
-    }
-
-    fn adaptive_reply(
-        correlation: crate::CorrelationId,
-        disposition: AdaptiveDisposition,
-        terminal: Terminal,
-        diagnostic: Option<Diagnostic>,
-    ) -> ApplicationReply {
-        ApplicationReply {
-            correlation,
-            body: ReplyBody::Adaptive(disposition),
-            terminal,
-            diagnostic,
         }
     }
 
@@ -527,12 +476,10 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         });
         ApplicationReply {
             correlation,
-            body: ReplyBody::ExecutionStarted {
+            outcome: ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted {
                 operation,
                 transition,
-            },
-            terminal: Terminal::Accepted { operation },
-            diagnostic: None,
+            }),
         }
     }
 
@@ -660,17 +607,50 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         correlation: crate::CorrelationId,
         state: ExecutionState,
     ) -> ApplicationReply {
-        let terminal = match state {
-            ExecutionState::Pending { operation, .. } => Terminal::Accepted { operation },
-            ExecutionState::Completed { .. } => Terminal::Complete { emitted: 1 },
-            ExecutionState::Cancelled { .. } => Terminal::Cancelled { emitted: 0 },
-            ExecutionState::Failed { .. } => Terminal::Failed,
-        };
-        ApplicationReply {
-            correlation,
-            body: ReplyBody::Execution(state),
-            terminal,
-            diagnostic: None,
+        match state {
+            ExecutionState::Pending {
+                operation,
+                transition,
+            } => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Execution(
+                    ExecutionReply::Pending {
+                        operation,
+                        transition,
+                    },
+                )),
+            },
+            ExecutionState::Completed {
+                operation,
+                transition,
+            } => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Execution(
+                    ExecutionReply::Completed {
+                        operation,
+                        transition,
+                    },
+                )),
+            },
+            ExecutionState::Cancelled {
+                operation,
+                transition,
+            } => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Execution(
+                    ExecutionReply::Cancelled {
+                        operation,
+                        transition,
+                    },
+                )),
+            },
+            state @ ExecutionState::Failed { .. } => Self::rejected(
+                correlation,
+                Diagnostic {
+                    code: DiagnosticCode::ExecutionFailed,
+                    detail: DiagnosticDetail::Execution(state),
+                },
+            ),
         }
     }
 
@@ -750,9 +730,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
     fn rejected(correlation: crate::CorrelationId, diagnostic: Diagnostic) -> ApplicationReply {
         ApplicationReply {
             correlation,
-            body: ReplyBody::Rejected,
-            terminal: Terminal::Failed,
-            diagnostic: Some(diagnostic),
+            outcome: ApplicationOutcome::Failed { diagnostic },
         }
     }
 

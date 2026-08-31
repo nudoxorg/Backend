@@ -365,7 +365,7 @@ impl GoldenReply {
         let correlation = reply.correlation.0;
         let (body, terminal, diagnostic) = match reply.outcome {
             ApplicationOutcome::Resolved(body) => {
-                let terminal = match ApplicationDisposition::from(body) {
+                let terminal = match ApplicationDisposition::from(&body) {
                     ApplicationDisposition::Accepted { operation } => GoldenTerminal::Accepted {
                         operation: operation.0,
                     },

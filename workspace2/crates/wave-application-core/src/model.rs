@@ -160,42 +160,6 @@ impl ApplicationInput {
     }
 }
 
-/// The one explicit request disposition returned by every semantic operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Terminal {
-    /// A separate bounded operation owns the selected action.
-    Accepted {
-        /// Exact admitted operation.
-        operation: OperationKey,
-    },
-    /// Full result coverage.
-    Complete {
-        /// Number of emitted rows.
-        emitted: u8,
-    },
-    /// Partial result coverage with exact unavailable capability.
-    Partial {
-        /// Number of emitted rows.
-        emitted: u8,
-        /// Exact unavailable source.
-        unavailable: Capability,
-    },
-    /// Useful local facts remain while a remote capability is unavailable.
-    Degraded {
-        /// Number of emitted rows.
-        emitted: u8,
-        /// Exact unavailable source.
-        unavailable: Capability,
-    },
-    /// The named cancel action won the only operation transition.
-    Cancelled {
-        /// Number of emitted rows before cancellation.
-        emitted: u8,
-    },
-    /// Semantic validation, policy validation, or a compiler row failed.
-    Failed,
-}
-
 /// Named capability health, never an unstructured availability string.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Capability {
@@ -266,8 +230,6 @@ pub enum AdaptiveDisposition {
     },
     /// Resource admission rejected the otherwise canonical action.
     Overloaded(Overload),
-    /// The caller-owned policy snapshot was malformed or ambiguous.
-    Rejected(PolicyError),
 }
 
 /// One observation of the finite service-owned capability future.
@@ -305,6 +267,63 @@ pub enum ExecutionState {
     },
 }
 
+/// One non-failure execution observation that may be delivered as a reply body.
+///
+/// An execution failure always travels in [`DiagnosticDetail::Execution`], so a visible body
+/// cannot manufacture a body-bearing failure without its typed cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionReply {
+    /// A real waker was registered and the action remains uniquely owned by the future.
+    Pending {
+        /// Polled operation.
+        operation: OperationKey,
+        /// Exact still-owned action.
+        transition: CapabilityTransition,
+    },
+    /// The local metadata transition was applied and reached its fused terminal.
+    Completed {
+        /// Completed operation.
+        operation: OperationKey,
+        /// Exact applied action.
+        transition: CapabilityTransition,
+    },
+    /// Cancellation won before the action item was emitted.
+    Cancelled {
+        /// Cancelled operation.
+        operation: OperationKey,
+        /// Exact unexecuted action.
+        transition: CapabilityTransition,
+    },
+}
+
+impl From<ExecutionReply> for ExecutionState {
+    fn from(reply: ExecutionReply) -> Self {
+        match reply {
+            ExecutionReply::Pending {
+                operation,
+                transition,
+            } => Self::Pending {
+                operation,
+                transition,
+            },
+            ExecutionReply::Completed {
+                operation,
+                transition,
+            } => Self::Completed {
+                operation,
+                transition,
+            },
+            ExecutionReply::Cancelled {
+                operation,
+                transition,
+            } => Self::Cancelled {
+                operation,
+                transition,
+            },
+        }
+    }
+}
+
 /// Structured business diagnostic code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticCode {
@@ -326,6 +345,8 @@ pub enum DiagnosticCode {
     AdaptivePolicyRejected,
     /// A configured compiler or durable publication adapter returned one bounded typed terminal.
     CompilerTerminal,
+    /// A local capability execution failed at one exact external phase.
+    ExecutionFailed,
 }
 
 /// Exact rejected operand/cause retained by a business diagnostic.
@@ -359,6 +380,8 @@ pub enum DiagnosticDetail {
     Policy(PolicyError),
     /// Closed compiler or publication terminal from the configured local capability.
     Compiler(CompilerTerminal),
+    /// Exact local capability execution that failed before its intended transition applied.
+    Execution(ExecutionState),
 }
 
 /// One source-preserving service diagnostic.
@@ -391,10 +414,20 @@ pub enum ReplyBody {
         /// Exact selected local effect.
         transition: CapabilityTransition,
     },
-    /// One real poll or fused terminal from the service-owned execution future.
-    Execution(ExecutionState),
-    /// A typed failure has no fabricated payload.
-    Rejected,
+    /// One non-failure poll or fused terminal from the service-owned execution future.
+    Execution(ExecutionReply),
+}
+
+/// Closed request result that makes success and diagnostic facts mutually exclusive.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ApplicationOutcome {
+    /// Visible semantic facts whose disposition is derived exclusively from their variant.
+    Resolved(ReplyBody),
+    /// Semantic validation or a lower-plane failure retained its one exact diagnostic.
+    Failed {
+        /// The sole source-preserving failure fact. Failure deliberately has no reply body.
+        diagnostic: Diagnostic,
+    },
 }
 
 /// Fully structured service result shared by direct, CLI, MCP, and GPUI consumers.
@@ -402,12 +435,72 @@ pub enum ReplyBody {
 pub struct ApplicationReply {
     /// Correlation copied unchanged from the input.
     pub correlation: CorrelationId,
-    /// One semantic body.
-    pub body: ReplyBody,
-    /// One request disposition.
-    pub terminal: Terminal,
-    /// A failure has exactly one source-preserving diagnostic in this slice.
-    pub diagnostic: Option<Diagnostic>,
+    /// Closed result: a body with its disposition or a sole failure diagnostic.
+    pub outcome: ApplicationOutcome,
+}
+
+/// Typed disposition of a body-bearing result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationDisposition {
+    /// A bounded operation was admitted.
+    Accepted { operation: OperationKey },
+    /// Full result coverage.
+    Complete { emitted: u8 },
+    /// Partial result coverage with one unavailable capability.
+    Partial {
+        emitted: u8,
+        unavailable: Capability,
+    },
+    /// Degraded result coverage with one unavailable capability.
+    Degraded {
+        emitted: u8,
+        unavailable: Capability,
+    },
+    /// Cancellation won.
+    Cancelled { emitted: u8 },
+}
+
+/// Compact observation of a body-bearing disposition or a retained failure class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApplicationObservation {
+    /// One body-bearing outcome resolved with this disposition.
+    Resolved(ApplicationDisposition),
+    /// One diagnostic-bearing outcome failed with this closed code.
+    Failed { code: DiagnosticCode },
+}
+
+impl From<&ReplyBody> for ApplicationDisposition {
+    fn from(body: &ReplyBody) -> Self {
+        match *body {
+            ReplyBody::Generated(_) | ReplyBody::Execution(ExecutionReply::Completed { .. }) => {
+                Self::Complete { emitted: 1 }
+            }
+            ReplyBody::DependencyUnavailable { capability } => Self::Degraded {
+                emitted: 0,
+                unavailable: capability,
+            },
+            ReplyBody::Health(facts) => health_disposition(facts),
+            ReplyBody::Adaptive(AdaptiveDisposition::NoAction) => Self::Complete { emitted: 0 },
+            ReplyBody::Adaptive(
+                AdaptiveDisposition::RetryRemote { .. }
+                | AdaptiveDisposition::RecoveryExhausted { .. },
+            ) => Self::Degraded {
+                emitted: 0,
+                unavailable: Capability::Remote,
+            },
+            ReplyBody::Adaptive(AdaptiveDisposition::Overloaded(_)) => Self::Degraded {
+                emitted: 0,
+                unavailable: Capability::LocalAnalyzer,
+            },
+            ReplyBody::ExecutionStarted { operation, .. }
+            | ReplyBody::Execution(ExecutionReply::Pending { operation, .. }) => {
+                Self::Accepted { operation }
+            }
+            ReplyBody::Execution(ExecutionReply::Cancelled { .. }) => {
+                Self::Cancelled { emitted: 0 }
+            }
+        }
+    }
 }
 
 /// Coarse typed observation that service adapters may record lazily.
@@ -415,6 +508,44 @@ pub struct ApplicationReply {
 pub struct ApplicationEvent {
     /// Correlated reply event.
     pub correlation: CorrelationId,
-    /// Exact resulting request disposition.
-    pub terminal: Terminal,
+    /// Exact resulting class without duplicating body or diagnostic storage.
+    pub outcome: ApplicationObservation,
+}
+
+impl From<&ApplicationReply> for ApplicationEvent {
+    fn from(reply: &ApplicationReply) -> Self {
+        let outcome = match &reply.outcome {
+            ApplicationOutcome::Resolved(body) => {
+                ApplicationObservation::Resolved(ApplicationDisposition::from(body))
+            }
+            ApplicationOutcome::Failed { diagnostic } => ApplicationObservation::Failed {
+                code: diagnostic.code,
+            },
+        };
+        Self {
+            correlation: reply.correlation,
+            outcome,
+        }
+    }
+}
+
+fn health_disposition(facts: [CapabilityHealth; 6]) -> ApplicationDisposition {
+    let mut emitted = 0_u8;
+    let mut first_unavailable = None;
+    for fact in facts {
+        match fact {
+            CapabilityHealth::LocalReady(_) => emitted = emitted.saturating_add(1),
+            CapabilityHealth::Unavailable(capability) if first_unavailable.is_none() => {
+                first_unavailable = Some(capability);
+            }
+            CapabilityHealth::Unavailable(_) => {}
+        }
+    }
+    match first_unavailable {
+        Some(unavailable) => ApplicationDisposition::Partial {
+            emitted,
+            unavailable,
+        },
+        None => ApplicationDisposition::Complete { emitted },
+    }
 }

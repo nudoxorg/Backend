@@ -11,11 +11,12 @@ use std::{
 
 use nudox_observe::{DropNewest, FlightRecorder, Probe};
 use wave_application_core::{
-    AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationService, BatteryState,
-    ByteCount, Capability, CapabilityDomain, CapabilityHealth, CapabilityTransition, ContentId,
-    CorrelationId, DiagnosticCode, ExecutionState, GenerationId, InconsistentRecovery,
-    IndexSnapshotId, InputText, InputTextError, OperationBudget, OperationKey, Pin, Pressure,
-    RecoveryCause, ReplyBody, ResourceBudget, RetryBudget, Terminal,
+    AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
+    ApplicationObservation, ApplicationOutcome, ApplicationService, BatteryState, ByteCount,
+    Capability, CapabilityDomain, CapabilityHealth, CapabilityTransition, ContentId, CorrelationId,
+    DiagnosticCode, ExecutionReply, GenerationId, InconsistentRecovery, IndexSnapshotId, InputText,
+    InputTextError, OperationBudget, OperationKey, Pin, Pressure, RecoveryCause, ReplyBody,
+    ResourceBudget, RetryBudget,
 };
 
 fn text(value: &str) -> Result<InputText, InputTextError> {
@@ -94,41 +95,49 @@ fn acquire_and_complete(
         bundle: bundle(),
         budget: budget(1, 1, BatteryState::Normal),
     });
-    let ReplyBody::ExecutionStarted {
+    let ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted {
         operation,
         transition: CapabilityTransition::Acquire {
             bundle: selected, ..
         },
-    } = admitted.body
+    }) = admitted.outcome
     else {
         return Err(ServiceTestError::UnexpectedReply("acquisition admission"));
     };
     assert_eq!(selected, bundle());
-    assert_eq!(admitted.terminal, Terminal::Accepted { operation });
+    assert_eq!(
+        ApplicationDisposition::from(&ReplyBody::ExecutionStarted {
+            operation,
+            transition: CapabilityTransition::Acquire {
+                capability: nudox_adaptive::CapabilityKind::Analyzer,
+                bundle: selected,
+            },
+        }),
+        ApplicationDisposition::Accepted { operation }
+    );
 
     let pending = service.execute(&ApplicationInput::PollExecution {
         correlation: CorrelationId(31),
         operation,
     });
     assert!(matches!(
-        pending.body,
-        ReplyBody::Execution(ExecutionState::Pending {
-            transition: CapabilityTransition::Acquire { bundle: selected, .. },
-            ..
-        }) if selected == bundle()
+        pending.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Pending {
+                transition: CapabilityTransition::Acquire { bundle: selected, .. },
+                ..
+            })) if selected == bundle()
     ));
     let completed = service.execute(&ApplicationInput::PollExecution {
         correlation: CorrelationId(32),
         operation,
     });
     assert!(matches!(
-        completed.body,
-        ReplyBody::Execution(ExecutionState::Completed {
-            transition: CapabilityTransition::Acquire { bundle: selected, .. },
-            ..
-        }) if selected == bundle()
+        completed.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Completed {
+                transition: CapabilityTransition::Acquire { bundle: selected, .. },
+                ..
+            })) if selected == bundle()
     ));
-    assert_eq!(completed.terminal, Terminal::Complete { emitted: 1 });
     Ok(operation)
 }
 
@@ -143,23 +152,9 @@ fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_r
         source: text("fn first() {}")?,
     });
     assert_eq!(
-        accepted.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::CompilerOutput,
-        }
-    );
-    assert!(matches!(
-        accepted.body,
-        ReplyBody::DependencyUnavailable {
+        accepted.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
             capability: Capability::CompilerOutput,
-        }
-    ));
-    assert_eq!(
-        accepted.diagnostic,
-        Some(wave_application_core::Diagnostic {
-            code: DiagnosticCode::DependencyUnavailable,
-            detail: wave_application_core::DiagnosticDetail::Capability(Capability::CompilerOutput,),
         })
     );
 
@@ -169,25 +164,19 @@ fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_r
         stage: text("parse")?,
         source: text("const second = true;")?,
     });
-    assert!(matches!(rejected.body, ReplyBody::Rejected));
-    assert_eq!(
-        rejected
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| diagnostic.code),
-        Some(DiagnosticCode::UnsupportedCompilerStage)
-    );
     assert!(matches!(
-        rejected
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| &diagnostic.detail),
-        Some(wave_application_core::DiagnosticDetail::Frontend(
-            nudox_compile_vocab::FrontendError::UnsupportedStage {
-                language: nudox_compile_vocab::Language::Rust,
-                stage: nudox_compile_vocab::Stage::Parse,
-            }
-        ))
+        rejected.outcome,
+        ApplicationOutcome::Failed {
+            diagnostic: wave_application_core::Diagnostic {
+                code: DiagnosticCode::UnsupportedCompilerStage,
+                detail: wave_application_core::DiagnosticDetail::Frontend(
+                    nudox_compile_vocab::FrontendError::UnsupportedStage {
+                        language: nudox_compile_vocab::Language::Rust,
+                        stage: nudox_compile_vocab::Stage::Parse,
+                    }
+                ),
+            },
+        }
     ));
     Ok(())
 }
@@ -202,18 +191,11 @@ fn absent_index_plane_is_honestly_degraded() -> Result<(), ServiceTestError> {
         limit: 2,
     });
     assert_eq!(
-        search.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::Index,
-        }
-    );
-    assert!(matches!(
-        search.body,
-        ReplyBody::DependencyUnavailable {
+        search.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
             capability: Capability::Index,
-        }
-    ));
+        })
+    );
     Ok(())
 }
 
@@ -228,11 +210,15 @@ fn semantic_limit_plus_one_is_retained_but_larger_transport_text_is_rejected()
         stage: text("lower-ir")?,
         source: limit_plus_one,
     });
-    assert_eq!(rejected.terminal, Terminal::Failed);
-    assert_eq!(
-        rejected.diagnostic.map(|diagnostic| diagnostic.code),
-        Some(DiagnosticCode::SemanticTextTooLong)
-    );
+    assert!(matches!(
+        rejected.outcome,
+        ApplicationOutcome::Failed {
+            diagnostic: wave_application_core::Diagnostic {
+                code: DiagnosticCode::SemanticTextTooLong,
+                ..
+            },
+        }
+    ));
     let transport_error = InputText::try_from_str("1234567890123456789012345678901234");
     assert!(matches!(
         transport_error,
@@ -255,8 +241,8 @@ fn outage_acquires_real_local_bundle_then_exposes_bounded_remote_retry()
         operation,
     });
     assert!(matches!(
-        fused.body,
-        ReplyBody::Execution(ExecutionState::Completed { .. })
+        fused.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Completed { .. }))
     ));
     let retry = service.execute(&ApplicationInput::RecoverLocal {
         correlation: CorrelationId(34),
@@ -265,19 +251,12 @@ fn outage_acquires_real_local_bundle_then_exposes_bounded_remote_retry()
         budget: budget(1, 1, BatteryState::Normal),
     });
     assert!(matches!(
-        retry.body,
-        ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
-            retries_remaining,
-            ..
-        }) if retries_remaining == RetryBudget::from(0)
+        retry.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
+                retries_remaining,
+                ..
+            })) if retries_remaining == RetryBudget::from(0)
     ));
-    assert_eq!(
-        retry.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::Remote,
-        }
-    );
     Ok(())
 }
 
@@ -302,26 +281,18 @@ fn inconsistent_remote_pin_is_exposed_through_the_application_policy_seam()
     ));
 
     assert!(matches!(
-        retry.body,
-        ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
-            cause: RecoveryCause::Inconsistent { observed: returned },
-            retries_remaining,
-            ..
-        }) if returned == observed && retries_remaining == RetryBudget::from(0)
+        retry.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
+                cause: RecoveryCause::Inconsistent { observed: returned },
+                retries_remaining,
+                ..
+            })) if returned == observed && retries_remaining == RetryBudget::from(0)
     ));
-    assert_eq!(
-        retry.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::Remote,
-        }
-    );
     Ok(())
 }
 
 #[test]
-fn cancellation_fuses_without_acquiring_and_critical_contraction_releases_after_completion()
--> Result<(), ServiceTestError> {
+fn cancellation_fuses_without_acquiring() -> Result<(), ServiceTestError> {
     let mut service = ApplicationService::new();
     let admitted = service.execute(&ApplicationInput::RecoverLocal {
         correlation: CorrelationId(40),
@@ -329,7 +300,9 @@ fn cancellation_fuses_without_acquiring_and_critical_contraction_releases_after_
         bundle: bundle(),
         budget: budget(1, 1, BatteryState::Normal),
     });
-    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
+    let ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted { operation, .. }) =
+        admitted.outcome
+    else {
         return Err(ServiceTestError::UnexpectedReply("cancellable admission"));
     };
     let cancelled = service.execute(&ApplicationInput::Cancel {
@@ -337,24 +310,29 @@ fn cancellation_fuses_without_acquiring_and_critical_contraction_releases_after_
         operation,
     });
     assert!(matches!(
-        cancelled.body,
-        ReplyBody::Execution(ExecutionState::Cancelled { .. })
+        cancelled.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Cancelled { .. }))
     ));
     let fused = service.execute(&ApplicationInput::PollExecution {
         correlation: CorrelationId(42),
         operation,
     });
-    assert_eq!(cancelled.body, fused.body);
+    assert_eq!(cancelled.outcome, fused.outcome);
     let health = service.execute(&ApplicationInput::Health {
         correlation: CorrelationId(43),
     });
-    let ReplyBody::Health(facts) = health.body else {
+    let ApplicationOutcome::Resolved(ReplyBody::Health(facts)) = health.outcome else {
         return Err(ServiceTestError::UnexpectedReply(
             "health after cancellation",
         ));
     };
     assert!(facts.contains(&CapabilityHealth::Unavailable(Capability::LocalAnalyzer)));
+    Ok(())
+}
 
+#[test]
+fn critical_contraction_releases_after_completed_acquisition() -> Result<(), ServiceTestError> {
+    let mut service = ApplicationService::new();
     let _completed_operation = acquire_and_complete(&mut service)?;
     let release = service.execute(&ApplicationInput::ReleaseLocal {
         correlation: CorrelationId(47),
@@ -363,11 +341,11 @@ fn cancellation_fuses_without_acquiring_and_critical_contraction_releases_after_
         budget: budget(1, 0, BatteryState::Critical),
     });
     assert!(matches!(
-        release.body,
-        ReplyBody::ExecutionStarted {
+        release.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted {
             transition: CapabilityTransition::Release { .. },
             ..
-        }
+        })
     ));
     Ok(())
 }
@@ -382,7 +360,9 @@ fn admitted_execution_wakes_an_in_process_scheduler_without_poll_commands()
         bundle: bundle(),
         budget: budget(1, 1, BatteryState::Normal),
     });
-    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
+    let ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted { operation, .. }) =
+        admitted.outcome
+    else {
         return Err(ServiceTestError::UnexpectedReply(
             "wake-driven acquisition admission",
         ));
@@ -405,11 +385,11 @@ fn admitted_execution_wakes_an_in_process_scheduler_without_poll_commands()
         ));
     };
     assert!(matches!(
-        completed.body,
-        ReplyBody::Execution(ExecutionState::Completed { operation: observed, .. })
-            if observed == operation
+        completed.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Execution(ExecutionReply::Completed {
+            operation: observed, ..
+        })) if observed == operation
     ));
-    assert_eq!(completed.terminal, Terminal::Complete { emitted: 1 });
     Ok(())
 }
 
@@ -423,8 +403,8 @@ fn zero_action_credit_preserves_exact_adaptive_overload() {
         budget: budget(0, 1, BatteryState::Normal),
     });
     assert!(matches!(
-        reply.body,
-        ReplyBody::Adaptive(AdaptiveDisposition::Overloaded(overload))
+        reply.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Adaptive(AdaptiveDisposition::Overloaded(overload)))
             if matches!(overload.resource, wave_application_core::ResourceClass::Operations)
     ));
 }
@@ -437,7 +417,9 @@ fn disabled_probe_formats_nothing_and_bounded_probe_retains_exact_event() {
         constructed.set(constructed.get() + 1);
         ApplicationEvent {
             correlation: CorrelationId(0),
-            terminal: Terminal::Complete { emitted: 0 },
+            outcome: ApplicationObservation::Resolved(ApplicationDisposition::Complete {
+                emitted: 0,
+            }),
         }
     });
     assert_eq!(constructed.get(), 0);

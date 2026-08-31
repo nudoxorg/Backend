@@ -8,10 +8,10 @@ use gpui::{
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_core::{
-    AdaptiveDisposition, ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability,
-    CapabilityDomain, CorrelationId, ExecutionState, GenerationId, INPUT_TEXT_BYTES,
-    InconsistentRecovery, IndexSnapshotId, OperationBudget, OperationKey, Pin, Pressure,
-    RecoveryCause, ReplyBody, ResourceBudget, RetryBudget, Terminal,
+    AdaptiveDisposition, ApplicationInput, ApplicationOutcome, ApplicationService, BatteryState,
+    ByteCount, Capability, CapabilityDomain, CorrelationId, DiagnosticCode, ExecutionState,
+    GenerationId, INPUT_TEXT_BYTES, InconsistentRecovery, IndexSnapshotId, OperationBudget,
+    OperationKey, Pin, Pressure, RecoveryCause, ReplyBody, ResourceBudget, RetryBudget,
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_gpui_shell::{
@@ -115,14 +115,8 @@ fn bounded_text(value: &str) -> Option<wave_application_core::InputText> {
 }
 
 #[cfg(feature = "real-gpui")]
-fn require_reply(
-    result: &Result<
-        wave_application_core::ApplicationReply,
-        wave_application_gpui_shell::ApplyError,
-    >,
-) -> Option<wave_application_core::ApplicationReply> {
+fn assert_projected(result: &Result<(), wave_application_gpui_shell::ApplyError>) {
     assert!(result.is_ok());
-    result.as_ref().ok().copied()
 }
 
 #[cfg(feature = "real-gpui")]
@@ -144,13 +138,13 @@ fn inconsistent_input() -> (ApplicationInput, Pin) {
 }
 
 #[cfg(feature = "real-gpui")]
-fn assert_inconsistent_reply(reply: &wave_application_core::ApplicationReply, observed: Pin) {
+fn assert_inconsistent_reply(view: &GpuiShellView, observed: Pin) {
     assert!(matches!(
-        reply.body,
-        ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
+        view.last_reply.as_ref().map(|reply| &reply.outcome),
+        Some(ApplicationOutcome::Resolved(ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
             cause: RecoveryCause::Inconsistent { observed: returned },
             ..
-        }) if returned == observed
+        }))) if *returned == observed
     ));
 }
 
@@ -166,17 +160,16 @@ fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppCo
         budget: budget(1, 1),
     };
     let admitted_result = view.update(cx, |view, cx| view.execute(&recover, cx));
-    let Some(admitted) = require_reply(&admitted_result) else {
-        return;
-    };
-    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
-        assert!(matches!(admitted.body, ReplyBody::ExecutionStarted { .. }));
-        return;
-    };
-    assert_eq!(admitted.terminal, Terminal::Accepted { operation });
+    assert_projected(&admitted_result);
     cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Resolved(
+                ReplyBody::ExecutionStarted { .. }
+            ))
+        ));
         assert_eq!(view.summaries()[2].state, ProjectionState::Accepted);
-        assert_eq!(view.foreground_operation, Some(operation));
+        assert!(view.foreground_operation.is_some());
     });
 
     cx.run_until_parked();
@@ -185,9 +178,8 @@ fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppCo
         assert!(matches!(
             view.execution,
             wave_application_gpui_shell::ExecutionProjection::Reported {
-                state: ExecutionState::Completed { operation: observed, .. },
-                terminal: Terminal::Complete { emitted: 1 },
-            } if observed == operation
+                state: ExecutionState::Completed { .. },
+            }
         ));
         assert_eq!(view.projection_error, None);
         assert_eq!(view.foreground_operation, None);
@@ -195,10 +187,8 @@ fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppCo
 
     let (inconsistent, observed) = inconsistent_input();
     let inconsistent_result = view.update(cx, |view, cx| view.execute(&inconsistent, cx));
-    let Some(inconsistent_reply) = require_reply(&inconsistent_result) else {
-        return;
-    };
-    assert_inconsistent_reply(&inconsistent_reply, observed);
+    assert_projected(&inconsistent_result);
+    cx.read_entity(&view, |view, _| assert_inconsistent_reply(view, observed));
 }
 
 #[cfg(feature = "real-gpui")]
@@ -213,11 +203,10 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
         budget: budget(1, 1),
     };
     let admitted_result = view.update(cx, |view, cx| view.execute(&recover, cx));
-    let Some(admitted) = require_reply(&admitted_result) else {
-        return;
-    };
-    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
-        assert!(matches!(admitted.body, ReplyBody::ExecutionStarted { .. }));
+    assert_projected(&admitted_result);
+    let operation = cx.read_entity(&view, |view, _| view.foreground_operation);
+    assert!(operation.is_some());
+    let Some(operation) = operation else {
         return;
     };
 
@@ -226,15 +215,15 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
         operation,
     };
     let cancelled_result = view.update(cx, |view, cx| view.execute(&cancel_input, cx));
-    let Some(cancelled) = require_reply(&cancelled_result) else {
-        return;
-    };
-    assert!(matches!(
-        cancelled.body,
-        ReplyBody::Execution(ExecutionState::Cancelled { operation: observed, .. })
-            if observed == operation
-    ));
-    assert_eq!(cancelled.terminal, Terminal::Cancelled { emitted: 0 });
+    assert_projected(&cancelled_result);
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Resolved(ReplyBody::Execution(
+                wave_application_core::ExecutionReply::Cancelled { operation: observed, .. }
+            ))) if *observed == operation
+        ));
+    });
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.summaries()[2].state, ProjectionState::Cancelled);
         assert_eq!(view.foreground_operation, None);
@@ -244,18 +233,16 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
         correlation: CorrelationId(103),
     };
     let health_result = view.update(cx, |view, cx| view.execute(&health_input, cx));
-    let Some(health) = require_reply(&health_result) else {
-        return;
-    };
-    let ReplyBody::Health(facts) = health.body else {
-        assert!(matches!(health.body, ReplyBody::Health(_)));
-        return;
-    };
-    assert!(
-        facts.contains(&wave_application_core::CapabilityHealth::Unavailable(
-            Capability::LocalAnalyzer,
-        ))
-    );
+    assert_projected(&health_result);
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Resolved(ReplyBody::Health(facts)))
+                if facts.contains(&wave_application_core::CapabilityHealth::Unavailable(
+                    Capability::LocalAnalyzer,
+                ))
+        ));
+    });
 }
 
 #[cfg(feature = "real-gpui")]
@@ -270,11 +257,10 @@ fn stale_cancel_keeps_the_admitted_execution_wake_driver(cx: &mut TestAppContext
         budget: budget(1, 1),
     };
     let admitted_result = view.update(cx, |view, cx| view.execute(&recover, cx));
-    let Some(admitted) = require_reply(&admitted_result) else {
-        return;
-    };
-    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
-        assert!(matches!(admitted.body, ReplyBody::ExecutionStarted { .. }));
+    assert_projected(&admitted_result);
+    let operation = cx.read_entity(&view, |view, _| view.foreground_operation);
+    assert!(operation.is_some());
+    let Some(operation) = operation else {
         return;
     };
 
@@ -283,11 +269,14 @@ fn stale_cancel_keeps_the_admitted_execution_wake_driver(cx: &mut TestAppContext
         operation: OperationKey(operation.0.saturating_add(1)),
     };
     let stale_result = view.update(cx, |view, cx| view.execute(&stale_cancel, cx));
-    let Some(stale) = require_reply(&stale_result) else {
-        return;
-    };
-    assert!(matches!(stale.body, ReplyBody::Rejected));
-    assert_eq!(stale.terminal, Terminal::Failed);
+    assert_projected(&stale_result);
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Failed { diagnostic })
+                if diagnostic.code == DiagnosticCode::OperationUnavailable
+        ));
+    });
 
     cx.run_until_parked();
     cx.read_entity(&view, |view, _| {
@@ -298,7 +287,6 @@ fn stale_cancel_keeps_the_admitted_execution_wake_driver(cx: &mut TestAppContext
                     operation: observed,
                     ..
                 },
-                terminal: Terminal::Complete { emitted: 1 },
             } if observed == operation
         ));
         assert_eq!(view.summaries()[2].state, ProjectionState::Ready);
@@ -313,41 +301,30 @@ fn entity_projects_unavailable_compiler_output_without_claiming_artifact(cx: &mu
         cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
     let source = bounded_text("fn entity() {} ");
     let language = bounded_text("rust");
-    let stage = bounded_text("parse");
-    let package = bounded_text("demo");
+    let stage = bounded_text("lower-ir");
     assert!(source.is_some());
     assert!(language.is_some());
     assert!(stage.is_some());
-    assert!(package.is_some());
     let Some(source) = source else { return };
     let Some(language) = language else { return };
     let Some(stage) = stage else { return };
-    let Some(package) = package else { return };
     let input = ApplicationInput::Generate {
         correlation: CorrelationId(111),
         language,
         stage,
-        package,
         source,
     };
     let result = view.update(cx, |view, cx| view.execute(&input, cx));
-    let Some(reply) = require_reply(&result) else {
-        return;
-    };
-    assert!(matches!(
-        reply.body,
-        ReplyBody::DependencyUnavailable {
-            capability: Capability::CompilerOutput,
-        }
-    ));
-    assert_eq!(
-        reply.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::CompilerOutput,
-        }
-    );
+    assert_projected(&result);
     cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Resolved(
+                ReplyBody::DependencyUnavailable {
+                    capability: Capability::CompilerOutput,
+                }
+            ))
+        ));
         assert_eq!(
             view.summaries()[0].state,
             ProjectionState::Degraded(Capability::CompilerOutput)
@@ -395,7 +372,7 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
     cx.simulate_input("s");
     cx.read_entity(&view, |view, _| {
         assert!(view.navigation.palette.visible);
-        assert_eq!(view.navigation.palette.result_count(), 14);
+        assert_eq!(view.navigation.palette.result_count(), 15);
         assert_eq!(
             view.navigation.palette.selected,
             CommandId::OpenRoute(Route::Libraries)
@@ -592,13 +569,15 @@ fn released_view_closes_the_admitted_completion_delivery(cx: &mut TestAppContext
         budget: budget(1, 1),
     };
     let admitted = view.update(cx, |view, cx| view.execute(&recover, cx));
-    assert!(matches!(
-        admitted,
-        Ok(wave_application_core::ApplicationReply {
-            body: ReplyBody::ExecutionStarted { .. },
-            ..
-        })
-    ));
+    assert_projected(&admitted);
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.last_reply.as_ref().map(|reply| &reply.outcome),
+            Some(ApplicationOutcome::Resolved(
+                ReplyBody::ExecutionStarted { .. }
+            ))
+        ));
+    });
 
     cx.update(|window, _cx| window.remove_window());
     drop(view);

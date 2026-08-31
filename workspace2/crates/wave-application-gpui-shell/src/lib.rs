@@ -56,8 +56,8 @@ pub use forms::{
 
 pub use state::{
     AdaptiveProjection, ApplyError, BatchReceipt, ConnectionsPage, ExecutionProjection,
-    HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES, MotionPreference,
-    NativeTextInputError, PageSnapshots, ProjectionState, ReplyProjection, SURFACE_COUNT,
+    GeneratedProjection, HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES,
+    MotionPreference, NativeTextInputError, PageSnapshots, ProjectionState, SURFACE_COUNT,
     SearchPage, SettingsPage, ShellProjection, ShellState, Surface, SurfaceStatus, SurfaceSummary,
     TextInputTarget,
 };
@@ -66,9 +66,9 @@ pub use state::{
 // them keeps a GPUI consumer's import surface small while preserving one
 // business vocabulary.
 pub use wave_application_core::{
-    AdaptiveDisposition, ApplicationInput, ApplicationReply, ApplicationService, Capability,
-    CapabilityHealth, CapabilityTransition, CorrelationId, DiagnosticCode, ExecutionState,
-    OperationKey, ReplyBody, Terminal,
+    AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
+    ApplicationReply, ApplicationService, Capability, CapabilityHealth, CapabilityTransition,
+    CorrelationId, DiagnosticCode, ExecutionReply, ExecutionState, OperationKey, ReplyBody,
 };
 
 #[cfg(feature = "real-gpui")]

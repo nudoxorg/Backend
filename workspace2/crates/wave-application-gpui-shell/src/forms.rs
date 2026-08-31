@@ -14,8 +14,6 @@ pub enum FormField {
     Language,
     /// Compiler stage vocabulary token.
     Stage,
-    /// Compiler package name.
-    Package,
     /// Compiler source input.
     Source,
     /// Immutable snapshot selector.
@@ -73,8 +71,6 @@ pub enum FormState {
         language: Option<InputText>,
         /// Typed stage field.
         stage: Option<InputText>,
-        /// Typed package field.
-        package: Option<InputText>,
         /// Typed source field.
         source: Option<InputText>,
     },
@@ -213,7 +209,6 @@ impl FormState {
                 focused: FormField::Language,
                 language: None,
                 stage: None,
-                package: None,
                 source: None,
             },
             ServiceAction::SnapshotStatus => Self::Snapshot {
@@ -281,12 +276,10 @@ impl FormState {
                 focused: _,
                 language,
                 stage,
-                package,
                 source,
             } => match field {
                 FormField::Language => *language = Some(value),
                 FormField::Stage => *stage = Some(value),
-                FormField::Package => *package = Some(value),
                 FormField::Source => *source = Some(value),
                 FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(field));
@@ -328,7 +321,7 @@ impl FormState {
             Self::Generate { focused, .. }
                 if matches!(
                     field,
-                    FormField::Language | FormField::Stage | FormField::Package | FormField::Source
+                    FormField::Language | FormField::Stage | FormField::Source
                 ) =>
             {
                 *focused = field;
@@ -380,12 +373,10 @@ impl FormState {
                 focused,
                 language,
                 stage,
-                package,
                 source,
             } => match focused {
                 FormField::Language => append_input(language, text, FormField::Language)?,
                 FormField::Stage => append_input(stage, text, FormField::Stage)?,
-                FormField::Package => append_input(package, text, FormField::Package)?,
                 FormField::Source => append_input(source, text, FormField::Source)?,
                 FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(*focused));
@@ -420,12 +411,10 @@ impl FormState {
                 focused,
                 language,
                 stage,
-                package,
                 source,
             } => match focused {
                 FormField::Language => erase_input(language, FormField::Language)?,
                 FormField::Stage => erase_input(stage, FormField::Stage)?,
-                FormField::Package => erase_input(package, FormField::Package)?,
                 FormField::Source => erase_input(source, FormField::Source)?,
                 FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(*focused));
@@ -482,10 +471,9 @@ impl FormState {
             Self::Generate {
                 language,
                 stage,
-                package,
                 source,
                 ..
-            } => submit_generate(correlation, language, stage, package, source),
+            } => submit_generate(correlation, language, stage, source),
             Self::Snapshot {
                 action,
                 snapshot,
@@ -508,17 +496,11 @@ impl FormState {
 }
 
 const fn adjacent_generate_field(current: FormField, forward: bool) -> FormField {
-    let fields = [
-        FormField::Language,
-        FormField::Stage,
-        FormField::Package,
-        FormField::Source,
-    ];
+    let fields = [FormField::Language, FormField::Stage, FormField::Source];
     let index = match current {
         FormField::Language | FormField::Snapshot | FormField::Query => 0,
         FormField::Stage => 1,
-        FormField::Package => 2,
-        FormField::Source => 3,
+        FormField::Source => 2,
     };
     if forward {
         fields[(index + 1) % fields.len()]
@@ -531,14 +513,12 @@ fn submit_generate(
     correlation: CorrelationId,
     language: Option<InputText>,
     stage: Option<InputText>,
-    package: Option<InputText>,
     source: Option<InputText>,
 ) -> Result<ApplicationInput, FormError> {
     Ok(ApplicationInput::Generate {
         correlation,
         language: language.ok_or(FormError::MissingText(FormField::Language))?,
         stage: stage.ok_or(FormError::MissingText(FormField::Stage))?,
-        package: package.ok_or(FormError::MissingText(FormField::Package))?,
         source: source.ok_or(FormError::MissingText(FormField::Source))?,
     })
 }

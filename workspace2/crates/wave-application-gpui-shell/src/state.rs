@@ -3,8 +3,9 @@
 use core::ops::Deref;
 
 use wave_application_core::{
-    AdaptiveDisposition, ApplicationInput, ApplicationReply, Capability, CapabilityHealth,
-    CorrelationId, Diagnostic, ExecutionState, OperationKey, ReplyBody, Terminal,
+    AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
+    ApplicationReply, Capability, CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode,
+    DiagnosticDetail, ExecutionState, OperationKey, ReplyBody,
 };
 
 use crate::{
@@ -38,7 +39,7 @@ pub enum Surface {
     Health,
 }
 
-/// Coarse state label derived from the core terminal or capability facts.
+/// Coarse state label derived from the core disposition or capability facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionState {
     /// No core reply has reached this surface yet.
@@ -77,34 +78,12 @@ pub enum MotionPreference {
 pub enum SurfaceStatus {
     /// No reply has reached this surface yet.
     Checking,
-    /// A separate bounded operation was accepted.
-    Accepted {
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-    },
-    /// A complete terminal was projected.
-    Ready {
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-    },
-    /// A named capability was unavailable.
-    Degraded {
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-        /// Core capability retained unchanged.
-        capability: Capability,
-    },
-    /// The core cancelled the operation.
-    Cancelled {
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-    },
-    /// The core rejected the operation.
+    /// A body-bearing core disposition remains exact and non-duplicated.
+    Resolved(ApplicationDisposition),
+    /// A diagnostic-bearing failure remains available through `last_reply`.
     Failed {
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
-        /// Optional source-preserving typed diagnostic.
-        diagnostic: Option<Diagnostic>,
+        /// Closed diagnostic class retained by the owning core reply.
+        code: DiagnosticCode,
     },
 }
 
@@ -112,13 +91,21 @@ impl SurfaceStatus {
     const fn projection(self) -> ProjectionState {
         match self {
             Self::Checking => ProjectionState::Checking,
-            Self::Accepted { .. } => ProjectionState::Accepted,
-            Self::Ready { .. } => ProjectionState::Ready,
-            Self::Degraded { capability, .. } => ProjectionState::Degraded(capability),
-            Self::Cancelled { .. } => ProjectionState::Cancelled,
+            Self::Resolved(disposition) => projection_from_disposition(disposition),
             Self::Failed { .. } => ProjectionState::Failed,
         }
     }
+}
+
+/// The last successful compiler/publication result retained as typed visible shell state.
+///
+/// The artifact is kept verbatim from the core reply, including every source, recipe, fragment,
+/// and durable-publication authority. Its presence proves the core delivered a complete generated
+/// body; the shell never constructs it from a failed outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedProjection {
+    /// Complete generated artifact authority from the core reply.
+    pub artifact: wave_application_core::GeneratedArtifact,
 }
 
 /// Direct projection of a pure adaptive policy decision.
@@ -126,12 +113,12 @@ impl SurfaceStatus {
 pub enum AdaptiveProjection {
     /// No adaptive decision has reached the shell yet.
     Checking,
-    /// The exact C6 decision and terminal retained without conversion.
+    /// The exact C6 decision and core disposition retained without conversion.
     Reported {
         /// Pure policy disposition.
         disposition: AdaptiveDisposition,
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
+        /// Exact core body disposition.
+        result: ApplicationDisposition,
     },
 }
 
@@ -139,7 +126,7 @@ impl AdaptiveProjection {
     const fn projection(self) -> ProjectionState {
         match self {
             Self::Checking => ProjectionState::Checking,
-            Self::Reported { terminal, .. } => terminal_projection(terminal),
+            Self::Reported { result, .. } => projection_from_disposition(result),
         }
     }
 }
@@ -155,15 +142,11 @@ pub enum ExecutionProjection {
         operation: OperationKey,
         /// Exact selected local transition retained unchanged.
         transition: wave_application_core::CapabilityTransition,
-        /// Core accepted terminal retained unchanged.
-        terminal: Terminal,
     },
-    /// The exact service-owned execution state and terminal.
+    /// The exact service-owned execution state.
     Reported {
         /// Finite execution observation.
         state: ExecutionState,
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
     },
 }
 
@@ -187,12 +170,12 @@ impl ExecutionProjection {
 pub enum HealthProjection {
     /// No health reply has reached the shell yet.
     Checking,
-    /// The exact core health array and terminal.
+    /// The exact core health array and core disposition.
     Reported {
         /// Core capability facts retained without conversion.
         facts: [CapabilityHealth; 6],
-        /// Core terminal retained unchanged.
-        terminal: Terminal,
+        /// Exact core body disposition.
+        result: ApplicationDisposition,
     },
 }
 
@@ -200,11 +183,11 @@ impl HealthProjection {
     const fn projection(self) -> ProjectionState {
         match self {
             Self::Checking => ProjectionState::Checking,
-            Self::Reported { facts, terminal } => {
+            Self::Reported { facts, result } => {
                 if let Some(capability) = first_unavailable(facts) {
                     ProjectionState::Degraded(capability)
                 } else {
-                    terminal_projection(terminal)
+                    projection_from_disposition(result)
                 }
             }
         }
@@ -225,6 +208,8 @@ pub struct SurfaceSummary {
 pub struct HomePage {
     /// Compiler/IR availability projected from the exact core reply.
     pub generation: ProjectionState,
+    /// Last generated artifact, when one has been published.
+    pub generated: Option<GeneratedProjection>,
     /// Current local execution lifecycle.
     pub execution: ProjectionState,
     /// Current capability-health state.
@@ -271,8 +256,8 @@ pub struct ConnectionsPage {
 pub struct SettingsPage {
     /// Current capability-health state.
     pub health: ProjectionState,
-    /// Last source-preserving diagnostic, if a core reply supplied one.
-    pub diagnostic: Option<Diagnostic>,
+    /// Last diagnostic code, if a core reply supplied a source-preserving diagnostic.
+    pub diagnostic: Option<DiagnosticCode>,
     /// Last reply correlation retained for operational support.
     pub correlation: Option<CorrelationId>,
     /// Bounded coalesced update epoch.
@@ -292,17 +277,6 @@ pub struct PageSnapshots {
     pub connections: ConnectionsPage,
     /// Settings route state.
     pub settings: SettingsPage,
-}
-
-/// Source-preserving metadata from the most recently projected core reply.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ReplyProjection {
-    /// Correlation retained directly from the core reply.
-    pub correlation: CorrelationId,
-    /// Terminal retained directly from the core reply.
-    pub terminal: Terminal,
-    /// Full typed diagnostic retained without dropping its detail/cause.
-    pub diagnostic: Option<Diagnostic>,
 }
 
 /// Native text surface currently owning platform composition and selection.
@@ -340,13 +314,13 @@ pub enum NativeTextInputError {
 }
 
 /// Fixed-capacity presentation state for one application window.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ShellState {
     projection: ShellProjection,
 }
 
 /// Immutable public projection facts for one application window.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ShellProjection {
     /// Stable product information architecture and visible-only palette state.
     pub navigation: NavigationState,
@@ -354,6 +328,8 @@ pub struct ShellProjection {
     pub motion: MotionPreference,
     /// Compiler-generation surface state.
     pub generation: SurfaceStatus,
+    /// Last successful generated artifact retained for the visible generation surface.
+    pub generated: Option<GeneratedProjection>,
     /// Adaptive placement projection.
     pub adaptive: AdaptiveProjection,
     /// Service-owned execution projection.
@@ -368,8 +344,8 @@ pub struct ShellProjection {
     pub health: HealthProjection,
     /// Number of coalesced notification epochs.
     pub notification_epoch: u64,
-    /// Last source-preserving core reply facts, if one reached this view.
-    pub last_reply: Option<ReplyProjection>,
+    /// Last source-preserving core reply, owned without cloning its cold diagnostic allocation.
+    pub last_reply: Option<ApplicationReply>,
     /// Route-specific visible state derived from the same core facts.
     pub pages: PageSnapshots,
     /// The active closed typed action form, if the user explicitly opened one.
@@ -611,29 +587,41 @@ impl ShellState {
         }
         Some(command)
     }
-    /// Applies a caller-owned bounded reply slice and emits one coalesced notification epoch.
+    /// Applies one owned core reply and emits one coalesced notification epoch.
     ///
-    /// The length check happens before any projection mutation. The state contains only fixed
-    /// arrays, enums, and core copy types; no `Vec`, `String`, task, timer, or background polling
-    /// state is created here.
+    /// The shell takes ownership so a cold diagnostic's single allocation is retained directly
+    /// rather than cloned into presentation state.
     ///
     /// # Errors
     ///
-    /// Returns [`ApplyError::BatchTooLarge`] when the supplied slice exceeds the fixed boundary,
+    /// Returns [`ApplyError::NotificationEpochExhausted`] when the notification counter cannot
+    /// advance.
+    pub fn apply(&mut self, reply: ApplicationReply) -> Result<BatchReceipt, ApplyError> {
+        self.apply_batch([reply])
+    }
+
+    /// Applies a caller-owned fixed reply batch and emits one coalesced notification epoch.
+    ///
+    /// The array is consumed so the last reply can retain its exact diagnostic without an `Arc`,
+    /// clone, or second allocation. Its compile-time capacity is checked before any mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplyError::BatchTooLarge`] when the supplied array exceeds the fixed boundary,
     /// or [`ApplyError::NotificationEpochExhausted`] when the notification counter cannot advance.
-    pub fn apply_batch(
+    pub fn apply_batch<const REPLIES: usize>(
         &mut self,
-        replies: &[ApplicationReply],
+        replies: [ApplicationReply; REPLIES],
     ) -> Result<BatchReceipt, ApplyError> {
-        if replies.len() > MAX_BATCH_REPLIES {
+        if REPLIES > MAX_BATCH_REPLIES {
             let error = ApplyError::BatchTooLarge {
                 limit: MAX_BATCH_REPLIES,
-                actual: replies.len(),
+                actual: REPLIES,
             };
             self.projection.projection_error = Some(error);
             return Err(error);
         }
-        if replies.is_empty() {
+        if REPLIES == 0 {
             self.projection.projection_error = None;
             return Ok(BatchReceipt {
                 applied_replies: 0,
@@ -648,13 +636,14 @@ impl ShellState {
             return Err(error);
         };
         for reply in replies {
-            self.apply_reply(reply);
+            self.apply_reply(&reply);
+            self.projection.last_reply = Some(reply);
         }
         self.projection.notification_epoch = epoch;
         self.projection.projection_error = None;
         self.refresh_pages();
         Ok(BatchReceipt {
-            applied_replies: replies.len(),
+            applied_replies: REPLIES,
             notifications: 1,
             notification_epoch: epoch,
         })
@@ -696,29 +685,37 @@ impl ShellState {
     }
 
     fn apply_reply(&mut self, reply: &ApplicationReply) {
-        self.projection.last_reply = Some(ReplyProjection {
-            correlation: reply.correlation,
-            terminal: reply.terminal,
-            diagnostic: reply.diagnostic,
-        });
+        match &reply.outcome {
+            ApplicationOutcome::Resolved(body) => self.apply_resolved(body),
+            ApplicationOutcome::Failed { diagnostic } => self.apply_failure(diagnostic),
+        }
+    }
 
-        match reply.body {
+    fn apply_resolved(&mut self, body: &ReplyBody) {
+        let result = ApplicationDisposition::from(body);
+        match body {
+            ReplyBody::Generated(artifact) => {
+                self.projection.generation.set_resolved(result);
+                self.projection.generated = Some(GeneratedProjection {
+                    artifact: *artifact,
+                });
+            }
             ReplyBody::DependencyUnavailable { capability } => {
-                if let Some(status) = self.status_for(capability) {
-                    status.set_degraded(reply.terminal, capability);
+                if let Some(status) = self.status_for(*capability) {
+                    status.set_resolved(result);
                 }
             }
             ReplyBody::Health(facts) => {
                 self.projection.health = HealthProjection::Reported {
-                    facts,
-                    terminal: reply.terminal,
+                    facts: *facts,
+                    result,
                 };
-                self.project_health_status(facts, reply.terminal);
+                self.project_health_status(*facts);
             }
             ReplyBody::Adaptive(disposition) => {
                 self.projection.adaptive = AdaptiveProjection::Reported {
-                    disposition,
-                    terminal: reply.terminal,
+                    disposition: *disposition,
+                    result,
                 };
             }
             ReplyBody::ExecutionStarted {
@@ -726,32 +723,53 @@ impl ShellState {
                 transition,
             } => {
                 self.projection.execution = ExecutionProjection::Started {
-                    operation,
-                    transition,
-                    terminal: reply.terminal,
+                    operation: *operation,
+                    transition: *transition,
                 };
             }
             ReplyBody::Execution(state) => {
                 self.projection.execution = ExecutionProjection::Reported {
-                    state,
-                    terminal: reply.terminal,
+                    state: (*state).into(),
                 };
             }
-            ReplyBody::Rejected => {}
         }
     }
 
-    fn project_health_status(&mut self, facts: [CapabilityHealth; 6], terminal: Terminal) {
+    fn apply_failure(&mut self, diagnostic: &Diagnostic) {
+        match &diagnostic.detail {
+            DiagnosticDetail::Compiler(_) | DiagnosticDetail::Frontend(_) => {
+                self.projection.generation.set_failed(diagnostic.code);
+            }
+            DiagnosticDetail::Execution(state) => {
+                self.projection.execution = ExecutionProjection::Reported { state: *state };
+            }
+            DiagnosticDetail::Capability(capability) => {
+                if let Some(status) = self.status_for(*capability) {
+                    status.set_failed(diagnostic.code);
+                }
+            }
+            DiagnosticDetail::Text(_)
+            | DiagnosticDetail::Limit { .. }
+            | DiagnosticDetail::TextLength { .. }
+            | DiagnosticDetail::Operation(_)
+            | DiagnosticDetail::Policy(_) => {}
+        }
+    }
+
+    fn project_health_status(&mut self, facts: [CapabilityHealth; 6]) {
         for fact in facts {
             match fact {
                 CapabilityHealth::LocalReady(capability) => {
                     if let Some(status) = self.status_for(capability) {
-                        status.set_ready(terminal);
+                        status.set_resolved(ApplicationDisposition::Complete { emitted: 1 });
                     }
                 }
                 CapabilityHealth::Unavailable(capability) => {
                     if let Some(status) = self.status_for(capability) {
-                        status.set_degraded(terminal, capability);
+                        status.set_resolved(ApplicationDisposition::Degraded {
+                            emitted: 0,
+                            unavailable: capability,
+                        });
                     }
                 }
             }
@@ -789,6 +807,7 @@ impl ShellState {
         self.projection.pages = PageSnapshots {
             home: HomePage {
                 generation: self.projection.generation.projection(),
+                generated: self.projection.generated,
                 execution: self.projection.execution.projection(),
                 health: self.projection.health.projection(),
             },
@@ -810,11 +829,18 @@ impl ShellState {
             },
             settings: SettingsPage {
                 health: self.projection.health.projection(),
-                diagnostic: self
+                diagnostic: self.projection.last_reply.as_ref().and_then(|reply| {
+                    if let ApplicationOutcome::Failed { diagnostic } = &reply.outcome {
+                        Some(diagnostic.code)
+                    } else {
+                        None
+                    }
+                }),
+                correlation: self
                     .projection
                     .last_reply
-                    .and_then(|reply| reply.diagnostic),
-                correlation: self.projection.last_reply.map(|reply| reply.correlation),
+                    .as_ref()
+                    .map(|reply| reply.correlation),
                 notification_epoch: self.projection.notification_epoch,
             },
         };
@@ -828,6 +854,7 @@ impl Default for ShellState {
                 navigation: NavigationState::default(),
                 motion: MotionPreference::default(),
                 generation: SurfaceStatus::Checking,
+                generated: None,
                 adaptive: AdaptiveProjection::Checking,
                 execution: ExecutionProjection::Checking,
                 index: SurfaceStatus::Checking,
@@ -839,6 +866,7 @@ impl Default for ShellState {
                 pages: PageSnapshots {
                     home: HomePage {
                         generation: ProjectionState::Checking,
+                        generated: None,
                         execution: ProjectionState::Checking,
                         health: ProjectionState::Checking,
                     },
@@ -893,15 +921,12 @@ fn retain_transition<Value, Error: Copy>(
 }
 
 impl SurfaceStatus {
-    fn set_ready(&mut self, terminal: Terminal) {
-        *self = SurfaceStatus::Ready { terminal };
+    fn set_resolved(&mut self, result: ApplicationDisposition) {
+        *self = Self::Resolved(result);
     }
 
-    fn set_degraded(&mut self, terminal: Terminal, capability: Capability) {
-        *self = SurfaceStatus::Degraded {
-            terminal,
-            capability,
-        };
+    fn set_failed(&mut self, code: DiagnosticCode) {
+        *self = Self::Failed { code };
     }
 }
 
@@ -930,32 +955,15 @@ pub enum ApplyError {
     NotificationEpochExhausted,
 }
 
-const fn status_from_terminal(terminal: Terminal, diagnostic: Option<Diagnostic>) -> SurfaceStatus {
-    match terminal {
-        Terminal::Accepted { .. } => SurfaceStatus::Accepted { terminal },
-        Terminal::Complete { .. } => SurfaceStatus::Ready { terminal },
-        Terminal::Partial { unavailable, .. } | Terminal::Degraded { unavailable, .. } => {
-            SurfaceStatus::Degraded {
-                terminal,
-                capability: unavailable,
-            }
+const fn projection_from_disposition(disposition: ApplicationDisposition) -> ProjectionState {
+    match disposition {
+        ApplicationDisposition::Accepted { .. } => ProjectionState::Accepted,
+        ApplicationDisposition::Complete { .. } => ProjectionState::Ready,
+        ApplicationDisposition::Partial { unavailable, .. }
+        | ApplicationDisposition::Degraded { unavailable, .. } => {
+            ProjectionState::Degraded(unavailable)
         }
-        Terminal::Cancelled { .. } => SurfaceStatus::Cancelled { terminal },
-        Terminal::Failed => SurfaceStatus::Failed {
-            terminal,
-            diagnostic,
-        },
-    }
-}
-
-const fn terminal_projection(terminal: Terminal) -> ProjectionState {
-    match status_from_terminal(terminal, None) {
-        SurfaceStatus::Checking => ProjectionState::Checking,
-        SurfaceStatus::Accepted { .. } => ProjectionState::Accepted,
-        SurfaceStatus::Ready { .. } => ProjectionState::Ready,
-        SurfaceStatus::Degraded { capability, .. } => ProjectionState::Degraded(capability),
-        SurfaceStatus::Cancelled { .. } => ProjectionState::Cancelled,
-        SurfaceStatus::Failed { .. } => ProjectionState::Failed,
+        ApplicationDisposition::Cancelled { .. } => ProjectionState::Cancelled,
     }
 }
 

@@ -1,7 +1,8 @@
 use nudox_compile_vocab::{FrontendError, Language, Stage};
 use wave_application_core::{
-    ApplicationInput, ApplicationService, Capability, CapabilityHealth, CorrelationId,
-    DiagnosticCode, DiagnosticDetail, InputText, InputTextError, ReplyBody, Terminal,
+    ApplicationDisposition, ApplicationEvent, ApplicationInput, ApplicationObservation,
+    ApplicationOutcome, ApplicationReply, ApplicationService, Capability, CapabilityHealth,
+    CorrelationId, DiagnosticCode, DiagnosticDetail, InputText, InputTextError, ReplyBody,
 };
 
 fn text(value: &str) -> Result<InputText, InputTextError> {
@@ -20,27 +21,25 @@ fn unavailable_compiler_specialization_is_never_generated_truth() -> Result<(), 
     });
 
     assert_eq!(
-        generated.terminal,
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::CompilerOutput,
-        }
-    );
-    assert!(matches!(
-        generated.body,
-        ReplyBody::DependencyUnavailable {
+        generated.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
             capability: Capability::CompilerOutput,
-        }
-    ));
+        })
+    );
 
     let health = service.execute(&ApplicationInput::Health {
         correlation: CorrelationId(2),
     });
     assert!(matches!(
-        health.body,
-        ReplyBody::Health(facts)
-            if facts.contains(&CapabilityHealth::LocalReady(Capability::CompilerRegistry))
-                && facts.contains(&CapabilityHealth::Unavailable(Capability::CompilerOutput))
+        health.outcome,
+        ApplicationOutcome::Resolved(ReplyBody::Health(facts))
+            if ApplicationDisposition::from(&ReplyBody::Health(facts))
+                == ApplicationDisposition::Partial {
+                    emitted: 1,
+                    unavailable: Capability::CompilerOutput,
+                }
+            && facts.contains(&CapabilityHealth::LocalReady(Capability::CompilerRegistry))
+            && facts.contains(&CapabilityHealth::Unavailable(Capability::CompilerOutput))
     ));
 
     Ok(())
@@ -56,26 +55,36 @@ fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), InputTextE
         source: text("export const broken = 7;")?,
     });
 
-    assert_eq!(rejected.terminal, Terminal::Failed);
-    assert_eq!(
-        rejected
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| diagnostic.code),
-        Some(DiagnosticCode::UnsupportedCompilerStage)
-    );
     assert!(matches!(
-        rejected
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| &diagnostic.detail),
-        Some(DiagnosticDetail::Frontend(
-            FrontendError::UnsupportedStage {
-                language: Language::Rust,
-                stage: Stage::Parse,
-            }
-        ))
+        rejected.outcome,
+        ApplicationOutcome::Failed {
+            diagnostic: wave_application_core::Diagnostic {
+                code: DiagnosticCode::UnsupportedCompilerStage,
+                detail: DiagnosticDetail::Frontend(FrontendError::UnsupportedStage {
+                    language: Language::Rust,
+                    stage: Stage::Parse,
+                }),
+            },
+        }
     ));
 
     Ok(())
+}
+
+#[test]
+fn resolved_outcomes_derive_the_only_possible_observation() {
+    let reply = ApplicationReply {
+        correlation: CorrelationId(4),
+        outcome: ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
+            capability: Capability::Graph,
+        }),
+    };
+
+    assert_eq!(
+        ApplicationEvent::from(&reply).outcome,
+        ApplicationObservation::Resolved(ApplicationDisposition::Degraded {
+            emitted: 0,
+            unavailable: Capability::Graph,
+        })
+    );
 }

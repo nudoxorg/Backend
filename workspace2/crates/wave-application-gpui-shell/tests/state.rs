@@ -4,17 +4,25 @@
 #[path = "../../wave-application-protocol/tests/support/golden_corpus.rs"]
 mod golden_corpus;
 
+use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
+use nudox_id::{
+    ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
+    DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
+    IrManifestEncoding, SourceFactDomain, ToolchainDomain,
+};
 use wave_application_core::{
-    AdaptiveDisposition, ApplicationInput, ApplicationReply, ApplicationService, BatteryState,
-    ByteCount, Capability, CapabilityDomain, CapabilityHealth, CorrelationId, DiagnosticCode,
-    ExecutionState, GenerationId, IndexSnapshotId, InputText, InputTextError, OperationBudget, Pin,
-    Pressure, ReplyBody, ResourceBudget, RetryBudget, Terminal,
+    AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
+    ApplicationReply, ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain,
+    CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
+    GeneratedArtifact, GenerationAuthority, GenerationId, IndexSnapshotId, InputText,
+    InputTextError, OperationBudget, Pin, Pressure, PublicationAuthority, ReplyBody,
+    ResourceBudget, RetryBudget, SourceAuthority,
 };
 use wave_application_gpui_shell::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
-    FormField, HealthProjection, MAX_BATCH_REPLIES, MotionPreference, PaletteDirection,
-    PaletteEditError, ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT, ServiceAction,
-    ShellState, Surface, SurfaceStatus,
+    FormField, GeneratedProjection, HealthProjection, MAX_BATCH_REPLIES, MotionPreference,
+    PaletteDirection, PaletteEditError, ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT,
+    ServiceAction, ShellState, Surface, SurfaceStatus,
 };
 
 #[derive(Debug)]
@@ -75,8 +83,41 @@ fn pin() -> Pin {
     }
 }
 
-fn bundle() -> wave_application_core::ContentId<CapabilityDomain> {
-    wave_application_core::ContentId::from_canonical_bytes(b"gpui-analyzer-bundle")
+fn bundle() -> ContentId<CapabilityDomain> {
+    ContentId::from_canonical_bytes(b"gpui-analyzer-bundle")
+}
+
+fn generated_artifact() -> GeneratedArtifact {
+    let source_identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"gpui-source");
+    let toolchain = ContentId::<ToolchainDomain>::from_canonical_bytes(b"gpui-toolchain");
+    GeneratedArtifact {
+        source: SourceAuthority {
+            identity: source_identity,
+            byte_len: 11,
+        },
+        recipe: CompileRecipeFact::derive(
+            Language::Rust,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source_identity,
+            toolchain,
+        ),
+        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"gpui-fragment",
+        ),
+        publication: PublicationAuthority {
+            generation: GenerationAuthority {
+                pinned_root: GenerationId::from_canonical_bytes(b"gpui-generated-root"),
+                dep_set: ContentId::<DependencySetDomain>::from_canonical_bytes(b"gpui-generated-deps"),
+            },
+            manifest: ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+                b"gpui-manifest",
+            ),
+            binding: ArtifactId::<CompilePublicationEncoding, CompilePublicationDomain>::from_encoded_bytes(
+                b"gpui-binding",
+            ),
+        },
+    }
 }
 
 fn budget(operations: u8, retries: u8) -> ResourceBudget {
@@ -91,17 +132,15 @@ fn budget(operations: u8, retries: u8) -> ResourceBudget {
     }
 }
 
-fn reply(correlation: u64, body: ReplyBody, terminal: Terminal) -> ApplicationReply {
+fn reply(correlation: u64, body: &ReplyBody) -> ApplicationReply {
     ApplicationReply {
         correlation: CorrelationId(correlation),
-        body,
-        terminal,
-        diagnostic: None,
+        outcome: ApplicationOutcome::Resolved(*body),
     }
 }
 
-fn apply(state: &mut ShellState, replies: &[ApplicationReply]) -> Result<BatchReceipt, ApplyError> {
-    state.apply_batch(replies)
+fn apply(state: &mut ShellState, reply: ApplicationReply) -> Result<BatchReceipt, ApplyError> {
+    state.apply(reply)
 }
 
 #[test]
@@ -249,11 +288,11 @@ fn golden_corpus_projects_the_independent_core_journey_into_visible_gui_facts()
     let replies = golden_corpus::direct_application_replies()?;
     let mut state = ShellState::default();
     for reply in replies {
-        apply(&mut state, &[reply])?;
+        apply(&mut state, reply)?;
     }
 
     assert_eq!(
-        state.last_reply.map(|reply| reply.correlation.0),
+        state.last_reply.as_ref().map(|reply| reply.correlation.0),
         Some(expected[3].correlation)
     );
     assert_eq!(
@@ -287,7 +326,6 @@ fn typed_generate_form_requires_each_field_and_constructs_only_application_input
 
     state.replace_form_text(FormField::Language, text("rust")?)?;
     state.replace_form_text(FormField::Stage, text("parse")?)?;
-    state.replace_form_text(FormField::Package, text("demo")?)?;
     state.replace_form_text(FormField::Source, text("fn main() {}")?)?;
     assert!(matches!(
         state.submit_form(CorrelationId(61)),
@@ -364,32 +402,52 @@ fn unavailable_compiler_output_is_projected_without_an_echo_artifact() -> Result
     let reply = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(11),
         language: text("rust")?,
-        stage: text("parse")?,
-        package: text("demo")?,
+        stage: text("lower-ir")?,
         source,
     });
     let mut state = ShellState::default();
-    apply(&mut state, &[reply])?;
+    apply(&mut state, reply)?;
 
     assert!(matches!(
-        reply.body,
-        ReplyBody::DependencyUnavailable {
-            capability: Capability::CompilerOutput,
-        }
+        state.last_reply.as_ref().map(|reply| &reply.outcome),
+        Some(ApplicationOutcome::Resolved(
+            ReplyBody::DependencyUnavailable {
+                capability: Capability::CompilerOutput,
+            }
+        ))
     ));
     assert_eq!(
         state.generation,
-        SurfaceStatus::Degraded {
-            terminal: Terminal::Degraded {
-                emitted: 0,
-                unavailable: Capability::CompilerOutput,
-            },
-            capability: Capability::CompilerOutput,
-        }
+        SurfaceStatus::Resolved(ApplicationDisposition::Degraded {
+            emitted: 0,
+            unavailable: Capability::CompilerOutput,
+        })
     );
     assert_eq!(
         state.summaries()[0].state,
         ProjectionState::Degraded(Capability::CompilerOutput)
+    );
+    Ok(())
+}
+
+#[test]
+fn generated_artifact_is_retained_verbatim_in_the_visible_generation_projection()
+-> Result<(), TestError> {
+    let artifact = generated_artifact();
+    let incoming = reply(31, &ReplyBody::Generated(artifact));
+    let mut state = ShellState::default();
+    apply(&mut state, incoming)?;
+
+    let expected = Some(GeneratedProjection { artifact });
+    assert_eq!(state.generated, expected);
+    assert_eq!(state.pages.home.generated, expected);
+    assert!(matches!(
+        state.last_reply.as_ref().map(|reply| &reply.outcome),
+        Some(ApplicationOutcome::Resolved(ReplyBody::Generated(observed))) if *observed == artifact
+    ));
+    assert_eq!(
+        state.generation,
+        SurfaceStatus::Resolved(ApplicationDisposition::Complete { emitted: 1 })
     );
     Ok(())
 }
@@ -404,13 +462,13 @@ fn adaptive_decision_is_projected_without_replacing_its_typed_cause() -> Result<
         budget: budget(0, 1),
     });
     let mut state = ShellState::default();
-    apply(&mut state, &[reply])?;
+    apply(&mut state, reply)?;
 
     assert!(matches!(
         state.adaptive,
         AdaptiveProjection::Reported {
             disposition: AdaptiveDisposition::Overloaded(_),
-            terminal: Terminal::Degraded {
+            result: ApplicationDisposition::Degraded {
                 unavailable: Capability::LocalAnalyzer,
                 ..
             },
@@ -432,23 +490,22 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
         bundle: bundle(),
         budget: budget(1, 1),
     });
-    let ReplyBody::ExecutionStarted {
+    let ApplicationOutcome::Resolved(ReplyBody::ExecutionStarted {
         operation,
         transition,
-    } = admitted.body
+    }) = admitted.outcome
     else {
         return Err(TestError::Unexpected(
             "recover should start a local operation",
         ));
     };
     let mut state = ShellState::default();
-    apply(&mut state, &[admitted])?;
+    apply(&mut state, admitted)?;
     assert_eq!(
         state.execution,
         ExecutionProjection::Started {
             operation,
             transition,
-            terminal: Terminal::Accepted { operation },
         }
     );
     assert_eq!(state.summaries()[2].state, ProjectionState::Accepted);
@@ -457,13 +514,12 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
         correlation: CorrelationId(14),
         operation,
     });
-    apply(&mut state, &[pending])?;
+    apply(&mut state, pending)?;
     assert!(matches!(
         state.execution,
         ExecutionProjection::Reported {
             state: ExecutionState::Pending { operation: observed, .. },
-            terminal: Terminal::Accepted { operation: accepted },
-        } if observed == operation && accepted == operation
+        } if observed == operation
     ));
     assert_eq!(state.summaries()[2].state, ProjectionState::Active);
 
@@ -471,12 +527,11 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
         correlation: CorrelationId(15),
         operation,
     });
-    apply(&mut state, &[completed])?;
+    apply(&mut state, completed)?;
     assert!(matches!(
         state.execution,
         ExecutionProjection::Reported {
             state: ExecutionState::Completed { operation: observed, .. },
-            terminal: Terminal::Complete { emitted: 1 },
         } if observed == operation
     ));
     assert_eq!(state.summaries()[2].state, ProjectionState::Ready);
@@ -493,22 +548,18 @@ fn health_preserves_all_six_capability_facts() -> Result<(), TestError> {
         CapabilityHealth::Unavailable(Capability::Vector),
         CapabilityHealth::Unavailable(Capability::LocalAnalyzer),
     ];
-    let incoming = reply(
-        20,
-        ReplyBody::Health(facts),
-        Terminal::Partial {
-            emitted: 2,
-            unavailable: Capability::CompilerOutput,
-        },
-    );
+    let incoming = reply(20, &ReplyBody::Health(facts));
     let mut state = ShellState::default();
-    apply(&mut state, &[incoming])?;
+    apply(&mut state, incoming)?;
 
     assert_eq!(
         state.health,
         HealthProjection::Reported {
             facts,
-            terminal: incoming.terminal,
+            result: ApplicationDisposition::Partial {
+                emitted: 1,
+                unavailable: Capability::CompilerOutput,
+            },
         }
     );
     assert!(matches!(
@@ -520,7 +571,7 @@ fn health_preserves_all_six_capability_facts() -> Result<(), TestError> {
         ProjectionState::Degraded(Capability::CompilerOutput)
     );
     assert_eq!(
-        state.last_reply.map(|reply| reply.correlation),
+        state.last_reply.as_ref().map(|reply| reply.correlation),
         Some(CorrelationId(20))
     );
     Ok(())
@@ -530,16 +581,12 @@ fn health_preserves_all_six_capability_facts() -> Result<(), TestError> {
 fn unavailable_lower_plane_is_typed_and_bounded() -> Result<(), TestError> {
     let incoming = reply(
         30,
-        ReplyBody::DependencyUnavailable {
+        &ReplyBody::DependencyUnavailable {
             capability: Capability::Vector,
-        },
-        Terminal::Degraded {
-            emitted: 0,
-            unavailable: Capability::Vector,
         },
     );
     let mut state = ShellState::default();
-    apply(&mut state, &[incoming])?;
+    apply(&mut state, incoming)?;
     assert_eq!(
         state.summaries()[5].state,
         ProjectionState::Degraded(Capability::Vector)
@@ -551,23 +598,24 @@ fn unavailable_lower_plane_is_typed_and_bounded() -> Result<(), TestError> {
 fn rejected_diagnostic_is_retained_without_erasing_its_code() -> Result<(), TestError> {
     let incoming = ApplicationReply {
         correlation: CorrelationId(40),
-        body: ReplyBody::Rejected,
-        terminal: Terminal::Failed,
-        diagnostic: Some(wave_application_core::Diagnostic {
-            code: DiagnosticCode::DependencyUnavailable,
-            detail: wave_application_core::DiagnosticDetail::Capability(Capability::Index),
-        }),
+        outcome: ApplicationOutcome::Failed {
+            diagnostic: Diagnostic {
+                code: DiagnosticCode::DependencyUnavailable,
+                detail: DiagnosticDetail::Capability(Capability::Index),
+            },
+        },
     };
     let mut state = ShellState::default();
-    apply(&mut state, &[incoming])?;
+    apply(&mut state, incoming)?;
     assert!(matches!(
-        state.last_reply,
-        Some(wave_application_gpui_shell::ReplyProjection {
-            terminal: Terminal::Failed,
-            diagnostic: Some(wave_application_core::Diagnostic {
-                code: DiagnosticCode::DependencyUnavailable,
-                detail: wave_application_core::DiagnosticDetail::Capability(Capability::Index),
-            }),
+        state.last_reply.as_ref(),
+        Some(ApplicationReply {
+            outcome: ApplicationOutcome::Failed {
+                diagnostic: Diagnostic {
+                    code: DiagnosticCode::DependencyUnavailable,
+                    detail: DiagnosticDetail::Capability(Capability::Index),
+                }
+            },
             ..
         })
     ));
@@ -576,10 +624,16 @@ fn rejected_diagnostic_is_retained_without_erasing_its_code() -> Result<(), Test
 
 #[test]
 fn oversized_batch_is_rejected_before_state_mutation() {
-    let incoming = reply(50, ReplyBody::Rejected, Terminal::Failed);
-    let replies = [incoming; MAX_BATCH_REPLIES + 1];
+    let replies: [ApplicationReply; MAX_BATCH_REPLIES + 1] = core::array::from_fn(|_| {
+        reply(
+            50,
+            &ReplyBody::DependencyUnavailable {
+                capability: Capability::Index,
+            },
+        )
+    });
     let mut state = ShellState::default();
-    let result = state.apply_batch(&replies);
+    let result = state.apply_batch(replies);
 
     assert_eq!(
         result,
@@ -602,7 +656,7 @@ fn oversized_batch_is_rejected_before_state_mutation() {
 #[test]
 fn empty_boundary_is_fused_without_notification() -> Result<(), ApplyError> {
     let mut state = ShellState::default();
-    let receipt = apply(&mut state, &[])?;
+    let receipt = state.apply_batch([])?;
     assert_eq!(receipt.applied_replies, 0);
     assert_eq!(receipt.notifications, 0);
     assert_eq!(receipt.notification_epoch, 0);

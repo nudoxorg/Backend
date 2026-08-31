@@ -5,10 +5,13 @@ use std::mem::size_of;
 use allocation_counter::{AllocationInfo, measure};
 use nudox_compile_vocab::{Language, Stage};
 use wave_application_core::{
-    ApplicationInput, ApplicationService, CompilerCapability, CompilerDiagnostic, CompilerRequest,
-    CompilerTerminal, CorrelationId, MAX_NATIVE_DIAGNOSTIC_BYTES, MAX_NATIVE_WORKER_PANIC_BYTES,
-    UnavailableCompiler,
+    ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
+    CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, InputText,
+    MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
+
+const EXPECTED_APPLICATION_REPLY_BYTES: usize = 280;
+const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 272;
 
 #[derive(Debug, Eq, PartialEq)]
 enum DiagnosticAllocationTestError {
@@ -22,12 +25,19 @@ enum DiagnosticAllocationTestError {
     },
     ReplyLayout {
         actual: usize,
-        maximum: usize,
+        expected: usize,
+    },
+    OutcomeLayout {
+        actual: usize,
+        expected: usize,
     },
     SuccessAllocation {
         observed: AllocationInfo,
     },
     SuccessDiagnostic,
+    UnavailableReply {
+        observed: Box<ApplicationOutcome>,
+    },
     UnavailableAllocation {
         observed: AllocationInfo,
     },
@@ -52,6 +62,7 @@ fn compiler_diagnostics_are_one_cold_allocation_and_clean_replies_stay_compact()
 -> Result<(), DiagnosticAllocationTestError> {
     exact_layout()?;
     successful_health_is_allocation_free()?;
+    unavailable_dependency_is_allocation_free()?;
     unavailable_compiler_is_allocation_free()?;
     emitted_native_diagnostic_has_one_owner()
 }
@@ -72,11 +83,41 @@ fn successful_health_is_allocation_free() -> Result<(), DiagnosticAllocationTest
     let Some(reply) = reply else {
         return Err(DiagnosticAllocationTestError::SuccessDiagnostic);
     };
-    if reply.diagnostic.is_some() {
+    if !matches!(reply.outcome, ApplicationOutcome::Resolved(_)) {
         return Err(DiagnosticAllocationTestError::SuccessDiagnostic);
     }
     drop(reply);
     Ok(())
+}
+
+fn unavailable_dependency_is_allocation_free() -> Result<(), DiagnosticAllocationTestError> {
+    let snapshot = InputText::try_from_str("unavailable-index")
+        .map_err(|_| DiagnosticAllocationTestError::SuccessDiagnostic)?;
+    let request = ApplicationInput::SnapshotStatus {
+        correlation: CorrelationId(2),
+        snapshot,
+    };
+    let mut service = ApplicationService::new();
+    let mut reply = None;
+    let allocations = measure(|| {
+        reply = Some(service.execute(&request));
+    });
+    if allocations != AllocationInfo::default() {
+        return Err(DiagnosticAllocationTestError::SuccessAllocation {
+            observed: allocations,
+        });
+    }
+    let Some(reply) = reply else {
+        return Err(DiagnosticAllocationTestError::SuccessDiagnostic);
+    };
+    match reply.outcome {
+        ApplicationOutcome::Resolved(ReplyBody::DependencyUnavailable {
+            capability: Capability::Index,
+        }) => Ok(()),
+        observed => Err(DiagnosticAllocationTestError::UnavailableReply {
+            observed: Box::new(observed),
+        }),
+    }
 }
 
 fn unavailable_compiler_is_allocation_free() -> Result<(), DiagnosticAllocationTestError> {
@@ -171,12 +212,17 @@ fn exact_layout() -> Result<(), DiagnosticAllocationTestError> {
         });
     }
     let reply_bytes = size_of::<wave_application_core::ApplicationReply>();
-    let reply_without_inline_diagnostic_limit =
-        2 * MAX_NATIVE_DIAGNOSTIC_BYTES + MAX_NATIVE_WORKER_PANIC_BYTES;
-    if reply_bytes >= reply_without_inline_diagnostic_limit {
+    if size_of::<usize>() == 8 && reply_bytes != EXPECTED_APPLICATION_REPLY_BYTES {
         return Err(DiagnosticAllocationTestError::ReplyLayout {
             actual: reply_bytes,
-            maximum: reply_without_inline_diagnostic_limit - 1,
+            expected: EXPECTED_APPLICATION_REPLY_BYTES,
+        });
+    }
+    let outcome_bytes = size_of::<ApplicationOutcome>();
+    if size_of::<usize>() == 8 && outcome_bytes != EXPECTED_APPLICATION_OUTCOME_BYTES {
+        return Err(DiagnosticAllocationTestError::OutcomeLayout {
+            actual: outcome_bytes,
+            expected: EXPECTED_APPLICATION_OUTCOME_BYTES,
         });
     }
     Ok(())

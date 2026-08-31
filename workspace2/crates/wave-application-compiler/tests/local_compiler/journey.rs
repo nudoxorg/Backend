@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nudox_compile_vocab::{Language, Stage};
 use nudox_id::{ContentId, SourceFactDomain};
 use wave_application_core::{
-    ApplicationReply, ApplicationService, CompilerTerminal, Diagnostic, DiagnosticCode,
-    DiagnosticDetail, ReplyBody, Terminal,
+    ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
+    CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ReplyBody,
 };
 
 use super::support::{
@@ -22,7 +22,7 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     let compiler = open_local_compiler(&fixture, &toolchains, &cancelled, &mut scratch)?;
     let mut service = ApplicationService::with_compiler(compiler);
 
-    assert_generated(&service.execute(&generate(
+    assert_generated(service.execute(&generate(
         Language::Rust,
         "lower-ir",
         "pub const READY: i32 = 1;",
@@ -58,20 +58,20 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     Ok(())
 }
 
-fn assert_generated(reply: &ApplicationReply) -> Result<(), LocalCompilerTestError> {
-    let facts = match reply.body {
-        ReplyBody::Generated(facts) => facts,
+fn assert_generated(reply: ApplicationReply) -> Result<(), LocalCompilerTestError> {
+    let facts = match reply.outcome {
+        ApplicationOutcome::Resolved(ReplyBody::Generated(facts))
+            if ApplicationDisposition::from(&ReplyBody::Generated(facts))
+                == ApplicationDisposition::Complete { emitted: 1 } =>
+        {
+            facts
+        }
         observed => {
-            return Err(LocalCompilerTestError::GeneratedBody {
+            return Err(LocalCompilerTestError::GeneratedOutcome {
                 observed: Box::new(observed),
             });
         }
     };
-    if reply.terminal != (Terminal::Complete { emitted: 1 }) {
-        return Err(LocalCompilerTestError::GeneratedTerminal {
-            observed: Box::new(reply.terminal),
-        });
-    }
     if facts.recipe.language != Language::Rust || facts.recipe.stage != Stage::LowerIr {
         return Err(LocalCompilerTestError::GeneratedRecipe {
             language: facts.recipe.language,
@@ -96,18 +96,21 @@ fn assert_generated(reply: &ApplicationReply) -> Result<(), LocalCompilerTestErr
 }
 
 fn assert_missing_native_toolchain(reply: ApplicationReply) -> Result<(), LocalCompilerTestError> {
-    match reply.diagnostic {
-        Some(Diagnostic {
-            code: DiagnosticCode::CompilerTerminal,
-            detail:
-                DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
-                    language: Language::Python,
-                    stage: Stage::LowerIr,
-                    selected: nudox_compile_vocab::NativeTool::Python,
-                    configured: None,
-                    ..
-                }),
-        }) => Ok(()),
+    match reply.outcome {
+        ApplicationOutcome::Failed {
+            diagnostic:
+                Diagnostic {
+                    code: DiagnosticCode::CompilerTerminal,
+                    detail:
+                        DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
+                            language: Language::Python,
+                            stage: Stage::LowerIr,
+                            selected: nudox_compile_vocab::NativeTool::Python,
+                            configured: None,
+                            ..
+                        }),
+                },
+        } => Ok(()),
         observed => Err(LocalCompilerTestError::CompilerDiagnostic {
             observed: Box::new(observed),
         }),
@@ -117,18 +120,21 @@ fn assert_missing_native_toolchain(reply: ApplicationReply) -> Result<(), LocalC
 fn assert_explicitly_unavailable_tool(
     reply: ApplicationReply,
 ) -> Result<(), LocalCompilerTestError> {
-    match reply.diagnostic {
-        Some(Diagnostic {
-            code: DiagnosticCode::CompilerTerminal,
-            detail:
-                DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
-                    language: Language::TypeScript,
-                    stage: Stage::LowerIr,
-                    selected: nudox_compile_vocab::NativeTool::TypeScriptCompiler,
-                    configured: None,
-                    ..
-                }),
-        }) => Ok(()),
+    match reply.outcome {
+        ApplicationOutcome::Failed {
+            diagnostic:
+                Diagnostic {
+                    code: DiagnosticCode::CompilerTerminal,
+                    detail:
+                        DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
+                            language: Language::TypeScript,
+                            stage: Stage::LowerIr,
+                            selected: nudox_compile_vocab::NativeTool::TypeScriptCompiler,
+                            configured: None,
+                            ..
+                        }),
+                },
+        } => Ok(()),
         observed => Err(LocalCompilerTestError::CompilerDiagnostic {
             observed: Box::new(observed),
         }),
@@ -136,11 +142,14 @@ fn assert_explicitly_unavailable_tool(
 }
 
 fn assert_unsupported_stage(reply: ApplicationReply) -> Result<(), LocalCompilerTestError> {
-    match reply.diagnostic {
-        Some(Diagnostic {
-            code: DiagnosticCode::UnsupportedCompilerStage,
-            ..
-        }) => Ok(()),
+    match reply.outcome {
+        ApplicationOutcome::Failed {
+            diagnostic:
+                Diagnostic {
+                    code: DiagnosticCode::UnsupportedCompilerStage,
+                    ..
+                },
+        } => Ok(()),
         observed => Err(LocalCompilerTestError::CompilerDiagnostic {
             observed: Box::new(observed),
         }),
@@ -154,15 +163,18 @@ fn assert_cancelled(reply: ApplicationReply, source: &[u8]) -> Result<(), LocalC
         });
     };
     let expected = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
-    match reply.diagnostic {
-        Some(Diagnostic {
-            code: DiagnosticCode::CompilerTerminal,
-            detail:
-                DiagnosticDetail::Compiler(CompilerTerminal::Cancelled {
-                    attempted,
-                    diagnostic: None,
-                }),
-        }) if attempted.source.identity == expected && attempted.source.byte_len == byte_len => {
+    match reply.outcome {
+        ApplicationOutcome::Failed {
+            diagnostic:
+                Diagnostic {
+                    code: DiagnosticCode::CompilerTerminal,
+                    detail:
+                        DiagnosticDetail::Compiler(CompilerTerminal::Cancelled {
+                            attempted,
+                            diagnostic: None,
+                        }),
+                },
+        } if attempted.source.identity == expected && attempted.source.byte_len == byte_len => {
             Ok(())
         }
         observed => Err(LocalCompilerTestError::CompilerDiagnostic {
