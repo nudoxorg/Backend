@@ -5,6 +5,8 @@ use core::{cmp::Ordering, ops::Deref};
 use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use nudox_index_vocab::LexicalSegmentId;
 
+use crate::document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
+
 /// Maximum number of rows admitted by one lexical segment view.
 pub const MAX_LEXICAL_ROWS: usize = 256;
 
@@ -37,7 +39,8 @@ fn segment_id(rows: &[LexicalRow<'_>]) -> LexicalSegmentId {
     hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
     for row in rows {
         write_bytes(&mut hasher, row.term);
-        hasher.write_record(&CanonicalRecord(u32::from(row.document).to_le_bytes()));
+        let document: [u8; ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
+        hasher.write_record(&CanonicalRecord(document));
         let value = match row.value {
             LexicalRowValue::Present(score) => {
                 let mut value = [0_u8; 5];
@@ -77,31 +80,6 @@ impl From<LexicalScore> for u32 {
 }
 
 impl Deref for LexicalScore {
-    type Target = u32;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// A fixed-width stable document identity used across lexical segments in one snapshot.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct LexicalDocumentId(u32);
-
-impl From<u32> for LexicalDocumentId {
-    fn from(ordinal: u32) -> Self {
-        Self(ordinal)
-    }
-}
-
-impl From<LexicalDocumentId> for u32 {
-    fn from(document: LexicalDocumentId) -> Self {
-        document.0
-    }
-}
-
-impl Deref for LexicalDocumentId {
     type Target = u32;
 
     fn deref(&self) -> &Self::Target {
@@ -172,29 +150,32 @@ pub enum LexicalRowValue {
 pub struct LexicalRow<'bytes> {
     /// Canonical term bytes borrowed from the segment owner.
     pub term: &'bytes [u8],
-    /// Stable local document identity.
-    pub document: LexicalDocumentId,
+    /// Stable package document identity.
+    pub document: EntityDocumentId,
     /// Immutable membership fact for this term/document pair.
     pub value: LexicalRowValue,
 }
 
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<LexicalRow<'_>>() == 64);
+
 impl<'bytes> LexicalRow<'bytes> {
     /// Creates one borrowed lexical row without copying its term bytes.
     #[must_use]
-    pub const fn new(term: &'bytes [u8], document: u32, score: LexicalScore) -> Self {
+    pub const fn new(term: &'bytes [u8], document: EntityDocumentId, score: LexicalScore) -> Self {
         Self {
             term,
-            document: LexicalDocumentId(document),
+            document,
             value: LexicalRowValue::Present(score),
         }
     }
 
     /// Creates an immutable deletion fact for one term/document membership.
     #[must_use]
-    pub const fn tombstone(term: &'bytes [u8], document: u32) -> Self {
+    pub const fn tombstone(term: &'bytes [u8], document: EntityDocumentId) -> Self {
         Self {
             term,
-            document: LexicalDocumentId(document),
+            document,
             value: LexicalRowValue::Tombstone,
         }
     }
@@ -235,8 +216,8 @@ impl<'query> LexicalOperation<'query> {
 pub struct LexicalHit<'bytes> {
     /// Matching term bytes borrowed from the source row.
     pub term: &'bytes [u8],
-    /// Stable local document identity.
-    pub document: LexicalDocumentId,
+    /// Stable package document identity.
+    pub document: EntityDocumentId,
     /// Deterministic recipe score.
     pub score: LexicalScore,
 }
@@ -248,8 +229,8 @@ pub struct LexicalSnapshotHit<'bytes> {
     pub segment: LexicalSegmentId,
     /// Matching term bytes borrowed from the source row.
     pub term: &'bytes [u8],
-    /// Stable local document identity.
-    pub document: LexicalDocumentId,
+    /// Stable package document identity.
+    pub document: EntityDocumentId,
     /// Deterministic recipe score.
     pub score: LexicalScore,
 }
@@ -260,7 +241,7 @@ impl<'bytes> LexicalSnapshotHit<'bytes> {
     pub const fn new(
         segment: LexicalSegmentId,
         term: &'bytes [u8],
-        document: LexicalDocumentId,
+        document: EntityDocumentId,
         score: LexicalScore,
     ) -> Self {
         Self {
@@ -275,7 +256,7 @@ impl<'bytes> LexicalSnapshotHit<'bytes> {
 impl<'bytes> LexicalHit<'bytes> {
     /// Creates a caller-owned output placeholder or hit.
     #[must_use]
-    pub const fn new(term: &'bytes [u8], document: LexicalDocumentId, score: LexicalScore) -> Self {
+    pub const fn new(term: &'bytes [u8], document: EntityDocumentId, score: LexicalScore) -> Self {
         Self {
             term,
             document,
@@ -330,8 +311,8 @@ pub enum LexicalSegmentError<'bytes> {
         index: usize,
         /// Repeated term bytes.
         term: &'bytes [u8],
-        /// Repeated local document identity.
-        document: LexicalDocumentId,
+        /// Repeated package document identity.
+        document: EntityDocumentId,
     },
 }
 
@@ -367,6 +348,10 @@ impl<'bytes> LexicalSegment<'bytes> {
     /// Row and byte bounds are checked before ordering, duplicate, and identity work.
     /// This keeps an attacker-controlled row count from amplifying validation
     /// or canonical identity hashing.
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold canonical-order rejection retains both complete fixed-width global document addresses without heap allocation"
+    )]
     pub fn new(rows: &'bytes [LexicalRow<'bytes>]) -> Result<Self, LexicalSegmentError<'bytes>> {
         if rows.len() > MAX_LEXICAL_ROWS {
             return Err(LexicalSegmentError::TooManyRows {

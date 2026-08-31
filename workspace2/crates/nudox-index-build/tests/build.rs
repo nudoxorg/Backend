@@ -4,7 +4,7 @@ mod support;
 
 use allocation_counter::{AllocationInfo, measure};
 use nudox_id::{ContentId, SourceFactDomain};
-use nudox_index_core::{ExactOperation, LexicalRow};
+use nudox_index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use nudox_ir_format::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
 use nudox_ir_vocab::{AtomId, TypeId};
 use support::{
@@ -64,7 +64,7 @@ fn reopened_fragments_produce_existing_core_rows_without_warm_allocation() -> Re
 }
 
 #[test]
-fn declaration_order_normalizes_and_type_coordinates_remain_explicit() -> Result<(), TestError> {
+fn raw_fragment_authority_preserves_order_and_type_coordinates() -> Result<(), TestError> {
     let atoms = [AtomInput { bytes: b"alpha" }, AtomInput { bytes: b"beta" }];
     let types = [TypeNode::Primitive(PrimitiveType::Bool)];
     let ordered = ids_for(
@@ -85,7 +85,7 @@ fn declaration_order_normalizes_and_type_coordinates_remain_explicit() -> Result
         &types,
         &atoms,
     )?;
-    if ordered != reordered {
+    if ordered == reordered {
         return Err(TestError::BuildProof(BuildProofError::SourceOrderChanged));
     }
     let first_reference = ids_for(
@@ -115,7 +115,7 @@ fn declaration_order_normalizes_and_type_coordinates_remain_explicit() -> Result
 }
 
 #[test]
-fn fragment_namespace_prevents_cross_fragment_collisions_without_change_spillover()
+fn manifest_bound_documents_keep_equal_fragments_addressable_without_change_spillover()
 -> Result<(), TestError> {
     let baseline = paired_witnesses("paired-baseline", b"shared")?;
     let changed = paired_witnesses("paired-changed", b"changed")?;
@@ -124,10 +124,14 @@ fn fragment_namespace_prevents_cross_fragment_collisions_without_change_spillove
             BuildProofError::FragmentNamespaceCollapsed,
         ));
     }
-    if baseline.alpha.lexical != baseline.beta.lexical
-        || baseline.alpha != changed.alpha
-        || baseline.beta == changed.beta
+    if baseline.alpha.document == baseline.beta.document
+        || baseline.alpha.lexical == baseline.beta.lexical
     {
+        return Err(TestError::BuildProof(
+            BuildProofError::LexicalAuthorityCollapsed,
+        ));
+    }
+    if baseline.alpha != changed.alpha || baseline.beta == changed.beta {
         return Err(TestError::BuildProof(
             BuildProofError::AtomChangeEscapedFragment,
         ));
@@ -150,9 +154,15 @@ fn verify_rows(index: &nudox_index_build::PreparedIndex<'_>) -> Result<(), TestE
         .zip(index.exact.rows)
         .zip(index.lexical.rows)
     {
-        if exact.key != fact.exact_key.as_ref()
+        let document = nudox_index_core::EntityDocumentId {
+            fragment: index.fragment.fragment,
+            entity: fact.entity,
+        };
+        let document_bytes: [u8; nudox_index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();
+        if exact.key != document_bytes
+            || exact.key != fact.exact_key.as_ref()
             || exact.value_bytes().is_none()
-            || lexical != &LexicalRow::new(fact.name, fact.entity.raw, 1_u32.into())
+            || lexical != &LexicalRow::new(fact.name, document, 1_u32.into())
         {
             return Err(TestError::BuildProof(BuildProofError::EntityRowMismatch));
         }
@@ -216,6 +226,7 @@ struct SegmentWitness {
     exact: nudox_index_core::ExactSegmentId,
     lexical: nudox_index_core::LexicalSegmentId,
     key: nudox_index_build::ExactEntityKey,
+    document: nudox_index_core::EntityDocumentId,
 }
 
 #[derive(Clone, Copy)]
@@ -267,24 +278,50 @@ fn paired_witnesses(label: &str, beta_atom: &[u8]) -> Result<PairedWitnesses, Te
     let beta_source = ContentId::<SourceFactDomain>::from_canonical_bytes(BETA_SOURCE);
     let first_witness = witness(&first)?;
     let second_witness = witness(&second)?;
-    let paired = if first.source.identity == alpha_source && second.source.identity == beta_source {
-        PairedWitnesses {
-            alpha: first_witness,
-            beta: second_witness,
-        }
-    } else if first.source.identity == beta_source && second.source.identity == alpha_source {
-        PairedWitnesses {
-            alpha: second_witness,
-            beta: first_witness,
-        }
-    } else {
-        return Err(TestError::BuildProof(
-            BuildProofError::FragmentNamespaceCollapsed,
-        ));
-    };
+    let exact = [first.exact.id, second.exact.id];
+    let lexical = [first.lexical.id, second.lexical.id];
+    IndexSnapshot::new(opened.publication.generation.pinned_root, &exact, &lexical)
+        .map_err(|cause| TestError::BuildProof(BuildProofError::SnapshotRejected { cause }))?;
+    let paired = label_witnesses(
+        &first,
+        &second,
+        first_witness,
+        second_witness,
+        alpha_source,
+        beta_source,
+    )?;
     publisher.shutdown()?;
     fixture.remove()?;
     Ok(paired)
+}
+
+fn label_witnesses(
+    first: &nudox_index_build::PreparedIndex<'_>,
+    second: &nudox_index_build::PreparedIndex<'_>,
+    first_witness: SegmentWitness,
+    second_witness: SegmentWitness,
+    alpha_source: ContentId<SourceFactDomain>,
+    beta_source: ContentId<SourceFactDomain>,
+) -> Result<PairedWitnesses, TestError> {
+    if first.fragment.source.identity == alpha_source
+        && second.fragment.source.identity == beta_source
+    {
+        return Ok(PairedWitnesses {
+            alpha: first_witness,
+            beta: second_witness,
+        });
+    }
+    if first.fragment.source.identity == beta_source
+        && second.fragment.source.identity == alpha_source
+    {
+        return Ok(PairedWitnesses {
+            alpha: second_witness,
+            beta: first_witness,
+        });
+    }
+    Err(TestError::BuildProof(
+        BuildProofError::FragmentNamespaceCollapsed,
+    ))
 }
 
 fn assert_warm_build_does_not_allocate(
@@ -305,13 +342,15 @@ fn assert_warm_build_does_not_allocate(
 
 fn witness(index: &nudox_index_build::PreparedIndex<'_>) -> Result<SegmentWitness, TestError> {
     let Some(entity) = index.entities.first() else {
-        return Err(TestError::BuildProof(
-            BuildProofError::FragmentNamespaceCollapsed,
-        ));
+        return Err(TestError::BuildProof(BuildProofError::MissingIndexedEntity));
+    };
+    let Some(lexical) = index.lexical.rows.first() else {
+        return Err(TestError::BuildProof(BuildProofError::MissingIndexedEntity));
     };
     Ok(SegmentWitness {
         exact: index.exact.id,
         lexical: index.lexical.id,
         key: entity.exact_key,
+        document: lexical.document,
     })
 }

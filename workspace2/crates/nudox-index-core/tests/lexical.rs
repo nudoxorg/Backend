@@ -1,18 +1,29 @@
+use nudox_id::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use nudox_index_core::{
-    LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,
+    EntityDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,
     LexicalSegment, LexicalSegmentError, LexicalTopK, MAX_LEXICAL_ROWS,
 };
+use nudox_ir_vocab::EntityId;
 
 fn score(units: u32) -> LexicalScore {
     LexicalScore::from(units)
 }
 
+fn document_id(entity: u32) -> EntityDocumentId {
+    EntityDocumentId {
+        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"lexical-core-test-fragment",
+        ),
+        entity: EntityId::new(entity),
+    }
+}
+
 fn row(term: &'static [u8], document: u32, units: u32) -> LexicalRow<'static> {
-    LexicalRow::new(term, document, score(units))
+    LexicalRow::new(term, document_id(document), score(units))
 }
 
 fn hit(term: &'static [u8], document: u32, units: u32) -> LexicalHit<'static> {
-    LexicalHit::new(term, LexicalDocumentId::from(document), score(units))
+    LexicalHit::new(term, document_id(document), score(units))
 }
 
 #[test]
@@ -74,7 +85,7 @@ fn hostile_row_bound_precedes_duplicate_order_and_identity_work() {
 #[test]
 fn tombstone_identity_and_ranking_are_distinct_from_zero_score_membership() {
     let present_rows = [row(b"alpha", 1, 0)];
-    let tombstone_rows = [LexicalRow::tombstone(b"alpha", 1)];
+    let tombstone_rows = [LexicalRow::tombstone(b"alpha", document_id(1))];
     let present = LexicalSegment::new(&present_rows);
     let tombstone = LexicalSegment::new(&tombstone_rows);
     assert!(present.is_ok() && tombstone.is_ok());
@@ -112,8 +123,8 @@ fn invalid_top_k_retains_the_bound_and_precedes_ranking() {
 fn term_lookup_and_ranked_hits_borrow_original_term_bytes() {
     let alpha = b"alpha";
     let rows = [
-        LexicalRow::new(alpha, 1, score(2)),
-        LexicalRow::new(alpha, 2, score(1)),
+        LexicalRow::new(alpha, document_id(1), score(2)),
+        LexicalRow::new(alpha, document_id(2), score(1)),
         row(b"beta", 3, 9),
     ];
     let segment = LexicalSegment::new(&rows);

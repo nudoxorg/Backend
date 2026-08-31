@@ -13,3 +13,7 @@ role = "adapter"
 nudox-index-core = { path = "../nudox-index-core" }
 tantivy.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+nudox-id = { path = "../nudox-id" }
+nudox-ir-vocab = { path = "../nudox-ir-vocab" }

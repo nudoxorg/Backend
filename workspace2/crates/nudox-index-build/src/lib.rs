@@ -17,7 +17,7 @@ pub use build::{
     IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, build,
     preflight,
 };
-pub use error::{BuildAdmissionError, BuildError, BuildRegion, CanonicalLengthField};
+pub use error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion};
 pub use fact::{
     ENTITY_VALUE_BYTES, EXACT_ENTITY_KEY_BYTES, EntityFact, EntityFactView, EntityProjection,
     ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView,

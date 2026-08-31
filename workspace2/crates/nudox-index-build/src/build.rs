@@ -1,18 +1,17 @@
 use core::{cmp::Ordering, mem::MaybeUninit, ops::Deref};
 
 use crate::{
-    error::{BuildAdmissionError, BuildError, BuildRegion, CanonicalLengthField},
+    error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion},
     fact::{EntityFact, EntityProjection},
     initialized::{InitializationError, Initialized, try_initialize},
 };
 use nudox_compile_publication::OpenedFragment;
 use nudox_compile_publication::manifest::StoredFragmentFacts;
-use nudox_id::{ContentHasher, ContentId, FixedCanonicalRecord, IndexExactSegmentDomain};
 use nudox_index_core::{
-    ExactRow, ExactSegment, LexicalRow, LexicalScore, LexicalSegment, MAX_EXACT_ROWS,
-    MAX_LEXICAL_ROWS,
+    EntityDocumentId, ExactRow, ExactSegment, LexicalRow, LexicalScore, LexicalSegment,
+    MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
 };
-use nudox_ir_format::{Atom, FragmentView, RecipeFact, SourceIdentity, TypeNode};
+use nudox_ir_format::{Atom, FragmentView, TypeNode};
 use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 
 /// Maximum declarations accepted by one builder invocation.
@@ -23,20 +22,8 @@ pub const MAX_INDEX_ROWS: usize = if MAX_EXACT_ROWS < MAX_LEXICAL_ROWS {
 };
 
 const ENTITY_NAME_SCORE_UNITS: u32 = 1;
-const NAMESPACE_CHUNK_BYTES: usize = 32;
-const TYPE_NAMESPACE_BYTES: usize = 5;
-const TYPE_NAMESPACE_TAG_BYTES: usize = 1;
-const PRIMITIVE_NAMESPACE_TAG: u8 = 0;
-const REFERENCE_NAMESPACE_TAG: u8 = 1;
-const CANONICAL_NAMESPACE_TAG: [u8; 24] = *b"nudox.index.entity.ns.v1";
 
-struct CanonicalRecord<const BYTES: usize>([u8; BYTES]);
-
-impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> {
-    fn canonical_bytes(&self) -> &[u8; BYTES] {
-        &self.0
-    }
-}
+type DerivationResult<Value> = Result<Value, BuildDerivationError>;
 
 /// Caller-owned regions for one allocation-free index projection.
 ///
@@ -99,10 +86,6 @@ pub struct PreparedIndex<'bytes>(PreparedIndexView<'bytes>);
 pub struct PreparedIndexView<'bytes> {
     /// Complete manifest-selected fragment authority for the reopened bytes that were indexed.
     pub fragment: StoredFragmentFacts,
-    /// Source authority bound by the reopened compiler publication.
-    pub source: SourceIdentity,
-    /// Compiler recipe bound by the reopened compiler publication.
-    pub recipe: RecipeFact,
     /// Canonically ordered typed declaration facts.
     pub entities: &'bytes [EntityFact<'bytes>],
     /// Canonical exact-core segment directly consumable by exact retrieval.
@@ -157,18 +140,15 @@ pub fn build<'opened, 'fragment: 'scratch, 'scratch>(
     let type_nodes = collect_type_nodes(selected.type_nodes, &fragment.view)?;
     let projections =
         canonical_projections(selected.projections, &fragment.view, atoms, type_nodes)?;
-    let namespace =
-        canonical_fragment_namespace(fragment.view.source, fragment.view.recipe, projections)?;
-    let entities = derive_entities(selected.entities, projections, namespace)?;
+    let entities = derive_entities(selected.entities, projections, fragment.facts.fragment)?;
     let exact_rows = derive_exact_rows(selected.exact_rows, entities)?;
-    let lexical_rows = derive_lexical_rows(selected.lexical_rows, entities)?;
+    let lexical_rows =
+        derive_lexical_rows(selected.lexical_rows, entities, fragment.facts.fragment)?;
     let exact = ExactSegment::new(exact_rows).map_err(|cause| BuildError::Exact { cause })?;
     let lexical =
         LexicalSegment::new(lexical_rows).map_err(|cause| BuildError::Lexical { cause })?;
     Ok(PreparedIndex(PreparedIndexView {
         fragment: fragment.facts,
-        source: fragment.view.source,
-        recipe: fragment.view.recipe,
         entities,
         exact,
         lexical,
@@ -187,14 +167,14 @@ struct SelectedScratch<'slots> {
 fn collect_atoms<'slots>(
     output: &'slots mut [MaybeUninit<Atom<'slots>>],
     view: &FragmentView<'slots>,
-) -> Result<&'slots [Atom<'slots>], BuildError<'slots>> {
+) -> DerivationResult<&'slots [Atom<'slots>]> {
     initialize(BuildRegion::Atoms, output, view.atoms(), Ok).map(Initialized::into_shared)
 }
 
 fn collect_type_nodes<'slots>(
     output: &'slots mut [MaybeUninit<TypeNode>],
     view: &FragmentView<'slots>,
-) -> Result<&'slots [TypeNode], BuildError<'slots>> {
+) -> DerivationResult<&'slots [TypeNode]> {
     initialize(BuildRegion::TypeNodes, output, view.type_nodes(), Ok).map(Initialized::into_shared)
 }
 
@@ -203,7 +183,7 @@ fn canonical_projections<'slots>(
     view: &FragmentView<'slots>,
     atoms: &[Atom<'slots>],
     type_nodes: &[TypeNode],
-) -> Result<&'slots [EntityProjection<'slots>], BuildError<'slots>> {
+) -> DerivationResult<&'slots [EntityProjection<'slots>]> {
     let mut projections = initialize(
         BuildRegion::Projections,
         output,
@@ -225,19 +205,18 @@ fn canonical_projections<'slots>(
 fn derive_entities<'slots>(
     output: &'slots mut [MaybeUninit<EntityFact<'slots>>],
     projections: &[EntityProjection<'slots>],
-    namespace: ContentId<IndexExactSegmentDomain>,
-) -> Result<&'slots [EntityFact<'slots>], BuildError<'slots>> {
+    fragment: nudox_compile_publication::immutable::FragmentIdentity,
+) -> DerivationResult<&'slots [EntityFact<'slots>]> {
     initialize(
         BuildRegion::Entities,
         output,
         projections.iter().copied().enumerate(),
         |(ordinal, projection)| {
-            let entity = EntityId::new(
-                u32::try_from(ordinal)
-                    .map_err(|source| BuildError::EntityOrdinalAddressSpace { ordinal, source })?,
-            );
+            let entity = EntityId::new(u32::try_from(ordinal).map_err(|source| {
+                BuildDerivationError::EntityOrdinalAddressSpace { ordinal, source }
+            })?);
             Ok(EntityFact::new(
-                namespace,
+                EntityDocumentId { fragment, entity },
                 entity,
                 projection.name,
                 projection.kind,
@@ -251,7 +230,7 @@ fn derive_entities<'slots>(
 fn derive_exact_rows<'slots>(
     output: &'slots mut [MaybeUninit<ExactRow<'slots>>],
     entities: &'slots [EntityFact<'slots>],
-) -> Result<&'slots [ExactRow<'slots>], BuildError<'slots>> {
+) -> DerivationResult<&'slots [ExactRow<'slots>]> {
     initialize(BuildRegion::ExactRows, output, entities.iter(), |entity| {
         Ok(ExactRow::present(
             entity.exact_key.as_ref(),
@@ -264,15 +243,20 @@ fn derive_exact_rows<'slots>(
 fn derive_lexical_rows<'slots>(
     output: &'slots mut [MaybeUninit<LexicalRow<'slots>>],
     entities: &[EntityFact<'slots>],
-) -> Result<&'slots [LexicalRow<'slots>], BuildError<'slots>> {
+    fragment: nudox_compile_publication::immutable::FragmentIdentity,
+) -> DerivationResult<&'slots [LexicalRow<'slots>]> {
     initialize(
         BuildRegion::LexicalRows,
         output,
         entities.iter(),
         |entity| {
+            let document = EntityDocumentId {
+                fragment,
+                entity: entity.entity,
+            };
             Ok(LexicalRow::new(
                 entity.name,
-                entity.entity.raw,
+                document,
                 LexicalScore::from(ENTITY_NAME_SCORE_UNITS),
             ))
         },
@@ -331,7 +315,7 @@ impl RequiredScratch {
         Ok(())
     }
 
-    fn select(self, scratch: IndexBuildScratch<'_>) -> Result<SelectedScratch<'_>, BuildError<'_>> {
+    fn select(self, scratch: IndexBuildScratch<'_>) -> DerivationResult<SelectedScratch<'_>> {
         let IndexBuildScratch {
             projections,
             entities,
@@ -355,23 +339,23 @@ fn selected_region<Value>(
     output: &mut [MaybeUninit<Value>],
     required: usize,
     region: BuildRegion,
-) -> Result<&mut [MaybeUninit<Value>], BuildError<'_>> {
+) -> DerivationResult<&mut [MaybeUninit<Value>]> {
     let available = output.len();
     output
         .get_mut(..required)
-        .ok_or(BuildError::ScratchInitialization {
+        .ok_or(BuildDerivationError::ScratchInitialization {
             region,
             required,
             available,
         })
 }
 
-fn initialize<'slots, Source, Value: Copy>(
+fn initialize<Source, Value: Copy>(
     region: BuildRegion,
-    output: &'slots mut [MaybeUninit<Value>],
+    output: &mut [MaybeUninit<Value>],
     source: impl ExactSizeIterator<Item = Source>,
-    transform: impl FnMut(Source) -> Result<Value, BuildError<'slots>>,
-) -> Result<Initialized<'slots, Value>, BuildError<'slots>> {
+    transform: impl FnMut(Source) -> DerivationResult<Value>,
+) -> DerivationResult<Initialized<'_, Value>> {
     try_initialize(output, source, transform).map_err(|error| match error {
         InitializationError::Length {
             required,
@@ -380,12 +364,12 @@ fn initialize<'slots, Source, Value: Copy>(
         | InitializationError::Exhausted {
             required,
             initialized: available,
-        } => BuildError::ScratchInitialization {
+        } => BuildDerivationError::ScratchInitialization {
             region,
             required,
             available,
         },
-        InitializationError::Surplus { required } => BuildError::ScratchInitialization {
+        InitializationError::Surplus { required } => BuildDerivationError::ScratchInitialization {
             region,
             required,
             available: required,
@@ -398,33 +382,35 @@ fn resolve_atom<'bytes>(
     atoms: &[Atom<'bytes>],
     entity: EntityId,
     name: AtomId,
-) -> Result<Atom<'bytes>, BuildError<'bytes>> {
-    let index = usize::try_from(name.raw).map_err(|source| BuildError::AtomAddressSpace {
-        entity,
-        name,
-        source,
-    })?;
+) -> DerivationResult<Atom<'bytes>> {
+    let index =
+        usize::try_from(name.raw).map_err(|source| BuildDerivationError::AtomAddressSpace {
+            entity,
+            name,
+            source,
+        })?;
     atoms
         .get(index)
         .copied()
-        .ok_or(BuildError::MissingAtom { entity, name })
+        .ok_or(BuildDerivationError::MissingAtom { entity, name })
 }
 
-fn resolve_type<'bytes>(
+fn resolve_type(
     type_nodes: &[TypeNode],
     entity: EntityId,
     semantic_type: TypeId,
-) -> Result<TypeNode, BuildError<'bytes>> {
-    let index =
-        usize::try_from(semantic_type.raw).map_err(|source| BuildError::TypeAddressSpace {
+) -> DerivationResult<TypeNode> {
+    let index = usize::try_from(semantic_type.raw).map_err(|source| {
+        BuildDerivationError::TypeAddressSpace {
             entity,
             semantic_type,
             source,
-        })?;
+        }
+    })?;
     type_nodes
         .get(index)
         .copied()
-        .ok_or(BuildError::MissingTypeNode {
+        .ok_or(BuildDerivationError::MissingTypeNode {
             entity,
             semantic_type,
         })
@@ -435,87 +421,6 @@ fn compare_projection(left: &EntityProjection<'_>, right: &EntityProjection<'_>)
         .cmp(right.name)
         .then_with(|| type_order(left.semantic_type, right.semantic_type))
         .then_with(|| u16::from(left.kind).cmp(&u16::from(right.kind)))
-}
-
-fn canonical_fragment_namespace<'bytes>(
-    source: SourceIdentity,
-    recipe: RecipeFact,
-    projections: &[EntityProjection<'bytes>],
-) -> Result<ContentId<IndexExactSegmentDomain>, BuildError<'bytes>> {
-    let mut hasher = ContentHasher::<IndexExactSegmentDomain>::new();
-    hasher.write_record(&CanonicalRecord(CANONICAL_NAMESPACE_TAG));
-    hasher.write_record(&CanonicalRecord(*source.identity));
-    hasher.write_record(&CanonicalRecord(*recipe.identity));
-    hasher.write_record(&canonical_length_record(
-        projections.len(),
-        CanonicalLengthField::ProjectionCount,
-    )?);
-    for projection in projections {
-        write_namespace_bytes(&mut hasher, projection.name)?;
-        hasher.write_record(&CanonicalRecord(u16::from(projection.kind).to_le_bytes()));
-        hasher.write_record(&CanonicalRecord(type_namespace_record(
-            projection.semantic_type,
-        )));
-    }
-    Ok(hasher.finalize())
-}
-
-fn write_namespace_bytes(
-    hasher: &mut ContentHasher<IndexExactSegmentDomain>,
-    bytes: &[u8],
-) -> Result<(), BuildError<'static>> {
-    hasher.write_record(&canonical_length_record(
-        bytes.len(),
-        CanonicalLengthField::EntityName,
-    )?);
-    for chunk in bytes.chunks(NAMESPACE_CHUNK_BYTES) {
-        hasher.write_record(&namespace_chunk_record(chunk)?);
-    }
-    Ok(())
-}
-
-fn canonical_length_record(
-    length: usize,
-    field: CanonicalLengthField,
-) -> Result<CanonicalRecord<{ size_of::<u64>() }>, BuildError<'static>> {
-    let value =
-        u64::try_from(length).map_err(|source| BuildError::CanonicalLengthAddressSpace {
-            field,
-            observed: length,
-            source,
-        })?;
-    Ok(CanonicalRecord(value.to_le_bytes()))
-}
-
-fn namespace_chunk_record(
-    chunk: &[u8],
-) -> Result<CanonicalRecord<{ NAMESPACE_CHUNK_BYTES + 1 }>, BuildError<'static>> {
-    let length =
-        u8::try_from(chunk.len()).map_err(|source| BuildError::CanonicalLengthAddressSpace {
-            field: CanonicalLengthField::EntityNameChunk,
-            observed: chunk.len(),
-            source,
-        })?;
-    let mut payload = [0_u8; NAMESPACE_CHUNK_BYTES];
-    for (destination, source) in payload.iter_mut().zip(chunk) {
-        *destination = *source;
-    }
-    let mut record = [0_u8; NAMESPACE_CHUNK_BYTES + 1];
-    let [length_slot, bytes @ ..] = &mut record;
-    *length_slot = length;
-    bytes.copy_from_slice(&payload);
-    Ok(CanonicalRecord(record))
-}
-
-fn type_namespace_record(semantic_type: TypeNode) -> [u8; TYPE_NAMESPACE_BYTES] {
-    let (tag, operand) = match semantic_type {
-        TypeNode::Primitive(primitive) => (PRIMITIVE_NAMESPACE_TAG, u32::from(primitive)),
-        TypeNode::Reference(target) => (REFERENCE_NAMESPACE_TAG, target.raw),
-    };
-    let mut record = [0; TYPE_NAMESPACE_BYTES];
-    record[..TYPE_NAMESPACE_TAG_BYTES].copy_from_slice(&[tag]);
-    record[TYPE_NAMESPACE_TAG_BYTES..].copy_from_slice(&operand.to_le_bytes());
-    record
 }
 
 fn type_order(left: TypeNode, right: TypeNode) -> Ordering {

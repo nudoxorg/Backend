@@ -21,8 +21,8 @@ use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_durable_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
 use nudox_index_build::{
-    BuildAdmissionError, BuildError, EntityFact, EntityProjection, IndexBuildScratch,
-    PreparedIndex, build,
+    BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
+    IndexBuildScratch, PreparedIndex, build,
 };
 use nudox_index_core::{ExactRow, ExactSegmentError, LexicalRow, LexicalSegmentError};
 use nudox_ir_format::{
@@ -99,7 +99,7 @@ pub(crate) enum BuildProofError {
     WarmAllocation,
     #[error("allocation measurement did not execute the builder")]
     MeasurementSkipped,
-    #[error("source declaration order changed canonical segment identities")]
+    #[error("a raw declaration-order change reused immutable global entity authority")]
     SourceOrderChanged,
     #[error("compiler type coordinates were treated as structural identity")]
     TypeCoordinatesCollapsed,
@@ -124,6 +124,14 @@ pub(crate) enum BuildProofError {
     EntityLimitPreflightFailed,
     #[error("equal declarations from distinct reopened fragments shared a global exact entity key")]
     FragmentNamespaceCollapsed,
+    #[error("equal declarations from distinct reopened fragments shared lexical authority")]
+    LexicalAuthorityCollapsed,
+    #[error("one reopened fragment did not project an indexed entity")]
+    MissingIndexedEntity,
+    #[error("the immutable snapshot rejected distinct reopened projections: {cause:?}")]
+    SnapshotRejected {
+        cause: nudox_index_core::IndexSnapshotError,
+    },
     #[error("changing one fragment atom changed another fragment's segment proof")]
     AtomChangeEscapedFragment,
     #[error("truncated immutable fragment reached the builder boundary")]
@@ -142,11 +150,6 @@ pub(crate) enum BuildProofError {
 pub(crate) enum BuildTerminal {
     #[error("canonical entity ordinal did not fit compiler identity")]
     EntityOrdinalAddressSpace,
-    #[error("canonical {field:?} length {observed} did not fit the identity stream")]
-    CanonicalLengthAddressSpace {
-        field: nudox_index_build::CanonicalLengthField,
-        observed: usize,
-    },
     #[error("entity bound rejected build: observed {observed}, maximum {maximum}")]
     EntityLimit { maximum: usize, observed: usize },
     #[error("caller region {region:?} was short: required {required}, available {available}")]
@@ -192,23 +195,7 @@ impl From<BuildError<'_>> for BuildTerminal {
     fn from(error: BuildError<'_>) -> Self {
         match error {
             BuildError::Admission(cause) => Self::from(cause),
-            BuildError::EntityOrdinalAddressSpace { .. } => Self::EntityOrdinalAddressSpace,
-            BuildError::CanonicalLengthAddressSpace {
-                field, observed, ..
-            } => Self::CanonicalLengthAddressSpace { field, observed },
-            BuildError::ScratchInitialization {
-                region,
-                required,
-                available,
-            } => Self::ScratchInitialization {
-                region,
-                required,
-                available,
-            },
-            BuildError::AtomAddressSpace { .. } => Self::AtomAddressSpace,
-            BuildError::TypeAddressSpace { .. } => Self::TypeAddressSpace,
-            BuildError::MissingAtom { .. } => Self::MissingAtom,
-            BuildError::MissingTypeNode { .. } => Self::MissingTypeNode,
+            BuildError::Derivation(cause) => Self::from(cause),
             BuildError::Exact { cause } => Self::Core {
                 plane: CorePlane::Exact,
                 fault: exact_core_fault(cause),
@@ -217,6 +204,29 @@ impl From<BuildError<'_>> for BuildTerminal {
                 plane: CorePlane::Lexical,
                 fault: lexical_core_fault(cause),
             },
+        }
+    }
+}
+
+impl From<BuildDerivationError> for BuildTerminal {
+    fn from(error: BuildDerivationError) -> Self {
+        match error {
+            BuildDerivationError::EntityOrdinalAddressSpace { .. } => {
+                Self::EntityOrdinalAddressSpace
+            }
+            BuildDerivationError::ScratchInitialization {
+                region,
+                required,
+                available,
+            } => Self::ScratchInitialization {
+                region,
+                required,
+                available,
+            },
+            BuildDerivationError::AtomAddressSpace { .. } => Self::AtomAddressSpace,
+            BuildDerivationError::TypeAddressSpace { .. } => Self::TypeAddressSpace,
+            BuildDerivationError::MissingAtom { .. } => Self::MissingAtom,
+            BuildDerivationError::MissingTypeNode { .. } => Self::MissingTypeNode,
         }
     }
 }

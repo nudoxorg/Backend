@@ -1,29 +1,34 @@
-use nudox_id::GenerationId;
+use nudox_id::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use nudox_index_core::{
-    IndexSnapshot, LexicalDocumentId, LexicalManifest, LexicalOperation, LexicalOutputError,
+    EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation, LexicalOutputError,
     LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
     LexicalTerminal, LexicalTopK,
 };
+use nudox_ir_vocab::EntityId;
+
+fn document(entity: u32) -> EntityDocumentId {
+    EntityDocumentId {
+        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"lexical-snapshot-test-fragment",
+        ),
+        entity: EntityId::new(entity),
+    }
+}
 
 fn generation() -> GenerationId {
     GenerationId::from_canonical_bytes(b"published-ir-generation")
 }
 
 fn placeholder(segment: nudox_index_core::LexicalSegmentId) -> LexicalSnapshotHit<'static> {
-    LexicalSnapshotHit::new(
-        segment,
-        b"placeholder",
-        LexicalDocumentId::from(0),
-        LexicalScore::from(0),
-    )
+    LexicalSnapshotHit::new(segment, b"placeholder", document(0), LexicalScore::from(0))
 }
 
 #[test]
 fn lexical_terminal_retains_derived_snapshot_and_segment_provenance() {
     let rows = [
-        LexicalRow::new(b"needle", 3, LexicalScore::from(7)),
-        LexicalRow::new(b"needle", 8, LexicalScore::from(7)),
-        LexicalRow::new(b"needle", 9, LexicalScore::from(11)),
+        LexicalRow::new(b"needle", document(3), LexicalScore::from(7)),
+        LexicalRow::new(b"needle", document(8), LexicalScore::from(7)),
+        LexicalRow::new(b"needle", document(9), LexicalScore::from(11)),
     ];
     let segment = LexicalSegment::new(&rows);
     assert!(segment.is_ok());
@@ -68,13 +73,13 @@ fn lexical_terminal_retains_derived_snapshot_and_segment_provenance() {
                 LexicalSnapshotHit::new(
                     segment_id,
                     b"needle",
-                    LexicalDocumentId::from(9),
+                    document(9),
                     LexicalScore::from(11),
                 ),
                 LexicalSnapshotHit::new(
                     segment_id,
                     b"needle",
-                    LexicalDocumentId::from(3),
+                    document(3),
                     LexicalScore::from(7),
                 ),
             ]
@@ -84,17 +89,17 @@ fn lexical_terminal_retains_derived_snapshot_and_segment_provenance() {
 #[test]
 fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
     let old_rows = [
-        LexicalRow::new(b"needle", 1, LexicalScore::from(10)),
-        LexicalRow::new(b"needle", 2, LexicalScore::from(5)),
+        LexicalRow::new(b"needle", document(1), LexicalScore::from(10)),
+        LexicalRow::new(b"needle", document(2), LexicalScore::from(5)),
     ];
     let update_rows = [
-        LexicalRow::new(b"needle", 1, LexicalScore::from(1)),
-        LexicalRow::new(b"needle", 3, LexicalScore::from(7)),
+        LexicalRow::new(b"needle", document(1), LexicalScore::from(1)),
+        LexicalRow::new(b"needle", document(3), LexicalScore::from(7)),
     ];
     let compacted_rows = [
-        LexicalRow::new(b"needle", 1, LexicalScore::from(1)),
-        LexicalRow::new(b"needle", 2, LexicalScore::from(5)),
-        LexicalRow::new(b"needle", 3, LexicalScore::from(7)),
+        LexicalRow::new(b"needle", document(1), LexicalScore::from(1)),
+        LexicalRow::new(b"needle", document(2), LexicalScore::from(5)),
+        LexicalRow::new(b"needle", document(3), LexicalScore::from(7)),
     ];
     let old = LexicalSegment::new(&old_rows);
     let update = LexicalSegment::new(&update_rows);
@@ -154,17 +159,21 @@ fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
         compacted_output.map(|hit| (hit.document, hit.score))
     );
     assert_eq!(
-        incremental_output.map(|hit| u32::from(hit.document)),
+        incremental_output.map(|hit| hit.document.entity.raw),
         [3, 2, 1]
     );
 }
 
 #[test]
 fn term_change_tombstone_hides_old_membership_and_publishes_new_membership() {
-    let old_rows = [LexicalRow::new(b"alpha", 1, LexicalScore::from(9))];
+    let old_rows = [LexicalRow::new(
+        b"alpha",
+        document(1),
+        LexicalScore::from(9),
+    )];
     let update_rows = [
-        LexicalRow::tombstone(b"alpha", 1),
-        LexicalRow::new(b"beta", 1, LexicalScore::from(7)),
+        LexicalRow::tombstone(b"alpha", document(1)),
+        LexicalRow::new(b"beta", document(1), LexicalScore::from(7)),
     ];
     let old = LexicalSegment::new(&old_rows);
     let update = LexicalSegment::new(&update_rows);
@@ -210,14 +219,18 @@ fn term_change_tombstone_hides_old_membership_and_publishes_new_membership() {
     assert!(matches!(
         new_term,
         Ok(LexicalTerminal::Complete { hits: [hit], .. })
-            if hit.document == LexicalDocumentId::from(1)
+            if hit.document == document(1)
                 && hit.score == LexicalScore::from(7)
     ));
 }
 
 #[test]
 fn insufficient_dedup_scratch_precedes_output_mutation() {
-    let rows = [LexicalRow::new(b"needle", 1, LexicalScore::from(1))];
+    let rows = [LexicalRow::new(
+        b"needle",
+        document(1),
+        LexicalScore::from(1),
+    )];
     let segment = LexicalSegment::new(&rows);
     assert!(segment.is_ok());
     let Some(segment) = segment.ok() else {
@@ -258,8 +271,8 @@ fn insufficient_dedup_scratch_precedes_output_mutation() {
 #[test]
 fn insufficient_output_precedes_scratch_and_output_mutation() {
     let rows = [
-        LexicalRow::new(b"needle", 1, LexicalScore::from(2)),
-        LexicalRow::new(b"needle", 2, LexicalScore::from(1)),
+        LexicalRow::new(b"needle", document(1), LexicalScore::from(2)),
+        LexicalRow::new(b"needle", document(2), LexicalScore::from(1)),
     ];
     let segment = LexicalSegment::new(&rows);
     assert!(segment.is_ok());
@@ -279,10 +292,7 @@ fn insufficient_output_precedes_scratch_and_output_mutation() {
     let (Some(manifest), Some(top_k)) = (manifest.ok(), top_k.ok()) else {
         return;
     };
-    let mut scratch = [
-        Some(LexicalDocumentId::from(91)),
-        Some(LexicalDocumentId::from(92)),
-    ];
+    let mut scratch = [Some(document(91)), Some(document(92))];
     let before_scratch = scratch;
     let mut output = [placeholder(segment.id)];
     let before_output = output;
@@ -306,8 +316,16 @@ fn insufficient_output_precedes_scratch_and_output_mutation() {
 
 #[test]
 fn lexical_snapshot_rejects_reversed_update_precedence() {
-    let old_rows = [LexicalRow::new(b"needle", 1, LexicalScore::from(9))];
-    let update_rows = [LexicalRow::new(b"needle", 1, LexicalScore::from(2))];
+    let old_rows = [LexicalRow::new(
+        b"needle",
+        document(1),
+        LexicalScore::from(9),
+    )];
+    let update_rows = [LexicalRow::new(
+        b"needle",
+        document(1),
+        LexicalScore::from(2),
+    )];
     let old = LexicalSegment::new(&old_rows);
     let update = LexicalSegment::new(&update_rows);
     assert!(old.is_ok() && update.is_ok());

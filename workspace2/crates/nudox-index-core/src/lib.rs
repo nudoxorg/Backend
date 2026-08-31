@@ -9,19 +9,21 @@
 
 use core::ops::Deref;
 
+mod document;
 mod exact;
 mod lexical;
 mod snapshot;
+
+pub use document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError};
 
 pub use exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentView,
     MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
 };
 pub use lexical::{
-    LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow,
-    LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentView,
-    LexicalSnapshotHit, LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
-    MAX_LEXICAL_TOP_K,
+    LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalRowValue, LexicalScore,
+    LexicalSegment, LexicalSegmentError, LexicalSegmentView, LexicalSnapshotHit, LexicalTopK,
+    LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
 };
 pub use nudox_id::GenerationId;
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
@@ -542,7 +544,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         &self,
         operation: LexicalOperation<'_>,
         top_k: LexicalTopK,
-        seen_documents: &mut [Option<LexicalDocumentId>],
+        seen_documents: &mut [Option<EntityDocumentId>],
         output: &'output mut [LexicalSnapshotHit<'segment>],
     ) -> Result<LexicalTerminal<'manifest, 'output, 'segment>, LexicalQueryError> {
         let matching_rows = self

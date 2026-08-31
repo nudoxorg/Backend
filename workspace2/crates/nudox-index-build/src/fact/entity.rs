@@ -1,7 +1,7 @@
 use core::ops::Deref;
 
 use super::{ExactEntityKey, ExactEntityValue};
-use nudox_id::{ContentId, IndexExactSegmentDomain};
+use nudox_index_core::EntityDocumentId;
 use nudox_ir_format::{EntityKind, TypeNode};
 use nudox_ir_vocab::EntityId;
 
@@ -19,7 +19,7 @@ pub struct EntityFact<'bytes> {
 /// Public immutable facts of one canonical entity index record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EntityFactView<'bytes> {
-    /// Canonical declaration ordinal used as the lexical document identity.
+    /// Canonical declaration ordinal within the shared immutable-fragment entity address.
     pub entity: EntityId,
     /// Typed canonical exact-plane key; unlike a name, this is unique for every entity.
     pub exact_key: ExactEntityKey,
@@ -39,7 +39,7 @@ impl<'bytes> Deref for EntityFact<'bytes> {
 
 impl<'bytes> EntityFact<'bytes> {
     pub(crate) fn new(
-        fragment_namespace: ContentId<IndexExactSegmentDomain>,
+        document: EntityDocumentId,
         entity: EntityId,
         name: &'bytes [u8],
         kind: EntityKind,
@@ -48,7 +48,7 @@ impl<'bytes> EntityFact<'bytes> {
         Self {
             view: EntityFactView {
                 entity,
-                exact_key: ExactEntityKey::new(fragment_namespace, entity),
+                exact_key: document.into(),
                 exact_value: ExactEntityValue::from_facts(kind, semantic_type),
                 name,
             },
@@ -98,7 +98,7 @@ mod tests {
                 observed: size_of::<ExactEntityValue>(),
             });
         }
-        if size_of::<EntityFact<'_>>() != 72 {
+        if size_of::<EntityFact<'_>>() != 64 {
             return Err(LayoutTestError::EntityFact {
                 observed: size_of::<EntityFact<'_>>(),
             });

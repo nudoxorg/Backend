@@ -27,22 +27,35 @@ pub enum BuildError<'bytes> {
     /// Preflight rejected caller capacity before any caller slot was written.
     #[error(transparent)]
     Admission(#[from] BuildAdmissionError),
+    /// One allocation-free derivation stage could not recover a canonical compiler fact.
+    #[error(transparent)]
+    Derivation(#[from] BuildDerivationError),
+    /// Existing exact-core validation rejected the derived canonical rows.
+    #[error("exact-core rejected the derived canonical rows")]
+    Exact {
+        /// Exact existing-core rejection, including any borrowed offending row evidence.
+        cause: ExactSegmentError<'bytes>,
+    },
+    /// Existing lexical-core validation rejected the derived canonical rows.
+    #[error("lexical-core rejected the derived canonical rows")]
+    Lexical {
+        /// Exact existing-core rejection, including any borrowed offending row evidence.
+        cause: LexicalSegmentError<'bytes>,
+    },
+}
+
+/// A small owned compiler-coordinate or caller-scratch derivation failure.
+///
+/// This is deliberately separate from [`BuildError`]'s borrowed core-segment evidence, so the
+/// hot, allocation-free internal stages return compact values while the public terminal retains
+/// every existing-core rejection in full.
+#[derive(Debug, Error)]
+pub enum BuildDerivationError {
     /// A canonical builder ordinal could not be represented by the compiler entity identity.
     #[error("canonical entity ordinal {ordinal} does not fit compiler entity identity")]
     EntityOrdinalAddressSpace {
         /// Host ordinal generated after canonical entity ordering.
         ordinal: usize,
-        /// Original checked conversion failure.
-        #[source]
-        source: TryFromIntError,
-    },
-    /// A host-sized length could not be represented by the canonical index identity stream.
-    #[error("{field:?} length {observed} does not fit canonical index identity")]
-    CanonicalLengthAddressSpace {
-        /// The exact canonical record whose length could not be encoded.
-        field: CanonicalLengthField,
-        /// Complete host-sized length observed before hashing.
-        observed: usize,
         /// Original checked conversion failure.
         #[source]
         source: TryFromIntError,
@@ -97,29 +110,6 @@ pub enum BuildError<'bytes> {
         /// Type coordinate that could not be recovered.
         semantic_type: TypeId,
     },
-    /// Existing exact-core validation rejected the derived canonical rows.
-    #[error("exact-core rejected the derived canonical rows")]
-    Exact {
-        /// Exact existing-core rejection, including any borrowed offending row evidence.
-        cause: ExactSegmentError<'bytes>,
-    },
-    /// Existing lexical-core validation rejected the derived canonical rows.
-    #[error("lexical-core rejected the derived canonical rows")]
-    Lexical {
-        /// Exact existing-core rejection, including any borrowed offending row evidence.
-        cause: LexicalSegmentError<'bytes>,
-    },
-}
-
-/// A length-bearing component of the canonical fragment namespace stream.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CanonicalLengthField {
-    /// Number of canonical entity projections.
-    ProjectionCount,
-    /// Number of bytes in one canonical entity name.
-    EntityName,
-    /// Number of bytes in one fixed namespace name chunk.
-    EntityNameChunk,
 }
 
 /// A no-write rejection from caller scratch admission.

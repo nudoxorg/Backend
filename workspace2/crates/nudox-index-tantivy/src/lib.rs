@@ -7,13 +7,16 @@
 
 use core::str::Utf8Error;
 
-use nudox_index_core::{IndexSnapshotId, LexicalManifest, LexicalSegmentId};
+use nudox_index_core::{
+    ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError, IndexSnapshotId,
+    LexicalManifest, LexicalSegmentId,
+};
 use tantivy::{
     Index, IndexReader, TantivyDocument,
     collector::TopDocs,
     doc,
     query::{QueryParser, QueryParserError},
-    schema::{Field, INDEXED, STORED, Schema, TEXT, Value},
+    schema::{Field, STORED, Schema, TEXT, Value},
 };
 
 /// Tantivy's minimum writer heap in bytes for this bounded nested build.
@@ -31,8 +34,8 @@ pub const MAX_TANTIVY_QUERY_BYTES: usize = 4_096;
 /// One deterministic adapter hit. Backend floating scores never become identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TantivyHit {
-    /// Stable local document identity; ties are ordered by this value.
-    pub document: u32,
+    /// Stable package document identity; ties are ordered by this value.
+    pub document: EntityDocumentId,
 }
 
 /// Complete immutable lexical terminal retaining the pinned snapshot.
@@ -130,13 +133,16 @@ pub enum TantivyAdapterError {
         #[source]
         source: QueryParserError,
     },
-    /// A stored document lacked or overflowed its stable identity field.
-    #[error("Tantivy result at segment {segment} document {document} has no valid identity")]
+    /// A stored document lacked or malformed its complete immutable identity field.
+    #[error("Tantivy result at segment {segment} document {document} had an invalid identity")]
     StoredIdentity {
         /// Tantivy segment ordinal.
         segment: u32,
         /// Tantivy document ordinal.
         document: u32,
+        /// Typed reason the stored identity could not be recovered.
+        #[source]
+        source: StoredIdentityError,
     },
     /// Tantivy reported more documents than this target can address.
     #[error("Tantivy document count {observed} exceeds this target")]
@@ -146,6 +152,21 @@ pub enum TantivyAdapterError {
         /// Original checked-integer conversion failure.
         #[source]
         source: core::num::TryFromIntError,
+    },
+}
+
+/// Typed rejection while recovering a complete immutable document identity from Tantivy storage.
+#[derive(Debug, thiserror::Error)]
+pub enum StoredIdentityError {
+    /// The stored document did not retain the required fixed-width bytes field.
+    #[error("identity field was absent or not bytes")]
+    Missing,
+    /// The stored byte field did not decode as a typed global document identity.
+    #[error("identity field was malformed")]
+    Malformed {
+        /// Complete fixed-key decoding cause.
+        #[source]
+        source: EntityDocumentIdError,
     },
 }
 
@@ -219,7 +240,7 @@ impl TantivyLexical {
         }
         let mut schema = Schema::builder();
         let body_field = schema.add_text_field("body", TEXT);
-        let document_field = schema.add_u64_field("document", STORED | INDEXED);
+        let document_field = schema.add_bytes_field("document", STORED);
         let index = Index::create_in_ram(schema.build());
         let mut writer =
             index
@@ -246,10 +267,11 @@ impl TantivyLexical {
                         source,
                     }
                 })?;
+                let document: [u8; ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
                 writer
                     .add_document(doc!(
                         body_field => text,
-                        document_field => u64::from(u32::from(row.document)),
+                        document_field => document.to_vec(),
                     ))
                     .map_err(|source| TantivyAdapterError::Tantivy {
                         phase: TantivyPhase::AddDocument,
@@ -334,16 +356,23 @@ impl TantivyLexical {
                         phase: TantivyPhase::ReadDocument,
                         source,
                     })?;
-            let Some(identity) = document
+            let identity = document
                 .get_first(self.document_field)
-                .and_then(|value| value.as_u64())
-                .and_then(|value| u32::try_from(value).ok())
-            else {
-                return Err(TantivyAdapterError::StoredIdentity {
+                .and_then(|value| value.as_bytes())
+                .ok_or(TantivyAdapterError::StoredIdentity {
                     segment: address.segment_ord,
                     document: address.doc_id,
-                });
-            };
+                    source: StoredIdentityError::Missing,
+                })
+                .and_then(|bytes| {
+                    EntityDocumentId::try_from(bytes).map_err(|source| {
+                        TantivyAdapterError::StoredIdentity {
+                            segment: address.segment_ord,
+                            document: address.doc_id,
+                            source: StoredIdentityError::Malformed { source },
+                        }
+                    })
+                })?;
             insert_document(&mut output[..requested_limit], &mut written, identity);
         }
         Ok(TantivyTerminal {
@@ -353,7 +382,11 @@ impl TantivyLexical {
     }
 }
 
-fn insert_document(output: &mut [Option<TantivyHit>], written: &mut usize, document: u32) {
+fn insert_document(
+    output: &mut [Option<TantivyHit>],
+    written: &mut usize,
+    document: EntityDocumentId,
+) {
     if output.is_empty() {
         return;
     }
