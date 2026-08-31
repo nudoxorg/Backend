@@ -1,5 +1,7 @@
 //! Fixed-capacity state projection for core application replies.
 
+use core::ops::Deref;
+
 use wave_application_core::{
     AdaptiveDisposition, ApplicationReply, Capability, CapabilityHealth, CorrelationId,
     DiagnosticCode, ExecutionState, OperationKey, ReplyBody, Terminal,
@@ -286,15 +288,37 @@ struct LastReply {
 /// Fixed-capacity presentation state for one application window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShellState {
-    generation: SurfaceStatus,
-    adaptive: AdaptiveProjection,
-    execution: ExecutionProjection,
-    index: SurfaceStatus,
-    graph: SurfaceStatus,
-    vector: SurfaceStatus,
-    health: HealthProjection,
+    projection: ShellProjection,
     last_reply: Option<LastReply>,
-    notification_epoch: u64,
+}
+
+/// Immutable public projection facts for one application window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShellProjection {
+    /// Compiler-generation surface state.
+    pub generation: SurfaceStatus,
+    /// Adaptive placement projection.
+    pub adaptive: AdaptiveProjection,
+    /// Service-owned execution projection.
+    pub execution: ExecutionProjection,
+    /// Index surface state.
+    pub index: SurfaceStatus,
+    /// Graph surface state.
+    pub graph: SurfaceStatus,
+    /// Vector surface state.
+    pub vector: SurfaceStatus,
+    /// Health projection.
+    pub health: HealthProjection,
+    /// Number of coalesced notification epochs.
+    pub notification_epoch: u64,
+}
+
+impl Deref for ShellState {
+    type Target = ShellProjection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.projection
+    }
 }
 
 impl ShellState {
@@ -322,18 +346,19 @@ impl ShellState {
             return Ok(BatchReceipt {
                 applied_replies: 0,
                 notifications: 0,
-                notification_epoch: self.notification_epoch,
+                notification_epoch: self.projection.notification_epoch,
             });
         }
 
         let epoch = self
+            .projection
             .notification_epoch
             .checked_add(1)
             .ok_or(ApplyError::NotificationEpochExhausted)?;
         for reply in replies {
             self.apply_reply(reply);
         }
-        self.notification_epoch = epoch;
+        self.projection.notification_epoch = epoch;
         Ok(BatchReceipt {
             applied_replies: replies.len(),
             notifications: 1,
@@ -347,57 +372,33 @@ impl ShellState {
         [
             SurfaceSummary {
                 surface: Surface::Generation,
-                state: self.generation.projection(),
+                state: self.projection.generation.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Adaptive,
-                state: self.adaptive.projection(),
+                state: self.projection.adaptive.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Execution,
-                state: self.execution.projection(),
+                state: self.projection.execution.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Index,
-                state: self.index.projection(),
+                state: self.projection.index.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Graph,
-                state: self.graph.projection(),
+                state: self.projection.graph.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Vector,
-                state: self.vector.projection(),
+                state: self.projection.vector.projection(),
             },
             SurfaceSummary {
                 surface: Surface::Health,
-                state: self.health.projection(),
+                state: self.projection.health.projection(),
             },
         ]
-    }
-
-    /// Returns the compiler generation projection.
-    #[must_use]
-    pub const fn generation(&self) -> SurfaceStatus {
-        self.generation
-    }
-
-    /// Returns the pure adaptive decision projection.
-    #[must_use]
-    pub const fn adaptive(&self) -> AdaptiveProjection {
-        self.adaptive
-    }
-
-    /// Returns the service-owned execution projection.
-    #[must_use]
-    pub const fn execution(&self) -> ExecutionProjection {
-        self.execution
-    }
-
-    /// Returns the projected health body.
-    #[must_use]
-    pub const fn health(&self) -> HealthProjection {
-        self.health
     }
 
     /// Returns the last core correlation, if a reply was applied.
@@ -427,12 +428,6 @@ impl ShellState {
         }
     }
 
-    /// Returns the number of coalesced notification epochs.
-    #[must_use]
-    pub const fn notification_epoch(&self) -> u64 {
-        self.notification_epoch
-    }
-
     fn apply_reply(&mut self, reply: &ApplicationReply) {
         self.last_reply = Some(LastReply {
             correlation: reply.correlation,
@@ -442,7 +437,8 @@ impl ShellState {
 
         match reply.body {
             ReplyBody::CompilerPassthrough { .. } => {
-                self.generation = status_from_terminal(reply.terminal, reply.diagnostic);
+                self.projection.generation =
+                    status_from_terminal(reply.terminal, reply.diagnostic);
             }
             ReplyBody::DependencyUnavailable { capability } => {
                 if let Some(status) = self.status_for(capability) {
@@ -450,14 +446,14 @@ impl ShellState {
                 }
             }
             ReplyBody::Health(facts) => {
-                self.health = HealthProjection::Reported {
+                self.projection.health = HealthProjection::Reported {
                     facts,
                     terminal: reply.terminal,
                 };
                 self.project_health_status(facts, reply.terminal);
             }
             ReplyBody::Adaptive(disposition) => {
-                self.adaptive = AdaptiveProjection::Reported {
+                self.projection.adaptive = AdaptiveProjection::Reported {
                     disposition,
                     terminal: reply.terminal,
                 };
@@ -466,14 +462,14 @@ impl ShellState {
                 operation,
                 transition,
             } => {
-                self.execution = ExecutionProjection::Started {
+                self.projection.execution = ExecutionProjection::Started {
                     operation,
                     transition,
                     terminal: reply.terminal,
                 };
             }
             ReplyBody::Execution(state) => {
-                self.execution = ExecutionProjection::Reported {
+                self.projection.execution = ExecutionProjection::Reported {
                     state,
                     terminal: reply.terminal,
                 };
@@ -501,10 +497,12 @@ impl ShellState {
 
     fn status_for(&mut self, capability: Capability) -> Option<&mut SurfaceStatus> {
         match capability {
-            Capability::CompilerRegistry | Capability::CompilerOutput => Some(&mut self.generation),
-            Capability::Index => Some(&mut self.index),
-            Capability::Graph => Some(&mut self.graph),
-            Capability::Vector => Some(&mut self.vector),
+            Capability::CompilerRegistry | Capability::CompilerOutput => {
+                Some(&mut self.projection.generation)
+            }
+            Capability::Index => Some(&mut self.projection.index),
+            Capability::Graph => Some(&mut self.projection.graph),
+            Capability::Vector => Some(&mut self.projection.vector),
             Capability::LocalAnalyzer | Capability::Remote => None,
         }
     }
@@ -513,15 +511,17 @@ impl ShellState {
 impl Default for ShellState {
     fn default() -> Self {
         Self {
-            generation: SurfaceStatus::Checking,
-            adaptive: AdaptiveProjection::Checking,
-            execution: ExecutionProjection::Checking,
-            index: SurfaceStatus::Checking,
-            graph: SurfaceStatus::Checking,
-            vector: SurfaceStatus::Checking,
-            health: HealthProjection::Checking,
+            projection: ShellProjection {
+                generation: SurfaceStatus::Checking,
+                adaptive: AdaptiveProjection::Checking,
+                execution: ExecutionProjection::Checking,
+                index: SurfaceStatus::Checking,
+                graph: SurfaceStatus::Checking,
+                vector: SurfaceStatus::Checking,
+                health: HealthProjection::Checking,
+                notification_epoch: 0,
+            },
             last_reply: None,
-            notification_epoch: 0,
         }
     }
 }
@@ -542,29 +542,12 @@ impl SurfaceStatus {
 /// Result of one shell state boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchReceipt {
-    applied_replies: usize,
-    notifications: u8,
-    notification_epoch: u64,
-}
-
-impl BatchReceipt {
-    /// Returns the number of core replies projected.
-    #[must_use]
-    pub const fn applied_replies(self) -> usize {
-        self.applied_replies
-    }
-
-    /// Returns the number of GPUI notifications requested for this boundary.
-    #[must_use]
-    pub const fn notifications(self) -> u8 {
-        self.notifications
-    }
-
-    /// Returns the resulting coalesced notification epoch.
-    #[must_use]
-    pub const fn notification_epoch(self) -> u64 {
-        self.notification_epoch
-    }
+    /// Number of core replies projected.
+    pub applied_replies: usize,
+    /// Number of GPUI notifications requested for this boundary.
+    pub notifications: u8,
+    /// Resulting coalesced notification epoch.
+    pub notification_epoch: u64,
 }
 
 /// A bounded projection error.

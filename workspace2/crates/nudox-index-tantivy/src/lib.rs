@@ -38,22 +38,10 @@ pub struct TantivyHit {
 /// Complete immutable lexical terminal retaining the pinned snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TantivyTerminal {
-    snapshot: IndexSnapshotId,
-    written: usize,
-}
-
-impl TantivyTerminal {
-    /// Returns the exact immutable snapshot searched by Tantivy.
-    #[must_use]
-    pub const fn snapshot(self) -> IndexSnapshotId {
-        self.snapshot
-    }
-
-    /// Returns the number of initialized result slots.
-    #[must_use]
-    pub const fn written(self) -> usize {
-        self.written
-    }
+    /// Exact immutable snapshot searched by Tantivy.
+    pub snapshot: IndexSnapshotId,
+    /// Number of initialized result slots.
+    pub written: usize,
 }
 
 /// Structured build/query failure retaining its causal Tantivy source.

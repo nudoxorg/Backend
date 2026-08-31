@@ -106,7 +106,7 @@ fn first_frame_is_stable_without_polling_or_allocated_rows() {
             .all(|summary| summary.state == ProjectionState::Checking)
     );
     assert_eq!(state.last_correlation(), None);
-    assert_eq!(state.notification_epoch(), 0);
+    assert_eq!(state.notification_epoch, 0);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn compiler_passthrough_is_projected_as_degraded_artifact_output() -> Result<(),
         matches!(reply.body, ReplyBody::CompilerPassthrough { source: returned, .. } if returned == source)
     );
     assert_eq!(
-        state.generation(),
+        state.generation,
         SurfaceStatus::Degraded {
             terminal: Terminal::Partial {
                 emitted: 1,
@@ -156,7 +156,7 @@ fn adaptive_decision_is_projected_without_replacing_its_typed_cause() -> Result<
     apply(&mut state, &[reply])?;
 
     assert!(matches!(
-        state.adaptive(),
+        state.adaptive,
         AdaptiveProjection::Reported {
             disposition: AdaptiveDisposition::Overloaded(_),
             terminal: Terminal::Degraded {
@@ -193,7 +193,7 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
     let mut state = ShellState::default();
     apply(&mut state, &[admitted])?;
     assert_eq!(
-        state.execution(),
+        state.execution,
         ExecutionProjection::Started {
             operation,
             transition,
@@ -208,7 +208,7 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
     });
     apply(&mut state, &[pending])?;
     assert!(matches!(
-        state.execution(),
+        state.execution,
         ExecutionProjection::Reported {
             state: ExecutionState::Pending { operation: observed, .. },
             terminal: Terminal::Accepted { operation: accepted },
@@ -222,7 +222,7 @@ fn execution_started_and_terminal_are_projected_as_distinct_states() -> Result<(
     });
     apply(&mut state, &[completed])?;
     assert!(matches!(
-        state.execution(),
+        state.execution,
         ExecutionProjection::Reported {
             state: ExecutionState::Completed { operation: observed, .. },
             terminal: Terminal::Complete { emitted: 1 },
@@ -254,13 +254,13 @@ fn health_preserves_all_six_capability_facts() -> Result<(), TestError> {
     apply(&mut state, &[incoming])?;
 
     assert_eq!(
-        state.health(),
+        state.health,
         HealthProjection::Reported {
             facts,
             terminal: incoming.terminal,
         }
     );
-    assert_eq!(state.health().facts(), Some(facts));
+    assert_eq!(state.health.facts(), Some(facts));
     assert_eq!(
         state.summaries()[6].state,
         ProjectionState::Degraded(Capability::CompilerOutput)
@@ -326,15 +326,15 @@ fn oversized_batch_is_rejected_before_state_mutation() {
         })
     );
     assert_eq!(state.last_correlation(), None);
-    assert_eq!(state.notification_epoch(), 0);
+    assert_eq!(state.notification_epoch, 0);
 }
 
 #[test]
 fn empty_boundary_is_fused_without_notification() -> Result<(), ApplyError> {
     let mut state = ShellState::default();
     let receipt = apply(&mut state, &[])?;
-    assert_eq!(receipt.applied_replies(), 0);
-    assert_eq!(receipt.notifications(), 0);
-    assert_eq!(receipt.notification_epoch(), 0);
+    assert_eq!(receipt.applied_replies, 0);
+    assert_eq!(receipt.notifications, 0);
+    assert_eq!(receipt.notification_epoch, 0);
     Ok(())
 }

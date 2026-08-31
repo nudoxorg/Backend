@@ -36,8 +36,8 @@ fn real_tantivy_document_set_matches_the_borrowed_lexical_core() {
     let terminal = adapter
         .search(snapshot_id, "rust", 2, &mut tantivy_output)
         .expect("Tantivy membership query");
-    assert_eq!(terminal.snapshot(), snapshot_id);
-    assert_eq!(terminal.written(), 2);
+    assert_eq!(terminal.snapshot, snapshot_id);
+    assert_eq!(terminal.written, 2);
     assert_eq!(
         tantivy_output,
         [
@@ -71,13 +71,13 @@ fn tantivy_projects_only_newest_live_term_memberships() {
     let old_term = adapter
         .search(snapshot_id, "alpha", 1, &mut old_term_output)
         .expect("deleted term query");
-    assert_eq!(old_term.written(), 0);
+    assert_eq!(old_term.written, 0);
 
     let mut new_term_output = [None];
     let new_term = adapter
         .search(snapshot_id, "beta", 1, &mut new_term_output)
         .expect("new term query");
-    assert_eq!(new_term.written(), 1);
+    assert_eq!(new_term.written, 1);
     assert_eq!(new_term_output, [Some(TantivyHit { document: 1 })]);
 }
 
@@ -105,7 +105,7 @@ fn a_different_corpus_cannot_claim_the_same_snapshot() {
     let terminal = adapter
         .search(snapshot.id, "rust", 1, &mut output)
         .expect("matching query");
-    assert_eq!(terminal.written(), 1);
+    assert_eq!(terminal.written, 1);
     assert_eq!(output, [Some(TantivyHit { document: 1 })]);
 }
 

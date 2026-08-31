@@ -10,8 +10,8 @@ mod state;
 
 pub use state::{
     AdaptiveProjection, ApplyError, BatchReceipt, ExecutionProjection, HealthProjection,
-    MAX_BATCH_REPLIES, ProjectionState, SURFACE_COUNT, ShellState, Surface, SurfaceStatus,
-    SurfaceSummary,
+    MAX_BATCH_REPLIES, ProjectionState, SURFACE_COUNT, ShellProjection, ShellState, Surface,
+    SurfaceStatus, SurfaceSummary,
 };
 
 // These are re-exports of the core types, not shell-owned DTOs. Re-exporting
