@@ -139,17 +139,15 @@ impl Error for CanonicalContentIdDecodeError {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CanonicalContentId<DomainTag>(ContentId<DomainTag>);
 
-impl<DomainTag> CanonicalContentId<DomainTag> {
-    /// Returns the decoded identity while retaining its compile-time domain marker.
-    #[must_use]
-    pub const fn into_inner(self) -> ContentId<DomainTag> {
-        self.0
-    }
-}
-
 impl<DomainTag> From<ContentId<DomainTag>> for CanonicalContentId<DomainTag> {
     fn from(value: ContentId<DomainTag>) -> Self {
         Self(value)
+    }
+}
+
+impl<DomainTag> From<CanonicalContentId<DomainTag>> for ContentId<DomainTag> {
+    fn from(value: CanonicalContentId<DomainTag>) -> Self {
+        value.0
     }
 }
 
@@ -691,7 +689,7 @@ fn canonical_content_id<DomainTag: Domain>(
     field: &'static str,
 ) -> Result<ContentId<DomainTag>, AdapterError> {
     CanonicalContentId::<DomainTag>::try_from(value)
-        .map(CanonicalContentId::into_inner)
+        .map(Into::into)
         .map_err(|source| AdapterError::invalid_content_id(field, source))
 }
 
