@@ -16,6 +16,3 @@ allocation-counter.workspace = true
 
 [features]
 loom-model = ["dep:loom"]
-
-[lints]
-workspace = true

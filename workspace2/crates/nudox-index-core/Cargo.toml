@@ -9,6 +9,3 @@ publish.workspace = true
 [dependencies]
 nudox-id = { path = "../nudox-id" }
 nudox-index-vocab = { path = "../nudox-index-vocab" }
-
-[lints]
-workspace = true

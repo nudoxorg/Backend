@@ -11,6 +11,3 @@ nudox-id = { path = "../nudox-id" }
 
 [dev-dependencies]
 allocation-counter.workspace = true
-
-[lints]
-workspace = true

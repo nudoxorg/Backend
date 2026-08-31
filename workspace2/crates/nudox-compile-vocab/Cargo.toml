@@ -8,6 +8,3 @@ publish.workspace = true
 
 [dependencies]
 nudox-ir-vocab = { path = "../nudox-ir-vocab" }
-
-[lints]
-workspace = true

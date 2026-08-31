@@ -13,6 +13,3 @@ role = "adapter"
 nudox-index-core = { path = "../nudox-index-core" }
 tantivy.workspace = true
 thiserror.workspace = true
-
-[lints]
-workspace = true

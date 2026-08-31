@@ -24,6 +24,17 @@
   state: watching
   owner and closing artifact: Terra, `flake.nix` and `tools/quality.sh`
 
+- fingerprint: inherited-lint-policy-drift
+  role: terra
+  capability and commit: shared-crates-migration, post-`34fb9070`
+  observed behavior and concrete artifact: root strict Clippy rejected `nudox-ir-format` for `missing_docs` and `clippy::must_use_candidate` after moved manifests newly opted into `[lints] workspace = true`.
+  why the current rubric/skill/tool allowed it: path normalization was treated as equivalent to policy inheritance even where the source manifest previously owned no workspace lint configuration.
+  local correction attempted and result: removed new workspace-lint inheritance from the ten formerly independent manifests and restored the two local lint tables that existed before the move; focused strict Clippy for IR and compiler packages is green.
+  suggested enforcement: test
+  occurrences: shared-crates-migration
+  state: closed
+  owner and closing artifact: Terra, moved `Cargo.toml` manifests
+
 ## Explained
 
 - Cargo's workspace rules make the root the only owner of the shared lock, inherited package/lint policy, and profiles; moved manifests can inherit that policy without inheriting adapter dependencies. The rubric now requires a root metadata check and one root lock.
