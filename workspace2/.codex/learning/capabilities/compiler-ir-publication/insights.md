@@ -46,6 +46,17 @@
   state: closed
   owner and closing artifact: terra / native compile integration test
 
+- fingerprint: mapped-fragment-borrows-require-one-complete-proof
+  role: terra
+  capability and commit: compiler-ir-publication / mapped fragment retrieval
+  observed behavior and concrete artifact: a byte-range manifest alone cannot safely lend file-backed semantic views unless the exact complete mapping first satisfies both its artifact commitment and compact-fragment grammar.
+  why the current rubric/skill/tool allowed it: range verification protected fetched sections, but did not own a file-backed lifecycle or prohibit an extra parse on each view.
+  local correction attempted and result: optional `mmap` opens a checked nonzero immutable file length, maps exactly that length, validates the complete six-lane manifest and grammar once, then retains the `FragmentLayout` so views borrow the same mapping pointer without reparse or copy.
+  suggested enforcement: test
+  occurrences: compiler-ir-publication
+  state: closed
+  owner and closing artifact: terra / mapped fragment feature tests
+
 ## Explained
 
 ## Corrected
