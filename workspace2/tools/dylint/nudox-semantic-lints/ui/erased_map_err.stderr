@@ -5,7 +5,7 @@ LL |     result.map_err(|_| ConfigError::Allocation)
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = help: retain the source in the replacement error or pass it to an exact diagnostic function
-   = note: requested on the command line with `-D nudox-erased-map-err`
+   = note: requested on the command line with `-F nudox-erased-map-err`
 
 error: Result::map_err discards its unused source error
   --> $DIR/erased_map_err.rs:17:20

@@ -31,9 +31,16 @@ if ((${#lint_libraries[@]} != 1)); then
 fi
 lint_library="${lint_libraries[0]}"
 
-# Every lint registered by the library is warn-by-default. Denying all warnings here makes
-# registration sufficient for shipping enforcement and prevents the runner's inventory drifting.
-export DYLINT_RUSTFLAGS="-Aunknown-lints -Dwarnings -Fnudox_poison_sync_primitive -Fnudox_redundant_public_accessor"
+# Keep ordinary compiler warnings fatal and make every architectural law non-waivable in shipping
+# code.  The explicit force inventory prevents a crate-local `allow` from silently weakening a law.
+export DYLINT_RUSTFLAGS="-Aunknown-lints -Dwarnings \
+  -Fnudox_dynamic_dispatch \
+  -Fnudox_dynamic_json_construction \
+  -Fnudox_enum_static_str_projection \
+  -Fnudox_erased_map_err \
+  -Fnudox_poison_sync_primitive \
+  -Fnudox_redundant_public_accessor \
+  -Fnudox_stringly_state_field"
 
 dylint_cargo dylint \
   --no-deps \

@@ -5,7 +5,7 @@ LL |     step: &'static str,
    |     ^^^^^^^^^^^^^^^^^^
    |
    = help: replace the static string vocabulary with a closed enum or semantic type
-   = note: requested on the command line with `-D nudox-stringly-state-field`
+   = note: requested on the command line with `-F nudox-stringly-state-field`
 
 error: closed state/error field `field` is stringly typed
   --> $DIR/stringly_state_field.rs:12:20

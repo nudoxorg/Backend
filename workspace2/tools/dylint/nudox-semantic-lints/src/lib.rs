@@ -114,13 +114,13 @@ fn ui() -> std::io::Result<()> {
 
     dylint_testing::ui::Test::src_base(env!("CARGO_PKG_NAME"), fixture_root)
         .rustc_flags([
-            "-Dnudox_dynamic_dispatch",
-            "-Dnudox_dynamic_json_construction",
-            "-Dnudox_erased_map_err",
+            "-Fnudox_dynamic_dispatch",
+            "-Fnudox_dynamic_json_construction",
+            "-Fnudox_erased_map_err",
             "-Fnudox_poison_sync_primitive",
             "-Fnudox_redundant_public_accessor",
-            "-Dnudox_stringly_state_field",
-            "-Dnudox_enum_static_str_projection",
+            "-Fnudox_stringly_state_field",
+            "-Fnudox_enum_static_str_projection",
         ])
         .run();
     Ok(())
