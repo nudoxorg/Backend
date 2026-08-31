@@ -29,11 +29,13 @@ pub use content::{
 };
 pub use generation::{GenerationHasher, GenerationId};
 pub use marker::{
-    CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, DomainCode, DomainTag,
-    Encoding, EncodingCode, EncodingTag, FrameEncoding, IndexExactSegmentDomain,
-    IndexLexicalSegmentDomain, IndexSnapshotDomain, IndexVectorSegmentDomain,
-    LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain,
-    StageKeyDomain,
+    CapabilityDomain, CompilationTargetDomain, CompilePublicationDomain,
+    CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DependencySetDomain,
+    Domain, DomainCode, DomainTag, Encoding, EncodingCode, EncodingTag, FrameEncoding,
+    IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
+    IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
+    IrManifestEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain,
+    RootDomain, SourceFactDomain, StageKeyDomain, ToolchainDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};

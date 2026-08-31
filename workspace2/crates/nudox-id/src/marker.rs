@@ -94,22 +94,35 @@ protocol_registry!(
         (IndexSnapshotDomain, IndexSnapshot, 8, b"nudox.idx.snap.1"),
         (IndexExactSegmentDomain, IndexExactSegment, 9, b"nudox.idx.exact1"),
         (IndexLexicalSegmentDomain, IndexLexicalSegment, 10, b"nudox.idx.lexic1"),
-        (IndexVectorSegmentDomain, IndexVectorSegment, 11, b"nudox.idx.vectr1")
+        (IndexVectorSegmentDomain, IndexVectorSegment, 11, b"nudox.idx.vectr1"),
+        (IrFragmentDomain, IrFragment, 12, b"nudox.irfrag.v1\0"),
+        (IrManifestDomain, IrManifest, 13, b"nudox.irmani.v1\0"),
+        (SourceFactDomain, SourceFact, 14, b"nudox.source.v1\0"),
+        (ToolchainDomain, Toolchain, 15, b"nudox.tool.v1\0\0\0"),
+        (CompilationTargetDomain, CompilationTarget, 16, b"nudox.target.v1\0"),
+        (CompileRecipeDomain, CompileRecipe, 17, b"nudox.recipe.v1\0"),
+        (CompilePublicationDomain, CompilePublication, 18, b"nudox.publish.v1")
     }
     encodings {
         (FrameEncoding, Frame, 1, b"nudox.frame.v1\0\0"),
         (LocalitySortedEncoding, LocalitySorted, 2, b"nudox.locsort.v1"),
-        (ObjectPackEncoding, ObjectPack, 3, b"nudox.objpack.v1")
+        (ObjectPackEncoding, ObjectPack, 3, b"nudox.objpack.v1"),
+        (IrFragmentEncoding, IrFragment, 4, b"nudox.irfrag.w1\0"),
+        (IrManifestEncoding, IrManifest, 5, b"nudox.irmani.w1\0"),
+        (CompilePublicationEncoding, CompilePublication, 6, b"nudox.publish.w1")
     }
 );
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, Encoding,
-        FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
-        IndexVectorSegmentDomain, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
-        OperationDomain, RootDomain, StageKeyDomain,
+        CapabilityDomain, CompilationTargetDomain, CompilePublicationDomain,
+        CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DependencySetDomain,
+        Domain, Encoding, FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+        IndexSnapshotDomain, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
+        IrManifestDomain, IrManifestEncoding, LocalitySortedEncoding, ObjectDomain,
+        ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain, StageKeyDomain,
+        ToolchainDomain,
     };
 
     #[test]
@@ -126,6 +139,13 @@ mod tests {
             IndexExactSegmentDomain::TAG,
             IndexLexicalSegmentDomain::TAG,
             IndexVectorSegmentDomain::TAG,
+            IrFragmentDomain::TAG,
+            IrManifestDomain::TAG,
+            SourceFactDomain::TAG,
+            ToolchainDomain::TAG,
+            CompilationTargetDomain::TAG,
+            CompileRecipeDomain::TAG,
+            CompilePublicationDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {
@@ -136,6 +156,9 @@ mod tests {
             FrameEncoding::TAG,
             LocalitySortedEncoding::TAG,
             ObjectPackEncoding::TAG,
+            IrFragmentEncoding::TAG,
+            IrManifestEncoding::TAG,
+            CompilePublicationEncoding::TAG,
         ];
         for (index, encoding) in encodings.iter().enumerate() {
             for other in encodings.iter().skip(index + 1) {
