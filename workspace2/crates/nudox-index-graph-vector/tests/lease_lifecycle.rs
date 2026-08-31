@@ -1,12 +1,13 @@
 use core::{
     mem::size_of,
     pin::Pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
 use nudox_index_graph_vector::{
-    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphAuthority, GraphEdge, GraphStreamEvent,
-    GraphTerminal, LeasedGraphBatch, PartitionId, ProjectionId, StreamCapacityError, TraceProbe,
+    Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphLease, GraphStreamEvent,
+    GraphTerminal, LeaseCapacity, LeasedGraphBatch, PartitionId, ProjectionId, StreamCapacityError,
+    TraceProbe,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
@@ -14,43 +15,29 @@ use nudox_ir_vocab::EntityId;
 const CAPACITY_ONE: usize = 1;
 const CAPACITY_TWO: usize = 2;
 
+#[derive(Debug, Eq, PartialEq)]
+enum TestFailure {
+    Admission(StreamCapacityError),
+    CapacityConversion,
+    ExpectedBatch { phase: TestPhase },
+    ExpectedTerminal { phase: TestPhase },
+    ExpectedRejection { phase: TestPhase },
+    ThreadPanicked { worker: Worker },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestPhase {
-    Capacity,
     ReverseCompletion,
     DropConservation,
     TerminalFusion,
+    ProducerDisconnect,
     Cancellation,
     ConcurrentCompletion,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EventKind {
-    Pending,
-    Batch,
-    Complete,
-    Partial,
-    Cancelled,
-    Fused,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum TestFailure {
-    Admission(StreamCapacityError),
-    UnexpectedEvent {
-        phase: TestPhase,
-        expected: EventKind,
-        observed: EventKind,
-    },
-    ThreadPanicked {
-        worker: Worker,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Worker {
     First,
-    Second,
 }
 
 type TestResult = Result<(), TestFailure>;
@@ -71,74 +58,43 @@ fn edge(graph: GraphAuthority, partition: PartitionId, source: u32, target: u32)
     )
 }
 
-fn channel<'cancellation>(
+fn lease<'cancellation>(
     graph: GraphAuthority,
     selected: &[PartitionId],
     item_capacity: usize,
     cancellation: &'cancellation Cancellation,
     trace: &mut TraceProbe<'_>,
-) -> Result<(EdgeBatchProducer, EdgeBatchStream<'cancellation>), TestFailure> {
-    let byte_capacity = item_capacity * size_of::<GraphEdge>();
-    EdgeBatchStream::channel(
-        graph,
-        selected,
-        item_capacity,
-        byte_capacity,
-        cancellation,
-        trace,
-    )
-    .map_err(TestFailure::Admission)
+) -> Result<GraphLease<'cancellation>, TestFailure> {
+    let edges_per_partition =
+        u8::try_from(item_capacity).map_err(|_| TestFailure::CapacityConversion)?;
+    let capacity = LeaseCapacity {
+        edges_per_partition,
+        bytes_per_partition: item_capacity * size_of::<GraphEdge>(),
+    };
+    GraphLease::new(graph, selected, capacity, cancellation, trace).map_err(TestFailure::Admission)
 }
 
-fn event_kind(event: &GraphStreamEvent<'_>) -> EventKind {
-    match event {
-        GraphStreamEvent::Batch(_) => EventKind::Batch,
-        GraphStreamEvent::Terminal(GraphTerminal::Complete { .. }) => EventKind::Complete,
-        GraphStreamEvent::Terminal(GraphTerminal::Partial { .. }) => EventKind::Partial,
-        GraphStreamEvent::Terminal(GraphTerminal::Cancelled { .. }) => EventKind::Cancelled,
-        GraphStreamEvent::Fused => EventKind::Fused,
-    }
-}
-
-fn next_batch<'stream, 'cancellation>(
-    stream: Pin<&'stream mut EdgeBatchStream<'cancellation>>,
+fn next_batch<'stream, 'lease, 'cancellation>(
+    stream: Pin<&'stream mut EdgeBatchStream<'lease, 'cancellation>>,
     context: &mut Context<'_>,
     trace: &mut TraceProbe<'_>,
     phase: TestPhase,
 ) -> Result<LeasedGraphBatch<'stream>, TestFailure> {
     match stream.poll_batch(context, trace) {
         Poll::Ready(GraphStreamEvent::Batch(batch)) => Ok(batch),
-        Poll::Pending => Err(TestFailure::UnexpectedEvent {
-            phase,
-            expected: EventKind::Batch,
-            observed: EventKind::Pending,
-        }),
-        Poll::Ready(event) => Err(TestFailure::UnexpectedEvent {
-            phase,
-            expected: EventKind::Batch,
-            observed: event_kind(&event),
-        }),
+        Poll::Pending | Poll::Ready(_) => Err(TestFailure::ExpectedBatch { phase }),
     }
 }
 
-fn next_terminal<'cancellation>(
-    stream: Pin<&mut EdgeBatchStream<'cancellation>>,
+fn next_terminal<'stream, 'lease, 'cancellation>(
+    stream: Pin<&'stream mut EdgeBatchStream<'lease, 'cancellation>>,
     context: &mut Context<'_>,
     trace: &mut TraceProbe<'_>,
     phase: TestPhase,
 ) -> Result<GraphTerminal, TestFailure> {
     match stream.poll_batch(context, trace) {
         Poll::Ready(GraphStreamEvent::Terminal(terminal)) => Ok(terminal),
-        Poll::Pending => Err(TestFailure::UnexpectedEvent {
-            phase,
-            expected: EventKind::Partial,
-            observed: EventKind::Pending,
-        }),
-        Poll::Ready(event) => Err(TestFailure::UnexpectedEvent {
-            phase,
-            expected: EventKind::Partial,
-            observed: event_kind(&event),
-        }),
+        Poll::Pending | Poll::Ready(_) => Err(TestFailure::ExpectedTerminal { phase }),
     }
 }
 
@@ -155,13 +111,14 @@ fn item_capacity_one_and_two_reject_overflow_without_charging() -> TestResult {
     let mut trace = TraceProbe::disabled();
 
     for item_capacity in [CAPACITY_ONE, CAPACITY_TWO] {
-        let (producer, stream) = channel(
+        let lease = lease(
             graph,
             &[partition],
             item_capacity,
             &cancellation,
             &mut trace,
         )?;
+        let (mut producer, stream) = lease.split().map_err(TestFailure::Admission)?;
         let overfull = &edges[..item_capacity + CAPACITY_ONE];
         assert_eq!(
             producer.settle(partition, overfull),
@@ -170,8 +127,8 @@ fn item_capacity_one_and_two_reject_overflow_without_charging() -> TestResult {
                 observed: overfull.len(),
             })
         );
-        assert_eq!(stream.charged_items(), 0);
-        assert_eq!(stream.charged_bytes(), 0);
+        assert_eq!(stream.load().edges, 0);
+        assert_eq!(stream.load().bytes, 0);
         assert_eq!(
             producer.poll_ready(&mut Context::from_waker(Waker::noop())),
             Poll::Ready(Ok(()))
@@ -191,56 +148,59 @@ fn reverse_completion_preserves_partition_identity_and_missing_order() -> TestRe
     let selected = [first, second, third, fourth];
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let (producer, mut stream) =
-        channel(graph, &selected, CAPACITY_ONE, &cancellation, &mut trace)?;
+    let lease = lease(graph, &selected, CAPACITY_ONE, &cancellation, &mut trace)?;
+    let (mut producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
     let noop = Waker::noop();
     let mut context = Context::from_waker(noop);
 
     let fourth_edge = [edge(graph, fourth, 40, 41)];
     assert_eq!(producer.settle(fourth, &fourth_edge), Ok(()));
-    let mut fourth_batch = next_batch(
-        Pin::new(&mut stream),
-        &mut context,
-        &mut trace,
-        TestPhase::ReverseCompletion,
-    )?;
-    let mut fourth_output = [fourth_edge[0]];
-    assert_eq!(
-        fourth_batch.copy_into(&mut fourth_output),
-        Ok(fourth_edge.len())
-    );
-    assert_eq!(fourth_output, fourth_edge);
-
     let second_edge = [edge(graph, second, 20, 21)];
     assert_eq!(producer.settle(second, &second_edge), Ok(()));
-    let mut second_batch = next_batch(
+    let first_edge = [edge(graph, first, 10, 11)];
+    assert_eq!(producer.settle(first, &first_edge), Ok(()));
+    assert_eq!(producer.finish(), Ok(()));
+
+    let first_batch = next_batch(
         Pin::new(&mut stream),
         &mut context,
         &mut trace,
         TestPhase::ReverseCompletion,
     )?;
-    let mut second_output = [second_edge[0]];
-    assert_eq!(
-        second_batch.copy_into(&mut second_output),
-        Ok(second_edge.len())
-    );
-    assert_eq!(second_output, second_edge);
+    assert_eq!(first_batch.as_ref(), first_edge);
+    drop(first_batch);
 
-    assert_eq!(producer.finish(), Ok(()));
+    let second_batch = next_batch(
+        Pin::new(&mut stream),
+        &mut context,
+        &mut trace,
+        TestPhase::ReverseCompletion,
+    )?;
+    assert_eq!(second_batch.as_ref(), second_edge);
+    drop(second_batch);
+
+    let fourth_batch = next_batch(
+        Pin::new(&mut stream),
+        &mut context,
+        &mut trace,
+        TestPhase::ReverseCompletion,
+    )?;
+    assert_eq!(fourth_batch.as_ref(), fourth_edge);
+    drop(fourth_batch);
+
     let terminal = next_terminal(
         Pin::new(&mut stream),
         &mut context,
         &mut trace,
         TestPhase::ReverseCompletion,
     )?;
-    assert_eq!(
-        terminal,
-        GraphTerminal::Partial {
-            authority: graph,
-            missing: [Some(first), Some(third), None, None],
-            missing_len: CAPACITY_TWO,
-        }
-    );
+    let GraphTerminal::Partial { authority, missing } = terminal else {
+        return Err(TestFailure::ExpectedTerminal {
+            phase: TestPhase::ReverseCompletion,
+        });
+    };
+    assert_eq!(authority, graph);
+    assert_eq!(missing.as_ref(), &[third]);
     Ok(())
 }
 
@@ -252,8 +212,8 @@ fn dropping_ready_batch_returns_both_credits_and_allows_next_partition() -> Test
     let selected = [first, second];
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let (producer, mut stream) =
-        channel(graph, &selected, CAPACITY_TWO, &cancellation, &mut trace)?;
+    let lease = lease(graph, &selected, CAPACITY_TWO, &cancellation, &mut trace)?;
+    let (mut producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
     let first_edges = [edge(graph, first, 50, 51), edge(graph, first, 52, 53)];
     assert_eq!(producer.settle(first, &first_edges), Ok(()));
     let noop = Waker::noop();
@@ -266,27 +226,23 @@ fn dropping_ready_batch_returns_both_credits_and_allows_next_partition() -> Test
             TestPhase::DropConservation,
         )?;
         assert_eq!(batch.len(), first_edges.len());
-        assert_eq!(
-            stream.charged_bytes(),
-            size_of::<GraphEdge>() * CAPACITY_TWO
-        );
+        assert_eq!(stream.load().bytes, size_of::<GraphEdge>() * CAPACITY_TWO);
         drop(batch);
     }
-    assert_eq!(stream.charged_items(), 0);
-    assert_eq!(stream.charged_bytes(), 0);
+    assert_eq!(stream.load().edges, 0);
+    assert_eq!(stream.load().bytes, 0);
     assert_eq!(producer.poll_ready(&mut context), Poll::Ready(Ok(())));
 
     let second_edges = [edge(graph, second, 60, 61)];
     assert_eq!(producer.settle(second, &second_edges), Ok(()));
-    let mut batch = next_batch(
+    let batch = next_batch(
         Pin::new(&mut stream),
         &mut context,
         &mut trace,
         TestPhase::DropConservation,
     )?;
-    let mut output = [second_edges[0]; CAPACITY_ONE];
-    assert_eq!(batch.copy_into(&mut output), Ok(second_edges.len()));
-    assert_eq!(output, second_edges);
+    assert_eq!(batch.as_ref(), second_edges);
+    drop(batch);
     assert_eq!(producer.finish(), Ok(()));
     assert_eq!(
         next_terminal(
@@ -306,8 +262,8 @@ fn cancellation_releases_settled_batch_and_fuses() -> TestResult {
     let partition = PartitionId::new(7);
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let (producer, mut stream) =
-        channel(graph, &[partition], CAPACITY_ONE, &cancellation, &mut trace)?;
+    let lease = lease(graph, &[partition], CAPACITY_ONE, &cancellation, &mut trace)?;
+    let (mut producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
     let settled = [edge(graph, partition, 70, 71)];
     assert_eq!(producer.settle(partition, &settled), Ok(()));
     cancellation.cancel();
@@ -321,8 +277,8 @@ fn cancellation_releases_settled_batch_and_fuses() -> TestResult {
         )?,
         GraphTerminal::Cancelled { authority: graph }
     );
-    assert_eq!(stream.charged_items(), 0);
-    assert_eq!(stream.charged_bytes(), 0);
+    assert_eq!(stream.load().edges, 0);
+    assert_eq!(stream.load().bytes, 0);
     assert!(matches!(
         Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Ready(GraphStreamEvent::Fused)
@@ -337,22 +293,31 @@ fn terminal_rejects_reuse_and_then_stays_fused() -> TestResult {
     let partition = PartitionId::new(8);
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let (producer, mut stream) = channel(graph, &[partition], 0, &cancellation, &mut trace)?;
+    let lease = lease(graph, &[partition], 0, &cancellation, &mut trace)?;
+    let (mut producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
+    match lease.split() {
+        Err(StreamCapacityError::EndpointsAlreadyBorrowed) => {}
+        Ok(_) | Err(_) => {
+            return Err(TestFailure::ExpectedRejection {
+                phase: TestPhase::TerminalFusion,
+            });
+        }
+    }
     assert_eq!(producer.finish(), Ok(()));
     let mut context = Context::from_waker(Waker::noop());
-    assert_eq!(
-        next_terminal(
-            Pin::new(&mut stream),
-            &mut context,
-            &mut trace,
-            TestPhase::TerminalFusion,
-        )?,
-        GraphTerminal::Partial {
-            authority: graph,
-            missing: [Some(partition), None, None, None],
-            missing_len: CAPACITY_ONE,
-        }
-    );
+    let terminal = next_terminal(
+        Pin::new(&mut stream),
+        &mut context,
+        &mut trace,
+        TestPhase::TerminalFusion,
+    )?;
+    let GraphTerminal::Partial { authority, missing } = terminal else {
+        return Err(TestFailure::ExpectedTerminal {
+            phase: TestPhase::TerminalFusion,
+        });
+    };
+    assert_eq!(authority, graph);
+    assert_eq!(missing.as_ref(), &[partition]);
     assert!(matches!(
         Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
         Poll::Ready(GraphStreamEvent::Fused)
@@ -366,89 +331,95 @@ fn terminal_rejects_reuse_and_then_stays_fused() -> TestResult {
 }
 
 #[test]
-fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestResult {
-    let graph = authority(46);
-    let partition = PartitionId::new(9);
+fn dropping_producer_publishes_typed_failure_and_fuses() -> TestResult {
+    let graph = authority(47);
+    let partition = PartitionId::new(10);
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let (producer, mut stream) =
-        channel(graph, &[partition], CAPACITY_ONE, &cancellation, &mut trace)?;
-    let arrived = AtomicUsize::new(0);
-    let start = AtomicBool::new(false);
-    let first_edge = edge(graph, partition, 90, 91);
-    let second_edge = edge(graph, partition, 92, 93);
-
-    let (first_result, second_result) = std::thread::scope(|scope| {
-        let first_producer = &producer;
-        let first_arrived = &arrived;
-        let first_start = &start;
-        let first = scope.spawn(move || {
-            first_arrived.fetch_add(CAPACITY_ONE, Ordering::AcqRel);
-            while !first_start.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-            first_producer.settle(partition, &[first_edge])
-        });
-
-        let second_producer = &producer;
-        let second_arrived = &arrived;
-        let second_start = &start;
-        let second = scope.spawn(move || {
-            second_arrived.fetch_add(CAPACITY_ONE, Ordering::AcqRel);
-            while !second_start.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-            second_producer.settle(partition, &[second_edge])
-        });
-
-        while arrived.load(Ordering::Acquire) != CAPACITY_TWO {
-            std::thread::yield_now();
-        }
-        start.store(true, Ordering::Release);
-        let first_result = first.join().map_err(|_| TestFailure::ThreadPanicked {
-            worker: Worker::First,
-        })?;
-        let second_result = second.join().map_err(|_| TestFailure::ThreadPanicked {
-            worker: Worker::Second,
-        })?;
-        Ok::<_, TestFailure>((first_result, second_result))
-    })?;
-
-    let results = [first_result, second_result];
-    assert_eq!(
-        results.iter().filter(|result| result.is_ok()).count(),
-        CAPACITY_ONE
-    );
-    assert!(results.iter().all(|result| {
-        result.is_ok()
-            || matches!(
-                result,
-                Err(StreamCapacityError::BatchAlreadySettled)
-                    | Err(StreamCapacityError::PartitionAlreadySettled { partition: observed })
-                    if *observed == partition
-            )
-    }));
+    let lease = lease(graph, &[partition], 0, &cancellation, &mut trace)?;
+    let (producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
+    drop(producer);
 
     let mut context = Context::from_waker(Waker::noop());
-    let mut batch = next_batch(
-        Pin::new(&mut stream),
-        &mut context,
-        &mut trace,
-        TestPhase::ConcurrentCompletion,
-    )?;
-    let placeholder = edge(graph, partition, 0, 0);
-    let mut output = [placeholder];
-    assert_eq!(batch.copy_into(&mut output), Ok(CAPACITY_ONE));
-    assert!(output[0] == first_edge || output[0] == second_edge);
-    assert_eq!(producer.finish(), Ok(()));
     assert_eq!(
         next_terminal(
             Pin::new(&mut stream),
             &mut context,
             &mut trace,
-            TestPhase::ConcurrentCompletion,
+            TestPhase::ProducerDisconnect,
         )?,
-        GraphTerminal::Complete { authority: graph }
+        GraphTerminal::Failed {
+            authority: graph,
+            cause: StreamCapacityError::ProducerDisconnected,
+        }
     );
+    assert!(matches!(
+        Pin::new(&mut stream).poll_batch(&mut context, &mut trace),
+        Poll::Ready(GraphStreamEvent::Fused)
+    ));
+    Ok(())
+}
+
+#[test]
+fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestResult {
+    let graph = authority(46);
+    let partition = PartitionId::new(9);
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let lease = lease(graph, &[partition], CAPACITY_ONE, &cancellation, &mut trace)?;
+    let (producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
+    let start = AtomicBool::new(false);
+    let settled = AtomicBool::new(false);
+    let first_edge = edge(graph, partition, 90, 91);
+    let worker_result = std::thread::scope(|scope| {
+        let worker_start = &start;
+        let worker_settled = &settled;
+        let worker = scope.spawn(move || {
+            while !worker_start.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let mut producer = producer;
+            let settled_result = producer.settle(partition, &[first_edge]);
+            worker_settled.store(true, Ordering::Release);
+            let finished_result = settled_result.and_then(|()| producer.finish());
+            (settled_result, finished_result)
+        });
+
+        start.store(true, Ordering::Release);
+        while !settled.load(Ordering::Acquire) {
+            match Pin::new(&mut stream)
+                .poll_batch(&mut Context::from_waker(Waker::noop()), &mut trace)
+            {
+                Poll::Pending => std::thread::yield_now(),
+                Poll::Ready(_) => {
+                    return Err(TestFailure::ExpectedBatch {
+                        phase: TestPhase::ConcurrentCompletion,
+                    });
+                }
+            }
+        }
+        worker.join().map_err(|_| TestFailure::ThreadPanicked {
+            worker: Worker::First,
+        })
+    })?;
+    assert_eq!(worker_result.0, Ok(()));
+    assert_eq!(worker_result.1, Ok(()));
+
+    let mut context = Context::from_waker(Waker::noop());
+    let batch = next_batch(
+        Pin::new(&mut stream),
+        &mut context,
+        &mut trace,
+        TestPhase::ConcurrentCompletion,
+    )?;
+    assert_eq!(batch.as_ref(), &[first_edge]);
+    drop(batch);
+    let terminal = next_terminal(
+        Pin::new(&mut stream),
+        &mut context,
+        &mut trace,
+        TestPhase::ConcurrentCompletion,
+    )?;
+    assert_eq!(terminal, GraphTerminal::Complete { authority: graph });
     Ok(())
 }
