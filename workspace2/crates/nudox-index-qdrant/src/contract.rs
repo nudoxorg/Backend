@@ -263,8 +263,6 @@ pub enum MalformedResponseCause {
     MissingVector,
     /// The metric payload was a string outside this adapter's owned metric vocabulary.
     UnknownMetric(RejectedMetric),
-    /// Internal bounded retry bookkeeping reached an impossible terminal state.
-    RetryExhaustionWithoutResponse,
     /// A successful HTTP response explicitly rejected the requested mutation.
     RejectedAcknowledgement,
     /// A verified readback could not be placed in the admitted output slice.

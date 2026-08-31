@@ -24,12 +24,6 @@ pub(super) struct ResponseEnvelope {
     pub(super) body: String,
 }
 
-#[derive(Debug)]
-enum RetryFailure {
-    Transport(ureq::Error),
-    ResponseRead(std::io::Error),
-}
-
 pub(super) fn request_json<T: Serialize>(
     agent: &ureq::Agent,
     retry: RetryPolicy,
@@ -39,94 +33,93 @@ pub(super) fn request_json<T: Serialize>(
     body: T,
 ) -> Result<ResponseEnvelope, QdrantError> {
     let encoded = match method {
-        Method::Put | Method::Post => Some(
-            serde_json::to_vec(&body).map_err(|source| QdrantError::Encode { phase, source })?,
-        ),
-        Method::Get | Method::Delete => None,
+        Method::Put | Method::Post => {
+            serde_json::to_vec(&body).map_err(|source| QdrantError::Encode { phase, source })?
+        }
+        Method::Get | Method::Delete => Vec::new(),
     };
     let attempts = retry.attempts.get();
-    let mut last_transport = None;
-    for attempt in 1..=attempts {
-        let result = match method {
-            Method::Get => agent.get(url).call(),
-            Method::Put => agent
-                .put(url)
-                .content_type("application/json")
-                .send(encoded.as_deref().unwrap_or_default()),
-            Method::Post => agent
-                .post(url)
-                .content_type("application/json")
-                .send(encoded.as_deref().unwrap_or_default()),
-            Method::Delete => agent.delete(url).call(),
-        };
-        match result {
-            Ok(mut response) => {
-                let status = response.status().as_u16();
-                let mut body = String::new();
-                let decoded_limit = (MAX_RESPONSE_BYTES as u64).saturating_add(1);
-                let mut decoded = response
-                    .body_mut()
-                    .with_config()
-                    .limit(MAX_RESPONSE_BYTES as u64)
-                    .reader()
-                    .take(decoded_limit);
-                match decoded.read_to_string(&mut body) {
-                    Ok(_decoded_bytes) => {
-                        if body.len() > MAX_RESPONSE_BYTES {
-                            return Err(QdrantError::ResponseTooLarge {
-                                phase,
-                                maximum: MAX_RESPONSE_BYTES,
-                                observed_at_least: body.len(),
-                            });
-                        }
-                        if is_success(status) || !retryable_status(status) || attempt == attempts {
-                            return Ok(ResponseEnvelope {
-                                status,
-                                attempts: attempt,
-                                body,
-                            });
-                        }
-                    }
-                    Err(source) => {
-                        if attempt == attempts {
-                            return Err(QdrantError::ResponseRead {
-                                phase,
-                                attempts,
-                                source,
-                            });
-                        }
-                        last_transport = Some(RetryFailure::ResponseRead(source));
-                    }
+    let mut attempt = 1;
+    loop {
+        match send(agent, method, url, &encoded) {
+            Ok(response) => match read_response(phase, attempt, response) {
+                Ok(envelope)
+                    if is_success(envelope.status)
+                        || !retryable_status(envelope.status)
+                        || attempt == attempts =>
+                {
+                    return Ok(envelope);
                 }
-            }
+                Ok(_retryable) => {}
+                Err(QdrantError::ResponseRead { .. }) if attempt < attempts => {}
+                Err(error) => return Err(error),
+            },
+            Err(source) if attempt < attempts => drop(source),
             Err(source) => {
-                if attempt == attempts {
-                    return Err(QdrantError::Transport {
-                        phase,
-                        attempts,
-                        source,
-                    });
-                }
-                last_transport = Some(RetryFailure::Transport(source));
+                return Err(QdrantError::Transport {
+                    phase,
+                    attempts: attempt,
+                    source,
+                });
             }
         }
+        attempt += 1;
     }
-    match last_transport {
-        Some(RetryFailure::Transport(source)) => Err(QdrantError::Transport {
-            phase,
-            attempts,
-            source,
-        }),
-        Some(RetryFailure::ResponseRead(source)) => Err(QdrantError::ResponseRead {
-            phase,
-            attempts,
-            source,
-        }),
-        None => Err(QdrantError::MalformedResponse {
-            phase,
-            cause: super::contract::MalformedResponseCause::RetryExhaustionWithoutResponse,
-        }),
+}
+
+fn send(
+    agent: &ureq::Agent,
+    method: Method,
+    url: &str,
+    encoded: &[u8],
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    match method {
+        Method::Get => agent.get(url).call(),
+        Method::Put => agent
+            .put(url)
+            .content_type("application/json")
+            .send(encoded),
+        Method::Post => agent
+            .post(url)
+            .content_type("application/json")
+            .send(encoded),
+        Method::Delete => agent.delete(url).call(),
     }
+}
+
+fn read_response(
+    phase: RequestPhase,
+    attempt: u8,
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<ResponseEnvelope, QdrantError> {
+    let status = response.status().as_u16();
+    let mut body = String::new();
+    let decoded_limit = (MAX_RESPONSE_BYTES as u64).saturating_add(1);
+    let mut decoded = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES as u64)
+        .reader()
+        .take(decoded_limit);
+    decoded
+        .read_to_string(&mut body)
+        .map_err(|source| QdrantError::ResponseRead {
+            phase,
+            attempts: attempt,
+            source,
+        })?;
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(QdrantError::ResponseTooLarge {
+            phase,
+            maximum: MAX_RESPONSE_BYTES,
+            observed_at_least: body.len(),
+        });
+    }
+    Ok(ResponseEnvelope {
+        status,
+        attempts: attempt,
+        body,
+    })
 }
 
 pub(super) fn is_success(status: u16) -> bool {
