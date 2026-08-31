@@ -33,21 +33,21 @@ rejection in the full registry.
 - Builder-owned paths, and no others:
 
 ```text
-planes/compiler/crates/nudox-compile-registry/src/lib.rs
-planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs
-planes/compiler/crates/nudox-compile-registry/tests/subset.rs
-planes/compiler/crates/nudox-compile-registry/examples/release_consumer.rs
+crates/nudox-compile-registry/src/lib.rs
+crates/nudox-compile-registry/tests/dispatch.rs
+crates/nudox-compile-registry/tests/subset.rs
+crates/nudox-compile-registry/examples/release_consumer.rs
 ```
 
-- Existing compiler manifests and lockfile are read-only.  The nested compiler workspace is already the
+- Existing compiler manifests and lockfile are read-only.  The root workspace is already the
   only justified manifest boundary; no workspace or dependency change is authorized.
 
 | frozen path | SHA-256 | formatted LOC |
 | --- | --- | ---: |
-| `planes/compiler/crates/nudox-compile-registry/src/lib.rs` | `965eaabadaf3178cce0103fe4f9d8bc03ce55468ba0bf9ad3572282b33d47cb4` | 67 |
-| `planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs` | `2835cffd057b88cd1c0914e77fd5660f6106e3ce3f9bbbd44bfd95e4d56f0df4` | 30 |
-| `planes/compiler/crates/nudox-compile-registry/tests/subset.rs` | `4bb540991a5189fa65a932cbacf12379eb6060a72f6e0e624d29006d177af843` | 8 |
-| `planes/compiler/crates/nudox-compile-registry/examples/release_consumer.rs` | absent | 0 |
+| `crates/nudox-compile-registry/src/lib.rs` | `965eaabadaf3178cce0103fe4f9d8bc03ce55468ba0bf9ad3572282b33d47cb4` | 67 |
+| `crates/nudox-compile-registry/tests/dispatch.rs` | `2835cffd057b88cd1c0914e77fd5660f6106e3ce3f9bbbd44bfd95e4d56f0df4` | 30 |
+| `crates/nudox-compile-registry/tests/subset.rs` | `4bb540991a5189fa65a932cbacf12379eb6060a72f6e0e624d29006d177af843` | 8 |
+| `crates/nudox-compile-registry/examples/release_consumer.rs` | absent | 0 |
 
 ## Laws, falsifiers, and negative space
 
@@ -115,7 +115,7 @@ Before release comparison, the candidate example must be byte-identical to the f
 binds the control/candidate comparison without freezing an unearned implementation helper choice:
 
 ```text
-cmp -s planes/compiler/crates/nudox-compile-registry/examples/release_consumer.rs evidence/p5-c0/compiler/skeleton/release_consumer.rs
+cmp -s crates/nudox-compile-registry/examples/release_consumer.rs evidence/p5-c0/compiler/skeleton/release_consumer.rs
 ```
 
 ## Commands and raw evidence
@@ -128,22 +128,22 @@ never supplies the public compiler-process or direct-release proof:
 ```text
 rustc -Vv
 cargo -V
-RUSTC_WRAPPER= CARGO_TARGET_DIR=planes/compiler/target-c0-compiler \
-  cargo clean --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry -p nudox-compile-vocab
-test "$(find planes/compiler/target-c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_registry-*.rlib' -print 2>/dev/null | wc -l | tr -d ' ')" = 0
-test "$(find planes/compiler/target-c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_vocab-*.rlib' -print 2>/dev/null | wc -l | tr -d ' ')" = 0
-RUSTC_WRAPPER= CARGO_TARGET_DIR=planes/compiler/target-c0-compiler \
-  cargo test --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-test "$(find planes/compiler/target-c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_registry-*.rlib' -print | wc -l | tr -d ' ')" = 1
-test "$(find planes/compiler/target-c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_vocab-*.rlib' -print | wc -l | tr -d ' ')" = 1
-shasum -a 256 planes/compiler/crates/nudox-compile-registry/src/lib.rs \
-  planes/compiler/crates/nudox-compile-vocab/src/lib.rs \
-  planes/compiler/target-c0-compiler/debug/deps/libnudox_compile_registry-*.rlib \
-  planes/compiler/target-c0-compiler/debug/deps/libnudox_compile_vocab-*.rlib
-RUSTC_WRAPPER= CARGO_TARGET_DIR=planes/compiler/target-c0-compiler \
-  cargo fmt --manifest-path planes/compiler/Cargo.toml --all -- --check
-RUSTC_WRAPPER= CARGO_TARGET_DIR=planes/compiler/target-c0-compiler \
-  cargo clippy --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets -- -D warnings
+RUSTC_WRAPPER= CARGO_TARGET_DIR=target/c0-compiler \
+  cargo clean --manifest-path Cargo.toml -p nudox-compile-registry -p nudox-compile-vocab
+test "$(find target/c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_registry-*.rlib' -print 2>/dev/null | wc -l | tr -d ' ')" = 0
+test "$(find target/c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_vocab-*.rlib' -print 2>/dev/null | wc -l | tr -d ' ')" = 0
+RUSTC_WRAPPER= CARGO_TARGET_DIR=target/c0-compiler \
+  cargo test --locked --manifest-path Cargo.toml --workspace --all-targets
+test "$(find target/c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_registry-*.rlib' -print | wc -l | tr -d ' ')" = 1
+test "$(find target/c0-compiler/debug/deps -maxdepth 1 -type f -name 'libnudox_compile_vocab-*.rlib' -print | wc -l | tr -d ' ')" = 1
+shasum -a 256 crates/nudox-compile-registry/src/lib.rs \
+  crates/nudox-compile-vocab/src/lib.rs \
+  target/c0-compiler/debug/deps/libnudox_compile_registry-*.rlib \
+  target/c0-compiler/debug/deps/libnudox_compile_vocab-*.rlib
+RUSTC_WRAPPER= CARGO_TARGET_DIR=target/c0-compiler \
+  cargo fmt --manifest-path Cargo.toml --all -- --check
+RUSTC_WRAPPER= CARGO_TARGET_DIR=target/c0-compiler \
+  cargo clippy --locked --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 git diff --check && git status --short
 ```
 

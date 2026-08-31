@@ -29,15 +29,15 @@ Baseline: `6bfb0cf4b02d22f596b5fb659194d5ef5345800b`, branch
 
 | path | LOC | SHA-256 or state | disposition |
 |---|---:|---|---|
-| `workspace2/domains/ir/Cargo.toml` | 4 | `ebda83dc3ec8c97ce407a3b26c6fba3d5cd45cea1403b35c15fe4f61b44afb38` | unchanged |
-| `workspace2/domains/ir/Cargo.lock` | n/a | `784e273c39b4e56de4c8f4eaffff7ea525abeadcd094e7cd4fceb0bac3c04bc7` | unchanged |
-| `workspace2/domains/ir/crates/nudox-ir-vocab/src/lib.rs` | 34 | `2470230102424a34892369204ce20c5a164cec25d894ce8eee45331e636e5a78` | unchanged identity authority |
-| `workspace2/domains/ir/crates/nudox-ir-format/Cargo.toml` | 12 | `afeb037e49f08d479c39a866e06ec6ca8ffbbaeace5a52978682615bfcc1cb9c` | unchanged |
-| `workspace2/domains/ir/crates/nudox-ir-format/src/lib.rs` | 296 | `7e31c1b17c52c0d077300d6820f85267fce1ba684ee22cbda2084403987ad5cc` | private module declaration and named reexports only |
-| `workspace2/domains/ir/crates/nudox-ir-format/tests/fragment.rs` | 526 | `b75d5fd6d683b9d127d770a781959cdf50df7d45b92b9350353dafb5fda28f1a` | actual-rlib fixture addition only |
-| `workspace2/domains/ir/crates/nudox-ir-format/tests/prepared_consumer.rs` | 162 | `36c694eafe94a29662688d1b385c3f23dca86f2094f069c4e9a4e0e117e29837` | unchanged retained consumer |
-| `workspace2/domains/ir/crates/nudox-ir-format/src/type_dag.rs` | 0 | absent | new sole production module |
-| `workspace2/domains/ir/crates/nudox-ir-format/tests/type_dag.rs` | 0 | absent | new public runtime/mutation test |
+| `workspace2/Cargo.toml` | n/a | migration-owned | shared root workspace integration; outside C1 |
+| `workspace2/Cargo.lock` | n/a | migration-owned | shared root lock integration; outside C1 |
+| `workspace2/crates/nudox-ir-vocab/src/lib.rs` | 34 | `2470230102424a34892369204ce20c5a164cec25d894ce8eee45331e636e5a78` | unchanged identity authority |
+| `workspace2/crates/nudox-ir-format/Cargo.toml` | 12 | `afeb037e49f08d479c39a866e06ec6ca8ffbbaeace5a52978682615bfcc1cb9c` | unchanged |
+| `workspace2/crates/nudox-ir-format/src/lib.rs` | 296 | `7e31c1b17c52c0d077300d6820f85267fce1ba684ee22cbda2084403987ad5cc` | private module declaration and named reexports only |
+| `workspace2/crates/nudox-ir-format/tests/fragment.rs` | 526 | `b75d5fd6d683b9d127d770a781959cdf50df7d45b92b9350353dafb5fda28f1a` | actual-rlib fixture addition only |
+| `workspace2/crates/nudox-ir-format/tests/prepared_consumer.rs` | 162 | `36c694eafe94a29662688d1b385c3f23dca86f2094f069c4e9a4e0e117e29837` | unchanged retained consumer |
+| `workspace2/crates/nudox-ir-format/src/type_dag.rs` | 0 | absent | new sole production module |
+| `workspace2/crates/nudox-ir-format/tests/type_dag.rs` | 0 | absent | new public runtime/mutation test |
 | `workspace2/evidence/p5-c1/type-dag/**` | 0 | absent | manager evidence only |
 
 No manifest, lockfile, vocabulary, dependency, feature, macro, unsafe,

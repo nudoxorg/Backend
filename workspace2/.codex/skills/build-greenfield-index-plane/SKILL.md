@@ -29,8 +29,9 @@ observable child slice and freezes allowed paths, identity/schema edits, depende
 bytes, allocations, copies, touched ranges, comparisons, branch/work counters, code size, and
 integration terminal before production edits.
 
-For `I0`, the default allowed surface is a new complete nested workspace under
-`workspace2/planes/index/**`, plus separately authorized additions to the central ID/schema registries.
+For `I0`, the default allowed surface is a new complete set of packages under
+`workspace2/crates/nudox-index-*`, plus separately authorized additions to the central ID/schema
+registries.
 Do not pre-create query, publication, server, vector, or object-store implementations. A crate/module
 must own a current invariant, not reserve a name for later.
 

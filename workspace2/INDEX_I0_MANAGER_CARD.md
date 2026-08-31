@@ -7,7 +7,7 @@
 | Capability | Establish the portable, closed index vocabulary needed to name a snapshot and a segment without allowing an exact-family segment identity to stand in for lexical, relation, usage, or vector identity. |
 | First observable terminal | An external `nudox-index-vocab` consumer hashes the same borrowed canonical byte slice through independent local and remote byte owners and obtains equal `IndexSnapshotId` and `IndexSegmentId<Exact>` values; a downstream attempt to assign `IndexSegmentId<Lexical>` to `IndexSegmentId<Exact>` does not compile. |
 | Named baseline | Git `f9419673f451ec8796d3f9462f3bace667c13435`, branch `autonomous-index-contract`, clean before this documentation cycle. |
-| Public journey | `workspace2/planes/index/crates/nudox-index-vocab/tests/vocabulary.rs::local_and_remote_canonical_bytes_produce_the_same_typed_ids`. It imports only the published vocabulary crate, makes separately owned local and remote `[u8; 24]` byte arrays with equal contents, borrows each as `&[u8]`, creates one snapshot ID plus exact and lexical segment IDs from each, and asserts equality. Two public `compile_fail` doctests in `src/lib.rs` use only `nudox_index_vocab` imports and prove that neither direct assignment nor `Into` can turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`; a third imports the registered `RootDomain` and proves that the sealed family projection rejects arbitrary identity domains. |
+| Public journey | `workspace2/crates/nudox-index-vocab/tests/vocabulary.rs::local_and_remote_canonical_bytes_produce_the_same_typed_ids`. It imports only the published vocabulary crate, makes separately owned local and remote `[u8; 24]` byte arrays with equal contents, borrows each as `&[u8]`, creates one snapshot ID plus exact and lexical segment IDs from each, and asserts equality. Two public `compile_fail` doctests in `src/lib.rs` use only `nudox_index_vocab` imports and prove that neither direct assignment nor `Into` can turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`; a third imports the registered `RootDomain` and proves that the sealed family projection rejects arbitrary identity domains. |
 | Checkpoint | Checkpoint 2 stops immediately after those two external terminals and their required negative/error evidence. |
 
 The seven frozen governing inputs are, literally:
@@ -24,17 +24,15 @@ workspace2/.codex/skills/build-greenfield-index-plane/SKILL.md
 
 ## Exact allowed writes
 
-Only the following future production/test paths are writable by the builder. Every listed `planes/index`
-path is absent at the frozen baseline; no wildcard authorizes another file.
+Only the following future production/test paths are writable by the builder. Every listed package path
+is absent at the frozen baseline; no wildcard authorizes another file.
 
 ```text
 workspace2/crates/nudox-id/src/marker.rs
 workspace2/crates/nudox-id/src/lib.rs
-workspace2/planes/index/Cargo.toml
-workspace2/planes/index/Cargo.lock
-workspace2/planes/index/crates/nudox-index-vocab/Cargo.toml
-workspace2/planes/index/crates/nudox-index-vocab/src/lib.rs
-workspace2/planes/index/crates/nudox-index-vocab/tests/vocabulary.rs
+workspace2/crates/nudox-index-vocab/Cargo.toml
+workspace2/crates/nudox-index-vocab/src/lib.rs
+workspace2/crates/nudox-index-vocab/tests/vocabulary.rs
 ```
 
 The manager alone may update this card and `workspace2/INDEX_I0_CALIBRATION_RAW.md`; neither is a
@@ -99,14 +97,14 @@ text cost is bounded by those two exercised calls and two marker implementations
 | Retained/live bytes | Zero retained allocations by the vocabulary; the caller retains its two 24-byte owners. `size_of`/`align_of` must show each ID is the existing 32-byte, 1-aligned content ID and each family marker is zero-sized. |
 | Allocations/copies | Exactly zero allocations after byte-owner setup on both ID paths, measured with `allocation_counter::measure` around only a warmed non-empty constructor call. “No copies” means no copy or retention of canonical input bytes: source audit rejects `Vec`, `Box`, `Arc`, `to_vec`, `to_owned`, `copy_from_slice`, or an input-byte field. Returning the 32-byte digest value is not charged as an input-byte copy. The test binary runs alone with `--test vocabulary -- --test-threads=1`; unavailable harness evidence stops the claim. |
 | Work | Source audit requires exactly one `ContentId::from_canonical_bytes` call per constructed ID and no `ContentHasher`, prehash, retry, scan, binary search, directory, range, or parsing code. The existing constructor supplies one BLAKE3 pass over the supplied 24 bytes per ID. |
-| Text/dependency | No new registry dependency or version is allowed. Direct dependencies are only path `nudox-id` and test-only `allocation-counter`; every resolved registry package/version/checksum in the nested lockfile must already occur identically in `workspace2/Cargo.lock`. The allowed new package is only local `nudox-index-vocab`. No new registry package/version, unsafe/SIMD, macro, `dyn`, `Arc`, allocation policy, or root-workspace membership is allowed. Text-size claim is limited to the existing `nudox-id` implementation plus one vocabulary crate; no release-size win is claimed. |
+| Text/dependency | No new registry dependency or version is allowed. Direct dependencies are only path `nudox-id` and test-only `allocation-counter`; every resolved registry package/version/checksum in the root lockfile must already occur identically in `workspace2/Cargo.lock`. The allowed new package is only local `nudox-index-vocab`. No new registry package/version, unsafe/SIMD, macro, `dyn`, `Arc`, allocation policy, or root-workspace membership is allowed. Text-size claim is limited to the existing `nudox-id` implementation plus one vocabulary crate; no release-size win is claimed. |
 | Production LOC | Forecast 155 normally formatted Rust LOC; ceiling 230; unused reserve 75 lines (greater than 25 and 10%). Stop before the next file if written plus remaining forecast reaches 138 lines, or a file exceeds forecast by 20%/25 lines. |
 | Test LOC | Forecast 100 normally formatted Rust LOC; ceiling 120; unused reserve 20 lines (greater than 15 and 10%). The public compile-fail doctests belong to the production source forecast. Stop at 72 forecasted/written lines if the rest cannot fit. |
 | Latency/queue | Synchronous pure hash only; no queue, future, task, timeout, or latency claim. |
 
 Immediate stop triggers: a new public item absent from the skeleton; any need for a manifest, wire
-record, `Vec`, `Box`, `Arc`, direct BLAKE3 use, dependency/manifest outside the listed nested
-workspace, unsafe/SIMD, a second proof-bearing production module, a raw identity label outside
+record, `Vec`, `Box`, `Arc`, direct BLAKE3 use, dependency/manifest outside the listed package paths,
+unsafe/SIMD, a second proof-bearing production module, a raw identity label outside
 `nudox-id`, or an inability to make the family mismatch compile-fail externally.
 
 ## Normally formatted skeleton ledger
@@ -118,18 +116,17 @@ ceiling. Rust LOC excludes TOML and lockfile lines but includes docs and test su
 | --- | --- | ---: |
 | `crates/nudox-id/src/marker.rs` | snapshot plus exact/lexical sealed index-family domain markers in the existing central registry | 12 |
 | `crates/nudox-id/src/lib.rs` | five marker reexports | 2 |
-| `planes/index/crates/nudox-index-vocab/src/lib.rs` | closed family enum; sealed exact/lexical marker relation; code/error; typed snapshot/segment aliases; canonical-byte constructors and downstream compile-fail doctests | 141 |
+| `crates/nudox-index-vocab/src/lib.rs` | closed family enum; sealed exact/lexical marker relation; code/error; typed snapshot/segment aliases; canonical-byte constructors and downstream compile-fail doctests | 141 |
 | **Production total** |  | **155** |
-| `planes/index/crates/nudox-index-vocab/tests/vocabulary.rs` | public local/remote parity, raw-code rejection, layout, source-audited borrowed input, and serial allocation evidence | 100 |
+| `crates/nudox-index-vocab/tests/vocabulary.rs` | public local/remote parity, raw-code rejection, layout, source-audited borrowed input, and serial allocation evidence | 100 |
 | **Test total** |  | **100** |
 
-The future nested manifests are intentionally tiny and not a reserve for implementation surface:
-`planes/index/Cargo.toml` declares only `crates/nudox-index-vocab`, the current workspace package
-facts, and existing pinned test-only `allocation-counter`; the crate manifest names only path
-dependency `nudox-id = { path = "../../../../crates/nudox-id" }` and that workspace test dependency.
-`planes/index/Cargo.lock` is generated from those exact inputs. The compile-fail public-consumer proof
-is a `compile_fail` doctest in `src/lib.rs`, so no `trybuild` dependency or UI fixture exists. All
-three manifests/lockfile are new, absent baseline files and are subject to the no-new-package/version
+The future package manifest is intentionally tiny and not a reserve for implementation surface:
+`crates/nudox-index-vocab/Cargo.toml` names only the path dependency
+`nudox-id = { path = "../nudox-id" }` and the existing pinned test-only `allocation-counter`; the
+root `Cargo.toml` owns workspace membership and the shared lockfile. The compile-fail public-consumer
+proof is a `compile_fail` doctest in `src/lib.rs`, so no `trybuild` dependency or UI fixture exists.
+The package manifest is a new, absent baseline file and remains subject to the no-new-package/version
 stop trigger.
 
 ## Frozen baseline/digest/LOC ledger
@@ -140,11 +137,9 @@ SHA-256 digests are file bytes at the named baseline. Rust LOC is normally forma
 | --- | --- | ---: |
 | `workspace2/crates/nudox-id/src/marker.rs` | `7216af5891497eb23b854c176a9a6c7900c9d49d0a9ae1c6369400065354faa1` | 156 |
 | `workspace2/crates/nudox-id/src/lib.rs` | `6f2bc5fdbc9bf560acd0af7e443a75148c524547f95c09210c1627389a01d75f` | 28 |
-| `workspace2/planes/index/Cargo.toml` | absent | 0 |
-| `workspace2/planes/index/Cargo.lock` | absent | — |
-| `workspace2/planes/index/crates/nudox-index-vocab/Cargo.toml` | absent | 0 |
-| `workspace2/planes/index/crates/nudox-index-vocab/src/lib.rs` | absent | 0 |
-| `workspace2/planes/index/crates/nudox-index-vocab/tests/vocabulary.rs` | absent | 0 |
+| `workspace2/crates/nudox-index-vocab/Cargo.toml` | absent | 0 |
+| `workspace2/crates/nudox-index-vocab/src/lib.rs` | absent | 0 |
+| `workspace2/crates/nudox-index-vocab/tests/vocabulary.rs` | absent | 0 |
 
 The frozen contract inputs are digested in `INDEX_I0_CALIBRATION_RAW.md`; `INDEX_GREENFIELD_PLAN.md`,
 `PACKED_COLLECTIONS.md`, `TESTING.md`, and the seven governing skills are read-only inputs, not future
@@ -160,18 +155,18 @@ builder writes.
 | Borrow/layout | `vocabulary.rs::ids_and_markers_have_the_declared_layout` | IDs are 32/1; markers are 0/1; constructors borrow caller bytes. | Retain bytes in a field, add a wrapper allocation, or report an unmeasured pointer claim. |
 | Allocation/copy | serial `vocabulary` test plus source audit | Zero allocations after setup on a non-empty 24-byte input; no retained/copy of canonical input bytes. | A normal parallel counter, empty-only run, unrecorded harness provenance, or listed input-copy token stops the claim. |
 | Hash work | source audit of vocabulary constructors | One existing `ContentId::from_canonical_bytes` call per snapshot/exact/lexical construction; no prehash/retry path. | A second hash construction, `ContentHasher`, or raw hash literal stops the claim. |
-| Registry/no_std | expanded existing `nudox-id` marker test plus nested `cargo clippy` | All three new labels are pairwise distinct from every existing domain/encoding label; vocabulary stays `#![no_std]` and `#![forbid(unsafe_code)]`. | A duplicate/short/non-domain tag, raw registration route, or unsafe/no_std regression stops. |
-| Negative space | `git diff --check`, path ledger, and nested lockfile package/version audit | Only literal card paths change; the allowed new crate is not a dependency; no manifest/query/view/publication/backends/root workspace change. | Any unlisted file, new dependency package/version, API, or future identity stops the phase. |
+| Registry/no_std | expanded existing `nudox-id` marker test plus root `cargo clippy` | All three new labels are pairwise distinct from every existing domain/encoding label; vocabulary stays `#![no_std]` and `#![forbid(unsafe_code)]`. | A duplicate/short/non-domain tag, raw registration route, or unsafe/no_std regression stops. |
+| Negative space | `git diff --check`, path ledger, and root lockfile package/version audit | Only literal card paths change; the allowed new crate is not a dependency; no manifest/query/view/publication/backends/root workspace change. | Any unlisted file, new dependency package/version, API, or future identity stops the phase. |
 
 Commands, run from `workspace2` after the future child paths exist:
 
 ```text
-RUSTC_WRAPPER= cargo fmt --manifest-path planes/index/Cargo.toml --all -- --check
-RUSTC_WRAPPER= cargo test --manifest-path planes/index/Cargo.toml -p nudox-index-vocab --test vocabulary --no-fail-fast -- --test-threads=1
-RUSTC_WRAPPER= cargo test --manifest-path planes/index/Cargo.toml -p nudox-index-vocab --doc --no-fail-fast
-RUSTC_WRAPPER= cargo clippy --manifest-path planes/index/Cargo.toml -p nudox-index-vocab --all-targets -- -D warnings
-RUSTC_WRAPPER= cargo doc --manifest-path planes/index/Cargo.toml -p nudox-index-vocab --no-deps
-git diff --check f9419673f451ec8796d3f9462f3bace667c13435 -- workspace2/crates/nudox-id/src/marker.rs workspace2/crates/nudox-id/src/lib.rs workspace2/planes/index
+RUSTC_WRAPPER= cargo fmt --manifest-path Cargo.toml --all -- --check
+RUSTC_WRAPPER= cargo test --manifest-path Cargo.toml -p nudox-index-vocab --test vocabulary --no-fail-fast -- --test-threads=1
+RUSTC_WRAPPER= cargo test --manifest-path Cargo.toml -p nudox-index-vocab --doc --no-fail-fast
+RUSTC_WRAPPER= cargo clippy --manifest-path Cargo.toml -p nudox-index-vocab --all-targets -- -D warnings
+RUSTC_WRAPPER= cargo doc --manifest-path Cargo.toml -p nudox-index-vocab --no-deps
+git diff --check f9419673f451ec8796d3f9462f3bace667c13435 -- workspace2/crates/nudox-id/src/marker.rs workspace2/crates/nudox-id/src/lib.rs workspace2/crates/nudox-index-vocab
 ```
 
 The current documentation-cycle baseline commands passed: `RUSTC_WRAPPER= cargo fmt --manifest-path

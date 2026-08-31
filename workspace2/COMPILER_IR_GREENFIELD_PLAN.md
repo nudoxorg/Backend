@@ -44,39 +44,26 @@ bundle on demand and speak the same typed job/artifact protocol to local or remo
 
 ## Source topology
 
-Use two nested workspaces so semantic vocabulary cannot depend on execution or language SDKs:
+Use one root workspace. Semantic vocabulary remains isolated by package dependency direction, so it
+does not depend on execution or language SDKs:
 
 ```text
-domains/ir/
-  Cargo.toml
-  crates/
-    nudox-ir-vocab/          no_std entity kinds, typed IDs, source/type vocabulary
-    nudox-ir-format/         no_std canonical fragment/manifest wire records
-    nudox-ir-view/           borrowed validated fragments and typed cursors
-    nudox-ir-build/          alloc caller-arena builders and canonical preparation
-    nudox-ir-diff/           borrowed manifest/fragment delta and closure proofs
-
-planes/compiler/
-  Cargo.toml
-  crates/
-    nudox-compile-vocab/     no_std recipe/stage/job/capability vocabulary
-    nudox-compile-registry/  declarative frontend registry and closed dispatch generation
-    nudox-compile-driver/    sync typed stage graph over concrete frontend families
-    nudox-compile-schedule/  std owner scheduler and physical-credit admission
-    nudox-compile-publish/   std artifact/publication integration
-  frontends/
-    rust/
-    typescript/
-    ...                     one nested crate/workspace member per earned adapter
-  adapters/
-    process/
-    sandbox/
-    object-store/
-    server/
-    bundle-loader/
+crates/
+  nudox-ir-vocab/             no_std entity kinds, typed IDs, source/type vocabulary
+  nudox-ir-format/            no_std canonical fragment/manifest wire records
+  nudox-ir-view/              borrowed validated fragments and typed cursors
+  nudox-ir-build/             alloc caller-arena builders and canonical preparation
+  nudox-ir-diff/              borrowed manifest/fragment delta and closure proofs
+  nudox-compile-vocab/        no_std recipe/stage/job/capability vocabulary
+  nudox-compile-registry/     declarative frontend registry and closed dispatch generation
+  nudox-compile-driver/       sync typed stage graph over concrete frontend families
+  nudox-compile-schedule/     std owner scheduler and physical-credit admission
+  nudox-compile-publish/      std artifact/publication integration
+  nudox-compile-frontend-*    one root workspace member per earned adapter
+  nudox-compile-adapter-*     process, sandbox, object-store, server, or bundle-loader adapters
 ```
 
-Frontend crates depend inward on compile/IR vocabulary and builder contracts. IR never depends on a
+Frontend packages depend inward on compile/IR vocabulary and builder contracts. IR never depends on a
 frontend, compiler, registry, sandbox, filesystem, GUI, or index. Sandbox is a replaceable execution
 adapter, not the definition of a compile job. Generators, mutation corpora, deterministic schedules,
 and independent semantic oracles live in ordinary owning crates' top-level `tests/` trees. There are
@@ -298,7 +285,7 @@ nine/ten are measured same-scope stretch.
 
 ### C0 — compile and IR vocabulary
 
-Create both nested workspaces; typed IDs; language/stage/entity/type vocabularies; declarative registry
+Create the root-workspace packages; typed IDs; language/stage/entity/type vocabularies; declarative registry
 prototype for two tiny test frontends; const capability matrix; compile-fail illegal dispatch/stage/
 kind cases; exact size and code-size evidence. No real language SDK, sandbox, scheduler, serde, or async.
 

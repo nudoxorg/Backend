@@ -155,7 +155,7 @@ The full greenfield contract and manager slices live in
 anti-pattern evidence only; none of its APIs, schemas, stores, or search behavior is a compatibility
 constraint.
 
-- [x] Establish the minimal nested no-std identity vocabulary: snapshot, exact-segment, and
+- [x] Establish the minimal root-workspace no-std identity vocabulary: snapshot, exact-segment, and
   lexical-segment aliases use the checked central domains directly. Dormant future-family variants,
   a one-implementation projection trait, and raw rebranding surface are absent.
 - [ ] Partition immutable generation/object metadata by canonical key with rendezvous placement only
@@ -220,8 +220,8 @@ rejected P2/P6 implementations remain negative evidence.
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
 | Typed identity integrity | Integrated with closed registry, public all-pairs/split-point falsifiers, and safe typed locality payloads | Keep raw authority checks at ingress and resist reintroducing unchecked constructors or post-validation decoding. |
-| Index I0 vocabulary | Integrated after identity repair; nested tests, strict linting, formatting, and docs pass | Start the immutable snapshot/segment grammar without rebuilding a future-family registry or generic family projection. |
-| Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
+| Index I0 vocabulary | Integrated after identity repair; root-workspace tests, strict linting, formatting, and docs pass | Start the immutable snapshot/segment grammar without rebuilding a future-family registry or generic family projection. |
+| Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked root-workspace gates are closed. |
 | Leased range T0 | Autonomous Terra calibration active; the first pre-edit Terra rejected an incomplete ABI/credit card | First terminal is a two-lease runtime-independent reorder/conservation proof with complete/cancelled terminals. Partial/degraded/failed and physical adapters remain later children. |
 | Durable journal D0 | Synchronous single-owner durability substrate integrated; asynchronous heart remains open | Preserve the accepted file authority and its fault proofs while adding bounded MPSC/group commit as a separate owner, then bind stable receipts to publication CAS. |
 | Observability health | Adapter seam is green after removing the dedicated scenario crate | A future lifecycle capability must expose real exporter failure without reintroducing a test-support package or portable SDK dependency. |

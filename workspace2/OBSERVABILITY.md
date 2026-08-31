@@ -12,9 +12,9 @@ service can attach complete traces, metrics, and logs without changing semantic 
 2. An optional fixed-capacity local flight recorder stores compact copyable events in an owner-local or
    SPSC ring. It allocates once, overwrites or rejects according to explicit policy, and dumps only on
    error/user request. It never formats on record.
-3. A server-only adapter maps typed probes to `tracing` callsites and OpenTelemetry. It lives in a
-   separate workspace/package graph so the portable client does not link OTEL, Tokio, tonic, HTTP, or
-   TLS accidentally.
+3. A server-only adapter maps typed probes to `tracing` callsites and OpenTelemetry. It lives in its
+   own root-workspace package and dependency graph so the portable client does not link OTEL, Tokio,
+   tonic, HTTP, or TLS accidentally.
 
 ## Signal design
 
@@ -102,8 +102,8 @@ stable CI instruction/cache regression budgets where Valgrind is available:
 - integration and benchmark cases in the same ordinary crate share driver and fixture constructors;
 - cardinality audit rejects object/generation/request identifiers as metric attributes.
 
-The executable adapter in `adapters/observability` proves the current seam with in-memory SDK
+The executable adapter in `crates/nudox-observability-adapter` proves the current seam with in-memory SDK
 exporters: three correlated spans, the exact 15-event signal fixture, seven unlabeled aggregate gauges,
 disabled-callsite laziness, bounded-queue overload, export-failure accounting, and shutdown flushing.
-The adapter is a nested workspace, so none of its tracing, SDK, exporter, or async dependencies enter
-the portable crate graph.
+The adapter is marked server-only in the root workspace, so none of its tracing, SDK, exporter, or
+async dependencies enter the portable crate graph.

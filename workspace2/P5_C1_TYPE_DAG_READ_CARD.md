@@ -19,10 +19,10 @@ produce E0308.
 
 Baseline is clean commit `cda6a396`. Write only:
 
-- `workspace2/domains/ir/crates/nudox-ir-format/src/lib.rs`: private module plus named reexports;
-- `workspace2/domains/ir/crates/nudox-ir-format/src/type_dag.rs`: production read boundary;
-- `workspace2/domains/ir/crates/nudox-ir-format/tests/type_dag.rs`: runtime and mutation proof;
-- `workspace2/domains/ir/crates/nudox-ir-format/tests/fragment.rs`: actual-rlib fixture only;
+- `workspace2/crates/nudox-ir-format/src/lib.rs`: private module plus named reexports;
+- `workspace2/crates/nudox-ir-format/src/type_dag.rs`: production read boundary;
+- `workspace2/crates/nudox-ir-format/tests/type_dag.rs`: runtime and mutation proof;
+- `workspace2/crates/nudox-ir-format/tests/fragment.rs`: actual-rlib fixture only;
 - `workspace2/evidence/p5-c1/type-dag-read/**`: direct evidence and rejected mutants.
 
 No manifest, lockfile, vocabulary, dependency, macro, unsafe, allocation, string owner, fragment,

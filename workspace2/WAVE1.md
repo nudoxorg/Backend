@@ -25,16 +25,16 @@ framework.
 
 ## Operation runtime
 
-Owns `nudox-operation`, `nudox-runtime`, `nudox-workflow`, `nudox-observe`, and the server-only nested
-`adapters/observability` workspace.
+Owns `nudox-operation`, `nudox-runtime`, `nudox-workflow`, `nudox-observe`, and the server-only
+`nudox-observability-adapter` package in the root workspace.
 
 Deliver a statically dispatched operation contract, bounded batch/credit runtime, and durable
 idempotent workflow reducer. Integrate the other Wave 1 crates in end-to-end tests once their public
 surfaces appear. Do not add Tokio, trait objects, boxed futures, or a generalized executor.
 
 `nudox-observe` is the tiny no-std typed probe/flight-recorder seam. The OTEL SDK/exporter lives only
-in `adapters/observability`, with its own workspace and dependency graph, so the portable client cannot
-link it accidentally. The adapter must prove correlated traces/logs/metrics through in-memory OTEL
+in `nudox-observability-adapter`, whose adapter-only metadata and dependency graph keep it out of the
+portable client graph. The adapter must prove correlated traces/logs/metrics through in-memory OTEL
 exporters before any network exporter is considered complete.
 
 The Wave 1 in-memory source is a synchronous lending cursor because it never waits. Its operation

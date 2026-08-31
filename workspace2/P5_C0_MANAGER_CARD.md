@@ -22,8 +22,8 @@ counterexample, not a claim this zero-production-delta terminal can repair or di
 - Builder-scoped paths, exactly:
 
 ```text
-domains/ir/crates/nudox-ir-vocab/src/lib.rs (read-only digest-pinned comparison path)
-domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs (only writable builder path)
+crates/nudox-ir-vocab/src/lib.rs (read-only digest-pinned comparison path)
+crates/nudox-ir-vocab/tests/coordinates.rs (only writable builder path)
 ```
 
 `src/lib.rs` must remain byte-identical to its recorded baseline digest; any diff is an immediate stop
@@ -41,8 +41,8 @@ calibration role is spawned with its stated model and `fork_turns: none`.
 
 | Baseline path | SHA-256 | formatted LOC |
 | --- | --- | ---: |
-| `domains/ir/crates/nudox-ir-vocab/src/lib.rs` | `2470230102424a34892369204ce20c5a164cec25d894ce8eee45331e636e5a78` | 34 |
-| `domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs` | `7ca6d45b5fbeb9b0961d5726eea0249e574eb3f76d6b3d9f37fdc17e2aefdc43` | 14 |
+| `crates/nudox-ir-vocab/src/lib.rs` | `2470230102424a34892369204ce20c5a164cec25d894ce8eee45331e636e5a78` | 34 |
+| `crates/nudox-ir-vocab/tests/coordinates.rs` | `7ca6d45b5fbeb9b0961d5726eea0249e574eb3f76d6b3d9f37fdc17e2aefdc43` | 14 |
 
 ## Preserved representation and negative space
 
@@ -83,7 +83,7 @@ coded compiler errors, then requires the sole error to be `E0308` with source-vi
 `TypeId`; the legal `TypeId` mutation must itself compile successfully before its false diagnostic
 predicate is accepted. Its local `Option` records only zero-or-one artifact discovery and fails
 immediately on a second candidate; it is not a public or semantic terminal. The manager pins every
-Cargo gate to `domains/ir/target`, while the fixture resolves the parent of the running test executable;
+Cargo gate to the root `target`, while the fixture resolves the parent of the running test executable;
 those are the same dependency directory under the advertised gates. The two Luna readers and the
 plausible-misreader receive only this card and the governing skills. The Terra reviewer calibration
 additionally receives this exact frozen skeleton artifact, at the path and digest above, so it can
@@ -100,10 +100,10 @@ Run every command below from `workspace2` with the literal target directory show
 test, the manager must prepare one clean vocabulary artifact and retain the output:
 
 ```text
-CARGO_TARGET_DIR=domains/ir/target RUSTC_WRAPPER= cargo clean --manifest-path domains/ir/Cargo.toml -p nudox-ir-vocab
-CARGO_TARGET_DIR=domains/ir/target RUSTC_WRAPPER= cargo test --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-test "$(find domains/ir/target/debug/deps -maxdepth 1 -type f -name 'libnudox_ir_vocab-*.rlib' -print | wc -l | tr -d ' ')" = 1
-find domains/ir/target/debug/deps -maxdepth 1 -type f -name 'libnudox_ir_vocab-*.rlib' -exec shasum -a 256 domains/ir/crates/nudox-ir-vocab/src/lib.rs {} \;
+CARGO_TARGET_DIR=target RUSTC_WRAPPER= cargo clean --manifest-path Cargo.toml -p nudox-ir-vocab
+CARGO_TARGET_DIR=target RUSTC_WRAPPER= cargo test --locked --manifest-path Cargo.toml --workspace --all-targets
+test "$(find target/debug/deps -maxdepth 1 -type f -name 'libnudox_ir_vocab-*.rlib' -print | wc -l | tr -d ' ')" = 1
+find target/debug/deps -maxdepth 1 -type f -name 'libnudox_ir_vocab-*.rlib' -exec shasum -a 256 crates/nudox-ir-vocab/src/lib.rs {} \;
 ```
 
 The clean preparation must report exactly one candidate. Zero or multiple candidates are causal
@@ -114,9 +114,9 @@ fixture inputs, and retains toolchain and compiler-process command. These bind r
 freshly built exported artifact rather than an older profile or shadow source.
 
 ```text
-CARGO_TARGET_DIR=domains/ir/target RUSTC_WRAPPER= cargo fmt --manifest-path domains/ir/Cargo.toml --all -- --check
-CARGO_TARGET_DIR=domains/ir/target RUSTC_WRAPPER= cargo test --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-CARGO_TARGET_DIR=domains/ir/target RUSTC_WRAPPER= cargo clippy --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets -- -D warnings
+CARGO_TARGET_DIR=target RUSTC_WRAPPER= cargo fmt --manifest-path Cargo.toml --all -- --check
+CARGO_TARGET_DIR=target RUSTC_WRAPPER= cargo test --locked --manifest-path Cargo.toml --workspace --all-targets
+CARGO_TARGET_DIR=target RUSTC_WRAPPER= cargo clippy --locked --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 git diff --check && git status --short
 ```
 

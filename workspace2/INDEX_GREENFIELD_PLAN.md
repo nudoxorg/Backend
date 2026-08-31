@@ -39,25 +39,22 @@ The same segment bytes and query semantics work on a laptop, an NVMe search node
 
 ## Source topology
 
-The index lives in a nested workspace so the portable root cannot accidentally inherit servers,
-object-store SDKs, embedding runtimes, or query engines.
+The index lives in the root workspace, with package metadata and dependency direction keeping
+servers, object-store SDKs, embedding runtimes, and query engines out of portable packages.
 
 ```text
-planes/index/
-  Cargo.toml
-  crates/
-    nudox-index-vocab/       no_std closed schema/query/segment vocabulary
-    nudox-index-format/      no_std canonical manifest and segment wire records
-    nudox-index-view/        borrowed validated manifest/segment views and cursors
-    nudox-index-build/       caller-arena builders, external sort, compaction equivalence
-    nudox-index-query/       sync borrowed planners, posting cursors, merge/top-k
-    nudox-index-publish/     std durable snapshot log/head protocol
-  adapters/
-    file/                    mmap and file-range leases
-    object-store/            remote range/read/write and publication CAS
-    lexical-tantivy/         optional segment builder/reader experiment, never core truth
-    vector-qdrant/           optional derived-view adapter, never snapshot truth
-    server/                  async fan-out, admission, health and OTEL
+crates/
+  nudox-index-vocab/          no_std closed schema/query/segment vocabulary
+  nudox-index-format/         no_std canonical manifest and segment wire records
+  nudox-index-view/           borrowed validated manifest/segment views and cursors
+  nudox-index-build/          caller-arena builders, external sort, compaction equivalence
+  nudox-index-query/          sync borrowed planners, posting cursors, merge/top-k
+  nudox-index-publish/        std durable snapshot log/head protocol
+  nudox-index-adapter-file/   mmap and file-range leases
+  nudox-index-adapter-object/ remote range/read/write and publication CAS
+  nudox-index-tantivy/        optional derived-view adapter, never snapshot truth
+  nudox-index-qdrant/         optional derived-view adapter, never snapshot truth
+  nudox-index-server/         async fan-out, admission, health and OTEL
 ```
 
 A crate exists only when it owns a replaceable invariant. `lib.rs` maps modules and reexports a small
@@ -264,7 +261,7 @@ stretch, never extra features.
 
 ### I0 — minimal identity vocabulary and snapshot manifest
 
-After foundation raw identity integrity closes, build the nested workspace, only currently consumed
+After foundation raw identity integrity closes, build the root-workspace packages, only currently consumed
 typed identities/family codes, packed snapshot manifest builder/view,
 binary-searchable segment directory, exact mutation corpus, zero-allocation borrowed validation, and
 one local manifest scan. No query engine, publication adapter, text/vector backend, or async I/O.

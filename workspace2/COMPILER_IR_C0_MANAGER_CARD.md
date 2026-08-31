@@ -10,8 +10,8 @@ A later builder starts from this card only after fresh cold calibration accepts 
   `autonomous-compiler-contract`.
 - Baseline: `f9419673f451ec8796d3f9462f3bace667c13435`; formatting and `git diff --check` were clean.
 - Toolchain: `workspace2/rust-toolchain.toml`, Rust `1.97.1`, `clippy`, and `rustfmt`.
-- Baseline absence: `workspace2/domains/ir/**`, `workspace2/planes/compiler/**`, and this card are
-  untracked/absent. The root workspace remains `members = ["crates/*"]` and is not writable.
+- Baseline absence: the nine package files listed below and this card are untracked/absent. The root
+  workspace and shared lockfile already exist and remain read-only.
 
 | Frozen input | SHA-256 | LOC |
 | --- | --- | ---: |
@@ -83,26 +83,23 @@ constructor.
 
 ## Exact later write ownership
 
-Every listed file is absent at the frozen base (digest `absent`, LOC `0`). No wildcard is authority.
+Every listed package file is absent at the frozen base (digest `absent`, LOC `0`). No wildcard is
+authority.
 
 ```text
-workspace2/domains/ir/Cargo.toml
-workspace2/domains/ir/Cargo.lock
-workspace2/domains/ir/crates/nudox-ir-vocab/Cargo.toml
-workspace2/domains/ir/crates/nudox-ir-vocab/src/lib.rs
-workspace2/domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs
-workspace2/planes/compiler/Cargo.toml
-workspace2/planes/compiler/Cargo.lock
-workspace2/planes/compiler/crates/nudox-compile-vocab/Cargo.toml
-workspace2/planes/compiler/crates/nudox-compile-vocab/src/lib.rs
-workspace2/planes/compiler/crates/nudox-compile-registry/Cargo.toml
-workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
-workspace2/planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs
-workspace2/planes/compiler/crates/nudox-compile-registry/tests/subset.rs
+workspace2/crates/nudox-ir-vocab/Cargo.toml
+workspace2/crates/nudox-ir-vocab/src/lib.rs
+workspace2/crates/nudox-ir-vocab/tests/coordinates.rs
+workspace2/crates/nudox-compile-vocab/Cargo.toml
+workspace2/crates/nudox-compile-vocab/src/lib.rs
+workspace2/crates/nudox-compile-registry/Cargo.toml
+workspace2/crates/nudox-compile-registry/src/lib.rs
+workspace2/crates/nudox-compile-registry/tests/dispatch.rs
+workspace2/crates/nudox-compile-registry/tests/subset.rs
 ```
 
-The two nested lockfiles are committed build inputs and every terminal Cargo command uses `--locked`;
-the worktree must remain clean after a gate. Forbidden: root manifest/lockfile; central registry;
+The root lockfile is the committed build input and every terminal Cargo command uses `--locked`;
+the worktree must remain clean after a gate. Forbidden: root manifest/lockfile edits; central registry;
 existing crate; dependency; real frontend SDK;
 macro crate; test-support crate; fragment/wire/builder/view; recipe/job/driver; cache/scheduler/sandbox/
 process/object-store/server/bundle; async/runtime; `serde`; `async-trait`; public `dyn`; `Box<dyn Error>`;
@@ -143,7 +140,7 @@ negative evidence, so it is a forecast control, not a candidate.
 | IR vocabulary source and its crate manifest | production | 54 |
 | compiler vocabulary source and its crate manifest | production | 52 |
 | registry source and its crate manifest | production | 60 |
-| two nested workspace manifests | production | 34 |
+| shared root workspace manifest/lock integration | integration (not charged) | 0 |
 | IR coordinate test | test | 32 |
 | public dispatch and subset tests | test | 88 |
 | **production forecast / hard cap / unused reserve** | production | **200 / 225 / 25** |
@@ -152,7 +149,7 @@ negative evidence, so it is a forecast control, not a candidate.
 Caps: zero added dependencies, unsafe blocks, `alloc` dependency closure, payload copies, retained owners,
 and allocation sites on dispatch; one boundary selection, one concrete call, no scan; exact four-byte/
 four-alignment dense ID on this target; release text delta no more than 8 KiB against the empty
-nested-workspace control. C0.1 makes no allocator-performance claim: its `#![no_std]`, no-`alloc`,
+root-workspace control. C0.1 makes no allocator-performance claim: its `#![no_std]`, no-`alloc`,
 zero-dependency closure plus source audit prove allocation is unavailable on the selected path; the later
 allocator-instrumented IR builder claim belongs to C1.
 
@@ -160,25 +157,21 @@ allocator-instrumented IR builder claim belongs to C1.
 
 ```text
 cd /private/tmp/nudox-autonomous-compiler-contract/workspace2
-RUSTC_WRAPPER= cargo fmt --manifest-path domains/ir/Cargo.toml --all -- --check
-RUSTC_WRAPPER= cargo fmt --manifest-path planes/compiler/Cargo.toml --all -- --check
-RUSTC_WRAPPER= cargo check --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo check --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --locked --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry --doc
-RUSTC_WRAPPER= cargo clippy --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets -- -D warnings
-RUSTC_WRAPPER= cargo clippy --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets -- -D warnings
+RUSTC_WRAPPER= cargo fmt --manifest-path Cargo.toml --all -- --check
+RUSTC_WRAPPER= cargo check --locked --manifest-path Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo test --locked --manifest-path Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo test --locked --manifest-path Cargo.toml -p nudox-compile-registry --doc
+RUSTC_WRAPPER= cargo clippy --locked --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 rustc -vV
-RUSTC_WRAPPER= cargo test --locked --release --no-run --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-find planes/compiler/target/release/deps -type f -perm -111 -name 'dispatch-*' -print -exec /usr/bin/size -m {} \;
-find planes/compiler/target/release/deps -type f -perm -111 -name 'nudox_compile_registry-*' -print -exec /usr/bin/size -m {} \;
+RUSTC_WRAPPER= cargo test --locked --release --no-run --manifest-path Cargo.toml --workspace --all-targets
+find target/release/deps -type f -perm -111 -name 'dispatch-*' -print -exec /usr/bin/size -m {} \;
+find target/release/deps -type f -perm -111 -name 'nudox_compile_registry-*' -print -exec /usr/bin/size -m {} \;
 git diff --check
 ```
 
-One fresh builder turn may create exactly the thirteen files above. It must deliver the compileable nested
-workspace skeleton, two branded coordinates, full/manual and `RustSubsetOnly` registries, and external
-two-row/exact-error tests; commit only these paths after nested format/check/test gates. It stops before
+One fresh builder turn may create exactly the nine package files above. It must deliver the compileable
+root-workspace package skeleton, two branded coordinates, full/manual and `RustSubsetOnly` registries, and external
+two-row/exact-error tests; commit only these paths after root format/check/test gates. It stops before
 a macro, compile-fail harness dependency, feature mechanism, real frontend, or C1 type. Its adversarial
 test replaces both frontend implementations with the same behavior or admits TypeScript through
 `RustSubsetOnly`; the named tests must fail. It records raw layout, dependency-closure, and text output
@@ -193,7 +186,7 @@ bundle acquisition and C6 is the published incremental consumer terminal.
 
 The first fresh child was spawned with explicit `model: gpt-5.6-luna` and `fork_turns: none`; the runtime
 accepted task `/root/autonomous_compiler_c0_manager/c0_reader_one`. It independently found the two-row
-terminal, absent paths, nested commands, and no-root-manifest boundary, but over-escalated synthetic tags,
+terminal, absent paths, root commands, and no-root-manifest boundary, but over-escalated synthetic tags,
 subset mechanism, manual/macro choice, central registry, and text tool. This card settles those facts.
 
 The remaining cold deck is mandatory before a builder: second reader, plausible misreader, reviewer, then
@@ -207,5 +200,5 @@ contract ambiguity: the baseline plan digest in the table no longer matched the 
 re-freeze paragraph above is the narrow rewrite; it changes no capability, path, cap, or evidence row.
 
 Exact next decision: **commission the first builder card only if all four fresh trials reproduce this
-rewritten C0.1 terminal, thirteen paths, prohibited surface, caps/reserve, commands, and no authority
+rewritten C0.1 terminal, nine package paths, prohibited surface, caps/reserve, commands, and no authority
 question with zero blocker/major ambiguity.**

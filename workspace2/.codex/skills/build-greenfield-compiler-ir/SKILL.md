@@ -24,10 +24,10 @@ observable child slice and freezes allowed paths, registry edits, dependencies, 
 arena/retained/live bytes, allocations/copies, stage/hash work, binary text, cancellation/failure
 terminal, and integration consumer before production edits.
 
-For `C0`, the default surface is complete nested workspaces under `workspace2/domains/ir/**` and
-`workspace2/planes/compiler/**`, plus separately authorized central registry additions. Use two tiny
-synthetic concrete frontends to prove generated dispatch; do not import a real SDK, sandbox, runtime,
-object store, serde, or server.
+For `C0`, the default surface is a complete set of root-workspace packages under
+`workspace2/crates/nudox-ir-*` and `workspace2/crates/nudox-compile-*`, plus separately authorized
+central registry additions. Use two tiny synthetic concrete frontends to prove generated dispatch;
+do not import a real SDK, sandbox, runtime, object store, serde, or server.
 
 Tests and deterministic drivers stay in ordinary owning crates' top-level `tests/` trees. Do not
 create `*-testkit` crates or expose shipping fixture APIs; a genuinely reusable simulator is an
@@ -147,7 +147,7 @@ output across input/scheduling permutations, exact invalidation sets, causal err
 and a top-level real public journey.
 
 The owning workspace's ordinary locked test and Clippy graph must discover the production crate and
-its public journey. A green nested workspace is useful local custody, but is not integration proof.
+its public journey. A green root-workspace package set is useful local custody, but is not integration proof.
 Mutation tests must distinguish structural bytes that must reject or canonicalize from payload bytes
 whose variability is semantically intended; “all payload mutations validate” never proves canonicality.
 

@@ -15,11 +15,11 @@ integration prerequisites while using a private experimental seam on their own b
 | P1 | Canonical root, locality, hydration, pre-publication authority | canonical bytes → borrowed view → bounded selection/hydration → non-forgeable verified fact | typed identity integrity; P2 owns any later published typestate | `nudox-root`, `nudox-hydration`, `nudox-object` |
 | P2 | Durable publication heart | reduce → append/group commit → sync receipt → CAS head → crash-safe reopen | typed identity decode; later P1 published capability | `nudox-workflow`, runtime/observe, durable adapter |
 | P3 | Authenticated partial object/range storage | header/directory → selected authenticated ranges → borrowed body verification → store transfer; local/NVMe/object-store parity | leased range T0; typed artifact identity; P2 publication | object pack, storage/range adapters |
-| P4 | Real immutable index | delta → exact segment → snapshot → borrowed query → equivalent compaction → local/remote outage result | typed identity, range, durable publication for integration | `planes/index/**` |
-| P5 | Real compiler and compact IR | source → real bounded frontend → packed IR fragment/manifest → recipe/stage driver → vertically admitted execution | typed identity, range, durable publication for integration | `domains/ir/**`, `planes/compiler/**` |
+| P4 | Real immutable index | delta → exact segment → snapshot → borrowed query → equivalent compaction → local/remote outage result | typed identity, range, durable publication for integration | `crates/nudox-index-*` |
+| P5 | Real compiler and compact IR | source → real bounded frontend → packed IR fragment/manifest → recipe/stage driver → vertically admitted execution | typed identity, range, durable publication for integration | `crates/nudox-ir-*`, `crates/nudox-compile-*` |
 | P6 | Declarative protocol registry and static dispatch | one auditable declaration drives two real consumers, compile-time closure, compile-fail diagnostics, and erased codegen | typed identity grammar decision before shared adoption | foundation/index/compiler registries; layout lab |
 | P7 | Local-first adaptive heart | typed demand + local facts + remote health + resource budget → deterministic placement/expansion/contraction with exact terminals | stable operation/range/index/compiler/publication vocabularies | operation/runtime/workflow plus private prototype crate |
-| P8 | Lean client, GUI, and conditional capability delivery | measured <50 MB base shell opens local facts and acquires one verified optional component without server dependency leakage | compiler bundle, local-first coordinator, stable foundation | new client/GUI nested workspace |
+| P8 | Lean client, GUI, and conditional capability delivery | measured <50 MB base shell opens local facts and acquires one verified optional component without server dependency leakage | compiler bundle, local-first coordinator, stable foundation | new root-workspace client/GUI packages |
 | P9 | Unified system proof harness | one public journey runs as exact test, benchmark, traced simulation, and replayable fault schedule without a test-only crate | stable public seams for final integration; prototype may target current accepted subset | ordinary crate `tests/`, adapter tests, tools |
 
 Safe parallelism is by isolated worktree, not by pretending dependencies are settled. P1, P2, P5,
@@ -287,7 +287,7 @@ fork_turns="none", plus a separate read-only reviewer with explicit model=gpt-5.
 fork_turns="none". Retain successful spawn/transport output and task identities. Keep one manager active
 enough to leave slots for its Luna and reviewer. No agent may merge or score the product.
 
-The mandatory first manager card is I0 only: the nested workspace, currently consumed typed identities
+The mandatory first manager card is I0 only: the root-workspace index packages, currently consumed typed identities
 and family codes behind a private checked seam, a packed snapshot-manifest builder/borrowed view,
 binary-searchable segment directory, exact mutation corpus, zero-allocation validation, and one local
 manifest scan. It has no segment/query/publication/range/async/backend type. Sol must reproduce and
@@ -368,7 +368,7 @@ fork_turns="none", plus a separate read-only reviewer with explicit model=gpt-5.
 fork_turns="none". Retain successful spawn/transport output and task identities. Terra owns cards and
 oracles; Luna implements frozen verticals; reviewer attacks and never edits; Sol simplifies. No merge.
 
-The mandatory first manager card is C0 only: create the two nested workspaces; currently needed typed
+The mandatory first manager card is C0 only: create the root-workspace IR/compiler packages; currently needed typed
 IDs and language/stage/entity/type vocabularies behind a private checked seam; a manual closed static
 dispatch control with two tiny honest consumers; a const capability matrix; compile-fail illegal
 dispatch/stage/kind cases; exact layout and release-text evidence. It has no fragment, builder, frontend,
