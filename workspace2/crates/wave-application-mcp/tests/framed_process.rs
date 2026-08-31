@@ -10,10 +10,16 @@ use serde_json::Value;
 use wave_application_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
 use wave_application_protocol::{read_frame, write_frame};
 
+// The shared corpus also exposes CLI argument construction for the sibling process test.
+#[allow(dead_code)]
+#[path = "../../wave-application-protocol/tests/support/golden_corpus.rs"]
+mod golden_corpus;
+
 #[derive(Debug)]
 enum TestError {
     Io(io::Error),
     Json(serde_json::Error),
+    Golden(golden_corpus::GoldenError),
 }
 
 impl fmt::Display for TestError {
@@ -21,6 +27,7 @@ impl fmt::Display for TestError {
         match self {
             Self::Io(source) => source.fmt(formatter),
             Self::Json(source) => source.fmt(formatter),
+            Self::Golden(source) => source.fmt(formatter),
         }
     }
 }
@@ -43,6 +50,8 @@ impl From<serde_json::Error> for TestError {
 #[serde(rename_all = "kebab-case")]
 enum ApplicationAction {
     Generate,
+    Health,
+    Cancel,
     RecoverLocal,
     PollExecution,
     ReleaseLocal,
@@ -110,6 +119,7 @@ enum OperationId {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum JsonRpcRequestId<'request_id> {
+    Null,
     Number(u64),
     Text(&'request_id str),
 }
@@ -123,10 +133,20 @@ struct ToolCallRequest<'request_id, Arguments> {
 }
 
 #[derive(Serialize)]
+struct ToolCallNotification<Arguments> {
+    jsonrpc: JsonRpcVersion,
+    method: RpcMethod,
+    params: ToolCallParams<Arguments>,
+}
+
+#[derive(Serialize)]
 struct ToolCallParams<Arguments> {
     name: ToolName,
     arguments: ApplicationArguments<Arguments>,
 }
+
+#[derive(Serialize)]
+struct EmptyArguments {}
 
 #[derive(Serialize)]
 struct ApplicationArguments<Arguments> {
@@ -198,6 +218,25 @@ fn request<Arguments: Serialize>(
     Ok(serde_json::to_value(ToolCallRequest {
         jsonrpc: JsonRpcVersion::Version2,
         id,
+        method: RpcMethod::ToolsCall,
+        params: ToolCallParams {
+            name: ToolName::NudoxApplication,
+            arguments: ApplicationArguments {
+                fields: arguments,
+                action,
+                correlation,
+            },
+        },
+    })?)
+}
+
+fn notification<Arguments: Serialize>(
+    correlation: u64,
+    action: ApplicationAction,
+    arguments: Arguments,
+) -> Result<Value, TestError> {
+    Ok(serde_json::to_value(ToolCallNotification {
+        jsonrpc: JsonRpcVersion::Version2,
         method: RpcMethod::ToolsCall,
         params: ToolCallParams {
             name: ToolName::NudoxApplication,
@@ -311,18 +350,16 @@ fn assert_generation(
     stdout: &mut BufReader<ChildStdout>,
     id: u64,
     source: &str,
-) -> Result<String, TestError> {
+) -> Result<(), TestError> {
     let generated = generate(stdin, stdout, id, source)?;
     let structured = &generated["result"]["structuredContent"];
     assert_eq!(structured["correlation"], id);
-    assert_eq!(structured["body"]["kind"], "compiler_passthrough");
-    assert_eq!(structured["body"]["package"], "mcp-package");
-    assert_eq!(structured["body"]["source"], source);
-    assert_eq!(structured["terminal"]["kind"], "partial");
-    structured["body"]["source"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| TestError::Io(io::Error::new(io::ErrorKind::InvalidData, "source missing")))
+    assert_eq!(structured["body"]["kind"], "dependency_unavailable");
+    assert_eq!(structured["body"]["capability"], "compiler_output");
+    assert_eq!(structured["terminal"]["kind"], "degraded");
+    assert_eq!(structured["terminal"]["unavailable"], "compiler_output");
+    assert_eq!(structured["diagnostic"]["code"], "dependency_unavailable");
+    Ok(())
 }
 
 fn assert_first_completed(
@@ -381,6 +418,7 @@ fn assert_cancelled(
         ApplicationAction::ReleaseLocal,
         release_arguments(),
     )?;
+    assert_eq!(admitted["id"], "second-operation");
     assert_eq!(
         admitted["result"]["structuredContent"]["body"]["kind"],
         "execution_started"
@@ -449,12 +487,142 @@ fn framed_mcp_process_preserves_structured_results_and_named_cancellation() -> R
         .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
     let mut stdout = BufReader::new(stdout);
 
-    let first_source = assert_generation(&mut stdin, &mut stdout, 81, "fn mcp() {}")?;
-    let second_source = assert_generation(&mut stdin, &mut stdout, 811, "fn mcp_second() {}")?;
-    assert_ne!(first_source, second_source);
+    assert_generation(&mut stdin, &mut stdout, 81, "fn mcp() {}")?;
+    assert_generation(&mut stdin, &mut stdout, 811, "fn mcp_second() {}")?;
     assert_first_completed(&mut stdin, &mut stdout)?;
     assert_cancelled(&mut stdin, &mut stdout)?;
     assert_malformed(&mut stdin, &mut stdout)?;
+
+    drop(stdin);
+    let status = child.wait()?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[test]
+fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> Result<(), TestError>
+{
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wave-application-mcp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("MCP child did not retain stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
+    let mut stdout = BufReader::new(stdout);
+
+    let notification = notification(
+        90,
+        ApplicationAction::Generate,
+        GenerateArguments {
+            language: SourceLanguage::Rust,
+            stage: SourceStage::Parse,
+            package: PackageName::McpPackage,
+            source: "fn notification() {}",
+        },
+    )?;
+    send(&mut stdin, &notification)?;
+    let health = request(
+        JsonRpcRequestId::Number(91),
+        91,
+        ApplicationAction::Health,
+        EmptyArguments {},
+    )?;
+    send(&mut stdin, &health)?;
+    let health_reply = receive(&mut stdout)?;
+    assert_eq!(health_reply["id"], 91);
+    assert_eq!(
+        health_reply["result"]["structuredContent"]["body"]["kind"],
+        "health"
+    );
+
+    let null_id = request(
+        JsonRpcRequestId::Null,
+        92,
+        ApplicationAction::Generate,
+        GenerateArguments {
+            language: SourceLanguage::Rust,
+            stage: SourceStage::Parse,
+            package: PackageName::McpPackage,
+            source: "fn null_id() {}",
+        },
+    )?;
+    send(&mut stdin, &null_id)?;
+    let null_reply = receive(&mut stdout)?;
+    assert!(null_reply["id"].is_null());
+    assert_eq!(
+        null_reply["result"]["structuredContent"]["body"]["kind"],
+        "dependency_unavailable"
+    );
+
+    drop(stdin);
+    let status = child.wait()?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[test]
+fn deterministic_golden_corpus_matches_independent_service_and_mcp_process() -> Result<(), TestError>
+{
+    let expected = golden_corpus::direct_replies().map_err(TestError::Golden)?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wave-application-mcp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("MCP child did not retain stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
+    let mut stdout = BufReader::new(stdout);
+
+    let generated = generate(&mut stdin, &mut stdout, 101, "fn corpus() {}")?;
+    let generated =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&generated)?).map_err(TestError::Golden)?;
+    assert_eq!(generated.id, 101);
+    assert_eq!(generated.result.structured_content, expected[0]);
+
+    let health = effect(
+        &mut stdin,
+        &mut stdout,
+        JsonRpcRequestId::Number(102),
+        102,
+        ApplicationAction::Health,
+        EmptyArguments {},
+    )?;
+    let health =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&health)?).map_err(TestError::Golden)?;
+    assert_eq!(health.id, 102);
+    assert_eq!(health.result.structured_content, expected[1]);
+
+    let admitted = recover(&mut stdin, &mut stdout, JsonRpcRequestId::Number(103), 103)?;
+    let admitted =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&admitted)?).map_err(TestError::Golden)?;
+    assert_eq!(admitted.id, 103);
+    assert_eq!(admitted.result.structured_content, expected[2]);
+
+    let cancelled = effect(
+        &mut stdin,
+        &mut stdout,
+        JsonRpcRequestId::Number(104),
+        104,
+        ApplicationAction::Cancel,
+        PollExecutionArguments {
+            operation: OperationId::First,
+        },
+    )?;
+    let cancelled =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&cancelled)?).map_err(TestError::Golden)?;
+    assert_eq!(cancelled.id, 104);
+    assert_eq!(cancelled.result.structured_content, expected[3]);
 
     drop(stdin);
     let status = child.wait()?;

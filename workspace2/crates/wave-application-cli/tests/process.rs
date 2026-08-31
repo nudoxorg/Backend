@@ -3,10 +3,16 @@ use std::{error::Error, fmt, io, process::Command};
 use serde_json::Value;
 use wave_application_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
 
+// The shared corpus also exposes MCP envelope decoding for the sibling process test.
+#[allow(dead_code)]
+#[path = "../../wave-application-protocol/tests/support/golden_corpus.rs"]
+mod golden_corpus;
+
 #[derive(Debug)]
 enum CliTestError {
     Io(io::Error),
     Json(serde_json::Error),
+    Golden(golden_corpus::GoldenError),
     MissingLine(usize),
 }
 
@@ -15,6 +21,7 @@ impl fmt::Display for CliTestError {
         match self {
             Self::Io(source) => source.fmt(formatter),
             Self::Json(source) => source.fmt(formatter),
+            Self::Golden(source) => source.fmt(formatter),
             Self::MissingLine(index) => write!(formatter, "missing JSON output line {index}"),
         }
     }
@@ -51,7 +58,7 @@ fn stdout_json(output: &std::process::Output, line: usize) -> Result<Value, CliT
 }
 
 #[test]
-fn child_process_reports_source_sensitive_compiler_passthrough() -> Result<(), CliTestError> {
+fn child_process_preserves_honest_compiler_unavailable_terminal() -> Result<(), CliTestError> {
     let output = run(&[
         "generate",
         "71",
@@ -63,11 +70,11 @@ fn child_process_reports_source_sensitive_compiler_passthrough() -> Result<(), C
     assert!(output.status.success());
     let reply = stdout_json(&output, 0)?;
     assert_eq!(reply["correlation"], 71);
-    assert_eq!(reply["terminal"]["kind"], "partial");
+    assert_eq!(reply["terminal"]["kind"], "degraded");
     assert_eq!(reply["terminal"]["unavailable"], "compiler_output");
-    assert_eq!(reply["body"]["kind"], "compiler_passthrough");
-    assert_eq!(reply["body"]["package"], "cli-package");
-    assert_eq!(reply["body"]["source"], "fn cli() {}");
+    assert_eq!(reply["body"]["kind"], "dependency_unavailable");
+    assert_eq!(reply["body"]["capability"], "compiler_output");
+    assert_eq!(reply["diagnostic"]["code"], "dependency_unavailable");
     Ok(())
 }
 
@@ -150,4 +157,39 @@ fn child_process_distinguishes_business_diagnostic_from_transport_diagnostic()
     assert_eq!(too_many_reply["adapter_error"]["code"], "too_many_fields");
     assert_eq!(too_many_reply["adapter_error"]["actual"], 7);
     Ok(())
+}
+
+#[test]
+fn deterministic_golden_corpus_matches_independent_service_and_cli_process()
+-> Result<(), CliTestError> {
+    let expected = golden_corpus::direct_replies().map_err(CliTestError::Golden)?;
+    let commands = golden_corpus::command_arguments();
+    let mut arguments = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
+        if index != 0 {
+            arguments.push("--".to_owned());
+        }
+        arguments.extend(command.iter().cloned());
+    }
+    let references = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = run(&references)?;
+    assert!(output.status.success());
+    for (line, expected) in expected.iter().enumerate() {
+        let actual = stdout_golden(&output, line)?;
+        assert_eq!(&actual, expected);
+    }
+    Ok(())
+}
+
+fn stdout_golden(
+    output: &std::process::Output,
+    line: usize,
+) -> Result<golden_corpus::GoldenReply, CliTestError> {
+    let bytes = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|candidate| !candidate.is_empty())
+        .nth(line)
+        .ok_or(CliTestError::MissingLine(line))?;
+    golden_corpus::decode_reply(bytes).map_err(CliTestError::Golden)
 }

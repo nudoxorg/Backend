@@ -5159,6 +5159,7 @@ dependencies = [
 name = "wave-application-cli"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "wave-application-core",
  "wave-application-protocol",

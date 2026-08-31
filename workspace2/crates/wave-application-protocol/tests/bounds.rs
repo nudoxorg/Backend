@@ -57,9 +57,17 @@ enum BatteryState {
 }
 
 #[derive(Serialize)]
+#[serde(untagged)]
+enum JsonRpcRequestId {
+    Null,
+    Number(u64),
+    Text(String),
+}
+
+#[derive(Serialize)]
 struct McpPolicyRequest<'generation> {
     jsonrpc: JsonRpcVersion,
-    id: u64,
+    id: JsonRpcRequestId,
     method: RpcMethod,
     params: McpToolCall<'generation>,
 }
@@ -119,9 +127,13 @@ fn policy_arguments() -> Vec<String> {
 }
 
 fn mcp_policy_request(generation: &str) -> io::Result<String> {
+    mcp_policy_request_with_id(generation, JsonRpcRequestId::Number(9))
+}
+
+fn mcp_policy_request_with_id(generation: &str, id: JsonRpcRequestId) -> io::Result<String> {
     serde_json::to_string(&McpPolicyRequest {
         jsonrpc: JsonRpcVersion::Version2,
-        id: 9,
+        id,
         method: RpcMethod::ToolsCall,
         params: McpToolCall {
             name: ToolName::NudoxApplication,
@@ -142,6 +154,34 @@ fn mcp_policy_request(generation: &str) -> io::Result<String> {
         },
     })
     .map_err(io::Error::other)
+}
+
+#[test]
+fn mcp_preserves_null_identity_as_a_request_not_a_notification() -> Result<(), TestError> {
+    let generation = GenerationId::from_digest([11; 32]).to_string();
+    let body = mcp_policy_request_with_id(&generation, JsonRpcRequestId::Null)?;
+    let McpDecode::Accepted(envelope) = decode_mcp(body.as_bytes()) else {
+        return Err(io::Error::other("null-id MCP request was rejected").into());
+    };
+    assert_eq!(envelope.id, Some(serde_json::Value::Null));
+    assert_eq!(envelope.request_id, Some(McpRequestId::Null));
+    Ok(())
+}
+
+#[test]
+fn mcp_preserves_string_identity_for_cancellation_matching() -> Result<(), TestError> {
+    let generation = GenerationId::from_digest([11; 32]).to_string();
+    let body = mcp_policy_request_with_id(
+        &generation,
+        JsonRpcRequestId::Text("request-string".to_owned()),
+    )?;
+    let McpDecode::Accepted(envelope) = decode_mcp(body.as_bytes()) else {
+        return Err(io::Error::other("string-id MCP request was rejected").into());
+    };
+    let expected = InputText::try_from_str("request-string")
+        .map_err(|error| io::Error::other(format!("test identity is too long: {error:?}")))?;
+    assert_eq!(envelope.request_id, Some(McpRequestId::String(expected)));
+    Ok(())
 }
 
 #[test]

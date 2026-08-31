@@ -2,11 +2,13 @@
 
 use std::{error::Error, fmt, io, ops::Deref};
 
+use request::{ApplicationArgumentsDto, RequestDto, RequestIdField, RequestIdentityDto};
 use serde_json::Value;
 use wave_application_core::{ApplicationInput, ApplicationReply, InputText};
 
 use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
 
+mod request;
 mod wire;
 
 pub use wire::{McpError, McpReply};
@@ -43,6 +45,8 @@ pub struct CancellationTarget {
 /// Bounded JSON-RPC request identity retained for exact cancellation matching.
 #[derive(Clone, Debug, PartialEq)]
 pub enum McpRequestId {
+    /// An explicit JSON `null` request identity. It is distinct from an absent id notification.
+    Null,
     /// A JSON number request identity retained without narrowing to a correlation or operation.
     Number(serde_json::Number),
     /// A bounded JSON string request identity.
@@ -54,6 +58,7 @@ impl McpRequestId {
     #[must_use]
     pub fn as_value(&self) -> Value {
         match self {
+            Self::Null => Value::Null,
             Self::Number(number) => Value::Number(number.clone()),
             Self::String(text) => {
                 Value::String(String::from_utf8_lossy(text.as_ref()).into_owned())
@@ -109,19 +114,25 @@ pub enum McpDecode {
 /// Decodes a bounded MCP JSON-RPC request without performing business validation.
 #[must_use]
 pub fn decode_mcp(body: &[u8]) -> McpDecode {
-    let value: Value = match serde_json::from_slice(body) {
-        Ok(value) => value,
+    let request: RequestDto = match serde_json::from_slice(body) {
+        Ok(request) => request,
         Err(source) => {
+            let id = serde_json::from_slice::<RequestIdentityDto>(body)
+                .ok()
+                .and_then(|request| match request.id {
+                    RequestIdField::Missing => None,
+                    RequestIdField::Present(value) => Some(value),
+                });
             return McpDecode::Rejected(McpDecodeError::new(
-                None,
-                AdapterError::invalid_json("frame", source),
+                id,
+                AdapterError::invalid_json("request", source),
             ));
         }
     };
-    let id = value
-        .as_object()
-        .and_then(|object| object.get("id"))
-        .cloned();
+    let id = match request.id {
+        RequestIdField::Missing => None,
+        RequestIdField::Present(value) => Some(value),
+    };
     let request_id = match id.as_ref() {
         Some(value) => match parse_request_id(value, "id") {
             Ok(request_id) => Some(request_id),
@@ -129,16 +140,13 @@ pub fn decode_mcp(body: &[u8]) -> McpDecode {
         },
         None => None,
     };
-    let Some(object) = value.as_object() else {
-        return McpDecode::Rejected(McpDecodeError::new(id, malformed("request")));
-    };
-    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+    if request.jsonrpc.as_deref() != Some("2.0") {
         return McpDecode::Rejected(McpDecodeError::new(id, malformed("jsonrpc")));
     }
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
+    let Some(method) = request.method.as_deref() else {
         return McpDecode::Rejected(McpDecodeError::new(id, malformed("method")));
     };
-    let Some(params) = object.get("params").and_then(Value::as_object) else {
+    let Some(params) = request.params else {
         return McpDecode::Rejected(McpDecodeError::new(id, missing("params")));
     };
     let request = match method {
@@ -189,81 +197,35 @@ pub fn encode_cli_adapter_error(error: &AdapterError) -> io::Result<Vec<u8>> {
     serde_json::to_vec(&wire::AdapterErrorEnvelope::from(error)).map_err(io::Error::other)
 }
 
-fn tool_input(params: &serde_json::Map<String, Value>) -> Result<ApplicationInput, AdapterError> {
-    if params.get("name").and_then(Value::as_str) != Some("nudox.application") {
+fn tool_input(params: request::ParamsDto) -> Result<ApplicationInput, AdapterError> {
+    if params.name.as_deref() != Some("nudox.application") {
         return Err(unknown("tool"));
     }
-    let arguments = params
-        .get("arguments")
-        .and_then(Value::as_object)
-        .ok_or_else(|| missing("arguments"))?;
-    let action = required_text(arguments, "action")?;
-    let correlation = required_number(arguments, "correlation")?;
-    input_from_json(&action, correlation, |name| {
-        required_argument(arguments, name)
-    })
+    let arguments: ApplicationArgumentsDto =
+        params.arguments.ok_or_else(|| missing("arguments"))?;
+    let action = arguments.action.clone().ok_or_else(|| missing("action"))?;
+    let correlation = arguments
+        .correlation
+        .ok_or_else(|| malformed("correlation"))?;
+    input_from_json(&action, correlation, |name| arguments.argument(name))
 }
 
-fn cancellation_input(
-    params: &serde_json::Map<String, Value>,
-) -> Result<CancellationTarget, AdapterError> {
+fn cancellation_input(params: request::ParamsDto) -> Result<CancellationTarget, AdapterError> {
     // MCP's cancellation notification identifies the original request, not the service's
     // internal operation key. The process resolves this typed target through its bounded active
     // request table before constructing the core cancellation input.
-    let request_id = params
-        .get("requestId")
-        .ok_or_else(|| missing("requestId"))?;
+    let RequestIdField::Present(request_id) = params.request_id else {
+        return Err(missing("requestId"));
+    };
     Ok(CancellationTarget {
-        request_id: parse_request_id(request_id, "requestId")?,
+        request_id: parse_request_id(&request_id, "requestId")?,
     })
 }
 
-fn required_text(
-    object: &serde_json::Map<String, Value>,
-    name: &'static str,
-) -> Result<String, AdapterError> {
-    let value = object.get(name).ok_or_else(|| missing(name))?;
-    value
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| malformed(name))
-}
-
-fn required_argument(
-    object: &serde_json::Map<String, Value>,
-    name: &'static str,
-) -> Result<String, AdapterError> {
-    let value = object.get(name).ok_or_else(|| missing(name))?;
-    if let Some(text) = value.as_str() {
-        return Ok(text.to_owned());
-    }
-    if is_numeric_argument(name) {
-        return value
-            .as_u64()
-            .map(|number| number.to_string())
-            .ok_or_else(|| malformed(name));
-    }
-    Err(malformed(name))
-}
-
-fn is_numeric_argument(name: &str) -> bool {
-    matches!(
-        name,
-        "limit" | "operation" | "ram_free" | "nvme_free" | "operations" | "retries"
-    )
-}
-
-fn required_number(
-    object: &serde_json::Map<String, Value>,
-    name: &'static str,
-) -> Result<u64, AdapterError> {
-    object
-        .get(name)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| malformed(name))
-}
-
 fn parse_request_id(value: &Value, field: &'static str) -> Result<McpRequestId, AdapterError> {
+    if value.is_null() {
+        return Ok(McpRequestId::Null);
+    }
     if let Some(number) = value.as_number() {
         if number.is_i64() || number.is_u64() {
             return Ok(McpRequestId::Number(number.clone()));

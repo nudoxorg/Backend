@@ -13,12 +13,6 @@ use super::{
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum ReplyBodyWire {
-    CompilerPassthrough {
-        package: Text,
-        language: Language,
-        stage: Stage,
-        source: Text,
-    },
     DependencyUnavailable {
         capability: CapabilityName,
     },
@@ -162,17 +156,6 @@ pub(super) enum ExecutionStateWire {
 impl From<ReplyBody> for ReplyBodyWire {
     fn from(body: ReplyBody) -> Self {
         match body {
-            ReplyBody::CompilerPassthrough {
-                package,
-                language,
-                stage,
-                source,
-            } => Self::CompilerPassthrough {
-                package: Text(package),
-                language: language.into(),
-                stage: stage.into(),
-                source: Text(source),
-            },
             ReplyBody::DependencyUnavailable { capability } => Self::DependencyUnavailable {
                 capability: capability.into(),
             },
