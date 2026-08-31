@@ -13,13 +13,20 @@ role = "adapter"
 default = []
 # The fallback state projection is always available. This feature gates only the
 # actual GPUI entity/view so dependency resolution can be measured independently.
-real-gpui = ["dep:gpui"]
+real-gpui = ["dep:gpui", "dep:gpui_platform"]
+
+[[bin]]
+name = "wave-application-gpui"
+path = "src/main.rs"
+required-features = ["real-gpui"]
 
 [dependencies]
 wave-application-core = { path = "../wave-application-core" }
 gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true }
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true
 

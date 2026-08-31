@@ -9,7 +9,10 @@ Settings frame with a status strip and command palette.
 The default build keeps the projection headless and testable without a window,
 accessibility driver, global search, timer, task, or polling loop. The
 `real-gpui` feature enables the pinned GPUI-CE entity, keyboard command palette,
-and `uniform_list` virtual rows with nearest-selection reveal.
+`uniform_list` virtual rows with nearest-selection reveal, and the
+`wave-application-gpui` production host. The host opens one native window over
+the same entity and service exercised by the real-GPUI journeys; it does not add
+a second command decoder or application state path.
 
 ## Focused gates
 
@@ -31,6 +34,13 @@ nix develop ./workspace2#quality --command \
 The first command checks the fixed headless projection. The second runs the
 actual GPUI entity tests, including keyboard palette navigation, recover-local
 → pending → completed, and cancellation through the entity-owned service.
+Launch the production host with:
+
+```text
+cargo run --manifest-path workspace2/Cargo.toml \
+  -p wave-application-gpui-shell --features real-gpui \
+  --bin wave-application-gpui
+```
 
 ## Availability ledger
 
@@ -49,10 +59,11 @@ fixture adapter, reinterpret backend validation, or claim lower-plane closure.
 | --- | --- |
 | Service input | One borrowed `&ApplicationInput` per entity command. |
 | Reply input | One copied `ApplicationReply` projected per command. |
-| Retained shell state | Fixed enums, one six-fact health array, navigation route, bounded palette query, and one last-reply record; no task, timer, or polling owner. |
+| Retained shell state | Fixed enums, one six-fact health array, navigation route, bounded palette query, and one last-reply record. |
+| Foreground execution | At most one wake-driven GPUI task for the exact admitted operation; matching cancellation or completion releases it. There is no timer or polling owner. |
 | Palette rows | GPUI `uniform_list` materializes only visible command rows and uses `ScrollStrategy::Nearest` after keyboard movement. |
 | Render summary | `[SurfaceSummary; 7]` returned by value; labels and element IDs are `&'static str`. |
-| Notification work | One `cx.notify()` per successful entity command. |
+| Notification work | One `cx.notify()` per application command or accepted/rejected native edit; no scheduled refresh notification. |
 
 No unsafe code, global state, accessibility automation, or speculative backend
 adapter is present in this slice.

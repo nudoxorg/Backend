@@ -19,7 +19,8 @@ fearless_simd = { version = "0.7.0", default-features = false }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 atomic-waker = { version = "1.1.2", default-features = false }
 allocation-counter = "0.8.1"
-gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["test-support"] }
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
