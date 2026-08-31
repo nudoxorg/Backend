@@ -101,10 +101,10 @@ run_retrieval_facade() {
     stable_cargo test \
       --manifest-path "$project_dir/Cargo.toml" \
       -p nudox-index-retrieval \
-      --test sealed_boundary \
+      --test sealed_boundary_public \
       --locked \
       --offline \
-      sealed_boundary_classifies_retrieval_terminals_without_mutating_pre_cancelled_outputs \
+      sealed_boundary_public_journey_classifies_retrieval_terminals \
       -- \
       --exact \
       --nocapture

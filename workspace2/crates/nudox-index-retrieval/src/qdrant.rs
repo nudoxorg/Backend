@@ -51,11 +51,11 @@ where
         }
         let missing = match vector_missing(self.vector_authority, self.vector_selection, reachable)
         {
-            Ok(missing) => missing,
-            Err(cause) => {
+            VectorCoverageTransition::Covered(missing) => missing,
+            VectorCoverageTransition::Rejected(cause) => {
                 return RetrievalOperationTerminal::Failed {
                     snapshot: snapshot.id,
-                    cause: map_selection_error(cause),
+                    cause: map_selection_error(self.vector_authority, cause),
                 };
             }
         };
@@ -98,140 +98,197 @@ const fn classify_qdrant_result<'output>(
     }
 }
 
-#[allow(
-    clippy::result_large_err,
-    clippy::too_many_lines,
-    reason = "validating the exact bounded reachable subset must retain full typed authorities and descriptors"
-)]
-fn vector_missing(
+fn vector_missing<'descriptor>(
+    authority: VectorAuthority,
+    pinned: &[VectorSegmentDescriptor],
+    reachable: &'descriptor [VectorSegmentDescriptor],
+) -> VectorCoverageTransition<'descriptor> {
+    match authority_transition(authority, pinned, reachable) {
+        AuthorityTransition::Admitted => {}
+        AuthorityTransition::Rejected(cause) => {
+            return VectorCoverageTransition::Rejected(VectorSelectionRejection::Authority(cause));
+        }
+    }
+    match order_transition(pinned, reachable) {
+        OrderTransition::Ordered => {}
+        OrderTransition::Rejected(cause) => {
+            return VectorCoverageTransition::Rejected(VectorSelectionRejection::Order(cause));
+        }
+    }
+    coverage_transition(pinned, reachable)
+}
+
+enum AuthorityTransition {
+    Admitted,
+    Rejected(AuthorityRejection),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorityRejection {
+    Capacity {
+        maximum: usize,
+        observed: usize,
+    },
+    Mismatch {
+        position: usize,
+        observed: VectorAuthority,
+    },
+}
+
+fn authority_transition(
     authority: VectorAuthority,
     pinned: &[VectorSegmentDescriptor],
     reachable: &[VectorSegmentDescriptor],
-) -> Result<Option<MissingPartitions>, ReachableVectorError> {
+) -> AuthorityTransition {
+    if pinned.len() > MAX_PARTITIONS {
+        return AuthorityTransition::Rejected(AuthorityRejection::Capacity {
+            maximum: MAX_PARTITIONS,
+            observed: pinned.len(),
+        });
+    }
     if reachable.len() > MAX_PARTITIONS {
-        return Err(ReachableVectorError::Capacity {
+        return AuthorityTransition::Rejected(AuthorityRejection::Capacity {
             maximum: MAX_PARTITIONS,
             observed: reachable.len(),
         });
     }
-    let mut reachable_partitions = [PartitionId::new(0); MAX_PARTITIONS];
-    let mut previous_position = None;
     for (position, descriptor) in reachable.iter().copied().enumerate() {
         if descriptor.authority != authority {
-            return Err(ReachableVectorError::Authority {
+            return AuthorityTransition::Rejected(AuthorityRejection::Mismatch {
                 position,
-                expected: authority,
                 observed: descriptor.authority,
             });
         }
-        let Some(selected_position) = pinned.iter().position(|selected| *selected == descriptor)
+    }
+    AuthorityTransition::Admitted
+}
+
+enum OrderTransition<'descriptor> {
+    Ordered,
+    Rejected(OrderRejection<'descriptor>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OrderRejection<'descriptor> {
+    Unselected {
+        position: usize,
+        observed: &'descriptor VectorSegmentDescriptor,
+    },
+    Reordered {
+        position: usize,
+        preceding_position: usize,
+        selected_position: usize,
+        observed: &'descriptor VectorSegmentDescriptor,
+    },
+}
+
+fn order_transition<'descriptor>(
+    pinned: &[VectorSegmentDescriptor],
+    reachable: &'descriptor [VectorSegmentDescriptor],
+) -> OrderTransition<'descriptor> {
+    let mut previous_position = None;
+    for (position, descriptor) in reachable.iter().enumerate() {
+        let Some(selected_position) = pinned.iter().position(|selected| selected == descriptor)
         else {
-            return Err(ReachableVectorError::Unselected {
+            return OrderTransition::Rejected(OrderRejection::Unselected {
                 position,
-                descriptor,
+                observed: descriptor,
             });
         };
         if let Some(preceding_position) = previous_position
             && selected_position <= preceding_position
         {
-            return Err(ReachableVectorError::Order {
+            return OrderTransition::Rejected(OrderRejection::Reordered {
                 position,
                 preceding_position,
                 selected_position,
-                descriptor,
+                observed: descriptor,
             });
         }
         previous_position = Some(selected_position);
-        let Some(destination) = reachable_partitions.get_mut(position) else {
-            return Err(ReachableVectorError::Capacity {
-                maximum: MAX_PARTITIONS,
-                observed: reachable.len(),
-            });
-        };
-        *destination = descriptor.partition;
     }
+    OrderTransition::Ordered
+}
+
+fn coverage_transition<'descriptor>(
+    pinned: &[VectorSegmentDescriptor],
+    reachable: &[VectorSegmentDescriptor],
+) -> VectorCoverageTransition<'descriptor> {
     let mut pinned_partitions = [PartitionId::new(0); MAX_PARTITIONS];
-    if pinned.len() > MAX_PARTITIONS {
-        return Err(ReachableVectorError::Capacity {
-            maximum: MAX_PARTITIONS,
-            observed: pinned.len(),
-        });
-    }
     for (descriptor, destination) in pinned.iter().copied().zip(&mut pinned_partitions) {
         *destination = descriptor.partition;
     }
+    let mut reachable_partitions = [PartitionId::new(0); MAX_PARTITIONS];
+    for (descriptor, destination) in reachable.iter().copied().zip(&mut reachable_partitions) {
+        *destination = descriptor.partition;
+    }
     let Some(pinned) = pinned_partitions.get(..pinned.len()) else {
-        return Err(ReachableVectorError::Capacity {
-            maximum: MAX_PARTITIONS,
-            observed: pinned.len(),
-        });
+        return VectorCoverageTransition::Rejected(VectorSelectionRejection::Coverage(
+            MissingPartitionsError::SelectedCapacity {
+                maximum: MAX_PARTITIONS,
+                observed: pinned.len(),
+            },
+        ));
     };
     let Some(reachable) = reachable_partitions.get(..reachable.len()) else {
-        return Err(ReachableVectorError::Capacity {
-            maximum: MAX_PARTITIONS,
-            observed: reachable.len(),
-        });
+        return VectorCoverageTransition::Rejected(VectorSelectionRejection::Coverage(
+            MissingPartitionsError::ReachableCapacity {
+                maximum: MAX_PARTITIONS,
+                observed: reachable.len(),
+            },
+        ));
     };
-    MissingPartitions::from_selected_reachable(pinned, reachable)
-        .map_err(ReachableVectorError::Coverage)
+    match MissingPartitions::from_selected_reachable(pinned, reachable) {
+        Ok(missing) => VectorCoverageTransition::Covered(missing),
+        Err(cause) => VectorCoverageTransition::Rejected(VectorSelectionRejection::Coverage(cause)),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReachableVectorError {
-    Authority {
-        position: usize,
-        expected: VectorAuthority,
-        observed: VectorAuthority,
-    },
-    Unselected {
-        position: usize,
-        descriptor: VectorSegmentDescriptor,
-    },
-    Order {
-        position: usize,
-        preceding_position: usize,
-        selected_position: usize,
-        descriptor: VectorSegmentDescriptor,
-    },
-    Capacity {
-        maximum: usize,
-        observed: usize,
-    },
+enum VectorSelectionRejection<'descriptor> {
+    Authority(AuthorityRejection),
+    Order(OrderRejection<'descriptor>),
     Coverage(MissingPartitionsError),
 }
 
-const fn map_selection_error(cause: ReachableVectorError) -> RetrievalFailure {
+enum VectorCoverageTransition<'descriptor> {
+    Covered(Option<MissingPartitions>),
+    Rejected(VectorSelectionRejection<'descriptor>),
+}
+
+const fn map_selection_error(
+    expected: VectorAuthority,
+    cause: VectorSelectionRejection<'_>,
+) -> RetrievalFailure {
     match cause {
-        ReachableVectorError::Authority {
+        VectorSelectionRejection::Authority(AuthorityRejection::Mismatch {
             position,
-            expected,
             observed,
-        } => RetrievalFailure::VectorAuthority {
+        }) => RetrievalFailure::VectorAuthority {
             expected,
             surface: VectorAuthoritySurface::QdrantReachable { position },
             observed,
         },
-        ReachableVectorError::Unselected {
-            position,
-            descriptor,
-        } => RetrievalFailure::UnpinnedVectorDescriptor {
-            position,
-            observed: descriptor,
-        },
-        ReachableVectorError::Order {
-            position,
-            preceding_position,
-            selected_position,
-            descriptor,
-        } => RetrievalFailure::VectorSelectionOrder {
-            position,
-            preceding_position,
-            selected_position,
-            observed: descriptor,
-        },
-        ReachableVectorError::Capacity { maximum, observed } => {
+        VectorSelectionRejection::Authority(AuthorityRejection::Capacity { maximum, observed }) => {
             RetrievalFailure::VectorSelectionCapacity { maximum, observed }
         }
-        ReachableVectorError::Coverage(cause) => RetrievalFailure::VectorCoverage(cause),
+        VectorSelectionRejection::Order(OrderRejection::Unselected { position, observed }) => {
+            RetrievalFailure::UnpinnedVectorDescriptor {
+                position,
+                observed: *observed,
+            }
+        }
+        VectorSelectionRejection::Order(OrderRejection::Reordered {
+            position,
+            preceding_position,
+            selected_position,
+            observed,
+        }) => RetrievalFailure::VectorSelectionOrder {
+            position,
+            preceding_position,
+            selected_position,
+            observed: *observed,
+        },
+        VectorSelectionRejection::Coverage(cause) => RetrievalFailure::VectorCoverage(cause),
     }
 }

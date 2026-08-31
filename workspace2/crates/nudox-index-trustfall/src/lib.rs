@@ -6,6 +6,7 @@ mod graph;
 mod schema;
 
 pub use graph::{
-    TrustfallGraph, TrustfallGraphError, TrustfallHit, TrustfallOutputField, TrustfallStaticPhase,
-    TrustfallTerminal,
+    TrustfallArgumentDiagnostic, TrustfallGraph, TrustfallGraphError, TrustfallHit,
+    TrustfallOutputField, TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
+    TrustfallUpstreamDiagnostic,
 };

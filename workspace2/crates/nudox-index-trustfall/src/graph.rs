@@ -17,14 +17,18 @@ use trustfall::{
     },
 };
 use trustfall_core::{
-    frontend::parse, interpreter::execution::interpret_ir, ir::IndexedQuery,
+    frontend::{error::FrontendError, parse},
+    interpreter::{error::QueryArgumentsError, execution::interpret_ir},
+    ir::IndexedQuery,
+    schema::error::InvalidSchemaError,
 };
 
 use crate::schema::{GRAPH_SCHEMA, NEIGHBORS_QUERY};
 
 const ENTITY_HALF_BITS: u32 = 16;
-static PARSED_GRAPH_SCHEMA: OnceLock<Option<Schema>> = OnceLock::new();
-static PARSED_NEIGHBORS_QUERY: OnceLock<Option<Arc<IndexedQuery>>> = OnceLock::new();
+static PARSED_GRAPH_SCHEMA: OnceLock<Result<Schema, TrustfallUpstreamDiagnostic>> = OnceLock::new();
+static PARSED_NEIGHBORS_QUERY: OnceLock<Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic>> =
+    OnceLock::new();
 
 /// One typed graph fact returned by the synchronous Trustfall projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,29 +61,70 @@ pub enum TrustfallOutputField {
     Partition,
 }
 
-/// Fixed Trustfall stage whose library error type is intentionally private upstream.
+/// Stable schema diagnostic category derived from Trustfall's non-exhaustive upstream error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TrustfallStaticPhase {
-    /// Parsing the crate-owned static schema.
-    Schema,
-    /// Parsing the crate-owned fixed query operation.
-    Query,
-    /// Binding crate-owned typed query variables.
-    Arguments,
+pub enum TrustfallSchemaDiagnostic {
+    /// The crate-owned schema did not satisfy Trustfall's grammar.
+    Syntax,
+    /// The schema parsed but its declarations were semantically inconsistent.
+    Semantic,
+    /// Trustfall retained several schema failures.
+    Multiple,
+    /// A future Trustfall schema variant was rejected without losing its closed source stage.
+    UpstreamFuture,
+}
+
+/// Stable query diagnostic category derived from Trustfall's non-exhaustive upstream error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustfallQueryDiagnostic {
+    /// The crate-owned query did not satisfy Trustfall's grammar.
+    Syntax,
+    /// The query parsed but failed schema/query validation.
+    Validation,
+    /// Trustfall's query-planning fallback rejected the fixed operation.
+    Planning,
+    /// Trustfall retained several query failures.
+    Multiple,
+    /// A future Trustfall query variant was rejected without losing its closed source stage.
+    UpstreamFuture,
+}
+
+/// Stable typed argument diagnostic derived from Trustfall's fixed interpreter boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustfallArgumentDiagnostic {
+    /// A fixed query argument was missing.
+    Missing,
+    /// The fixed adapter supplied an argument the query did not consume.
+    Unused,
+    /// A fixed query argument did not satisfy Trustfall's declared type.
+    Type,
+    /// Trustfall retained several argument failures.
+    Multiple,
+}
+
+/// Closed retained source for one upstream Trustfall rejection.
+///
+/// Trustfall's upstream diagnostics are non-exhaustive and unsuitable for this stable public
+/// adapter boundary. The stage and category retain the strongest portable evidence without a
+/// display string, dynamic payload, or erased error object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustfallUpstreamDiagnostic {
+    /// Schema parsing or validation failed.
+    Schema(TrustfallSchemaDiagnostic),
+    /// Fixed query parsing, validation, or planning failed.
+    Query(TrustfallQueryDiagnostic),
+    /// Fixed query variable binding failed before iteration began.
+    Arguments(TrustfallArgumentDiagnostic),
 }
 
 /// Exact failure while executing the fixed synchronous Trustfall operation.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum TrustfallGraphError {
-    /// Trustfall rejected one crate-owned static grammar stage.
-    ///
-    /// Trustfall 0.8 keeps these concrete error types private, so no dynamic or stringly source is
-    /// admitted into the public terminal. The stage is closed and the grammar is covered by the
-    /// adapter-invariant test.
-    #[error("Trustfall rejected the crate-owned static {phase:?} grammar")]
-    StaticGrammar {
-        /// Closed static grammar stage rejected by Trustfall.
-        phase: TrustfallStaticPhase,
+    /// Trustfall rejected one crate-owned static or interpreter stage.
+    #[error("Trustfall rejected the crate-owned operation: {diagnostic:?}")]
+    UpstreamRejected {
+        /// Closed stage and stable category retained from the upstream rejection.
+        diagnostic: TrustfallUpstreamDiagnostic,
     },
     /// The caller's output cannot preserve every result from the immutable graph view.
     #[error("Trustfall graph output has {available} slots, required {required}")]
@@ -146,9 +191,9 @@ impl<'view> TrustfallGraph<'view> {
         let arguments = Arc::new(source_arguments(source));
         let rows = match interpret_ir(adapter, query, arguments) {
             Ok(rows) => rows,
-            Err(_rejected) => {
-                return Err(TrustfallGraphError::StaticGrammar {
-                    phase: TrustfallStaticPhase::Arguments,
+            Err(cause) => {
+                return Err(TrustfallGraphError::UpstreamRejected {
+                    diagnostic: TrustfallUpstreamDiagnostic::Arguments(argument_diagnostic(cause)),
                 });
             }
         };
@@ -184,22 +229,112 @@ impl<'view> TrustfallGraph<'view> {
 }
 
 fn parsed_schema() -> Result<&'static Schema, TrustfallGraphError> {
-    PARSED_GRAPH_SCHEMA
-        .get_or_init(|| Schema::parse(GRAPH_SCHEMA).ok())
-        .as_ref()
-        .ok_or(TrustfallGraphError::StaticGrammar {
-            phase: TrustfallStaticPhase::Schema,
-        })
+    cached_schema(&PARSED_GRAPH_SCHEMA, GRAPH_SCHEMA).map_err(upstream_error)
 }
 
 fn parsed_query(schema: &Schema) -> Result<Arc<IndexedQuery>, TrustfallGraphError> {
-    PARSED_NEIGHBORS_QUERY
-        .get_or_init(|| parse(schema, NEIGHBORS_QUERY).ok())
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or(TrustfallGraphError::StaticGrammar {
-            phase: TrustfallStaticPhase::Query,
-        })
+    cached_query(&PARSED_NEIGHBORS_QUERY, schema, NEIGHBORS_QUERY).map_err(upstream_error)
+}
+
+fn cached_schema<'schema>(
+    cache: &'schema OnceLock<Result<Schema, TrustfallUpstreamDiagnostic>>,
+    grammar: &str,
+) -> Result<&'schema Schema, TrustfallUpstreamDiagnostic> {
+    match cache.get_or_init(|| {
+        Schema::parse(grammar)
+            .map_err(|cause| TrustfallUpstreamDiagnostic::Schema(schema_diagnostic(cause)))
+    }) {
+        Ok(schema) => Ok(schema),
+        Err(cause) => Err(*cause),
+    }
+}
+
+fn cached_query(
+    cache: &OnceLock<Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic>>,
+    schema: &Schema,
+    query: &str,
+) -> Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic> {
+    match cache.get_or_init(|| {
+        parse(schema, query)
+            .map_err(|cause| TrustfallUpstreamDiagnostic::Query(query_diagnostic(cause)))
+    }) {
+        Ok(query) => Ok(Arc::clone(query)),
+        Err(cause) => Err(*cause),
+    }
+}
+
+const fn upstream_error(diagnostic: TrustfallUpstreamDiagnostic) -> TrustfallGraphError {
+    TrustfallGraphError::UpstreamRejected { diagnostic }
+}
+
+fn schema_diagnostic(cause: InvalidSchemaError) -> TrustfallSchemaDiagnostic {
+    match cause {
+        InvalidSchemaError::MultipleErrors(_) => TrustfallSchemaDiagnostic::Multiple,
+        InvalidSchemaError::SchemaParseError(_) => TrustfallSchemaDiagnostic::Syntax,
+        InvalidSchemaError::InvalidTypeWideningOfInheritedField(..)
+        | InvalidSchemaError::InvalidTypeNarrowingOfInheritedFieldParameter(..)
+        | InvalidSchemaError::InheritedFieldMissingParameters(..)
+        | InvalidSchemaError::InheritedFieldUnexpectedParameters(..)
+        | InvalidSchemaError::InvalidDefaultValueForFieldParameter(..)
+        | InvalidSchemaError::CircularImplementsRelationships(..)
+        | InvalidSchemaError::MissingTransitiveInterfaceImplementation(..)
+        | InvalidSchemaError::MissingRequiredField(..)
+        | InvalidSchemaError::AmbiguousFieldOrigin(..)
+        | InvalidSchemaError::PropertyFieldWithParameters(..)
+        | InvalidSchemaError::InvalidEdgeType(..)
+        | InvalidSchemaError::UnknownPropertyOrEdgeType(..)
+        | InvalidSchemaError::PropertyFieldOnRootQueryType(..)
+        | InvalidSchemaError::EdgePointsToRootQueryType(..)
+        | InvalidSchemaError::ReservedFieldName(..)
+        | InvalidSchemaError::ReservedTypeName(..)
+        | InvalidSchemaError::ImplementingNonExistentType(..)
+        | InvalidSchemaError::ImplementingNonInterface(..)
+        | InvalidSchemaError::DuplicateFieldDefinition(..)
+        | InvalidSchemaError::DuplicateTypeOrInterfaceDefinition(..) => {
+            TrustfallSchemaDiagnostic::Semantic
+        }
+        _ => TrustfallSchemaDiagnostic::UpstreamFuture,
+    }
+}
+
+fn query_diagnostic(cause: FrontendError) -> TrustfallQueryDiagnostic {
+    match cause {
+        FrontendError::MultipleErrors(_) => TrustfallQueryDiagnostic::Multiple,
+        FrontendError::ParseError(_) => TrustfallQueryDiagnostic::Syntax,
+        FrontendError::OtherError(_) => TrustfallQueryDiagnostic::Planning,
+        FrontendError::UndefinedTagInFilter(..)
+        | FrontendError::TagUsedBeforeDefinition(..)
+        | FrontendError::TagUsedOutsideItsFoldedSubquery(..)
+        | FrontendError::UnusedTags(..)
+        | FrontendError::MultipleOutputsWithSameName(..)
+        | FrontendError::MultipleTagsWithSameName(..)
+        | FrontendError::ExplicitTagNameRequired(..)
+        | FrontendError::FilterTypeError(..)
+        | FrontendError::UnsupportedDirectiveOnProperty(..)
+        | FrontendError::UnsupportedEdgeOutput(..)
+        | FrontendError::UnsupportedEdgeFilter(..)
+        | FrontendError::UnsupportedEdgeTag(..)
+        | FrontendError::UnsupportedDirectiveOnFoldedEdge(..)
+        | FrontendError::MissingRequiredEdgeParameter(..)
+        | FrontendError::UnexpectedEdgeParameter(..)
+        | FrontendError::InvalidEdgeParameterType(..)
+        | FrontendError::RecursingNonRecursableEdge(..)
+        | FrontendError::RecursionToSubtype(..)
+        | FrontendError::AmbiguousOriginEdgeRecursion(..)
+        | FrontendError::EdgeRecursionNeedingMultipleCoercions(..)
+        | FrontendError::PropertyMetaFieldUsedAsEdge(..)
+        | FrontendError::ValidationError(..) => TrustfallQueryDiagnostic::Validation,
+        _ => TrustfallQueryDiagnostic::UpstreamFuture,
+    }
+}
+
+fn argument_diagnostic(cause: QueryArgumentsError) -> TrustfallArgumentDiagnostic {
+    match cause {
+        QueryArgumentsError::MissingArguments(_) => TrustfallArgumentDiagnostic::Missing,
+        QueryArgumentsError::UnusedArguments(_) => TrustfallArgumentDiagnostic::Unused,
+        QueryArgumentsError::ArgumentTypeError(..) => TrustfallArgumentDiagnostic::Type,
+        QueryArgumentsError::MultipleErrors(_) => TrustfallArgumentDiagnostic::Multiple,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,6 +544,8 @@ fn candidate_precedes(left: TrustfallHit, right: TrustfallHit) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use core::mem::size_of;
+
     use nudox_index_graph_vector::{GraphEdge, GraphRow, ProjectionId};
     use nudox_index_vocab::IndexSnapshotId;
     use trustfall::provider::check_adapter_invariants;
@@ -441,6 +578,24 @@ mod tests {
                 view: &view,
                 schema: &schema,
             },
+        );
+    }
+
+    #[test]
+    fn cached_schema_rejection_remains_typed_after_a_later_valid_grammar() {
+        let cache = OnceLock::new();
+        let diagnostic = TrustfallUpstreamDiagnostic::Schema(TrustfallSchemaDiagnostic::Syntax);
+        assert!(cache.set(Err(diagnostic)).is_ok());
+
+        let observed = cached_schema(&cache, GRAPH_SCHEMA);
+        assert!(matches!(observed, Err(cause) if cause == diagnostic));
+    }
+
+    #[test]
+    fn borrowed_adapter_retains_no_dynamic_abi_state_between_calls() {
+        assert_eq!(
+            size_of::<TrustfallGraph<'static>>(),
+            size_of::<&ValidatedGraphView<'static>>()
         );
     }
 }
