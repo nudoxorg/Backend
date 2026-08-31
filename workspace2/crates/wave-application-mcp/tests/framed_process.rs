@@ -5,7 +5,8 @@ use std::{
     process::{ChildStdin, ChildStdout, Command, Stdio},
 };
 
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
 use wave_application_core::{CapabilityDomain, ContentId, GenerationId, IndexSnapshotId};
 use wave_application_protocol::{read_frame, write_frame};
 
@@ -38,30 +39,175 @@ impl From<serde_json::Error> for TestError {
     }
 }
 
-fn request(
-    id: &Value,
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ApplicationAction {
+    Generate,
+    RecoverLocal,
+    PollExecution,
+    ReleaseLocal,
+}
+
+#[derive(Serialize)]
+enum JsonRpcVersion {
+    #[serde(rename = "2.0")]
+    Version2,
+}
+
+#[derive(Serialize)]
+enum RpcMethod {
+    #[serde(rename = "tools/call")]
+    ToolsCall,
+    #[serde(rename = "$/cancelRequest")]
+    CancelRequest,
+}
+
+#[derive(Serialize)]
+enum ToolName {
+    #[serde(rename = "nudox.application")]
+    NudoxApplication,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceLanguage {
+    Rust,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceStage {
+    Parse,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PackageName {
+    McpPackage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Pressure {
+    Relaxed,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BatteryState {
+    Normal,
+    Critical,
+}
+
+#[derive(Serialize)]
+enum OperationId {
+    #[serde(rename = "1")]
+    First,
+    #[serde(rename = "2")]
+    Second,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum JsonRpcRequestId<'request_id> {
+    Number(u64),
+    Text(&'request_id str),
+}
+
+#[derive(Serialize)]
+struct ToolCallRequest<'request_id, Arguments> {
+    jsonrpc: JsonRpcVersion,
+    id: JsonRpcRequestId<'request_id>,
+    method: RpcMethod,
+    params: ToolCallParams<Arguments>,
+}
+
+#[derive(Serialize)]
+struct ToolCallParams<Arguments> {
+    name: ToolName,
+    arguments: ApplicationArguments<Arguments>,
+}
+
+#[derive(Serialize)]
+struct ApplicationArguments<Arguments> {
+    #[serde(flatten)]
+    fields: Arguments,
+    action: ApplicationAction,
     correlation: u64,
-    action: &str,
-    arguments: &Value,
+}
+
+#[derive(Serialize)]
+struct GenerateArguments<'source> {
+    language: SourceLanguage,
+    stage: SourceStage,
+    package: PackageName,
+    source: &'source str,
+}
+
+#[derive(Serialize)]
+struct PolicyArguments {
+    generation: String,
+    snapshot: String,
+    bundle: String,
+    ram_free: u64,
+    nvme_free: u64,
+    operations: u64,
+    retries: u64,
+    memory_pressure: Pressure,
+    storage_pressure: Pressure,
+    battery: BatteryState,
+}
+
+#[derive(Serialize)]
+struct PollExecutionArguments {
+    operation: OperationId,
+}
+
+#[derive(Serialize)]
+struct CancellationNotification<'request_id> {
+    jsonrpc: JsonRpcVersion,
+    method: RpcMethod,
+    params: CancellationParams<'request_id>,
+}
+
+#[derive(Serialize)]
+struct CancellationParams<'request_id> {
+    #[serde(rename = "requestId")]
+    request_id: &'request_id str,
+}
+
+#[derive(Serialize)]
+struct MalformedToolCallRequest<'request_id> {
+    jsonrpc: JsonRpcVersion,
+    id: JsonRpcRequestId<'request_id>,
+    method: RpcMethod,
+    params: MalformedToolCallParams,
+}
+
+#[derive(Serialize)]
+struct MalformedToolCallParams {
+    name: ToolName,
+}
+
+fn request<Arguments: Serialize>(
+    id: JsonRpcRequestId<'_>,
+    correlation: u64,
+    action: ApplicationAction,
+    arguments: Arguments,
 ) -> Result<Value, TestError> {
-    let request_arguments = arguments.as_object().ok_or_else(|| {
-        TestError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "MCP test arguments must be a JSON object",
-        ))
-    })?;
-    let mut request_arguments = request_arguments.clone();
-    request_arguments.insert("action".to_owned(), json!(action));
-    request_arguments.insert("correlation".to_owned(), json!(correlation));
-    Ok(json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "tools/call",
-        "params": {
-            "name": "nudox.application",
-            "arguments": request_arguments,
+    Ok(serde_json::to_value(ToolCallRequest {
+        jsonrpc: JsonRpcVersion::Version2,
+        id,
+        method: RpcMethod::ToolsCall,
+        params: ToolCallParams {
+            name: ToolName::NudoxApplication,
+            arguments: ApplicationArguments {
+                fields: arguments,
+                action,
+                correlation,
+            },
         },
-    }))
+    })?)
 }
 
 fn send(writer: &mut impl Write, value: &Value) -> Result<(), TestError> {
@@ -87,37 +233,42 @@ fn generate(
     source: &str,
 ) -> Result<Value, TestError> {
     let generation = request(
-        &json!(id),
+        JsonRpcRequestId::Number(id),
         id,
-        "generate",
-        &json!({"language": "rust", "stage": "parse", "package": "mcp-package", "source": source}),
+        ApplicationAction::Generate,
+        GenerateArguments {
+            language: SourceLanguage::Rust,
+            stage: SourceStage::Parse,
+            package: PackageName::McpPackage,
+            source,
+        },
     )?;
     send(stdin, &generation)?;
     receive(stdout)
 }
 
-fn policy_arguments() -> Value {
-    json!({
-        "generation": GenerationId::from_digest([11; 32]).to_string(),
-        "snapshot": IndexSnapshotId::from_digest([13; 32]).to_string(),
-        "bundle": ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
-        "ram_free": 4096,
-        "nvme_free": 8192,
-        "operations": 1,
-        "retries": 1,
-        "memory_pressure": "relaxed",
-        "storage_pressure": "relaxed",
-        "battery": "normal",
-    })
+fn policy_arguments() -> PolicyArguments {
+    PolicyArguments {
+        generation: GenerationId::from_digest([11; 32]).to_string(),
+        snapshot: IndexSnapshotId::from_digest([13; 32]).to_string(),
+        bundle: ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
+        ram_free: 4096,
+        nvme_free: 8192,
+        operations: 1,
+        retries: 1,
+        memory_pressure: Pressure::Relaxed,
+        storage_pressure: Pressure::Relaxed,
+        battery: BatteryState::Normal,
+    }
 }
 
-fn effect(
+fn effect<Arguments: Serialize>(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
-    id: &Value,
+    id: JsonRpcRequestId<'_>,
     correlation: u64,
-    action: &str,
-    arguments: &Value,
+    action: ApplicationAction,
+    arguments: Arguments,
 ) -> Result<Value, TestError> {
     let begin_request = request(id, correlation, action, arguments)?;
     send(stdin, &begin_request)?;
@@ -127,7 +278,7 @@ fn effect(
 fn recover(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
-    id: &Value,
+    id: JsonRpcRequestId<'_>,
     correlation: u64,
 ) -> Result<Value, TestError> {
     effect(
@@ -135,24 +286,24 @@ fn recover(
         stdout,
         id,
         correlation,
-        "recover-local",
-        &policy_arguments(),
+        ApplicationAction::RecoverLocal,
+        policy_arguments(),
     )
 }
 
-fn release_arguments() -> Value {
-    json!({
-        "generation": GenerationId::from_digest([11; 32]).to_string(),
-        "snapshot": IndexSnapshotId::from_digest([13; 32]).to_string(),
-        "bundle": ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
-        "ram_free": 4096,
-        "nvme_free": 8192,
-        "operations": 1,
-        "retries": 0,
-        "memory_pressure": "relaxed",
-        "storage_pressure": "relaxed",
-        "battery": "critical",
-    })
+fn release_arguments() -> PolicyArguments {
+    PolicyArguments {
+        generation: GenerationId::from_digest([11; 32]).to_string(),
+        snapshot: IndexSnapshotId::from_digest([13; 32]).to_string(),
+        bundle: ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
+        ram_free: 4096,
+        nvme_free: 8192,
+        operations: 1,
+        retries: 0,
+        memory_pressure: Pressure::Relaxed,
+        storage_pressure: Pressure::Relaxed,
+        battery: BatteryState::Critical,
+    }
 }
 
 fn assert_generation(
@@ -178,13 +329,20 @@ fn assert_first_completed(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
 ) -> Result<(), TestError> {
-    let admitted = recover(stdin, stdout, &json!(82), 82)?;
+    let admitted = recover(stdin, stdout, JsonRpcRequestId::Number(82), 82)?;
     assert_eq!(
         admitted["result"]["structuredContent"]["body"]["kind"],
         "execution_started"
     );
 
-    let pending_request = request(&json!(83), 83, "poll-execution", &json!({"operation": "1"}))?;
+    let pending_request = request(
+        JsonRpcRequestId::Number(83),
+        83,
+        ApplicationAction::PollExecution,
+        PollExecutionArguments {
+            operation: OperationId::First,
+        },
+    )?;
     send(stdin, &pending_request)?;
     let pending = receive(stdout)?;
     assert_eq!(pending["id"], 83);
@@ -193,7 +351,14 @@ fn assert_first_completed(
         "pending"
     );
 
-    let completed_request = request(&json!(84), 84, "poll-execution", &json!({"operation": "1"}))?;
+    let completed_request = request(
+        JsonRpcRequestId::Number(84),
+        84,
+        ApplicationAction::PollExecution,
+        PollExecutionArguments {
+            operation: OperationId::First,
+        },
+    )?;
     send(stdin, &completed_request)?;
     let completed = receive(stdout)?;
     assert_eq!(completed["id"], 84);
@@ -211,24 +376,33 @@ fn assert_cancelled(
     let admitted = effect(
         stdin,
         stdout,
-        &json!("second-operation"),
+        JsonRpcRequestId::Text("second-operation"),
         85,
-        "release-local",
-        &release_arguments(),
+        ApplicationAction::ReleaseLocal,
+        release_arguments(),
     )?;
     assert_eq!(
         admitted["result"]["structuredContent"]["body"]["kind"],
         "execution_started"
     );
 
-    let cancellation_request = json!({
-        "jsonrpc": "2.0",
-        "method": "$/cancelRequest",
-        "params": {"requestId": "second-operation"},
-    });
+    let cancellation_request = serde_json::to_value(CancellationNotification {
+        jsonrpc: JsonRpcVersion::Version2,
+        method: RpcMethod::CancelRequest,
+        params: CancellationParams {
+            request_id: "second-operation",
+        },
+    })?;
     send(stdin, &cancellation_request)?;
 
-    let progress_request = request(&json!(86), 86, "poll-execution", &json!({"operation": "2"}))?;
+    let progress_request = request(
+        JsonRpcRequestId::Number(86),
+        86,
+        ApplicationAction::PollExecution,
+        PollExecutionArguments {
+            operation: OperationId::Second,
+        },
+    )?;
     send(stdin, &progress_request)?;
     let progress = receive(stdout)?;
     assert_eq!(progress["id"], 86);
@@ -243,12 +417,14 @@ fn assert_malformed(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
 ) -> Result<(), TestError> {
-    let malformed = json!({
-        "jsonrpc": "2.0",
-        "id": 87,
-        "method": "tools/call",
-        "params": {"name": "nudox.application"},
-    });
+    let malformed = serde_json::to_value(MalformedToolCallRequest {
+        jsonrpc: JsonRpcVersion::Version2,
+        id: JsonRpcRequestId::Number(87),
+        method: RpcMethod::ToolsCall,
+        params: MalformedToolCallParams {
+            name: ToolName::NudoxApplication,
+        },
+    })?;
     send(stdin, &malformed)?;
     let error = receive(stdout)?;
     assert_eq!(error["id"], 87);

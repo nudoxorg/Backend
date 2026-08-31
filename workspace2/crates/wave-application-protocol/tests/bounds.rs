@@ -1,6 +1,7 @@
 use std::io::{self, Cursor};
 
 use nudox_id::ContentIdDecodeError;
+use serde::Serialize;
 use wave_application_core::{
     ApplicationInput, CapabilityDomain, ContentId, GenerationId, InconsistentRecovery,
     IndexSnapshotId, InputText, Pin,
@@ -15,6 +16,87 @@ use wave_application_protocol::{
 enum TestError {
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+#[derive(Serialize)]
+enum JsonRpcVersion {
+    #[serde(rename = "2.0")]
+    Version2,
+}
+
+#[derive(Serialize)]
+enum RpcMethod {
+    #[serde(rename = "tools/call")]
+    ToolsCall,
+    #[serde(rename = "$/cancelRequest")]
+    CancelRequest,
+}
+
+#[derive(Serialize)]
+enum ToolName {
+    #[serde(rename = "nudox.application")]
+    NudoxApplication,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PolicyAction {
+    RecoverLocal,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Pressure {
+    Relaxed,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum BatteryState {
+    Normal,
+}
+
+#[derive(Serialize)]
+struct McpPolicyRequest<'generation> {
+    jsonrpc: JsonRpcVersion,
+    id: u64,
+    method: RpcMethod,
+    params: McpToolCall<'generation>,
+}
+
+#[derive(Serialize)]
+struct McpToolCall<'generation> {
+    name: ToolName,
+    arguments: McpPolicyArguments<'generation>,
+}
+
+#[derive(Serialize)]
+struct McpPolicyArguments<'generation> {
+    action: PolicyAction,
+    correlation: u64,
+    generation: &'generation str,
+    snapshot: String,
+    bundle: String,
+    ram_free: u64,
+    nvme_free: u64,
+    operations: u64,
+    retries: u64,
+    memory_pressure: Pressure,
+    storage_pressure: Pressure,
+    battery: BatteryState,
+}
+
+#[derive(Serialize)]
+struct McpCancellationNotification<'request_id> {
+    jsonrpc: JsonRpcVersion,
+    method: RpcMethod,
+    params: McpCancellationParams<'request_id>,
+}
+
+#[derive(Serialize)]
+struct McpCancellationParams<'request_id> {
+    #[serde(rename = "requestId")]
+    request_id: &'request_id str,
 }
 
 fn policy_arguments() -> Vec<String> {
@@ -36,30 +118,30 @@ fn policy_arguments() -> Vec<String> {
     .collect()
 }
 
-fn mcp_policy_request(generation: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 9,
-        "method": "tools/call",
-        "params": {
-            "name": "nudox.application",
-            "arguments": {
-                "action": "recover-local",
-                "correlation": 9,
-                "generation": generation,
-                "snapshot": IndexSnapshotId::from_digest([13; 32]).to_string(),
-                "bundle": ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
-                "ram_free": 4096,
-                "nvme_free": 8192,
-                "operations": 1,
-                "retries": 1,
-                "memory_pressure": "relaxed",
-                "storage_pressure": "relaxed",
-                "battery": "normal",
-            }
-        }
+fn mcp_policy_request(generation: &str) -> io::Result<String> {
+    serde_json::to_string(&McpPolicyRequest {
+        jsonrpc: JsonRpcVersion::Version2,
+        id: 9,
+        method: RpcMethod::ToolsCall,
+        params: McpToolCall {
+            name: ToolName::NudoxApplication,
+            arguments: McpPolicyArguments {
+                action: PolicyAction::RecoverLocal,
+                correlation: 9,
+                generation,
+                snapshot: IndexSnapshotId::from_digest([13; 32]).to_string(),
+                bundle: ContentId::<CapabilityDomain>::from_digest([17; 32]).to_string(),
+                ram_free: 4096,
+                nvme_free: 8192,
+                operations: 1,
+                retries: 1,
+                memory_pressure: Pressure::Relaxed,
+                storage_pressure: Pressure::Relaxed,
+                battery: BatteryState::Normal,
+            },
+        },
     })
-    .to_string()
+    .map_err(io::Error::other)
 }
 
 #[test]
@@ -111,7 +193,7 @@ fn post_parse_mcp_rejections_retain_request_id() -> Result<(), TestError> {
     ) else {
         return Err(io::Error::other("malformed MCP request was accepted").into());
     };
-    assert_eq!(error.id, Some(serde_json::json!(91)));
+    assert_eq!(error.id, Some(serde_json::Value::from(91)));
     assert_eq!(error.error.field, "arguments");
     Ok(())
 }
@@ -160,11 +242,11 @@ fn cli_rejects_malformed_canonical_identity_with_exact_width_cause() -> Result<(
 #[test]
 fn mcp_rejects_wrong_canonical_identity_domain_with_typed_cause() -> Result<(), TestError> {
     let wrong_domain = ContentId::<CapabilityDomain>::from_digest([19; 32]).to_string();
-    let body = mcp_policy_request(&wrong_domain);
+    let body = mcp_policy_request(&wrong_domain)?;
     let McpDecode::Rejected(error) = decode_mcp(body.as_bytes()) else {
         return Err(io::Error::other("wrong identity domain was accepted").into());
     };
-    assert_eq!(error.id, Some(serde_json::json!(9)));
+    assert_eq!(error.id, Some(serde_json::Value::from(9)));
     assert_eq!(error.error.field, "generation");
     assert!(matches!(
         error.cause,
@@ -177,12 +259,14 @@ fn mcp_rejects_wrong_canonical_identity_domain_with_typed_cause() -> Result<(), 
 
 #[test]
 fn mcp_cancellation_remains_typed_until_process_resolution() -> Result<(), TestError> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "$/cancelRequest",
-        "params": {"requestId": "operation-two"},
+    let body = serde_json::to_string(&McpCancellationNotification {
+        jsonrpc: JsonRpcVersion::Version2,
+        method: RpcMethod::CancelRequest,
+        params: McpCancellationParams {
+            request_id: "operation-two",
+        },
     })
-    .to_string();
+    .map_err(io::Error::other)?;
     let McpDecode::Accepted(envelope) = decode_mcp(body.as_bytes()) else {
         return Err(io::Error::other("typed cancellation notification was rejected").into());
     };
