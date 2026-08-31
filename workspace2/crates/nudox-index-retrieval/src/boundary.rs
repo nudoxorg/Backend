@@ -24,25 +24,89 @@ pub struct RetrievalBoundaryView<'vector> {
     pub vector_selection: &'vector [VectorSegmentDescriptor],
 }
 
-/// Typed rejection while validating a durable retrieval boundary's derived authorities.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum RetrievalBoundaryError {
-    /// The pinned graph authority named another sealed snapshot.
-    #[error("graph authority snapshot differs from the sealed publication")]
+/// Complete authority facts retained in one cold retrieval-boundary rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetrievalBoundaryEvidenceView {
+    /// A graph authority named another sealed snapshot.
     GraphSnapshot {
         /// Snapshot sealed by the durable publication witness.
         expected: IndexSnapshotId,
         /// Complete supplied graph authority.
         observed: GraphAuthority,
     },
-    /// The pinned vector authority named another sealed snapshot.
-    #[error("vector authority snapshot differs from the sealed publication")]
+    /// A vector authority named another sealed snapshot.
     VectorSnapshot {
         /// Snapshot sealed by the durable publication witness.
         expected: IndexSnapshotId,
         /// Complete supplied vector authority.
         observed: VectorAuthority,
     },
+    /// A selected vector descriptor belonged to another full vector authority.
+    VectorSelectionAuthority {
+        /// Selection position.
+        position: usize,
+        /// Full vector authority pinned by the boundary.
+        expected: VectorAuthority,
+        /// Complete descriptor authority.
+        observed: VectorAuthority,
+    },
+}
+
+/// Cold heap-owned authority evidence behind one typed boundary-construction rejection.
+///
+/// Construction succeeds without allocation. This wrapper allocates exactly once only for the
+/// three broad authority-rejection variants, preserving every authority field while keeping their
+/// `Result` carrier compact. It dereferences to the immutable complete evidence view.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RetrievalBoundaryEvidence(Box<RetrievalBoundaryEvidenceView>);
+
+impl Deref for RetrievalBoundaryEvidence {
+    type Target = RetrievalBoundaryEvidenceView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl RetrievalBoundaryEvidence {
+    fn graph_snapshot(expected: IndexSnapshotId, observed: GraphAuthority) -> Self {
+        Self(Box::new(RetrievalBoundaryEvidenceView::GraphSnapshot {
+            expected,
+            observed,
+        }))
+    }
+
+    fn vector_snapshot(expected: IndexSnapshotId, observed: VectorAuthority) -> Self {
+        Self(Box::new(RetrievalBoundaryEvidenceView::VectorSnapshot {
+            expected,
+            observed,
+        }))
+    }
+
+    fn vector_selection_authority(
+        position: usize,
+        expected: VectorAuthority,
+        observed: VectorAuthority,
+    ) -> Self {
+        Self(Box::new(
+            RetrievalBoundaryEvidenceView::VectorSelectionAuthority {
+                position,
+                expected,
+                observed,
+            },
+        ))
+    }
+}
+
+/// Typed rejection while validating a durable retrieval boundary's derived authorities.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RetrievalBoundaryError {
+    /// The pinned graph authority named another sealed snapshot.
+    #[error("graph authority snapshot differs from the sealed publication")]
+    GraphSnapshot(RetrievalBoundaryEvidence),
+    /// The pinned vector authority named another sealed snapshot.
+    #[error("vector authority snapshot differs from the sealed publication")]
+    VectorSnapshot(RetrievalBoundaryEvidence),
     /// The selected vector descriptor count exceeded the fixed server boundary.
     #[error("vector selection has {observed} descriptors, limit is {maximum}")]
     VectorSelectionCapacity {
@@ -54,12 +118,10 @@ pub enum RetrievalBoundaryError {
     /// A selected descriptor belonged to another full vector authority.
     #[error("vector selection descriptor {position} differs from pinned authority")]
     VectorSelectionAuthority {
-        /// Selection position.
+        /// Selection position, repeated for direct error discrimination.
         position: usize,
-        /// Full vector authority pinned by the boundary.
-        expected: VectorAuthority,
-        /// Complete descriptor authority.
-        observed: VectorAuthority,
+        /// Cold complete expected/observed authority evidence.
+        evidence: RetrievalBoundaryEvidence,
     },
     /// One immutable vector descriptor was selected twice.
     #[error("vector selection repeats descriptor {id:?}")]
@@ -118,10 +180,6 @@ where
     ///
     /// Returns [`RetrievalBoundaryError`] when an authority names another sealed snapshot or the
     /// borrowed vector selection is oversized, ambiguous, or belongs to another full authority.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the closed error retains full graph/vector authorities instead of erasing or boxing evidence"
-    )]
     pub fn new(
         published: &'boundary PublishedIndexSnapshot<'store, 'selection, PayloadOwner>,
         cancellation: &'boundary Cancellation,
@@ -131,16 +189,14 @@ where
     ) -> Result<Self, RetrievalBoundaryError> {
         let snapshot = published.snapshot.id;
         if graph_authority.snapshot != snapshot {
-            return Err(RetrievalBoundaryError::GraphSnapshot {
-                expected: snapshot,
-                observed: graph_authority,
-            });
+            return Err(RetrievalBoundaryError::GraphSnapshot(
+                RetrievalBoundaryEvidence::graph_snapshot(snapshot, graph_authority),
+            ));
         }
         if vector_authority.snapshot != snapshot {
-            return Err(RetrievalBoundaryError::VectorSnapshot {
-                expected: snapshot,
-                observed: vector_authority,
-            });
+            return Err(RetrievalBoundaryError::VectorSnapshot(
+                RetrievalBoundaryEvidence::vector_snapshot(snapshot, vector_authority),
+            ));
         }
         if vector_selection.len() > MAX_PARTITIONS {
             return Err(RetrievalBoundaryError::VectorSelectionCapacity {
@@ -152,8 +208,11 @@ where
             if descriptor.authority != vector_authority {
                 return Err(RetrievalBoundaryError::VectorSelectionAuthority {
                     position,
-                    expected: vector_authority,
-                    observed: descriptor.authority,
+                    evidence: RetrievalBoundaryEvidence::vector_selection_authority(
+                        position,
+                        vector_authority,
+                        descriptor.authority,
+                    ),
                 });
             }
             for (first_position, first) in
@@ -184,5 +243,46 @@ where
             published,
             cancellation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{hint::black_box, mem::size_of};
+
+    use allocation_counter::measure;
+
+    use super::*;
+
+    #[test]
+    fn cold_boundary_authority_evidence_allocates_once_while_hot_result_stays_compact() {
+        type Boundary = RetrievalBoundary<'static, 'static, 'static, 'static, Box<[u8]>>;
+
+        let snapshot = IndexSnapshotId::from_canonical_bytes(b"boundary-cold-evidence");
+        let authority =
+            GraphAuthority::new(snapshot, nudox_index_graph_vector::ProjectionId::new(1));
+        let allocations = measure(|| {
+            let evidence = black_box(RetrievalBoundaryEvidence::graph_snapshot(
+                snapshot, authority,
+            ));
+            assert!(matches!(
+                *evidence,
+                RetrievalBoundaryEvidenceView::GraphSnapshot {
+                    expected,
+                    observed,
+                } if expected == snapshot && observed == authority
+            ));
+        });
+        assert_eq!(allocations.count_total, 1);
+        assert_eq!(allocations.count_current, 0);
+        assert_eq!(allocations.count_max, 1);
+        assert!(matches!(
+            u64::try_from(size_of::<RetrievalBoundaryEvidenceView>()),
+            Ok(evidence_size) if allocations.bytes_total >= evidence_size
+        ));
+        assert_eq!(
+            size_of::<Result<Boundary, RetrievalBoundaryError>>(),
+            size_of::<Boundary>()
+        );
     }
 }

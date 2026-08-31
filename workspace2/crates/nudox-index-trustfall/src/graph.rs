@@ -61,6 +61,29 @@ pub enum TrustfallOutputField {
     Partition,
 }
 
+/// Exact integral wire value rejected while decoding one fixed Trustfall output field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustfallOutputNumber {
+    /// A signed Trustfall integer value.
+    Signed(i64),
+    /// An unsigned Trustfall integer value.
+    Unsigned(u64),
+}
+
+/// Closed reason a fixed Trustfall output field could not become a `u16` coordinate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustfallOutputCause {
+    /// Trustfall omitted the declared fixed output field.
+    Missing,
+    /// Trustfall supplied a value outside the declared integer grammar.
+    NonInteger,
+    /// Trustfall supplied an integer outside the accepted `u16` coordinate range.
+    OutOfRange {
+        /// Exact rejected signed or unsigned integer value.
+        observed: TrustfallOutputNumber,
+    },
+}
+
 /// Stable schema diagnostic category derived from Trustfall's non-exhaustive upstream error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrustfallSchemaDiagnostic {
@@ -134,11 +157,13 @@ pub enum TrustfallGraphError {
         /// Caller-provided output capacity.
         available: usize,
     },
-    /// A fixed Trustfall output field was absent or outside its declared integer grammar.
-    #[error("Trustfall graph output field {field:?} was not an unsigned sixteen-bit integer")]
+    /// A fixed Trustfall output field was not a valid unsigned sixteen-bit coordinate.
+    #[error("Trustfall graph output field {field:?} was rejected: {cause:?}")]
     InvalidOutputField {
-        /// Declared field whose observed dynamic value was rejected.
+        /// Declared output field rejected by the decoder.
         field: TrustfallOutputField,
+        /// Closed missing, type, or range cause retained from the output row.
+        cause: TrustfallOutputCause,
     },
     /// Trustfall output cardinality disagreed with the borrowed graph facts that seeded it.
     #[error("Trustfall graph emitted {observed} facts after a preflight of {expected}")]
@@ -503,10 +528,34 @@ fn output_half(
     name: &str,
     field: TrustfallOutputField,
 ) -> Result<u16, TrustfallGraphError> {
-    row.get(name)
-        .and_then(FieldValue::as_i64)
-        .and_then(|value| u16::try_from(value).ok())
-        .ok_or(TrustfallGraphError::InvalidOutputField { field })
+    let Some(value) = row.get(name) else {
+        return Err(TrustfallGraphError::InvalidOutputField {
+            field,
+            cause: TrustfallOutputCause::Missing,
+        });
+    };
+    match value {
+        FieldValue::Int64(observed) => {
+            u16::try_from(*observed).map_err(|_| TrustfallGraphError::InvalidOutputField {
+                field,
+                cause: TrustfallOutputCause::OutOfRange {
+                    observed: TrustfallOutputNumber::Signed(*observed),
+                },
+            })
+        }
+        FieldValue::Uint64(observed) => {
+            u16::try_from(*observed).map_err(|_| TrustfallGraphError::InvalidOutputField {
+                field,
+                cause: TrustfallOutputCause::OutOfRange {
+                    observed: TrustfallOutputNumber::Unsigned(*observed),
+                },
+            })
+        }
+        _ => Err(TrustfallGraphError::InvalidOutputField {
+            field,
+            cause: TrustfallOutputCause::NonInteger,
+        }),
+    }
 }
 
 fn entity_high(entity: EntityId) -> u16 {
@@ -597,5 +646,46 @@ mod tests {
             size_of::<TrustfallGraph<'static>>(),
             size_of::<&ValidatedGraphView<'static>>()
         );
+    }
+
+    #[test]
+    fn missing_output_field_retains_its_closed_cause() {
+        let row = BTreeMap::new();
+        let result = output_half(&row, "partition", TrustfallOutputField::Partition);
+        assert!(matches!(
+            result,
+            Err(TrustfallGraphError::InvalidOutputField {
+                field: TrustfallOutputField::Partition,
+                cause: TrustfallOutputCause::Missing,
+            })
+        ));
+    }
+
+    #[test]
+    fn non_integer_output_field_retains_its_closed_cause() {
+        let row = BTreeMap::from([(Arc::<str>::from("partition"), FieldValue::Boolean(true))]);
+        let result = output_half(&row, "partition", TrustfallOutputField::Partition);
+        assert!(matches!(
+            result,
+            Err(TrustfallGraphError::InvalidOutputField {
+                field: TrustfallOutputField::Partition,
+                cause: TrustfallOutputCause::NonInteger,
+            })
+        ));
+    }
+
+    #[test]
+    fn out_of_range_output_field_retains_its_exact_integer() {
+        let row = BTreeMap::from([(Arc::<str>::from("partition"), FieldValue::Int64(-1))]);
+        let result = output_half(&row, "partition", TrustfallOutputField::Partition);
+        assert!(matches!(
+            result,
+            Err(TrustfallGraphError::InvalidOutputField {
+                field: TrustfallOutputField::Partition,
+                cause: TrustfallOutputCause::OutOfRange {
+                    observed: TrustfallOutputNumber::Signed(-1),
+                },
+            })
+        ));
     }
 }

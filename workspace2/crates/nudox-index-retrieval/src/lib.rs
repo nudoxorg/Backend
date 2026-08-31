@@ -14,7 +14,10 @@ mod tantivy;
 mod terminal;
 mod trustfall;
 
-pub use boundary::{RetrievalBoundary, RetrievalBoundaryError, RetrievalBoundaryView};
+pub use boundary::{
+    RetrievalBoundary, RetrievalBoundaryError, RetrievalBoundaryEvidence,
+    RetrievalBoundaryEvidenceView, RetrievalBoundaryView,
+};
 pub use exact::ExactRoute;
 pub use lexical::LexicalRoute;
 pub use terminal::{

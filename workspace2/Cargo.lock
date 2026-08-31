@@ -3801,6 +3801,7 @@ dependencies = [
 name = "nudox-index-retrieval"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "nudox-durable-journal",
  "nudox-hydration",
  "nudox-id",

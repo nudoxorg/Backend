@@ -22,6 +22,7 @@ nudox-ir-vocab = { path = "../nudox-ir-vocab" }
 thiserror.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 nudox-durable-journal = { path = "../nudox-durable-journal" }
 nudox-hydration = { path = "../nudox-hydration" }
 nudox-id = { path = "../nudox-id" }

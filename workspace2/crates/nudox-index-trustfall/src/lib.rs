@@ -7,6 +7,6 @@ mod schema;
 
 pub use graph::{
     TrustfallArgumentDiagnostic, TrustfallGraph, TrustfallGraphError, TrustfallHit,
-    TrustfallOutputField, TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
-    TrustfallUpstreamDiagnostic,
+    TrustfallOutputCause, TrustfallOutputField, TrustfallOutputNumber, TrustfallQueryDiagnostic,
+    TrustfallSchemaDiagnostic, TrustfallTerminal, TrustfallUpstreamDiagnostic,
 };
