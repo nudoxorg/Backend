@@ -20,10 +20,7 @@ impl<'fragment> FragmentView<'fragment> {
         Ok(Self::from_validated_layout(envelope, layout))
     }
 
-    pub(crate) fn from_validated_layout(
-        envelope: &'fragment [u8],
-        layout: FragmentLayout,
-    ) -> Self {
+    pub(crate) fn from_validated_layout(envelope: &'fragment [u8], layout: FragmentLayout) -> Self {
         let entity_lane = &envelope[layout.entities.range()];
         let atom_lane = &envelope[layout.atoms.range()];
         Self {

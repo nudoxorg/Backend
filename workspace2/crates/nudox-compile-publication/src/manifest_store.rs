@@ -11,11 +11,8 @@ use crate::{
         CompilationManifestError, CompilationManifestIdentity, CompilationManifestView,
         StoredFragmentFacts,
     },
-    storage::{ImmutableFileStore, StoredFile},
+    storage::{ImmutableFileStore, StorageNamespace, StoredFile},
 };
-
-const MANIFEST_DIRECTORY: &str = "manifests";
-const MANIFEST_EXTENSION: &[u8; 7] = b".irmani";
 
 /// Failure while durably storing one validated canonical package manifest.
 #[derive(Debug, Error)]
@@ -52,7 +49,7 @@ pub struct ImmutableManifestStore {
 impl ImmutableManifestStore {
     pub(crate) fn existing(directory: &Path) -> Self {
         Self {
-            store: ImmutableFileStore::existing(directory, MANIFEST_DIRECTORY, MANIFEST_EXTENSION),
+            store: ImmutableFileStore::existing(directory, StorageNamespace::Manifests),
         }
     }
 
@@ -65,8 +62,7 @@ impl ImmutableManifestStore {
         Ok(Self {
             store: ImmutableFileStore::new::<IrManifestEncoding, IrManifestDomain>(
                 directory,
-                MANIFEST_DIRECTORY,
-                MANIFEST_EXTENSION,
+                StorageNamespace::Manifests,
             )?,
         })
     }

@@ -2,9 +2,8 @@ use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
 use nudox_ir_format::{
     AtomFault, AtomInput, DirectoryFault, EntityKind, EntityNameFault, EntityRecord,
-    EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment,
-    PrimitiveType, RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
-    WriteError,
+    EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType,
+    RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
 use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
@@ -61,7 +60,8 @@ fn canonical() -> Result<[u8; CANONICAL_LENGTH], TestFailure> {
     }];
     let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
     let atoms = [AtomInput { bytes: b"alpha" }];
-    let prepared = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
+    let prepared =
+        PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
     assert_eq!(prepared.required_capacity(), CANONICAL_LENGTH);
     let mut output = [0; CANONICAL_LENGTH];
     prepared.write_into(&mut output)?;
@@ -75,11 +75,23 @@ fn canonical_fixture_has_exact_closed_layout_and_semantic_lanes() -> Result<(), 
         &bytes[..HEADER_BYTES],
         &[78, 88, 73, 82, 1, 0, 6, 0, 245, 0, 0, 0]
     );
-    assert_eq!(&bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES], &[1, 0, 1, 0, 1, 0, 0, 0, 108, 0, 0, 0, 12, 0, 0, 0]);
-    assert_eq!(&bytes[TYPE_DIRECTORY..TYPE_DIRECTORY + DIRECTORY_BYTES], &[2, 0, 1, 0, 1, 0, 0, 0, 120, 0, 0, 0, 8, 0, 0, 0]);
-    assert_eq!(&bytes[ENTITY_RECORD..ENTITY_RECORD + 12], &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(
+        &bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES],
+        &[1, 0, 1, 0, 1, 0, 0, 0, 108, 0, 0, 0, 12, 0, 0, 0]
+    );
+    assert_eq!(
+        &bytes[TYPE_DIRECTORY..TYPE_DIRECTORY + DIRECTORY_BYTES],
+        &[2, 0, 1, 0, 1, 0, 0, 0, 120, 0, 0, 0, 8, 0, 0, 0]
+    );
+    assert_eq!(
+        &bytes[ENTITY_RECORD..ENTITY_RECORD + 12],
+        &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+    );
     assert_eq!(&bytes[TYPE_RECORD..TYPE_RECORD + 8], &[0; 8]);
-    assert_eq!(&bytes[ATOM_RECORD..ATOM_RECORD + 8], &[0, 0, 0, 0, 5, 0, 0, 0]);
+    assert_eq!(
+        &bytes[ATOM_RECORD..ATOM_RECORD + 8],
+        &[0, 0, 0, 0, 5, 0, 0, 0]
+    );
     assert_eq!(&bytes[ATOM_BYTES..SOURCE_RECORD], b"alpha");
     assert_eq!(&bytes[SOURCE_RECORD..SOURCE_RECORD + 4], &[13, 0, 0, 0]);
     assert_eq!(
@@ -104,7 +116,10 @@ fn every_canonical_prefix_rejects_with_header_or_geometry_priority() -> Result<(
                 actual,
             }
         };
-        assert_eq!(FragmentView::validate(&bytes[..actual]).err(), Some(expected));
+        assert_eq!(
+            FragmentView::validate(&bytes[..actual]).err(),
+            Some(expected)
+        );
     }
     Ok(())
 }
@@ -292,7 +307,8 @@ fn cardinality_is_not_calibrated_to_the_zero_one_two_matrix() -> Result<(), Test
         TypeNode::Reference(TypeId::new(1)),
     ];
     let atoms = [AtomInput { bytes: b"quad" }];
-    let prepared = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
+    let prepared =
+        PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
     let mut output = [0; 512];
     let prefix = prepared.write_into(&mut output)?;
     let view = FragmentView::validate(prefix)?;

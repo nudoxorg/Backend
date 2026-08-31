@@ -1,5 +1,5 @@
-use nudox_id::{ContentId, SourceFactDomain};
 use nudox_compile_vocab::CompileRecipeFact;
+use nudox_id::{ContentId, SourceFactDomain};
 use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 

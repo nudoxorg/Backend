@@ -4,8 +4,7 @@ use nudox_ir_vocab::{EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{
-    AtomFault, EntityFault, EntityRecordFault, RecipeFactFault, SourceIdentityFault,
-    TypeNodeFault,
+    AtomFault, EntityFault, EntityRecordFault, RecipeFactFault, SourceIdentityFault, TypeNodeFault,
     wire::SectionKind,
 };
 

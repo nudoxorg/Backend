@@ -33,6 +33,10 @@ use native_tooling::{HostTool, NativeToolingError, NativeWork};
 static JOURNEY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Error)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "this one-shot test terminal keeps exact production sources inline without heap indirection"
+)]
 enum TestFailure {
     #[error(transparent)]
     Tooling(#[from] NativeToolingError),

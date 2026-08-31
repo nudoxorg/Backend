@@ -10,9 +10,9 @@ use crate::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
         FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, RECIPE_FACT_BYTES,
         SOURCE_IDENTITY_BYTES, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
-        WRITTEN_SECTION_COUNT, entity_fault, entity_name_fault, type_node_fault,
-        write_atom_record, write_entity, write_recipe_fact, write_source_identity, write_type_node,
-        write_u16, write_u32,
+        WRITTEN_SECTION_COUNT, entity_fault, entity_name_fault, type_node_fault, write_atom_record,
+        write_entity, write_recipe_fact, write_source_identity, write_type_node, write_u16,
+        write_u32,
     },
 };
 

@@ -9,6 +9,7 @@ use nudox_compile_driver::{NativeTool, ResolvedToolchain, ToolchainResolutionErr
 use thiserror::Error;
 
 static WORK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+const STABLE_TOOLCHAIN_ENV: &str = "NUDOX_STABLE_TOOLCHAIN";
 
 #[derive(Debug, Error)]
 pub(crate) enum NativeToolingError {
@@ -55,6 +56,19 @@ impl HostTool {
         executable_name: &str,
         tool: NativeTool,
     ) -> Result<Self, NativeToolingError> {
+        if tool == NativeTool::Rustc
+            && let Some(toolchain_root) = env::var_os(STABLE_TOOLCHAIN_ENV)
+        {
+            let candidate = PathBuf::from(toolchain_root).join("bin/rustc");
+            if candidate.is_file() {
+                return Ok(Self {
+                    tool,
+                    executable: candidate
+                        .canonicalize()
+                        .map_err(|source| NativeToolingError::Canonicalize { tool, source })?,
+                });
+            }
+        }
         let paths = env::var_os("PATH").ok_or(NativeToolingError::MissingPath { tool })?;
         for directory in env::split_paths(&paths) {
             let candidate = directory.join(executable_name);

@@ -115,8 +115,7 @@ fn open_owned(
 }
 
 #[test]
-fn mapped_owner_validates_once_then_reuses_the_same_borrowed_bytes()
--> Result<(), TestFailure> {
+fn mapped_owner_validates_once_then_reuses_the_same_borrowed_bytes() -> Result<(), TestFailure> {
     let (bytes, length, manifest) = fragment()?;
     let fixture = TemporaryFixture::create("same-pointer", &bytes[..length])?;
     let mapped = open_owned(&fixture.path, manifest)?;
@@ -126,7 +125,10 @@ fn mapped_owner_validates_once_then_reuses_the_same_borrowed_bytes()
     assert_eq!(mapped.mapped_bytes, length);
     assert_eq!(first.as_ref().as_ptr(), mapped.as_ref().as_ptr());
     assert_eq!(first.as_ref().as_ptr(), second.as_ref().as_ptr());
-    assert_eq!(first.atoms().next().map(|atom| atom.bytes), Some(&b"alpha"[..]));
+    assert_eq!(
+        first.atoms().next().map(|atom| atom.bytes),
+        Some(&b"alpha"[..])
+    );
 
     #[cfg(unix)]
     {

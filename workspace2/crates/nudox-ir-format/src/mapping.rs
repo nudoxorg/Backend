@@ -129,12 +129,13 @@ pub unsafe fn open_fragment_mmap(
     // SAFETY: the caller guarantees the documented immutable-inode contract; this maps exactly
     // the checked nonzero descriptor metadata length read above, retains a read-only descriptor
     // mapping in `MappedFragment`, and ties all fragment borrows to `&MappedFragment`.
-    let mapping = unsafe { MmapOptions::new().len(mapping_length).map(&file) }.map_err(|source| {
-        MappedFragmentError::Io {
-            phase: MappedFragmentIoPhase::Map,
-            source,
-        }
-    })?;
+    let mapping =
+        unsafe { MmapOptions::new().len(mapping_length).map(&file) }.map_err(|source| {
+            MappedFragmentError::Io {
+                phase: MappedFragmentIoPhase::Map,
+                source,
+            }
+        })?;
     let layout = manifest
         .verify_fragment_layout(&mapping)
         .map_err(MappedFragmentError::Validation)?;

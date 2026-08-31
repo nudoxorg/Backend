@@ -15,8 +15,8 @@ use std::{
 use nudox_compile_vocab::NativeTool;
 
 use crate::types::{
-    CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeRecipe,
-    NativeDiagnostic, NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain,
+    CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeDiagnostic,
+    NativeRecipe, NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain,
     SourceIdentity,
 };
 
@@ -35,7 +35,11 @@ impl NativeFrontend for RustFrontend {
         let mut command = Command::new(toolchain.executable());
         let mut metadata = OsString::from("--emit=metadata=");
         metadata.push(native_work.join(RUST_METADATA_FILE));
-        command.args(["--crate-type=lib", "--edition=2024", "--crate-name=nudox_probe"]);
+        command.args([
+            "--crate-type=lib",
+            "--edition=2024",
+            "--crate-name=nudox_probe",
+        ]);
         command.arg(metadata).arg("-").current_dir(native_work);
         command
     }
@@ -44,7 +48,9 @@ impl NativeFrontend for RustFrontend {
 impl NativeFrontend for ClangFrontend {
     fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
         let mut command = Command::new(toolchain.executable());
-        command.args(["-x", "c", "-fsyntax-only", "-"]).current_dir(native_work);
+        command
+            .args(["-x", "c", "-fsyntax-only", "-w", "-"])
+            .current_dir(native_work);
         command
     }
 }
@@ -202,16 +208,19 @@ fn drive_child<'source, 'toolchain, 'cancel, 'diagnostic, ConcreteFrontend: Nati
             source,
             recipe_fact,
         );
-        writer.join().map_err(|_| CompileFailure::ToolInputWriterPanicked {
-            source_identity: source,
-            recipe: recipe_fact,
-        })?;
-        let diagnostic = reader.join().map_err(|_| {
-            CompileFailure::ToolDiagnosticReaderPanicked {
-                source_identity: source,
-                recipe: recipe_fact,
-            }
-        })?;
+        // Terminal observation is attempted before either scoped worker is joined. Ordinary
+        // terminals and successful interruption are reaped; an exact interruption I/O error can
+        // instead mean reaping was not proved. Scoped ownership still requires both joins, and a
+        // worker panic resumes its original payload rather than becoming a fabricated compile
+        // terminal.
+        match writer.join() {
+            Ok(()) => {}
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+        let diagnostic = match reader.join() {
+            Ok(diagnostic) => diagnostic,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
         let diagnostic = diagnostic.map_err(|cause| CompileFailure::ToolDiagnosticRead {
             source_identity: source,
             recipe: recipe_fact,
@@ -252,11 +261,11 @@ fn drive_child<'source, 'toolchain, 'cancel, 'diagnostic, ConcreteFrontend: Nati
             }),
             ChildTerminal::Success => Ok(()),
             ChildTerminal::Rejected(status) => Err(CompileFailure::NativeRejected {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    status,
-                    diagnostic,
-                }),
+                source_identity: source,
+                recipe: recipe_fact,
+                status,
+                diagnostic,
+            }),
         }
     })
 }
@@ -303,7 +312,6 @@ fn compound_native_work_cleanup<'diagnostic>(
         CompileFailure::ToolInputCleanup { cause, cleanup, .. } => {
             NativeWorkPrimary::ToolInputCleanup { cause, cleanup }
         }
-        CompileFailure::ToolInputWriterPanicked { .. } => NativeWorkPrimary::ToolInputWriterPanicked,
         CompileFailure::ToolTerminate { cause, .. } => NativeWorkPrimary::ToolTerminate { cause },
         CompileFailure::ToolWait { cause, .. } => NativeWorkPrimary::ToolWait { cause },
         CompileFailure::ToolWaitCleanup { cause, cleanup, .. } => {
@@ -311,9 +319,6 @@ fn compound_native_work_cleanup<'diagnostic>(
         }
         CompileFailure::ToolDiagnosticRead { cause, .. } => {
             NativeWorkPrimary::ToolDiagnosticRead { cause }
-        }
-        CompileFailure::ToolDiagnosticReaderPanicked { .. } => {
-            NativeWorkPrimary::ToolDiagnosticReaderPanicked
         }
         CompileFailure::Cancelled { diagnostic, .. } => NativeWorkPrimary::Cancelled { diagnostic },
         CompileFailure::DeadlineExceeded { diagnostic, .. } => {
@@ -412,17 +417,10 @@ fn wait_for_terminal<'diagnostic>(
                 Ok(Ok(())) => source_delivered = true,
                 Ok(Err(cause)) => return input_failed(child, source, recipe, cause),
                 Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    terminate(child).map_err(|cause| CompileFailure::ToolTerminate {
-                        source_identity: source,
-                        recipe,
-                        cause,
-                    })?;
-                    return Err(CompileFailure::ToolInputWriterPanicked {
-                        source_identity: source,
-                        recipe,
-                    });
-                }
+                // The only sender lives in the scoped writer. If it disconnected through a
+                // panic, the owner still attempts terminal observation before joining; the join
+                // then resumes the exact panic payload rather than fabricating a compiler error.
+                Err(TryRecvError::Disconnected) => {}
             }
         }
         if diagnostic_limit.load(Ordering::Acquire) {

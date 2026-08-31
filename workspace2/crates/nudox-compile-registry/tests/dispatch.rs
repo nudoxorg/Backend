@@ -4,14 +4,24 @@ use nudox_compile_vocab::{FrontendError, Language, NativeTool, Stage};
 #[test]
 fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
     let rows = [
-        (Language::Rust, AdapterRoute::Native { tool: NativeTool::Rustc }),
+        (
+            Language::Rust,
+            AdapterRoute::Native {
+                tool: NativeTool::Rustc,
+            },
+        ),
         (
             Language::TypeScript,
             AdapterRoute::ToolingUnavailable {
                 tool: NativeTool::TypeScriptCompiler,
             },
         ),
-        (Language::Python, AdapterRoute::Native { tool: NativeTool::Python }),
+        (
+            Language::Python,
+            AdapterRoute::Native {
+                tool: NativeTool::Python,
+            },
+        ),
         (
             Language::Go,
             AdapterRoute::ToolingUnavailable {
@@ -30,7 +40,12 @@ fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
                 tool: NativeTool::CSharpCompiler,
             },
         ),
-        (Language::Clang, AdapterRoute::Native { tool: NativeTool::Clang }),
+        (
+            Language::Clang,
+            AdapterRoute::Native {
+                tool: NativeTool::Clang,
+            },
+        ),
     ];
     assert_eq!(rows.map(|(language, _route)| language), Language::ALL);
     for (language, route) in rows {

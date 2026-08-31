@@ -178,9 +178,6 @@ fn genuine_verified_generation_publishes_binds_and_reopens() -> Result<(), Box<d
         | Err(nudox_durable_journal::CancelError::OwnerLost { .. }) => {
             return Err(io::Error::other("duplicate cancellation did not reach a terminal").into());
         }
-        Err(_) => {
-            return Err(io::Error::other("duplicate cancellation had an unknown terminal").into());
-        }
     }
     reopened.shutdown()?;
     fs::remove_dir_all(directory)?;

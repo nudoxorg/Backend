@@ -4,7 +4,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use thiserror::Error;
@@ -86,14 +85,18 @@ pub enum BindingStoreError {
     /// Existing binding named a different verified generation than its deterministic path.
     #[error("stored generation binding facts disagree with its deterministic generation path")]
     GenerationMismatch {
-        /// Exact cold mismatch facts retained in one shared diagnostic owner.
-        facts: Arc<BindingGenerationMismatch>,
+        /// Generation facts derived from the deterministic path.
+        expected: nudox_hydration::VerifiedGenerationFacts,
+        /// Generation facts carried by immutable binding bytes.
+        observed: nudox_hydration::VerifiedGenerationFacts,
     },
     /// Existing binding bytes had a different complete immutable identity or manifest fact.
     #[error("stored generation binding facts conflict with the requested immutable binding")]
     BindingMismatch {
-        /// Exact cold mismatch facts retained in one shared diagnostic owner.
-        facts: Arc<BindingFactsMismatch>,
+        /// Facts requested for the immutable generation address.
+        expected: CompilationBindingFacts,
+        /// Existing validated facts at that address.
+        observed: CompilationBindingFacts,
     },
     /// Every bounded temporary binding name collided with a pre-existing temporary path.
     #[error("could not allocate a temporary compiler binding after {attempts} attempts")]
@@ -104,24 +107,6 @@ pub enum BindingStoreError {
         #[source]
         source: io::Error,
     },
-}
-
-/// Exact deterministic-address disagreement retained only on the cold binding error path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BindingGenerationMismatch {
-    /// Generation facts derived from the deterministic path.
-    pub expected: nudox_hydration::VerifiedGenerationFacts,
-    /// Generation facts carried by immutable binding bytes.
-    pub observed: nudox_hydration::VerifiedGenerationFacts,
-}
-
-/// Exact immutable binding conflict retained only on the cold storage error path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BindingFactsMismatch {
-    /// Facts requested for the immutable generation address.
-    pub expected: CompilationBindingFacts,
-    /// Existing validated facts at that address.
-    pub observed: CompilationBindingFacts,
 }
 
 /// Location and validated facts of a generation-addressed immutable binding.
@@ -149,6 +134,10 @@ impl GenerationBindingStore {
     }
 
     /// Opens or creates the binding directory without creating a selected generation.
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold exact binding conflicts retain both immutable facts without allocation or source erasure"
+    )]
     pub(crate) fn new(parent: &Path) -> Result<Self, BindingStoreError> {
         fs::create_dir_all(parent).map_err(|source| BindingStoreError::Io {
             phase: BindingIoPhase::CreateDirectory,
@@ -174,6 +163,10 @@ impl GenerationBindingStore {
 
     /// Persists a fully validated binding at its deterministic generation address before journal
     /// submission. Existing bytes are independently validated and reused without rewriting.
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold exact binding conflicts retain both immutable facts without allocation or source erasure"
+    )]
     pub(crate) fn ensure(
         &mut self,
         binding: &CompilationBindingView<'_>,
@@ -188,10 +181,8 @@ impl GenerationBindingStore {
             }
             Some(existing) => {
                 return Err(BindingStoreError::BindingMismatch {
-                    facts: Arc::new(BindingFactsMismatch {
-                        expected: **binding,
-                        observed: existing,
-                    }),
+                    expected: **binding,
+                    observed: existing,
                 });
             }
             None => {}
@@ -200,6 +191,10 @@ impl GenerationBindingStore {
     }
 
     /// Loads the exact binding addressable only from journal-published generation facts.
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold exact binding conflicts retain both immutable facts without allocation or source erasure"
+    )]
     pub(crate) fn load(
         &self,
         generation: nudox_hydration::VerifiedGenerationFacts,
@@ -209,6 +204,10 @@ impl GenerationBindingStore {
             .map(|facts| facts.map(|facts| StoredBinding { facts, path }))
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold exact binding conflicts retain both immutable facts without allocation or source erasure"
+    )]
     fn read_existing(
         &self,
         path: &Path,
@@ -281,15 +280,17 @@ impl GenerationBindingStore {
             CompilationBindingView::validate(&bytes).map_err(BindingStoreError::Binding)?;
         if binding.generation != expected_generation {
             return Err(BindingStoreError::GenerationMismatch {
-                facts: Arc::new(BindingGenerationMismatch {
-                    expected: expected_generation,
-                    observed: binding.generation,
-                }),
+                expected: expected_generation,
+                observed: binding.generation,
             });
         }
         Ok(Some(*binding))
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "cold exact binding conflicts retain both immutable facts without allocation or source erasure"
+    )]
     fn publish_missing(
         &mut self,
         final_path: PathBuf,

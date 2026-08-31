@@ -1,24 +1,17 @@
 use core::{num::TryFromIntError, ops::Deref};
-use std::{
-    path::Path,
-    sync::atomic::AtomicBool,
-    time::Instant,
-};
+use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
 
 use nudox_compile_registry::{AdapterRoute, FullRegistry};
 use nudox_compile_vocab::{FrontendError, Language, Stage};
 use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
 use nudox_ir_format::{
-    AtomInput, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment,
-    TypeNode, WriteError,
+    AtomInput, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment, TypeNode,
+    WriteError,
 };
 use nudox_ir_vocab::{AtomId, TypeId};
 use thiserror::Error;
 
-use crate::{
-    lower::declaration,
-    native::parse_with_native_tool,
-};
+use crate::{lower::declaration, native::parse_with_native_tool};
 
 pub use nudox_compile_vocab::{CompileRecipeFact, NativeTool};
 pub use nudox_ir_format::SourceIdentity;
@@ -108,7 +101,6 @@ impl<'path> ToolchainSelection<'path> {
     }
 }
 
-
 /// Deadline and cancellation facts borrowed by one bounded native invocation.
 #[derive(Clone, Copy, Debug)]
 pub struct CompileControl<'cancel> {
@@ -196,8 +188,6 @@ pub enum NativeWorkPrimary<'diagnostic> {
         cause: std::io::Error,
         cleanup: std::io::Error,
     },
-    /// Scoped source writer panicked after native child ownership began.
-    ToolInputWriterPanicked,
     /// Interrupting a native child failed.
     ToolTerminate { cause: std::io::Error },
     /// Polling a native child failed.
@@ -209,8 +199,6 @@ pub enum NativeWorkPrimary<'diagnostic> {
     },
     /// Reading bounded native diagnostics failed.
     ToolDiagnosticRead { cause: std::io::Error },
-    /// Scoped bounded diagnostic reader panicked after native child ownership began.
-    ToolDiagnosticReaderPanicked,
     /// Cancellation reaped the child before a semantic result.
     Cancelled {
         diagnostic: NativeDiagnostic<'diagnostic>,
@@ -395,12 +383,6 @@ pub enum CompileFailure<'diagnostic> {
         cause: std::io::Error,
         cleanup: std::io::Error,
     },
-    /// The scoped source writer terminated unexpectedly after the child was reaped.
-    #[error("source writer panicked for {recipe:?}")]
-    ToolInputWriterPanicked {
-        source_identity: SourceIdentity,
-        recipe: CompileRecipeFact,
-    },
     /// Killing an interrupted native child preserved its concrete I/O cause.
     #[error("could not terminate {recipe:?}")]
     ToolTerminate {
@@ -433,12 +415,6 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         #[source]
         cause: std::io::Error,
-    },
-    /// The bounded diagnostic reader terminated unexpectedly after the child was reaped.
-    #[error("bounded native diagnostic reader panicked for {recipe:?}")]
-    ToolDiagnosticReaderPanicked {
-        source_identity: SourceIdentity,
-        recipe: CompileRecipeFact,
     },
     /// Cancellation killed and reaped the child before a semantic result became visible.
     #[error("{recipe:?} was cancelled")]
@@ -523,8 +499,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     let selected = match route {
         AdapterRoute::Native { tool } => tool,
         AdapterRoute::ToolingUnavailable { tool } => {
-            if request.toolchain.fact()
-                != (ToolchainSelectionFact::ExplicitlyUnavailable { tool })
+            if request.toolchain.fact() != (ToolchainSelectionFact::ExplicitlyUnavailable { tool })
             {
                 return Err(CompileFailure::ToolchainSelectionMismatch {
                     source_identity: source,
@@ -587,20 +562,21 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     let atoms = [AtomInput {
         bytes: declaration.name,
     }];
-    let prepared = PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms).map_err(|cause| {
-        CompileFailure::Prepare {
+    let prepared =
+        PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms).map_err(|cause| {
+            CompileFailure::Prepare {
+                source_identity: source,
+                recipe,
+                cause,
+            }
+        })?;
+    let bytes = prepared
+        .write_into(output.fragment_output)
+        .map_err(|cause| CompileFailure::Write {
             source_identity: source,
             recipe,
             cause,
-        }
-    })?;
-    let bytes = prepared.write_into(output.fragment_output).map_err(|cause| {
-        CompileFailure::Write {
-            source_identity: source,
-            recipe,
-            cause,
-        }
-    })?;
+        })?;
     let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
         source_identity: source,
         recipe,

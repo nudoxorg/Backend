@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
@@ -44,6 +43,7 @@ enum TestFailure {
 }
 
 static WORK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+const STABLE_TOOLCHAIN_ENV: &str = "NUDOX_STABLE_TOOLCHAIN";
 
 struct TemporaryWork {
     path: PathBuf,
@@ -81,6 +81,16 @@ impl Drop for TemporaryWork {
 }
 
 fn executable(tool: NativeTool) -> Result<PathBuf, TestFailure> {
+    if tool == NativeTool::Rustc
+        && let Some(toolchain_root) = env::var_os(STABLE_TOOLCHAIN_ENV)
+    {
+        let candidate = PathBuf::from(toolchain_root).join("bin/rustc");
+        if candidate.is_file() {
+            return candidate
+                .canonicalize()
+                .map_err(|cause| TestFailure::Canonicalize { tool, cause });
+        }
+    }
     let name = match tool {
         NativeTool::Rustc => "rustc",
         NativeTool::Python => "python3",
@@ -132,7 +142,10 @@ fn request<'source, 'path, 'cancel>(
         stage: Stage::LowerIr,
         source,
         toolchain,
-        control: CompileControl { deadline, cancelled },
+        control: CompileControl {
+            deadline,
+            cancelled,
+        },
     }
 }
 
@@ -191,17 +204,22 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                 assert_eq!(compiled.recipe.stage, Stage::LowerIr);
                 assert_eq!(compiled.recipe.tool, tool);
                 assert_eq!(compiled.source.byte_len, source_length);
-                assert!(core::ptr::eq(compiled.fragment.as_ref().as_ptr(), output_pointer));
+                assert!(core::ptr::eq(
+                    compiled.fragment.as_ref().as_ptr(),
+                    output_pointer
+                ));
                 assert_eq!(compiled.fragment.entities().count(), 1);
                 assert_eq!(compiled.fragment.type_nodes().count(), 1);
                 assert_eq!(
                     compiled.fragment.atoms().next().map(|atom| atom.bytes),
                     Some(expected_atom)
                 );
-                assert!(compiled
-                    .fragment
-                    .type_nodes()
-                    .eq([TypeNode::Primitive(expected_type)]));
+                assert!(
+                    compiled
+                        .fragment
+                        .type_nodes()
+                        .eq([TypeNode::Primitive(expected_type)])
+                );
                 compiled.fragment.as_ref().len()
             }
             Err(_) => return Err(TestFailure::Compile { tool }),
@@ -214,47 +232,60 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
 
 #[test]
 fn native_rejection_retains_recipe_source_and_bounded_diagnostic() -> Result<(), TestFailure> {
-    let source = b"pub const = ;";
-    let source_length = source_length(source)?;
-    let executable = executable(NativeTool::Rustc)?;
-    let toolchain = resolved(NativeTool::Rustc, &executable)?;
-    let native_work = TemporaryWork::create()?;
-    let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
-    let mut output = [0xa5; 512];
-    match compile(
-        request(
+    let cases = [
+        (
             Language::Rust,
-            source,
-            ToolchainSelection::ResolvedNative(toolchain),
-            &cancelled,
-            Instant::now() + Duration::from_secs(5),
+            NativeTool::Rustc,
+            b"pub const = ;".as_slice(),
         ),
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: native_work.path(),
-        },
-        CompileOutput {
-            fragment_output: &mut output,
-        },
-    ) {
-        Err(CompileFailure::NativeRejected {
-            source_identity,
-            recipe,
-            diagnostic,
-            ..
-        }) => {
-            assert_eq!(recipe.language, Language::Rust);
-            assert_eq!(recipe.stage, Stage::LowerIr);
-            assert_eq!(recipe.tool, NativeTool::Rustc);
-            assert_eq!(source_identity.byte_len, source_length);
-            assert!(!diagnostic.bytes.is_empty());
-            assert!(!diagnostic.truncated);
+        (
+            Language::Clang,
+            NativeTool::Clang,
+            b"const char * = ;".as_slice(),
+        ),
+    ];
+    for (language, tool, source) in cases {
+        let source_length = source_length(source)?;
+        let executable = executable(tool)?;
+        let toolchain = resolved(tool, &executable)?;
+        let native_work = TemporaryWork::create()?;
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostic = [0; 4_096];
+        let mut output = [0xa5; 512];
+        match compile(
+            request(
+                language,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                &cancelled,
+                Instant::now() + Duration::from_secs(5),
+            ),
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: native_work.path(),
+            },
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        ) {
+            Err(CompileFailure::NativeRejected {
+                source_identity,
+                recipe,
+                diagnostic,
+                ..
+            }) => {
+                assert_eq!(recipe.language, language);
+                assert_eq!(recipe.stage, Stage::LowerIr);
+                assert_eq!(recipe.tool, tool);
+                assert_eq!(source_identity.byte_len, source_length);
+                assert!(!diagnostic.bytes.is_empty());
+                assert!(!diagnostic.truncated);
+            }
+            _ => return Err(TestFailure::Compile { tool }),
         }
-        _ => return Err(TestFailure::Compile { tool: NativeTool::Rustc }),
+        native_work.assert_empty()?;
+        assert!(output.iter().all(|byte| *byte == 0xa5));
     }
-    native_work.assert_empty()?;
-    assert!(output.iter().all(|byte| *byte == 0xa5));
     Ok(())
 }
 
@@ -337,8 +368,7 @@ fn native_lowering_rejects_an_unavailable_selection_before_any_tool_spawn()
 }
 
 #[test]
-fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation()
--> Result<(), TestFailure> {
+fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Result<(), TestFailure> {
     let source = b"pub const alpha: u64 = { const INNER: bool = true; 1 };";
     let executable = executable(NativeTool::Rustc)?;
     let toolchain = resolved(NativeTool::Rustc, &executable)?;
@@ -402,7 +432,9 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
             fragment_output: &mut alpha_output,
         },
     )
-    .map_err(|_| TestFailure::Compile { tool: NativeTool::Rustc })?;
+    .map_err(|_| TestFailure::Compile {
+        tool: NativeTool::Rustc,
+    })?;
     native_work.assert_empty()?;
     let bravo = compile(
         request(
@@ -420,7 +452,9 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
             fragment_output: &mut bravo_output,
         },
     )
-    .map_err(|_| TestFailure::Compile { tool: NativeTool::Rustc })?;
+    .map_err(|_| TestFailure::Compile {
+        tool: NativeTool::Rustc,
+    })?;
     native_work.assert_empty()?;
 
     assert_ne!(alpha.fragment.as_ref(), bravo.fragment.as_ref());
@@ -437,14 +471,18 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
         bravo.fragment.atoms().next().map(|atom| atom.bytes),
         Some(&b"bravo"[..])
     );
-    assert!(alpha
-        .fragment
-        .type_nodes()
-        .eq([TypeNode::Primitive(PrimitiveType::Bool)]));
-    assert!(bravo
-        .fragment
-        .type_nodes()
-        .eq([TypeNode::Primitive(PrimitiveType::I32)]));
+    assert!(
+        alpha
+            .fragment
+            .type_nodes()
+            .eq([TypeNode::Primitive(PrimitiveType::Bool)])
+    );
+    assert!(
+        bravo
+            .fragment
+            .type_nodes()
+            .eq([TypeNode::Primitive(PrimitiveType::I32)])
+    );
     Ok(())
 }
 
@@ -469,9 +507,8 @@ mod bounded_native {
     };
 
     use nudox_compile_driver::{
-        CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
-        NativeTool, NativeWorkError, NativeWorkPrimary, ResolvedToolchain, ToolchainSelection,
-        compile,
+        CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+        NativeWorkError, NativeWorkPrimary, ResolvedToolchain, ToolchainSelection, compile,
     };
     use nudox_compile_vocab::{FrontendError, Language, Stage};
     use thiserror::Error;
@@ -536,7 +573,10 @@ mod bounded_native {
             stage: Stage::LowerIr,
             source,
             toolchain,
-            control: CompileControl { deadline, cancelled },
+            control: CompileControl {
+                deadline,
+                cancelled,
+            },
         }
     }
 
@@ -614,8 +654,7 @@ mod bounded_native {
     }
 
     #[test]
-    fn pre_cancelled_request_never_starts_the_marker_tool()
-    -> Result<(), ScriptFailure> {
+    fn pre_cancelled_request_never_starts_the_marker_tool() -> Result<(), ScriptFailure> {
         let executable = script(b"#!/bin/sh\nprintf x > started\nwhile :; do :; done\n")?;
         let toolchain = ResolvedToolchain::from_version(
             NativeTool::Rustc,
@@ -650,8 +689,7 @@ mod bounded_native {
     }
 
     #[test]
-    fn parse_stage_is_a_pre_spawn_typed_terminal_and_never_lends_ir()
-    -> Result<(), ScriptFailure> {
+    fn parse_stage_is_a_pre_spawn_typed_terminal_and_never_lends_ir() -> Result<(), ScriptFailure> {
         let executable = script(b"#!/bin/sh\nprintf x > started\nwhile :; do :; done\n")?;
         let toolchain = ResolvedToolchain::from_version(
             NativeTool::Rustc,
@@ -698,8 +736,7 @@ mod bounded_native {
     }
 
     #[test]
-    fn cleanup_failure_retains_the_exact_native_rejection_terminal()
-    -> Result<(), ScriptFailure> {
+    fn cleanup_failure_retains_the_exact_native_rejection_terminal() -> Result<(), ScriptFailure> {
         let executable = script(
             b"#!/bin/sh\nIFS= read -r ignored\nprintf x > foreign\nprintf rejected >&2\nexit 1\n",
         )?;

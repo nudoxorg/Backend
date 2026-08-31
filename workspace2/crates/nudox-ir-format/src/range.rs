@@ -170,7 +170,8 @@ impl FragmentRangeManifest {
                 observed: observed_length,
             });
         }
-        let observed = ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(fragment);
+        let observed =
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(fragment);
         if observed != self.fragment {
             return Err(FragmentRangeVerifyError::FragmentIdentity {
                 expected: self.fragment,
@@ -327,18 +328,18 @@ fn committed_range(
     lane: LaneLayout,
     bytes: &[u8],
 ) -> Result<FragmentRange, FragmentRangeManifestError> {
-    let offset = u32::try_from(lane.start_index).map_err(|source| FragmentRangeManifestError::Offset {
-        section,
-        observed: lane.start_index,
-        source,
-    })?;
-    let length = u32::try_from(bytes.len()).map_err(|source| {
-        FragmentRangeManifestError::SectionLength {
+    let offset =
+        u32::try_from(lane.start_index).map_err(|source| FragmentRangeManifestError::Offset {
+            section,
+            observed: lane.start_index,
+            source,
+        })?;
+    let length =
+        u32::try_from(bytes.len()).map_err(|source| FragmentRangeManifestError::SectionLength {
             section,
             observed: bytes.len(),
             source,
-        }
-    })?;
+        })?;
     Ok(FragmentRange {
         section,
         offset,
@@ -445,10 +446,12 @@ mod tests {
             );
         assert!(matches!(
             manifest.verify_fragment(&corrupted[..length]),
-            Err(FragmentRangeVerifyError::Fragment(FragmentError::EntityRecord {
-                fault: EntityRecordFault::Kind { actual: 255 },
-                ..
-            }))
+            Err(FragmentRangeVerifyError::Fragment(
+                FragmentError::EntityRecord {
+                    fault: EntityRecordFault::Kind { actual: 255 },
+                    ..
+                }
+            ))
         ));
         Ok(())
     }

@@ -76,7 +76,11 @@ fn zero_one_two_cartesian_consumers_preserve_caller_regions() -> Result<(), Test
             } else {
                 &nodes[..type_node_count]
             };
-            let selected_atoms = if entity_count == 0 { &atoms[..0] } else { &atoms[..] };
+            let selected_atoms = if entity_count == 0 {
+                &atoms[..0]
+            } else {
+                &atoms[..]
+            };
             let prepared = match PreparedFragment::prepare(
                 source_identity(),
                 recipe_fact(),
@@ -195,9 +199,11 @@ fn every_undersized_output_is_byte_for_byte_unchanged() -> Result<(), TestFailur
         TypeNode::Reference(TypeId::new(0)),
     ];
     let atoms = [AtomInput { bytes: b"alpha" }];
-    let required = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?
-        .required_capacity();
-    let prepared = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
+    let required =
+        PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?
+            .required_capacity();
+    let prepared =
+        PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
     for available in 0..required {
         let mut output = [0xa5; 512];
         let before = output;

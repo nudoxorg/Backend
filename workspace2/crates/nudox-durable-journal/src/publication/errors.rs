@@ -1,3 +1,4 @@
+use core::ops::Deref;
 use std::{
     collections::TryReserveError,
     io,
@@ -231,6 +232,14 @@ impl std::error::Error for SharedCommitError {
 /// Opaque source owner used when one physical failure fans out to several accepted commands.
 pub struct SharedPublicationFailure(pub(super) Arc<PublicationFailure>);
 
+impl Deref for SharedPublicationFailure {
+    type Target = PublicationFailure;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
 impl std::fmt::Debug for SharedPublicationFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
@@ -362,7 +371,6 @@ pub enum ShutdownError {
 }
 
 /// A rejected nonblocking submission retaining its exact verified witness.
-#[non_exhaustive]
 pub enum SubmitError<'store, DomainTag, PayloadOwner>
 where
     DomainTag: Domain,
@@ -416,7 +424,6 @@ where
 }
 
 /// A cancellation race that reached a durable terminal before cancellation won.
-#[non_exhaustive]
 pub enum CancelError<'store, DomainTag, PayloadOwner>
 where
     DomainTag: Domain,
@@ -483,7 +490,6 @@ where
 }
 
 /// A wait terminal that always retains the exact admitted verified witness on failure.
-#[non_exhaustive]
 pub enum PublicationError<'store, DomainTag, PayloadOwner>
 where
     DomainTag: Domain,

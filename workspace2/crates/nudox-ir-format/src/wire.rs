@@ -1,9 +1,7 @@
 use core::{num::TryFromIntError, ops::Range};
 
 use nudox_compile_vocab::{Language, NativeTool, Stage};
-use nudox_id::{
-    CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,
-};
+use nudox_id::{CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain};
 use nudox_ir_vocab::{AtomId, TypeId};
 
 use crate::{
@@ -370,9 +368,11 @@ pub(crate) fn decode_recipe_fact(record: &[u8]) -> Result<RecipeFact, RecipeFact
     if record[3] != 0 {
         return Err(RecipeFactFault::Reserved { actual: record[3] });
     }
-    let language = Language::try_from(record[0]).map_err(|actual| RecipeFactFault::Language { actual })?;
+    let language =
+        Language::try_from(record[0]).map_err(|actual| RecipeFactFault::Language { actual })?;
     let stage = Stage::try_from(record[1]).map_err(|actual| RecipeFactFault::Stage { actual })?;
-    let tool = NativeTool::try_from(record[2]).map_err(|actual| RecipeFactFault::Tool { actual })?;
+    let tool =
+        NativeTool::try_from(record[2]).map_err(|actual| RecipeFactFault::Tool { actual })?;
     let mut recipe_raw = [0; HASH_BYTES];
     recipe_raw.copy_from_slice(&record[4..4 + HASH_BYTES]);
     let identity = ContentId::<CompileRecipeDomain>::try_from(recipe_raw)

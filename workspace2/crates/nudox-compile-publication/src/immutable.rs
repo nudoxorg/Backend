@@ -8,15 +8,12 @@ use nudox_ir_format::{
 };
 use thiserror::Error;
 
-use crate::storage::{ImmutableFileError, ImmutableFileStore, StoredFile};
+use crate::storage::{ImmutableFileError, ImmutableFileStore, StorageNamespace, StoredFile};
 
 pub use crate::storage::ImmutableIoPhase;
 
 /// Typed identity used for complete canonical IR fragment artifacts.
 pub type FragmentIdentity = ArtifactId<IrFragmentEncoding, IrFragmentDomain>;
-
-const ARTIFACT_DIRECTORY: &str = "fragments";
-const ARTIFACT_EXTENSION: &[u8; 7] = b".irfrag";
 
 /// Failure while validating or durably storing one complete immutable fragment.
 #[derive(Debug, Error)]
@@ -58,7 +55,7 @@ impl ImmutableArtifactStore {
     /// Opens the sibling immutable-fragment directory without creating any paths.
     pub(crate) fn existing(directory: &Path) -> Self {
         Self {
-            store: ImmutableFileStore::existing(directory, ARTIFACT_DIRECTORY, ARTIFACT_EXTENSION),
+            store: ImmutableFileStore::existing(directory, StorageNamespace::Fragments),
         }
     }
 
@@ -67,8 +64,7 @@ impl ImmutableArtifactStore {
         Ok(Self {
             store: ImmutableFileStore::new::<IrFragmentEncoding, IrFragmentDomain>(
                 directory,
-                ARTIFACT_DIRECTORY,
-                ARTIFACT_EXTENSION,
+                StorageNamespace::Fragments,
             )?,
         })
     }

@@ -26,6 +26,10 @@ use thiserror::Error;
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Error)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "focused fault tests retain exact cold publication facts without allocation or source erasure"
+)]
 enum TestError {
     #[error("test filesystem operation failed")]
     Io(#[from] io::Error),
@@ -146,12 +150,46 @@ fn package_manifest_is_order_invariant_and_unchanged_fragment_is_reused() -> Res
         ],
         PublishControl::Continue,
     );
-    assert!(matches!(
-        rejected_change,
-        Err(PublishCompiledError::Uncommitted(
-            UncommittedPublication::Failed { .. }
-        ))
-    ));
+    match rejected_change {
+        Err(PublishCompiledError::Uncommitted(UncommittedPublication::Failed {
+            attempted,
+            source,
+        })) => {
+            assert_ne!(attempted.generation, second.publication.generation);
+            match &*source {
+                nudox_durable_journal::PublicationFailure::Conflict { facts } => {
+                    assert_eq!(
+                        facts.expected_root,
+                        *attempted.generation.pinned_root.as_ref()
+                    );
+                    assert_eq!(
+                        facts.expected_dep_set,
+                        *attempted.generation.dep_set.as_ref()
+                    );
+                    assert_eq!(
+                        facts.observed_root,
+                        *second.publication.generation.pinned_root.as_ref()
+                    );
+                    assert_eq!(
+                        facts.observed_dep_set,
+                        *second.publication.generation.dep_set.as_ref()
+                    );
+                }
+                _ => {
+                    return Err(TestError::Assertion {
+                        expected: "exact durable conflict source",
+                        observed: "another durable failure source",
+                    });
+                }
+            }
+        }
+        _ => {
+            return Err(TestError::Assertion {
+                expected: "uncommitted durable conflict",
+                observed: "another publication terminal",
+            });
+        }
+    }
     assert_eq!(publisher.published()?, Some(second.publication));
     let changed_paths = PublicationPaths::in_directory(&fixture.changed_journal());
     let changed_publisher = DurablePublisher::create(&changed_paths, limits()?)?;
@@ -400,13 +438,15 @@ fn open_published_rejects_manifest_source_fact_that_disagrees_with_fragment()
     fs::write(binding_path, binding.as_ref())?;
     match open_facts(&publisher, &fixture.artifacts()) {
         Err(nudox_compile_publication::publication::OpenPublishedError::FragmentFacts {
-            facts,
+            ordinal,
+            expected,
+            observed,
         }) => {
-            assert_eq!(facts.ordinal, 0);
-            assert_eq!(facts.expected.source.byte_len, u32::MAX);
-            assert_eq!(facts.observed.source, compiled(&bytes[..length])?.source);
-            assert_eq!(facts.expected.recipe, facts.observed.recipe);
-            assert_eq!(facts.expected.ranges, facts.observed.ranges);
+            assert_eq!(ordinal, 0);
+            assert_eq!(expected.source.byte_len, u32::MAX);
+            assert_eq!(observed.source, compiled(&bytes[..length])?.source);
+            assert_eq!(expected.recipe, observed.recipe);
+            assert_eq!(expected.ranges, observed.ranges);
         }
         _ => {
             return Err(TestError::Assertion {

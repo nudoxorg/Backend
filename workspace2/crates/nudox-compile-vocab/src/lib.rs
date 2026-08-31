@@ -1,8 +1,6 @@
 #![no_std]
 
-use nudox_id::{
-    CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain,
-};
+use nudox_id::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Language {

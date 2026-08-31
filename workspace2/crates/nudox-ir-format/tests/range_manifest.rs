@@ -40,7 +40,13 @@ fn fragment() -> Result<([u8; 256], usize), TestFailure> {
     }];
     let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
     let atoms = [AtomInput { bytes: b"alpha" }];
-    let prepared = PreparedFragment::prepare(source, recipe_fact(source.identity), &entities, &nodes, &atoms)?;
+    let prepared = PreparedFragment::prepare(
+        source,
+        recipe_fact(source.identity),
+        &entities,
+        &nodes,
+        &atoms,
+    )?;
     let mut output = [0; 256];
     let length = prepared.required_capacity();
     let _bytes = prepared.write_into(&mut output)?;
@@ -58,30 +64,34 @@ fn recipe_fact(source: ContentId<SourceFactDomain>) -> CompileRecipeFact {
 }
 
 #[test]
-fn complete_and_section_views_exist_only_after_exact_manifest_validation()
--> Result<(), TestFailure> {
+fn complete_and_section_views_exist_only_after_exact_manifest_validation() -> Result<(), TestFailure>
+{
     let (bytes, length) = fragment()?;
     let view = FragmentView::validate(&bytes[..length])?;
     let manifest = FragmentRangeManifest::from_view(&view)?;
     assert_eq!(manifest.ranges.len(), 6);
     assert_eq!(manifest.source, view.source);
-    assert_eq!(manifest.ranges.map(|range| range.section), [
-        SectionKind::EntityTypes,
-        SectionKind::TypeNodes,
-        SectionKind::AtomRecords,
-        SectionKind::AtomBytes,
+    assert_eq!(
+        manifest.ranges.map(|range| range.section),
+        [
+            SectionKind::EntityTypes,
+            SectionKind::TypeNodes,
+            SectionKind::AtomRecords,
+            SectionKind::AtomBytes,
             SectionKind::SourceIdentity,
             SectionKind::RecipeFact,
-    ]);
+        ]
+    );
     for range in manifest.ranges {
         let start = usize::try_from(range.offset).map_err(|source| TestFailure::Coordinate {
             actual: range.offset,
             source,
         })?;
-        let end = start + usize::try_from(range.length).map_err(|source| TestFailure::Coordinate {
-            actual: range.length,
-            source,
-        })?;
+        let end = start
+            + usize::try_from(range.length).map_err(|source| TestFailure::Coordinate {
+                actual: range.length,
+                source,
+            })?;
         let verified = manifest.verify(FragmentRangeRequest {
             section: range.section,
             offset: range.offset,

@@ -25,7 +25,10 @@ pub(super) fn declaration<'source>(
 
 fn rust_declaration(source: &[u8]) -> Result<Declaration<'_>, LoweringUnsupported> {
     let prefix = b"pub const ";
-    let declaration_start = match source.windows(prefix.len()).position(|window| window == prefix) {
+    let declaration_start = match source
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+    {
         Some(start) => start + prefix.len(),
         None if identifier_after(source, b"pub fn ").is_some() => {
             return Err(LoweringUnsupported::RustFunction);
@@ -83,18 +86,22 @@ fn assignment(source: &[u8]) -> Result<Declaration<'_>, LoweringUnsupported> {
     } else {
         return Err(LoweringUnsupported::PythonAssignmentValue);
     };
-    (!name.is_empty()).then_some(Declaration {
-        name,
-        kind: EntityKind::Constant,
-        semantic_type,
-    })
-    .ok_or(LoweringUnsupported::PythonAssignmentName)
+    (!name.is_empty())
+        .then_some(Declaration {
+            name,
+            kind: EntityKind::Constant,
+            semantic_type,
+        })
+        .ok_or(LoweringUnsupported::PythonAssignmentName)
 }
 
 fn clang_declaration(source: &[u8]) -> Result<Declaration<'_>, LoweringUnsupported> {
     let prefix = b"const char *";
     let name = identifier_after(source, prefix).ok_or_else(|| {
-        if source.windows(b"const".len()).any(|window| window == b"const") {
+        if source
+            .windows(b"const".len())
+            .any(|window| window == b"const")
+        {
             LoweringUnsupported::ClangDeclarationForm
         } else {
             LoweringUnsupported::NoSupportedDeclaration
