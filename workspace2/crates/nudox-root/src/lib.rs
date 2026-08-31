@@ -22,13 +22,13 @@ pub use closure::{
     ClosureError, ClosureScratch, ClosureScratchFacts, RootProbeEvent, SelectedClosure,
     SelectionWork,
 };
-pub use diff::{ChangedRootDiff, RootChange, RootDiff};
-pub use entry::{EntryKey, EntryRange, EntryRangeError, RootEntry};
+pub use diff::{ChangedRootDiff, RootChange, RootDiff, RootDiffMetrics};
+pub use entry::{EntryKey, EntryRange, EntryRangeBounds, EntryRangeError, RootEntry};
 pub use locality::{
     GenerationEntry, GenerationScan, GenerationView, Locality, LocalityError, LocalityException,
-    LocalityLayout, LocalityLookupWork, LocalityRow, LocalityScanWork, LocalityValidator,
-    LocalityWriteError, MeasuredGenerationLookup, MeasuredGenerationScan, NonResident,
-    PreparedLocality, SelectedCount, SelectedGeneration, SelectedOrdinalBuffer,
+    LocalityLayout, LocalityLayoutView, LocalityLookupWork, LocalityRow, LocalityScanWork,
+    LocalityValidator, LocalityWriteError, MeasuredGenerationLookup, MeasuredGenerationScan,
+    NonResident, PreparedLocality, SelectedCount, SelectedGeneration, SelectedOrdinalBuffer,
     SelectedOrdinalBufferError, SelectedOrdinals, ValidatedLocality, ValidatedLocalityFacts,
     with_validated_locality,
 };

@@ -1,4 +1,4 @@
-use core::{cmp::Ordering, iter::Peekable};
+use core::{cmp::Ordering, iter::Peekable, ops::Deref};
 
 use crate::entry::RootEntry;
 use crate::packed::{CanonicalRows, GenerationRoot};
@@ -44,14 +44,21 @@ pub enum RootChange<DomainTag> {
 pub struct RootDiff<'older, 'newer, DomainTag> {
     older_rows: Peekable<CanonicalRows<'older, DomainTag>>,
     newer_rows: Peekable<CanonicalRows<'newer, DomainTag>>,
-    comparisons: usize,
+    metrics: RootDiffMetrics,
 }
 
-impl<DomainTag> RootDiff<'_, '_, DomainTag> {
-    /// Returns semantic-key comparisons performed so far.
-    #[must_use]
-    pub const fn comparisons(&self) -> usize {
-        self.comparisons
+/// Read-only work accounting for one streaming root comparison.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RootDiffMetrics {
+    /// Semantic-key comparisons performed so far.
+    pub comparisons: usize,
+}
+
+impl<DomainTag> Deref for RootDiff<'_, '_, DomainTag> {
+    type Target = RootDiffMetrics;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metrics
     }
 }
 
@@ -63,11 +70,11 @@ pub struct ChangedRootDiff<'older, 'newer, DomainTag> {
     diff: RootDiff<'older, 'newer, DomainTag>,
 }
 
-impl<DomainTag> ChangedRootDiff<'_, '_, DomainTag> {
-    /// Returns semantic-key comparisons performed by the underlying merge.
-    #[must_use]
-    pub const fn comparisons(&self) -> usize {
-        self.diff.comparisons()
+impl<DomainTag> Deref for ChangedRootDiff<'_, '_, DomainTag> {
+    type Target = RootDiffMetrics;
+
+    fn deref(&self) -> &Self::Target {
+        &self.diff.metrics
     }
 }
 
@@ -77,7 +84,7 @@ impl<DomainTag> Iterator for RootDiff<'_, '_, DomainTag> {
     fn next(&mut self) -> Option<Self::Item> {
         match (self.older_rows.peek(), self.newer_rows.peek()) {
             (Some(older), Some(newer)) => {
-                self.comparisons += 1;
+                self.metrics.comparisons += 1;
                 match older.entry.key.cmp(&newer.entry.key) {
                     Ordering::Less => self
                         .older_rows
@@ -156,7 +163,7 @@ impl<DomainTag> GenerationRoot<DomainTag> {
         RootDiff {
             older_rows: self.canonical_rows().peekable(),
             newer_rows: newer.canonical_rows().peekable(),
-            comparisons: 0,
+            metrics: RootDiffMetrics::default(),
         }
     }
 

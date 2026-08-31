@@ -23,9 +23,23 @@ impl Deref for EntryKey {
 
 /// Inclusive key projection within a generation root.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct EntryRange {
-    start: EntryKey,
-    end: EntryKey,
+pub struct EntryRange(EntryRangeBounds);
+
+/// Immutable bounds exposed by a validated inclusive entry range.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EntryRangeBounds {
+    /// First included key.
+    pub start: EntryKey,
+    /// Final included key.
+    pub end: EntryKey,
+}
+
+impl Deref for EntryRange {
+    type Target = EntryRangeBounds;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl EntryRange {
@@ -36,25 +50,15 @@ impl EntryRange {
     /// Returns [`EntryRangeError::Inverted`] when `start` follows `end`.
     pub const fn new(start: EntryKey, end: EntryKey) -> Result<Self, EntryRangeError> {
         if start.0 <= end.0 {
-            Ok(Self { start, end })
+            Ok(Self(EntryRangeBounds { start, end }))
         } else {
             Err(EntryRangeError::Inverted { start, end })
         }
     }
-    /// Returns the first included key.
-    #[must_use]
-    pub const fn start(self) -> EntryKey {
-        self.start
-    }
-    /// Returns the final included key.
-    #[must_use]
-    pub const fn end(self) -> EntryKey {
-        self.end
-    }
     /// Returns whether this range includes `key`.
     #[must_use]
     pub const fn contains(self, key: EntryKey) -> bool {
-        self.start.0 <= key.0 && key.0 <= self.end.0
+        self.0.start.0 <= key.0 && key.0 <= self.0.end.0
     }
 }
 

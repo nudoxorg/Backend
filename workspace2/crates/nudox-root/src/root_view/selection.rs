@@ -165,8 +165,8 @@ impl<'bytes, 'locality, DomainTag: Domain> BorrowedGenerationView<'bytes, 'local
                 }
             }
             Some(range) => {
-                let start = rows.partition_point(|row| row.key.get() < *range.start());
-                let end = rows.partition_point(|row| row.key.get() <= *range.end());
+                let start = rows.partition_point(|row| row.key.get() < *range.start);
+                let end = rows.partition_point(|row| row.key.get() <= *range.end);
                 for position in start..end {
                     scratch.record_projected_row();
                     mark_borrowed_ancestors(rows, scratch, position);

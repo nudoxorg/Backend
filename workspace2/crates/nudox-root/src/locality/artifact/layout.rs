@@ -1,4 +1,4 @@
-use core::mem::size_of;
+use core::{mem::size_of, ops::Deref};
 
 use crate::MetadataBytes;
 
@@ -67,11 +67,24 @@ const _: () = assert!(WORDS_PER_RANK_BLOCK == 4);
 /// Compact measured locality layout. Native ranges are stack-only geometry,
 /// never retained by a borrowed validation witness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LocalityLayout {
-    exceptions: ExceptionCount,
-    promises: PromiseCount,
-    present_overlays: PresentOverlayCount,
-    bytes: MetadataBytes,
+pub struct LocalityLayout(LocalityLayoutView);
+
+/// Immutable measured locality geometry exposed after count validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalityLayoutView {
+    pub(super) exceptions: ExceptionCount,
+    pub(super) promises: PromiseCount,
+    pub(super) present_overlays: PresentOverlayCount,
+    /// Exact complete artifact extent.
+    pub bytes: MetadataBytes,
+}
+
+impl Deref for LocalityLayout {
+    type Target = LocalityLayoutView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl LocalityLayout {
@@ -94,12 +107,12 @@ impl LocalityLayout {
                 source,
             }
         })?;
-        Ok(Self {
+        Ok(Self(LocalityLayoutView {
             exceptions,
             promises,
             present_overlays,
             bytes: bytes.into(),
-        })
+        }))
     }
 
     pub(crate) fn from_counts(
@@ -108,21 +121,6 @@ impl LocalityLayout {
         present_overlays: u32,
     ) -> Result<Self, LocalityError> {
         Self::new(exceptions.into(), promises.into(), present_overlays.into())
-    }
-
-    #[must_use]
-    /// Returns the exact complete artifact extent.
-    pub const fn bytes(&self) -> MetadataBytes {
-        self.bytes
-    }
-    pub(super) const fn exceptions(&self) -> ExceptionCount {
-        self.exceptions
-    }
-    pub(super) const fn promises(&self) -> PromiseCount {
-        self.promises
-    }
-    pub(super) const fn present_overlays(&self) -> PresentOverlayCount {
-        self.present_overlays
     }
 
     pub(super) fn lanes(&self) -> LaneTable {

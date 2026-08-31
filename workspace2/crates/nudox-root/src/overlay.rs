@@ -96,7 +96,7 @@ pub fn propagate_overlays<'output, DomainTag: Domain>(
     let counts = count_output(view, base, &marks);
     let layout = LocalityLayout::from_counts(counts.exceptions, counts.promises, counts.present)
         .map_err(OverlayError::Locality)?;
-    let final_metadata_bytes = layout.bytes();
+    let final_metadata_bytes = layout.bytes;
     let required = usize::from(final_metadata_bytes);
     if output.len() < required {
         return Err(OverlayError::Output(LocalityWriteError::OutputTooSmall {

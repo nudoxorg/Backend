@@ -397,8 +397,8 @@ impl<DomainTag> GenerationRoot<DomainTag> {
         }
     }
     pub(crate) fn projected_rows(&self, range: EntryRange) -> CanonicalRows<'_, DomainTag> {
-        let next = self.rows.partition_point(|row| row.key < range.start());
-        let end = self.rows.partition_point(|row| row.key <= range.end());
+        let next = self.rows.partition_point(|row| row.key < range.start);
+        let end = self.rows.partition_point(|row| row.key <= range.end);
         CanonicalRows {
             root: self,
             range: CanonicalRange::projected(next, end),

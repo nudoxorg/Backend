@@ -114,7 +114,7 @@ fn streaming_diff_has_exact_canonical_classifications() -> Result<(), ScenarioEr
     ]))?;
     let mut diff = older.diff(&newer);
     let changes: Vec<_> = diff.by_ref().collect();
-    assert_eq!(diff.comparisons(), 4);
+    assert_eq!(diff.comparisons, 4);
     assert_eq!(
         changes,
         Vec::from([
@@ -181,7 +181,7 @@ fn changed_only_diff_omits_unchanged_rows_and_preserves_edge_transitions()
         })
     );
     assert_eq!(changes.next(), None);
-    assert_eq!(changes.comparisons(), 4);
+    assert_eq!(changes.comparisons, 4);
     Ok(())
 }
 
@@ -201,7 +201,7 @@ fn changed_only_diff_streams_a_million_unchanged_rows_without_output() -> Result
     let mut changes = root.changed_diff(&root);
     assert_eq!(changes.next(), None);
     assert_eq!(
-        changes.comparisons(),
+        changes.comparisons,
         usize::try_from(MILLION_UNCHANGED_ROWS).map_err(ScenarioError::MillionRowCount)?
     );
     Ok(())
@@ -233,7 +233,7 @@ fn hundred_thousand_rows_have_fixed_resident_budget_and_streaming_diff() -> Resu
         .filter(|change| matches!(change, RootChange::ContentChanged { .. }))
         .count();
     assert_eq!(changed, 10);
-    assert_eq!(diff.comparisons(), LARGE_ROOT_ROW_COUNT);
+    assert_eq!(diff.comparisons, LARGE_ROOT_ROW_COUNT);
     Ok(())
 }
 

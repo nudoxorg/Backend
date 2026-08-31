@@ -17,8 +17,8 @@ mod view;
 
 pub(crate) use artifact::LocalityEncoder;
 pub use artifact::{
-    LocalityError, LocalityLayout, LocalityValidator, LocalityWriteError, PreparedLocality,
-    ValidatedLocality, ValidatedLocalityFacts, with_validated_locality,
+    LocalityError, LocalityLayout, LocalityLayoutView, LocalityValidator, LocalityWriteError,
+    PreparedLocality, ValidatedLocality, ValidatedLocalityFacts, with_validated_locality,
 };
 pub use cursor::{LocalityLookupWork, LocalityScanWork};
 pub use error::SelectedOrdinalBufferError;

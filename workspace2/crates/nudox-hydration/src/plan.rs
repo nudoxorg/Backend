@@ -293,8 +293,8 @@ impl DependencySetWriter {
             Projection::Range(range) => hasher.write_record(&RangeDependencySetRecord {
                 pinned_root: *pinned_root,
                 projection: u8::from(projection.tag()),
-                start: U64::new(*range.start()),
-                end: U64::new(*range.end()),
+                start: U64::new(*range.start),
+                end: U64::new(*range.end),
                 count: U64::new(u64::from(u32::from(count))),
             }),
         }

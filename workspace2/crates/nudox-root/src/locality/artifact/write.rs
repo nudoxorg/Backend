@@ -51,7 +51,7 @@ impl<'facts, DomainTag: nudox_id::Domain> PreparedLocality<'facts, DomainTag> {
         let layout =
             LocalityLayout::new(counts.exceptions, counts.promises, counts.present_overlays)?;
         Ok(Self {
-            required_bytes: layout.bytes(),
+            required_bytes: layout.bytes,
             facts,
             generation: root.id,
             root_count: root.entry_count,
@@ -319,9 +319,9 @@ fn write_header<DomainTag: nudox_id::Domain>(
         generation: *generation,
         content_domain: u8::from(DomainTag::CODE),
         root_count: U32::<BigEndian>::new(u32::from(root_count)),
-        exception_count: U32::new(u32::from(layout.exceptions())),
-        promise_count: U32::new(u32::from(layout.promises())),
-        present_overlay_count: U32::new(u32::from(layout.present_overlays())),
+        exception_count: U32::new(u32::from(layout.exceptions)),
+        promise_count: U32::new(u32::from(layout.promises)),
+        present_overlay_count: U32::new(u32::from(layout.present_overlays)),
     };
     output[..HEADER_BYTES].copy_from_slice(header.as_bytes());
 }
@@ -388,7 +388,7 @@ fn write_rank_directories(output: &mut [u8], lanes: LaneTable, layout: &Locality
         lanes.promise_bits,
         lanes.promise_ranks,
         lanes.providers,
-        u32::from(layout.exceptions()),
+        u32::from(layout.exceptions),
     );
     write_rank_directory(
         output,
