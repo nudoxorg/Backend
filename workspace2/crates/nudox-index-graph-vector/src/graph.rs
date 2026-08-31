@@ -20,20 +20,6 @@ pub struct GraphEdge {
 }
 
 impl GraphEdge {
-    /// Internal lease accounting cannot borrow the complete edge after its caller-owned batch ends.
-    #[must_use]
-    pub(crate) const fn authority(self) -> GraphAuthority {
-        self.authority
-    }
-
-    /// Internal lease accounting checks that each borrowed edge remains in its supplied partition.
-    #[must_use]
-    pub(crate) const fn partition(self) -> PartitionId {
-        self.partition
-    }
-}
-
-impl GraphEdge {
     /// Creates one edge fact. A graph view validates its authority before admission.
     #[must_use]
     pub const fn new(

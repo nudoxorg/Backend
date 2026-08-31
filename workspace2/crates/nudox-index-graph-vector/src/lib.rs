@@ -1,8 +1,12 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Immutable graph/vector projections and their bounded leased edge.
 
 mod authority;
 mod graph;
+#[allow(
+    unsafe_code,
+    reason = "the private lease cells publish Copy graph edges through reviewed atomic state transitions"
+)]
 mod lease;
 mod trace;
 mod vector;
@@ -15,8 +19,8 @@ pub use graph::{
     GraphRow, ValidatedGraphView,
 };
 pub use lease::{
-    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphStreamEvent, GraphTerminal,
-    InsufficientOutput, LeasedGraphBatch, StreamCapacityError,
+    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphLease, GraphStreamEvent, GraphTerminal,
+    LeaseCapacity, LeaseLoad, LeaseStateCell, LeasedGraphBatch, StreamCapacityError,
 };
 pub use trace::{GraphTraceEvent, TraceProbe, TraceRecorder};
 pub use vector::{

@@ -7,7 +7,7 @@ use std::hint::black_box;
 
 use allocation_counter::{AllocationInfo, measure};
 use nudox_index_graph_vector::{
-    Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphRow, Metric, ModelId,
+    Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphRow, LeaseCapacity, Metric, ModelId,
     PartitionId, ProjectionId, TraceProbe, ValidatedGraphView, ValidatedVectorSegment,
     VectorAuthority, VectorPoint, exact_vector_query,
 };
@@ -56,16 +56,23 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
     let mut vector_output = [None; 1];
     let cancellation = Cancellation::new();
     let mut trace = TraceProbe::disabled();
-    let channel = EdgeBatchStream::channel(
+    let lease = GraphLease::new(
         graph_authority,
         &[partition],
-        1,
-        size_of::<GraphEdge>(),
+        LeaseCapacity {
+            edges_per_partition: 1,
+            bytes_per_partition: size_of::<GraphEdge>(),
+        },
         &cancellation,
         &mut trace,
     );
-    assert!(channel.is_ok());
-    let Ok((_producer, mut stream)) = channel else {
+    assert!(lease.is_ok());
+    let Ok(lease) = lease else {
+        return;
+    };
+    let endpoints = lease.split();
+    assert!(endpoints.is_ok());
+    let Ok((_producer, mut stream)) = endpoints else {
         return;
     };
     let waker = core::task::Waker::noop();
