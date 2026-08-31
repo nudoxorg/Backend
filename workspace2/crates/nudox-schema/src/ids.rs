@@ -22,6 +22,10 @@ pub enum SchemaId {
     Object = 1_u32.to_be(),
     /// Canonical bounded batch frame body described by this crate.
     Frame = 0x0001_0001_u32.to_be(),
+    /// Canonical compact semantic IR fragment bytes.
+    IrFragment = 0x0002_0001_u32.to_be(),
+    /// Canonical compiler publication manifest bytes.
+    CompilationManifest = 0x0002_0002_u32.to_be(),
 }
 
 impl From<SchemaId> for u32 {
@@ -29,6 +33,8 @@ impl From<SchemaId> for u32 {
         match schema {
             SchemaId::Object => 1,
             SchemaId::Frame => 0x0001_0001,
+            SchemaId::IrFragment => 0x0002_0001,
+            SchemaId::CompilationManifest => 0x0002_0002,
         }
     }
 }
@@ -40,6 +46,8 @@ impl TryFrom<u32> for SchemaId {
         match wire {
             1 => Ok(Self::Object),
             0x0001_0001 => Ok(Self::Frame),
+            0x0002_0001 => Ok(Self::IrFragment),
+            0x0002_0002 => Ok(Self::CompilationManifest),
             other => Err(UnknownSchemaId(other)),
         }
     }
@@ -50,6 +58,8 @@ impl fmt::Display for SchemaId {
         match self {
             Self::Object => formatter.write_str("schema:object"),
             Self::Frame => formatter.write_str("schema:frame"),
+            Self::IrFragment => formatter.write_str("schema:ir-fragment"),
+            Self::CompilationManifest => formatter.write_str("schema:compilation-manifest"),
         }
     }
 }
@@ -122,9 +132,22 @@ mod tests {
     #[test]
     fn closed_tags_are_unique_compact_and_round_trip() {
         assert_ne!(u32::from(SchemaId::Object), u32::from(SchemaId::Frame));
+        assert_ne!(u32::from(SchemaId::Frame), u32::from(SchemaId::IrFragment));
+        assert_ne!(
+            u32::from(SchemaId::IrFragment),
+            u32::from(SchemaId::CompilationManifest)
+        );
         assert_eq!(
             SchemaId::try_from(u32::from(SchemaId::Frame)),
             Ok(SchemaId::Frame)
+        );
+        assert_eq!(
+            SchemaId::try_from(u32::from(SchemaId::IrFragment)),
+            Ok(SchemaId::IrFragment)
+        );
+        assert_eq!(
+            SchemaId::try_from(u32::from(SchemaId::CompilationManifest)),
+            Ok(SchemaId::CompilationManifest)
         );
         assert_eq!(OperationId::try_from(1), Ok(OperationId::PinnedObject));
         assert_eq!(SchemaId::try_from(99), Err(UnknownSchemaId(99)));
@@ -140,6 +163,14 @@ mod tests {
         );
         assert_eq!(SchemaId::Object.as_bytes(), 1_u32.to_be_bytes());
         assert_eq!(SchemaId::Frame.as_bytes(), 0x0001_0001_u32.to_be_bytes());
+        assert_eq!(
+            SchemaId::IrFragment.as_bytes(),
+            0x0002_0001_u32.to_be_bytes()
+        );
+        assert_eq!(
+            SchemaId::CompilationManifest.as_bytes(),
+            0x0002_0002_u32.to_be_bytes()
+        );
         assert_eq!(OperationId::PinnedObject.as_bytes(), 1_u32.to_be_bytes());
     }
 }

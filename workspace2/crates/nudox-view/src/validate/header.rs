@@ -45,7 +45,7 @@ pub(crate) fn parse_header(
     let schema_wire = header.schema.get();
     match SchemaId::try_from(schema_wire) {
         Ok(SchemaId::Frame) => {}
-        Ok(SchemaId::Object) | Err(_) => {
+        Ok(_) | Err(_) => {
             return Err(ValidateError::UnsupportedSchema { wire: schema_wire });
         }
     }
