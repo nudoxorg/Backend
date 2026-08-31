@@ -6,12 +6,24 @@ use std::{
 };
 
 use nudox_hydration::VerifiedGeneration;
-use nudox_id::Domain;
+use nudox_id::{ContentIdDecodeError, Domain};
 use nudox_workflow::{ReductionError, StageKey, WorkflowRecord};
 use thiserror::Error;
 
 use super::facts::PublicationFacts;
 use crate::{CommitError, FrameSequence, JournalError, format::CHECKSUM_BYTES};
+
+/// Rejection while restoring one typed generation identity from a journal fact.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PublicationGenerationError {
+    /// The retained root bytes do not carry the root identity authority.
+    #[error("publication root identity has the wrong authority")]
+    PinnedRoot(#[source] ContentIdDecodeError),
+    /// The retained dependency-set bytes do not carry that identity authority.
+    #[error("publication dependency-set identity has the wrong authority")]
+    DependencySet(#[source] ContentIdDecodeError),
+}
 
 /// Rejection of a publication resource bound before any owner is started.
 #[derive(Debug, Error)]
@@ -109,6 +121,9 @@ pub enum PublicationFailure {
     /// A command could not bind its derived input to the terminal facts.
     #[error("publication terminal facts do not match the admitted verified input")]
     InputMismatch,
+    /// The admitted input could not restore the typed facts needed for a public receipt.
+    #[error("publication input cannot restore typed generation facts")]
+    Generation(#[source] PublicationGenerationError),
     /// The owner was poisoned after a prior source-bearing failure.
     #[error("publication owner is poisoned and requires independent reopen")]
     Poisoned,
@@ -323,6 +338,9 @@ pub enum PublicationOpenError {
     /// An immutable fact file or head cannot be parsed as this fixed version.
     #[error("publication artifact has an unsupported fixed encoding")]
     EncodingMismatch,
+    /// The immutable fact did not retain valid typed generation identities.
+    #[error("publication fact contains an invalid typed generation identity")]
+    Generation(#[source] PublicationGenerationError),
     /// The owner could not return its startup result.
     #[error("publication owner exited before startup completed")]
     OwnerStartupLost,

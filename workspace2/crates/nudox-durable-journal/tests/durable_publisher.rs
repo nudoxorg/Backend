@@ -154,6 +154,7 @@ fn genuine_verified_generation_publishes_binds_and_reopens() -> Result<(), Box<d
     };
     assert_eq!(*published, expected_facts);
     let publication = published.publication;
+    assert_eq!(publication.generation, expected_facts);
     assert_eq!(publisher.published()?, Some(publication));
     publisher.shutdown()?;
 
@@ -245,9 +246,9 @@ fn warmed_public_admission_and_terminal_have_bounded_thread_local_allocations()
             count_total: 3,
             count_current: 3,
             count_max: 3,
-            bytes_total: 752,
-            bytes_current: 752,
-            bytes_max: 752,
+            bytes_total: 800,
+            bytes_current: 800,
+            bytes_max: 800,
         }
     );
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::publication::credit::{CreditPool, PendingLease};
 use crate::{ArtifactName, DurablePublisher, PublicationLimits};
 use allocation_counter::{AllocationInfo, measure};
+use nudox_id::{ContentId, DependencySetDomain, GenerationId};
 use std::{
     error::Error,
     fmt, fs, io,
@@ -110,6 +111,12 @@ fn nonzero(value: usize) -> io::Result<NonZeroUsize> {
     NonZeroUsize::new(value).ok_or_else(|| io::Error::other("test capacity must be nonzero"))
 }
 
+fn verified_input(root: u8, dep_set: u8) -> PublicationInput {
+    let root = GenerationId::from_canonical_bytes(&[root]);
+    let dep_set = ContentId::<DependencySetDomain>::from_canonical_bytes(&[dep_set]);
+    PublicationInput::from_parts(*root, *dep_set)
+}
+
 fn write_fact(
     paths: &PublicationPaths,
     input: PublicationInput,
@@ -182,7 +189,7 @@ fn grouped_owner_fanout_is_one_journal_record_and_binds_same_facts() -> Result<(
     let pool = CreditPool::new(2);
     let state = state(&pool);
     let mut storage = OwnerStorage::new(nonzero(2)?)?;
-    let input = PublicationInput::from_parts([7; 32], [8; 32]);
+    let input = verified_input(7, 8);
     let (first, first_response, first_lease) = command(&pool, input)?;
     let (second, second_response, second_lease) = command(&pool, input)?;
     let mut group = vec![first, second];
@@ -238,7 +245,7 @@ fn warmed_duplicate_group_reuses_owner_storage_without_heap_allocation()
     let pool = CreditPool::new(2);
     let state = state(&pool);
     let mut storage = OwnerStorage::new(nonzero(2)?)?;
-    let input = PublicationInput::from_parts([17; 32], [18; 32]);
+    let input = verified_input(17, 18);
     let (first, first_response, first_lease) = command(&pool, input)?;
     let mut group = vec![first];
     let mut current = None;
@@ -301,7 +308,7 @@ fn warmed_duplicate_group_reuses_owner_storage_without_heap_allocation()
 fn every_fact_and_head_short_prefix_is_rejected_by_independent_reopen() -> Result<(), Box<dyn Error>>
 {
     let limits = PublicationLimits::new(nonzero(1)?, nonzero(1)?)?;
-    let fact_input = PublicationInput::from_parts([19; 32], [20; 32]);
+    let fact_input = verified_input(19, 20);
     for prefix in 0..FACT_BYTES {
         let fixture = Fixture::new("fact-prefix")?;
         let paths = fixture.paths();
@@ -357,7 +364,7 @@ fn every_fact_and_head_short_prefix_is_rejected_by_independent_reopen() -> Resul
         }
     }
 
-    let head_input = PublicationInput::from_parts([21; 32], [22; 32]);
+    let head_input = verified_input(21, 22);
     for prefix in 0..HEAD_BYTES {
         let fixture = Fixture::new("head-prefix")?;
         let paths = fixture.paths();
@@ -424,7 +431,7 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
     let pool = CreditPool::new(2);
     let state = state(&pool);
     let mut storage = OwnerStorage::new(nonzero(2)?)?;
-    let input = PublicationInput::from_parts([9; 32], [10; 32]);
+    let input = verified_input(9, 10);
     let (first, first_response, first_lease) = command(&pool, input)?;
     let mut group = vec![first];
     let mut current = None;
@@ -445,7 +452,7 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
     let journal_bytes = fs::read(paths.journal())?;
     let fact_bytes = fs::read(paths.fact())?;
     let head_bytes = fs::read(paths.head())?;
-    let conflicting = PublicationInput::from_parts([11; 32], [12; 32]);
+    let conflicting = verified_input(11, 12);
     let (command, response, lease) = command(&pool, conflicting)?;
     group.push(command);
     process(
@@ -460,10 +467,10 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
     );
     match response.recv()? {
         OwnerOutcome::Failed(PublicationFailure::Conflict { facts }) => {
-            assert_eq!(facts.expected_root, [11; 32]);
-            assert_eq!(facts.expected_dep_set, [12; 32]);
-            assert_eq!(facts.observed_root, [9; 32]);
-            assert_eq!(facts.observed_dep_set, [10; 32]);
+            assert_eq!(facts.expected_root, conflicting.root);
+            assert_eq!(facts.expected_dep_set, conflicting.dep_set);
+            assert_eq!(facts.observed_root, input.root);
+            assert_eq!(facts.observed_dep_set, input.dep_set);
         }
         OwnerOutcome::Failed(source) => {
             return Err(Box::new(TerminalError::Failed {
@@ -500,7 +507,7 @@ fn dropped_pending_guard_cancels_queued_command_without_a_journal_effect()
     let pool = CreditPool::new(1);
     let state = state(&pool);
     let mut storage = OwnerStorage::new(nonzero(1)?)?;
-    let input = PublicationInput::from_parts([13; 32], [14; 32]);
+    let input = verified_input(13, 14);
     let (command, response, lease) = command(&pool, input)?;
     let pending_guard = PendingLease(Arc::clone(&lease));
     drop(pending_guard);
@@ -548,7 +555,7 @@ fn receiver_loss_still_completes_the_command_lease() -> Result<(), Box<dyn Error
     let pool = CreditPool::new(1);
     let state = state(&pool);
     let mut storage = OwnerStorage::new(nonzero(1)?)?;
-    let input = PublicationInput::from_parts([15; 32], [16; 32]);
+    let input = verified_input(15, 16);
     let (command, response, lease) = command(&pool, input)?;
     drop(response);
     let mut group = vec![command];

@@ -7,6 +7,7 @@ use std::{
 
 use blake3::Hasher;
 use nudox_hydration::VerifiedGenerationFacts;
+use nudox_id::{ContentId, DependencySetDomain, GenerationId};
 use nudox_workflow::StageKey;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
@@ -14,7 +15,10 @@ use zerocopy::{
 };
 
 use super::{
-    errors::{ArtifactName, PublicationFailure, PublicationIoStep, PublicationOpenError},
+    errors::{
+        ArtifactName, PublicationFailure, PublicationGenerationError, PublicationIoStep,
+        PublicationOpenError,
+    },
     facts::{
         ImmutablePublicationIdentity, PublicationFacts, PublicationHeadIdentity, PublicationPaths,
     },
@@ -64,8 +68,23 @@ impl PublicationInput {
         }
     }
 
+    pub(super) fn generation_facts(
+        self,
+    ) -> Result<VerifiedGenerationFacts, PublicationGenerationError> {
+        let pinned_root =
+            GenerationId::try_from(self.root).map_err(PublicationGenerationError::PinnedRoot)?;
+        let dep_set = ContentId::<DependencySetDomain>::try_from(self.dep_set)
+            .map_err(PublicationGenerationError::DependencySet)?;
+        Ok(VerifiedGenerationFacts {
+            pinned_root,
+            dep_set,
+        })
+    }
+
     pub(super) fn matches_publication(self, publication: PublicationFacts) -> bool {
-        fact_identity(self, publication.stable).checksum == publication.immutable.checksum
+        self.root == *publication.generation.pinned_root
+            && self.dep_set == *publication.generation.dep_set
+            && fact_identity(self, publication.stable).checksum == publication.immutable.checksum
             && head_identity(publication.immutable, publication.stable).checksum
                 == publication.head.checksum
     }

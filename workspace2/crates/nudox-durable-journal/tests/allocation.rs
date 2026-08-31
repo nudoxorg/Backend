@@ -111,7 +111,7 @@ fn warmed_nonempty_append_has_no_heap_allocation_and_exact_control_receipt()
 
 #[test]
 fn publication_layout_and_response_channel_allocation_are_explicit() {
-    assert_eq!(size_of::<PublicationFacts>(), 48);
+    assert_eq!(size_of::<PublicationFacts>(), 112);
     assert_eq!(size_of::<PublicationLimits>(), 2 * size_of::<usize>());
 
     let allocations = measure(|| {

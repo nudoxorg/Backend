@@ -12,9 +12,9 @@ pub use journal::FileJournal;
 pub use publication::{
     ArtifactName, CancelError, DurablePublisher, ImmutablePublicationIdentity, PendingPublication,
     PublicationConflict, PublicationError, PublicationFacts, PublicationFailure,
-    PublicationHeadIdentity, PublicationIoStep, PublicationLimitError, PublicationLimits,
-    PublicationOpenError, PublicationPaths, PublicationStateConflict, PublishedGeneration,
-    SharedCommitError, SharedPublicationFailure, ShutdownError, SubmitError,
+    PublicationGenerationError, PublicationHeadIdentity, PublicationIoStep, PublicationLimitError,
+    PublicationLimits, PublicationOpenError, PublicationPaths, PublicationStateConflict,
+    PublishedGeneration, SharedCommitError, SharedPublicationFailure, ShutdownError, SubmitError,
 };
 
 /// Physical ordinal of a committed journal frame.

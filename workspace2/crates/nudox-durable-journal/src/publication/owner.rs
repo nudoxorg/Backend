@@ -275,6 +275,13 @@ fn process_group(
         return;
     };
     let candidate_input = group[candidate].input;
+    let generation = match candidate_input.generation_facts() {
+        Ok(generation) => generation,
+        Err(source) => {
+            poison_group(poison, PublicationFailure::Generation(source), group, state);
+            return;
+        }
+    };
     let receipt = if let Some(stored) = current.as_ref() {
         if stored.input == candidate_input {
             Some(stored.receipt)
@@ -366,6 +373,7 @@ fn process_group(
             }
         };
         let facts = PublicationFacts {
+            generation,
             stable: receipt,
             immutable: fact.identity,
             head: head.identity,
@@ -557,6 +565,10 @@ fn load_existing(
                 return Err(PublicationOpenError::HeadLinkMismatch);
             }
             let facts = PublicationFacts {
+                generation: fact
+                    .input
+                    .generation_facts()
+                    .map_err(PublicationOpenError::Generation)?,
                 stable: fact.receipt,
                 immutable: fact.identity,
                 head: head.identity,

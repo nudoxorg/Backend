@@ -5,6 +5,7 @@ use std::{
 
 use super::errors::PublicationLimitError;
 use crate::{ReceiptFacts, format::CHECKSUM_BYTES};
+use nudox_hydration::VerifiedGenerationFacts;
 
 /// The fixed paths owned by one local durable publication directory.
 #[derive(Clone, Debug)]
@@ -90,6 +91,12 @@ pub struct PublicationHeadIdentity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct PublicationFacts {
+    /// The exact validated generation facts whose stable journal receipt is retained below.
+    ///
+    /// These fields are decoded from the immutable fact on reopen, so clients can bind
+    /// independently persisted semantic artifacts to the journal-selected generation without
+    /// treating a mutable selector as authority.
+    pub generation: VerifiedGenerationFacts,
     /// The stable journal receipt named by the immutable publication fact.
     pub stable: ReceiptFacts,
     /// Identity of the immutable publication fact.
