@@ -7,10 +7,13 @@ use rustc_session::declare_lint;
 declare_lint! {
     /// ### What it does
     ///
-    /// Finds public inherent methods that only return an already-public field from `self`.
+    /// Finds public inherent methods that only return one field from `self`.
+    ///
+    /// Direct public facts should be fields. When construction must remain sealed, expose a
+    /// read-only public view through `Deref` rather than multiplying one-line getters.
     pub NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
     Warn,
-    "a public method only returns an already-public field"
+    "a public method only returns a field"
 }
 
 pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>) {
@@ -51,19 +54,19 @@ pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>)
     };
     let field_index = typeck.field_index(returned.hir_id);
     let field = &definition.non_enum_variant().fields[field_index];
-    if !context.tcx.visibility(field.did).is_public() {
-        return;
-    }
-
     span_lint_and_help(
         context,
         NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
         item.span,
         format!(
-            "public accessor only returns the public field `{}`",
+            "public accessor only returns the field `{}`",
             field_name.name
         ),
         None,
-        "delete the accessor and use direct field access",
+        if context.tcx.visibility(field.did).is_public() {
+            "delete the accessor and use direct field access"
+        } else {
+            "use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant"
+        },
     );
 }

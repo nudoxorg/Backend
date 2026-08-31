@@ -33,7 +33,7 @@ lint_library="${lint_libraries[0]}"
 
 # Every lint registered by the library is warn-by-default. Denying all warnings here makes
 # registration sufficient for shipping enforcement and prevents the runner's inventory drifting.
-export DYLINT_RUSTFLAGS="-Dwarnings"
+export DYLINT_RUSTFLAGS="-Aunknown-lints -Dwarnings -Fnudox_poison_sync_primitive -Fnudox_redundant_public_accessor"
 
 dylint_cargo dylint \
   --no-deps \
@@ -45,5 +45,4 @@ dylint_cargo dylint \
   --locked \
   --offline \
   --all-features \
-  --lib \
-  --bins
+  --all-targets

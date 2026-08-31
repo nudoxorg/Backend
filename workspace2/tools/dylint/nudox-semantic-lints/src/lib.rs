@@ -14,6 +14,7 @@ mod dynamic_dispatch;
 mod dynamic_json_construction;
 mod enum_static_str_projection;
 mod erased_map_err;
+mod poison_sync_primitive;
 mod redundant_public_accessor;
 mod stringly_state_field;
 
@@ -25,6 +26,7 @@ use std::collections::HashSet;
 
 impl_lint_pass!(NudoxSemanticLints => [
     erased_map_err::NUDOX_ERASED_MAP_ERR,
+    poison_sync_primitive::NUDOX_POISON_SYNC_PRIMITIVE,
     stringly_state_field::NUDOX_STRINGLY_STATE_FIELD,
     redundant_public_accessor::NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
     dynamic_dispatch::NUDOX_DYNAMIC_DISPATCH,
@@ -40,6 +42,7 @@ struct NudoxSemanticLints {
 pub fn register_lints(_session: &Session, lint_store: &mut LintStore) {
     lint_store.register_lints(&[
         erased_map_err::NUDOX_ERASED_MAP_ERR,
+        poison_sync_primitive::NUDOX_POISON_SYNC_PRIMITIVE,
         stringly_state_field::NUDOX_STRINGLY_STATE_FIELD,
         redundant_public_accessor::NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
         dynamic_dispatch::NUDOX_DYNAMIC_DISPATCH,
@@ -56,6 +59,7 @@ pub fn register_lints(_session: &Session, lint_store: &mut LintStore) {
 impl<'tcx> LateLintPass<'tcx> for NudoxSemanticLints {
     fn check_expr(&mut self, context: &LateContext<'tcx>, expression: &'tcx Expr<'_>) {
         erased_map_err::check(context, expression);
+        poison_sync_primitive::check_expr(context, expression);
         dynamic_json_construction::check(
             context,
             expression,
@@ -77,6 +81,7 @@ impl<'tcx> LateLintPass<'tcx> for NudoxSemanticLints {
 
     fn check_ty(&mut self, context: &LateContext<'tcx>, ty: &'tcx Ty<'tcx, AmbigArg>) {
         dynamic_dispatch::check(context, ty);
+        poison_sync_primitive::check_ty(context, ty);
     }
 }
 
@@ -112,7 +117,8 @@ fn ui() -> std::io::Result<()> {
             "-Dnudox_dynamic_dispatch",
             "-Dnudox_dynamic_json_construction",
             "-Dnudox_erased_map_err",
-            "-Dnudox_redundant_public_accessor",
+            "-Fnudox_poison_sync_primitive",
+            "-Fnudox_redundant_public_accessor",
             "-Dnudox_stringly_state_field",
             "-Dnudox_enum_static_str_projection",
         ])

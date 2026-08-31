@@ -1,4 +1,4 @@
-error: public accessor only returns the public field `bytes`
+error: public accessor only returns the field `bytes`
   --> $DIR/redundant_public_accessor.rs:8:5
    |
 LL | /     pub const fn bytes(&self) -> usize {
@@ -7,9 +7,9 @@ LL | |     }
    | |_____^
    |
    = help: delete the accessor and use direct field access
-   = note: requested on the command line with `-D nudox-redundant-public-accessor`
+   = note: requested on the command line with `-F nudox-redundant-public-accessor`
 
-error: public accessor only returns the public field `bytes`
+error: public accessor only returns the field `bytes`
   --> $DIR/redundant_public_accessor.rs:12:5
    |
 LL | /     pub const fn into_bytes(self) -> usize {
@@ -19,7 +19,7 @@ LL | |     }
    |
    = help: delete the accessor and use direct field access
 
-error: public accessor only returns the public field `bytes`
+error: public accessor only returns the field `bytes`
   --> $DIR/redundant_public_accessor.rs:23:9
    |
 LL | /         pub const fn $name(&self) -> usize {
@@ -33,5 +33,15 @@ LL |       local_accessor!(expanded_bytes);
    = help: delete the accessor and use direct field access
    = note: this error originates in the macro `local_accessor` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 3 previous errors
+error: public accessor only returns the field `bytes`
+  --> $DIR/redundant_public_accessor.rs:48:5
+   |
+LL | /     pub const fn bytes(&self) -> usize {
+LL | |         self.bytes
+LL | |     }
+   | |_____^
+   |
+   = help: use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant
+
+error: aborting due to 4 previous errors
 

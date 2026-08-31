@@ -185,6 +185,11 @@ earn a worker/file lifetime; per-operation `Arc` allocation/refcounting does not
   decorative. MPSC capabilities need `&self` plus a proven `Sync` owner or an explicit split handle.
 - “Lock-free” excludes `Mutex`, `RwLock`, `Condvar`, and queues that hide them. Name the progress
   guarantee, linearization points, atomic orderings, ABA/reclamation story, and false-sharing plan.
+- Poisoning synchronization is forbidden across shipping libraries, binaries, examples, benches,
+  and integration tests. Test coordination is production-quality concurrency evidence: use bounded
+  channels, atomics, scoped ownership, and typed phase handles rather than a `Mutex`/`Condvar` gate.
+  A cold lock exception must use a non-poisoning primitive, identify its contention boundary, and be
+  accepted by Sol as an explicit capability tradeoff; a lint waiver is not an exception.
 - Preallocate bounded slots. Represent phases as exhaustive enums/atomic states owning exactly valid
   fields. Prove admission, publication, cancellation, terminal observation, reuse, poison, drop, and
   shutdown using production transitions under Loom; use Miri for initialization/provenance/drop.
@@ -331,6 +336,12 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
 - Test coordination returns exact setup, timeout, release, join, and observed failures. Do not erase
   cleanup errors with `let _ = ...`; if several failures can coexist, use a small typed aggregate or
   choose and document a deterministic source-preserving priority.
+- A semantic law is enforced only when its quality command compiles every shipping target that can
+  contain the violation (`--all-targets` and the applicable features), its UI suite contains a
+  realistic failing mutant, and an attempted local `#[allow]` cannot waive architectural laws. A
+  green library-only lint pass says nothing about integration-test code. When review finds a pattern
+  the lint should already reject, first attack target/feature/macro/waiver coverage; do not merely add
+  a second source matcher.
 - Test plumbing may not restate the wire grammar once per integer width or mutable/immutable access.
   Use one typed test record/view or one checked const-width cell primitive. If fixture and mutation
   support exceeds the code containing laws and exact assertions, redesign the fixture before adding

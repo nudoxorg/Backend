@@ -1,0 +1,43 @@
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:6:12
+   |
+LL |     mutex: Mutex<u8>,
+   |            ^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+   = note: requested on the command line with `-F nudox-poison-sync-primitive`
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:7:14
+   |
+LL |     readers: RwLock<u8>,
+   |              ^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:8:11
+   |
+LL |     wake: Condvar,
+   |           ^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:12:17
+   |
+LL |     let mutex = Mutex::new(0_u8);
+   |                 ^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:13:10
+   |
+LL |     drop(mutex.lock());
+   |          ^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: aborting due to 5 previous errors
+

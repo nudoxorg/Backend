@@ -1,0 +1,11 @@
+error[E0453]: allow(nudox_redundant_public_accessor) incompatible with previous forbid
+  --> $DIR/redundant_public_accessor_waiver.rs:5:9
+   |
+LL | #[allow(nudox_redundant_public_accessor)]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ overruled by previous forbid
+   |
+   = note: `forbid` lint level was set on command line (`-F nudox_redundant_public_accessor`)
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0453`.

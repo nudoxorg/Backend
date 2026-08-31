@@ -116,6 +116,13 @@ only when a worker:
 One return gets one disposition: accept, reject with an executable counterexample, or issue one
 repair card. A worker return never triggers a new evidence packet or full recalibration.
 
+When a repeated defect should have been mechanically impossible, Terra immediately checks whether
+the gate actually covered the worker's target, features, macro expansion, and waiver level. It adds
+one realistic failing mutant and repairs the narrowest semantic lint or runner before dispatching the
+code repair. A lint that runs only on libraries while Luna edits integration tests is absent, not
+partial evidence. Architectural lints are force-level; workers redesign the boundary instead of
+adding `allow` attributes.
+
 ## Terra-owned simplification
 
 Functionality green is the beginning of review. Terra compares alternatives and reshapes the chosen
