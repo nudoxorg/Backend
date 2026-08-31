@@ -1,6 +1,6 @@
 //! Borrowed immutable lexical segments.
 
-use core::{borrow::Borrow, cmp::Ordering, ops::Deref};
+use core::{cmp::Ordering, ops::Deref};
 
 use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexLexicalSegmentDomain};
 use nudox_index_vocab::LexicalSegmentId;
@@ -84,18 +84,6 @@ impl Deref for LexicalScore {
     }
 }
 
-impl AsRef<u32> for LexicalScore {
-    fn as_ref(&self) -> &u32 {
-        &self.0
-    }
-}
-
-impl Borrow<u32> for LexicalScore {
-    fn borrow(&self) -> &u32 {
-        &self.0
-    }
-}
-
 /// A fixed-width stable document identity used across lexical segments in one snapshot.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -117,18 +105,6 @@ impl Deref for LexicalDocumentId {
     type Target = u32;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<u32> for LexicalDocumentId {
-    fn as_ref(&self) -> &u32 {
-        &self.0
-    }
-}
-
-impl Borrow<u32> for LexicalDocumentId {
-    fn borrow(&self) -> &u32 {
         &self.0
     }
 }
@@ -162,18 +138,6 @@ impl Deref for LexicalTopK {
     type Target = usize;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<usize> for LexicalTopK {
-    fn as_ref(&self) -> &usize {
-        &self.0
-    }
-}
-
-impl Borrow<usize> for LexicalTopK {
-    fn borrow(&self) -> &usize {
         &self.0
     }
 }
