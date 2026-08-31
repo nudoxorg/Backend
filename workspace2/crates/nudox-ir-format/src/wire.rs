@@ -1,11 +1,15 @@
 use core::{num::TryFromIntError, ops::Range};
 
-use nudox_id::{ContentId, HASH_BYTES, SourceFactDomain};
+use nudox_compile_vocab::{Language, NativeTool, Stage};
+use nudox_id::{
+    CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,
+};
 use nudox_ir_vocab::{AtomId, TypeId};
 
 use crate::{
     AtomFault, EntityFault, EntityKind, EntityNameFault, EntityRecord, EntityRecordFault,
-    PrimitiveType, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
+    PrimitiveType, RecipeFact, RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode,
+    TypeNodeFault,
 };
 
 pub(crate) struct HeaderLayout {
@@ -64,7 +68,8 @@ pub(crate) const ENTITY_BYTES: usize = size_of::<u32>() + size_of::<u32>() + siz
 pub(crate) const TYPE_NODE_BYTES: usize = TYPE_NODE_LAYOUT.encoded_len;
 pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
-pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 5 };
+pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
+pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 6 };
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
@@ -105,6 +110,7 @@ wire_enum_u16! {
         AtomRecords = 3,
         AtomBytes = 4,
         SourceIdentity = 5,
+        RecipeFact = 6,
     }
 }
 
@@ -203,6 +209,9 @@ pub(crate) struct FragmentLayout {
     pub(crate) atoms: LaneLayout,
     pub(crate) atom_bytes: LaneLayout,
     pub(crate) source_identity: LaneLayout,
+    pub(crate) recipe_fact: LaneLayout,
+    pub(crate) source: SourceIdentity,
+    pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,
     pub(crate) output_wire_len: ByteLength,
 }
@@ -345,6 +354,39 @@ pub(crate) fn decode_source_identity(record: &[u8]) -> Result<SourceIdentity, So
     Ok(SourceIdentity {
         identity,
         byte_len: read_u32(record, 0),
+    })
+}
+
+pub(crate) fn write_recipe_fact(output: &mut [u8], recipe: RecipeFact) {
+    output[0] = u8::from(recipe.language);
+    output[1] = u8::from(recipe.stage);
+    output[2] = u8::from(recipe.tool);
+    output[3] = 0;
+    output[4..4 + HASH_BYTES].copy_from_slice(recipe.identity.as_ref());
+    output[4 + HASH_BYTES..RECIPE_FACT_BYTES].copy_from_slice(recipe.toolchain.as_ref());
+}
+
+pub(crate) fn decode_recipe_fact(record: &[u8]) -> Result<RecipeFact, RecipeFactFault> {
+    if record[3] != 0 {
+        return Err(RecipeFactFault::Reserved { actual: record[3] });
+    }
+    let language = Language::try_from(record[0]).map_err(|actual| RecipeFactFault::Language { actual })?;
+    let stage = Stage::try_from(record[1]).map_err(|actual| RecipeFactFault::Stage { actual })?;
+    let tool = NativeTool::try_from(record[2]).map_err(|actual| RecipeFactFault::Tool { actual })?;
+    let mut recipe_raw = [0; HASH_BYTES];
+    recipe_raw.copy_from_slice(&record[4..4 + HASH_BYTES]);
+    let identity = ContentId::<CompileRecipeDomain>::try_from(recipe_raw)
+        .map_err(RecipeFactFault::Identity)?;
+    let mut toolchain_raw = [0; HASH_BYTES];
+    toolchain_raw.copy_from_slice(&record[4 + HASH_BYTES..RECIPE_FACT_BYTES]);
+    let toolchain = ContentId::<ToolchainDomain>::try_from(toolchain_raw)
+        .map_err(RecipeFactFault::Toolchain)?;
+    Ok(RecipeFact {
+        identity,
+        language,
+        stage,
+        tool,
+        toolchain,
     })
 }
 

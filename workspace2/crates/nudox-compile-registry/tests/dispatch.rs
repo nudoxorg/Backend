@@ -1,30 +1,43 @@
-use nudox_compile_registry::FullRegistry;
-use nudox_compile_vocab::{FrontendError, Language, Stage};
+use nudox_compile_registry::{AdapterRoute, FullRegistry};
+use nudox_compile_vocab::{FrontendError, Language, NativeTool, Stage};
 
 #[test]
-fn full_rows_lend_the_source_and_retain_exact_rejection() -> Result<(), FrontendError> {
-    let rust_source: &[u8] = b"fn main()";
-    let typescript_source: &[u8] = b"let x = 1";
-
-    let rust_parse = FullRegistry.dispatch(Language::RustSubset, Stage::Parse, rust_source)?;
-    let rust_lower = FullRegistry.dispatch(Language::RustSubset, Stage::LowerIr, rust_source)?;
-    let typescript_parse =
-        FullRegistry.dispatch(Language::TypeScriptSubset, Stage::Parse, typescript_source)?;
-
-    assert!(core::ptr::eq(rust_parse, rust_source));
-    assert!(core::ptr::eq(rust_lower, rust_source));
-    assert!(core::ptr::eq(typescript_parse, typescript_source));
+fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
     assert_eq!(
-        FullRegistry.dispatch(
-            Language::TypeScriptSubset,
-            Stage::LowerIr,
-            typescript_source
-        ),
-        Err(FrontendError::UnsupportedStage {
-            language: Language::TypeScriptSubset,
-            stage: Stage::LowerIr
+        FullRegistry.route(Language::Rust, Stage::LowerIr),
+        Ok(AdapterRoute::Native {
+            tool: NativeTool::Rustc,
         })
     );
+    assert_eq!(
+        FullRegistry.route(Language::Python, Stage::LowerIr),
+        Ok(AdapterRoute::Native {
+            tool: NativeTool::Python,
+        })
+    );
+    assert_eq!(
+        FullRegistry.route(Language::Clang, Stage::LowerIr),
+        Ok(AdapterRoute::Native {
+            tool: NativeTool::Clang,
+        })
+    );
+    assert_eq!(
+        FullRegistry.route(Language::TypeScript, Stage::LowerIr),
+        Ok(AdapterRoute::ToolingUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        })
+    );
+}
 
-    Ok(())
+#[test]
+fn every_language_parse_row_is_an_explicit_unsupported_terminal() {
+    for language in Language::ALL {
+        assert_eq!(
+            FullRegistry.route(language, Stage::Parse),
+            Err(FrontendError::UnsupportedStage {
+                language,
+                stage: Stage::Parse,
+            })
+        );
+    }
 }

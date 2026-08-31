@@ -1,67 +1,51 @@
 #![no_std]
 
-use nudox_compile_vocab::{FrontendError, Language, Stage};
+use nudox_compile_vocab::{FrontendError, Language, NativeTool, Stage};
 
-struct RustFrontend;
-struct TypeScriptFrontend;
-
-trait Frontend {
-    fn parse(source: &[u8]) -> &[u8];
-    fn lower(source: &[u8]) -> Result<&[u8], FrontendError>;
+/// Closed native-adapter disposition for one language and semantic stage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdapterRoute {
+    /// The caller must invoke this concrete, already selected native adapter.
+    Native { tool: NativeTool },
+    /// The selected adapter is intentionally unavailable in this build or host recipe.
+    ToolingUnavailable { tool: NativeTool },
 }
 
-fn drive<ConcreteFrontend: Frontend>(stage: Stage, source: &[u8]) -> Result<&[u8], FrontendError> {
-    match stage {
-        Stage::Parse => Ok(ConcreteFrontend::parse(source)),
-        Stage::LowerIr => ConcreteFrontend::lower(source),
-    }
-}
-
-impl Frontend for RustFrontend {
-    fn parse(source: &[u8]) -> &[u8] {
-        source
-    }
-    fn lower(source: &[u8]) -> Result<&[u8], FrontendError> {
-        Ok(source)
-    }
-}
-
-impl Frontend for TypeScriptFrontend {
-    fn parse(source: &[u8]) -> &[u8] {
-        source
-    }
-    fn lower(_: &[u8]) -> Result<&[u8], FrontendError> {
-        Err(FrontendError::UnsupportedStage {
-            language: Language::TypeScriptSubset,
-            stage: Stage::LowerIr,
-        })
-    }
-}
-
+/// The single static language/stage dispatch boundary for compilation.
 pub struct FullRegistry;
 
 impl FullRegistry {
-    pub fn dispatch(
+    /// Resolves one closed language and stage row without parsing or lending synthetic source.
+    pub const fn route(
         self,
         language: Language,
         stage: Stage,
-        source: &[u8],
-    ) -> Result<&[u8], FrontendError> {
-        match language {
-            Language::RustSubset => drive::<RustFrontend>(stage, source),
-            Language::TypeScriptSubset => drive::<TypeScriptFrontend>(stage, source),
+    ) -> Result<AdapterRoute, FrontendError> {
+        match stage {
+            Stage::Parse => Err(FrontendError::UnsupportedStage { language, stage }),
+            Stage::LowerIr => Ok(match language {
+                Language::Rust => AdapterRoute::Native {
+                    tool: NativeTool::Rustc,
+                },
+                Language::Python => AdapterRoute::Native {
+                    tool: NativeTool::Python,
+                },
+                Language::Clang => AdapterRoute::Native {
+                    tool: NativeTool::Clang,
+                },
+                Language::TypeScript => AdapterRoute::ToolingUnavailable {
+                    tool: NativeTool::TypeScriptCompiler,
+                },
+                Language::Go => AdapterRoute::ToolingUnavailable {
+                    tool: NativeTool::GoCompiler,
+                },
+                Language::Java => AdapterRoute::ToolingUnavailable {
+                    tool: NativeTool::JavaCompiler,
+                },
+                Language::CSharp => AdapterRoute::ToolingUnavailable {
+                    tool: NativeTool::CSharpCompiler,
+                },
+            }),
         }
-    }
-}
-
-/// ```compile_fail
-/// use nudox_compile_registry::RustSubsetOnly;
-/// RustSubsetOnly.parse_typescript(&[]);
-/// ```
-pub struct RustSubsetOnly;
-
-impl RustSubsetOnly {
-    pub fn parse(self, source: &[u8]) -> &[u8] {
-        RustFrontend::parse(source)
     }
 }

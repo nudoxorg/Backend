@@ -1,7 +1,7 @@
 use nudox_ir_vocab::{AtomId, EntityId};
 
 use crate::{
-    EntityType, SourceIdentity, TypeNode,
+    EntityType, TypeNode,
     view::FragmentView,
     wire::{
         ATOM_RECORD_BYTES, ENTITY_BYTES, TYPE_NODE_BYTES, decode_validated_entity,
@@ -10,12 +10,6 @@ use crate::{
 };
 
 impl<'fragment> FragmentView<'fragment> {
-    /// Returns the source fact validated from this fragment's required identity lane.
-    #[must_use]
-    pub fn source_identity(&self) -> SourceIdentity {
-        self.source_identity
-    }
-
     pub fn entities(&self) -> EntityCursor<'fragment> {
         EntityCursor {
             remaining: self.entities,
@@ -109,18 +103,16 @@ impl<'fragment> Iterator for AtomCursor<'fragment> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (record, remaining) = self.records.split_first_chunk::<ATOM_RECORD_BYTES>()?;
-        // `FragmentView::validate` rejects any record whose u32 coordinates lie
-        // outside this already borrowed atom pool.  The pool itself was admitted
-        // through checked wire-to-native conversion, so these values are exact
-        // native indices rather than a fallible stream terminal.
-        let start = read_u32(record, 0) as usize;
-        let length = read_u32(record, size_of::<u32>()) as usize;
-        let end = start + length;
-        let bytes = &self.bytes[start..end];
         let ordinal = AtomId::new(self.next_ordinal);
         self.next_ordinal += 1;
         self.records = remaining;
-        Some(Atom { ordinal, bytes })
+        let start = validated_wire_index(read_u32(record, 0));
+        let length = validated_wire_index(read_u32(record, size_of::<u32>()));
+        let end = start + length;
+        Some(Atom {
+            ordinal,
+            bytes: &self.bytes[start..end],
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -131,3 +123,11 @@ impl<'fragment> Iterator for AtomCursor<'fragment> {
 
 impl ExactSizeIterator for AtomCursor<'_> {}
 impl core::iter::FusedIterator for AtomCursor<'_> {}
+
+#[allow(
+    clippy::as_conversions,
+    reason = "the target-width gate admits u32 coordinates and FragmentView validation proves every atom coordinate"
+)]
+fn validated_wire_index(value: u32) -> usize {
+    value as usize
+}

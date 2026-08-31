@@ -3668,6 +3668,7 @@ dependencies = [
 name = "nudox-compile-driver"
 version = "0.1.0"
 dependencies = [
+ "nudox-compile-registry",
  "nudox-compile-vocab",
  "nudox-id",
  "nudox-ir-format",
@@ -3686,7 +3687,7 @@ dependencies = [
 name = "nudox-compile-vocab"
 version = "0.1.0"
 dependencies = [
- "nudox-ir-vocab",
+ "nudox-id",
 ]
 
 [[package]]
@@ -3799,6 +3800,7 @@ dependencies = [
 name = "nudox-ir-format"
 version = "0.1.0"
 dependencies = [
+ "nudox-compile-vocab",
  "nudox-id",
  "nudox-ir-vocab",
  "thiserror 2.0.20",

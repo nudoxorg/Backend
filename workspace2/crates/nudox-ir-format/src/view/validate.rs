@@ -7,15 +7,41 @@ use crate::{
     },
     wire::{
         ATOM_RECORD_BYTES, ByteLength, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout,
-        HEADER_LAYOUT, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind, SectionRequirement,
-        TYPE_NODE_BYTES, atom_fault, decode_entity, decode_source_identity, decode_type_node,
-        entity_fault, entity_name_fault, read_u16, read_u32, type_node_fault,
+        HEADER_LAYOUT, RECIPE_FACT_BYTES, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind,
+        SectionRequirement, TYPE_NODE_BYTES, atom_fault, decode_entity, decode_recipe_fact,
+        decode_source_identity, decode_type_node, entity_fault, entity_name_fault, read_u16,
+        read_u32, type_node_fault,
     },
 };
 
 impl<'fragment> FragmentView<'fragment> {
     pub fn validate(envelope: &'fragment [u8]) -> Result<Self, FragmentError> {
-        let layout = validate_layout(envelope)?;
+        let layout = validate_fragment_layout(envelope)?;
+        Ok(Self::from_validated_layout(envelope, layout))
+    }
+
+    pub(crate) fn from_validated_layout(
+        envelope: &'fragment [u8],
+        layout: FragmentLayout,
+    ) -> Self {
+        let entity_lane = &envelope[layout.entities.range()];
+        let atom_lane = &envelope[layout.atoms.range()];
+        Self {
+            envelope,
+            entities: entity_lane,
+            type_nodes: &envelope[layout.type_nodes.range()],
+            atoms: atom_lane,
+            atom_bytes: &envelope[layout.atom_bytes.range()],
+            source: layout.source,
+            recipe: layout.recipe,
+            layout,
+        }
+    }
+}
+
+pub(crate) fn validate_fragment_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
+    let layout = validate_layout(envelope)?;
+    {
         let entity_lane = &envelope[layout.entities.range()];
         for (ordinal, record) in
             (0..u32::from(layout.entities.count)).zip(entity_lane.chunks_exact(ENTITY_BYTES))
@@ -42,15 +68,31 @@ impl<'fragment> FragmentView<'fragment> {
                 });
             }
         }
+    }
+    {
         let atom_lane = &envelope[layout.atoms.range()];
         for (ordinal, record) in
             (0..u32::from(layout.atoms.count)).zip(atom_lane.chunks_exact(ATOM_RECORD_BYTES))
         {
-            if let Some(fault) = atom_fault(AtomId::new(ordinal), record, layout.atom_bytes.count) {
+            let ordinal = AtomId::new(ordinal);
+            if let Some(fault) = atom_fault(ordinal, record, layout.atom_bytes.count) {
                 return Err(FragmentError::Atom { fault });
             }
+            let start = read_u32(record, 0);
+            usize::try_from(start).map_err(|source| FragmentError::WireWidth {
+                field: WireField::AtomStart { ordinal },
+                actual: start,
+                source,
+            })?;
+            let length = read_u32(record, size_of::<u32>());
+            usize::try_from(length).map_err(|source| FragmentError::WireWidth {
+                field: WireField::AtomLength { ordinal },
+                actual: length,
+                source,
+            })?;
         }
-
+    }
+    {
         let type_lane = &envelope[layout.type_nodes.range()];
         for (ordinal, record) in
             (0..u32::from(layout.type_nodes.count)).zip(type_lane.chunks_exact(TYPE_NODE_BYTES))
@@ -71,17 +113,8 @@ impl<'fragment> FragmentView<'fragment> {
                 });
             }
         }
-        let source_identity = decode_source_identity(&envelope[layout.source_identity.range()])
-            .map_err(|fault| FragmentError::SourceIdentity { fault })?;
-        Ok(Self {
-            envelope,
-            entities: entity_lane,
-            type_nodes: type_lane,
-            atoms: atom_lane,
-            atom_bytes: &envelope[layout.atom_bytes.range()],
-            source_identity,
-        })
     }
+    Ok(layout)
 }
 
 fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
@@ -142,6 +175,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut source_identity = None;
     let mut atoms = None;
     let mut atom_bytes = None;
+    let mut recipe_fact = None;
     for _ in 0..u16::from(section_count) {
         let (next_state, entry) = state.parse(envelope)?;
         match SectionKind::try_from(entry.kind) {
@@ -180,6 +214,21 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 require_known(&entry)?;
                 atom_bytes = Some(entry.lane);
             }
+            Ok(SectionKind::RecipeFact) => {
+                validate_known_length(&entry, RECIPE_FACT_BYTES)?;
+                require_known(&entry)?;
+                if u32::from(entry.lane.count) != 1 {
+                    return Err(directory_fault(
+                        entry.ordinal,
+                        DirectoryFault::Count {
+                            kind: entry.kind,
+                            expected: 1,
+                            actual: u32::from(entry.lane.count),
+                        },
+                    ));
+                }
+                recipe_fact = Some(entry.lane);
+            }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
                 return Err(directory_fault(
                     entry.ordinal,
@@ -211,12 +260,37 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let atom_bytes = atom_bytes.ok_or(FragmentError::MissingSection {
         section: SectionKind::AtomBytes,
     })?;
+    let recipe_fact = recipe_fact.ok_or(FragmentError::MissingSection {
+        section: SectionKind::RecipeFact,
+    })?;
+    let source = decode_source_identity(&envelope[source_identity.range()])
+        .map_err(|fault| FragmentError::SourceIdentity { fault })?;
+    let recipe = decode_recipe_fact(&envelope[recipe_fact.range()])
+        .map_err(|fault| FragmentError::RecipeFact { fault })?;
+    let expected_recipe = nudox_compile_vocab::CompileRecipeFact::derive(
+        recipe.language,
+        recipe.stage,
+        recipe.tool,
+        source.identity,
+        recipe.toolchain,
+    );
+    if recipe.identity != expected_recipe.identity {
+        return Err(FragmentError::RecipeFact {
+            fault: crate::RecipeFactFault::IdentityRelation {
+                expected: expected_recipe.identity,
+                observed: recipe.identity,
+            },
+        });
+    }
     Ok(FragmentLayout {
         entities,
         type_nodes,
         atoms,
         atom_bytes,
         source_identity,
+        recipe_fact,
+        source,
+        recipe,
         output_len: envelope.len(),
         output_wire_len: declared_wire_length,
     })

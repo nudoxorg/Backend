@@ -1,4 +1,5 @@
 use nudox_id::{ContentId, SourceFactDomain};
+use nudox_compile_vocab::CompileRecipeFact;
 use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
@@ -16,6 +17,30 @@ pub enum SourceIdentityFault {
     #[error("source identity authority is invalid")]
     Authority(#[source] nudox_id::ContentIdDecodeError),
 }
+
+#[derive(Debug, Eq, Error, PartialEq)]
+pub enum RecipeFactFault {
+    #[error("recipe reserved byte is nonzero: {actual}")]
+    Reserved { actual: u8 },
+    #[error("recipe language tag {actual} is unknown")]
+    Language { actual: u8 },
+    #[error("recipe stage tag {actual} is unknown")]
+    Stage { actual: u8 },
+    #[error("recipe tool tag {actual} is unknown")]
+    Tool { actual: u8 },
+    #[error("recipe identity authority is invalid")]
+    Identity(#[source] nudox_id::ContentIdDecodeError),
+    #[error("recipe toolchain authority is invalid")]
+    Toolchain(#[source] nudox_id::ContentIdDecodeError),
+    #[error("recipe identity does not bind decoded source and recipe facts")]
+    IdentityRelation {
+        expected: ContentId<nudox_id::CompileRecipeDomain>,
+        observed: ContentId<nudox_id::CompileRecipeDomain>,
+    },
+}
+
+/// Typed compilation recipe facts persisted alongside the source fact in every fragment.
+pub type RecipeFact = CompileRecipeFact;
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("entity type target {target:?} is outside node count {node_count}")]

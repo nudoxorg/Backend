@@ -4,13 +4,15 @@ use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{
-    AtomInput, EntityRecord, EntityRecordFault, SourceIdentity, TypeNode, TypeNodeFault,
+    AtomInput, EntityRecord, EntityRecordFault, RecipeFact, SourceIdentity, TypeNode,
+    TypeNodeFault,
     wire::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
-        FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, SOURCE_IDENTITY_BYTES, SectionKind,
-        SectionRequirement, TYPE_NODE_BYTES, WRITTEN_SECTION_COUNT, entity_fault,
-        entity_name_fault, type_node_fault, write_atom_record, write_entity, write_source_identity,
-        write_type_node, write_u16, write_u32,
+        FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, RECIPE_FACT_BYTES,
+        SOURCE_IDENTITY_BYTES, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
+        WRITTEN_SECTION_COUNT, entity_fault, entity_name_fault, type_node_fault,
+        write_atom_record, write_entity, write_recipe_fact, write_source_identity, write_type_node,
+        write_u16, write_u32,
     },
 };
 
@@ -22,6 +24,7 @@ pub enum LayoutStep {
     AtomRecordLane,
     AtomByteLane,
     SourceIdentityLane,
+    RecipeFactLane,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -87,6 +90,7 @@ pub enum WriteError {
 
 pub struct PreparedFragment<'facts> {
     source: SourceIdentity,
+    recipe: RecipeFact,
     entities: &'facts [EntityRecord],
     type_nodes: &'facts [TypeNode],
     atoms: &'facts [AtomInput<'facts>],
@@ -96,6 +100,7 @@ pub struct PreparedFragment<'facts> {
 impl<'facts> PreparedFragment<'facts> {
     pub fn prepare(
         source: SourceIdentity,
+        recipe: RecipeFact,
         entities: &'facts [EntityRecord],
         type_nodes: &'facts [TypeNode],
         atoms: &'facts [AtomInput<'facts>],
@@ -104,7 +109,14 @@ impl<'facts> PreparedFragment<'facts> {
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
         let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
         let atom_byte_count = atom_byte_count(atoms)?;
-        let layout = layout(entity_count, type_node_count, atom_count, atom_byte_count)?;
+        let layout = layout(
+            source,
+            recipe,
+            entity_count,
+            type_node_count,
+            atom_count,
+            atom_byte_count,
+        )?;
 
         for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
             if let Some(fault) = entity_fault(entity.semantic_type, type_node_count) {
@@ -131,6 +143,7 @@ impl<'facts> PreparedFragment<'facts> {
 
         Ok(Self {
             source,
+            recipe,
             entities,
             type_nodes,
             atoms,
@@ -177,6 +190,7 @@ impl<'facts> PreparedFragment<'facts> {
             SectionKind::SourceIdentity,
             self.layout.source_identity,
         );
+        write_directory_entry(written, 5, SectionKind::RecipeFact, self.layout.recipe_fact);
 
         let mut entity_cursor = self.layout.entities.start_index;
         for entity in self.entities {
@@ -199,6 +213,7 @@ impl<'facts> PreparedFragment<'facts> {
             &mut written[self.layout.source_identity.range()],
             self.source,
         );
+        write_recipe_fact(&mut written[self.layout.recipe_fact.range()], self.recipe);
         Ok(written)
     }
 }
@@ -224,6 +239,8 @@ fn atom_byte_count(atoms: &[AtomInput<'_>]) -> Result<ItemCount, PrepareError> {
 }
 
 fn layout(
+    source: SourceIdentity,
+    recipe: RecipeFact,
     entity_count: ItemCount,
     type_node_count: ItemCount,
     atom_count: ItemCount,
@@ -239,7 +256,38 @@ fn layout(
         ItemCount::from(1),
         SOURCE_IDENTITY_BYTES,
     )?;
-    cursor.finish(entities, type_nodes, atoms, atom_bytes, source_identity)
+    let recipe_fact = cursor.lane(
+        LayoutStep::RecipeFactLane,
+        ItemCount::from(1),
+        RECIPE_FACT_BYTES,
+    )?;
+    cursor.finish(
+        FragmentFacts { source, recipe },
+        FragmentLanes {
+            entities,
+            type_nodes,
+            atoms,
+            atom_bytes,
+            source_identity,
+            recipe_fact,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct FragmentFacts {
+    source: SourceIdentity,
+    recipe: RecipeFact,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentLanes {
+    entities: LaneLayout,
+    type_nodes: LaneLayout,
+    atoms: LaneLayout,
+    atom_bytes: LaneLayout,
+    source_identity: LaneLayout,
+    recipe_fact: LaneLayout,
 }
 
 struct LayoutCursor {
@@ -306,11 +354,8 @@ impl LayoutCursor {
 
     fn finish(
         self,
-        entities: LaneLayout,
-        type_nodes: LaneLayout,
-        atoms: LaneLayout,
-        atom_bytes: LaneLayout,
-        source_identity: LaneLayout,
+        facts: FragmentFacts,
+        lanes: FragmentLanes,
     ) -> Result<FragmentLayout, PrepareError> {
         let output_wire_len =
             ByteLength::try_from(self.next_index).map_err(|source| PrepareError::OutputLength {
@@ -318,11 +363,14 @@ impl LayoutCursor {
                 source,
             })?;
         Ok(FragmentLayout {
-            entities,
-            type_nodes,
-            atoms,
-            atom_bytes,
-            source_identity,
+            entities: lanes.entities,
+            type_nodes: lanes.type_nodes,
+            atoms: lanes.atoms,
+            atom_bytes: lanes.atom_bytes,
+            source_identity: lanes.source_identity,
+            recipe_fact: lanes.recipe_fact,
+            source: facts.source,
+            recipe: facts.recipe,
             output_len: self.next_index,
             output_wire_len,
         })

@@ -24,6 +24,17 @@
   state: closed
   owner and closing artifact: terra / native compile integration test and operation semantic journey
 
+- fingerprint: recipe-authority-must-be-recomputed-from-fragment-facts
+  role: terra
+  capability and commit: compiler-ir-publication / recipe-bearing range manifest
+  observed behavior and concrete artifact: an authority-valid recipe identity could otherwise be paired with mutated language, stage, tool, source, or toolchain cells in a fragment.
+  why the current rubric/skill/tool allowed it: typed identifier decoding verifies the registry cell but cannot prove cross-field derivation.
+  local correction attempted and result: the recipe lane now retains the decoded closed facts and validation recomputes `CompileRecipeFact::derive`; a language mutation retaining the old recipe identity is a structured relation fault.
+  suggested enforcement: test
+  occurrences: compiler-ir-publication
+  state: closed
+  owner and closing artifact: terra / wire attack and range manifest tests
+
 ## Explained
 
 ## Corrected

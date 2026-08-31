@@ -1,8 +1,10 @@
-use nudox_id::{ContentId, SourceFactDomain};
+use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
+use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
 use nudox_ir_format::{
     AtomFault, AtomInput, DirectoryFault, EntityKind, EntityNameFault, EntityRecord,
     EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment,
-    PrimitiveType, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
+    PrimitiveType, RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
+    WriteError,
 };
 use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
@@ -16,12 +18,13 @@ const ENTITY_OFFSET: usize = ENTITY_DIRECTORY + 8;
 const ENTITY_BYTE_LENGTH: usize = ENTITY_DIRECTORY + 12;
 const TYPE_KIND: usize = TYPE_DIRECTORY;
 const TYPE_OFFSET: usize = TYPE_DIRECTORY + 8;
-const ENTITY_RECORD: usize = HEADER_BYTES + DIRECTORY_BYTES * 5;
+const ENTITY_RECORD: usize = HEADER_BYTES + DIRECTORY_BYTES * 6;
 const TYPE_RECORD: usize = ENTITY_RECORD + 12;
 const ATOM_RECORD: usize = TYPE_RECORD + 8;
 const ATOM_BYTES: usize = ATOM_RECORD + 8;
 const SOURCE_RECORD: usize = ATOM_BYTES + 5;
-const CANONICAL_LENGTH: usize = SOURCE_RECORD + 36;
+const RECIPE_RECORD: usize = SOURCE_RECORD + 36;
+const CANONICAL_LENGTH: usize = RECIPE_RECORD + 68;
 
 #[derive(Debug, Error)]
 enum TestFailure {
@@ -40,6 +43,16 @@ fn source_identity() -> SourceIdentity {
     }
 }
 
+fn recipe_fact() -> CompileRecipeFact {
+    CompileRecipeFact::derive(
+        Language::Rust,
+        Stage::LowerIr,
+        NativeTool::Rustc,
+        source_identity().identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"golden-toolchain"),
+    )
+}
+
 fn canonical() -> Result<[u8; CANONICAL_LENGTH], TestFailure> {
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
@@ -48,7 +61,7 @@ fn canonical() -> Result<[u8; CANONICAL_LENGTH], TestFailure> {
     }];
     let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
     let atoms = [AtomInput { bytes: b"alpha" }];
-    let prepared = PreparedFragment::prepare(source_identity(), &entities, &nodes, &atoms)?;
+    let prepared = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
     assert_eq!(prepared.required_capacity(), CANONICAL_LENGTH);
     let mut output = [0; CANONICAL_LENGTH];
     prepared.write_into(&mut output)?;
@@ -60,17 +73,17 @@ fn canonical_fixture_has_exact_closed_layout_and_semantic_lanes() -> Result<(), 
     let bytes = canonical()?;
     assert_eq!(
         &bytes[..HEADER_BYTES],
-        &[78, 88, 73, 82, 1, 0, 5, 0, 161, 0, 0, 0]
+        &[78, 88, 73, 82, 1, 0, 6, 0, 245, 0, 0, 0]
     );
-    assert_eq!(&bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES], &[1, 0, 1, 0, 1, 0, 0, 0, 92, 0, 0, 0, 12, 0, 0, 0]);
-    assert_eq!(&bytes[TYPE_DIRECTORY..TYPE_DIRECTORY + DIRECTORY_BYTES], &[2, 0, 1, 0, 1, 0, 0, 0, 104, 0, 0, 0, 8, 0, 0, 0]);
+    assert_eq!(&bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES], &[1, 0, 1, 0, 1, 0, 0, 0, 108, 0, 0, 0, 12, 0, 0, 0]);
+    assert_eq!(&bytes[TYPE_DIRECTORY..TYPE_DIRECTORY + DIRECTORY_BYTES], &[2, 0, 1, 0, 1, 0, 0, 0, 120, 0, 0, 0, 8, 0, 0, 0]);
     assert_eq!(&bytes[ENTITY_RECORD..ENTITY_RECORD + 12], &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
     assert_eq!(&bytes[TYPE_RECORD..TYPE_RECORD + 8], &[0; 8]);
     assert_eq!(&bytes[ATOM_RECORD..ATOM_RECORD + 8], &[0, 0, 0, 0, 5, 0, 0, 0]);
     assert_eq!(&bytes[ATOM_BYTES..SOURCE_RECORD], b"alpha");
     assert_eq!(&bytes[SOURCE_RECORD..SOURCE_RECORD + 4], &[13, 0, 0, 0]);
     assert_eq!(
-        &bytes[SOURCE_RECORD + 4..],
+        &bytes[SOURCE_RECORD + 4..RECIPE_RECORD],
         source_identity().identity.as_ref().as_slice()
     );
     Ok(())
@@ -123,7 +136,7 @@ fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailur
         })
     );
     bytes = golden;
-    bytes[ENTITY_OFFSET] = 93;
+    bytes[ENTITY_OFFSET] = 109;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Directory {
@@ -131,12 +144,12 @@ fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailur
             fault: DirectoryFault::Offset {
                 kind: 1,
                 expected: ENTITY_RECORD,
-                actual: 93,
+                actual: 109,
             },
         })
     );
     bytes = golden;
-    bytes[TYPE_OFFSET] = 103;
+    bytes[TYPE_OFFSET] = 119;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Directory {
@@ -144,7 +157,7 @@ fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailur
             fault: DirectoryFault::Offset {
                 kind: 2,
                 expected: TYPE_RECORD,
-                actual: 103,
+                actual: 119,
             },
         })
     );
@@ -221,6 +234,14 @@ fn semantic_and_authority_mutations_fail_before_a_borrowed_view() -> Result<(), 
             fault: SourceIdentityFault::Authority(_),
         })
     ));
+    bytes = golden;
+    bytes[RECIPE_RECORD] = u8::from(Language::Python);
+    assert!(matches!(
+        FragmentView::validate(&bytes),
+        Err(FragmentError::RecipeFact {
+            fault: RecipeFactFault::IdentityRelation { expected, observed },
+        }) if expected != observed
+    ));
     Ok(())
 }
 
@@ -271,8 +292,8 @@ fn cardinality_is_not_calibrated_to_the_zero_one_two_matrix() -> Result<(), Test
         TypeNode::Reference(TypeId::new(1)),
     ];
     let atoms = [AtomInput { bytes: b"quad" }];
-    let prepared = PreparedFragment::prepare(source_identity(), &entities, &nodes, &atoms)?;
-    let mut output = [0; 256];
+    let prepared = PreparedFragment::prepare(source_identity(), recipe_fact(), &entities, &nodes, &atoms)?;
+    let mut output = [0; 512];
     let prefix = prepared.write_into(&mut output)?;
     let view = FragmentView::validate(prefix)?;
     assert_eq!(view.entities().len(), entities.len());

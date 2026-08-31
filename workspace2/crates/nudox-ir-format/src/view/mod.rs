@@ -6,6 +6,8 @@ mod validate;
 pub use cursor::{Atom, AtomCursor, EntityCursor, TypeNodeCursor};
 pub use error::{DirectoryFault, FragmentError, WireField};
 
+pub(crate) use validate::validate_fragment_layout;
+
 pub use crate::wire::SectionKind;
 
 pub struct FragmentView<'fragment> {
@@ -14,7 +16,11 @@ pub struct FragmentView<'fragment> {
     pub(super) type_nodes: &'fragment [u8],
     pub(super) atoms: &'fragment [u8],
     pub(super) atom_bytes: &'fragment [u8],
-    pub(super) source_identity: crate::SourceIdentity,
+    /// Typed source fact validated from the fragment's required identity lane.
+    pub source: crate::SourceIdentity,
+    /// Typed recipe facts validated from the fragment's required recipe lane.
+    pub recipe: crate::RecipeFact,
+    pub(crate) layout: crate::wire::FragmentLayout,
 }
 
 impl AsRef<[u8]> for FragmentView<'_> {

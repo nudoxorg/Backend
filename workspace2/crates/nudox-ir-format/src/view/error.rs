@@ -4,7 +4,8 @@ use nudox_ir_vocab::{EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{
-    AtomFault, EntityFault, EntityRecordFault, SourceIdentityFault, TypeNodeFault,
+    AtomFault, EntityFault, EntityRecordFault, RecipeFactFault, SourceIdentityFault,
+    TypeNodeFault,
     wire::SectionKind,
 };
 
@@ -14,6 +15,8 @@ pub enum WireField {
     SectionItemCount { ordinal: u16 },
     SectionOffset { ordinal: u16 },
     SectionByteLength { ordinal: u16 },
+    AtomStart { ordinal: nudox_ir_vocab::AtomId },
+    AtomLength { ordinal: nudox_ir_vocab::AtomId },
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -102,5 +105,10 @@ pub enum FragmentError {
     SourceIdentity {
         #[source]
         fault: SourceIdentityFault,
+    },
+    #[error("recipe fact is invalid: {fault}")]
+    RecipeFact {
+        #[source]
+        fault: RecipeFactFault,
     },
 }
