@@ -413,8 +413,6 @@ pub enum PublicationCause {
     Rejected(PublicationPhase),
     /// Stable receipt and pre-journal binding named different generations.
     StableGenerationMismatch,
-    /// A newer non-exhaustive publication terminal is not representable by this bounded wire.
-    Unrecognized,
 }
 
 /// Named non-cancellation publication phase.
@@ -432,8 +430,6 @@ pub enum PublicationPhase {
     Binding,
     /// Durable publisher owner failed after admission.
     Durable,
-    /// A newer non-exhaustive durable publication terminal.
-    Unrecognized,
 }
 
 /// Fixed-size retained native diagnostic. The source bytes never outlive the caller scratch.

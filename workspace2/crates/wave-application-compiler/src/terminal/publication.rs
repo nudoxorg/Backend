@@ -35,7 +35,6 @@ pub(crate) fn publication_terminal(
         PublishCompiledError::StableGenerationMismatch { .. } => {
             PublicationCause::StableGenerationMismatch
         }
-        _ => PublicationCause::Unrecognized,
     };
     CompilerTerminal::Publication {
         attempted: attempt(source, recipe),
@@ -56,6 +55,5 @@ const fn uncommitted_cause(error: &UncommittedPublication) -> PublicationCause {
         UncommittedPublication::Failed { .. } => {
             PublicationCause::Rejected(PublicationPhase::Durable)
         }
-        _ => PublicationCause::Rejected(PublicationPhase::Unrecognized),
     }
 }
