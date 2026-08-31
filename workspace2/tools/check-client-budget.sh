@@ -2,11 +2,10 @@
 # Reproducibly account for the portable CLI's release artifact and direct dependency graph.
 set -euo pipefail
 
-application_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-project_dir=$(cd "$application_root/../.." && pwd)
-# shellcheck source=../../../tools/pinned-toolchains.sh
+project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
-manifest="$application_root/Cargo.toml"
+manifest="$project_dir/Cargo.toml"
 budget_bytes=$((50 * 1024 * 1024))
 first_target=$(mktemp -d)
 second_target=$(mktemp -d)
@@ -17,7 +16,12 @@ trap cleanup EXIT
 
 build_client() {
   local target_dir=$1
-  CARGO_TARGET_DIR="$target_dir" stable_cargo build --locked --release --manifest-path "$manifest" --package wave-application-cli
+  CARGO_TARGET_DIR="$target_dir" stable_cargo build \
+    --locked \
+    --offline \
+    --release \
+    --manifest-path "$manifest" \
+    --package wave-application-cli
 }
 
 build_client "$first_target"
@@ -46,7 +50,12 @@ if [[ "$first_hash" != "$second_hash" ]]; then
   exit 1
 fi
 
-dependency_tree=$(stable_cargo tree --locked --manifest-path "$manifest" --package wave-application-cli --edges normal)
+dependency_tree=$(stable_cargo tree \
+  --locked \
+  --offline \
+  --manifest-path "$manifest" \
+  --package wave-application-cli \
+  --edges normal)
 if rg --quiet '(^|[[:space:]])(tokio|reqwest|opentelemetry)([[:space:]]| v|$)' <<<"$dependency_tree"; then
   echo "client graph contains a server/runtime SDK edge" >&2
   exit 1

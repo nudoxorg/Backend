@@ -10,6 +10,12 @@ fi
 lint_workspace="$project_dir/tools/dylint"
 lint_target_dir="${CARGO_TARGET_DIR:-$project_dir/target/dylint}"
 export CARGO_TARGET_DIR="$lint_target_dir"
+# Keep Dylint's generated compiler driver with the caller's target tree. The
+# default under `$HOME/.dylint_drivers` makes a quality run depend on mutable
+# user state and can silently reuse a driver built for another source tree.
+dylint_driver_path="${DYLINT_DRIVER_PATH:-$lint_target_dir/drivers}"
+mkdir -p "$dylint_driver_path"
+export DYLINT_DRIVER_PATH="$dylint_driver_path"
 # shellcheck source=shipping-workspaces.sh
 source "$lint_workspace/shipping-workspaces.sh"
 # shellcheck source=../../pinned-toolchains.sh
@@ -29,16 +35,15 @@ lint_library="${lint_libraries[0]}"
 # registration sufficient for shipping enforcement and prevents the runner's inventory drifting.
 export DYLINT_RUSTFLAGS="-Dwarnings"
 
-for relative_manifest in "${shipping_workspace_manifests[@]}"; do
-  dylint_cargo dylint \
-    --no-deps \
-    --no-metadata \
-    --lib-path "$lint_library" \
-    --manifest-path "$project_dir/$relative_manifest" \
-    --workspace \
-    -- \
-    --locked \
-    --offline \
-    --lib \
-    --bins
-done
+dylint_cargo dylint \
+  --no-deps \
+  --no-metadata \
+  --lib-path "$lint_library" \
+  --manifest-path "$project_dir/$shipping_workspace_manifest" \
+  --workspace \
+  -- \
+  --locked \
+  --offline \
+  --all-features \
+  --lib \
+  --bins

@@ -17,20 +17,18 @@ source "$project_dir/tools/pinned-toolchains.sh"
 
 "$project_dir/tools/check-crate-layout.sh"
 "$project_dir/tools/dylint/run.sh"
-for relative_manifest in "${shipping_workspace_manifests[@]}"; do
-  manifest="$project_dir/$relative_manifest"
-  stable_cargo fmt --manifest-path "$manifest" --all -- --check
-  stable_cargo test --manifest-path "$manifest" --workspace --all-targets --locked --offline
-  stable_cargo clippy --manifest-path "$manifest" --workspace --all-targets --locked --offline -- \
-    -D warnings \
-    -D clippy::undocumented_unsafe_blocks
-  stable_cargo clippy --manifest-path "$manifest" --workspace --all-targets --all-features --locked --offline -- \
-    -D warnings \
-    -D clippy::undocumented_unsafe_blocks
-  stable_cargo doc --manifest-path "$manifest" --workspace --no-deps --all-features --locked --offline
-done
+root_manifest="$project_dir/$shipping_workspace_manifest"
+stable_cargo fmt --manifest-path "$root_manifest" --all -- --check
+stable_cargo test --manifest-path "$root_manifest" --workspace --all-targets --locked --offline
+stable_cargo clippy --manifest-path "$root_manifest" --workspace --all-targets --locked --offline -- \
+  -D warnings \
+  -D clippy::undocumented_unsafe_blocks
+stable_cargo clippy --manifest-path "$root_manifest" --workspace --all-targets --all-features --locked --offline -- \
+  -D warnings \
+  -D clippy::undocumented_unsafe_blocks
+stable_cargo doc --manifest-path "$root_manifest" --workspace --no-deps --all-features --locked --offline
 stable_cargo test \
-  --manifest-path "$project_dir/Cargo.toml" \
+  --manifest-path "$root_manifest" \
   -p nudox-runtime \
   --features loom-model \
   --lib \
@@ -39,11 +37,7 @@ stable_cargo test \
 
 # Repository-level custody check: unsafe is denied by default, and local exceptions
 # must remain inside the named, independently reviewed proof modules.
-absolute_source_roots=()
-for relative_root in "${shipping_source_roots[@]}"; do
-  absolute_source_roots+=("$project_dir/$relative_root")
-done
-unsafe_sites="$(rg -n --glob '*.rs' '\bunsafe\s+(fn|impl|trait)|unsafe\s*\{' "${absolute_source_roots[@]}" || true)"
+unsafe_sites="$(rg -n --glob '*.rs' '\bunsafe\s+(fn|impl|trait)|unsafe\s*\{' "$project_dir/$shipping_source_root" || true)"
 unexpected_unsafe="$unsafe_sites"
 for reviewed_unsafe in "${reviewed_unsafe_modules[@]}"; do
   unexpected_unsafe="$(printf '%s\n' "$unexpected_unsafe" | rg -v -F "$project_dir/$reviewed_unsafe:" || true)"
@@ -61,77 +55,42 @@ for reviewed_unsafe in "${reviewed_unsafe_modules[@]}"; do
   fi
 done
 
-# Repository-level dependency check: source syntax cannot prove the resolved
-# shipping graph. Resolve normal edges independently for every inventoried Cargo
-# workspace so nested workspaces cannot fall outside the root graph silently.
-for relative_manifest in "${shipping_workspace_manifests[@]}"; do
-  if [[ "$relative_manifest" == "planes/index/Cargo.toml" || "$relative_manifest" == "planes/application/Cargo.toml" ]]; then
-    continue
-  fi
-  normal_tree="$(
-    stable_cargo tree \
-      --manifest-path "$project_dir/$relative_manifest" \
-      --workspace \
-      --edges normal \
-      --prefix none \
-      --locked \
-      --offline
-  )"
-  if printf '%s\n' "$normal_tree" | rg '^(serde|serde_json|tokio|async-trait|futures) v'; then
-    echo "forbidden normal dependency resolved in $relative_manifest" >&2
-    exit 1
-  fi
-done
-
-# The application aggregate intentionally contains JSON-RPC and GPUI adapters. Keep those edges
-# out of the concrete protocol-neutral behavior owner instead of pretending the whole application
-# graph is portable.
-application_manifest="$project_dir/planes/application/Cargo.toml"
-application_core_tree="$(
-  stable_cargo tree \
-    --manifest-path "$application_manifest" \
-    --package wave-application-core \
-    --edges normal \
-    --prefix none \
+# Resolve every package marked portable (and every unmarked new package) by
+# root metadata. Adapter identity is declared with `package.metadata.nudox.role
+# = "adapter"` in the owning manifest, so an adapter cannot make a portable
+# graph look clean merely by sharing a workspace. Capture metadata before
+# iterating so a failed metadata command cannot be hidden by process
+# substitution's asynchronous exit status.
+metadata_json="$(
+  stable_cargo metadata \
+    --manifest-path "$root_manifest" \
+    --format-version 1 \
+    --no-deps \
     --locked \
     --offline
 )"
-if printf '%s\n' "$application_core_tree" | rg '^(serde|serde_json|tokio|async-trait|futures|gpui|tracing|opentelemetry) v'; then
-  echo 'adapter dependency resolved in portable application core' >&2
+portable_packages="$(
+  jq -r '.packages[] | select((.metadata.nudox.role? // "portable") != "adapter") | .name' \
+    <<<"$metadata_json"
+)"
+if [[ -z "$portable_packages" ]]; then
+  echo 'root metadata returned no portable packages' >&2
   exit 1
 fi
-stable_cargo test \
-  --manifest-path "$application_manifest" \
-  --workspace \
-  --all-targets \
-  --all-features \
-  --locked \
-  --offline
-
-# The index plane deliberately permits runtime/query-engine SDKs only below its
-# nested adapters. Every portable package under planes/index/crates is checked
-# independently so adding one server adapter cannot make the aggregate
-# workspace tree look portable.
-index_manifest="$project_dir/planes/index/Cargo.toml"
-for portable_manifest in "$project_dir"/planes/index/crates/*/Cargo.toml; do
-  portable_package="$(rg -m 1 '^name = "[^"]+"$' "$portable_manifest" | sed -n 's/^name = "\([^"]*\)"$/\1/p')"
-  if [[ -z "$portable_package" ]]; then
-    echo "cannot resolve portable package name from $portable_manifest" >&2
-    exit 1
-  fi
+while IFS= read -r portable_package; do
   normal_tree="$(
     stable_cargo tree \
-      --manifest-path "$index_manifest" \
+      --manifest-path "$root_manifest" \
       --package "$portable_package" \
       --edges normal \
       --prefix none \
       --locked \
       --offline
   )"
-  if printf '%s\n' "$normal_tree" | rg '^(serde|serde_json|tokio|async-trait|futures|trustfall|qdrant-client|tonic|tracing|opentelemetry) v'; then
-    echo "adapter dependency resolved in portable index package $portable_package" >&2
+  if printf '%s\n' "$normal_tree" | rg '^(serde|serde_json|tokio|async-trait|futures|trustfall|qdrant-client|tonic|gpui|tracing|opentelemetry) v'; then
+    echo "adapter dependency resolved in portable package $portable_package" >&2
     exit 1
   fi
-done
+done <<<"$portable_packages"
 
-"$project_dir/planes/application/scripts/check-client-budget.sh"
+"$project_dir/tools/check-client-budget.sh"

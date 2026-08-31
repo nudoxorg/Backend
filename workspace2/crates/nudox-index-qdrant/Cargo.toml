@@ -10,6 +10,7 @@ publish.workspace = true
 role = "adapter"
 
 [dependencies]
+arrayvec = { workspace = true, features = ["serde"] }
 nudox-index-graph-vector = { path = "../nudox-index-graph-vector" }
 nudox-index-vocab = { path = "../nudox-index-vocab" }
 nudox-ir-vocab = { path = "../nudox-ir-vocab" }

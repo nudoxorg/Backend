@@ -7,7 +7,7 @@
 | Baseline | Git `699b7cca71c78de8afebc1cee9e2a26a3ca46fdc`; every writable baseline file is digested in the manager handoff. |
 | Capability | Make the already-shipping adapter journey an actual public integration journey, then delete redundant interest work and strengthen exact diagnostics without changing adapter semantics. |
 | Observable consumer | A server composes bounded SDK providers, `dispatch`, and `TracingProbe`; public tests invoke only this adapter boundary. |
-| Allowed paths | `adapters/observability/**` only. |
+| Allowed paths | `crates/nudox-observability-adapter/**` only. |
 | Preserve | Static typed probes; the nested adapter dependency boundary; three spans, fifteen logs, seven unlabeled gauges; exact trace/span/value assertions; bounded queues; caller-owned lifecycle; no health wrapper. |
 | Must prove | Public journey is in top-level `tests/`; one outer `Targets` policy is behaviorally equivalent to the former three uses; three-span lookup has no allocation and rejects missing/duplicate names; overload cleanup retains every primary/release/join failure deterministically; missing and unsupported log fields are distinct errors. |
 | Budget | No dependency, unsafe, allocator, SIMD, exporter-health, OTLP, core API, or new production abstraction. Deletion is preferred; no production growth without an eliminated redundant operation. |
@@ -30,7 +30,7 @@
 |---|---|
 | Capability | A server-only, local-dispatch `TracingProbe` maps public semantic signals to correlated spans, logs, and aggregate runtime gauges; trace/log export is bounded and nonblocking. |
 | Observable consumer | A server composes `TracingProbe`, `dispatch`, bounded trace/log providers, and a periodic meter provider without coupling the portable producers to the adapter. |
-| Allowed writes | `adapters/observability/**` only. |
+| Allowed writes | `crates/nudox-observability-adapter/**` only. |
 | Preserve | `Probe` remains typed and lazily built; all OTEL/tracing dependencies remain inside the nested adapter; the current 3 spans, 15 events, and 7 unlabeled gauges retain their exact semantic values; export is background/bounded; shutdown stays caller-owned. |
 | Must prove | Exact span parentage and trace IDs; exact log/trace event correlation and fields; seven metric names, values, and no attributes; disabled interest does not run a builder; bounded overload drops rather than blocking producers; exporter failure is observable; force-flush then shutdown reaches both trace and logs; portable workspace dependency graph excludes adapter dependencies. |
 | Resource law | No new dependency, public cross-core API, unsafe, SIMD, allocator, synchronous export, per-event application allocation, unbounded queue, or data-plane credit ownership. New production normally stays within 100 formatted net lines and leaves 25 lines reserve; deletion wins. |
@@ -115,7 +115,7 @@ without a lookup allocation. Cleanup coordination retains receive, release, and 
 applying the documented receive → release → join → producer-send source priority. Missing log fields
 and present fields with unsupported representations have distinct typed errors.
 
-All closure commands passed from `adapters/observability`: `cargo fmt --all -- --check`, Nix-clang
+All closure commands passed from `crates/nudox-observability-adapter`: `cargo fmt --all -- --check`, Nix-clang
 `cargo test` (seven integration tests plus empty unit/doc suites), Nix-clang
 `cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic`,
 `cargo doc --no-deps`, and `git diff --check`.

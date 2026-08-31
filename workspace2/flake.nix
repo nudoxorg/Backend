@@ -77,14 +77,6 @@
           };
           qualityLockFiles = [
             ./Cargo.lock
-            ./adapters/durable-journal/Cargo.lock
-            ./adapters/observability/Cargo.lock
-            ./domains/ir/Cargo.lock
-            ./layout-lab/Cargo.lock
-            ./planes/compiler/Cargo.lock
-            ./planes/index/Cargo.lock
-            ./planes/adaptive/Cargo.lock
-            ./planes/application/Cargo.lock
             ./tools/dylint/Cargo.lock
             (dylintSource + "/Cargo.lock")
             (dylintSource + "/driver/Cargo.lock")
@@ -150,6 +142,11 @@
             [source.vendored-sources]
             directory = "${qualityCargoDeps}"
 
+            [source."git+https://github.com/gpui-ce/gpui-ce?rev=d435891f47743d96bfc6d4ab74c9ecd05af2603e#d435891f47743d96bfc6d4ab74c9ecd05af2603e"]
+            git = "https://github.com/gpui-ce/gpui-ce"
+            rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e"
+            replace-with = "vendored-sources"
+
             [source."git+https://github.com/rust-lang/rust-clippy?rev=9fca3bc9fc2bc83c60bde26d18ed68f11564b228#9fca3bc9fc2bc83c60bde26d18ed68f11564b228"]
             git = "https://github.com/rust-lang/rust-clippy"
             rev = "9fca3bc9fc2bc83c60bde26d18ed68f11564b228"
@@ -187,6 +184,7 @@
               dylintTools
               pkgs.clang
               pkgs.curl
+              pkgs.jq
               pkgs.libiconv
               pkgs.qdrant
               pkgs.rustup

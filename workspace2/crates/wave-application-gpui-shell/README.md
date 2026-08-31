@@ -18,12 +18,12 @@ indicator removed for the offline build scripts:
 ```text
 env -u PROMPT_MULTILINE_INDICATOR LC_ALL=C LANG=C \
   cargo +1.97.1-aarch64-apple-darwin test \
-    --manifest-path workspace2/planes/application/gpui_shell/Cargo.toml --offline
+    --manifest-path workspace2/Cargo.toml -p wave-application-gpui-shell --offline
 
 nix develop ./workspace2#quality --command \
   env -u PROMPT_MULTILINE_INDICATOR LC_ALL=C LANG=C \
   cargo +1.97.1-aarch64-apple-darwin test \
-    --manifest-path workspace2/planes/application/gpui_shell/Cargo.toml \
+    --manifest-path workspace2/Cargo.toml -p wave-application-gpui-shell \
     --features real-gpui --offline
 ```
 

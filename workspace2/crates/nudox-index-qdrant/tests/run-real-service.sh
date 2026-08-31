@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")/../../../../.." && pwd)"
+project_dir="$(cd "$(dirname "$0")/../../.." && pwd)"
 
 if [[ "${NUDOX_QDRANT_NIX_ENV:-}" != 1 ]]; then
   exec nix develop "$project_dir#quality" -c env \
@@ -9,7 +9,7 @@ if [[ "${NUDOX_QDRANT_NIX_ENV:-}" != 1 ]]; then
     "$0" "$@"
 fi
 
-# shellcheck source=../../../../../tools/pinned-toolchains.sh
+# shellcheck source=../../../tools/pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
 qdrant_test_dir="$(mktemp -d /tmp/nudox-qdrant-service.XXXXXX)"
@@ -51,7 +51,7 @@ if ((ready == 0)); then
 fi
 
 QDRANT_URL="$qdrant_url" stable_cargo test \
-  --manifest-path "$project_dir/planes/index/Cargo.toml" \
+  --manifest-path "$project_dir/Cargo.toml" \
   -p nudox-index-qdrant \
   --test real_service \
   --locked \
