@@ -11,7 +11,7 @@ use super::{
     credit::CreditLease,
     errors::{
         PublicationFailure, PublicationIoStep, PublicationLimitError, PublicationOpenError,
-        SharedCommitError, SharedPublicationFailure,
+        PublicationStateConflict, SharedCommitError, SharedPublicationFailure,
     },
     facts::{PublicationFacts, PublicationPaths},
     format::{
@@ -375,11 +375,18 @@ fn process_group(
             receipt,
             facts,
         };
-        let mut published = match state.published.lock() {
-            Ok(published) => published,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *published = Some(facts);
+        if let Err(attempted) = state.published.set(facts) {
+            poison_group(
+                poison,
+                PublicationFailure::PublishedStateConflict(Arc::new(PublicationStateConflict {
+                    retained: state.published.get().copied(),
+                    attempted,
+                })),
+                group,
+                state,
+            );
+            return;
+        }
         *current = Some(stored);
         *pending = None;
     }

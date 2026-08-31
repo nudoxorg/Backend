@@ -8,7 +8,7 @@ use std::{
     num::NonZeroUsize,
     path::PathBuf,
     sync::{
-        Mutex,
+        OnceLock,
         atomic::AtomicBool,
         mpsc::{Receiver, RecvError, sync_channel},
     },
@@ -143,7 +143,7 @@ fn state(pool: &Arc<CreditPool>) -> PublisherState {
     PublisherState {
         closed: AtomicBool::new(false),
         credits: Arc::clone(pool),
-        published: Mutex::new(None),
+        published: OnceLock::new(),
     }
 }
 
@@ -485,14 +485,7 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
     assert_eq!(fs::read(paths.journal())?, journal_bytes);
     assert_eq!(fs::read(paths.fact())?, fact_bytes);
     assert_eq!(fs::read(paths.head())?, head_bytes);
-    assert_eq!(
-        state
-            .published
-            .lock()
-            .map_err(|_| io::Error::other("state mutex poisoned"))?
-            .as_ref(),
-        Some(&publication)
-    );
+    assert_eq!(state.published.get(), Some(&publication));
     drop(lease);
     assert!(CreditPool::reserve(&pool).is_some());
     Ok(())

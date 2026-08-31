@@ -112,6 +112,9 @@ pub enum PublicationFailure {
     /// The owner was poisoned after a prior source-bearing failure.
     #[error("publication owner is poisoned and requires independent reopen")]
     Poisoned,
+    /// The write-once published-state cell already retained a different terminal fact.
+    #[error("publication write-once state already contains a terminal fact")]
+    PublishedStateConflict(Arc<PublicationStateConflict>),
     /// Independent artifact parsing failed while reconciling an already-created file.
     #[error("publication artifact reconciliation failed")]
     Open(#[source] PublicationOpenError),
@@ -134,6 +137,15 @@ pub struct PublicationConflict {
     pub observed_root: [u8; 32],
     /// Dependency set retained by the current durable fact.
     pub observed_dep_set: [u8; 32],
+}
+
+/// Exact facts from both sides of a rejected write-once publication transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationStateConflict {
+    /// Existing fact, when independently observable after the failed write.
+    pub retained: Option<PublicationFacts>,
+    /// Fact rejected by the write-once state boundary.
+    pub attempted: PublicationFacts,
 }
 
 /// The closed set of source-bearing journal failures that can be fanned out.
@@ -314,6 +326,9 @@ pub enum PublicationOpenError {
     /// The owner could not return its startup result.
     #[error("publication owner exited before startup completed")]
     OwnerStartupLost,
+    /// Startup attempted to replace an already initialized publication fact.
+    #[error("publication startup write-once state already contains a terminal fact")]
+    PublishedStateConflict(Arc<PublicationStateConflict>),
 }
 
 /// A shutdown source from the owner or its join boundary.

@@ -2,7 +2,7 @@ use std::{
     fs,
     ops::Deref,
     sync::{
-        Arc, Mutex,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, RecvError, SyncSender, TrySendError, sync_channel},
     },
@@ -16,8 +16,8 @@ use super::{
     credit::{CreditPool, PendingLease},
     errors::{
         CancelError, PublicationConflict, PublicationError, PublicationFailure, PublicationIoStep,
-        PublicationOpenError, SharedCommitError, SharedPublicationFailure, ShutdownError,
-        SubmitError,
+        PublicationOpenError, PublicationStateConflict, SharedCommitError,
+        SharedPublicationFailure, ShutdownError, SubmitError,
     },
     facts::{PublicationFacts, PublicationLimits, PublicationPaths},
     format::PublicationInput,
@@ -125,11 +125,7 @@ impl DurablePublisher {
 
     /// Returns independently validated current publication facts, if a head is visible.
     pub fn published(&self) -> Result<Option<PublicationFacts>, PublicationOpenError> {
-        let published = match self.state.published.lock() {
-            Ok(published) => published,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        Ok(*published)
+        Ok(self.state.published.get().copied())
     }
 
     /// Closes admission, drains accepted commands, and joins the owner exactly once.
@@ -159,7 +155,7 @@ impl DurablePublisher {
         let state = Arc::new(PublisherState {
             closed: AtomicBool::new(false),
             credits,
-            published: Mutex::new(None),
+            published: OnceLock::new(),
         });
         let (sender, receiver) = sync_channel(queue_capacity);
         let (startup_sender, startup_receiver) = sync_channel(1);
@@ -199,11 +195,12 @@ impl DurablePublisher {
             }
         };
         if let Some(published) = initial.published {
-            let mut target = match state.published.lock() {
-                Ok(target) => target,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            *target = Some(published);
+            state.published.set(published).map_err(|attempted| {
+                PublicationOpenError::PublishedStateConflict(Arc::new(PublicationStateConflict {
+                    retained: state.published.get().copied(),
+                    attempted,
+                }))
+            })?;
         }
         Ok(Self {
             sender: Some(sender),
@@ -382,7 +379,7 @@ where
 pub(super) struct PublisherState {
     pub(super) closed: AtomicBool,
     pub(super) credits: Arc<CreditPool>,
-    pub(super) published: Mutex<Option<PublicationFacts>>,
+    pub(super) published: OnceLock<PublicationFacts>,
 }
 
 pub(super) fn conflict(
