@@ -60,31 +60,6 @@ pub enum ImmutableIoPhase {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ImmutableArtifactError {
-    /// The caller-provided byte length cannot be represented by the protocol coordinate.
-    #[error("artifact byte length {observed} cannot be represented as u32")]
-    InputLengthAddressSpace {
-        /// Native byte length observed before any filesystem write.
-        observed: usize,
-        /// Checked conversion source.
-        #[source]
-        source: TryFromIntError,
-    },
-    /// The caller's exact length claim differs from the supplied bytes.
-    #[error("artifact byte length claim is {expected}, observed {observed}")]
-    InputLengthMismatch {
-        /// Claimed protocol length.
-        expected: u32,
-        /// Native length converted to the protocol coordinate.
-        observed: u32,
-    },
-    /// The caller's typed identity does not commit to the supplied bytes.
-    #[error("artifact identity does not commit to the supplied bytes")]
-    InputIdentityMismatch {
-        /// Caller-supplied identity retained on rejection.
-        expected: FragmentIdentity,
-        /// Identity calculated from the supplied bytes.
-        observed: FragmentIdentity,
-    },
     /// The caller did not provide complete bytes satisfying the validated fragment manifest.
     #[error("fragment bytes do not satisfy their complete validated manifest")]
     Fragment(#[source] FragmentRangeVerifyError),
@@ -181,6 +156,10 @@ pub struct StoredArtifact {
 ///
 /// The owner contains only a temporary-name nonce; no lock, asynchronous worker, or per-operation
 /// heap owner is needed. A mutable store reference serializes its local temp-to-final transitions.
+///
+/// This adapter has a single-process ownership contract. `rename` is intentionally used for the
+/// requested temp-to-final durability transition and may replace a path written concurrently by a
+/// different process; callers needing cross-process ownership must acquire it outside this type.
 #[derive(Debug)]
 pub struct ImmutableArtifactStore {
     fragments: PathBuf,
