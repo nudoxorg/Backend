@@ -1,5 +1,6 @@
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{RecvTimeoutError, sync_channel},
 };
 
@@ -20,17 +21,18 @@ const OVERLOAD_ATTEMPTS: usize = 12;
 const FOLLOW_UP_ATTEMPTS: usize = OVERLOAD_ATTEMPTS - 1;
 const TEST_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(1);
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct BlockingGate {
-    state: Arc<(Mutex<GateState>, Condvar)>,
+    state: Arc<GateState>,
+    started: std::sync::mpsc::SyncSender<std::thread::Thread>,
 }
 
 #[derive(Debug, Default)]
 struct GateState {
-    started: bool,
-    released: bool,
-    exported: usize,
-    largest_batch: usize,
+    waiting: AtomicBool,
+    released: AtomicBool,
+    exported: AtomicUsize,
+    largest_batch: AtomicUsize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,72 +44,106 @@ struct ExportedBatches {
 #[derive(Debug)]
 struct ProducerOutcome {
     received: Result<usize, AdapterTestError>,
-    released: Result<(), AdapterTestError>,
     joined: Result<Result<(), AdapterTestError>, AdapterTestError>,
 }
 
 impl ProducerOutcome {
-    // Coordination has deterministic source priority: receive, release, join, producer send.
+    // Coordination has deterministic source priority: receive, join, producer send.
     fn into_result(self) -> Result<usize, AdapterTestError> {
         let completed = self.received?;
-        self.released?;
         self.joined??;
         Ok(completed)
     }
 }
 
+#[derive(Debug)]
+struct GateController {
+    state: Arc<GateState>,
+    started: std::sync::mpsc::Receiver<std::thread::Thread>,
+}
+
+#[derive(Debug)]
+struct BlockedExport {
+    state: Arc<GateState>,
+    worker: std::thread::Thread,
+}
+
+#[derive(Debug)]
+struct ReleasedGate(Arc<GateState>);
+
+fn blocking_gate() -> (BlockingGate, GateController) {
+    let state = Arc::new(GateState::default());
+    let (started, observed) = sync_channel(1);
+    (
+        BlockingGate {
+            state: Arc::clone(&state),
+            started,
+        },
+        GateController {
+            state,
+            started: observed,
+        },
+    )
+}
+
 impl BlockingGate {
-    fn new() -> Self {
-        Self {
-            state: Arc::new((Mutex::new(GateState::default()), Condvar::new())),
-        }
-    }
-
     fn block_export(&self, batch: usize) -> Result<(), AdapterTestError> {
-        let (lock, wake) = &*self.state;
-        let mut state = lock.lock().map_err(|_| AdapterTestError::GatePoisoned)?;
-        state.started = true;
-        state.largest_batch = state.largest_batch.max(batch);
-        wake.notify_one();
-        let (state, waited) = wake
-            .wait_timeout_while(state, TEST_TIMEOUT, |state| !state.released)
-            .map_err(|_| AdapterTestError::GatePoisoned)?;
-        if waited.timed_out() && !state.released {
-            return Err(AdapterTestError::GateTimedOut);
+        self.state.largest_batch.fetch_max(batch, Ordering::Relaxed);
+        if self.state.released.load(Ordering::Acquire) {
+            self.state.exported.fetch_add(batch, Ordering::Release);
+            return Ok(());
         }
-        drop(state);
-        let mut state = lock.lock().map_err(|_| AdapterTestError::GatePoisoned)?;
-        state.exported += batch;
-        Ok(())
-    }
-
-    fn wait_started(&self) -> Result<(), AdapterTestError> {
-        let (lock, wake) = &*self.state;
-        let state = lock.lock().map_err(|_| AdapterTestError::GatePoisoned)?;
-        let (state, waited) = wake
-            .wait_timeout_while(state, TEST_TIMEOUT, |state| !state.started)
-            .map_err(|_| AdapterTestError::GatePoisoned)?;
-        if waited.timed_out() && !state.started {
-            return Err(AdapterTestError::GateTimedOut);
+        if self
+            .state
+            .waiting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AdapterTestError::ConcurrentBlockedExport);
         }
+        if self.started.send(std::thread::current()).is_err() {
+            return Err(AdapterTestError::GateControllerDropped);
+        }
+
+        let started = std::time::Instant::now();
+        while !self.state.released.load(Ordering::Acquire) {
+            let Some(remaining) = TEST_TIMEOUT.checked_sub(started.elapsed()) else {
+                return Err(AdapterTestError::GateTimedOut);
+            };
+            std::thread::park_timeout(remaining);
+        }
+        self.state.exported.fetch_add(batch, Ordering::Release);
         Ok(())
     }
+}
 
-    fn release(&self) -> Result<(), AdapterTestError> {
-        let (lock, wake) = &*self.state;
-        let mut state = lock.lock().map_err(|_| AdapterTestError::GatePoisoned)?;
-        state.released = true;
-        wake.notify_one();
-        Ok(())
+impl GateController {
+    fn wait_started(self) -> Result<BlockedExport, AdapterTestError> {
+        match self.started.recv_timeout(TEST_TIMEOUT) {
+            Ok(worker) => Ok(BlockedExport {
+                state: self.state,
+                worker,
+            }),
+            Err(RecvTimeoutError::Timeout) => Err(AdapterTestError::GateTimedOut),
+            Err(RecvTimeoutError::Disconnected) => Err(AdapterTestError::GateControllerDropped),
+        }
     }
+}
 
-    fn exported(&self) -> Result<ExportedBatches, AdapterTestError> {
-        let (lock, _) = &*self.state;
-        let state = lock.lock().map_err(|_| AdapterTestError::GatePoisoned)?;
-        Ok(ExportedBatches {
-            count: state.exported,
-            largest: state.largest_batch,
-        })
+impl BlockedExport {
+    fn release(self) -> ReleasedGate {
+        self.state.released.store(true, Ordering::Release);
+        self.worker.unpark();
+        ReleasedGate(self.state)
+    }
+}
+
+impl ReleasedGate {
+    fn exported(&self) -> ExportedBatches {
+        ExportedBatches {
+            count: self.0.exported.load(Ordering::Acquire),
+            largest: self.0.largest_batch.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -138,35 +174,34 @@ impl LogExporter for BlockingLogExporter {
 }
 
 fn producer_completes_before_release<Produce>(
-    gate: &BlockingGate,
+    blocked: BlockedExport,
     produce: Produce,
-) -> Result<usize, AdapterTestError>
+) -> Result<(usize, ReleasedGate), AdapterTestError>
 where
     Produce: FnOnce() -> usize + Send,
 {
     std::thread::scope(|scope| {
         let (complete, observed) = sync_channel(1);
-        let producer = scope.spawn(move || {
-            complete
-                .send(produce())
-                .map_err(|_| AdapterTestError::ProducerDisconnected)
+        let producer = scope.spawn(move || match complete.send(produce()) {
+            Ok(()) => Ok(()),
+            Err(disconnected) => Err(AdapterTestError::ProducerDisconnected {
+                completed: disconnected.0,
+            }),
         });
         let received = observed
             .recv_timeout(TEST_TIMEOUT)
             .map_err(|error| match error {
                 RecvTimeoutError::Timeout => AdapterTestError::ProducerTimedOut,
-                RecvTimeoutError::Disconnected => AdapterTestError::ProducerDisconnected,
+                RecvTimeoutError::Disconnected => AdapterTestError::ProducerCompletionLost,
             });
-        let released = gate.release();
-        let joined = producer
-            .join()
-            .map_err(|_| AdapterTestError::ProducerPanicked);
-        ProducerOutcome {
-            received,
-            released,
-            joined,
-        }
-        .into_result()
+        let released = blocked.release();
+        let joined = match producer.join() {
+            Ok(produced) => Ok(produced),
+            Err(_panic) => Err(AdapterTestError::ProducerPanicked),
+        };
+        ProducerOutcome { received, joined }
+            .into_result()
+            .map(|completed| (completed, released))
     })
 }
 
@@ -174,16 +209,11 @@ where
 fn producer_outcome_retains_coexisting_failures_before_prioritizing() {
     let outcome = ProducerOutcome {
         received: Err(AdapterTestError::ProducerTimedOut),
-        released: Err(AdapterTestError::GatePoisoned),
         joined: Err(AdapterTestError::ProducerPanicked),
     };
     assert!(matches!(
         &outcome.received,
         Err(AdapterTestError::ProducerTimedOut)
-    ));
-    assert!(matches!(
-        &outcome.released,
-        Err(AdapterTestError::GatePoisoned)
     ));
     assert!(matches!(
         &outcome.joined,
@@ -198,15 +228,15 @@ fn producer_outcome_retains_coexisting_failures_before_prioritizing() {
 #[test]
 fn bounded_span_queue_drops_without_blocking_the_completed_producer() -> Result<(), AdapterTestError>
 {
-    let gate = BlockingGate::new();
+    let (gate, controller) = blocking_gate();
     let provider = batch_provider(
-        BlockingSpanExporter(gate.clone()),
+        BlockingSpanExporter(gate),
         BatchLimits::new(1, 1, core::time::Duration::from_hours(1))?,
     );
     drop(provider.tracer("queue-test").start("first"));
-    gate.wait_started()?;
+    let blocked = controller.wait_started()?;
     let tracer = provider.tracer("queue-test");
-    let completed = producer_completes_before_release(&gate, move || {
+    let (completed, released) = producer_completes_before_release(blocked, move || {
         (0..FOLLOW_UP_ATTEMPTS)
             .map(|_| {
                 drop(tracer.start("overload"));
@@ -216,7 +246,7 @@ fn bounded_span_queue_drops_without_blocking_the_completed_producer() -> Result<
     assert_eq!(completed, FOLLOW_UP_ATTEMPTS);
     provider.force_flush()?;
     assert_eq!(
-        gate.exported()?,
+        released.exported(),
         ExportedBatches {
             count: 2,
             largest: 1
@@ -229,21 +259,21 @@ fn bounded_span_queue_drops_without_blocking_the_completed_producer() -> Result<
 #[test]
 fn bounded_log_queue_drops_without_blocking_the_completed_producer() -> Result<(), AdapterTestError>
 {
-    let gate = BlockingGate::new();
+    let (gate, controller) = blocking_gate();
     let trace_provider = batch_provider(
         opentelemetry_sdk::trace::InMemorySpanExporterBuilder::new().build(),
         BatchLimits::new(1, 1, core::time::Duration::from_hours(1))?,
     );
     let logger_provider = batch_logger_provider(
-        BlockingLogExporter(gate.clone()),
+        BlockingLogExporter(gate),
         BatchLimits::new(1, 1, core::time::Duration::from_hours(1))?,
     );
     let subscriber = dispatch(&trace_provider, &logger_provider, nudox_interest());
     tracing::dispatcher::with_default(&subscriber, || {
         tracing::info!(target: "nudox.overload", sequence = 0_u8, "queue overload");
     });
-    gate.wait_started()?;
-    let completed = producer_completes_before_release(&gate, move || {
+    let blocked = controller.wait_started()?;
+    let (completed, released) = producer_completes_before_release(blocked, move || {
         tracing::dispatcher::with_default(&subscriber, || {
             (1..=FOLLOW_UP_ATTEMPTS)
                 .map(|sequence| {
@@ -255,7 +285,7 @@ fn bounded_log_queue_drops_without_blocking_the_completed_producer() -> Result<(
     assert_eq!(completed, FOLLOW_UP_ATTEMPTS);
     logger_provider.force_flush()?;
     assert_eq!(
-        gate.exported()?,
+        released.exported(),
         ExportedBatches {
             count: 2,
             largest: 1

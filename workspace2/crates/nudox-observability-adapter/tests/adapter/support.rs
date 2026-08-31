@@ -32,14 +32,18 @@ pub(super) enum AdapterTestError {
     MissingMetric { name: &'static str },
     #[error("metric {name} was not one exact u64 gauge point")]
     UnexpectedMetricShape { name: String },
-    #[error("blocking exporter test gate was poisoned")]
-    GatePoisoned,
     #[error("blocking exporter test gate exceeded its bounded wait")]
     GateTimedOut,
+    #[error("blocking exporter observed a second blocked export")]
+    ConcurrentBlockedExport,
+    #[error("blocking exporter lost its test controller")]
+    GateControllerDropped,
     #[error("producer did not complete before the bounded coordination timeout")]
     ProducerTimedOut,
-    #[error("producer completion channel disconnected")]
-    ProducerDisconnected,
+    #[error("producer completion channel disconnected after producing {completed} entries")]
+    ProducerDisconnected { completed: usize },
+    #[error("producer completion channel closed before reporting its count")]
+    ProducerCompletionLost,
     #[error("producer thread panicked")]
     ProducerPanicked,
 }
