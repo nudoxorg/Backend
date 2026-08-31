@@ -28,6 +28,11 @@ done condition and return schema
 Discover ordinary repository facts yourself. Escalate only when two implementations change public
 semantics, authority, dependency direction, or another writer's owned path.
 
+A card may assign one bounded research experiment alongside implementation. It must name the exact
+question, primary sources or production repositories, comparison dimensions, and concrete output
+(benchmark, minimized prototype, layout probe, or decision table). Run it while another row advances,
+return the artifact to Terra, and do not choose cross-crate architecture or expand into a survey.
+
 ## Continuous implementation loop
 
 Work continuously; commits are recovery points, not approval requests.
@@ -37,7 +42,8 @@ Work continuously; commits are recovery points, not approval requests.
 3. Implement the smallest coherent behavior. Prefer borrows, standard traits, direct public fields
    for independent facts, private correlated authority, exhaustive enums, descriptive generics, and
    source/owner-preserving errors.
-4. Run the focused red, nearby boundaries, formatting, and the row's resource measurement.
+4. Run the focused red, nearby boundaries, formatting, and the row's resource measurement. Do not
+   run capability/closure gates owned by Terra or Sol unless the card explicitly assigns them.
 5. Try the row's anti-cheat mutant: constant body, ignored input, mixed owners, malformed boundary,
    cancellation/restart, or hidden allocation as applicable.
 6. Inspect the complete owned diff. Delete helpers, wrappers, compatibility, dead variants, repeated

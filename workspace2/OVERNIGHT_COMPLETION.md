@@ -5,6 +5,47 @@ end-to-end product proof. It supersedes the prototype-only portfolio and the fai
 overnight run. Prototype branches and task transcripts remain design and attack input, but progress
 is measured only by integrated code, a newly red falsifier, or a reproduced product gate.
 
+## August 31 migration finish
+
+The remaining work runs as three dependency-aligned product verticals, not one controller per crate
+or adapter. At most three top-level Sol tasks may run. Each Sol task may use at most two child lanes;
+a Terra reviewer consumes one of those lanes. Adjacent discoveries enter the chief backlog rather
+than spawning another manager. Tasks begin from the current `canonical` commit in isolated
+worktrees, return coherent commits, and never merge a stale branch wholesale.
+
+1. **Compiler, semantic IR, and publication.** Port the best mechanisms from
+   `codex/multilingual-compiler-ir-a7ae`, the IR-VCS continuation worktrees, and the accepted durable
+   publisher into the unified `workspace2/crates/` graph. The public terminal is real source from
+   every supported language -> typed recipe -> borrowed compact IR -> stable durable publication,
+   with changed-fragment reuse and structured diagnostics.
+2. **Local immutable retrieval.** Port the useful Tantivy, Trustfall/S3, Qdrant, range-authority,
+   mmap, and foreign-link mechanisms from `codex/waves-b4-b5-retrieval` and continuation commits.
+   The public terminal is the published IR snapshot queried through exact, lexical, graph, and
+   vector paths against locally provisioned services, with pinned authority and typed partial,
+   degraded, cancellation, and corruption outcomes.
+3. **One application and Hummingbird-style interface.** Replace lifecycle stand-ins with the real
+   compiler and retrieval services. CLI, MCP, and GPUI project one typed command/query/stream model.
+   The GUI must have a stable first frame, command-palette navigation, virtualized results, no
+   polling animation, and Home/Libraries/Search/Connections/Settings information architecture.
+
+Each vertical must produce executable progress before a second research tranche. Luna may perform a
+bounded research experiment when the question, comparison, sources, and code/test artifact are
+named; Terra synthesizes it into the next rubric row. Proof is tiered: workers run focused row gates,
+Terra runs the capability gate once, and Sol/chief run the complete closure only after integration.
+Repeated full-workspace, fresh-cache, Nix, Dylint-UI, or external-service gates are forbidden unless
+the relevant environment or mechanism changed.
+
+Final closure is one 200+ package multilingual journey through compile, IR, publication, Tantivy,
+Trustfall, Qdrant, and the in-process/CLI/MCP/GPUI projections. It includes restart, stale routing,
+outage/recovery, cancellation, overload, corruption, deterministic replay, release size, peak-live
+memory, allocation/copy, latency, and throughput comparisons against the old workspace. Claims of an
+order-of-magnitude improvement require a calibrated measured dimension; every other old behavior
+must be matched, deliberately retired with a stronger contract, or replaced by a documented new
+capability. Only after this closure is green may the chief remove the old `workspace/` and promote
+`workspace2/` to `workspace/`. Protected scratch under `workspace/_patches/` and
+`workspace/_worktrees/` is never part of that removal and must be preserved outside the promoted
+tree first.
+
 “Complete” means the public terminal and evidence below exist on a clean committed candidate. It does
 not mean a task reports success, a crate compiles, or a happy-path test passes. Each stage has one Sol
 controller. Sol controllers may commission capability-scoped Terra managers, Luna implementers, and

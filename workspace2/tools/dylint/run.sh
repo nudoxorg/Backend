@@ -21,6 +21,12 @@ source "$lint_workspace/shipping-workspaces.sh"
 # shellcheck source=../../pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
+if (($# == 0)); then
+  lint_targets=(--workspace)
+else
+  lint_targets=("$@")
+fi
+
 "$lint_workspace/ui-test.sh"
 
 shopt -s nullglob
@@ -47,7 +53,7 @@ dylint_cargo dylint \
   --no-metadata \
   --lib-path "$lint_library" \
   --manifest-path "$project_dir/$shipping_workspace_manifest" \
-  --workspace \
+  "${lint_targets[@]}" \
   -- \
   --locked \
   --offline \

@@ -55,6 +55,32 @@ moving against executable product evidence.
    gates, semantic lints, and novel cross-cutting attacks. A fresh blind Terra review strengthens a
    risky shipping repair when available; its absence does not suspend the repair behind ceremony.
 
+## Work and token economy
+
+Default to three or fewer top-level delivery tasks and one Terra manager per capability. A Sol task
+may have at most two active child lanes; a Terra manager may have at most two active Luna lanes. A
+reviewer temporarily occupies one of those slots rather than expanding the swarm. Raise these limits
+only when paths, dependency direction, and integration order are already disjoint and the additional
+lane has an executable terminal.
+
+One task owns one end-to-end vertical. A finding outside that vertical is appended to the chief
+backlog with its counterexample; it does not spawn another manager. Research questions receive two
+bounded tranches. Luna may execute a tightly scoped research experiment when the card names the exact
+question, primary sources or repositories, comparison dimensions, and artifact to return. Terra
+synthesizes the result and owns the representation decision; Luna never receives an open-ended
+"research everything" card.
+
+Sample transcripts and diffs by decision boundary. Do not load complete multi-hour tool output,
+builder narration, or every historical document. Start from current canonical, read the latest
+candidate commits and learning fingerprints, then fetch only the historical artifact needed for one
+live choice. Old branches are mechanism and attack corpora, never merge units or compatibility
+authorities.
+
+Use the proof ladder in the shared Rust skill. Focused edits do not rerun cold Nix, full Dylint,
+Loom/Miri, live services, and the whole workspace. Capability owners run their expensive applicable
+proof once after composition; Sol runs the closure terminal once after integration. Repeating a
+green unchanged gate is not evidence.
+
 ## Durable artifacts
 
 Keep only artifacts that help the next technical decision: one compact manager packet, one living

@@ -68,6 +68,13 @@ Limit simultaneous Terra managers by useful child capacity. A manager without ch
 implements directly; it never waits for a preferred topology. Luna is an implementation engine, not
 a calibration reader. The reviewer attacks and simplifies concrete code; it does not authorize work.
 
+Default to at most three top-level delivery tasks and two active child lanes inside any one task.
+Every task owns one dependency-aligned public vertical and starts from current canonical. Adjacent
+discoveries enter the next-batch backlog with a counterexample; they never justify widening the
+current task into a product-wide audit. A reviewer consumes an existing child slot. Prefer one deep
+manager with one or two continuously productive Luna lanes over a fan-out that creates shared-manifest
+and integration collisions.
+
 ## Chief's continuous lane
 
 While Terra works, produce durable shared progress in disjoint paths:
@@ -119,6 +126,11 @@ Promote correctness/authority/safety failures immediately and cross-capability c
 two independent occurrences. Periodically sample raw Luna diffs and reviewer findings to find latent
 patterns the summaries missed. Close a learning row only with a type, lint, test, repository gate, or
 demonstrably clearer single skill rule.
+
+Sample by decision boundary: current diff, failed mutant, review finding, and final repair. Do not
+ingest a whole multi-hour transcript or enormous command output when those four artifacts answer the
+question. Historical branches supply algorithms, tests, and rejected alternatives; they do not make
+their APIs or directory layout authoritative.
 
 ## Integrate a Terra candidate
 

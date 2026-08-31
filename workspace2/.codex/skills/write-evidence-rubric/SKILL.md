@@ -9,6 +9,13 @@ A rubric is a collection of falsifiable engineering laws, not prose goals or a r
 Start from the public terminal, current red, direct consumer, and resource/authority boundaries. Load
 the shared craft/domain sections relevant to those rows; do not require full-plan rereads.
 
+Compose from one executable vertical outward. The first mandatory row must traverse the real public
+input to the real public terminal and fail for a constant or fake adapter. Remaining rows strengthen
+that same vertical at distinct invariant boundaries: authority, failure/restart, resource/work,
+concurrency, and diagnostics only where applicable. Do not create one row per file, test, command,
+type, language, backend, or stylistic preference. Merge rows that have the same owner and falsifier;
+split a row only when its parts can progress independently without inventing a second terminal.
+
 ## Row schema
 
 Every row is independently executable:
@@ -25,6 +32,11 @@ dependencies and non-overlap
 state: RED | IMPLEMENTING | GREEN | ATTACKED | SUPERSEDED
 research decision and remaining uncertainty
 ```
+
+Each row names its proof tier: focused edit, capability closure, or chief integration. A command is
+owned by exactly one tier. Do not attach cold Nix, full-workspace Dylint, live services, Miri/Loom,
+and end-to-end corpus runs to every row; attach each expensive proof once where its inputs are fully
+composed. A Luna card should normally receive one or a few adjacent rows with one focused red command.
 
 “Elegant,” “fast,” “robust,” “well tested,” “low allocation,” or “production ready” are invalid
 without an observable definition. Compilation and test totals prove no row. A row must distinguish

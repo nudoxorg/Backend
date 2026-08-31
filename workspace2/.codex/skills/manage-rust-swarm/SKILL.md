@@ -93,6 +93,11 @@ Do not use Luna for cold reading, calibration, packet construction, status monit
 research, architecture selection, or acceptance. Use it for production code, focused tests,
 mutations, benchmarks, minimized reproductions, mechanical splits, and bounded repairs.
 
+Luna may also run a bounded research experiment when Terra supplies one exact unresolved question,
+named primary sources or production repositories, comparison dimensions, and a concrete return such
+as a benchmark, layout probe, minimized implementation, or decision table. This is implementation
+support, not open-ended survey work: Terra synthesizes the result and owns the choice.
+
 Luna's default stance is ownership, not compliance theater: preserve causes and owners, reject weak
 tests, inspect the complete owned diff, simplify after green, and keep working until every assigned
 row is green or one exact counterexample proves the card impossible. It commits coherent increments
@@ -101,6 +106,11 @@ directly instead of retrying dispatch or declaring a blocker.
 
 Workers use disjoint paths or isolated branches. Terra alone edits shared manifests, public
 reexports, rubric state, and integration seams unless it explicitly assigns one of them.
+
+Keep at most two Luna lanes active. A hostile reviewer temporarily uses one slot. When a finding is
+outside the assigned public terminal, record it for Sol with its counterexample instead of spawning a
+new capability. Never turn one manager into lease, storage, compiler, application, and lint programs
+at once merely because the audit found legitimate work in each.
 
 ## Continuous course correction
 

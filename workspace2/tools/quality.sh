@@ -5,28 +5,82 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=dylint/shipping-workspaces.sh
 source "$project_dir/tools/dylint/shipping-workspaces.sh"
 
+quality_invocation=("$@")
+quality_mode="${1:-closure}"
+if (($# != 0)); then
+  shift
+fi
+case "$quality_mode" in
+  focused | capability)
+    if (($# == 0)); then
+      echo "usage: $0 $quality_mode <cargo-package>..." >&2
+      exit 2
+    fi
+    package_flags=()
+    for package_name in "$@"; do
+      package_flags+=(--package "$package_name")
+    done
+    ;;
+  closure)
+    if (($# != 0)); then
+      echo "usage: $0 closure" >&2
+      exit 2
+    fi
+    package_flags=(--workspace)
+    ;;
+  *)
+    echo "usage: $0 {focused <cargo-package>...|capability <cargo-package>...|closure}" >&2
+    exit 2
+    ;;
+esac
+
 if [[ "${NUDOX_QUALITY_NIX_ENV:-}" != 1 ]]; then
   exec nix develop "path:$project_dir#quality" -c env \
     NUDOX_QUALITY_NIX_ENV=1 \
     NUDOX_DYLINT_NIX_ENV=1 \
-    "$0" "$@"
+    "$0" "${quality_invocation[@]}"
 fi
 
 # shellcheck source=pinned-toolchains.sh
 source "$project_dir/tools/pinned-toolchains.sh"
 
-"$project_dir/tools/check-crate-layout.sh"
-"$project_dir/tools/dylint/run.sh"
 root_manifest="$project_dir/$shipping_workspace_manifest"
-stable_cargo fmt --manifest-path "$root_manifest" --all -- --check
-stable_cargo test --manifest-path "$root_manifest" --workspace --all-targets --locked --offline
-stable_cargo clippy --manifest-path "$root_manifest" --workspace --all-targets --locked --offline -- \
+stable_cargo fmt --manifest-path "$root_manifest" "${package_flags[@]}" -- --check
+stable_cargo test \
+  --manifest-path "$root_manifest" \
+  "${package_flags[@]}" \
+  --all-targets \
+  --locked \
+  --offline
+stable_cargo clippy \
+  --manifest-path "$root_manifest" \
+  "${package_flags[@]}" \
+  --all-targets \
+  --all-features \
+  --locked \
+  --offline \
+  -- \
   -D warnings \
   -D clippy::undocumented_unsafe_blocks
-stable_cargo clippy --manifest-path "$root_manifest" --workspace --all-targets --all-features --locked --offline -- \
-  -D warnings \
-  -D clippy::undocumented_unsafe_blocks
-stable_cargo doc --manifest-path "$root_manifest" --workspace --no-deps --all-features --locked --offline
+
+if [[ "$quality_mode" == focused ]]; then
+  exit 0
+fi
+
+"$project_dir/tools/check-crate-layout.sh"
+"$project_dir/tools/dylint/run.sh" "${package_flags[@]}"
+stable_cargo doc \
+  --manifest-path "$root_manifest" \
+  "${package_flags[@]}" \
+  --no-deps \
+  --all-features \
+  --locked \
+  --offline
+
+if [[ "$quality_mode" == capability ]]; then
+  exit 0
+fi
+
 stable_cargo test \
   --manifest-path "$root_manifest" \
   -p nudox-runtime \

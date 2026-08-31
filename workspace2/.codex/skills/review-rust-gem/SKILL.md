@@ -29,6 +29,11 @@ The caller selects one mode. Do not run the universal closure deck against an ea
   deletion, standard traits, responsibility-based modules, and tests with visible laws. Preserve every
   falsifier and quantify any retained allocation, copy, indirection, or branch.
 
+Use one review at the first material vertical and one at closure only when the source or risk surface
+materially changed. A small capability may combine closure and simplification in one pass. Do not
+repeat a review because evidence prose, formatting, or an unrelated commit changed. The reviewer
+consumes one of the manager's two child slots; it does not enlarge the swarm.
+
 ## Required inputs
 
 Require: contract card, before/after tree or diff, direct consumers,
@@ -104,6 +109,11 @@ A simplification proposal additionally names the deleted symbol/state/allocation
 and the exact existing falsifier that must remain green. Prefer one coherent ranked packet over a
 sequence of style comments. The reviewer stays read-only to preserve independence; Terra owns the
 repair or dispatches one bounded Luna repair card.
+
+Return every applicable finding in that one packet. After one repair, recheck only the affected
+finding and its falsifier; do not restart the complete review deck or drip newly discovered style
+preferences across turns. A second failure of the same invariant requires a boundary redesign, not a
+longer prompt.
 
 `BLOCKER` means violated semantics, unsafe/durability uncertainty, lost errors/owners, unbounded state,
 or a missing contract capability. `MAJOR` means unjustified allocation/generic/dependency, material hot
