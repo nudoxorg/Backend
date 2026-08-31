@@ -73,6 +73,20 @@ struct McpPolicyRequest<'generation> {
 }
 
 #[derive(Serialize)]
+struct McpShapeRequest<Arguments> {
+    jsonrpc: JsonRpcVersion,
+    id: JsonRpcRequestId,
+    method: RpcMethod,
+    params: McpShapeToolCall<Arguments>,
+}
+
+#[derive(Serialize)]
+struct McpShapeToolCall<Arguments> {
+    name: ToolName,
+    arguments: Arguments,
+}
+
+#[derive(Serialize)]
 struct McpToolCall<'generation> {
     name: ToolName,
     arguments: McpPolicyArguments<'generation>,
@@ -92,6 +106,53 @@ struct McpPolicyArguments<'generation> {
     memory_pressure: Pressure,
     storage_pressure: Pressure,
     battery: BatteryState,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum GenerateAction {
+    Generate,
+}
+
+#[derive(Serialize)]
+struct MissingGenerateArguments<'source> {
+    action: GenerateAction,
+    correlation: u64,
+    language: &'source str,
+    stage: &'source str,
+    package: &'source str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum SearchAction {
+    Search,
+}
+
+#[derive(Serialize)]
+struct CrossActionSearchArguments<'snapshot, 'query, 'generation> {
+    action: SearchAction,
+    correlation: u64,
+    snapshot: &'snapshot str,
+    query: &'query str,
+    limit: u64,
+    generation: &'generation str,
+}
+
+fn shape_request<Arguments: Serialize>(
+    id: JsonRpcRequestId,
+    arguments: Arguments,
+) -> io::Result<String> {
+    serde_json::to_string(&McpShapeRequest {
+        jsonrpc: JsonRpcVersion::Version2,
+        id,
+        method: RpcMethod::ToolsCall,
+        params: McpShapeToolCall {
+            name: ToolName::NudoxApplication,
+            arguments,
+        },
+    })
+    .map_err(io::Error::other)
 }
 
 #[derive(Serialize)]
@@ -235,6 +296,52 @@ fn post_parse_mcp_rejections_retain_request_id() -> Result<(), TestError> {
     };
     assert_eq!(error.id, Some(serde_json::Value::from(91)));
     assert_eq!(error.error.field, "arguments");
+    Ok(())
+}
+
+#[test]
+fn mcp_missing_required_generate_field_rejects_before_dispatch_with_id() -> Result<(), TestError> {
+    let body = shape_request(
+        JsonRpcRequestId::Number(401),
+        MissingGenerateArguments {
+            action: GenerateAction::Generate,
+            correlation: 401,
+            language: "rust",
+            stage: "parse",
+            package: "missing-source",
+        },
+    )?;
+    let McpDecode::Rejected(error) = decode_mcp(body.as_bytes()) else {
+        return Err(io::Error::other("missing generate source was accepted").into());
+    };
+    assert_eq!(error.id, Some(serde_json::Value::from(401)));
+    assert_eq!(error.error.code, AdapterErrorCode::InvalidShape);
+    assert_eq!(error.error.field, "request");
+    assert!(matches!(error.cause, Some(AdapterErrorCause::Json(_))));
+    Ok(())
+}
+
+#[test]
+fn mcp_cross_action_field_rejects_before_dispatch_with_string_id() -> Result<(), TestError> {
+    let generation = GenerationId::from_digest([11; 32]).to_string();
+    let body = shape_request(
+        JsonRpcRequestId::Text("cross-action".to_owned()),
+        CrossActionSearchArguments {
+            action: SearchAction::Search,
+            correlation: 402,
+            snapshot: "snapshot",
+            query: "query",
+            limit: 2,
+            generation: &generation,
+        },
+    )?;
+    let McpDecode::Rejected(error) = decode_mcp(body.as_bytes()) else {
+        return Err(io::Error::other("cross-action search field was accepted").into());
+    };
+    assert_eq!(error.id, Some(serde_json::Value::from("cross-action")));
+    assert_eq!(error.error.code, AdapterErrorCode::InvalidShape);
+    assert_eq!(error.error.field, "request");
+    assert!(matches!(error.cause, Some(AdapterErrorCause::Json(_))));
     Ok(())
 }
 

@@ -51,7 +51,6 @@ impl From<serde_json::Error> for TestError {
 enum ApplicationAction {
     Generate,
     Health,
-    Cancel,
     RecoverLocal,
     PollExecution,
     ReleaseLocal,
@@ -566,6 +565,69 @@ fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> R
     Ok(())
 }
 
+fn assert_golden_exchange(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    expected: &[golden_corpus::GoldenReply],
+) -> Result<(), TestError> {
+    let generated = generate(stdin, stdout, 101, "fn corpus() {}")?;
+    let generated =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&generated)?).map_err(TestError::Golden)?;
+    assert_eq!(generated.id, golden_corpus::GoldenResponseId::Number(101));
+    assert_eq!(generated.result.structured_content, expected[0]);
+
+    let health = effect(
+        stdin,
+        stdout,
+        JsonRpcRequestId::Number(102),
+        102,
+        ApplicationAction::Health,
+        EmptyArguments {},
+    )?;
+    let health =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&health)?).map_err(TestError::Golden)?;
+    assert_eq!(health.id, golden_corpus::GoldenResponseId::Number(102));
+    assert_eq!(health.result.structured_content, expected[1]);
+
+    let admitted = recover(
+        stdin,
+        stdout,
+        JsonRpcRequestId::Text("golden-operation"),
+        103,
+    )?;
+    let admitted =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&admitted)?).map_err(TestError::Golden)?;
+    assert_eq!(
+        admitted.id,
+        golden_corpus::GoldenResponseId::Text("golden-operation".to_owned())
+    );
+    assert_eq!(admitted.result.structured_content, expected[2]);
+
+    let cancellation_request = serde_json::to_value(CancellationNotification {
+        jsonrpc: JsonRpcVersion::Version2,
+        method: RpcMethod::CancelRequest,
+        params: CancellationParams {
+            request_id: "golden-operation",
+        },
+    })?;
+    send(stdin, &cancellation_request)?;
+    let cancelled_request = request(
+        JsonRpcRequestId::Number(104),
+        104,
+        ApplicationAction::PollExecution,
+        PollExecutionArguments {
+            operation: OperationId::First,
+        },
+    )?;
+    send(stdin, &cancelled_request)?;
+    let cancelled = receive(stdout)?;
+    let cancelled =
+        golden_corpus::decode_mcp(&serde_json::to_vec(&cancelled)?).map_err(TestError::Golden)?;
+    assert_eq!(cancelled.id, golden_corpus::GoldenResponseId::Number(104));
+    assert_eq!(cancelled.result.structured_content, expected[3]);
+    Ok(())
+}
+
 #[test]
 fn deterministic_golden_corpus_matches_independent_service_and_mcp_process() -> Result<(), TestError>
 {
@@ -583,46 +645,7 @@ fn deterministic_golden_corpus_matches_independent_service_and_mcp_process() -> 
         .take()
         .ok_or_else(|| io::Error::other("MCP child did not retain stdout"))?;
     let mut stdout = BufReader::new(stdout);
-
-    let generated = generate(&mut stdin, &mut stdout, 101, "fn corpus() {}")?;
-    let generated =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&generated)?).map_err(TestError::Golden)?;
-    assert_eq!(generated.id, 101);
-    assert_eq!(generated.result.structured_content, expected[0]);
-
-    let health = effect(
-        &mut stdin,
-        &mut stdout,
-        JsonRpcRequestId::Number(102),
-        102,
-        ApplicationAction::Health,
-        EmptyArguments {},
-    )?;
-    let health =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&health)?).map_err(TestError::Golden)?;
-    assert_eq!(health.id, 102);
-    assert_eq!(health.result.structured_content, expected[1]);
-
-    let admitted = recover(&mut stdin, &mut stdout, JsonRpcRequestId::Number(103), 103)?;
-    let admitted =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&admitted)?).map_err(TestError::Golden)?;
-    assert_eq!(admitted.id, 103);
-    assert_eq!(admitted.result.structured_content, expected[2]);
-
-    let cancelled = effect(
-        &mut stdin,
-        &mut stdout,
-        JsonRpcRequestId::Number(104),
-        104,
-        ApplicationAction::Cancel,
-        PollExecutionArguments {
-            operation: OperationId::First,
-        },
-    )?;
-    let cancelled =
-        golden_corpus::decode_mcp(&serde_json::to_vec(&cancelled)?).map_err(TestError::Golden)?;
-    assert_eq!(cancelled.id, 104);
-    assert_eq!(cancelled.result.structured_content, expected[3]);
+    assert_golden_exchange(&mut stdin, &mut stdout, &expected)?;
 
     drop(stdin);
     let status = child.wait()?;

@@ -6,7 +6,7 @@ use request::{ApplicationArgumentsDto, RequestDto, RequestIdField, RequestIdenti
 use serde_json::Value;
 use wave_application_core::{ApplicationInput, ApplicationReply, InputText};
 
-use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
+use crate::{AdapterError, AdapterErrorCode};
 
 mod request;
 mod wire;
@@ -51,20 +51,6 @@ pub enum McpRequestId {
     Number(serde_json::Number),
     /// A bounded JSON string request identity.
     String(InputText),
-}
-
-impl McpRequestId {
-    /// Projects the typed request identity back to its exact JSON-RPC representation.
-    #[must_use]
-    pub fn as_value(&self) -> Value {
-        match self {
-            Self::Null => Value::Null,
-            Self::Number(number) => Value::Number(number.clone()),
-            Self::String(text) => {
-                Value::String(String::from_utf8_lossy(text.as_ref()).into_owned())
-            }
-        }
-    }
 }
 
 /// A bounded MCP decode failure with the already parsed JSON-RPC request id retained.
@@ -203,11 +189,7 @@ fn tool_input(params: request::ParamsDto) -> Result<ApplicationInput, AdapterErr
     }
     let arguments: ApplicationArgumentsDto =
         params.arguments.ok_or_else(|| missing("arguments"))?;
-    let action = arguments.action.clone().ok_or_else(|| missing("action"))?;
-    let correlation = arguments
-        .correlation
-        .ok_or_else(|| malformed("correlation"))?;
-    input_from_json(&action, correlation, |name| arguments.argument(name))
+    arguments.application_input()
 }
 
 fn cancellation_input(params: request::ParamsDto) -> Result<CancellationTarget, AdapterError> {

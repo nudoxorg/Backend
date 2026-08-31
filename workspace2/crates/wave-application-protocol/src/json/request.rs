@@ -2,13 +2,15 @@
 //!
 //! JSON-RPC request identities are intentionally kept as the one dynamic edge: the protocol
 //! allows string, number, and null identities, and the process must echo that value exactly. The
-//! application tool arguments themselves are a closed record, so they never travel through a
-//! string-keyed map or an untyped JSON value.
+//! application tool arguments are an internally tagged closed action enum. Every action carries
+//! its required transport fields in its own variant, so a field from one action cannot silently
+//! satisfy another action.
 
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use wave_application_core::{ApplicationInput, CorrelationId};
 
-use crate::{AdapterError, AdapterErrorCode};
+use crate::{AdapterError, AdapterErrorCode, cli::input_from_json};
 
 /// Presence-aware JSON-RPC identity field used for both requests and cancellation parameters.
 ///
@@ -68,7 +70,7 @@ pub(super) struct ParamsDto {
     /// Fixed application tool name for `tools/call`.
     #[serde(default)]
     pub(super) name: Option<String>,
-    /// Closed application argument record for `tools/call`.
+    /// Closed application action record for `tools/call`.
     #[serde(default)]
     pub(super) arguments: Option<ApplicationArgumentsDto>,
     /// Original request identity for `$/cancelRequest`.
@@ -76,109 +78,447 @@ pub(super) struct ParamsDto {
     pub(super) request_id: RequestIdField,
 }
 
-/// Closed argument fields shared by every application action. Optional fields are transport
-/// presence markers only; `input_from_json` remains the single semantic/required-field validator.
+/// Closed application action DTO. Required fields are represented directly in each variant;
+/// serde rejects a missing field or a field belonging to a different action before dispatch.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ApplicationArgumentsDto {
-    /// Closed action token.
-    #[serde(default)]
-    pub(super) action: Option<String>,
-    /// Required numeric application correlation.
-    #[serde(default)]
-    pub(super) correlation: Option<u64>,
-    /// Compiler language token.
-    #[serde(default)]
-    language: Option<String>,
-    /// Compiler stage token.
-    #[serde(default)]
-    stage: Option<String>,
-    /// Package name.
-    #[serde(default)]
-    package: Option<String>,
-    /// Source text.
-    #[serde(default)]
-    source: Option<String>,
-    /// Snapshot selector.
-    #[serde(default)]
-    snapshot: Option<String>,
-    /// Lexical query.
-    #[serde(default)]
-    query: Option<String>,
-    /// Result limit, accepted as a JSON number or a numeric string for CLI parity.
-    #[serde(default)]
-    limit: Option<JsonArgument>,
-    /// Expected generation identity.
-    #[serde(default)]
-    expected_generation: Option<String>,
-    /// Expected snapshot identity.
-    #[serde(default)]
-    expected_snapshot: Option<String>,
-    /// Observed generation identity.
-    #[serde(default)]
-    observed_generation: Option<String>,
-    /// Observed snapshot identity.
-    #[serde(default)]
-    observed_snapshot: Option<String>,
-    /// Generation identity.
-    #[serde(default)]
-    generation: Option<String>,
-    /// Analyzer bundle identity.
-    #[serde(default)]
-    bundle: Option<String>,
-    /// Free RAM budget.
-    #[serde(default)]
-    ram_free: Option<JsonArgument>,
-    /// Free `NVMe` budget.
-    #[serde(default)]
-    nvme_free: Option<JsonArgument>,
-    /// Operation budget.
-    #[serde(default)]
-    operations: Option<JsonArgument>,
-    /// Retry budget.
-    #[serde(default)]
-    retries: Option<JsonArgument>,
-    /// Memory pressure token.
-    #[serde(default)]
-    memory_pressure: Option<String>,
-    /// Storage pressure token.
-    #[serde(default)]
-    storage_pressure: Option<String>,
-    /// Battery state token.
-    #[serde(default)]
-    battery: Option<String>,
-    /// Execution operation key.
-    #[serde(default)]
-    operation: Option<JsonArgument>,
+#[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
+pub(super) enum ApplicationArgumentsDto {
+    /// Compiler vocabulary request.
+    Generate {
+        /// Request correlation.
+        correlation: u64,
+        /// Compiler language token.
+        language: String,
+        /// Compiler stage token.
+        stage: String,
+        /// Package name.
+        package: String,
+        /// Source text.
+        source: String,
+    },
+    /// Snapshot status request.
+    #[serde(rename = "status")]
+    SnapshotStatus {
+        /// Request correlation.
+        correlation: u64,
+        /// Snapshot selector.
+        snapshot: String,
+    },
+    /// Lexical retrieval request.
+    Search {
+        /// Request correlation.
+        correlation: u64,
+        /// Snapshot selector.
+        snapshot: String,
+        /// Lexical query.
+        query: String,
+        /// Result limit as a native number or decimal text.
+        limit: JsonArgument,
+    },
+    /// Graph retrieval request.
+    Graph {
+        /// Request correlation.
+        correlation: u64,
+        /// Snapshot selector.
+        snapshot: String,
+        /// Result limit as a native number or decimal text.
+        limit: JsonArgument,
+    },
+    /// Vector retrieval request.
+    Vector {
+        /// Request correlation.
+        correlation: u64,
+        /// Snapshot selector.
+        snapshot: String,
+        /// Result limit as a native number or decimal text.
+        limit: JsonArgument,
+    },
+    /// Locality request.
+    Locality {
+        /// Request correlation.
+        correlation: u64,
+        /// Snapshot selector.
+        snapshot: String,
+    },
+    /// Capability health request.
+    Health {
+        /// Request correlation.
+        correlation: u64,
+    },
+    /// Local recovery policy request.
+    RecoverLocal {
+        /// Request correlation.
+        correlation: u64,
+        /// Generation authority.
+        generation: String,
+        /// Snapshot authority.
+        snapshot: String,
+        /// Analyzer bundle identity.
+        bundle: String,
+        /// Free RAM budget.
+        ram_free: JsonArgument,
+        /// Free `NVMe` budget.
+        nvme_free: JsonArgument,
+        /// Operation budget.
+        operations: JsonArgument,
+        /// Retry budget.
+        retries: JsonArgument,
+        /// Memory pressure token.
+        memory_pressure: String,
+        /// Storage pressure token.
+        storage_pressure: String,
+        /// Battery state token.
+        battery: String,
+    },
+    /// Inconsistent remote recovery policy request.
+    RecoverInconsistent {
+        /// Request correlation.
+        correlation: u64,
+        /// Expected generation authority.
+        expected_generation: String,
+        /// Expected snapshot authority.
+        expected_snapshot: String,
+        /// Observed generation authority.
+        observed_generation: String,
+        /// Observed snapshot authority.
+        observed_snapshot: String,
+        /// Analyzer bundle identity.
+        bundle: String,
+        /// Free RAM budget.
+        ram_free: JsonArgument,
+        /// Free `NVMe` budget.
+        nvme_free: JsonArgument,
+        /// Operation budget.
+        operations: JsonArgument,
+        /// Retry budget.
+        retries: JsonArgument,
+        /// Memory pressure token.
+        memory_pressure: String,
+        /// Storage pressure token.
+        storage_pressure: String,
+        /// Battery state token.
+        battery: String,
+    },
+    /// Local release policy request.
+    ReleaseLocal {
+        /// Request correlation.
+        correlation: u64,
+        /// Generation authority.
+        generation: String,
+        /// Snapshot authority.
+        snapshot: String,
+        /// Analyzer bundle identity.
+        bundle: String,
+        /// Free RAM budget.
+        ram_free: JsonArgument,
+        /// Free `NVMe` budget.
+        nvme_free: JsonArgument,
+        /// Operation budget.
+        operations: JsonArgument,
+        /// Retry budget.
+        retries: JsonArgument,
+        /// Memory pressure token.
+        memory_pressure: String,
+        /// Storage pressure token.
+        storage_pressure: String,
+        /// Battery state token.
+        battery: String,
+    },
+    /// Execution polling request.
+    PollExecution {
+        /// Request correlation.
+        correlation: u64,
+        /// Service execution operation key.
+        operation: JsonArgument,
+    },
+    /// Execution cancellation request.
+    Cancel {
+        /// Request correlation.
+        correlation: u64,
+        /// Service execution operation key.
+        operation: JsonArgument,
+    },
 }
 
 impl ApplicationArgumentsDto {
-    /// Returns one known argument as owned text for the shared application input decoder.
-    pub(super) fn argument(&self, name: &'static str) -> Result<String, AdapterError> {
-        match name {
-            "language" => text(self.language.as_ref(), name),
-            "stage" => text(self.stage.as_ref(), name),
-            "package" => text(self.package.as_ref(), name),
-            "source" => text(self.source.as_ref(), name),
-            "snapshot" => text(self.snapshot.as_ref(), name),
-            "query" => text(self.query.as_ref(), name),
-            "limit" => number(self.limit.as_ref(), name),
-            "generation" => text(self.generation.as_ref(), name),
-            "bundle" => text(self.bundle.as_ref(), name),
-            "ram_free" => number(self.ram_free.as_ref(), name),
-            "nvme_free" => number(self.nvme_free.as_ref(), name),
-            "operations" => number(self.operations.as_ref(), name),
-            "retries" => number(self.retries.as_ref(), name),
-            "memory_pressure" => text(self.memory_pressure.as_ref(), name),
-            "storage_pressure" => text(self.storage_pressure.as_ref(), name),
-            "battery" => text(self.battery.as_ref(), name),
-            "expected_generation" => text(self.expected_generation.as_ref(), name),
-            "expected_snapshot" => text(self.expected_snapshot.as_ref(), name),
-            "observed_generation" => text(self.observed_generation.as_ref(), name),
-            "observed_snapshot" => text(self.observed_snapshot.as_ref(), name),
-            "operation" => number(self.operation.as_ref(), name),
-            _ => Err(AdapterError::simple(AdapterErrorCode::InvalidShape, name)),
+    /// Converts one shape-checked action through the shared CLI/MCP semantic decoder.
+    pub(super) fn application_input(&self) -> Result<ApplicationInput, AdapterError> {
+        match self {
+            Self::Generate { .. } => generate_input(self),
+            Self::SnapshotStatus { .. } => snapshot_input(self, "status"),
+            Self::Search { .. } => search_input(self),
+            Self::Graph { .. } => retrieval_input(self, "graph"),
+            Self::Vector { .. } => retrieval_input(self, "vector"),
+            Self::Locality { .. } => snapshot_input(self, "locality"),
+            Self::Health { correlation } => Ok(ApplicationInput::Health {
+                correlation: CorrelationId(*correlation),
+            }),
+            Self::RecoverLocal { .. } => policy_input(self, "recover-local"),
+            Self::RecoverInconsistent { .. } => inconsistent_input(self),
+            Self::ReleaseLocal { .. } => policy_input(self, "release-local"),
+            Self::PollExecution { .. } => operation_input(self, "poll-execution"),
+            Self::Cancel { .. } => operation_input(self, "cancel"),
         }
+    }
+}
+
+fn generate_input(arguments: &ApplicationArgumentsDto) -> Result<ApplicationInput, AdapterError> {
+    let ApplicationArgumentsDto::Generate {
+        correlation,
+        language,
+        stage,
+        package,
+        source,
+    } = arguments
+    else {
+        return invalid_argument("action");
+    };
+    input_from_json("generate", *correlation, |name| match name {
+        "language" => Ok(language.clone()),
+        "stage" => Ok(stage.clone()),
+        "package" => Ok(package.clone()),
+        "source" => Ok(source.clone()),
+        _ => invalid_argument(name),
+    })
+}
+
+fn snapshot_input(
+    arguments: &ApplicationArgumentsDto,
+    action: &'static str,
+) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, snapshot) = match arguments {
+        ApplicationArgumentsDto::SnapshotStatus {
+            correlation,
+            snapshot,
+        }
+        | ApplicationArgumentsDto::Locality {
+            correlation,
+            snapshot,
+        } => (*correlation, snapshot),
+        _ => return invalid_argument("action"),
+    };
+    input_from_json(action, correlation, |name| match name {
+        "snapshot" => Ok(snapshot.clone()),
+        _ => invalid_argument(name),
+    })
+}
+
+fn search_input(arguments: &ApplicationArgumentsDto) -> Result<ApplicationInput, AdapterError> {
+    let ApplicationArgumentsDto::Search {
+        correlation,
+        snapshot,
+        query,
+        limit,
+    } = arguments
+    else {
+        return invalid_argument("action");
+    };
+    input_from_json("search", *correlation, |name| match name {
+        "snapshot" => Ok(snapshot.clone()),
+        "query" => Ok(query.clone()),
+        "limit" => Ok(limit.as_text()),
+        _ => invalid_argument(name),
+    })
+}
+
+fn retrieval_input(
+    arguments: &ApplicationArgumentsDto,
+    action: &'static str,
+) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, snapshot, limit) = match arguments {
+        ApplicationArgumentsDto::Graph {
+            correlation,
+            snapshot,
+            limit,
+        }
+        | ApplicationArgumentsDto::Vector {
+            correlation,
+            snapshot,
+            limit,
+        } => (*correlation, snapshot, limit),
+        _ => return invalid_argument("action"),
+    };
+    input_from_json(action, correlation, |name| match name {
+        "snapshot" => Ok(snapshot.clone()),
+        "limit" => Ok(limit.as_text()),
+        _ => invalid_argument(name),
+    })
+}
+
+fn operation_input(
+    arguments: &ApplicationArgumentsDto,
+    action: &'static str,
+) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, operation) = match arguments {
+        ApplicationArgumentsDto::PollExecution {
+            correlation,
+            operation,
+        }
+        | ApplicationArgumentsDto::Cancel {
+            correlation,
+            operation,
+        } => (*correlation, operation),
+        _ => return invalid_argument("action"),
+    };
+    input_from_json(action, correlation, |name| match name {
+        "operation" => Ok(operation.as_text()),
+        _ => invalid_argument(name),
+    })
+}
+
+fn policy_input(
+    arguments: &ApplicationArgumentsDto,
+    action: &'static str,
+) -> Result<ApplicationInput, AdapterError> {
+    let fields = policy_fields(arguments)?;
+    input_from_json(action, fields.correlation, |name| match name {
+        "generation" => Ok(fields.generation.to_owned()),
+        "snapshot" => Ok(fields.snapshot.to_owned()),
+        "bundle" => Ok(fields.bundle.to_owned()),
+        "ram_free" => Ok(fields.ram_free.as_text()),
+        "nvme_free" => Ok(fields.nvme_free.as_text()),
+        "operations" => Ok(fields.operations.as_text()),
+        "retries" => Ok(fields.retries.as_text()),
+        "memory_pressure" => Ok(fields.memory_pressure.to_owned()),
+        "storage_pressure" => Ok(fields.storage_pressure.to_owned()),
+        "battery" => Ok(fields.battery.to_owned()),
+        _ => invalid_argument(name),
+    })
+}
+
+struct PolicyFields<'a> {
+    correlation: u64,
+    generation: &'a str,
+    snapshot: &'a str,
+    bundle: &'a str,
+    ram_free: &'a JsonArgument,
+    nvme_free: &'a JsonArgument,
+    operations: &'a JsonArgument,
+    retries: &'a JsonArgument,
+    memory_pressure: &'a str,
+    storage_pressure: &'a str,
+    battery: &'a str,
+}
+
+fn policy_fields(arguments: &ApplicationArgumentsDto) -> Result<PolicyFields<'_>, AdapterError> {
+    match arguments {
+        ApplicationArgumentsDto::RecoverLocal {
+            correlation,
+            generation,
+            snapshot,
+            bundle,
+            ram_free,
+            nvme_free,
+            operations,
+            retries,
+            memory_pressure,
+            storage_pressure,
+            battery,
+        }
+        | ApplicationArgumentsDto::ReleaseLocal {
+            correlation,
+            generation,
+            snapshot,
+            bundle,
+            ram_free,
+            nvme_free,
+            operations,
+            retries,
+            memory_pressure,
+            storage_pressure,
+            battery,
+        } => Ok(PolicyFields {
+            correlation: *correlation,
+            generation,
+            snapshot,
+            bundle,
+            ram_free,
+            nvme_free,
+            operations,
+            retries,
+            memory_pressure,
+            storage_pressure,
+            battery,
+        }),
+        _ => invalid_argument("action"),
+    }
+}
+
+fn inconsistent_input(
+    arguments: &ApplicationArgumentsDto,
+) -> Result<ApplicationInput, AdapterError> {
+    let fields = inconsistent_fields(arguments)?;
+    input_from_json(
+        "recover-inconsistent",
+        fields.correlation,
+        |name| match name {
+            "expected_generation" => Ok(fields.expected_generation.to_owned()),
+            "expected_snapshot" => Ok(fields.expected_snapshot.to_owned()),
+            "observed_generation" => Ok(fields.observed_generation.to_owned()),
+            "observed_snapshot" => Ok(fields.observed_snapshot.to_owned()),
+            "bundle" => Ok(fields.bundle.to_owned()),
+            "ram_free" => Ok(fields.ram_free.as_text()),
+            "nvme_free" => Ok(fields.nvme_free.as_text()),
+            "operations" => Ok(fields.operations.as_text()),
+            "retries" => Ok(fields.retries.as_text()),
+            "memory_pressure" => Ok(fields.memory_pressure.to_owned()),
+            "storage_pressure" => Ok(fields.storage_pressure.to_owned()),
+            "battery" => Ok(fields.battery.to_owned()),
+            _ => invalid_argument(name),
+        },
+    )
+}
+
+struct InconsistentFields<'a> {
+    correlation: u64,
+    expected_generation: &'a str,
+    expected_snapshot: &'a str,
+    observed_generation: &'a str,
+    observed_snapshot: &'a str,
+    bundle: &'a str,
+    ram_free: &'a JsonArgument,
+    nvme_free: &'a JsonArgument,
+    operations: &'a JsonArgument,
+    retries: &'a JsonArgument,
+    memory_pressure: &'a str,
+    storage_pressure: &'a str,
+    battery: &'a str,
+}
+
+fn inconsistent_fields(
+    arguments: &ApplicationArgumentsDto,
+) -> Result<InconsistentFields<'_>, AdapterError> {
+    match arguments {
+        ApplicationArgumentsDto::RecoverInconsistent {
+            correlation,
+            expected_generation,
+            expected_snapshot,
+            observed_generation,
+            observed_snapshot,
+            bundle,
+            ram_free,
+            nvme_free,
+            operations,
+            retries,
+            memory_pressure,
+            storage_pressure,
+            battery,
+        } => Ok(InconsistentFields {
+            correlation: *correlation,
+            expected_generation,
+            expected_snapshot,
+            observed_generation,
+            observed_snapshot,
+            bundle,
+            ram_free,
+            nvme_free,
+            operations,
+            retries,
+            memory_pressure,
+            storage_pressure,
+            battery,
+        }),
+        _ => invalid_argument("action"),
     }
 }
 
@@ -186,7 +526,7 @@ impl ApplicationArgumentsDto {
 /// JSON unsigned integer or a decimal string. Semantic width and range remain in `input_from_json`.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum JsonArgument {
+pub(super) enum JsonArgument {
     /// Native JSON unsigned integer.
     Number(u64),
     /// Decimal text retained for the common CLI/MCP vocabulary.
@@ -202,14 +542,6 @@ impl JsonArgument {
     }
 }
 
-fn text(value: Option<&String>, name: &'static str) -> Result<String, AdapterError> {
-    value
-        .cloned()
-        .ok_or(AdapterError::simple(AdapterErrorCode::MissingField, name))
-}
-
-fn number(value: Option<&JsonArgument>, name: &'static str) -> Result<String, AdapterError> {
-    value
-        .map(JsonArgument::as_text)
-        .ok_or(AdapterError::simple(AdapterErrorCode::MissingField, name))
+fn invalid_argument<T>(name: &'static str) -> Result<T, AdapterError> {
+    Err(AdapterError::simple(AdapterErrorCode::InvalidShape, name))
 }

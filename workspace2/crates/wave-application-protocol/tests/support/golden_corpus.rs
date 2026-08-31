@@ -155,8 +155,16 @@ pub enum GoldenDiagnosticDetail {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 pub struct GoldenMcpResponse {
-    pub id: u64,
+    pub id: GoldenResponseId,
     pub result: GoldenMcpResult,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(untagged)]
+pub enum GoldenResponseId {
+    Null,
+    Number(u64),
+    Text(String),
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
