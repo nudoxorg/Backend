@@ -9,7 +9,12 @@ use wave_application_core::{Capability, InputText};
 #[serde(rename_all = "snake_case")]
 pub(super) enum Language {
     Rust,
-    Typescript,
+    TypeScript,
+    Python,
+    Go,
+    Java,
+    CSharp,
+    Clang,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -108,8 +113,13 @@ impl<DomainTag: Domain> fmt::Display for DisplayContent<DomainTag> {
 impl From<nudox_compile_vocab::Language> for Language {
     fn from(language: nudox_compile_vocab::Language) -> Self {
         match language {
-            nudox_compile_vocab::Language::RustSubset => Self::Rust,
-            nudox_compile_vocab::Language::TypeScriptSubset => Self::Typescript,
+            nudox_compile_vocab::Language::Rust => Self::Rust,
+            nudox_compile_vocab::Language::TypeScript => Self::TypeScript,
+            nudox_compile_vocab::Language::Python => Self::Python,
+            nudox_compile_vocab::Language::Go => Self::Go,
+            nudox_compile_vocab::Language::Java => Self::Java,
+            nudox_compile_vocab::Language::CSharp => Self::CSharp,
+            nudox_compile_vocab::Language::Clang => Self::Clang,
         }
     }
 }
@@ -186,5 +196,32 @@ impl From<nudox_adaptive::StorageTier> for StorageTier {
             nudox_adaptive::StorageTier::Ram => Self::Ram,
             nudox_adaptive::StorageTier::Nvme => Self::Nvme,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Language;
+
+    #[test]
+    fn language_wire_projection_covers_the_closed_vocab() -> Result<(), serde_json::Error> {
+        const EXPECTED: &[&str] = &[
+            "rust",
+            "type_script",
+            "python",
+            "go",
+            "java",
+            "c_sharp",
+            "clang",
+        ];
+
+        assert_eq!(nudox_compile_vocab::Language::ALL.len(), EXPECTED.len());
+        for (language, expected) in nudox_compile_vocab::Language::ALL.into_iter().zip(EXPECTED) {
+            assert_eq!(
+                serde_json::to_string(&Language::from(language))?,
+                format!("\"{expected}\"")
+            );
+        }
+        Ok(())
     }
 }
