@@ -19,8 +19,9 @@ pub use graph::{
     GraphRow, GraphView, ValidatedGraphView,
 };
 pub use lease::{
-    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphLease, GraphStreamEvent, GraphTerminal,
-    LeaseCapacity, LeaseLoad, LeaseStateCell, LeasedGraphBatch, StreamCapacityError,
+    Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphDegradation, GraphLease,
+    GraphStreamEvent, GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, LeasedGraphBatch,
+    StreamCapacityError,
 };
 pub use trace::{GraphTraceEvent, TraceProbe, TraceRecorder};
 pub use vector::{

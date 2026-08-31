@@ -22,4 +22,6 @@ pub use cancellation::Cancellation;
 pub use channel::{
     EdgeBatchProducer, EdgeBatchStream, GraphLease, GraphStreamEvent, LeasedGraphBatch,
 };
-pub use contract::{GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError};
+pub use contract::{
+    GraphDegradation, GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError,
+};

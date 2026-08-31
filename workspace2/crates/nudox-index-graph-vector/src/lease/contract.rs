@@ -90,6 +90,15 @@ pub enum StreamCapacityError {
     CorruptState { cell: LeaseStateCell },
 }
 
+/// Typed provenance for a graph acquisition that remained snapshot-authoritative but degraded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphDegradation {
+    /// The acquisition retried a stale route while retaining the same pinned graph authority.
+    StaleRoute,
+    /// A selected immutable partition source was unavailable.
+    PartitionSourceUnavailable,
+}
+
 /// Terminal facts for the graph lease.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphTerminal {
@@ -101,6 +110,17 @@ pub enum GraphTerminal {
     Partial {
         authority: GraphAuthority,
         missing: MissingPartitions,
+    },
+    /// All selected partitions arrived, but acquisition recovered through a degraded route.
+    Degraded {
+        authority: GraphAuthority,
+        reason: GraphDegradation,
+    },
+    /// A degraded acquisition retained exact selected partition absences in request order.
+    DegradedPartial {
+        authority: GraphAuthority,
+        missing: MissingPartitions,
+        reason: GraphDegradation,
     },
     /// The unique producer disappeared without a terminal declaration.
     Failed {

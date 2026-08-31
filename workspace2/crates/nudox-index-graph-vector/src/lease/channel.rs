@@ -12,7 +12,10 @@ use core::{
 
 use super::{
     cancellation::{Cancellation, CancellationReservation},
-    contract::{GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError},
+    contract::{
+        GraphDegradation, GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell,
+        StreamCapacityError,
+    },
     storage::{EdgeRead, EdgeSlot, MAX_EDGES_PER_PARTITION, SharedLease, SlotPhase},
     wake::WakeCell,
 };
@@ -226,6 +229,41 @@ impl EdgeBatchProducer<'_> {
 
     /// Publishes only when declared absence equals exact partition accounting.
     pub fn finish_partial(&mut self, missing: &[PartitionId]) -> Result<(), StreamCapacityError> {
+        self.publish_terminal(self.checked_accounted_terminal(missing)?)
+    }
+
+    /// Publishes a snapshot-authoritative degraded terminal with exact partition accounting.
+    pub fn finish_degraded(
+        &mut self,
+        missing: &[PartitionId],
+        reason: GraphDegradation,
+    ) -> Result<(), StreamCapacityError> {
+        let terminal = match self.checked_accounted_terminal(missing)? {
+            GraphTerminal::Complete { authority } => GraphTerminal::Degraded { authority, reason },
+            GraphTerminal::Partial { authority, missing } => GraphTerminal::DegradedPartial {
+                authority,
+                missing,
+                reason,
+            },
+            GraphTerminal::Failed { authority, cause } => {
+                GraphTerminal::Failed { authority, cause }
+            }
+            GraphTerminal::Cancelled { authority }
+            | GraphTerminal::Degraded { authority, .. }
+            | GraphTerminal::DegradedPartial { authority, .. } => GraphTerminal::Failed {
+                authority,
+                cause: StreamCapacityError::CorruptState {
+                    cell: LeaseStateCell::Terminal,
+                },
+            },
+        };
+        self.publish_terminal(terminal)
+    }
+
+    fn checked_accounted_terminal(
+        &self,
+        missing: &[PartitionId],
+    ) -> Result<GraphTerminal, StreamCapacityError> {
         if missing.len() > self.shared.selected_len {
             return Err(StreamCapacityError::MissingPartitionCapacity {
                 maximum: self.shared.selected_len,
@@ -254,6 +292,8 @@ impl EdgeBatchProducer<'_> {
             GraphTerminal::Partial { missing, .. } => missing.as_ref(),
             GraphTerminal::Complete { .. }
             | GraphTerminal::Cancelled { .. }
+            | GraphTerminal::Degraded { .. }
+            | GraphTerminal::DegradedPartial { .. }
             | GraphTerminal::Failed { .. } => &[],
         };
         if expected != missing {
@@ -268,7 +308,7 @@ impl EdgeBatchProducer<'_> {
                 index,
             });
         }
-        self.publish_terminal(terminal)
+        Ok(terminal)
     }
 
     fn has_vacant_slot(&self) -> bool {

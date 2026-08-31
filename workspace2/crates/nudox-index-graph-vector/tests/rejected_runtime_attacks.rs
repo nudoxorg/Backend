@@ -5,8 +5,8 @@ use core::{
     task::{Context, Poll, Waker},
 };
 use nudox_index_graph_vector::{
-    Cancellation, GraphAuthority, GraphEdge, GraphLease, GraphStreamEvent, GraphTerminal,
-    LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError, TraceProbe,
+    Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
+    GraphTerminal, LeaseCapacity, PartitionId, ProjectionId, StreamCapacityError, TraceProbe,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
@@ -253,6 +253,41 @@ fn exact_partial_declaration_cannot_forge_absence() -> Result<(), StreamCapacity
     };
     assert_eq!(observed_authority, graph);
     assert_eq!(observed_missing.as_ref(), &[missing]);
+    Ok(())
+}
+
+#[test]
+fn degraded_terminal_retains_typed_cause_and_exact_missing_partition()
+-> Result<(), StreamCapacityError> {
+    let graph = authority(10);
+    let present = PartitionId::new(0);
+    let missing = PartitionId::new(1);
+    let cancellation = Cancellation::new();
+    let mut trace = TraceProbe::disabled();
+    let lease = lease(graph, &[present, missing], &cancellation, &mut trace)?;
+    let (mut producer, mut stream) = lease.split()?;
+    producer.settle(present, &[edge(graph, present, 1, 2)])?;
+    producer.finish_degraded(&[missing], GraphDegradation::PartitionSourceUnavailable)?;
+    let mut context = Context::from_waker(Waker::noop());
+    {
+        let event = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
+        let Poll::Ready(GraphStreamEvent::Batch(batch)) = event else {
+            return Err(StreamCapacityError::StreamClosed);
+        };
+        drop(batch);
+    }
+    let event = Pin::new(&mut stream).poll_batch(&mut context, &mut trace);
+    let Poll::Ready(GraphStreamEvent::Terminal(GraphTerminal::DegradedPartial {
+        authority: observed_authority,
+        missing: observed_missing,
+        reason,
+    })) = event
+    else {
+        return Err(StreamCapacityError::StreamClosed);
+    };
+    assert_eq!(observed_authority, graph);
+    assert_eq!(observed_missing.as_ref(), &[missing]);
+    assert_eq!(reason, GraphDegradation::PartitionSourceUnavailable);
     Ok(())
 }
 
