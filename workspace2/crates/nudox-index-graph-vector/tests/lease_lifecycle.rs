@@ -18,11 +18,27 @@ const CAPACITY_TWO: usize = 2;
 #[derive(Debug, Eq, PartialEq)]
 enum TestFailure {
     Admission(StreamCapacityError),
-    CapacityConversion { source: core::num::TryFromIntError },
-    ExpectedBatch { phase: TestPhase },
-    ExpectedTerminal { phase: TestPhase },
-    ExpectedRejection { phase: TestPhase },
-    ThreadPanicked { worker: Worker, report: PanicReport },
+    CapacityConversion {
+        source: core::num::TryFromIntError,
+    },
+    ExpectedBatch {
+        phase: TestPhase,
+    },
+    ExpectedTerminal {
+        phase: TestPhase,
+    },
+    ExpectedRejection {
+        phase: TestPhase,
+    },
+    BatchMismatch {
+        phase: TestPhase,
+        observed: Option<GraphEdge>,
+        observed_len: usize,
+    },
+    ThreadPanicked {
+        worker: Worker,
+        report: PanicReport,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -102,6 +118,22 @@ fn next_terminal<'stream, 'lease, 'cancellation>(
     match stream.poll_batch(context, trace) {
         Poll::Ready(GraphStreamEvent::Terminal(terminal)) => Ok(terminal),
         Poll::Pending | Poll::Ready(_) => Err(TestFailure::ExpectedTerminal { phase }),
+    }
+}
+
+fn verify_single_edge(
+    batch: &[GraphEdge],
+    expected: GraphEdge,
+    phase: TestPhase,
+) -> Result<(), TestFailure> {
+    if batch == [expected] {
+        Ok(())
+    } else {
+        Err(TestFailure::BatchMismatch {
+            phase,
+            observed: batch.first().copied(),
+            observed_len: batch.len(),
+        })
     }
 }
 
@@ -396,12 +428,22 @@ fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestRe
         });
 
         start.store(true, Ordering::Release);
-        while !settled.load(Ordering::Acquire) {
+        let mut observed_batch = false;
+        while !settled.load(Ordering::Acquire) && !observed_batch {
             match Pin::new(&mut stream)
                 .poll_batch(&mut Context::from_waker(Waker::noop()), &mut trace)
             {
                 Poll::Pending => std::thread::yield_now(),
-                Poll::Ready(_) => {
+                Poll::Ready(GraphStreamEvent::Batch(batch)) => {
+                    verify_single_edge(
+                        batch.as_ref(),
+                        first_edge,
+                        TestPhase::ConcurrentCompletion,
+                    )?;
+                    drop(batch);
+                    observed_batch = true;
+                }
+                Poll::Ready(GraphStreamEvent::Terminal(_) | GraphStreamEvent::Fused) => {
                     return Err(TestFailure::ExpectedBatch {
                         phase: TestPhase::ConcurrentCompletion,
                     });
@@ -409,7 +451,7 @@ fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestRe
             }
         }
         match worker.join() {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok((result, observed_batch)),
             Err(panic) => {
                 let report = if let Some(message) = panic.downcast_ref::<&'static str>() {
                     PanicReport::Static(message)
@@ -425,18 +467,20 @@ fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestRe
             }
         }
     })?;
-    assert_eq!(worker_result.0, Ok(()));
-    assert_eq!(worker_result.1, Ok(()));
+    assert_eq!(worker_result.0.0, Ok(()));
+    assert_eq!(worker_result.0.1, Ok(()));
 
     let mut context = Context::from_waker(Waker::noop());
-    let batch = next_batch(
-        Pin::new(&mut stream),
-        &mut context,
-        &mut trace,
-        TestPhase::ConcurrentCompletion,
-    )?;
-    assert_eq!(batch.as_ref(), &[first_edge]);
-    drop(batch);
+    if !worker_result.1 {
+        let batch = next_batch(
+            Pin::new(&mut stream),
+            &mut context,
+            &mut trace,
+            TestPhase::ConcurrentCompletion,
+        )?;
+        verify_single_edge(batch.as_ref(), first_edge, TestPhase::ConcurrentCompletion)?;
+        drop(batch);
+    }
     let terminal = next_terminal(
         Pin::new(&mut stream),
         &mut context,
