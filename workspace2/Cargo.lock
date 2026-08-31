@@ -3668,8 +3668,8 @@ dependencies = [
 name = "nudox-compile-driver"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "nudox-compile-vocab",
+ "nudox-id",
  "nudox-ir-format",
  "nudox-ir-vocab",
  "thiserror 2.0.20",
@@ -3799,6 +3799,7 @@ dependencies = [
 name = "nudox-ir-format"
 version = "0.1.0"
 dependencies = [
+ "nudox-id",
  "nudox-ir-vocab",
  "thiserror 2.0.20",
 ]

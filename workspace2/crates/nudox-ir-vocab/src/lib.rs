@@ -8,6 +8,9 @@ pub enum Entity {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Type {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Atom {}
+
 /// ```compile_fail
 /// use nudox_ir_vocab::{EntityId, TypeId};
 /// fn entity_only(_: EntityId) {}
@@ -32,3 +35,4 @@ impl<Owner> DenseId<Owner> {
 
 pub type EntityId = DenseId<Entity>;
 pub type TypeId = DenseId<Type>;
+pub type AtomId = DenseId<Atom>;

@@ -1,8 +1,12 @@
 use core::{num::TryFromIntError, ops::Range};
 
-use nudox_ir_vocab::TypeId;
+use nudox_id::{ContentId, HASH_BYTES, SourceFactDomain};
+use nudox_ir_vocab::{AtomId, TypeId};
 
-use crate::{EntityFault, PrimitiveType, TypeNode, TypeNodeFault};
+use crate::{
+    AtomFault, EntityFault, EntityKind, EntityNameFault, EntityRecord, EntityRecordFault,
+    PrimitiveType, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
+};
 
 pub(crate) struct HeaderLayout {
     pub(crate) magic: usize,
@@ -56,9 +60,11 @@ pub(crate) const TYPE_NODE_LAYOUT: TypeNodeLayout = TypeNodeLayout {
     encoded_len: size_of::<u8>() + size_of::<[u8; 3]>() + size_of::<u32>(),
 };
 
-pub(crate) const ENTITY_BYTES: usize = size_of::<u32>();
+pub(crate) const ENTITY_BYTES: usize = size_of::<u32>() + size_of::<u32>() + size_of::<u16>() * 2;
 pub(crate) const TYPE_NODE_BYTES: usize = TYPE_NODE_LAYOUT.encoded_len;
-pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 2 };
+pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
+pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
+pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 5 };
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
@@ -96,6 +102,9 @@ wire_enum_u16! {
     pub enum SectionKind {
         EntityTypes = 1,
         TypeNodes = 2,
+        AtomRecords = 3,
+        AtomBytes = 4,
+        SourceIdentity = 5,
     }
 }
 
@@ -191,6 +200,9 @@ impl LaneLayout {
 pub(crate) struct FragmentLayout {
     pub(crate) entities: LaneLayout,
     pub(crate) type_nodes: LaneLayout,
+    pub(crate) atoms: LaneLayout,
+    pub(crate) atom_bytes: LaneLayout,
+    pub(crate) source_identity: LaneLayout,
     pub(crate) output_len: usize,
     pub(crate) output_wire_len: ByteLength,
 }
@@ -225,6 +237,78 @@ pub(crate) fn entity_fault(target: TypeId, node_count: ItemCount) -> Option<Enti
     }
 }
 
+pub(crate) fn entity_name_fault(target: AtomId, atom_count: ItemCount) -> Option<EntityNameFault> {
+    let atom_count = u32::from(atom_count);
+    if target.raw < atom_count {
+        None
+    } else {
+        Some(EntityNameFault { target, atom_count })
+    }
+}
+
+pub(crate) fn write_entity(output: &mut [u8], entity: EntityRecord) {
+    write_u32(output, 0, entity.semantic_type.raw);
+    write_u32(output, size_of::<u32>(), entity.name.raw);
+    write_u16(output, size_of::<u32>() * 2, u16::from(entity.kind));
+    write_u16(output, size_of::<u32>() * 2 + size_of::<u16>(), 0);
+}
+
+pub(crate) fn decode_entity(record: &[u8]) -> Result<EntityRecord, EntityRecordFault> {
+    let kind_offset = size_of::<u32>() * 2;
+    let reserved = read_u16(record, kind_offset + size_of::<u16>());
+    if reserved != 0 {
+        return Err(EntityRecordFault::Reserved { actual: reserved });
+    }
+    let kind = EntityKind::try_from(read_u16(record, kind_offset))
+        .map_err(|actual| EntityRecordFault::Kind { actual })?;
+    Ok(EntityRecord {
+        semantic_type: TypeId::new(read_u32(record, 0)),
+        name: AtomId::new(read_u32(record, size_of::<u32>())),
+        kind,
+    })
+}
+
+pub(crate) fn decode_validated_entity(record: &[u8]) -> EntityRecord {
+    let kind_offset = size_of::<u32>() * 2;
+    let kind = match read_u16(record, kind_offset) {
+        0 => EntityKind::Function,
+        1 => EntityKind::Constant,
+        _ => EntityKind::Record,
+    };
+    EntityRecord {
+        semantic_type: TypeId::new(read_u32(record, 0)),
+        name: AtomId::new(read_u32(record, size_of::<u32>())),
+        kind,
+    }
+}
+
+pub(crate) fn write_atom_record(output: &mut [u8], start: u32, length: u32) {
+    write_u32(output, 0, start);
+    write_u32(output, size_of::<u32>(), length);
+}
+
+pub(crate) fn atom_fault(
+    ordinal: AtomId,
+    record: &[u8],
+    byte_count: ItemCount,
+) -> Option<AtomFault> {
+    let start = read_u32(record, 0);
+    let length = read_u32(record, size_of::<u32>());
+    if length == 0 {
+        return Some(AtomFault::Empty { ordinal });
+    }
+    let byte_count = u32::from(byte_count);
+    match start.checked_add(length) {
+        Some(end) if end <= byte_count => None,
+        _ => Some(AtomFault::Range {
+            ordinal,
+            start,
+            length,
+            byte_count,
+        }),
+    }
+}
+
 pub(crate) fn type_node_fault(node: TypeNode, node_count: ItemCount) -> Option<TypeNodeFault> {
     let node_count = u32::from(node_count);
     match node {
@@ -246,6 +330,22 @@ pub(crate) fn write_type_node(output: &mut [u8], node: TypeNode) {
             write_u32(output, TYPE_NODE_LAYOUT.operand, target.raw);
         }
     }
+}
+
+pub(crate) fn write_source_identity(output: &mut [u8], source: SourceIdentity) {
+    write_u32(output, 0, source.byte_len);
+    output[size_of::<u32>()..SOURCE_IDENTITY_BYTES].copy_from_slice(source.identity.as_ref());
+}
+
+pub(crate) fn decode_source_identity(record: &[u8]) -> Result<SourceIdentity, SourceIdentityFault> {
+    let mut raw = [0; HASH_BYTES];
+    raw.copy_from_slice(&record[size_of::<u32>()..SOURCE_IDENTITY_BYTES]);
+    let identity =
+        ContentId::<SourceFactDomain>::try_from(raw).map_err(SourceIdentityFault::Authority)?;
+    Ok(SourceIdentity {
+        identity,
+        byte_len: read_u32(record, 0),
+    })
 }
 
 pub(crate) fn decode_type_node(record: &[u8]) -> Result<TypeNode, TypeNodeFault> {

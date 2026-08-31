@@ -1,15 +1,16 @@
 use core::num::TryFromIntError;
 
-use nudox_ir_vocab::{EntityId, TypeId};
+use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{
-    EntityFault, EntityRecord, TypeNode, TypeNodeFault,
+    AtomInput, EntityRecord, EntityRecordFault, SourceIdentity, TypeNode, TypeNodeFault,
     wire::{
-        ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout,
-        HEADER_LAYOUT, ItemCount, LaneLayout, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
-        WRITTEN_SECTION_COUNT, entity_fault, type_node_fault, write_type_node, write_u16,
-        write_u32,
+        ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
+        FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, SOURCE_IDENTITY_BYTES, SectionKind,
+        SectionRequirement, TYPE_NODE_BYTES, WRITTEN_SECTION_COUNT, entity_fault,
+        entity_name_fault, type_node_fault, write_atom_record, write_entity, write_source_identity,
+        write_type_node, write_u16, write_u32,
     },
 };
 
@@ -18,22 +19,22 @@ pub enum LayoutStep {
     Directory,
     EntityLane,
     TypeNodeLane,
+    AtomRecordLane,
+    AtomByteLane,
+    SourceIdentityLane,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum PrepareError {
-    #[error("entity count {actual} exceeds the fragment count width")]
-    EntityCount {
+    #[error("{lane:?} count {actual} exceeds the fragment count width")]
+    Count {
+        lane: LayoutStep,
         actual: usize,
         #[source]
         source: TryFromIntError,
     },
-    #[error("type node count {actual} exceeds the fragment count width")]
-    TypeNodeCount {
-        actual: usize,
-        #[source]
-        source: TryFromIntError,
-    },
+    #[error("atom byte pool overflowed while adding atom {ordinal:?}")]
+    AtomBytePoolOverflow { ordinal: AtomId },
     #[error(
         "fragment layout overflow at {step:?} for {entity_count} entities and {type_node_count} type nodes"
     )]
@@ -59,7 +60,7 @@ pub enum PrepareError {
     Entity {
         ordinal: EntityId,
         #[source]
-        fault: EntityFault,
+        fault: EntityRecordFault,
     },
     #[error("type node {ordinal:?} is invalid: {fault}")]
     TypeNode {
@@ -69,41 +70,53 @@ pub enum PrepareError {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum WriteError {
     #[error("fragment output needs {required} bytes but only {available} are available")]
     OutputTooSmall { required: usize, available: usize },
+    #[error("prepared atom {ordinal:?} no longer fits the compact byte width")]
+    AtomLength {
+        ordinal: AtomId,
+        actual: usize,
+        #[source]
+        source: TryFromIntError,
+    },
+    #[error("prepared atom {ordinal:?} no longer fits its prepared byte region")]
+    AtomExtent { ordinal: AtomId },
 }
 
 pub struct PreparedFragment<'facts> {
+    source: SourceIdentity,
     entities: &'facts [EntityRecord],
     type_nodes: &'facts [TypeNode],
+    atoms: &'facts [AtomInput<'facts>],
     layout: FragmentLayout,
 }
 
 impl<'facts> PreparedFragment<'facts> {
     pub fn prepare(
+        source: SourceIdentity,
         entities: &'facts [EntityRecord],
         type_nodes: &'facts [TypeNode],
+        atoms: &'facts [AtomInput<'facts>],
     ) -> Result<Self, PrepareError> {
-        let entity_count =
-            ItemCount::try_from(entities.len()).map_err(|source| PrepareError::EntityCount {
-                actual: entities.len(),
-                source,
-            })?;
-        let type_node_count = ItemCount::try_from(type_nodes.len()).map_err(|source| {
-            PrepareError::TypeNodeCount {
-                actual: type_nodes.len(),
-                source,
-            }
-        })?;
-        let layout = layout(entity_count, type_node_count)?;
+        let entity_count = count(LayoutStep::EntityLane, entities.len())?;
+        let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
+        let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
+        let atom_byte_count = atom_byte_count(atoms)?;
+        let layout = layout(entity_count, type_node_count, atom_count, atom_byte_count)?;
 
         for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
             if let Some(fault) = entity_fault(entity.semantic_type, type_node_count) {
                 return Err(PrepareError::Entity {
                     ordinal: EntityId::new(ordinal),
-                    fault,
+                    fault: fault.into(),
+                });
+            }
+            if let Some(fault) = entity_name_fault(entity.name, atom_count) {
+                return Err(PrepareError::Entity {
+                    ordinal: EntityId::new(ordinal),
+                    fault: fault.into(),
                 });
             }
         }
@@ -117,8 +130,10 @@ impl<'facts> PreparedFragment<'facts> {
         }
 
         Ok(Self {
+            source,
             entities,
             type_nodes,
+            atoms,
             layout,
         })
     }
@@ -154,10 +169,21 @@ impl<'facts> PreparedFragment<'facts> {
         );
         write_directory_entry(written, 0, SectionKind::EntityTypes, self.layout.entities);
         write_directory_entry(written, 1, SectionKind::TypeNodes, self.layout.type_nodes);
+        write_directory_entry(written, 2, SectionKind::AtomRecords, self.layout.atoms);
+        write_directory_entry(written, 3, SectionKind::AtomBytes, self.layout.atom_bytes);
+        write_directory_entry(
+            written,
+            4,
+            SectionKind::SourceIdentity,
+            self.layout.source_identity,
+        );
 
         let mut entity_cursor = self.layout.entities.start_index;
         for entity in self.entities {
-            write_u32(written, entity_cursor, entity.semantic_type.raw);
+            write_entity(
+                &mut written[entity_cursor..entity_cursor + ENTITY_BYTES],
+                *entity,
+            );
             entity_cursor += ENTITY_BYTES;
         }
         let mut type_cursor = self.layout.type_nodes.start_index;
@@ -168,18 +194,52 @@ impl<'facts> PreparedFragment<'facts> {
             );
             type_cursor += TYPE_NODE_BYTES;
         }
+        write_atoms(written, self.layout, self.atoms)?;
+        write_source_identity(
+            &mut written[self.layout.source_identity.range()],
+            self.source,
+        );
         Ok(written)
     }
+}
+
+fn count(step: LayoutStep, actual: usize) -> Result<ItemCount, PrepareError> {
+    ItemCount::try_from(actual).map_err(|source| PrepareError::Count {
+        lane: step,
+        actual,
+        source,
+    })
+}
+
+fn atom_byte_count(atoms: &[AtomInput<'_>]) -> Result<ItemCount, PrepareError> {
+    let mut total = 0_usize;
+    for (ordinal, atom) in (0..u32::MAX).zip(atoms) {
+        total = total
+            .checked_add(atom.bytes.len())
+            .ok_or(PrepareError::AtomBytePoolOverflow {
+                ordinal: AtomId::new(ordinal),
+            })?;
+    }
+    count(LayoutStep::AtomByteLane, total)
 }
 
 fn layout(
     entity_count: ItemCount,
     type_node_count: ItemCount,
+    atom_count: ItemCount,
+    atom_byte_count: ItemCount,
 ) -> Result<FragmentLayout, PrepareError> {
     let mut cursor = LayoutCursor::new(entity_count, type_node_count)?;
     let entities = cursor.lane(LayoutStep::EntityLane, entity_count, ENTITY_BYTES)?;
     let type_nodes = cursor.lane(LayoutStep::TypeNodeLane, type_node_count, TYPE_NODE_BYTES)?;
-    cursor.finish(entities, type_nodes)
+    let atoms = cursor.lane(LayoutStep::AtomRecordLane, atom_count, ATOM_RECORD_BYTES)?;
+    let atom_bytes = cursor.lane(LayoutStep::AtomByteLane, atom_byte_count, 1)?;
+    let source_identity = cursor.lane(
+        LayoutStep::SourceIdentityLane,
+        ItemCount::from(1),
+        SOURCE_IDENTITY_BYTES,
+    )?;
+    cursor.finish(entities, type_nodes, atoms, atom_bytes, source_identity)
 }
 
 struct LayoutCursor {
@@ -248,6 +308,9 @@ impl LayoutCursor {
         self,
         entities: LaneLayout,
         type_nodes: LaneLayout,
+        atoms: LaneLayout,
+        atom_bytes: LaneLayout,
+        source_identity: LaneLayout,
     ) -> Result<FragmentLayout, PrepareError> {
         let output_wire_len =
             ByteLength::try_from(self.next_index).map_err(|source| PrepareError::OutputLength {
@@ -257,6 +320,9 @@ impl LayoutCursor {
         Ok(FragmentLayout {
             entities,
             type_nodes,
+            atoms,
+            atom_bytes,
+            source_identity,
             output_len: self.next_index,
             output_wire_len,
         })
@@ -269,6 +335,44 @@ impl LayoutCursor {
             type_node_count: u32::from(self.type_node_count),
         }
     }
+}
+
+fn write_atoms(
+    output: &mut [u8],
+    layout: FragmentLayout,
+    atoms: &[AtomInput<'_>],
+) -> Result<(), WriteError> {
+    let mut record_cursor = layout.atoms.start_index;
+    let mut bytes_cursor = layout.atom_bytes.start_index;
+    let mut relative_start = 0_u32;
+    for (ordinal, atom) in (0..u32::MAX).zip(atoms) {
+        let atom_length =
+            u32::try_from(atom.bytes.len()).map_err(|source| WriteError::AtomLength {
+                ordinal: AtomId::new(ordinal),
+                actual: atom.bytes.len(),
+                source,
+            })?;
+        let bytes_end = bytes_cursor
+            .checked_add(atom.bytes.len())
+            .filter(|end| *end <= layout.atom_bytes.end_index)
+            .ok_or(WriteError::AtomExtent {
+                ordinal: AtomId::new(ordinal),
+            })?;
+        write_atom_record(
+            &mut output[record_cursor..record_cursor + ATOM_RECORD_BYTES],
+            relative_start,
+            atom_length,
+        );
+        output[bytes_cursor..bytes_end].copy_from_slice(atom.bytes);
+        record_cursor += ATOM_RECORD_BYTES;
+        bytes_cursor = bytes_end;
+        relative_start = relative_start
+            .checked_add(atom_length)
+            .ok_or(WriteError::AtomExtent {
+                ordinal: AtomId::new(ordinal),
+            })?;
+    }
+    Ok(())
 }
 
 fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, lane: LaneLayout) {

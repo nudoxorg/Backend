@@ -1,5 +1,6 @@
 use nudox_compile_driver::{CompileFailure, CompileRequest, CompileScratch, NativeTool, compile};
 use nudox_compile_vocab::Language;
+use nudox_ir_format::{EntityKind, PrimitiveType, TypeNode};
 
 #[test]
 fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), CompileFailure> {
@@ -12,7 +13,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), C
         ),
     ];
     for (language, source) in cases {
-        let mut output = [0xa5; 128];
+        let mut output = [0xa5; 256];
         let output_pointer = output.as_ptr();
         let fragment_len = {
             let compiled = compile(
@@ -42,7 +43,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), C
 #[test]
 fn syntax_rejection_retains_the_exact_source_identity() {
     let source = b"pub const = ;";
-    let mut output = [0xa5; 128];
+    let mut output = [0xa5; 256];
     let failure = compile(
         CompileRequest {
             language: Language::Rust,
@@ -74,7 +75,7 @@ fn syntax_rejection_retains_the_exact_source_identity() {
 #[test]
 fn unavailable_tooling_is_an_explicit_typed_terminal() {
     let source = b"export const unavailable: number = 1;";
-    let mut output = [0xa5; 128];
+    let mut output = [0xa5; 256];
     assert!(matches!(
         compile(
             CompileRequest {
@@ -98,8 +99,8 @@ fn unavailable_tooling_is_an_explicit_typed_terminal() {
 fn source_identity_rejects_an_input_ignoring_compile_mutant() -> Result<(), CompileFailure> {
     let first_source = b"pub const FIRST: u8 = 1;";
     let second_source = b"pub const THIRD: u8 = 1;";
-    let mut first_output = [0; 128];
-    let mut second_output = [0; 128];
+    let mut first_output = [0; 256];
+    let mut second_output = [0; 256];
     let first = compile(
         CompileRequest {
             language: Language::Rust,
@@ -119,6 +120,56 @@ fn source_identity_rejects_an_input_ignoring_compile_mutant() -> Result<(), Comp
         },
     )?;
     assert_eq!(first.source.byte_len, second.source.byte_len);
-    assert_ne!(first.source.digest, second.source.digest);
+    assert_ne!(first.source.identity, second.source.identity);
+    Ok(())
+}
+
+#[test]
+fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
+-> Result<(), CompileFailure> {
+    let alpha_source = b"pub const alpha: bool = true;";
+    let bravo_source = b"pub const bravo: i32 = 1;";
+    let mut alpha_output = [0; 256];
+    let mut bravo_output = [0; 256];
+    let alpha = compile(
+        CompileRequest {
+            language: Language::Rust,
+            source: alpha_source,
+        },
+        CompileScratch {
+            fragment_output: &mut alpha_output,
+        },
+    )?;
+    let bravo = compile(
+        CompileRequest {
+            language: Language::Rust,
+            source: bravo_source,
+        },
+        CompileScratch {
+            fragment_output: &mut bravo_output,
+        },
+    )?;
+
+    assert_ne!(alpha.fragment.as_ref(), bravo.fragment.as_ref());
+    assert_eq!(
+        alpha.fragment.entities().next().map(|entity| entity.kind),
+        Some(EntityKind::Constant)
+    );
+    assert_eq!(
+        alpha.fragment.atoms().next().map(|atom| atom.bytes),
+        Some(&b"alpha"[..])
+    );
+    assert_eq!(
+        bravo.fragment.atoms().next().map(|atom| atom.bytes),
+        Some(&b"bravo"[..])
+    );
+    assert!(alpha
+        .fragment
+        .type_nodes()
+        .eq([TypeNode::Primitive(PrimitiveType::Bool)]));
+    assert!(bravo
+        .fragment
+        .type_nodes()
+        .eq([TypeNode::Primitive(PrimitiveType::I32)]));
     Ok(())
 }

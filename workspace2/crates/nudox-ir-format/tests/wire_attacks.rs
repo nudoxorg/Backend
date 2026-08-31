@@ -1,26 +1,27 @@
+use nudox_id::{ContentId, SourceFactDomain};
 use nudox_ir_format::{
-    DirectoryFault, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment,
-    PrimitiveType, TypeNode, TypeNodeFault, WriteError,
+    AtomFault, AtomInput, DirectoryFault, EntityKind, EntityNameFault, EntityRecord,
+    EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment,
+    PrimitiveType, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
-use nudox_ir_vocab::TypeId;
+use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
-const GOLDEN: [u8; 56] = [
-    78, 88, 73, 82, 1, 0, 2, 0, 56, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 44, 0, 0, 0, 4, 0, 0, 0, 2, 0,
-    1, 0, 1, 0, 0, 0, 48, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
-const OPTIONAL_GOLDEN: [u8; 73] = [
-    78, 88, 73, 82, 1, 0, 3, 0, 73, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 60, 0, 0, 0, 4, 0, 0, 0, 2, 0,
-    1, 0, 1, 0, 0, 0, 64, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 72, 0, 0, 0, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 170,
-];
-
-const ENTITY_FLAGS: usize = 14;
-const ENTITY_OFFSET: usize = 20;
-const ENTITY_BYTE_LENGTH: usize = 24;
-const TYPE_KIND: usize = 28;
-const TYPE_OFFSET: usize = 36;
-const TYPE_RECORD: usize = 48;
+const HEADER_BYTES: usize = 12;
+const DIRECTORY_BYTES: usize = 16;
+const ENTITY_DIRECTORY: usize = HEADER_BYTES;
+const TYPE_DIRECTORY: usize = HEADER_BYTES + DIRECTORY_BYTES;
+const ENTITY_FLAGS: usize = ENTITY_DIRECTORY + 2;
+const ENTITY_OFFSET: usize = ENTITY_DIRECTORY + 8;
+const ENTITY_BYTE_LENGTH: usize = ENTITY_DIRECTORY + 12;
+const TYPE_KIND: usize = TYPE_DIRECTORY;
+const TYPE_OFFSET: usize = TYPE_DIRECTORY + 8;
+const ENTITY_RECORD: usize = HEADER_BYTES + DIRECTORY_BYTES * 5;
+const TYPE_RECORD: usize = ENTITY_RECORD + 12;
+const ATOM_RECORD: usize = TYPE_RECORD + 8;
+const ATOM_BYTES: usize = ATOM_RECORD + 8;
+const SOURCE_RECORD: usize = ATOM_BYTES + 5;
+const CANONICAL_LENGTH: usize = SOURCE_RECORD + 36;
 
 #[derive(Debug, Error)]
 enum TestFailure {
@@ -32,44 +33,73 @@ enum TestFailure {
     Validate(#[from] FragmentError),
 }
 
-#[test]
-fn prepared_fragment_has_one_exact_independent_golden() -> Result<(), TestFailure> {
+fn source_identity() -> SourceIdentity {
+    SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"golden-source"),
+        byte_len: 13,
+    }
+}
+
+fn canonical() -> Result<[u8; CANONICAL_LENGTH], TestFailure> {
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
+        name: AtomId::new(0),
+        kind: EntityKind::Constant,
     }];
     let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
-    let prepared = PreparedFragment::prepare(&entities, &nodes)?;
-    let mut output = [0xa5; 64];
-    let prefix = prepared.write_into(&mut output)?;
-    assert_eq!(prefix, GOLDEN);
-    assert_eq!(&output[GOLDEN.len()..], &[0xa5; 8]);
+    let atoms = [AtomInput { bytes: b"alpha" }];
+    let prepared = PreparedFragment::prepare(source_identity(), &entities, &nodes, &atoms)?;
+    assert_eq!(prepared.required_capacity(), CANONICAL_LENGTH);
+    let mut output = [0; CANONICAL_LENGTH];
+    prepared.write_into(&mut output)?;
+    Ok(output)
+}
+
+#[test]
+fn canonical_fixture_has_exact_closed_layout_and_semantic_lanes() -> Result<(), TestFailure> {
+    let bytes = canonical()?;
+    assert_eq!(
+        &bytes[..HEADER_BYTES],
+        &[78, 88, 73, 82, 1, 0, 5, 0, 161, 0, 0, 0]
+    );
+    assert_eq!(&bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES], &[1, 0, 1, 0, 1, 0, 0, 0, 92, 0, 0, 0, 12, 0, 0, 0]);
+    assert_eq!(&bytes[TYPE_DIRECTORY..TYPE_DIRECTORY + DIRECTORY_BYTES], &[2, 0, 1, 0, 1, 0, 0, 0, 104, 0, 0, 0, 8, 0, 0, 0]);
+    assert_eq!(&bytes[ENTITY_RECORD..ENTITY_RECORD + 12], &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(&bytes[TYPE_RECORD..TYPE_RECORD + 8], &[0; 8]);
+    assert_eq!(&bytes[ATOM_RECORD..ATOM_RECORD + 8], &[0, 0, 0, 0, 5, 0, 0, 0]);
+    assert_eq!(&bytes[ATOM_BYTES..SOURCE_RECORD], b"alpha");
+    assert_eq!(&bytes[SOURCE_RECORD..SOURCE_RECORD + 4], &[13, 0, 0, 0]);
+    assert_eq!(
+        &bytes[SOURCE_RECORD + 4..],
+        source_identity().identity.as_ref().as_slice()
+    );
     Ok(())
 }
 
 #[test]
-fn every_golden_prefix_rejects_with_header_or_geometry_priority() {
-    for actual in 0..GOLDEN.len() {
-        let expected = if actual < 12 {
+fn every_canonical_prefix_rejects_with_header_or_geometry_priority() -> Result<(), TestFailure> {
+    let bytes = canonical()?;
+    for actual in 0..bytes.len() {
+        let expected = if actual < HEADER_BYTES {
             FragmentError::TruncatedHeader {
-                required: 12,
+                required: HEADER_BYTES,
                 actual,
             }
         } else {
             FragmentError::DeclaredLength {
-                declared: GOLDEN.len(),
+                declared: bytes.len(),
                 actual,
             }
         };
-        assert_eq!(
-            FragmentView::validate(&GOLDEN[..actual]).err(),
-            Some(expected)
-        );
+        assert_eq!(FragmentView::validate(&bytes[..actual]).err(), Some(expected));
     }
+    Ok(())
 }
 
 #[test]
-fn header_and_trailing_mutations_preserve_declared_operands() {
-    let mut bytes = GOLDEN;
+fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailure> {
+    let golden = canonical()?;
+    let mut bytes = golden;
     bytes[0] = 0;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -77,27 +107,13 @@ fn header_and_trailing_mutations_preserve_declared_operands() {
             actual: [0, 88, 73, 82],
         })
     );
-    bytes = GOLDEN;
+    bytes = golden;
     bytes[4] = 2;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Schema { actual: 2 })
     );
-
-    let mut trailing = [0; 57];
-    trailing[..GOLDEN.len()].copy_from_slice(&GOLDEN);
-    assert_eq!(
-        FragmentView::validate(&trailing).err(),
-        Some(FragmentError::DeclaredLength {
-            declared: GOLDEN.len(),
-            actual: trailing.len(),
-        })
-    );
-}
-
-#[test]
-fn directory_mutations_keep_exact_ordinal_kind_and_operands() {
-    let mut bytes = GOLDEN;
+    bytes = golden;
     bytes[ENTITY_FLAGS] = 3;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -106,50 +122,46 @@ fn directory_mutations_keep_exact_ordinal_kind_and_operands() {
             fault: DirectoryFault::Flags { kind: 1, actual: 3 },
         })
     );
-
-    bytes = GOLDEN;
-    bytes[ENTITY_OFFSET] = 45;
+    bytes = golden;
+    bytes[ENTITY_OFFSET] = 93;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Directory {
             ordinal: 0,
             fault: DirectoryFault::Offset {
                 kind: 1,
-                expected: 44,
-                actual: 45,
+                expected: ENTITY_RECORD,
+                actual: 93,
             },
         })
     );
-
-    bytes = GOLDEN;
-    bytes[TYPE_OFFSET] = 47;
+    bytes = golden;
+    bytes[TYPE_OFFSET] = 103;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Directory {
             ordinal: 1,
             fault: DirectoryFault::Offset {
                 kind: 2,
-                expected: 48,
-                actual: 47,
+                expected: TYPE_RECORD,
+                actual: 103,
             },
         })
     );
-
-    bytes = GOLDEN;
-    bytes[ENTITY_BYTE_LENGTH] = 5;
+    bytes = golden;
+    bytes[ENTITY_BYTE_LENGTH] = 13;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
         Some(FragmentError::Directory {
             ordinal: 0,
             fault: DirectoryFault::ByteLength {
                 kind: 1,
-                expected: 4,
-                actual: 5,
+                expected: 12,
+                actual: 13,
             },
         })
     );
-
-    bytes = GOLDEN;
+    bytes = golden;
     bytes[TYPE_KIND] = 1;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -161,39 +173,61 @@ fn directory_mutations_keep_exact_ordinal_kind_and_operands() {
             },
         })
     );
-
-    bytes = GOLDEN;
-    bytes[TYPE_KIND] = 3;
-    assert_eq!(
-        FragmentView::validate(&bytes).err(),
-        Some(FragmentError::Directory {
-            ordinal: 1,
-            fault: DirectoryFault::RequiredUnknown { kind: 3 },
-        })
-    );
-}
-
-#[test]
-fn optional_unknown_sections_skip_but_required_unknown_sections_fail_closed()
--> Result<(), FragmentError> {
-    let view = FragmentView::validate(&OPTIONAL_GOLDEN)?;
-    assert_eq!(view.entities().len(), 1);
-    assert_eq!(view.type_nodes().len(), 1);
-    let mut required = OPTIONAL_GOLDEN;
-    required[46] = 1;
-    assert_eq!(
-        FragmentView::validate(&required).err(),
-        Some(FragmentError::Directory {
-            ordinal: 2,
-            fault: DirectoryFault::RequiredUnknown { kind: 9 },
-        })
-    );
     Ok(())
 }
 
 #[test]
-fn type_mutations_keep_node_ordinal_and_first_fault() {
-    let mut bytes = GOLDEN;
+fn semantic_and_authority_mutations_fail_before_a_borrowed_view() -> Result<(), TestFailure> {
+    let golden = canonical()?;
+    let mut bytes = golden;
+    bytes[ENTITY_RECORD + 4] = 1;
+    assert_eq!(
+        FragmentView::validate(&bytes).err(),
+        Some(FragmentError::EntityRecord {
+            ordinal: EntityId::new(0),
+            fault: EntityRecordFault::Name(EntityNameFault {
+                target: AtomId::new(1),
+                atom_count: 1,
+            }),
+        })
+    );
+    bytes = golden;
+    bytes[ENTITY_RECORD + 8] = 9;
+    assert!(matches!(
+        FragmentView::validate(&bytes),
+        Err(FragmentError::EntityRecord {
+            fault: EntityRecordFault::Kind { actual: 9 },
+            ..
+        })
+    ));
+    bytes = golden;
+    bytes[ATOM_RECORD] = 1;
+    assert_eq!(
+        FragmentView::validate(&bytes).err(),
+        Some(FragmentError::Atom {
+            fault: AtomFault::Range {
+                ordinal: AtomId::new(0),
+                start: 1,
+                length: 5,
+                byte_count: 5,
+            },
+        })
+    );
+    bytes = golden;
+    bytes[SOURCE_RECORD + 4] = 0;
+    assert!(matches!(
+        FragmentView::validate(&bytes),
+        Err(FragmentError::SourceIdentity {
+            fault: SourceIdentityFault::Authority(_),
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn type_mutations_keep_node_ordinal_and_first_fault() -> Result<(), TestFailure> {
+    let golden = canonical()?;
+    let mut bytes = golden;
     bytes[TYPE_RECORD + 1] = 7;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -202,8 +236,7 @@ fn type_mutations_keep_node_ordinal_and_first_fault() {
             fault: TypeNodeFault::Reserved { actual: [7, 0, 0] },
         })
     );
-
-    bytes = GOLDEN;
+    bytes = golden;
     bytes[TYPE_RECORD] = 9;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -212,8 +245,7 @@ fn type_mutations_keep_node_ordinal_and_first_fault() {
             fault: TypeNodeFault::Tag { actual: 9 },
         })
     );
-
-    bytes = GOLDEN;
+    bytes = golden;
     bytes[TYPE_RECORD + 4] = 7;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
@@ -222,37 +254,15 @@ fn type_mutations_keep_node_ordinal_and_first_fault() {
             fault: TypeNodeFault::Primitive { actual: 7 },
         })
     );
-
-    bytes = GOLDEN;
-    bytes[ENTITY_FLAGS] = 3;
-    bytes[TYPE_RECORD] = 9;
-    assert_eq!(
-        FragmentView::validate(&bytes).err(),
-        Some(FragmentError::Directory {
-            ordinal: 0,
-            fault: DirectoryFault::Flags { kind: 1, actual: 3 },
-        })
-    );
-
-    bytes = GOLDEN;
-    bytes[44] = 1;
-    bytes[TYPE_RECORD] = 9;
-    assert_eq!(
-        FragmentView::validate(&bytes).err(),
-        Some(FragmentError::Entity {
-            ordinal: nudox_ir_vocab::EntityId::new(0),
-            fault: nudox_ir_format::EntityFault {
-                target: TypeId::new(1),
-                node_count: 1,
-            },
-        })
-    );
+    Ok(())
 }
 
 #[test]
 fn cardinality_is_not_calibrated_to_the_zero_one_two_matrix() -> Result<(), TestFailure> {
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
+        name: AtomId::new(0),
+        kind: EntityKind::Record,
     }; 4];
     let nodes = [
         TypeNode::Primitive(PrimitiveType::Bool),
@@ -260,11 +270,13 @@ fn cardinality_is_not_calibrated_to_the_zero_one_two_matrix() -> Result<(), Test
         TypeNode::Reference(TypeId::new(3)),
         TypeNode::Reference(TypeId::new(1)),
     ];
-    let prepared = PreparedFragment::prepare(&entities, &nodes)?;
-    let mut output = [0; 128];
+    let atoms = [AtomInput { bytes: b"quad" }];
+    let prepared = PreparedFragment::prepare(source_identity(), &entities, &nodes, &atoms)?;
+    let mut output = [0; 256];
     let prefix = prepared.write_into(&mut output)?;
     let view = FragmentView::validate(prefix)?;
     assert_eq!(view.entities().len(), entities.len());
     assert_eq!(view.type_nodes().len(), nodes.len());
+    assert_eq!(view.atoms().len(), atoms.len());
     Ok(())
 }

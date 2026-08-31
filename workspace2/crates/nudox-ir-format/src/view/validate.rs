@@ -1,4 +1,4 @@
-use nudox_ir_vocab::{EntityId, TypeId};
+use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 
 use crate::{
     view::{
@@ -6,9 +6,10 @@ use crate::{
         directory::{DirectoryState, ParsedDirectoryEntry, directory_fault},
     },
     wire::{
-        ByteLength, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout, HEADER_LAYOUT,
-        SectionCount, SectionKind, SectionRequirement, TYPE_NODE_BYTES, decode_type_node,
-        entity_fault, read_u16, read_u32, type_node_fault,
+        ATOM_RECORD_BYTES, ByteLength, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout,
+        HEADER_LAYOUT, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind, SectionRequirement,
+        TYPE_NODE_BYTES, atom_fault, decode_entity, decode_source_identity, decode_type_node,
+        entity_fault, entity_name_fault, read_u16, read_u32, type_node_fault,
     },
 };
 
@@ -19,12 +20,34 @@ impl<'fragment> FragmentView<'fragment> {
         for (ordinal, record) in
             (0..u32::from(layout.entities.count)).zip(entity_lane.chunks_exact(ENTITY_BYTES))
         {
-            let target = TypeId::new(read_u32(record, 0));
-            if let Some(fault) = entity_fault(target, layout.type_nodes.count) {
+            let entity = match decode_entity(record) {
+                Ok(entity) => entity,
+                Err(fault) => {
+                    return Err(FragmentError::EntityRecord {
+                        ordinal: EntityId::new(ordinal),
+                        fault,
+                    });
+                }
+            };
+            if let Some(fault) = entity_fault(entity.semantic_type, layout.type_nodes.count) {
                 return Err(FragmentError::Entity {
                     ordinal: EntityId::new(ordinal),
                     fault,
                 });
+            }
+            if let Some(fault) = entity_name_fault(entity.name, layout.atoms.count) {
+                return Err(FragmentError::EntityRecord {
+                    ordinal: EntityId::new(ordinal),
+                    fault: fault.into(),
+                });
+            }
+        }
+        let atom_lane = &envelope[layout.atoms.range()];
+        for (ordinal, record) in
+            (0..u32::from(layout.atoms.count)).zip(atom_lane.chunks_exact(ATOM_RECORD_BYTES))
+        {
+            if let Some(fault) = atom_fault(AtomId::new(ordinal), record, layout.atom_bytes.count) {
+                return Err(FragmentError::Atom { fault });
             }
         }
 
@@ -48,10 +71,15 @@ impl<'fragment> FragmentView<'fragment> {
                 });
             }
         }
+        let source_identity = decode_source_identity(&envelope[layout.source_identity.range()])
+            .map_err(|fault| FragmentError::SourceIdentity { fault })?;
         Ok(Self {
             envelope,
             entities: entity_lane,
             type_nodes: type_lane,
+            atoms: atom_lane,
+            atom_bytes: &envelope[layout.atom_bytes.range()],
+            source_identity,
         })
     }
 }
@@ -111,6 +139,9 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut state = DirectoryState::first(directory_end);
     let mut entities = None;
     let mut type_nodes = None;
+    let mut source_identity = None;
+    let mut atoms = None;
+    let mut atom_bytes = None;
     for _ in 0..u16::from(section_count) {
         let (next_state, entry) = state.parse(envelope)?;
         match SectionKind::try_from(entry.kind) {
@@ -123,6 +154,31 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 validate_known_length(&entry, TYPE_NODE_BYTES)?;
                 require_known(&entry)?;
                 type_nodes = Some(entry.lane);
+            }
+            Ok(SectionKind::SourceIdentity) => {
+                validate_known_length(&entry, SOURCE_IDENTITY_BYTES)?;
+                require_known(&entry)?;
+                if u32::from(entry.lane.count) != 1 {
+                    return Err(directory_fault(
+                        entry.ordinal,
+                        DirectoryFault::Count {
+                            kind: entry.kind,
+                            expected: 1,
+                            actual: u32::from(entry.lane.count),
+                        },
+                    ));
+                }
+                source_identity = Some(entry.lane);
+            }
+            Ok(SectionKind::AtomRecords) => {
+                validate_known_length(&entry, ATOM_RECORD_BYTES)?;
+                require_known(&entry)?;
+                atoms = Some(entry.lane);
+            }
+            Ok(SectionKind::AtomBytes) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                atom_bytes = Some(entry.lane);
             }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
                 return Err(directory_fault(
@@ -146,9 +202,21 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let type_nodes = type_nodes.ok_or(FragmentError::MissingSection {
         section: SectionKind::TypeNodes,
     })?;
+    let source_identity = source_identity.ok_or(FragmentError::MissingSection {
+        section: SectionKind::SourceIdentity,
+    })?;
+    let atoms = atoms.ok_or(FragmentError::MissingSection {
+        section: SectionKind::AtomRecords,
+    })?;
+    let atom_bytes = atom_bytes.ok_or(FragmentError::MissingSection {
+        section: SectionKind::AtomBytes,
+    })?;
     Ok(FragmentLayout {
         entities,
         type_nodes,
+        atoms,
+        atom_bytes,
+        source_identity,
         output_len: envelope.len(),
         output_wire_len: declared_wire_length,
     })

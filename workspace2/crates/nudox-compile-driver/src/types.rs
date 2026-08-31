@@ -1,24 +1,18 @@
 use core::num::TryFromIntError;
 
-use blake3::Hasher;
 use nudox_compile_vocab::Language;
+use nudox_id::{ContentId, SourceFactDomain};
 use nudox_ir_format::{
-    EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType,
+    AtomInput, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment,
     TypeNode, WriteError,
 };
-use nudox_ir_vocab::TypeId;
+use nudox_ir_vocab::{AtomId, TypeId};
 use thiserror::Error;
 
+use crate::lower::declaration;
 use crate::native::parse_with_native_tool;
 
-/// One immutable source fact carried through parser admission and IR publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceIdentity {
-    /// BLAKE3 digest of the exact source bytes passed to the native tool.
-    pub digest: [u8; blake3::OUT_LEN],
-    /// Exact source length established before any native work begins.
-    pub byte_len: u32,
-}
+pub use nudox_ir_format::SourceIdentity;
 
 /// The concrete native tool selected by the closed language dispatcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +114,12 @@ pub enum CompileFailure {
     /// The freshly written compact IR failed its own borrowed validation.
     #[error("fresh compact IR failed validation")]
     Validate(#[from] FragmentError),
+    /// Native syntax passed but the supported compact semantic recipe found no declaration fact.
+    #[error("{language:?} source {source_identity:?} has no declaration supported by LowerIr")]
+    MissingDeclaration {
+        language: Language,
+        source_identity: SourceIdentity,
+    },
 }
 
 /// Parses exact source with one closed native adapter, then lowers its validated-source fact.
@@ -127,13 +127,24 @@ pub fn compile<'source, 'output>(
     request: CompileRequest<'source>,
     scratch: CompileScratch<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure> {
-    let source = SourceIdentity::from_bytes(request.source)?;
+    let source = source_identity(request.source)?;
     parse_with_native_tool(request.language, source, request.source)?;
+    let declaration = declaration(request.language, request.source).ok_or(
+        CompileFailure::MissingDeclaration {
+            language: request.language,
+            source_identity: source,
+        },
+    )?;
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
+        name: AtomId::new(0),
+        kind: declaration.kind,
     }];
-    let nodes = [TypeNode::Primitive(PrimitiveType::I32)];
-    let prepared = PreparedFragment::prepare(&entities, &nodes)?;
+    let nodes = [TypeNode::Primitive(declaration.semantic_type)];
+    let atoms = [AtomInput {
+        bytes: declaration.name,
+    }];
+    let prepared = PreparedFragment::prepare(source, &entities, &nodes, &atoms)?;
     let bytes = prepared.write_into(scratch.fragment_output)?;
     let fragment = FragmentView::validate(bytes)?;
     Ok(CompiledFragment {
@@ -143,18 +154,14 @@ pub fn compile<'source, 'output>(
     })
 }
 
-impl SourceIdentity {
-    fn from_bytes(source_bytes: &[u8]) -> Result<Self, CompileFailure> {
-        let byte_len =
-            u32::try_from(source_bytes.len()).map_err(|source| CompileFailure::SourceLength {
-                actual: source_bytes.len(),
-                source,
-            })?;
-        let mut hasher = Hasher::new();
-        hasher.update(source_bytes);
-        Ok(Self {
-            digest: *hasher.finalize().as_bytes(),
-            byte_len,
-        })
-    }
+fn source_identity(source_bytes: &[u8]) -> Result<SourceIdentity, CompileFailure> {
+    let byte_len =
+        u32::try_from(source_bytes.len()).map_err(|source| CompileFailure::SourceLength {
+            actual: source_bytes.len(),
+            source,
+        })?;
+    Ok(SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+        byte_len,
+    })
 }

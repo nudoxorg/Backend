@@ -3,7 +3,10 @@ use core::num::TryFromIntError;
 use nudox_ir_vocab::{EntityId, TypeId};
 use thiserror::Error;
 
-use crate::{EntityFault, TypeNodeFault, wire::SectionKind};
+use crate::{
+    AtomFault, EntityFault, EntityRecordFault, SourceIdentityFault, TypeNodeFault,
+    wire::SectionKind,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WireField {
@@ -13,7 +16,7 @@ pub enum WireField {
     SectionByteLength { ordinal: u16 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Eq, Error, PartialEq)]
 pub enum DirectoryFault {
     #[error("section kind {actual} does not follow {previous}")]
     Order { previous: u16, actual: u16 },
@@ -33,13 +36,19 @@ pub enum DirectoryFault {
         expected: usize,
         actual: u32,
     },
+    #[error("section {kind} has {actual} records, not {expected}")]
+    Count {
+        kind: u16,
+        expected: u32,
+        actual: u32,
+    },
     #[error("section {kind} count {count} times width {width} overflows")]
     CountWidthOverflow { kind: u16, count: u32, width: usize },
     #[error("section {kind} range {start}+{length} overflows")]
     RangeOverflow { kind: u16, start: u32, length: u32 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Eq, Error, PartialEq)]
 pub enum FragmentError {
     #[error("fragment header needs {required} bytes but only {actual} are present")]
     TruncatedHeader { required: usize, actual: usize },
@@ -72,10 +81,26 @@ pub enum FragmentError {
         #[source]
         fault: EntityFault,
     },
+    #[error("entity {ordinal:?} is invalid: {fault}")]
+    EntityRecord {
+        ordinal: EntityId,
+        #[source]
+        fault: EntityRecordFault,
+    },
+    #[error("atom is invalid: {fault}")]
+    Atom {
+        #[source]
+        fault: AtomFault,
+    },
     #[error("type node {ordinal:?} is invalid: {fault}")]
     TypeNode {
         ordinal: TypeId,
         #[source]
         fault: TypeNodeFault,
+    },
+    #[error("source identity is invalid: {fault}")]
+    SourceIdentity {
+        #[source]
+        fault: SourceIdentityFault,
     },
 }
