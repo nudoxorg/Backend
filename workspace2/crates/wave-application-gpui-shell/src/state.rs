@@ -305,6 +305,26 @@ pub struct ReplyProjection {
     pub diagnostic: Option<Diagnostic>,
 }
 
+/// Native text surface currently owning platform composition and selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextInputTarget {
+    /// Command-palette query.
+    Palette,
+    /// Closed typed form field.
+    Form(FormField),
+}
+
+/// Exact fixed-bound rejection from platform paste or composition input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeTextInputError {
+    /// Native text surface that rejected the replacement.
+    pub target: TextInputTarget,
+    /// Requested UTF-8 byte length after replacement.
+    pub actual: usize,
+    /// Fixed accepted UTF-8 byte length.
+    pub maximum: usize,
+}
+
 /// Fixed-capacity presentation state for one application window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShellState {
@@ -345,6 +365,10 @@ pub struct ShellProjection {
     /// Most recent bounded projection rejection, retained instead of being dropped by an
     /// asynchronous UI update.
     pub projection_error: Option<ApplyError>,
+    /// Exact native text replacement rejection, if the fixed field bound rejected an edit.
+    pub input_error: Option<NativeTextInputError>,
+    /// Operation currently owned by the retained wake-driven foreground task.
+    pub foreground_operation: Option<OperationKey>,
 }
 
 impl Deref for ShellState {
@@ -389,6 +413,18 @@ impl ShellState {
     #[cfg(feature = "real-gpui")]
     pub(crate) fn retain_form_error(&mut self, error: Option<FormError>) {
         self.projection.form_error = error;
+    }
+
+    /// Retains or clears the exact native text replacement rejection.
+    #[cfg(feature = "real-gpui")]
+    pub(crate) fn retain_input_error(&mut self, error: Option<NativeTextInputError>) {
+        self.projection.input_error = error;
+    }
+
+    /// Publishes the operation currently owned by the wake-driven foreground task.
+    #[cfg(feature = "real-gpui")]
+    pub(crate) fn set_foreground_operation(&mut self, operation: Option<OperationKey>) {
+        self.projection.foreground_operation = operation;
     }
 
     /// Replaces the active graph/vector/search typed result limit.
@@ -800,6 +836,8 @@ impl Default for ShellState {
                 form: None,
                 form_error: None,
                 projection_error: None,
+                input_error: None,
+                foreground_operation: None,
             },
         }
     }

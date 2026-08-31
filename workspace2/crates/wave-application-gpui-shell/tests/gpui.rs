@@ -2,19 +2,21 @@
 
 #[cfg(feature = "real-gpui")]
 use gpui::{
-    AppContext, Context, IntoElement, Render, ScrollStrategy, TestAppContext,
-    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    AppContext, Bounds, Context, EntityInputHandler, IntoElement, Render, ScrollStrategy,
+    TestAppContext, UniformListScrollHandle, Window, div, point, prelude::*, px, size,
+    uniform_list,
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_core::{
     AdaptiveDisposition, ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability,
-    CapabilityDomain, CorrelationId, ExecutionState, GenerationId, InconsistentRecovery,
-    IndexSnapshotId, OperationBudget, OperationKey, Pin, Pressure, RecoveryCause, ReplyBody,
-    ResourceBudget, RetryBudget, Terminal,
+    CapabilityDomain, CorrelationId, ExecutionState, GenerationId, INPUT_TEXT_BYTES,
+    InconsistentRecovery, IndexSnapshotId, OperationBudget, OperationKey, Pin, Pressure,
+    RecoveryCause, ReplyBody, ResourceBudget, RetryBudget, Terminal,
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_gpui_shell::{
-    CommandId, FormField, FormState, GpuiShellView, ProjectionState, Route,
+    CommandId, FormField, FormState, GpuiShellView, NativeTextInputError, ProjectionState, Route,
+    TextInputTarget,
 };
 
 #[cfg(feature = "real-gpui")]
@@ -174,6 +176,7 @@ fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppCo
     assert_eq!(admitted.terminal, Terminal::Accepted { operation });
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.summaries()[2].state, ProjectionState::Accepted);
+        assert_eq!(view.foreground_operation, Some(operation));
     });
 
     cx.run_until_parked();
@@ -187,6 +190,7 @@ fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppCo
             } if observed == operation
         ));
         assert_eq!(view.projection_error, None);
+        assert_eq!(view.foreground_operation, None);
     });
 
     let (inconsistent, observed) = inconsistent_input();
@@ -233,6 +237,7 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
     assert_eq!(cancelled.terminal, Terminal::Cancelled { emitted: 0 });
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.summaries()[2].state, ProjectionState::Cancelled);
+        assert_eq!(view.foreground_operation, None);
     });
 
     let health_input = ApplicationInput::Health {
@@ -297,6 +302,7 @@ fn stale_cancel_keeps_the_admitted_execution_wake_driver(cx: &mut TestAppContext
             } if observed == operation
         ));
         assert_eq!(view.summaries()[2].state, ProjectionState::Ready);
+        assert_eq!(view.foreground_operation, None);
     });
 }
 
@@ -403,6 +409,130 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
 }
 
 #[cfg(feature = "real-gpui")]
+fn find_character_index(
+    view: &mut GpuiShellView,
+    expected: usize,
+    window: &mut Window,
+    cx: &mut Context<GpuiShellView>,
+) -> Option<usize> {
+    for x in i16::MIN..=i16::MAX {
+        let candidate = EntityInputHandler::character_index_for_point(
+            view,
+            point(px(f32::from(x)), px(0.0)),
+            window,
+            cx,
+        );
+        if candidate == Some(expected) {
+            return candidate;
+        }
+    }
+    None
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn native_text_handler_normalizes_surrogate_selections_and_composition(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("😀x");
+
+    let selection = view.update_in(cx, |view, window, cx| {
+        EntityInputHandler::set_selected_text_range(view, 1..1, window, cx);
+        EntityInputHandler::selected_text_range(view, false, window, cx)
+    });
+    assert_eq!(selection.map(|selection| selection.range), Some(0..0));
+
+    let (composition_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-k");
+    let (composition_selection, marked_range) =
+        composition_view.update_in(cx, |view, window, cx| {
+            EntityInputHandler::replace_and_mark_text_in_range(
+                view,
+                None,
+                "😀",
+                Some(1..1),
+                window,
+                cx,
+            );
+            (
+                EntityInputHandler::selected_text_range(view, false, window, cx),
+                EntityInputHandler::marked_text_range(view, window, cx),
+            )
+        });
+    assert_eq!(
+        composition_selection.map(|selection| selection.range),
+        Some(0..0)
+    );
+    assert_eq!(marked_range, Some(0..2));
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn native_text_handler_maps_ranges_and_field_hit_tests(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("😀x");
+
+    let (composition_bounds, left_index, right_index, clicked_index, text, adjusted) = view
+        .update_in(cx, |view, window, cx| {
+            let composition_bounds = EntityInputHandler::bounds_for_range(
+                view,
+                1..2,
+                Bounds::new(point(px(10.0), px(20.0)), size(px(90.0), px(18.0))),
+                window,
+                cx,
+            );
+            let left_index = EntityInputHandler::character_index_for_point(
+                view,
+                point(px(-1_000_000.0), px(0.0)),
+                window,
+                cx,
+            );
+            let right_index = EntityInputHandler::character_index_for_point(
+                view,
+                point(px(1_000_000.0), px(0.0)),
+                window,
+                cx,
+            );
+            let clicked_index = find_character_index(view, 2, window, cx);
+            if let Some(clicked_index) = clicked_index {
+                EntityInputHandler::set_selected_text_range(
+                    view,
+                    clicked_index..clicked_index,
+                    window,
+                    cx,
+                );
+                EntityInputHandler::replace_text_in_range(view, None, "!", window, cx);
+            }
+            let mut adjusted = None;
+            let text = EntityInputHandler::text_for_range(view, 0..4, &mut adjusted, window, cx);
+            (
+                composition_bounds,
+                left_index,
+                right_index,
+                clicked_index,
+                text,
+                adjusted,
+            )
+        });
+
+    let Some(composition_bounds) = composition_bounds else {
+        assert!(composition_bounds.is_some());
+        return;
+    };
+    assert_eq!(composition_bounds.origin, point(px(10.0), px(20.0)));
+    assert_eq!(composition_bounds.size, size(px(60.0), px(18.0)));
+    assert_eq!(left_index, Some(0));
+    assert_eq!(right_index, Some(3));
+    assert_eq!(clicked_index, Some(2));
+    assert_eq!(text.as_deref(), Some("😀!x"));
+    assert_eq!(adjusted, Some(0..4));
+}
+
+#[cfg(feature = "real-gpui")]
 #[gpui::test]
 fn native_text_handler_accepts_multibyte_palette_and_form_input(cx: &mut TestAppContext) {
     let (view, cx) =
@@ -429,6 +559,53 @@ fn native_text_handler_accepts_multibyte_palette_and_form_input(cx: &mut TestApp
             return;
         };
         assert_eq!(language.as_ref(), b"r\xC3\xBCst");
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn native_text_handler_retains_exact_palette_and_form_overflow(cx: &mut TestAppContext) {
+    const OVER_BOUND_INPUT: &str = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
+    let (palette_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input(OVER_BOUND_INPUT);
+    cx.read_entity(&palette_view, |view, _| {
+        assert_eq!(
+            view.input_error,
+            Some(NativeTextInputError {
+                target: TextInputTarget::Palette,
+                actual: OVER_BOUND_INPUT.len(),
+                maximum: INPUT_TEXT_BYTES,
+            })
+        );
+        assert_eq!(view.navigation.palette.result_count(), 0);
+    });
+
+    let (form_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("generate");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input(OVER_BOUND_INPUT);
+    cx.read_entity(&form_view, |view, _| {
+        assert_eq!(
+            view.input_error,
+            Some(NativeTextInputError {
+                target: TextInputTarget::Form(FormField::Language),
+                actual: OVER_BOUND_INPUT.len(),
+                maximum: INPUT_TEXT_BYTES,
+            })
+        );
+        assert!(matches!(
+            view.form_error,
+            Some(wave_application_gpui_shell::FormError::InputTooLong {
+                field: FormField::Language,
+                actual,
+                maximum: INPUT_TEXT_BYTES,
+            }) if actual == OVER_BOUND_INPUT.len()
+        ));
     });
 }
 

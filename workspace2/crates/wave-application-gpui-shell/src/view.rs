@@ -61,11 +61,12 @@ pub struct GpuiShellView {
     next_correlation: u64,
     driven_execution: Option<DrivenExecution>,
     native_input: input::NativeInputState,
+    native_input_bounds: input::SharedNativeInputGeometry,
 }
 
 struct DrivenExecution {
     operation: OperationKey,
-    _task: Task<()>,
+    task: Task<()>,
 }
 
 impl GpuiShellView {
@@ -100,6 +101,7 @@ impl GpuiShellView {
             next_correlation: 1,
             driven_execution: None,
             native_input: input::NativeInputState::default(),
+            native_input_bounds: Rc::new(std::cell::Cell::new(None)),
         }
     }
 
@@ -133,6 +135,7 @@ impl GpuiShellView {
                     .is_some_and(|driven| driven.operation == operation)
                 {
                     self.driven_execution = None;
+                    self.state.set_foreground_operation(None);
                 }
             }
             ReplyBody::DependencyUnavailable { .. }
@@ -164,20 +167,31 @@ impl GpuiShellView {
                     .poll_admitted_execution(correlation, operation, context)
             })
             .await;
-            match this.update(cx, |view, cx| match view.state.apply_batch(&[reply]) {
-                Ok(_receipt) => cx.notify(),
-                Err(error) => {
-                    debug_assert_eq!(view.state.projection_error, Some(error));
-                    cx.notify();
+            match this.update(cx, |view, cx| {
+                if view
+                    .driven_execution
+                    .as_ref()
+                    .is_some_and(|driven| driven.operation == operation)
+                {
+                    let driven = view.driven_execution.take();
+                    if let Some(driven) = driven {
+                        driven.task.detach();
+                    }
+                    view.state.set_foreground_operation(None);
+                }
+                match view.state.apply_batch(&[reply]) {
+                    Ok(_receipt) => cx.notify(),
+                    Err(error) => {
+                        debug_assert_eq!(view.state.projection_error, Some(error));
+                        cx.notify();
+                    }
                 }
             }) {
                 Ok(()) | Err(_) => {}
             }
         });
-        self.driven_execution = Some(DrivenExecution {
-            operation,
-            _task: task,
-        });
+        self.driven_execution = Some(DrivenExecution { operation, task });
+        self.state.set_foreground_operation(Some(operation));
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -774,9 +788,12 @@ impl GpuiShellView {
                     .text_color(rgb(METADATA_TEXT))
                     .child(action_form_hint(action)),
             )
-            .child(Self::form_fields(form, cx))
+            .child(self.form_fields(form, cx))
             .child(Self::limit_selector(form, cx))
-            .child(Self::form_error(self.state.form_error))
+            .child(Self::form_error(
+                self.state.form_error,
+                self.state.input_error,
+            ))
             .child(
                 div()
                     .flex()
@@ -816,7 +833,7 @@ impl GpuiShellView {
             .into_any_element()
     }
 
-    fn form_fields(form: FormState, cx: &mut Context<Self>) -> AnyElement {
+    fn form_fields(&self, form: FormState, cx: &mut Context<Self>) -> AnyElement {
         match form {
             FormState::Generate {
                 focused,
@@ -824,10 +841,10 @@ impl GpuiShellView {
                 stage,
                 package,
                 source,
-            } => Self::generate_form_fields(focused, language, stage, package, source, cx),
+            } => self.generate_form_fields(focused, language, stage, package, source, cx),
             FormState::Snapshot {
                 focused, snapshot, ..
-            } => Self::snapshot_form_fields(focused, snapshot, cx),
+            } => self.snapshot_form_fields(focused, snapshot, cx),
             FormState::Search {
                 focused,
                 snapshot,
@@ -839,8 +856,8 @@ impl GpuiShellView {
                 .flex_col()
                 .gap(px(4.0))
                 .children([
-                    Self::form_field(FormField::Snapshot, "Snapshot", snapshot, focused, cx),
-                    Self::form_field(FormField::Query, "Query", query, focused, cx),
+                    self.form_field(FormField::Snapshot, "Snapshot", snapshot, focused, cx),
+                    self.form_field(FormField::Query, "Query", query, focused, cx),
                 ])
                 .into_any_element(),
             FormState::Health => div()
@@ -868,6 +885,7 @@ impl GpuiShellView {
     }
 
     fn generate_form_fields(
+        &self,
         focused: FormField,
         language: Option<wave_application_core::InputText>,
         stage: Option<wave_application_core::InputText>,
@@ -881,32 +899,28 @@ impl GpuiShellView {
             .flex_col()
             .gap(px(4.0))
             .children([
-                Self::form_field(FormField::Language, "Language", language, focused, cx),
-                Self::form_field(FormField::Stage, "Stage", stage, focused, cx),
-                Self::form_field(FormField::Package, "Package", package, focused, cx),
-                Self::form_field(FormField::Source, "Source", source, focused, cx),
+                self.form_field(FormField::Language, "Language", language, focused, cx),
+                self.form_field(FormField::Stage, "Stage", stage, focused, cx),
+                self.form_field(FormField::Package, "Package", package, focused, cx),
+                self.form_field(FormField::Source, "Source", source, focused, cx),
             ])
             .into_any_element()
     }
 
     fn snapshot_form_fields(
+        &self,
         focused: FormField,
         snapshot: Option<wave_application_core::InputText>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
             .id("snapshot-form-fields")
-            .child(Self::form_field(
-                FormField::Snapshot,
-                "Snapshot",
-                snapshot,
-                focused,
-                cx,
-            ))
+            .child(self.form_field(FormField::Snapshot, "Snapshot", snapshot, focused, cx))
             .into_any_element()
     }
 
     fn form_field(
+        &self,
         field: FormField,
         label: &'static str,
         value: Option<wave_application_core::InputText>,
@@ -931,9 +945,19 @@ impl GpuiShellView {
             .child(label)
             .child(
                 div()
+                    .id("palette-native-input-field")
+                    .debug_selector(|| "palette-native-input-field".to_owned())
+                    .relative()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
-                    .child(form_value_label(value)),
+                    .child(form_value_label(value))
+                    .when(focused == field, |value| {
+                        value.child(self.native_input_bridge(
+                            crate::TextInputTarget::Form(field),
+                            &self.focus,
+                            cx,
+                        ))
+                    }),
             )
     }
 
@@ -978,12 +1002,26 @@ impl GpuiShellView {
             .into_any_element()
     }
 
-    fn form_error(error: Option<FormError>) -> impl IntoElement + use<> {
+    fn form_error(
+        error: Option<FormError>,
+        input_error: Option<crate::NativeTextInputError>,
+    ) -> impl IntoElement + use<> {
+        let label = match input_error
+            .filter(|error| matches!(error.target, crate::TextInputTarget::Form(_)))
+        {
+            Some(error) => SharedString::from(format!(
+                "{} input: {} / {} bytes",
+                text_input_target_label(error.target),
+                error.actual,
+                error.maximum
+            )),
+            None => SharedString::from(error.map_or("", form_error_label)),
+        };
         div()
             .id("typed-form-error")
             .text_sm()
             .text_color(rgb(METADATA_TEXT))
-            .child(error.map_or("", form_error_label))
+            .child(label)
     }
 
     fn status_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1014,8 +1052,17 @@ impl GpuiShellView {
     }
 
     fn palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query_label = match self.native_input_error_message() {
-            Some(error) => SharedString::from(error),
+        let query_label = match self
+            .state
+            .input_error
+            .filter(|error| error.target == crate::TextInputTarget::Palette)
+        {
+            Some(error) => SharedString::from(format!(
+                "{} input: {} / {} bytes",
+                text_input_target_label(error.target),
+                error.actual,
+                error.maximum
+            )),
             None => match self.state.navigation.palette.query_text() {
                 Ok("") | Err(_) => SharedString::from("Type to filter · ↑↓ Enter Esc"),
                 Ok(query) => SharedString::from(query),
@@ -1042,7 +1089,7 @@ impl GpuiShellView {
                     .border_color(rgb(PALETTE_BORDER))
                     .bg(rgb(PALETTE_BACKGROUND))
                     .text_color(rgb(FOREGROUND))
-                    .child(Self::palette_header(query_label))
+                    .child(self.palette_header(query_label, cx))
                     .child(self.palette_rows(cx)),
             );
         if self.state.motion == crate::MotionPreference::Standard {
@@ -1058,7 +1105,7 @@ impl GpuiShellView {
         }
     }
 
-    fn palette_header(query: SharedString) -> impl IntoElement + use<> {
+    fn palette_header(&self, query: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .h(px(56.0))
             .px(px(18.0))
@@ -1068,7 +1115,18 @@ impl GpuiShellView {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(div().text_lg().child("Command palette"))
-            .child(div().text_sm().text_color(rgb(METADATA_TEXT)).child(query))
+            .child(
+                div()
+                    .relative()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child(query)
+                    .child(self.native_input_bridge(
+                        crate::TextInputTarget::Palette,
+                        &self.palette_focus,
+                        cx,
+                    )),
+            )
     }
 
     fn palette_rows(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1158,7 +1216,6 @@ impl Render for GpuiShellView {
             .relative()
             .flex()
             .flex_col()
-            .child(self.native_input_bridge(cx))
             .child(
                 div()
                     .flex_1()
@@ -1346,6 +1403,18 @@ const fn form_field_id(field: FormField) -> u64 {
         FormField::Source => 4,
         FormField::Snapshot => 5,
         FormField::Query => 6,
+    }
+}
+
+const fn text_input_target_label(target: crate::TextInputTarget) -> &'static str {
+    match target {
+        crate::TextInputTarget::Palette => "Palette",
+        crate::TextInputTarget::Form(FormField::Language) => "Language",
+        crate::TextInputTarget::Form(FormField::Stage) => "Stage",
+        crate::TextInputTarget::Form(FormField::Package) => "Package",
+        crate::TextInputTarget::Form(FormField::Source) => "Source",
+        crate::TextInputTarget::Form(FormField::Snapshot) => "Snapshot",
+        crate::TextInputTarget::Form(FormField::Query) => "Query",
     }
 }
 

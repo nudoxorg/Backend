@@ -56,9 +56,10 @@ pub use forms::{
 
 pub use state::{
     AdaptiveProjection, ApplyError, BatchReceipt, ConnectionsPage, ExecutionProjection,
-    HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES, MotionPreference, PageSnapshots,
-    ProjectionState, ReplyProjection, SURFACE_COUNT, SearchPage, SettingsPage, ShellProjection,
-    ShellState, Surface, SurfaceStatus, SurfaceSummary,
+    HealthProjection, HomePage, LibrariesPage, MAX_BATCH_REPLIES, MotionPreference,
+    NativeTextInputError, PageSnapshots, ProjectionState, ReplyProjection, SURFACE_COUNT,
+    SearchPage, SettingsPage, ShellProjection, ShellState, Surface, SurfaceStatus, SurfaceSummary,
+    TextInputTarget,
 };
 
 // These are re-exports of the core types, not shell-owned DTOs. Re-exporting
