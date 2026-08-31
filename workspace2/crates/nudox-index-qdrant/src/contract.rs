@@ -547,6 +547,29 @@ pub enum QdrantError {
         #[source]
         source: ureq::Error,
     },
+    /// Reading a decoded response body failed after transport succeeded.
+    #[error("Qdrant {phase:?} response read failed after {attempts} attempt(s)")]
+    ResponseRead {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Number of attempts made.
+        attempts: u8,
+        /// Original decoded-body read failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The decoded response exceeded the fixed in-memory boundary.
+    #[error(
+        "Qdrant {phase:?} decoded response has at least {observed_at_least} bytes; maximum is {maximum}"
+    )]
+    ResponseTooLarge {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Maximum decoded bytes retained.
+        maximum: usize,
+        /// Minimum decoded length proven by the bounded reader.
+        observed_at_least: usize,
+    },
     /// A successful HTTP body was not valid JSON.
     #[error("Qdrant {phase:?} response decode failed")]
     Decode {

@@ -2539,6 +2539,7 @@ name = "nudox-index-qdrant"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "flate2",
  "nudox-index-graph-vector",
  "nudox-index-vocab",
  "nudox-ir-vocab",

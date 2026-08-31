@@ -16,6 +16,7 @@ bolero = "0.13.4"
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
 futures-core = { version = "0.3.31", default-features = false }
 fearless_simd = { version = "0.7.0", default-features = false }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 atomic-waker = { version = "1.1.2", default-features = false }
 allocation-counter = "0.8.1"
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["test-support"] }

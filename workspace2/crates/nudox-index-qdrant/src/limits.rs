@@ -9,8 +9,8 @@ pub(super) const DEFAULT_MAX_ATTEMPTS: NonZeroU8 = match NonZeroU8::new(3) {
 pub(super) const MAX_BATCH_POINTS: usize = 16;
 pub(super) const QUERY_SCAN_LIMIT: usize = MAX_BATCH_POINTS + 1;
 pub(super) const MAX_QUERY_PARTITIONS: usize = 4;
-pub(super) const MAX_VECTOR_DIMENSION: usize = 4096;
-pub(super) const MAX_RESPONSE_BYTES: u64 = 1_048_576;
+pub(super) const MAX_VECTOR_DIMENSION: usize = 16;
+pub(super) const MAX_RESPONSE_BYTES: usize = 1_048_576;
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const PHYSICAL_ID_ZERO_REPLACEMENT: u64 = 1;
 
