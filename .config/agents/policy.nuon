@@ -1,0 +1,18 @@
+# Defines global custody, privilege, context, and research-stop laws for agents.
+# Keeps orchestration state derived from executable facts instead of narratives.
+# Constrains every role transition to one explicit, auditable topology.
+{
+  depth_limit: 3
+  writer_limit_per_path: 1
+  rolling_window: 4
+  benchmark_roles: ["terra-reviewer" "sol-integrator"]
+  full_suite_roles: ["sol-integrator"]
+  semantic_lint_roles: ["terra-reviewer" "sol-integrator"]
+  status_source: "derive from role events, Git heads, and verifier records; never maintain a narrative board"
+  context_rule: "pass the brief, current catalog excerpt, owned code, and upstream outcome facts; never pass an entire transcript"
+  research_stop: "close a question after two research tranches that change no rubric row, test, representation decision, or next card"
+  verification_rule: "reviewer is verifier and independently reconstructs outcomes before reading author narrative"
+  command_rule: "roles use generated backend commands for owned repository actions; raw alternatives do not expand their capability set"
+  handoff_topology: "luna-pair -> terra-academic -> terra-reviewer -> terra-academic repair when rejected -> sol-integrator when verified"
+  role_id_rule: "all structured records use exact kebab-case role ids; display titles are never state identifiers"
+}

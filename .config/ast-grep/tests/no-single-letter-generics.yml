@@ -1,0 +1,8 @@
+# Contrasts role-bearing generic names with the recurring ambiguous letter set.
+# Proves multiple offending parameters are found in one declaration.
+# Keeps acceptable descriptive vocabulary independent from any product crate.
+id: no-single-letter-generics
+valid:
+  - "pub struct Store<Owner, DomainTag> { owner: Owner, marker: PhantomData<DomainTag> }"
+invalid:
+  - "pub struct Store<K, W> { key: K, work: W }"

@@ -1,0 +1,9 @@
+# Loads the nonstandard flake location through nix-direnv.
+# Watches every file that can alter the development environment.
+# Leaves all behavioral commands to the pinned Nushell application.
+watch_file .config/flake.nix
+watch_file .config/flake.lock
+nix_direnv_disallow_fallback
+watch_file .config/nix
+watch_file .config/nu
+use flake path:.config#development

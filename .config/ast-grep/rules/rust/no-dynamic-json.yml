@@ -1,0 +1,12 @@
+# Rejects ad hoc JSON construction inside typed Rust boundaries.
+# Directs protocols toward closed serde transfer types and quarantined envelopes.
+# Owns the syntax-level ban without claiming semantic type knowledge.
+id: no-dynamic-json
+message: Use a closed serde data transfer type instead of constructing dynamic JSON.
+note: Raw JSON values belong only in a quarantined untrusted-envelope decoder.
+severity: error
+language: Rust
+rule:
+  any:
+    - pattern: serde_json::json!($$$VALUES)
+    - pattern: json!($$$VALUES)

@@ -1,0 +1,19 @@
+# Contrasts direct propagation and typed source retention with wildcard erasure.
+# Proves both concise and explicit preservation idioms remain accepted.
+# Freezes the high-frequency map-error mutant that motivated this rule.
+id: preserve-error-cause
+valid:
+  - |
+    fn retain() -> Result<(), Failure> {
+      source().map_err(|source| Failure::Source { source })
+    }
+  - |
+    fn propagate() -> Result<(), Failure> {
+      source()?;
+      Ok(())
+    }
+invalid:
+  - |
+    fn erase() -> Result<(), Failure> {
+      source().map_err(|_| Failure::Allocation)
+    }

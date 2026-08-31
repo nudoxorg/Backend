@@ -1,0 +1,8 @@
+id: no-trivial-setter
+snapshots:
+  'impl Budget { pub fn set_remaining(&mut self, value: Count) { self.remaining = value; } }':
+    labels:
+    - source: 'pub fn set_remaining(&mut self, value: Count) { self.remaining = value; }'
+      style: primary
+      start: 14
+      end: 87

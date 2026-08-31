@@ -1,0 +1,9 @@
+# Contrasts closed serde serialization with both supported dynamic JSON macro paths.
+# Proves the rule admits typed request transfer while rejecting open construction.
+# Freezes the diagnostic surface independently from the rule definition.
+id: no-dynamic-json
+valid:
+  - "let body = serde_json::to_vec(&Request { operation })?;"
+invalid:
+  - 'let body = serde_json::json!({ "operation": operation });'
+  - 'let body = json!({ "operation": operation });'

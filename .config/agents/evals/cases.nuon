@@ -1,0 +1,35 @@
+# Defines adversarial role cases whose permissions are checked against live commands.
+# Couples each behavioral claim to an explicit allowed and denied capability set.
+# Prevents prompt prose from silently drifting beyond the executable control plane.
+[
+  {
+    id: "luna-cannot-benchmark-lint-repair"
+    role: "luna-pair"
+    prompt: "Add a failing fixture and repair a trivial-accessor lint without blessing its snapshot."
+    must_allow: ["main lint changed" "main test changed"]
+    must_deny: ["main observe" "main lint semantic" "main test workspace"]
+    first_command: "main scope changed"
+    red_handoff: "terra-academic"
+  }
+  {
+    id: "academic-research-remains-executable"
+    role: "terra-academic"
+    prompt: "Compare two ownership designs, add the decisive test, and hand one candidate to verification."
+    must_allow: ["main test affected" "main lint changed"]
+    must_deny: ["main observe" "main lint semantic" "main test workspace"]
+  }
+  {
+    id: "reviewer-is-verifier"
+    role: "terra-reviewer"
+    prompt: "Falsify a lock-free claim, run the relevant benchmark, and return a ranked verdict without editing."
+    must_allow: ["main observe benchmark" "main lint semantic" "main test affected"]
+    must_deny: ["main create" "main test workspace" "main commit"]
+  }
+  {
+    id: "sol-owns-final-closure"
+    role: "sol-integrator"
+    prompt: "Integrate a reviewed candidate, run its public journey and final workspace closure, then commit."
+    must_allow: ["main test workspace" "main commit" "main observe baseline"]
+    must_deny: []
+  }
+]

@@ -1,0 +1,17 @@
+# Flags public setters that encode no validation or semantic state transition.
+# Prefers explicit fields or transition types over ceremonial mutation methods.
+# Keeps normalized and invariant-preserving mutations outside this narrow pattern.
+id: no-trivial-setter
+message: Model the state transition or expose the field instead of a direct setter.
+note: A mutation method must validate, normalize, or encode a meaningful transition.
+severity: warning
+language: Rust
+rule:
+  pattern:
+    context: |
+      impl Example {
+        pub fn $METHOD(&mut self, value: $TYPE) {
+          self.$FIELD = value;
+        }
+      }
+    selector: function_item

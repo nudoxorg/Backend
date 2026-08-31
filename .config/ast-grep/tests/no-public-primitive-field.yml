@@ -1,0 +1,10 @@
+# Contrasts semantic public fields with unconstrained public scalar storage.
+# Proves private wire storage remains admissible at the syntax-only policy boundary.
+# Freezes both numeric and boolean public-field diagnostics for rule durability.
+id: no-public-primitive-field
+valid:
+  - "pub struct Request { pub operation: OperationKey }"
+  - "struct WireHeader { byte_len: u64 }"
+invalid:
+  - "pub struct Request { pub operation: u64 }"
+  - "pub struct State { pub ready: bool }"

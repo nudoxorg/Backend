@@ -1,0 +1,11 @@
+# Flags routine shared locking primitives for architectural review.
+# Makes ownership transfer, snapshots, atomics, and proved algorithms the default.
+# Leaves alias and hidden-mutability detection to the semantic lint island.
+id: no-locking-primitives
+message: Shared mutable locks require a semantic redesign, not routine admission.
+note: Prefer ownership transfer, immutable snapshots, atomics, or a proved lock-free structure.
+severity: error
+language: Rust
+rule:
+  kind: type_identifier
+  regex: ^(Mutex|RwLock|Condvar)$

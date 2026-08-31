@@ -1,0 +1,8 @@
+id: no-discarded-result
+snapshots:
+  fn discard() { let _ = operation(); }:
+    labels:
+    - source: let _ = operation();
+      style: primary
+      start: 15
+      end: 35

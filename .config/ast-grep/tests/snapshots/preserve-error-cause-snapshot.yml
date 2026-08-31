@@ -1,0 +1,11 @@
+id: preserve-error-cause
+snapshots:
+  ? |
+    fn erase() -> Result<(), Failure> {
+      source().map_err(|_| Failure::Allocation)
+    }
+  : labels:
+    - source: source().map_err(|_| Failure::Allocation)
+      style: primary
+      start: 38
+      end: 79

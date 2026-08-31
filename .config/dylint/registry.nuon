@@ -1,0 +1,35 @@
+# Registers only lint laws that require resolved Rust types, lifetimes, or HIR.
+# Records why syntax matching cannot prove each semantic boundary correctly.
+# Requires compile-fail, valid-neighbor, and specialist proof fixtures per lint.
+[
+  {
+    id: "preserve-error-cause"
+    purpose: "Prove erased closures and conversions retain the original typed source."
+    reason_ast_grep_is_insufficient: "Aliases, From implementations, and trait-object conversions require resolved HIR types."
+    required_fixtures: ["compile-fail" "valid-neighbor" "stderr-snapshot"]
+  }
+  {
+    id: "semantic-scalar"
+    purpose: "Detect stored primitives whose semantic domain is visible only after type resolution."
+    reason_ast_grep_is_insufficient: "Aliases, associated types, transparent wire types, and generic substitutions change meaning."
+    required_fixtures: ["compile-fail" "wire-waiver" "stderr-snapshot"]
+  }
+  {
+    id: "hidden-mutability"
+    purpose: "Reject interior or shared mutability concealed behind aliases and public traits."
+    reason_ast_grep_is_insufficient: "Cell, UnsafeCell, lock aliases, Send, and Sync require compiler identities and impl context."
+    required_fixtures: ["compile-fail" "proved-atomic" "stderr-snapshot"]
+  }
+  {
+    id: "lifetime-escape"
+    purpose: "Reject owned-looking APIs that erase an authority or owner lifetime."
+    reason_ast_grep_is_insufficient: "The relevant outlives and variance facts exist only after type checking."
+    required_fixtures: ["compile-fail" "borrowed-view" "stderr-snapshot"]
+  }
+  {
+    id: "unsafe-share-contract"
+    purpose: "Require local safety law, Loom attack, and Miri proof for unsafe Send or Sync."
+    reason_ast_grep_is_insufficient: "The compiler must resolve the exact impl target and contained mutation mechanisms."
+    required_fixtures: ["compile-fail" "loom-proof" "miri-proof" "stderr-snapshot"]
+  }
+]

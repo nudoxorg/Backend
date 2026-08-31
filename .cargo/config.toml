@@ -1,0 +1,8 @@
+# Routes Cargo artifacts into the repository's disposable local data boundary.
+# Points Clippy at the centrally owned policy without duplicating lint settings.
+# Leaves compilation and dependency selection to the pinned Nix environment.
+[build]
+target-dir = "../.local/target"
+
+[env]
+CLIPPY_CONF_DIR = { value = "../.config", relative = true }

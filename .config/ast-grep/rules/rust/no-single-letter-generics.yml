@@ -1,0 +1,11 @@
+# Rejects generic parameters that conceal the semantic role they abstract.
+# Keeps dense type signatures readable across crate and ownership boundaries.
+# Targets the project's recurring ambiguous letters while permitting real type names.
+id: no-single-letter-generics
+message: Generic parameters must name the semantic role they abstract.
+note: Use names such as DomainTag, Owner, Generation, Work, or Storage.
+severity: error
+language: Rust
+rule:
+  kind: type_identifier
+  regex: ^[KGTW]$

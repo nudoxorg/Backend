@@ -1,0 +1,14 @@
+id: no-dynamic-json
+snapshots:
+  'let body = json!({ "operation": operation });':
+    labels:
+    - source: 'json!({ "operation": operation })'
+      style: primary
+      start: 11
+      end: 44
+  'let body = serde_json::json!({ "operation": operation });':
+    labels:
+    - source: 'serde_json::json!({ "operation": operation })'
+      style: primary
+      start: 11
+      end: 56

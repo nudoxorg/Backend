@@ -2,7 +2,13 @@
 # Source, manifests, lockfiles, and inline documentation remain visible by default.
 # Generated artifacts are ignored by their conventional root-local names.
 
-/target/
+/.direnv/
+/.local/
+/.cargo/.package-cache
+/.cargo/.package-cache-mutate
+/.cargo/.global-cache
+/.cargo/.package-cache-lock
+/.cargo/registry/
 /.DS_Store
 /result
 /result-*

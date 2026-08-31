@@ -1,0 +1,9 @@
+# Exercises propagation and classified recovery beside a discarded-result mutant.
+# Keeps the structural matcher honest without relying on product source examples.
+# Freezes the expected diagnostic separately in the generated snapshot fixture.
+id: no-discarded-result
+valid:
+  - "fn handle() -> Result<(), Failure> { operation()?; Ok(()) }"
+  - "fn classify() { if let Err(source) = operation() { report(source); } }"
+invalid:
+  - "fn discard() { let _ = operation(); }"

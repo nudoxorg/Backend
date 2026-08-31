@@ -1,0 +1,25 @@
+# Defines the shared vocabulary that may appear as abbreviations in identifiers.
+# Requires every nonstandard shortening to have one stable expansion and domain.
+# Lets naming diagnostics distinguish established terms from convenient truncation.
+{
+  allowed: {
+    API: "application programming interface"
+    BLAKE3: "BLAKE3 hash function"
+    CLI: "command-line interface"
+    CRC: "cyclic redundancy check"
+    GPUI: "graphical user interface framework"
+    GPU: "graphics processing unit"
+    HTTP: "Hypertext Transfer Protocol"
+    IR: "intermediate representation"
+    JSON: "JavaScript Object Notation"
+    MCP: "Model Context Protocol"
+    NVMe: "Non-Volatile Memory Express"
+    OpenTelemetry: "OpenTelemetry"
+    Qdrant: "Qdrant vector database"
+    RAM: "random-access memory"
+    SIMD: "single instruction, multiple data"
+    UTF8: "Unicode Transformation Format 8"
+  }
+  denied_fragments: ["arg" "buf" "cfg" "ctx" "idx" "req" "res" "resp" "tmp"]
+  generic_examples: ["DomainTag" "Generation" "Owner" "Storage" "Work"]
+}

@@ -1,0 +1,10 @@
+# Rejects explicit disposal of a fallible Rust result.
+# Keeps recovery, propagation, and terminal classification visible in source.
+# Owns one syntax-level error-preservation invariant and its frozen fixtures.
+id: no-discarded-result
+message: Classify or propagate a fallible result instead of discarding it.
+note: Use a typed recovery branch, propagation, or an explicit terminal result.
+severity: error
+language: Rust
+rule:
+  pattern: let _ = $EXPRESSION;

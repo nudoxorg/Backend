@@ -1,0 +1,8 @@
+id: no-trivial-getter
+snapshots:
+  impl Bytes { pub fn bytes(&self) -> &[u8] { self.bytes } }:
+    labels:
+    - source: pub fn bytes(&self) -> &[u8] { self.bytes }
+      style: primary
+      start: 13
+      end: 56

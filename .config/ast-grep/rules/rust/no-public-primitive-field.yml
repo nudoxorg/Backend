@@ -1,0 +1,22 @@
+# Flags public primitive storage whose semantic domain is not represented by a type.
+# Encourages units, bounds, names, and invalid states to live in explicit vocabulary.
+# Limits syntax coverage to common scalar spellings and delegates aliases to Dylint.
+id: no-public-primitive-field
+message: Give the public scalar a domain type or a reviewed wire-boundary waiver.
+note: Names, ranges, units, and invalid states should be encoded by the type.
+severity: warning
+language: Rust
+rule:
+  any:
+    - pattern:
+        context: "struct Example { pub $FIELD: u64 }"
+        selector: field_declaration
+    - pattern:
+        context: "struct Example { pub $FIELD: usize }"
+        selector: field_declaration
+    - pattern:
+        context: "struct Example { pub $FIELD: String }"
+        selector: field_declaration
+    - pattern:
+        context: "struct Example { pub $FIELD: bool }"
+        selector: field_declaration
