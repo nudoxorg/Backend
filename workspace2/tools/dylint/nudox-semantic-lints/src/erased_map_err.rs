@@ -1,4 +1,4 @@
-use clippy_utils::{diagnostics::span_lint_and_help, peel_blocks, usage::BindingUsageFinder};
+use clippy_utils::{diagnostics::span_lint_and_help, usage::BindingUsageFinder};
 use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LintContext};
 use rustc_middle::ty::TyKind;
@@ -39,12 +39,7 @@ pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, expression: &'tcx Expr<'_
         return;
     };
     let body = context.tcx.hir_body(closure.body);
-    if BindingUsageFinder::are_params_used(context, body)
-        || !matches!(
-            peel_blocks(body.value).kind,
-            ExprKind::Path(_) | ExprKind::Struct(..)
-        )
-    {
+    if BindingUsageFinder::are_params_used(context, body) {
         return;
     }
 

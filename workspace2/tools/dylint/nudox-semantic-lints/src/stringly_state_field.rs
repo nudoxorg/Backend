@@ -46,7 +46,7 @@ fn is_closed_vocabulary_name(context: &LateContext<'_>, field: &FieldDef<'_>) ->
     match field.ident.name.as_str() {
         "class" | "kind" | "phase" | "role" | "stage" | "state" | "status" | "step" => true,
         "detail" | "expected" | "field" | "observed" | "operation" | "resource" => {
-            belongs_to_diagnostic_enum(context, field)
+            belongs_to_diagnostic_owner(context, field)
         }
         _ => false,
     }
@@ -73,16 +73,17 @@ fn contains_str(arguments: GenericArgsRef<'_>) -> bool {
     arguments.types().any(|argument| argument.is_str())
 }
 
-fn belongs_to_diagnostic_enum(context: &LateContext<'_>, field: &FieldDef<'_>) -> bool {
-    let variant = context.tcx.parent(field.def_id.into());
-    if context.tcx.def_kind(variant) != DefKind::Variant {
+fn belongs_to_diagnostic_owner(context: &LateContext<'_>, field: &FieldDef<'_>) -> bool {
+    let parent = context.tcx.parent(field.def_id.into());
+    let owner = match context.tcx.def_kind(parent) {
+        DefKind::Struct => parent,
+        DefKind::Variant => context.tcx.parent(parent),
+        _ => return false,
+    };
+    if !matches!(context.tcx.def_kind(owner), DefKind::Enum | DefKind::Struct) {
         return false;
     }
-    let enum_definition = context.tcx.parent(variant);
-    if context.tcx.def_kind(enum_definition) != DefKind::Enum {
-        return false;
-    }
-    let name = context.tcx.item_name(enum_definition);
+    let name = context.tcx.item_name(owner);
     ["Cause", "Error", "Failure", "Rejection", "Terminal"]
         .into_iter()
         .any(|suffix| name.as_str().ends_with(suffix))

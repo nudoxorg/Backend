@@ -4,6 +4,38 @@ pub struct PublicFact {
     pub bytes: usize,
 }
 
+pub struct TupleFact(pub usize);
+
+impl TupleFact {
+    pub const fn value(&self) -> &usize {
+        &self.0
+    }
+}
+
+pub struct InnerFact {
+    pub value: usize,
+}
+
+impl InnerFact {
+    pub const fn adjusted(&self, amount: usize) -> usize {
+        self.value + amount
+    }
+}
+
+pub struct OuterFact {
+    inner: InnerFact,
+}
+
+impl OuterFact {
+    pub const fn adjusted(&self, amount: usize) -> usize {
+        self.inner.adjusted(amount)
+    }
+
+    pub const fn adjusted_more(&self, amount: usize) -> usize {
+        self.inner.adjusted(amount + 1)
+    }
+}
+
 impl PublicFact {
     pub const fn bytes(&self) -> usize {
         self.bytes

@@ -1,4 +1,4 @@
-error: workspace semantic/error enums must remain exhaustively matchable
+error: workspace enums must remain exhaustively matchable
   --> $DIR/non_exhaustive_semantic_enum.rs:4:1
    |
 LL | / enum PublicationCause {
@@ -10,7 +10,7 @@ LL | | }
    = help: remove `#[non_exhaustive]` and add a typed variant when the vocabulary grows
    = note: requested on the command line with `-F nudox-non-exhaustive-semantic-enum`
 
-error: workspace semantic/error enums must remain exhaustively matchable
+error: workspace enums must remain exhaustively matchable
   --> $DIR/non_exhaustive_semantic_enum.rs:10:1
    |
 LL | / pub enum PublishError {
@@ -20,5 +20,15 @@ LL | | }
    |
    = help: remove `#[non_exhaustive]` and add a typed variant when the vocabulary grows
 
-error: aborting due to 2 previous errors
+error: workspace enums must remain exhaustively matchable
+  --> $DIR/non_exhaustive_semantic_enum.rs:21:1
+   |
+LL | / enum AdapterRoute {
+LL | |     Open,
+LL | | }
+   | |_^
+   |
+   = help: remove `#[non_exhaustive]` and add a typed variant when the vocabulary grows
+
+error: aborting due to 3 previous errors
 

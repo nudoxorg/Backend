@@ -1,5 +1,5 @@
 error: Result::map_err discards its unused source error
-  --> $DIR/erased_map_err.rs:13:20
+  --> $DIR/erased_map_err.rs:14:20
    |
 LL |     result.map_err(|_| ConfigError::Allocation)
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -8,7 +8,7 @@ LL |     result.map_err(|_| ConfigError::Allocation)
    = note: requested on the command line with `-F nudox-erased-map-err`
 
 error: Result::map_err discards its unused source error
-  --> $DIR/erased_map_err.rs:17:20
+  --> $DIR/erased_map_err.rs:18:20
    |
 LL |     result.map_err(|_source| ConfigError::Allocation)
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -16,7 +16,7 @@ LL |     result.map_err(|_source| ConfigError::Allocation)
    = help: retain the source in the replacement error or pass it to an exact diagnostic function
 
 error: Result::map_err discards its unused source error
-  --> $DIR/erased_map_err.rs:22:25
+  --> $DIR/erased_map_err.rs:23:25
    |
 LL |         $result.map_err(|_| ConfigError::Allocation)
    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -27,5 +27,21 @@ LL |     erase_locally!(result)
    = help: retain the source in the replacement error or pass it to an exact diagnostic function
    = note: this error originates in the macro `erase_locally` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 3 previous errors
+error: Result::map_err discards its unused source error
+  --> $DIR/erased_map_err.rs:48:20
+   |
+LL |     result.map_err(|_| exact_from_bytes(bytes))
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: retain the source in the replacement error or pass it to an exact diagnostic function
+
+error: Result::map_err discards its unused source error
+  --> $DIR/erased_map_err.rs:52:20
+   |
+LL |     result.map_err(|_| ConfigError::Tuple(ParseError))
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: retain the source in the replacement error or pass it to an exact diagnostic function
+
+error: aborting due to 5 previous errors
 

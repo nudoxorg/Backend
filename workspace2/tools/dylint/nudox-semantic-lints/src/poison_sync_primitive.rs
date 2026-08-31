@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_help;
 use rustc_hir::{
-    AmbigArg, Expr, ExprKind, Ty, TyKind as HirTyKind,
+    AmbigArg, Expr, ExprKind, Node, Ty, TyKind as HirTyKind,
     def::{DefKind, Res},
 };
 use rustc_lint::{LateContext, LintContext};
@@ -62,6 +62,32 @@ pub(crate) fn check_ty<'tcx>(context: &LateContext<'tcx>, rust_ty: &'tcx Ty<'tcx
     let HirTyKind::Path(path) = rust_ty.kind else {
         return;
     };
+    // A type-relative associated call (for example `Mutex::new(value)`) contains a HIR type path
+    // for its receiver. The call expression below owns the diagnostic so the constructor is
+    // reported once rather than once for the receiver and once for the call. Keep this tied to
+    // the immediate callee path: a generic argument such as `consume::<Mutex<u8>>()` still needs
+    // its own type-use diagnostic.
+    let mut parents = context.tcx.hir_parent_iter(rust_ty.hir_id);
+    if let Some((_, Node::Expr(path_expression))) = parents.next()
+        && matches!(path_expression.kind, ExprKind::Path(_))
+        && let Some((_, Node::Expr(call_expression))) = parents.next()
+        && let ExprKind::Call(callee, _) = call_expression.kind
+        && callee.hir_id == path_expression.hir_id
+        && let ExprKind::Path(callee_path) = callee.kind
+        && let Res::Def(DefKind::AssocFn, definition) =
+            context.qpath_res(&callee_path, callee.hir_id)
+        && let Some(owner) = context.tcx.impl_of_assoc(definition)
+        && forbidden_type(
+            context,
+            context
+                .tcx
+                .type_of(owner)
+                .instantiate_identity()
+                .skip_norm_wip(),
+        )
+    {
+        return;
+    }
     let resolved = context.qpath_res(&path, rust_ty.hir_id);
     let forbidden = match resolved {
         Res::Def(DefKind::Struct, definition) => forbidden_definition(context, definition),
@@ -81,13 +107,22 @@ pub(crate) fn check_ty<'tcx>(context: &LateContext<'tcx>, rust_ty: &'tcx Ty<'tcx
 }
 
 pub(crate) fn check_expr<'tcx>(context: &LateContext<'tcx>, expression: &'tcx Expr<'_>) {
-    let ExprKind::MethodCall(..) = expression.kind else {
-        return;
+    let definition = match expression.kind {
+        ExprKind::MethodCall(..) => context
+            .typeck_results()
+            .type_dependent_def_id(expression.hir_id),
+        ExprKind::Call(callee, _) => {
+            let ExprKind::Path(path) = callee.kind else {
+                return;
+            };
+            match context.qpath_res(&path, callee.hir_id) {
+                Res::Def(DefKind::AssocFn, definition) => Some(definition),
+                _ => None,
+            }
+        }
+        _ => None,
     };
-    let Some(definition) = context
-        .typeck_results()
-        .type_dependent_def_id(expression.hir_id)
-    else {
+    let Some(definition) = definition else {
         return;
     };
     let Some(owner) = context.tcx.impl_of_assoc(definition) else {

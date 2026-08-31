@@ -11,14 +11,14 @@ pub enum PublishError {
     Input,
 }
 
-// Non-exhaustive structs and non-semantic enums are outside this law.
+// Non-exhaustive structs are outside this law.
 #[non_exhaustive]
 struct PublicConfig {
     value: u8,
 }
 
 #[non_exhaustive]
-enum LifecycleState {
+enum AdapterRoute {
     Open,
 }
 

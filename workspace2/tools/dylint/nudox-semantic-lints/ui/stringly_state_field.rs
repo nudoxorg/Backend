@@ -29,6 +29,10 @@ enum LocalCompilerTestError {
     },
 }
 
+struct AdapterError {
+    field: &'static str,
+}
+
 macro_rules! local_state {
     ($name:ident) => {
         struct $name {

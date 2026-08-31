@@ -1,4 +1,4 @@
-use clippy_utils::{diagnostics::span_lint_and_help, peel_blocks};
+use clippy_utils::{diagnostics::span_lint_and_help, peel_blocks, peel_ref_operators};
 use rustc_hir::{ExprKind, ImplItem, ImplItemImplKind, ImplItemKind, PatKind, def::Res};
 use rustc_lint::{LateContext, LintContext};
 use rustc_middle::ty;
@@ -34,42 +34,77 @@ pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>)
         return;
     };
     let body = context.tcx.hir_body(body_id);
-    let [receiver_parameter] = body.params else {
+    let [receiver_parameter, parameters @ ..] = body.params else {
         return;
     };
     let PatKind::Binding(_, receiver_id, _, _) = receiver_parameter.pat.kind else {
         return;
     };
-    let returned = peel_blocks(body.value);
-    let ExprKind::Field(receiver, field_name) = returned.kind else {
-        return;
-    };
-    let ExprKind::Path(receiver_path) = receiver.kind else {
-        return;
-    };
-    if context.qpath_res(&receiver_path, receiver.hir_id) != Res::Local(receiver_id) {
+    let returned = peel_ref_operators(context, peel_blocks(body.value));
+    let typeck = context.tcx.typeck(item.owner_id.def_id);
+
+    if let ExprKind::Field(receiver, field_name) = returned.kind {
+        let ExprKind::Path(receiver_path) = receiver.kind else {
+            return;
+        };
+        if context.qpath_res(&receiver_path, receiver.hir_id) != Res::Local(receiver_id) {
+            return;
+        }
+        let receiver_type = typeck.expr_ty(receiver).peel_refs();
+        let ty::Adt(definition, _) = receiver_type.kind() else {
+            return;
+        };
+        let field_index = typeck.field_index(returned.hir_id);
+        let field = &definition.non_enum_variant().fields[field_index];
+        span_lint_and_help(
+            context,
+            NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
+            item.span,
+            format!(
+                "crate-visible accessor only returns the field `{}`",
+                field_name.name
+            ),
+            None,
+            if context.tcx.visibility(field.did).is_public() {
+                "delete the accessor and use direct field access"
+            } else {
+                "use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant"
+            },
+        );
         return;
     }
-    let typeck = context.tcx.typeck(item.owner_id.def_id);
-    let receiver_type = typeck.expr_ty(receiver).peel_refs();
-    let ty::Adt(definition, _) = receiver_type.kind() else {
+
+    let ExprKind::MethodCall(_, delegated_receiver, arguments, _) = returned.kind else {
         return;
     };
-    let field_index = typeck.field_index(returned.hir_id);
-    let field = &definition.non_enum_variant().fields[field_index];
+    let ExprKind::Field(inner_receiver, _) = delegated_receiver.kind else {
+        return;
+    };
+    let ExprKind::Path(inner_receiver_path) = inner_receiver.kind else {
+        return;
+    };
+    if context.qpath_res(&inner_receiver_path, inner_receiver.hir_id) != Res::Local(receiver_id)
+        || arguments.len() != parameters.len()
+    {
+        return;
+    }
+    for (argument, parameter) in arguments.iter().zip(parameters) {
+        let PatKind::Binding(_, parameter_id, _, _) = parameter.pat.kind else {
+            return;
+        };
+        let ExprKind::Path(argument_path) = argument.kind else {
+            return;
+        };
+        if context.qpath_res(&argument_path, argument.hir_id) != Res::Local(parameter_id) {
+            return;
+        }
+    }
     span_lint_and_help(
         context,
         NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
         item.span,
-        format!(
-            "crate-visible accessor only returns the field `{}`",
-            field_name.name
-        ),
+        "crate-visible accessor only delegates to an inner method",
         None,
-        if context.tcx.visibility(field.did).is_public() {
-            "delete the accessor and use direct field access"
-        } else {
-            "use a public field when it is independently mutable, or seal construction behind an immutable Deref view when fields form one validated invariant"
-        },
+        "expose the inner field directly, or use a public Deref or trait view instead of forwarding each method",
     );
 }

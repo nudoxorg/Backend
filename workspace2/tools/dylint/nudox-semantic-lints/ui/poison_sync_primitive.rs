@@ -47,6 +47,16 @@ fn inferred_constructor() {
     drop(mutex.lock());
 }
 
+fn unused_inferred_constructor() {
+    let _mutex = Mutex::new(0_u8);
+}
+
+fn consume<T>() {}
+
+fn generic_type_use() {
+    consume::<Mutex<u8>>();
+}
+
 fn inferred_alias_constructor() {
     let mutex = MutexAlias::new(0_u8);
     drop(mutex.lock());

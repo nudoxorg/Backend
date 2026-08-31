@@ -4,6 +4,7 @@
 enum ConfigError {
     Allocation,
     Exact { source: ParseError },
+    Tuple(ParseError),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +46,10 @@ fn exact_from_bytes(_bytes: &[u8]) -> ConfigError {
 
 fn cold_raw_rescan(result: Result<u8, ParseError>, bytes: &[u8]) -> Result<u8, ConfigError> {
     result.map_err(|_| exact_from_bytes(bytes))
+}
+
+fn tuple_replacement(result: Result<u8, ParseError>) -> Result<u8, ConfigError> {
+    result.map_err(|_| ConfigError::Tuple(ParseError))
 }
 
 struct Unrelated;
