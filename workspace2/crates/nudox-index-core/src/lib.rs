@@ -15,7 +15,7 @@ mod snapshot;
 
 pub use exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentView,
-    MAX_EXACT_PAYLOAD_BYTES,
+    MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
 };
 pub use lexical::{
     LexicalDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow,

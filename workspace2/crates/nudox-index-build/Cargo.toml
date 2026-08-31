@@ -1,0 +1,26 @@
+[package]
+name = "nudox-index-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nudox-compile-publication = { path = "../nudox-compile-publication" }
+nudox-id = { path = "../nudox-id" }
+nudox-index-core = { path = "../nudox-index-core" }
+nudox-ir-format = { path = "../nudox-ir-format" }
+nudox-ir-vocab = { path = "../nudox-ir-vocab" }
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-durable-journal = { path = "../nudox-durable-journal" }
+nudox-id = { path = "../nudox-id" }
+
+[lints]
+workspace = true
