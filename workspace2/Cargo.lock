@@ -3665,6 +3665,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-compile-driver"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nudox-compile-vocab",
+ "nudox-ir-format",
+ "nudox-ir-vocab",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "nudox-compile-registry"
 version = "0.1.0"
 dependencies = [
