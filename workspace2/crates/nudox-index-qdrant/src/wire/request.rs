@@ -69,21 +69,12 @@ impl From<VectorMetric> for PayloadMetric {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PayloadIndexDescriptor {
     pub(crate) field: PayloadField,
-    pub(crate) wire_name: &'static str,
     pub(crate) schema: PayloadIndexKind,
 }
 
 impl PayloadIndexDescriptor {
-    pub(crate) const fn new(
-        field: PayloadField,
-        wire_name: &'static str,
-        schema: PayloadIndexKind,
-    ) -> Self {
-        Self {
-            field,
-            wire_name,
-            schema,
-        }
+    pub(crate) const fn new(field: PayloadField, schema: PayloadIndexKind) -> Self {
+        Self { field, schema }
     }
 }
 

@@ -9,8 +9,8 @@ use nudox_index_graph_vector::{
     VectorQueryError, VectorSegmentError, exact_vector_query,
 };
 use nudox_index_qdrant::{
-    CollectionField, CollectionValue, MalformedResponseCause, QdrantBlockingAdapter,
-    QdrantDataKey, QdrantError, RequestPhase,
+    CollectionField, CollectionValue, MalformedResponseCause, QdrantBlockingAdapter, QdrantDataKey,
+    QdrantError, RequestPhase,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;

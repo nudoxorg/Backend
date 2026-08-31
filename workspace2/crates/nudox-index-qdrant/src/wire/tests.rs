@@ -92,7 +92,6 @@ fn query_fixture<Points: serde::Serialize>(points: Points) -> Result<String, ser
 fn payload_index_mismatch_retains_typed_expected_and_observed_schema() {
     let expected = [PayloadIndexDescriptor::new(
         PayloadField::Snapshot,
-        SNAPSHOT_PAYLOAD_KEY,
         PayloadIndexKind::Keyword,
     )];
     let body = r#"{
@@ -444,7 +443,12 @@ fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() -> Result<(
         vector: [1.0, 2.0],
     }])?;
     assert!(matches!(
-        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &invalid_snapshot),
+        parse_query_candidates(
+            authority,
+            &[segment.descriptor()],
+            &[0, 0],
+            &invalid_snapshot
+        ),
         Err(QdrantError::InvalidFieldEncoding {
             phase: RequestPhase::QueryPoints,
             field: PayloadField::Snapshot,

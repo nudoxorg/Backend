@@ -13,30 +13,25 @@ use super::{
     wire,
 };
 
-const PAYLOAD_INDEXES: [wire::PayloadIndexDescriptor; 5] = [
+const PAYLOAD_INDEXES: &[wire::PayloadIndexDescriptor] = &[
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Snapshot,
-        super::contract::SNAPSHOT_PAYLOAD_KEY,
         PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Model,
-        super::contract::MODEL_PAYLOAD_KEY,
         PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Segment,
-        super::contract::SEGMENT_PAYLOAD_KEY,
         PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Metric,
-        super::contract::METRIC_PAYLOAD_KEY,
         PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Partition,
-        super::contract::PARTITION_PAYLOAD_KEY,
         PayloadIndexKind::Integer,
     ),
 ];
@@ -203,7 +198,7 @@ impl QdrantBlockingAdapter {
     }
 
     fn ensure_payload_indexes(&self) -> Result<(), QdrantError> {
-        for descriptor in PAYLOAD_INDEXES {
+        for &descriptor in PAYLOAD_INDEXES {
             let response = self.request_json(
                 RequestPhase::CreatePayloadIndex,
                 Method::Put,
@@ -235,7 +230,7 @@ impl QdrantBlockingAdapter {
         wire::verify_payload_indexes(
             RequestPhase::ReadCollection,
             &response.body,
-            &PAYLOAD_INDEXES,
+            PAYLOAD_INDEXES,
         )
     }
 }

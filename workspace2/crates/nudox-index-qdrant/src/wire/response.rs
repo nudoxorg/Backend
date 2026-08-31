@@ -86,7 +86,7 @@ pub(crate) fn verify_payload_indexes(
 ) -> Result<(), QdrantError> {
     let response: CollectionResponse = decode(phase, body)?;
     for descriptor in expected {
-        let observed = response.result.payload_schema.kind(descriptor.wire_name);
+        let observed = response.result.payload_schema.kind(descriptor.field);
         if observed != Some(descriptor.schema) {
             return Err(QdrantError::CollectionMismatch {
                 phase,
@@ -252,15 +252,35 @@ struct CollectionResult {
     payload_schema: PayloadSchemaMap,
 }
 
-/// Qdrant owns an open payload-schema object. The transport's response-byte limit bounds this map;
-/// only the five declarative adapter keys are inspected and every other external key is ignored.
+/// Qdrant owns an open payload-schema object. Serde ignores external keys while this fixed record
+/// retains only fields that participate in the adapter's authority contract.
 #[derive(Default, Deserialize)]
-#[serde(transparent)]
-struct PayloadSchemaMap(std::collections::BTreeMap<String, PayloadSchema>);
+struct PayloadSchemaMap {
+    #[serde(rename = "nudox_snapshot")]
+    snapshot: Option<PayloadSchema>,
+    #[serde(rename = "nudox_model")]
+    model: Option<PayloadSchema>,
+    #[serde(rename = "nudox_segment")]
+    segment: Option<PayloadSchema>,
+    #[serde(rename = "nudox_metric")]
+    metric: Option<PayloadSchema>,
+    #[serde(rename = "nudox_partition")]
+    partition: Option<PayloadSchema>,
+    #[serde(rename = "nudox_entity")]
+    entity: Option<PayloadSchema>,
+}
 
 impl PayloadSchemaMap {
-    fn kind(&self, wire_name: &str) -> Option<PayloadIndexKind> {
-        self.0.get(wire_name).map(|entry| entry.data_type)
+    fn kind(&self, field: PayloadField) -> Option<PayloadIndexKind> {
+        match field {
+            PayloadField::Snapshot => self.snapshot,
+            PayloadField::Model => self.model,
+            PayloadField::Segment => self.segment,
+            PayloadField::Metric => self.metric,
+            PayloadField::Partition => self.partition,
+            PayloadField::Entity => self.entity,
+        }
+        .map(|entry| entry.data_type)
     }
 }
 
@@ -282,7 +302,7 @@ struct CollectionVectors {
     distance: CollectionMetric,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 struct PayloadSchema {
     data_type: PayloadIndexKind,
 }
