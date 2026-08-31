@@ -1,9 +1,4 @@
 //! Production slot reuse journey for stale handles and payload destruction.
-#![allow(
-    clippy::result_large_err,
-    reason = "the cold typed failure retains both exact runtime metric snapshots without allocation or error erasure"
-)]
-
 use core::convert::Infallible;
 use std::rc::Rc;
 
@@ -98,8 +93,8 @@ enum ReuseError {
     Owner(#[from] OwnerFault),
     #[error("runtime metrics were not conserved: observed {observed:?}, expected {expected:?}")]
     Metrics {
-        observed: RuntimeMetrics,
-        expected: RuntimeMetrics,
+        observed: Box<RuntimeMetrics>,
+        expected: Box<RuntimeMetrics>,
     },
     #[error("{phase:?} did not terminalize work: {observed:?}")]
     Progress {
@@ -305,8 +300,8 @@ fn stale_handle_cannot_cancel_reused_slot_and_every_payload_drops_once() -> Resu
     let observed_metrics = runtime.metrics();
     if observed_metrics != expected_metrics {
         return Err(ReuseError::Metrics {
-            observed: observed_metrics,
-            expected: expected_metrics,
+            observed: Box::new(observed_metrics),
+            expected: Box::new(expected_metrics),
         });
     }
 
