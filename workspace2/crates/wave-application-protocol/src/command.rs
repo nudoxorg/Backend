@@ -12,163 +12,163 @@ pub(crate) enum RawNumber {
     Text(String),
 }
 
+/// Compiler vocabulary and source fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawGenerate {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Compiler language token.
+    pub(crate) language: String,
+    /// Compiler stage token.
+    pub(crate) stage: String,
+    /// Package name.
+    pub(crate) package: String,
+    /// Source text.
+    pub(crate) source: String,
+}
+
+/// Shared immutable snapshot selector.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSnapshot {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Snapshot selector.
+    pub(crate) snapshot: String,
+}
+
+/// Lexical query fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSearch {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Snapshot selector.
+    pub(crate) snapshot: String,
+    /// Lexical query.
+    pub(crate) query: String,
+    /// Result limit in native JSON or CLI text form.
+    pub(crate) limit: RawNumber,
+}
+
+/// Shared graph and vector retrieval fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawRetrieval {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Snapshot selector.
+    pub(crate) snapshot: String,
+    /// Result limit in native JSON or CLI text form.
+    pub(crate) limit: RawNumber,
+}
+
+/// Argument-free capability health fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawHealth {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+}
+
+/// Shared local recovery and release policy.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawPolicy {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Generation authority.
+    pub(crate) generation: String,
+    /// Snapshot authority.
+    pub(crate) snapshot: String,
+    /// Analyzer bundle identity.
+    pub(crate) bundle: String,
+    /// Free RAM budget.
+    pub(crate) ram_free: RawNumber,
+    /// Free `NVMe` budget.
+    pub(crate) nvme_free: RawNumber,
+    /// Operation budget.
+    pub(crate) operations: RawNumber,
+    /// Retry budget.
+    pub(crate) retries: RawNumber,
+    /// Memory pressure token.
+    pub(crate) memory_pressure: String,
+    /// Storage pressure token.
+    pub(crate) storage_pressure: String,
+    /// Battery state token.
+    pub(crate) battery: String,
+}
+
+/// Inconsistent recovery authorities and policy budget.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawInconsistentPolicy {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Expected generation authority.
+    pub(crate) expected_generation: String,
+    /// Expected snapshot authority.
+    pub(crate) expected_snapshot: String,
+    /// Observed generation authority.
+    pub(crate) observed_generation: String,
+    /// Observed snapshot authority.
+    pub(crate) observed_snapshot: String,
+    /// Analyzer bundle identity.
+    pub(crate) bundle: String,
+    /// Free RAM budget.
+    pub(crate) ram_free: RawNumber,
+    /// Free `NVMe` budget.
+    pub(crate) nvme_free: RawNumber,
+    /// Operation budget.
+    pub(crate) operations: RawNumber,
+    /// Retry budget.
+    pub(crate) retries: RawNumber,
+    /// Memory pressure token.
+    pub(crate) memory_pressure: String,
+    /// Storage pressure token.
+    pub(crate) storage_pressure: String,
+    /// Battery state token.
+    pub(crate) battery: String,
+}
+
+/// Shared execution operation selector.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawOperation {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Service execution operation key.
+    pub(crate) operation: RawNumber,
+}
+
 /// One closed application command before transport-independent typed conversion.
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "action", rename_all = "kebab-case")]
 pub(crate) enum RawApplicationCommand {
     /// Compiler vocabulary request.
-    Generate {
-        /// Request correlation.
-        correlation: u64,
-        /// Compiler language token.
-        language: String,
-        /// Compiler stage token.
-        stage: String,
-        /// Package name.
-        package: String,
-        /// Source text.
-        source: String,
-    },
+    Generate(RawGenerate),
     /// Snapshot status request.
     #[serde(rename = "status")]
-    SnapshotStatus {
-        /// Request correlation.
-        correlation: u64,
-        /// Snapshot selector.
-        snapshot: String,
-    },
+    SnapshotStatus(RawSnapshot),
     /// Lexical retrieval request.
-    Search {
-        /// Request correlation.
-        correlation: u64,
-        /// Snapshot selector.
-        snapshot: String,
-        /// Lexical query.
-        query: String,
-        /// Result limit as a native number or decimal text.
-        limit: RawNumber,
-    },
+    Search(RawSearch),
     /// Graph retrieval request.
-    Graph {
-        /// Request correlation.
-        correlation: u64,
-        /// Snapshot selector.
-        snapshot: String,
-        /// Result limit as a native number or decimal text.
-        limit: RawNumber,
-    },
+    Graph(RawRetrieval),
     /// Vector retrieval request.
-    Vector {
-        /// Request correlation.
-        correlation: u64,
-        /// Snapshot selector.
-        snapshot: String,
-        /// Result limit as a native number or decimal text.
-        limit: RawNumber,
-    },
+    Vector(RawRetrieval),
     /// Locality request.
-    Locality {
-        /// Request correlation.
-        correlation: u64,
-        /// Snapshot selector.
-        snapshot: String,
-    },
+    Locality(RawSnapshot),
     /// Capability health request.
-    Health {
-        /// Request correlation.
-        correlation: u64,
-    },
+    Health(RawHealth),
     /// Local recovery policy request.
-    RecoverLocal {
-        /// Request correlation.
-        correlation: u64,
-        /// Generation authority.
-        generation: String,
-        /// Snapshot authority.
-        snapshot: String,
-        /// Analyzer bundle identity.
-        bundle: String,
-        /// Free RAM budget.
-        ram_free: RawNumber,
-        /// Free `NVMe` budget.
-        nvme_free: RawNumber,
-        /// Operation budget.
-        operations: RawNumber,
-        /// Retry budget.
-        retries: RawNumber,
-        /// Memory pressure token.
-        memory_pressure: String,
-        /// Storage pressure token.
-        storage_pressure: String,
-        /// Battery state token.
-        battery: String,
-    },
+    RecoverLocal(RawPolicy),
     /// Inconsistent remote recovery policy request.
-    RecoverInconsistent {
-        /// Request correlation.
-        correlation: u64,
-        /// Expected generation authority.
-        expected_generation: String,
-        /// Expected snapshot authority.
-        expected_snapshot: String,
-        /// Observed generation authority.
-        observed_generation: String,
-        /// Observed snapshot authority.
-        observed_snapshot: String,
-        /// Analyzer bundle identity.
-        bundle: String,
-        /// Free RAM budget.
-        ram_free: RawNumber,
-        /// Free `NVMe` budget.
-        nvme_free: RawNumber,
-        /// Operation budget.
-        operations: RawNumber,
-        /// Retry budget.
-        retries: RawNumber,
-        /// Memory pressure token.
-        memory_pressure: String,
-        /// Storage pressure token.
-        storage_pressure: String,
-        /// Battery state token.
-        battery: String,
-    },
+    RecoverInconsistent(RawInconsistentPolicy),
     /// Local release policy request.
-    ReleaseLocal {
-        /// Request correlation.
-        correlation: u64,
-        /// Generation authority.
-        generation: String,
-        /// Snapshot authority.
-        snapshot: String,
-        /// Analyzer bundle identity.
-        bundle: String,
-        /// Free RAM budget.
-        ram_free: RawNumber,
-        /// Free `NVMe` budget.
-        nvme_free: RawNumber,
-        /// Operation budget.
-        operations: RawNumber,
-        /// Retry budget.
-        retries: RawNumber,
-        /// Memory pressure token.
-        memory_pressure: String,
-        /// Storage pressure token.
-        storage_pressure: String,
-        /// Battery state token.
-        battery: String,
-    },
+    ReleaseLocal(RawPolicy),
     /// Execution polling request.
-    PollExecution {
-        /// Request correlation.
-        correlation: u64,
-        /// Service execution operation key.
-        operation: RawNumber,
-    },
+    PollExecution(RawOperation),
     /// Execution cancellation request.
-    Cancel {
-        /// Request correlation.
-        correlation: u64,
-        /// Service execution operation key.
-        operation: RawNumber,
-    },
+    Cancel(RawOperation),
 }

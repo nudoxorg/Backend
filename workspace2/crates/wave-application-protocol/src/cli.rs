@@ -10,7 +10,10 @@ use wave_application_core::{
     RetryBudget,
 };
 
-use crate::command::{RawApplicationCommand, RawNumber};
+use crate::command::{
+    RawApplicationCommand, RawGenerate, RawHealth, RawInconsistentPolicy, RawNumber, RawOperation,
+    RawPolicy, RawRetrieval, RawSearch, RawSnapshot,
+};
 
 /// Largest positional CLI field count for the closed application command vocabulary.
 pub const MAX_CLI_ARGUMENTS: usize = 14;
@@ -295,49 +298,49 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
         exact_fields(arguments, expected)?;
     }
     match action {
-        "generate" => Ok(RawApplicationCommand::Generate {
+        "generate" => Ok(RawApplicationCommand::Generate(RawGenerate {
             correlation,
             language: owned(arguments, 2, "language")?,
             stage: owned(arguments, 3, "stage")?,
             package: owned(arguments, 4, "package")?,
             source: owned(arguments, 5, "source")?,
-        }),
-        "status" => Ok(RawApplicationCommand::SnapshotStatus {
+        })),
+        "status" => Ok(RawApplicationCommand::SnapshotStatus(RawSnapshot {
             correlation,
             snapshot: owned(arguments, 2, "snapshot")?,
-        }),
-        "search" => Ok(RawApplicationCommand::Search {
+        })),
+        "search" => Ok(RawApplicationCommand::Search(RawSearch {
             correlation,
             snapshot: owned(arguments, 2, "snapshot")?,
             query: owned(arguments, 3, "query")?,
             limit: raw_number(arguments, 4, "limit")?,
-        }),
-        "graph" => Ok(RawApplicationCommand::Graph {
+        })),
+        "graph" => Ok(RawApplicationCommand::Graph(RawRetrieval {
             correlation,
             snapshot: owned(arguments, 2, "snapshot")?,
             limit: raw_number(arguments, 3, "limit")?,
-        }),
-        "vector" => Ok(RawApplicationCommand::Vector {
+        })),
+        "vector" => Ok(RawApplicationCommand::Vector(RawRetrieval {
             correlation,
             snapshot: owned(arguments, 2, "snapshot")?,
             limit: raw_number(arguments, 3, "limit")?,
-        }),
-        "locality" => Ok(RawApplicationCommand::Locality {
+        })),
+        "locality" => Ok(RawApplicationCommand::Locality(RawSnapshot {
             correlation,
             snapshot: owned(arguments, 2, "snapshot")?,
-        }),
-        "health" => Ok(RawApplicationCommand::Health { correlation }),
-        "recover-local" => raw_policy_command(arguments, correlation, true),
+        })),
+        "health" => Ok(RawApplicationCommand::Health(RawHealth { correlation })),
+        "recover-local" => raw_recover_command(arguments, correlation),
         "recover-inconsistent" => raw_inconsistent_policy_command(arguments, correlation),
-        "release-local" => raw_policy_command(arguments, correlation, false),
-        "poll-execution" => Ok(RawApplicationCommand::PollExecution {
+        "release-local" => raw_release_command(arguments, correlation),
+        "poll-execution" => Ok(RawApplicationCommand::PollExecution(RawOperation {
             correlation,
             operation: raw_number(arguments, 2, "operation")?,
-        }),
-        "cancel" => Ok(RawApplicationCommand::Cancel {
+        })),
+        "cancel" => Ok(RawApplicationCommand::Cancel(RawOperation {
             correlation,
             operation: raw_number(arguments, 2, "operation")?,
-        }),
+        })),
         _ => Err(AdapterError::simple(
             AdapterErrorCode::UnknownAction,
             "action",
@@ -438,276 +441,170 @@ pub fn collect_cli_arguments(
 impl TryFrom<RawApplicationCommand> for ApplicationInput {
     type Error = AdapterError;
 
-    // This is the single exhaustive raw-to-core gate; keeping every variant visible prevents
-    // transport adapters from growing their own semantic conversion paths.
-    #[allow(clippy::too_many_lines)]
     fn try_from(command: RawApplicationCommand) -> Result<Self, Self::Error> {
         match command {
-            RawApplicationCommand::Generate {
-                correlation,
-                language,
-                stage,
-                package,
-                source,
-            } => generate_input(correlation, language, stage, package, source),
-            RawApplicationCommand::SnapshotStatus {
-                correlation,
-                snapshot,
-            } => status_input(correlation, snapshot),
-            RawApplicationCommand::Search {
-                correlation,
-                snapshot,
-                query,
-                limit,
-            } => search_input(correlation, snapshot, query, limit),
-            RawApplicationCommand::Graph {
-                correlation,
-                snapshot,
-                limit,
-            } => {
-                let (correlation, snapshot, limit) = retrieval_parts(correlation, snapshot, limit)?;
-                Ok(ApplicationInput::Graph {
-                    correlation,
-                    snapshot,
-                    limit,
-                })
-            }
-            RawApplicationCommand::Vector {
-                correlation,
-                snapshot,
-                limit,
-            } => {
-                let (correlation, snapshot, limit) = retrieval_parts(correlation, snapshot, limit)?;
-                Ok(ApplicationInput::Vector {
-                    correlation,
-                    snapshot,
-                    limit,
-                })
-            }
-            RawApplicationCommand::Locality {
-                correlation,
-                snapshot,
-            } => locality_input(correlation, snapshot),
-            RawApplicationCommand::Health { correlation } => Ok(ApplicationInput::Health {
-                correlation: CorrelationId(correlation),
+            RawApplicationCommand::Generate(raw) => generate_input(raw),
+            RawApplicationCommand::SnapshotStatus(raw) => status_input(raw),
+            RawApplicationCommand::Search(raw) => search_input(raw),
+            RawApplicationCommand::Graph(raw) => graph_input(raw),
+            RawApplicationCommand::Vector(raw) => vector_input(raw),
+            RawApplicationCommand::Locality(raw) => locality_input(raw),
+            RawApplicationCommand::Health(raw) => Ok(ApplicationInput::Health {
+                correlation: CorrelationId(raw.correlation),
             }),
-            RawApplicationCommand::RecoverLocal {
-                correlation,
-                generation,
-                snapshot,
-                bundle,
-                ram_free,
-                nvme_free,
-                operations,
-                retries,
-                memory_pressure,
-                storage_pressure,
-                battery,
-            } => {
-                let budget = budget(
-                    ram_free,
-                    nvme_free,
-                    operations,
-                    retries,
-                    &memory_pressure,
-                    &storage_pressure,
-                    &battery,
-                )?;
-                let (correlation, pin, bundle) =
-                    policy_parts(correlation, &generation, &snapshot, &bundle)?;
-                Ok(ApplicationInput::RecoverLocal {
-                    correlation,
-                    pin,
-                    bundle,
-                    budget,
-                })
-            }
-            RawApplicationCommand::RecoverInconsistent {
-                correlation,
-                expected_generation,
-                expected_snapshot,
-                observed_generation,
-                observed_snapshot,
-                bundle,
-                ram_free,
-                nvme_free,
-                operations,
-                retries,
-                memory_pressure,
-                storage_pressure,
-                battery,
-            } => {
-                let budget = budget(
-                    ram_free,
-                    nvme_free,
-                    operations,
-                    retries,
-                    &memory_pressure,
-                    &storage_pressure,
-                    &battery,
-                )?;
-                inconsistent_input(
-                    correlation,
-                    &expected_generation,
-                    &expected_snapshot,
-                    &observed_generation,
-                    &observed_snapshot,
-                    &bundle,
-                    budget,
-                )
-            }
-            RawApplicationCommand::ReleaseLocal {
-                correlation,
-                generation,
-                snapshot,
-                bundle,
-                ram_free,
-                nvme_free,
-                operations,
-                retries,
-                memory_pressure,
-                storage_pressure,
-                battery,
-            } => {
-                let budget = budget(
-                    ram_free,
-                    nvme_free,
-                    operations,
-                    retries,
-                    &memory_pressure,
-                    &storage_pressure,
-                    &battery,
-                )?;
-                let (correlation, pin, bundle) =
-                    policy_parts(correlation, &generation, &snapshot, &bundle)?;
-                Ok(ApplicationInput::ReleaseLocal {
-                    correlation,
-                    pin,
-                    bundle,
-                    budget,
-                })
-            }
-            RawApplicationCommand::PollExecution {
-                correlation,
-                operation,
-            } => {
-                let (correlation, operation) = operation_parts(correlation, operation)?;
-                Ok(ApplicationInput::PollExecution {
-                    correlation,
-                    operation,
-                })
-            }
-            RawApplicationCommand::Cancel {
-                correlation,
-                operation,
-            } => {
-                let (correlation, operation) = operation_parts(correlation, operation)?;
-                Ok(ApplicationInput::Cancel {
-                    correlation,
-                    operation,
-                })
-            }
+            RawApplicationCommand::RecoverLocal(raw) => recover_input(raw),
+            RawApplicationCommand::RecoverInconsistent(raw) => inconsistent_policy_input(raw),
+            RawApplicationCommand::ReleaseLocal(raw) => release_input(raw),
+            RawApplicationCommand::PollExecution(raw) => poll_input(raw),
+            RawApplicationCommand::Cancel(raw) => cancel_input(raw),
         }
     }
 }
 
-fn generate_input(
-    correlation: u64,
-    language: String,
-    stage: String,
-    package: String,
-    source: String,
-) -> Result<ApplicationInput, AdapterError> {
+fn generate_input(raw: RawGenerate) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::Generate {
-        correlation: CorrelationId(correlation),
-        language: input_text(language, "language")?,
-        stage: input_text(stage, "stage")?,
-        package: input_text(package, "package")?,
-        source: input_text(source, "source")?,
+        correlation: CorrelationId(raw.correlation),
+        language: input_text(raw.language, "language")?,
+        stage: input_text(raw.stage, "stage")?,
+        package: input_text(raw.package, "package")?,
+        source: input_text(raw.source, "source")?,
     })
 }
 
-fn status_input(correlation: u64, snapshot: String) -> Result<ApplicationInput, AdapterError> {
+fn status_input(raw: RawSnapshot) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::SnapshotStatus {
-        correlation: CorrelationId(correlation),
-        snapshot: input_text(snapshot, "snapshot")?,
+        correlation: CorrelationId(raw.correlation),
+        snapshot: input_text(raw.snapshot, "snapshot")?,
     })
 }
 
-fn search_input(
-    correlation: u64,
-    snapshot: String,
-    query: String,
-    limit: RawNumber,
-) -> Result<ApplicationInput, AdapterError> {
+fn search_input(raw: RawSearch) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::Search {
-        correlation: CorrelationId(correlation),
-        snapshot: input_text(snapshot, "snapshot")?,
-        query: input_text(query, "query")?,
-        limit: number(limit, "limit")?,
+        correlation: CorrelationId(raw.correlation),
+        snapshot: input_text(raw.snapshot, "snapshot")?,
+        query: input_text(raw.query, "query")?,
+        limit: number(raw.limit, "limit")?,
     })
 }
 
-fn retrieval_parts(
-    correlation: u64,
-    snapshot: String,
-    limit: RawNumber,
-) -> Result<(CorrelationId, InputText, u8), AdapterError> {
+fn retrieval_parts(raw: RawRetrieval) -> Result<(CorrelationId, InputText, u8), AdapterError> {
     Ok((
-        CorrelationId(correlation),
-        input_text(snapshot, "snapshot")?,
-        number(limit, "limit")?,
+        CorrelationId(raw.correlation),
+        input_text(raw.snapshot, "snapshot")?,
+        number(raw.limit, "limit")?,
     ))
 }
 
-fn locality_input(correlation: u64, snapshot: String) -> Result<ApplicationInput, AdapterError> {
+fn graph_input(raw: RawRetrieval) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, snapshot, limit) = retrieval_parts(raw)?;
+    Ok(ApplicationInput::Graph {
+        correlation,
+        snapshot,
+        limit,
+    })
+}
+
+fn vector_input(raw: RawRetrieval) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, snapshot, limit) = retrieval_parts(raw)?;
+    Ok(ApplicationInput::Vector {
+        correlation,
+        snapshot,
+        limit,
+    })
+}
+
+fn locality_input(raw: RawSnapshot) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::Locality {
-        correlation: CorrelationId(correlation),
-        snapshot: input_text(snapshot, "snapshot")?,
+        correlation: CorrelationId(raw.correlation),
+        snapshot: input_text(raw.snapshot, "snapshot")?,
     })
 }
 
-fn policy_parts(
-    correlation: u64,
-    generation: &str,
-    snapshot: &str,
-    bundle: &str,
-) -> Result<(CorrelationId, Pin, ContentId<CapabilityDomain>), AdapterError> {
+type PolicyParts = (
+    CorrelationId,
+    Pin,
+    ContentId<CapabilityDomain>,
+    ResourceBudget,
+);
+
+fn policy_parts(raw: RawPolicy) -> Result<PolicyParts, AdapterError> {
     Ok((
-        CorrelationId(correlation),
-        pin_from_text(generation, snapshot)?,
-        canonical_content_id(bundle, "bundle")?,
+        CorrelationId(raw.correlation),
+        pin_from_text(&raw.generation, &raw.snapshot)?,
+        canonical_content_id(&raw.bundle, "bundle")?,
+        budget(
+            raw.ram_free,
+            raw.nvme_free,
+            raw.operations,
+            raw.retries,
+            &raw.memory_pressure,
+            &raw.storage_pressure,
+            &raw.battery,
+        )?,
     ))
 }
 
-fn inconsistent_input(
-    correlation: u64,
-    expected_generation: &str,
-    expected_snapshot: &str,
-    observed_generation: &str,
-    observed_snapshot: &str,
-    bundle: &str,
-    budget: ResourceBudget,
-) -> Result<ApplicationInput, AdapterError> {
+fn recover_input(raw: RawPolicy) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, pin, bundle, budget) = policy_parts(raw)?;
+    Ok(ApplicationInput::RecoverLocal {
+        correlation,
+        pin,
+        bundle,
+        budget,
+    })
+}
+
+fn inconsistent_policy_input(raw: RawInconsistentPolicy) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::RecoverInconsistent(
         InconsistentRecovery {
-            correlation: CorrelationId(correlation),
-            expected: pin_from_text(expected_generation, expected_snapshot)?,
-            observed: pin_from_text(observed_generation, observed_snapshot)?,
-            bundle: canonical_content_id(bundle, "bundle")?,
-            budget,
+            correlation: CorrelationId(raw.correlation),
+            expected: pin_from_text(&raw.expected_generation, &raw.expected_snapshot)?,
+            observed: pin_from_text(&raw.observed_generation, &raw.observed_snapshot)?,
+            bundle: canonical_content_id(&raw.bundle, "bundle")?,
+            budget: budget(
+                raw.ram_free,
+                raw.nvme_free,
+                raw.operations,
+                raw.retries,
+                &raw.memory_pressure,
+                &raw.storage_pressure,
+                &raw.battery,
+            )?,
         },
     ))
 }
 
-fn operation_parts(
-    correlation: u64,
-    operation: RawNumber,
-) -> Result<(CorrelationId, OperationKey), AdapterError> {
+fn release_input(raw: RawPolicy) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, pin, bundle, budget) = policy_parts(raw)?;
+    Ok(ApplicationInput::ReleaseLocal {
+        correlation,
+        pin,
+        bundle,
+        budget,
+    })
+}
+
+fn operation_parts(raw: RawOperation) -> Result<(CorrelationId, OperationKey), AdapterError> {
     Ok((
-        CorrelationId(correlation),
-        OperationKey(number(operation, "operation")?),
+        CorrelationId(raw.correlation),
+        OperationKey(number(raw.operation, "operation")?),
     ))
+}
+
+fn poll_input(raw: RawOperation) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, operation) = operation_parts(raw)?;
+    Ok(ApplicationInput::PollExecution {
+        correlation,
+        operation,
+    })
+}
+
+fn cancel_input(raw: RawOperation) -> Result<ApplicationInput, AdapterError> {
+    let (correlation, operation) = operation_parts(raw)?;
+    Ok(ApplicationInput::Cancel {
+        correlation,
+        operation,
+    })
 }
 
 fn field<'input>(
@@ -779,71 +676,57 @@ where
     }
 }
 
-fn raw_policy_command(
+fn raw_policy(arguments: &[String], correlation: u64) -> Result<RawPolicy, AdapterError> {
+    Ok(RawPolicy {
+        correlation,
+        generation: owned(arguments, 2, "generation")?,
+        snapshot: owned(arguments, 3, "snapshot")?,
+        bundle: owned(arguments, 4, "bundle")?,
+        ram_free: raw_number(arguments, 5, "ram_free")?,
+        nvme_free: raw_number(arguments, 6, "nvme_free")?,
+        operations: raw_number(arguments, 7, "operations")?,
+        retries: raw_number(arguments, 8, "retries")?,
+        memory_pressure: owned(arguments, 9, "memory_pressure")?,
+        storage_pressure: owned(arguments, 10, "storage_pressure")?,
+        battery: owned(arguments, 11, "battery")?,
+    })
+}
+
+fn raw_recover_command(
     arguments: &[String],
     correlation: u64,
-    recover: bool,
 ) -> Result<RawApplicationCommand, AdapterError> {
-    let generation = owned(arguments, 2, "generation")?;
-    let snapshot = owned(arguments, 3, "snapshot")?;
-    let bundle = owned(arguments, 4, "bundle")?;
-    let ram_free = raw_number(arguments, 5, "ram_free")?;
-    let nvme_free = raw_number(arguments, 6, "nvme_free")?;
-    let operations = raw_number(arguments, 7, "operations")?;
-    let retries = raw_number(arguments, 8, "retries")?;
-    let memory_pressure = owned(arguments, 9, "memory_pressure")?;
-    let storage_pressure = owned(arguments, 10, "storage_pressure")?;
-    let battery = owned(arguments, 11, "battery")?;
-    if recover {
-        Ok(RawApplicationCommand::RecoverLocal {
-            correlation,
-            generation,
-            snapshot,
-            bundle,
-            ram_free,
-            nvme_free,
-            operations,
-            retries,
-            memory_pressure,
-            storage_pressure,
-            battery,
-        })
-    } else {
-        Ok(RawApplicationCommand::ReleaseLocal {
-            correlation,
-            generation,
-            snapshot,
-            bundle,
-            ram_free,
-            nvme_free,
-            operations,
-            retries,
-            memory_pressure,
-            storage_pressure,
-            battery,
-        })
-    }
+    raw_policy(arguments, correlation).map(RawApplicationCommand::RecoverLocal)
+}
+
+fn raw_release_command(
+    arguments: &[String],
+    correlation: u64,
+) -> Result<RawApplicationCommand, AdapterError> {
+    raw_policy(arguments, correlation).map(RawApplicationCommand::ReleaseLocal)
 }
 
 fn raw_inconsistent_policy_command(
     arguments: &[String],
     correlation: u64,
 ) -> Result<RawApplicationCommand, AdapterError> {
-    Ok(RawApplicationCommand::RecoverInconsistent {
-        correlation,
-        expected_generation: owned(arguments, 2, "expected_generation")?,
-        expected_snapshot: owned(arguments, 3, "expected_snapshot")?,
-        observed_generation: owned(arguments, 4, "observed_generation")?,
-        observed_snapshot: owned(arguments, 5, "observed_snapshot")?,
-        bundle: owned(arguments, 6, "bundle")?,
-        ram_free: raw_number(arguments, 7, "ram_free")?,
-        nvme_free: raw_number(arguments, 8, "nvme_free")?,
-        operations: raw_number(arguments, 9, "operations")?,
-        retries: raw_number(arguments, 10, "retries")?,
-        memory_pressure: owned(arguments, 11, "memory_pressure")?,
-        storage_pressure: owned(arguments, 12, "storage_pressure")?,
-        battery: owned(arguments, 13, "battery")?,
-    })
+    Ok(RawApplicationCommand::RecoverInconsistent(
+        RawInconsistentPolicy {
+            correlation,
+            expected_generation: owned(arguments, 2, "expected_generation")?,
+            expected_snapshot: owned(arguments, 3, "expected_snapshot")?,
+            observed_generation: owned(arguments, 4, "observed_generation")?,
+            observed_snapshot: owned(arguments, 5, "observed_snapshot")?,
+            bundle: owned(arguments, 6, "bundle")?,
+            ram_free: raw_number(arguments, 7, "ram_free")?,
+            nvme_free: raw_number(arguments, 8, "nvme_free")?,
+            operations: raw_number(arguments, 9, "operations")?,
+            retries: raw_number(arguments, 10, "retries")?,
+            memory_pressure: owned(arguments, 11, "memory_pressure")?,
+            storage_pressure: owned(arguments, 12, "storage_pressure")?,
+            battery: owned(arguments, 13, "battery")?,
+        },
+    ))
 }
 
 fn pin_from_text(generation: &str, snapshot: &str) -> Result<Pin, AdapterError> {
