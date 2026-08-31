@@ -1,3 +1,0 @@
-extra_srcs = [
-    "tests/UTF-8-demo.txt",
-]

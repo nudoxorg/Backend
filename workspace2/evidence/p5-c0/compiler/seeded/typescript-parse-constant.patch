@@ -1,5 +1,0 @@
---- a/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
-+++ b/workspace2/planes/compiler/crates/nudox-compile-registry/src/lib.rs
-@@ -47,1 +47,1 @@
--        source
-+        b"constant-typescript-parse"

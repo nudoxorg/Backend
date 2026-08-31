@@ -1,7 +1,0 @@
---- a/src/type_dag.rs
-+++ b/src/type_dag.rs
-@@ -111,3 +111,3 @@
-         let mut decoded = [TypeNode::Primitive(PrimitiveType::Bool); MAX_TYPE_DAG_NODES as usize];
--        let body = &bytes[TYPE_DAG_HEADER_BYTES..];
-+        let body = &[1, 0][..];
-         let mut cursor = 0;

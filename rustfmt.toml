@@ -1,13 +1,8 @@
-color = "Never"
+# Keeps every boundary on one deterministic Rust 2024 presentation.
+# Imports group by crate so dependency direction remains visually obvious.
+# Comments and macros are formatted with the code they explain.
+
 edition = "2024"
-format_macro_matchers = true
-format_macro_bodies = true
-hex_literal_case = "Lower"
-imports_granularity = "Crate"
-newline_style = "Unix"
-normalize_comments = true
-normalize_doc_attributes = false
-overflow_delimited_expr = true
-use_field_init_shorthand = true
 style_edition = "2024"
-wrap_comments = true
+newline_style = "Unix"
+use_field_init_shorthand = true

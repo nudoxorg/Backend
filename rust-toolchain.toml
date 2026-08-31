@@ -1,0 +1,7 @@
+# Pins the compiler used outside the Nix development shell.
+# Installs only the components required by workspace quality gates.
+# Matches the minimum Rust version declared by every crate.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

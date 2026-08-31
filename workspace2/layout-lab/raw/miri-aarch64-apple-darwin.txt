@@ -1,4 +1,0 @@
-command	cargo miri test --manifest-path layout-lab/Cargo.toml --lib experiments::tests::permit_queue
-result	unavailable
-reason	installed cargo-miri selects rustc 1.99.0-nightly while the Nix std/sysroot is rustc 1.97.1; sysroot build fails before the lab crate compiles (removed diagnostic_on_unmatch_args and incompatible std errors).
-interpretation	no Miri safety evidence; PermitQueue remains lab-only and blocked.

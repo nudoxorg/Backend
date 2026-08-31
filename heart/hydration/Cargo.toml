@@ -1,0 +1,30 @@
+# Defines the `heart-hydration` package and its explicit dependency boundary.
+# The crate exists to plan and verify borrowed object hydration without weakening generation authority.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "heart-hydration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+heart-identity = { path = "../identity" }
+heart-object = { path = "../object" }
+heart-root = { path = "../root" }
+heart-observe = { path = "../observe" }
+heart-memory = { path = "../memory" }
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+heart-schema = { path = "../schema" }
+rstest.workspace = true
+trybuild.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

@@ -1,3 +1,0 @@
-['cfg(version = ">=2")']
-features = ["serde"]
-extra_deps = [":serde-1"]

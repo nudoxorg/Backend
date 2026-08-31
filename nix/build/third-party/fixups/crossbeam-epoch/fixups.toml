@@ -1,4 +1,0 @@
-cargo_env = true
-
-[buildscript]
-run = true

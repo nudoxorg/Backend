@@ -1,9 +1,0 @@
-toolchain=/nix/store/gvj0045rxpw8sx471alnyn9dbhikhswh-rust-1.97.1-with-components-2026-07-16
-host=aarch64-apple-darwin
-baseline=f2565a9fb33af06053bd19721d4dc2753ec09ed5
-command=RUSTFLAGS='--cfg canonical_byte_local_closure_red --check-cfg=cfg(canonical_byte_local_closure_red)' cargo test -p nudox-operation --test canonical_byte_local_closure --locked --offline
-exit=101
-error[E0432]=no nudox_hydration::plan_borrowed
-error[E0432]=no nudox_root::{BorrowedGenerationView,RootReadError,ValidatedRoot}
-error[E0599]=Need has no bind_borrowed
-error[E0599]=LocalObjectProvider has no bind_verified

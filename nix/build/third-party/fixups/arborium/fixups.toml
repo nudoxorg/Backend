@@ -1,3 +1,0 @@
-# Features live on the dependency in Cargo.toml (source of truth).
-# build.rs is empty; explicitly ignore so reindeer doesn't warn.
-buildscript.run = false

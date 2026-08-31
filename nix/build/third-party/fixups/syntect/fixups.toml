@@ -1,6 +1,0 @@
-extra_srcs = [
-    "assets/default.themedump",
-    "assets/default_metadata.packdump",
-    "assets/default_newlines.packdump",
-    "assets/default_nonewlines.packdump",
-]

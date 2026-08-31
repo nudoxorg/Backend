@@ -1,9 +1,0 @@
-extra_srcs = [
-    "data/mod.rs",
-    "data/*.rs.data",
-]
-
-cargo_env = true
-
-[buildscript]
-run = true

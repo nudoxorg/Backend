@@ -1,0 +1,21 @@
+# Defines the `compiler-driver` package and its explicit dependency boundary.
+# The crate exists to run bounded native toolchains and lower their output into canonical IR.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-vocabulary = { path = "../vocabulary" }
+compiler-registry = { path = "../registry" }
+compiler-ir = { path = "../ir" }
+compiler-ir-vocabulary = { path = "../ir-vocabulary" }
+heart-identity = { path = "../../heart/identity" }
+thiserror.workspace = true
+
+[lib]
+path = "lib.rs"

@@ -1,6 +1,0 @@
-/target
-/Cargo.lock
-
-# Fuzzing data/state.
-/fuzz/in*
-/fuzz/out*

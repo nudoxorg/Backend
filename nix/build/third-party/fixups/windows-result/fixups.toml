@@ -1,4 +1,0 @@
-extra_srcs = [
-    "readme.md",
-    "src/../windows-result.natvis",
-]

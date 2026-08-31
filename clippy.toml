@@ -1,0 +1,30 @@
+# Defines vocabulary Clippy may treat as prose rather than code identifiers.
+# Lint levels live in the root workspace manifest, beside dependency policy.
+# Thresholds stay deliberately tight so structure—not waivers—absorbs complexity.
+
+doc-valid-idents = [
+    "API",
+    "BLAKE3",
+    "CLI",
+    "CRC",
+    "DAG",
+    "GPUI",
+    "GPU",
+    "HTTP",
+    "ID",
+    "IR",
+    "JSON",
+    "MCP",
+    "NVMe",
+    "OpenTelemetry",
+    "Qdrant",
+    "RAM",
+    "SIMD",
+    "Tantivy",
+    "Trustfall",
+    "TypeScript",
+    "URL",
+    "UTF-8",
+]
+too-many-lines-threshold = 60
+type-complexity-threshold = 160

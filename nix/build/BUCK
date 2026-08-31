@@ -1,5 +1,0 @@
-alias(name = "heart",    actual = "//workspace/heart:heart",     visibility = ["PUBLIC"])
-alias(name = "ir",       actual = "//workspace/ir:ir",           visibility = ["PUBLIC"])
-alias(name = "registry", actual = "//workspace/registry:registry", visibility = ["PUBLIC"])
-alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = ["PUBLIC"])
-alias(name = "sandbox",  actual = "//workspace/compiler/sandbox:sandbox", visibility = ["PUBLIC"])

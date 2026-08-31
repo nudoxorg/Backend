@@ -1,5 +1,0 @@
-address_sanitizer	unavailable
-reason	stable Rust 1.97.1 cannot accept the required -Zsanitizer flag; no compatible nightly toolchain is installed for this target.
-thread_sanitizer	unavailable
-reason	as above; no result is inferred from ordinary tests.
-interpretation	no sanitizer safety evidence; PermitQueue remains lab-only and blocked.

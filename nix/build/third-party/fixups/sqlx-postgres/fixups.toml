@@ -1,6 +1,0 @@
-# include_str! of range/docs markdown next to the type modules
-extra_srcs = [
-    "src/types/bigdecimal-range.md",
-    "src/types/rust_decimal-range.md",
-    "src/options/doc.md",
-]

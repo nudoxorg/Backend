@@ -1,3 +1,0 @@
-# oxc_syntax (git monorepo) needs define_nonmax_u32_index_type! + nonmax crate.
-features = ["nonmax"]
-extra_deps = [":nonmax-0.5"]

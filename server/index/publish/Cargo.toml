@@ -1,0 +1,41 @@
+# Defines the `server-index-publish` package and its explicit dependency boundary.
+# The crate exists to seal index segments into durable, reopenable snapshot packs.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-publication = { path = "../../../compiler/publication" }
+server-journal = { path = "../../journal" }
+heart-identity = { path = "../../../heart/identity" }
+server-index-build = { path = "../build" }
+server-index-core = { path = "../core" }
+server-index-vocabulary = { path = "../vocabulary" }
+compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+compiler-driver = { path = "../../../compiler/driver" }
+compiler-vocabulary = { path = "../../../compiler/vocabulary" }
+heart-hydration = { path = "../../../heart/hydration" }
+server-index-graph-vector = { path = "../graph-vector" }
+server-index-qdrant = { path = "../qdrant" }
+server-index-tantivy = { path = "../tantivy" }
+server-index-trustfall = { path = "../trustfall" }
+compiler-ir = { path = "../../../compiler/ir" }
+heart-object = { path = "../../../heart/object" }
+heart-root = { path = "../../../heart/root" }
+heart-schema = { path = "../../../heart/schema" }
+heart-memory = { path = "../../../heart/memory" }
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

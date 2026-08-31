@@ -1,7 +1,0 @@
-/results/
-/.runs/
-/qdrant/results/*/storage/
-/qdrant/results/*/.qdrant-initialized
-/qdrant/results/*/qdrant-*.log
-/qdrant/results/*/qdrant-*.time.txt
-/qdrant/__pycache__/

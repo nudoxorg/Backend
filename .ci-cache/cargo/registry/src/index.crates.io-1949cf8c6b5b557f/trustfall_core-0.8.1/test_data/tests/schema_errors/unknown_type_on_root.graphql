@@ -1,7 +1,0 @@
-schema {
-    query: RootSchemaQuery
-}
-
-type RootSchemaQuery {
-    secret: FakeType!
-}

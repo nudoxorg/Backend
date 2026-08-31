@@ -1,251 +1,106 @@
-# Root virtual manifest for the Backend Cargo workspace.
-#
-# Dual-built crates (heart, ir, registry) keep their BUCK files so the Buck2
-# compiler build can compile them from the same source. compiler is Buck2-only
-# and is NOT a member here.
-#
-# After the streamlining, the small utility crates were consolidated:
-# caching/cas/telemetry/version folded into `heart` (content-addressed storage
-# and the stampede cache now live in `heart::cache`); runtime/protocol folded
-# into `registry` (the single serving crate); sandbox was dropped.
+# Defines the complete four-boundary Rust workspace.
+# Keeps product code inside four explicit architectural boundaries.
+# Centralizes dependency, lint, and release policy for every crate.
 [workspace]
 resolver = "3"
 members = [
-    # The per-ecosystem spec (ECOSYSTEM-PLAN) is now folded into the catalog
-    # crate as `index::ecosystem` — it is used only by `index` (whose
-    # `index::server` module composes `index` into the serving binary).
-    # `Language` itself lives in `heart` (the light shared vocabulary), keeping
-    # the index-free planes (`ir`, `registry`) off the catalog link path.
-    "workspace/heart",
-    # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
-    # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
-    # (versioned SQLite); it is a path dep of `index`, not a workspace member.
-    # index is the catalog crate (schema v4, MetaStore, outbox, migrations);
-    # the feed/git-monitor process plane now lives in `index::ingest` (the
-    # `ingest` binary is built from the index crate).
-    "workspace/index",
-    # ObjectPack (INDEX-PLAN §6): the NDPK container family is now folded into
-    # the storage layer as `index::pack` (§8: object-pack is part of index).
-    # Legacy `ir` crate (old JSON schema) deleted — dead (superseded by nudox-ir).
-    "workspace/registry",
-    # The composition/serving layer (§8) — the ONLY place `index` + `registry`
-    # + `heart::client` are composed into an axum binary — now lives inside
-    # `index` itself as `index::server` (the `nudox-serve` binary is built
-    # from `workspace/index/server/main.rs`). The formerly standalone
-    # `driver` crate was folded in and retired.
-    # ── Sealed-compute plane (SMOLVM-PLAN) ───────────────────────────────────
-    # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
-    # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
-    "workspace/compiler/sandbox",
-    # ir-sync folded into nudox-ir::sync (heart::sync trait impls)
-    # ── IR-native VCS plane ──────────────────────────────────────────────────
-    # The IR data model is split into a light, libpijul-FREE `ir` (the model
-    # everyone reads — entry/symbol/kind/wire/change/view/vocab/…) and a heavy
-    # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
-    # transfer). `registry` reads only the light `ir` and no longer transitively
-    # links libpijul.
-    "workspace/ir/vcs",
-    # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
-    # `transport` is the ONE shared iroh/bao content-transfer crate, extracted
-    # back OUT of `index::transport` into its own crate so `ir-vcs` depends on it
-    # (not on all of `index`) — breaking the `index ↔ ir-vcs` cycle that folding
-    # the server composition into `index` (server-dissolve) would create. Both
-    # `index` (pack + server) and `ir-vcs` (nudox_ir::sync) dep it; `index`
-    # re-exports it as `index::transport` so existing paths are unchanged.
-    "workspace/transport",
-    # (historical) The transport crate had been folded into `index::transport`. Heart stays
-    # iroh-free (only the `heart::sync` seam); the concrete iroh/iroh-blobs/
-    # bao plumbing lives once as a module of the index package, removed from
-    # the workspace member list. No per-plane bespoke bao/iroh.
-    # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
-    "workspace/ir/model",
-    # ── Producer plane: one crate holding the contract + all seven languages ──
-    # The former `nudox-producer` + `nudox-producer-{rust,go,java,csharp,clang,
-    # typescript,python}` crates were merged into a single `nudox-languages`
-    # crate at `workspace/compiler/languages/`; each language is a module.
-    "workspace/compiler/languages",
-    # ── Local-first GUI plane (GUI-LOCAL-PLAN §L0) ───────────────────────────
-    # `nudox-engine` is the whole local-first backend: the corpus (`store`),
-    # the Trustfall query adapter (`graph`), the engine facade, the MCP server
-    # (`mcp`), and the ONNX embedder adapter (`embed`, behind the `onnx`
-    # feature) are all modules of this one crate. `lindsey` (workspace/gui) is
-    # deliberately NOT a member: it keeps its own lockfile so gpui stays out of
-    # the backend graph, and reaches this one crate by path. Dependency law is
-    # now trivial — lindsey → nudox-engine → ir.
-    "workspace/nudox-engine",
+    "compiler/*",
+    "heart/*",
+    "interface/*",
+    "server/journal",
+    "server/operation",
+    "server/runtime",
+    "server/workflow",
+    "server/index/*",
 ]
 
-# `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default
-# `dolt-engine` feature), not a member. Cargo auto-promotes in-tree path deps to
-# members unless excluded, which is why this list has to say so out loud: without
-# it, `cargo check --workspace` tries to compile `vendor/doltlite/doltlite.c`, a
-# ~20 MB generated amalgamation that is deliberately not committed (see
-# `workspace/vendor/doltlite/VENDORING.md`). Excluding it makes the comment at
-# the top of `members` true instead of aspirational.
-#
-# `qdrant-edge` is a `[patch.crates-io]` entry with vendored C++ sources (cpp/)
-# that are deliberately not committed. Like rusqdoltlite, it must be excluded
-# from the workspace so `cargo check --workspace --all-targets` does not attempt
-# to compile it. The patch entry remains valid: when registry's `local` feature
-# is enabled, Cargo will use the patched version; when disabled, Cargo will skip
-# compiling qdrant-edge entirely.
-exclude = ["workspace/vendor/rusqdoltlite", "workspace/vendor/doltlite", "workspace/vendor/qdrant-edge"]
-
-# Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
-# requirement in the workspace resolves to the vendored fork (build metadata
-# `+nudox.N` is ignored in semver comparison). Fork diff = src/diff/diff.rs +
-# src/nudox_f1/ + Cargo.toml; regenerable patch at workspace/vendor/libpijul-fork.patch.
-[patch.crates-io]
-libpijul = { path = "workspace/vendor/libpijul" }
-# qdrant-edge 0.7.2 verbatim except `#![recursion_limit = "256"]` in lib.rs:
-# objc2 (pulled by iroh/netdev on macOS) adds a recursive blanket impl that
-# overflows the default trait-solver limit inside qdrant-edge's anonymize.rs.
-qdrant-edge = { path = "workspace/vendor/qdrant-edge" }
-# zstd-seekable 0.1.23 with build.rs changed to link `zstd-sys`'s libzstd
-# instead of bundling a second, independently-compiled copy (see
-# workspace/vendor/zstd-seekable/Cargo.toml). Upstream's copy is what
-# `libpijul` (workspace/vendor/libpijul, patched above) optionally depends on
-# for change-file compression, and its two copies of every `ZSTD_*` symbol
-# were clashing with `index::pack`'s own `zstd` -> `zstd-safe` -> `zstd-sys`
-# dependency -- a duplicate macOS `ld` only warns about instead of failing
-# on, so the build looked clean while corrupting memory at runtime.
-zstd-seekable = { path = "workspace/vendor/zstd-seekable" }
-# pyroscope 0.5.8 verbatim except `session.rs`'s `Session::upload`: upstream
-# built a brand-new `reqwest::blocking::Client` (its own dedicated OS thread
-# driving a private Tokio runtime) on every periodic flush, forever, for the
-# life of the agent. That recurring thread creation raced `pprof2`'s
-# SIGPROF-based sampling timer against `std::thread`'s per-thread init and
-# reliably aborted `nudox-serve` with "fatal runtime error: current thread
-# handle already set during thread spawn" within a couple of minutes of
-# telemetry being enabled. See workspace/vendor/README.md and
-# workspace/vendor/pyroscope-fork.patch.
-pyroscope = { path = "workspace/vendor/pyroscope" }
-
 [workspace.package]
-edition = "2024"
 version = "0.1.0"
-license = "MIT"
-repository = "https://dev.nudox.org/Nudox/Backend"
-keywords = ["nudox", "index", "search", "compiler", "code-intelligence"]
-categories = ["development-tools", "development-tools::build-utils"]
-
-[workspace.lints.rust]
-unused_imports = "warn"
-dead_code = "warn"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
 
 [workspace.dependencies]
-bon = "3.9"
-clang = "1.0"
-elsa = "1.11"
-indexmap = "2"
-itertools = "0.15"
-ouroboros = "0.18"
-papaya = "0.2"
-rustc-hash = "2.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-# `nix/corpus.nix` and `nix/entry-baseline.toml` are read by tests in
-# more than one crate (`workspace/index`, `nudox-engine`). Declared once here so
-# two readers of the same corpus files cannot end up on different toml majors
-# and disagree about what the corpus contains.
-toml = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-triomphe = "0.1"
-vfs = "0.13"
-# ── Local-first GUI planes (GUI-LOCAL-PLAN) ──────────────────────────────────
-# The trustfall fork is pinned by rev, not branch: LD-10 pin discipline applies
-# to it exactly as it does to gpui. We need two things upstream 0.8.1 lacks — a
-# real `Adapter::Error` channel (LR-6) and the `AsyncAdapter` stream engine,
-# whose result stream is `!Send` and therefore drives the engine's LocalSet.
-trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997", features = ["async"] }
-# `trustfall_core` is already resolved transitively through `trustfall` above
-# (same git rev — see LD-10 note); named directly here only so
-# `nudox-engine::query` can downcast `execute_query_async`'s `anyhow::Error`
-# to `trustfall_core::frontend::error::FrontendError` and recover the
-# line/column a parse error carries but `Display` drops. No new source is
-# fetched — this pins the *name*, not a second copy of the crate.
-trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997" }
-futures = "0.3"
-pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
-flume = "0.11"
-schemars = "1"
-tracing = "0.1"
-# Untrusted-archive ingest. `index::ingest::archive` sanitizes tar and zip
-# uploads; `index::server` re-extracts the same shapes on the serving side. Declared
-# once here so the two cannot drift onto different zip majors and disagree about
-# what a given archive contains — a divergence that would land as a security
-# difference, not a build error. `default-features = false` keeps bzip2/zstd/aes
-# C dependencies out; `deflate` is the only method these packs use besides
-# `Stored`.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+allocation-counter = "0.8.1"
+arrayvec = { version = "0.7.6", default-features = false }
+atomic-waker = { version = "1.1.2", default-features = false }
+blake3 = { version = "1.8.2", default-features = false }
+bolero = "0.13.4"
+derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
+fearless_simd = { version = "0.7.0", default-features = false }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+futures-core = { version = "0.3.31", default-features = false }
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+loom = "0.7.2"
+opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "=0.32.0"
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
+rstest = { version = "0.26.1", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+tantivy = "0.26.1"
+thiserror = { version = "2", default-features = false }
+tracing = "=0.1.44"
+tracing-opentelemetry = "=0.33.0"
+tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
+trybuild = "1.0.118"
+trustfall = "=0.8.1"
+ureq = "=3.4.0"
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
-# ── Clippy lint policy ────────────────────────────────────────────────────────
-# Strategy (see clippy.toml for the configuration knobs):
-#   * `all` (correctness/suspicious/style/complexity/perf) is enabled at `warn`
-#     and every occurrence is fixed in code — these are the reliable lints.
-#   * `pedantic` + `nursery` are enabled at `warn`; the noisy/heuristic lints
-#     whose findings are subjective (doc phrasing, `must_use` suggestions,
-#     integer-narrowing casts that are deliberate in storage/index math, name
-#     similarity, function-length thresholds) are allowed below.
-#   * `cargo` is enabled at `warn`; `multiple_crate_versions` is allowed because
-#     the dependency graph (vendored forks, patched crates) intentionally pins
-#     multiple majors. `cargo_common_metadata` is FIXED by adding real metadata
-#     to each crate's Cargo.toml.
-#   * `restriction` is allowed wholesale — these are the off-by-default,
-#     opinionated lints (`implicit_return`, `min_ident_chars`,
-#     `arbitrary_source_item_ordering`, `absolute_paths`, `unwrap_used`, …) that
-#     are "really unreliable" for a codebase of this size and are not meant to be
-#     applied mechanically.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
 [workspace.lints.clippy]
-# Group levels use a negative priority so that the individual `allow`/`warn`
-# entries below reliably override them (Cargo sorts same-priority entries by
-# name, so `pedantic = "warn"` would otherwise win over `must_use_candidate =
-# "allow"` — see clippy::lint_groups_priority).
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-restriction = { level = "allow", priority = -1 }
-
-# ── Noisy / heuristic pedantic+nursery lints (allowed at workspace level) ─────
-# These produce large numbers of subjective or false-positive findings.
-must_use_candidate = "allow"
-use_self = "allow"
-doc_markdown = "allow"
-missing_errors_doc = "allow"
-missing_const_for_fn = "allow"
-missing_panics_doc = "allow"
-cast_possible_truncation = "allow"
-cast_precision_loss = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-similar_names = "allow"
-too_many_lines = "allow"
-too_long_first_doc_paragraph = "allow"
-struct_excessive_bools = "allow"
-needless_pass_by_value = "allow"
-trivially_copy_pass_by_ref = "allow"
-module_name_repetitions = "allow"
-needless_raw_string_hashes = "allow"
-return_self_not_must_use = "allow"
-redundant_pub_crate = "allow"
-unused_self = "allow"
-implicit_hasher = "allow"
-ref_option = "allow"
-type_complexity = "allow"
-items_after_statements = "allow"
-significant_drop_tightening = "allow"
-significant_drop_in_scrutinee = "allow"
-future_not_send = "allow"
-unused_async = "allow"
-
-# ── Cargo lints ───────────────────────────────────────────────────────────────
-multiple_crate_versions = "allow"
-
-# ── Kept from the prior policy (design choices) ───────────────────────────────
-result_large_err = "allow"
+alloc_instead_of_core = "warn"
+allow_attributes_without_reason = "warn"
+as_conversions = "warn"
+clone_on_ref_ptr = "warn"
+cognitive_complexity = "warn"
+dbg_macro = "deny"
+empty_drop = "warn"
+expect_used = "warn"
+exit = "deny"
+if_then_some_else_none = "warn"
+indexing_slicing = "warn"
+mem_forget = "deny"
+missing_const_for_fn = "warn"
+multiple_unsafe_ops_per_block = "deny"
+panic = "warn"
+rc_buffer = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
+semicolon_if_nothing_returned = "warn"
+str_to_string = "warn"
+todo = "deny"
 too_many_arguments = "allow"
+too_many_lines = "allow"
+unimplemented = "deny"
+unreachable = "warn"
+unwrap_used = "deny"
+verbose_file_reads = "warn"
+
+[profile.dev]
+debug = 1
+incremental = true
 
 [profile.release]
+codegen-units = 1
 lto = "thin"
+panic = "abort"
+strip = "symbols"
+
+[profile.fuzz]
+inherits = "dev"
+opt-level = 3
+incremental = false
+codegen-units = 1

@@ -1,0 +1,23 @@
+# Defines the `compiler-ir` package and its explicit dependency boundary.
+# The crate exists to encode, validate, map, and borrow canonical compiler IR fragments.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+memmap2 = { version = "0.9.9", optional = true }
+compiler-vocabulary = { path = "../vocabulary" }
+heart-identity = { path = "../../heart/identity" }
+compiler-ir-vocabulary = { path = "../ir-vocabulary" }
+thiserror.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+mmap = ["dep:memmap2"]

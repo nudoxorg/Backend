@@ -1,8 +1,0 @@
-extra_srcs = [
-    "README.md",
-]
-
-cargo_env = true
-
-[buildscript]
-run = true

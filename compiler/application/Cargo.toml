@@ -1,0 +1,27 @@
+# Defines the `compiler-application` package and its explicit dependency boundary.
+# The crate exists to bind application requests to native compilation and durable publication.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+compiler-driver = { path = "../driver" }
+compiler-registry = { path = "../registry" }
+compiler-publication = { path = "../publication" }
+compiler-vocabulary = { path = "../vocabulary" }
+server-journal = { path = "../../server/journal" }
+heart-identity = { path = "../../heart/identity" }
+compiler-ir = { path = "../ir" }
+thiserror.workspace = true
+interface-core = { path = "../../interface/core" }
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"

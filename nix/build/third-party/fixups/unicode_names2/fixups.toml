@@ -1,9 +1,0 @@
-cargo_env = true
-
-extra_srcs = [
-    "data/UnicodeData.txt",
-    "data/NameAliases.txt",
-]
-
-[buildscript]
-run = true

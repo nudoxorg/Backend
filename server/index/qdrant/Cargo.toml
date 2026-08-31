@@ -1,0 +1,27 @@
+# Defines the `server-index-qdrant` package and its explicit dependency boundary.
+# The crate exists to adapt typed vector authorities and queries to the Qdrant service.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "server-index-qdrant"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+arrayvec = { workspace = true, features = ["serde"] }
+server-index-graph-vector = { path = "../graph-vector" }
+server-index-vocabulary = { path = "../vocabulary" }
+compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+
+[lib]
+path = "lib.rs"

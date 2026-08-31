@@ -1,5 +1,0 @@
-rustc --version
-cargo fmt --manifest-path workspace2/evidence/p5-c1/format/controls/v8/Cargo.toml -- --check
-cargo test --manifest-path workspace2/evidence/p5-c1/format/controls/v8/Cargo.toml --locked
-git diff --check
-shasum -a 256 detached-control-source.hex Cargo.toml tests/fragment.rs commands.txt stdout.txt stderr.txt status.txt

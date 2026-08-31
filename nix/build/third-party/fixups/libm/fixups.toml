@@ -1,9 +1,0 @@
-cargo_env = true
-
-# libm is pure-Rust; its build script only *detects* arch intrinsics and sets
-# opt cfgs, falling back to portable implementations when they are absent. Under
-# Buck2 the build-script env (CARGO_CFG_*/OPT_LEVEL) isn't fully populated, so
-# `Config::from_env` panics. Skipping the script is safe (portable fallback) and
-# keeps the build hermetic across shells (devshell vs. bare).
-[buildscript]
-run = false

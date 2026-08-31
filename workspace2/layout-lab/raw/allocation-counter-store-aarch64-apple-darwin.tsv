@@ -1,7 +1,0 @@
-format	nudox-layout-allocation-counter-v1
-columns	slots	count_total	count_current	count_max	bytes_total	bytes_current	bytes_max
-0	0	0	0	0	0	0
-1	0	0	0	0	0	0
-4	0	0	0	0	0	0
-5	2	0	2	384	0	384
-100000	2	0	2	7448576	0	7448576

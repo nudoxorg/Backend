@@ -1,6 +1,0 @@
-extra_srcs = [
-    "README.md",
-    "queries/highlights.scm",
-    "queries/injections.scm",
-    "queries/locals.scm",
-]

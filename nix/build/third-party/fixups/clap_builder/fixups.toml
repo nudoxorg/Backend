@@ -1,4 +1,0 @@
-features = ["env", "cargo", "unicode", "string", "wrap_help"]
-extra_deps = [":unicase-2", ":unicode-width-0.2"]
-# include_str!("../README.md") in src/lib.rs
-extra_srcs = ["README.md"]
