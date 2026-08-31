@@ -193,6 +193,13 @@ earn a worker/file lifetime; per-operation `Arc` allocation/refcounting does not
 - Preallocate bounded slots. Represent phases as exhaustive enums/atomic states owning exactly valid
   fields. Prove admission, publication, cancellation, terminal observation, reuse, poison, drop, and
   shutdown using production transitions under Loom; use Miri for initialization/provenance/drop.
+  Under the Loom feature, replace both atomics **and raw cells** with Loom's instrumented types;
+  modeling Loom atomics around `core::cell::UnsafeCell` does not test aliasing. A positive `Send`
+  compile assertion plus a narrow, locally justified `unsafe impl Sync` belongs on the private
+  shared state—not on a public owner whose one-shot split or scoped lifetime is part of the proof.
+  `Sync` permits shared borrowing; it is not ownership or reclamation. Prefer a stack owner plus
+  `thread::scope`; use `Arc` only when work must escape that lifetime, and name how removal is
+  reclaimed before borrowing any sled/Crossbeam-style epoch machinery.
 - Local-ready paths lend borrows without task or serialization. Remote/file I/O returns concrete
   futures/streams with register-before-`Pending`, recheck-after-register, fused terminal behavior,
   bounded in-flight leases, and cancellation-safe ownership return.

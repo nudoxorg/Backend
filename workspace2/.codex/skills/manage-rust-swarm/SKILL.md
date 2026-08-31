@@ -123,6 +123,12 @@ code repair. A lint that runs only on libraries while Luna edits integration tes
 partial evidence. Architectural lints are force-level; workers redesign the boundary instead of
 adding `allow` attributes.
 
+For a lock-free or unsafe row, Terra must inspect the repository gate itself before acceptance:
+the exact proof module must be in the reviewed-unsafe inventory, the shipping gate must execute its
+Loom feature, and Loom must instrument the raw cell as well as the atomic state. Miri output is
+separate evidence; a missing component or mismatched sysroot is a toolchain repair task, not a
+reason to relabel ordinary tests as memory-safety proof.
+
 ## Terra-owned simplification
 
 Functionality green is the beginning of review. Terra compares alternatives and reshapes the chosen
