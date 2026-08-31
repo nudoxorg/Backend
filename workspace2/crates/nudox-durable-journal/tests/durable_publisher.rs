@@ -13,7 +13,7 @@ use nudox_hydration::{Projection, VerifiedGeneration, VerifiedGenerationFacts, d
 use nudox_id::{ContentId, ObjectDomain};
 use nudox_object::ObjectRef;
 use nudox_root::{
-    ClosureScratch, GenerationRoot, GenerationView, ParsedLocality, PreparedLocality, RootEntry,
+    ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry, ValidatedLocality,
 };
 use nudox_schema::SchemaId;
 use nudox_store_memory::{InsertOutcome, MemoryStore, StoreCapacity};
@@ -80,7 +80,7 @@ impl VerifiedFixture {
         locality_bytes.try_reserve_exact(usize::from(prepared.required_bytes))?;
         locality_bytes.resize(usize::from(prepared.required_bytes), 0);
         prepared.write(&mut locality_bytes)?;
-        let locality = ParsedLocality::try_from(locality_bytes.as_slice())?;
+        let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
         let view = GenerationView::new(&self.root, &locality)?;
         let mut closure = ClosureScratch::new(self.root.len())?;
         let mut planning = PlanScratch::new(self.root.entry_count.into())?;

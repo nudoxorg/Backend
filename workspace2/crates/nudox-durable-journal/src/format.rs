@@ -11,7 +11,7 @@ use crate::{FrameSequence, HeaderError, JournalOffset};
 
 const MAGIC: [u8; 8] = *b"NUDXJNL\0";
 const PHYSICAL_VERSION: u16 = 1;
-const CHECKSUM_BYTES: usize = 16;
+pub(crate) const CHECKSUM_BYTES: usize = 16;
 const HEADER_DOMAIN: &[u8] = b"nudox.journal.header.v1\0";
 const FRAME_DOMAIN: &[u8] = b"nudox.journal.frame.v1\0";
 
