@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use nudox_runtime::{
     AdmissionError, BoundedWork, ByteBudget, ByteBudgetError, ByteQuantum, CancelResult,
-    OwnerFault, OwnerProgress, RemoteRuntime, RetainedBytes, RuntimeConfigError, TerminalEvent,
+    OwnerFault, OwnerProgress, RemoteRuntime, RetainedBytes, RuntimeConfigError, RuntimeMetrics,
     TerminalOutcome, WorkHandle,
 };
 use std::cell::Cell;
@@ -23,26 +23,6 @@ enum ReusePhase {
     SecondStaleCancellation,
     SecondTerminal,
     ThirdTerminal,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TerminalKind {
-    Cancelled,
-    Completed,
-    StaleGeneration,
-    ExecutorUnwound,
-}
-
-impl TerminalKind {
-    const fn from_outcome(outcome: &TerminalOutcome<Infallible>) -> Self {
-        match outcome {
-            TerminalOutcome::Cancelled => Self::Cancelled,
-            TerminalOutcome::Completed => Self::Completed,
-            TerminalOutcome::StaleGeneration => Self::StaleGeneration,
-            TerminalOutcome::Failed { failure } => match *failure {},
-            TerminalOutcome::ExecutorUnwound => Self::ExecutorUnwound,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,22 +45,22 @@ impl DropCheckpoint {
 }
 
 #[derive(Debug)]
-struct DropCounter(Rc<Cell<usize>>);
+struct DropCounter {
+    count: Rc<Cell<usize>>,
+}
 
 impl DropCounter {
     fn new() -> Self {
-        Self(Rc::new(Cell::new(0)))
+        Self {
+            count: Rc::new(Cell::new(0)),
+        }
     }
 
     fn work(&self) -> DropWork {
         DropWork {
             bytes: RetainedBytes::from(WORK_BYTES),
-            drops: Rc::clone(&self.0),
+            drops: Rc::clone(&self.count),
         }
-    }
-
-    fn count(&self) -> usize {
-        self.0.get()
     }
 }
 
@@ -98,7 +78,7 @@ impl BoundedWork for DropWork {
 
 impl Drop for DropWork {
     fn drop(&mut self) {
-        self.drops.set(self.drops.get() + 1);
+        self.drops.set(self.drops.get().saturating_add(1));
     }
 }
 
@@ -112,6 +92,11 @@ enum ReuseError {
     Admission(#[from] AdmissionError<DropWork>),
     #[error("owner containment failed")]
     Owner(#[from] OwnerFault),
+    #[error("runtime metrics were not conserved: observed {observed:?}, expected {expected:?}")]
+    Metrics {
+        observed: Box<RuntimeMetrics>,
+        expected: Box<RuntimeMetrics>,
+    },
     #[error("{phase:?} did not terminalize work: {observed:?}")]
     Progress {
         phase: ReusePhase,
@@ -125,11 +110,11 @@ enum ReuseError {
         observed: CancelResult,
         expected: CancelResult,
     },
-    #[error("{phase:?} returned terminal kind {observed:?}, expected {expected:?}")]
+    #[error("{phase:?} returned terminal outcome {observed:?}, expected {expected:?}")]
     Terminal {
         phase: ReusePhase,
-        observed: TerminalKind,
-        expected: TerminalKind,
+        observed: TerminalOutcome<Infallible>,
+        expected: TerminalOutcome<Infallible>,
     },
     #[error("{phase:?} reported handle {observed:?}, expected {expected:?}")]
     Handle {
@@ -171,27 +156,11 @@ fn require_terminal(
     phase: ReusePhase,
     expected_handle: WorkHandle,
     expected_generation: u8,
-    expected_kind: TerminalKind,
+    expected_outcome: TerminalOutcome<Infallible>,
 ) -> Result<(), ReuseError> {
     let event = owner
         .poll_terminal()?
         .ok_or(ReuseError::MissingTerminal { phase })?;
-    require_event(
-        &event,
-        phase,
-        expected_handle,
-        expected_generation,
-        expected_kind,
-    )
-}
-
-fn require_event(
-    event: &TerminalEvent<u8, Infallible>,
-    phase: ReusePhase,
-    expected_handle: WorkHandle,
-    expected_generation: u8,
-    expected_kind: TerminalKind,
-) -> Result<(), ReuseError> {
     if event.handle != expected_handle {
         return Err(ReuseError::Handle {
             phase,
@@ -206,19 +175,18 @@ fn require_event(
             expected: expected_generation,
         });
     }
-    let observed_kind = TerminalKind::from_outcome(&event.outcome);
-    if observed_kind != expected_kind {
+    if event.outcome != expected_outcome {
         return Err(ReuseError::Terminal {
             phase,
-            observed: observed_kind,
-            expected: expected_kind,
+            observed: event.outcome,
+            expected: expected_outcome,
         });
     }
     Ok(())
 }
 
 fn require_drops(counter: &DropCounter, checkpoint: DropCheckpoint) -> Result<(), ReuseError> {
-    let observed = counter.count();
+    let observed = counter.count.get();
     let expected = checkpoint.expected();
     if observed == expected {
         Ok(())
@@ -254,7 +222,7 @@ fn first_cycle(
         ReusePhase::FirstTerminal,
         handle,
         INITIAL_GENERATION,
-        TerminalKind::Cancelled,
+        TerminalOutcome::Cancelled,
     )?;
     require_drops(counter, DropCheckpoint::FirstTerminal)?;
     Ok(handle)
@@ -284,7 +252,7 @@ fn second_cycle(
         ReusePhase::SecondTerminal,
         handle,
         INITIAL_GENERATION,
-        TerminalKind::Completed,
+        TerminalOutcome::Completed,
     )?;
     require_drops(counter, DropCheckpoint::SecondTerminal)
 }
@@ -304,16 +272,12 @@ fn third_cycle(
         ReusePhase::ThirdTerminal,
         handle,
         INITIAL_GENERATION,
-        TerminalKind::StaleGeneration,
+        TerminalOutcome::StaleGeneration,
     )?;
     require_drops(counter, DropCheckpoint::ThirdTerminal)
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the test names each production lifecycle phase in one readable journey"
-)]
 fn stale_handle_cannot_cancel_reused_slot_and_every_payload_drops_once() -> Result<(), ReuseError> {
     let counter = DropCounter::new();
     let mut runtime = RemoteRuntime::<u8, DropWork>::new(1, budget()?)?;
@@ -323,6 +287,27 @@ fn stale_handle_cannot_cancel_reused_slot_and_every_payload_drops_once() -> Resu
         let first = first_cycle(admission, &mut owner, &counter)?;
         second_cycle(admission, &mut owner, &counter, first)?;
         third_cycle(admission, &mut owner, &counter)?;
+    }
+
+    let expected_metrics = RuntimeMetrics {
+        capacity: 1,
+        active_capacity: 1,
+        available: 1,
+        checked_out: 0,
+        reserved_bytes: 0,
+        retired_work_slots: 0,
+        terminal_occupied: 0,
+    };
+    let observed_metrics = runtime.metrics();
+    if observed_metrics != expected_metrics {
+        return Err(ReuseError::Metrics {
+            observed: Box::new(observed_metrics),
+            expected: Box::new(expected_metrics),
+        });
+    }
+
+    {
+        let (admission, _owner) = runtime.split();
         admission.admit(INITIAL_GENERATION, counter.work())?;
     }
     drop(runtime);
