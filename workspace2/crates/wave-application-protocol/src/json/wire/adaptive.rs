@@ -125,7 +125,7 @@ impl From<wave_application_core::AdaptiveDisposition> for AdaptiveDisposition {
             } => Self::RetryRemote {
                 pin: pin.into(),
                 cause: cause.into(),
-                retries_remaining: retries_remaining.get(),
+                retries_remaining: retries_remaining.into(),
             },
             wave_application_core::AdaptiveDisposition::RecoveryExhausted { pin, cause } => {
                 Self::RecoveryExhausted {
@@ -190,12 +190,14 @@ impl From<OverloadSubject> for OverloadSubjectWire {
 impl From<BudgetAmount> for BudgetAmountWire {
     fn from(amount: BudgetAmount) -> Self {
         match amount {
-            BudgetAmount::Bytes(bytes) => Self::Bytes { value: bytes.get() },
+            BudgetAmount::Bytes(bytes) => Self::Bytes {
+                value: bytes.into(),
+            },
             BudgetAmount::Operations(operations) => Self::Operations {
-                value: operations.get(),
+                value: operations.into(),
             },
             BudgetAmount::Retries(retries) => Self::Retries {
-                value: retries.get(),
+                value: retries.into(),
             },
         }
     }

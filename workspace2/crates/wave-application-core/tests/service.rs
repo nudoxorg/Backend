@@ -233,7 +233,7 @@ fn outage_acquires_real_local_bundle_then_exposes_bounded_remote_retry()
         ReplyBody::Adaptive(AdaptiveDisposition::RetryRemote {
             retries_remaining,
             ..
-        }) if retries_remaining.get() == 0
+        }) if retries_remaining == RetryBudget::from(0)
     ));
     assert_eq!(
         retry.terminal,
@@ -271,7 +271,7 @@ fn inconsistent_remote_pin_is_exposed_through_the_application_policy_seam()
             cause: RecoveryCause::Inconsistent { observed: returned },
             retries_remaining,
             ..
-        }) if returned == observed && retries_remaining.get() == 0
+        }) if returned == observed && retries_remaining == RetryBudget::from(0)
     ));
     assert_eq!(
         retry.terminal,

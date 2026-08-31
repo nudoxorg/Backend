@@ -6,8 +6,11 @@
 //! one typed placement decision. Adapters translate [`PlacementAction`] into their concrete async
 //! vocabulary; this crate neither starts I/O nor retains mutable execution state.
 
+mod scalar;
+
 pub use nudox_id::{CapabilityDomain, ContentId, GenerationId, ObjectDomain};
 pub use nudox_index_vocab::IndexSnapshotId;
+pub use scalar::{ByteCount, LatencyMicros, OperationBudget, RetryBudget};
 
 /// Maximum local residence facts admitted by one policy snapshot.
 pub const MAX_LOCAL_FACTS: usize = 8;
@@ -34,102 +37,6 @@ pub struct FactKey {
     pub pin: Pin,
     /// Fact selected under that authority.
     pub object: ContentId<ObjectDomain>,
-}
-
-/// Exact bytes owned by a physical residence or reservation.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ByteCount(u32);
-
-impl From<u32> for ByteCount {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl ByteCount {
-    /// Returns the exact byte quantity for transport and resource accounting.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-
-    const fn fits_within(self, available: Self) -> bool {
-        self.0 <= available.0
-    }
-}
-
-/// Number of independent actions admitted in the current interval.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct OperationBudget(u8);
-
-impl From<u8> for OperationBudget {
-    fn from(value: u8) -> Self {
-        Self(value)
-    }
-}
-
-impl OperationBudget {
-    /// Returns the exact remaining action credit.
-    #[must_use]
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-
-    const fn available(self) -> bool {
-        self.0 > 0
-    }
-}
-
-/// Number of safe remote recovery attempts admitted in the current interval.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct RetryBudget(u8);
-
-impl From<u8> for RetryBudget {
-    fn from(value: u8) -> Self {
-        Self(value)
-    }
-}
-
-impl RetryBudget {
-    /// Returns the exact remaining recovery credit.
-    #[must_use]
-    pub const fn get(self) -> u8 {
-        self.0
-    }
-
-    const fn available(self) -> bool {
-        self.0 > 0
-    }
-
-    const fn after_one(self) -> Self {
-        Self(self.0 - 1)
-    }
-}
-
-/// Measured remote latency in microseconds.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct LatencyMicros(u32);
-
-impl From<u32> for LatencyMicros {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl LatencyMicros {
-    /// Returns the measured latency in microseconds.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-
-    const fn no_more_than(self, limit: Self) -> bool {
-        self.0 <= limit.0
-    }
 }
 
 /// Physical residence of canonical bytes.
