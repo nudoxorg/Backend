@@ -590,6 +590,7 @@ impl GpuiShellView {
                 "Inspect capability health",
                 cx,
             ))
+            .child(self.motion_selector(cx))
             .child(
                 div()
                     .id("settings-notification-epoch")
@@ -599,6 +600,50 @@ impl GpuiShellView {
                     .child(self.state.pages.settings.notification_epoch.to_string()),
             )
             .into_any_element()
+    }
+
+    fn motion_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.state.motion;
+        div()
+            .id("settings-motion-preference")
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child("Motion")
+            .children(
+                [
+                    (
+                        crate::MotionPreference::Standard,
+                        "Standard",
+                        "motion-standard",
+                    ),
+                    (
+                        crate::MotionPreference::Reduced,
+                        "Reduced",
+                        "motion-reduced",
+                    ),
+                    (crate::MotionPreference::None, "None", "motion-none"),
+                ]
+                .map(|(motion, label, id)| {
+                    div()
+                        .id(id)
+                        .h(px(28.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.0))
+                        .when(selected == motion, |button| button.bg(rgb(SELECTED_ROW)))
+                        .when(selected != motion, |button| {
+                            button.bg(rgb(PANEL_BACKGROUND))
+                        })
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.set_motion_preference(motion);
+                            cx.notify();
+                        }))
+                        .child(label)
+                }),
+            )
     }
 
     fn snapshot_row(
