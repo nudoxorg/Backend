@@ -17,18 +17,20 @@ use nudox_observe::Probe;
 
 use crate::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
-    CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    ExecutionState, InconsistentRecovery, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES,
-    OperationKey, ReplyBody, Terminal, execution::LocalCapabilityExecution,
+    CapabilityHealth, CapabilityTransition, CompilerCapability, CompilerReadiness, CompilerRequest,
+    CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
+    InconsistentRecovery, InputText, MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey,
+    ReplyBody, Terminal, UnavailableCompiler, execution::LocalCapabilityExecution,
 };
 
-/// One concrete service that owns at most one bounded adaptive effect.
+/// One monomorphized service that owns at most one bounded adaptive effect and compiler seam.
 ///
-/// The compiler registry currently accepts vocabulary rows but has no typed compiler/IR
-/// publication result. Immutable index, graph, and vector providers have no accepted
-/// production seam, so their commands return typed degraded dependency facts. C6 policy
-/// selection and its local bundle execution are real.
-pub struct ApplicationService {
+/// The default [`UnavailableCompiler`] keeps process and UI clients portable. A configured
+/// specialization carries a concrete compiler capability without dynamic dispatch, global lookup,
+/// or a heavy compiler dependency in this crate.
+pub struct ApplicationService<Compiler = UnavailableCompiler> {
+    /// Concrete compiler capability owned by this monomorphized service specialization.
+    pub compiler: Compiler,
     active_bundle: Option<ActiveBundle>,
     execution: Option<ActiveExecution>,
     last_execution: Option<ExecutionState>,
@@ -47,18 +49,29 @@ struct ActiveExecution {
     task: LocalCapabilityExecution,
 }
 
-impl ApplicationService {
-    /// Creates an empty service with no fabricated lower-plane facts.
+impl<Compiler> ApplicationService<Compiler> {
+    /// Creates a service specialized to one explicitly supplied compiler capability.
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn with_compiler(compiler: Compiler) -> Self {
         Self {
+            compiler,
             active_bundle: None,
             execution: None,
             last_execution: None,
             next_operation: 1,
         }
     }
+}
 
+impl ApplicationService<UnavailableCompiler> {
+    /// Creates a portable service with no fabricated compiler or publication capability.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::with_compiler(UnavailableCompiler)
+    }
+}
+
+impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
     /// Executes one request with disabled typed tracing.
     #[must_use]
     pub fn execute(&mut self, input: &ApplicationInput) -> ApplicationReply {
@@ -114,9 +127,8 @@ impl ApplicationService {
                 correlation,
                 language,
                 stage,
-                package,
                 source,
-            } => Self::generate(correlation, language, stage, package, source),
+            } => self.generate(correlation, language, stage, source),
             ApplicationInput::SnapshotStatus {
                 correlation,
                 snapshot,
@@ -167,15 +179,12 @@ impl ApplicationService {
     }
 
     fn generate(
+        &mut self,
         correlation: crate::CorrelationId,
         language: InputText,
         stage: InputText,
-        package: InputText,
         source: InputText,
     ) -> ApplicationReply {
-        if let Some(diagnostic) = Self::text_bound(package) {
-            return Self::rejected(correlation, diagnostic);
-        }
         if let Some(diagnostic) = Self::text_bound(source) {
             return Self::rejected(correlation, diagnostic);
         }
@@ -185,14 +194,23 @@ impl ApplicationService {
         let Some(stage) = Self::stage(stage) else {
             return Self::rejected(correlation, Self::unknown_stage(stage));
         };
-        match FullRegistry.dispatch(language, stage, source.as_ref()) {
-            // The registry currently lends its input bytes back to its caller.  They are not a
-            // validated compiler/IR result, so they must never enter a generated reply.  The
-            // compiler manager owns the next seam; until it returns a typed publication result,
-            // this is an honest degraded terminal.
-            Ok(_accepted_source) => {
-                Self::dependency_unavailable(correlation, Capability::CompilerOutput)
-            }
+        match FullRegistry.route(language, stage) {
+            Ok(_route) => match self.compiler.generate(CompilerRequest {
+                language,
+                stage,
+                source: &source,
+            }) {
+                Ok(generated) => ApplicationReply {
+                    correlation,
+                    body: ReplyBody::Generated(generated),
+                    terminal: Terminal::Complete { emitted: 1 },
+                    diagnostic: None,
+                },
+                Err(CompilerTerminal::Unavailable { .. }) => {
+                    Self::dependency_unavailable(correlation, Capability::CompilerOutput)
+                }
+                Err(terminal) => Self::compiler_terminal(correlation, terminal),
+            },
             Err(source) => Self::rejected(
                 correlation,
                 Diagnostic {
@@ -270,20 +288,35 @@ impl ApplicationService {
         } else {
             CapabilityHealth::Unavailable(Capability::LocalAnalyzer)
         };
+        let compiler = match self.compiler.readiness() {
+            CompilerReadiness::Unavailable => {
+                CapabilityHealth::Unavailable(Capability::CompilerOutput)
+            }
+            CompilerReadiness::Ready => CapabilityHealth::LocalReady(Capability::CompilerOutput),
+        };
+        let compiler_unavailable = matches!(compiler, CapabilityHealth::Unavailable(_));
+        let terminal = if compiler_unavailable {
+            Terminal::Partial {
+                emitted: 2,
+                unavailable: Capability::CompilerOutput,
+            }
+        } else {
+            Terminal::Partial {
+                emitted: 3,
+                unavailable: Capability::Index,
+            }
+        };
         ApplicationReply {
             correlation,
             body: ReplyBody::Health([
                 CapabilityHealth::LocalReady(Capability::CompilerRegistry),
-                CapabilityHealth::Unavailable(Capability::CompilerOutput),
+                compiler,
                 CapabilityHealth::Unavailable(Capability::Index),
                 CapabilityHealth::Unavailable(Capability::Graph),
                 CapabilityHealth::Unavailable(Capability::Vector),
                 analyzer,
             ]),
-            terminal: Terminal::Partial {
-                emitted: 2,
-                unavailable: Capability::CompilerOutput,
-            },
+            terminal,
             diagnostic: None,
         }
     }
@@ -642,12 +675,15 @@ impl ApplicationService {
     }
 
     fn language(value: InputText) -> Option<Language> {
-        if value.as_ref() == b"rust" {
-            Some(Language::RustSubset)
-        } else if value.as_ref() == b"typescript" {
-            Some(Language::TypeScriptSubset)
-        } else {
-            None
+        match &*value {
+            "rust" => Some(Language::Rust),
+            "typescript" => Some(Language::TypeScript),
+            "python" => Some(Language::Python),
+            "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
+            "csharp" => Some(Language::CSharp),
+            "clang" => Some(Language::Clang),
+            _ => None,
         }
     }
 
@@ -719,9 +755,22 @@ impl ApplicationService {
             diagnostic: Some(diagnostic),
         }
     }
+
+    fn compiler_terminal(
+        correlation: crate::CorrelationId,
+        terminal: CompilerTerminal,
+    ) -> ApplicationReply {
+        Self::rejected(
+            correlation,
+            Diagnostic {
+                code: DiagnosticCode::CompilerTerminal,
+                detail: DiagnosticDetail::Compiler(terminal),
+            },
+        )
+    }
 }
 
-impl Default for ApplicationService {
+impl Default for ApplicationService<UnavailableCompiler> {
     fn default() -> Self {
         Self::new()
     }

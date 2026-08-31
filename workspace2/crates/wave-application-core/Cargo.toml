@@ -11,6 +11,7 @@ arrayvec.workspace = true
 nudox-adaptive = { path = "../nudox-adaptive" }
 nudox-compile-registry = { path = "../nudox-compile-registry" }
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-id = { path = "../nudox-id" }
 nudox-observe = { path = "../nudox-observe" }
 
 [lints.rust]

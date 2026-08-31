@@ -7,9 +7,11 @@ use nudox_adaptive::{
 };
 use nudox_compile_vocab::FrontendError;
 
+use crate::CompilerTerminal;
+
 /// Largest result list accepted by the concrete service.
 pub const MAX_REPLY_ROWS: u8 = 4;
-/// Longest accepted semantic query or package name.
+/// Longest accepted semantic query or source input.
 pub const MAX_SEMANTIC_TEXT_BYTES: usize = 32;
 
 /// Application-wide correlation carried unchanged into replies and observations.
@@ -38,7 +40,7 @@ pub struct InconsistentRecovery {
 /// Closed typed input accepted by the in-process service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationInput {
-    /// Validate one package through an existing compiler-registry row.
+    /// Compile one bounded source through an existing compiler-registry row.
     Generate {
         /// Request correlation.
         correlation: CorrelationId,
@@ -46,8 +48,6 @@ pub enum ApplicationInput {
         language: InputText,
         /// Unvalidated compiler stage token.
         stage: InputText,
-        /// Unvalidated package name.
-        package: InputText,
         /// Caller-bounded source bytes forwarded to the compiler registry.
         source: InputText,
     },
@@ -324,6 +324,8 @@ pub enum DiagnosticCode {
     OperationUnavailable,
     /// Adaptive policy input was rejected with its typed cause retained.
     AdaptivePolicyRejected,
+    /// A configured compiler or durable publication adapter returned one bounded typed terminal.
+    CompilerTerminal,
 }
 
 /// Exact rejected operand/cause retained by a business diagnostic.
@@ -355,6 +357,8 @@ pub enum DiagnosticDetail {
     Capability(Capability),
     /// Exact adaptive validation cause.
     Policy(PolicyError),
+    /// Closed compiler or publication terminal from the configured local capability.
+    Compiler(CompilerTerminal),
 }
 
 /// One source-preserving service diagnostic.
@@ -369,6 +373,8 @@ pub struct Diagnostic {
 /// Semantic reply body; all business behavior is represented here rather than in adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplyBody {
+    /// A real local compiler lowered and durably published one compact IR artifact.
+    Generated(crate::GeneratedArtifact),
     /// A lower-plane dependency is not present in this application slice.
     DependencyUnavailable {
         /// Exact missing lower-plane capability.

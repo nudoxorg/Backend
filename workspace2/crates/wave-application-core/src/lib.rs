@@ -3,11 +3,19 @@
 //! This portable crate owns semantic validation, ordering, terminals, replay, cancellation, and
 //! typed diagnostics. Process, JSON-RPC, and GPUI crates only decode or project these values.
 
+mod compiler;
 mod execution;
 mod model;
 mod service;
 mod text;
 
+pub use compiler::{
+    CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic, CompilerReadiness,
+    CompilerRequest, CompilerTerminal, FragmentCause, GeneratedArtifact, GenerationAuthority,
+    LoweringCause, MAX_COMPILER_DIAGNOSTIC_BYTES, NativeDirectoryCause, NativeIoFact,
+    NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase,
+    PublicationAuthority, PublicationCause, PublicationPhase, SourceAuthority, UnavailableCompiler,
+};
 pub use model::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,
     CapabilityHealth, CapabilityTransition, CorrelationId, Diagnostic, DiagnosticCode,

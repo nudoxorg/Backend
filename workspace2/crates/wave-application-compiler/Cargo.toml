@@ -1,0 +1,23 @@
+[package]
+name = "wave-application-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.nudox]
+role = "adapter"
+
+[dependencies]
+nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-publication = { path = "../nudox-compile-publication" }
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-durable-journal = { path = "../nudox-durable-journal" }
+nudox-id = { path = "../nudox-id" }
+nudox-ir-format = { path = "../nudox-ir-format" }
+thiserror.workspace = true
+wave-application-core = { path = "../wave-application-core" }
+
+[lints]
+workspace = true

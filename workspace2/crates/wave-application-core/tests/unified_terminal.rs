@@ -9,14 +9,13 @@ fn text(value: &str) -> Result<InputText, InputTextError> {
 }
 
 #[test]
-fn registry_echo_is_not_generated_compiler_truth() -> Result<(), InputTextError> {
+fn unavailable_compiler_specialization_is_never_generated_truth() -> Result<(), InputTextError> {
     let mut service = ApplicationService::new();
 
     let generated = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(1),
         language: text("rust")?,
         stage: text("lower-ir")?,
-        package: text("alpha")?,
         source: text("pub fn alpha() -> u8 { 7 }")?,
     });
 
@@ -52,9 +51,8 @@ fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), InputTextE
     let mut service = ApplicationService::new();
     let rejected = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(3),
-        language: text("typescript")?,
-        stage: text("lower-ir")?,
-        package: text("broken")?,
+        language: text("rust")?,
+        stage: text("parse")?,
         source: text("export const broken = 7;")?,
     });
 
@@ -67,8 +65,8 @@ fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), InputTextE
         rejected.diagnostic.map(|diagnostic| diagnostic.detail),
         Some(DiagnosticDetail::Frontend(
             FrontendError::UnsupportedStage {
-                language: Language::TypeScriptSubset,
-                stage: Stage::LowerIr,
+                language: Language::Rust,
+                stage: Stage::Parse,
             }
         ))
     ));

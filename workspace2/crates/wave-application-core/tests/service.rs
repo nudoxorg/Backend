@@ -133,14 +133,13 @@ fn acquire_and_complete(
 }
 
 #[test]
-fn accepted_registry_bytes_never_claim_compiler_output_and_rejections_keep_causes()
+fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_rejections()
 -> Result<(), ServiceTestError> {
     let mut service = ApplicationService::new();
     let accepted = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(11),
         language: text("rust")?,
         stage: text("lower-ir")?,
-        package: text("demo")?,
         source: text("fn first() {}")?,
     });
     assert_eq!(
@@ -166,9 +165,8 @@ fn accepted_registry_bytes_never_claim_compiler_output_and_rejections_keep_cause
 
     let rejected = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(12),
-        language: text("typescript")?,
-        stage: text("lower-ir")?,
-        package: text("demo")?,
+        language: text("rust")?,
+        stage: text("parse")?,
         source: text("const second = true;")?,
     });
     assert!(matches!(rejected.body, ReplyBody::Rejected));
@@ -180,8 +178,8 @@ fn accepted_registry_bytes_never_claim_compiler_output_and_rejections_keep_cause
         rejected.diagnostic.map(|diagnostic| diagnostic.detail),
         Some(wave_application_core::DiagnosticDetail::Frontend(
             nudox_compile_vocab::FrontendError::UnsupportedStage {
-                language: nudox_compile_vocab::Language::TypeScriptSubset,
-                stage: nudox_compile_vocab::Stage::LowerIr,
+                language: nudox_compile_vocab::Language::Rust,
+                stage: nudox_compile_vocab::Stage::Parse,
             }
         ))
     ));
@@ -221,9 +219,8 @@ fn semantic_limit_plus_one_is_retained_but_larger_transport_text_is_rejected()
     let rejected = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(25),
         language: text("rust")?,
-        stage: text("parse")?,
-        package: limit_plus_one,
-        source: text("fn bounded() {}")?,
+        stage: text("lower-ir")?,
+        source: limit_plus_one,
     });
     assert_eq!(rejected.terminal, Terminal::Failed);
     assert_eq!(
