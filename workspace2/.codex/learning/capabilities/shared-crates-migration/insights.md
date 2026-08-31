@@ -59,3 +59,5 @@
 - A fresh target proof avoids prior build artifacts that can make the `nudox-ir-format` rlib-surface test see more than one compatible rlib: `CARGO_TARGET_DIR=<fresh-directory> cargo test --manifest-path Cargo.toml --workspace --all-targets --locked --offline` passed all 30 current packages; the only Qdrant service test remained explicitly ignored because `QDRANT_URL` was unset.
 
 ## Promoted
+
+- Hostile closure review rechecked `78dd8728`: the live legacy-path assertion, pinned-command setup, and `53099825`/`31fb61dc` transplant procedure are approved. Its configured reviewer role is `gpt-5.6-terra` at `xhigh`; backend runtime telemetry is not exposed. The only residual is host-wide Nix store-GC contention, not a product or migration-topology defect.
