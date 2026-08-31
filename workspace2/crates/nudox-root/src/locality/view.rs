@@ -132,7 +132,7 @@ impl<'selection, DomainTag: Domain> SelectedGeneration<'selection, DomainTag> {
     /// Returns the root-proven selected count as a compact canonical field.
     #[must_use]
     pub const fn count(&self) -> SelectedCount {
-        SelectedCount(self.selected.compact_count())
+        SelectedCount(self.selected.compact_count)
     }
 
     /// Returns selected descriptor count without rescanning root state.

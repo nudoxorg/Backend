@@ -67,7 +67,7 @@ pub struct ValidatedLocalityFacts<'bytes, DomainTag> {
 /// the same validator before returning this witness.
 pub struct ValidatedLocality<'bytes, DomainTag> {
     facts: ValidatedLocalityFacts<'bytes, DomainTag>,
-    exception_count: u32,
+    pub(in crate::locality) exception_count: u32,
     lanes: BorrowedLanes<'bytes>,
 }
 
@@ -178,7 +178,7 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
         work: &mut WorkPolicy,
     ) -> Locality<DomainTag> {
         let Some(exception) =
-            binary_search_row(self.lanes.rows, self.exception_count, row.compact(), work)
+            binary_search_row(self.lanes.rows, self.exception_count, row.compact, work)
         else {
             return Locality::Resident;
         };
@@ -208,10 +208,6 @@ impl<'bytes, DomainTag: Domain> ValidatedLocality<'bytes, DomainTag> {
     )]
     fn provider_at(&self, promise: u32) -> ProviderSet {
         self.lanes.providers[native(promise)].provider_set()
-    }
-
-    pub(crate) const fn exception_count(&self) -> u32 {
-        self.exception_count
     }
 
     pub(in crate::locality) const fn cursor_lanes(&self) -> &BorrowedLanes<'bytes> {

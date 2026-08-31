@@ -93,10 +93,10 @@ impl<'locality, DomainTag: Domain> LocalityCursor<'locality, DomainTag> {
     }
 
     fn find<Work: ScanWork>(&mut self, row: RowIndex, work: &mut Work) -> Locality<DomainTag> {
-        while self.ordinals.exception < self.locality.exception_count() {
+        while self.ordinals.exception < self.locality.exception_count {
             work.compared();
             match exception_row(self.locality.cursor_lanes(), self.ordinals.exception)
-                .cmp(&row.compact())
+                .cmp(&row.compact)
             {
                 core::cmp::Ordering::Less => self.skip_exception(),
                 core::cmp::Ordering::Equal => return self.take_exception(),

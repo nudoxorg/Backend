@@ -133,7 +133,9 @@ compile_error!("nudox-root requires at least 32-bit usize coordinates");
 /// Only root iteration and checked builder output create this type. Keeping it
 /// separate from public keys prevents raw offsets from crossing the boundary.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct RowIndex(u32);
+pub(crate) struct RowIndex {
+    pub(crate) compact: u32,
+}
 
 impl RowIndex {
     /// Projects this compact root coordinate onto this process's exact packed
@@ -143,12 +145,7 @@ impl RowIndex {
         reason = "the crate's explicit 32/64-bit target gate makes every compact u32 root coordinate a native array index"
     )]
     pub(crate) const fn array_index(self) -> usize {
-        self.0 as usize
-    }
-
-    /// Returns the packed sparse-route coordinate without narrowing.
-    pub(crate) const fn compact(self) -> u32 {
-        self.0
+        self.compact as usize
     }
 
     /// Creates a coordinate returned by an arena cursor or binary search.
@@ -159,7 +156,9 @@ impl RowIndex {
         reason = "every producer traverses or searches one root whose builder proved its row length fits a compact u32"
     )]
     pub(crate) const fn from_arena_position(position: usize) -> Self {
-        Self(position as u32)
+        Self {
+            compact: position as u32,
+        }
     }
 
     /// Creates the coordinate retained by a validated borrowed wire row.
@@ -176,7 +175,7 @@ impl RowIndex {
         reason = "the explicit 32/64-bit target gate proves every u32 parent fits usize"
     )]
     const fn from_validated_parent(parent: u32) -> Self {
-        Self(parent)
+        Self { compact: parent }
     }
 }
 

@@ -134,7 +134,7 @@ impl<'output, DomainTag: nudox_id::Domain> LocalityEncoder<'output, DomainTag> {
             self.output,
             self.lanes.rows,
             self.cursor.exception,
-            row.compact(),
+            row.compact,
         );
         self.cursor
             .write_placement(self.output, self.lanes, placement);

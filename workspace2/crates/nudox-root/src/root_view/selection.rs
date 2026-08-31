@@ -177,7 +177,7 @@ impl<'bytes, 'locality, DomainTag: Domain> BorrowedGenerationView<'bytes, 'local
         Ok(BorrowedSelectedGeneration {
             rows: self.rows,
             selected: scratch.selected_indices(),
-            compact_count: scratch.selected_count(),
+            compact_count: scratch.selected_count,
             locality: self.locality,
         })
     }

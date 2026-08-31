@@ -15,7 +15,7 @@ use thiserror::Error;
 pub struct ClosureScratch {
     marks: Vec<u32>,
     selected_indices: Vec<RowIndex>,
-    selected_count: u32,
+    pub(crate) selected_count: u32,
     epoch: u32,
     facts: ClosureScratchFacts,
 }
@@ -146,9 +146,6 @@ impl ClosureScratch {
         self.selected_indices.sort_unstable();
     }
 
-    pub(crate) const fn selected_count(&self) -> u32 {
-        self.selected_count
-    }
 }
 
 /// Explicit projected-closure selection failure.
@@ -168,7 +165,7 @@ pub enum ClosureError {
 pub struct SelectedClosure<'root, DomainTag> {
     root: &'root GenerationRoot<DomainTag>,
     selected_indices: &'root [RowIndex],
-    compact_count: u32,
+    pub(crate) compact_count: u32,
     work: SelectionWork,
 }
 
@@ -210,12 +207,6 @@ impl<DomainTag> SelectedClosure<'_, DomainTag> {
     pub(crate) fn row_at_position(&self, position: usize) -> (RowIndex, RootEntry<DomainTag>) {
         let index = self.selected_indices[position];
         (index, self.root.entry_at(index))
-    }
-
-    /// Compact count accumulated while this exact root-bounded selection was
-    /// marked; no later native-length narrowing is required.
-    pub(crate) const fn compact_count(&self) -> u32 {
-        self.compact_count
     }
 
     /// Returns selected descriptor count without rescanning root state.
