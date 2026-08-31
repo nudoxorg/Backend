@@ -36,6 +36,8 @@ collection/range task.
   security tradeoff and prove routing/partition words consume digest entropy rather than fixed
   authority/version prefixes.
 - One typed record declaration owns fixed wire geometry.
+- Complete physical identity is derived after the byte stream is final and lives in its receipt or
+  content-addressed name; it is never a field inside the same all-byte preimage.
 - A complete validated view borrows; ownership is an outer adapter.
 - Sparse packs do not require absent root objects. Typed consumers join root descriptors to present
   objects without re-identifying either.

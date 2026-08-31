@@ -79,7 +79,8 @@ Run only applicable passes in this order:
    in libraries. Require Loom on production transitions and Miri for unsafe ownership.
 8. **Protocol/durability:** recompute every byte and preimage. Mutate every cell. Trace write/sync/
    directory/receipt/crash/replay semantics and partial operations. Reject duplicated metadata and
-   undefined authentication.
+   undefined authentication. Reject self-referential content identities, magic fixed-record offsets
+   that typed wire records can derive, and byte limits enforced only after unbounded I/O/allocation.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.

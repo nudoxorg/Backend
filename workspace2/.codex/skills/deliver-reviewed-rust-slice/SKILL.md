@@ -186,6 +186,12 @@ providing stable addresses, bounding fragmentation, or reducing dominant travers
 length” and “must be owned” are not evidence. Return rejected owners unchanged and retain allocation
 sources.
 
+Enforce an input byte budget while acquiring the input, not after an unbounded `read_to_end`,
+`read_to_string`, response-body collect, or decoder growth. Read at most `limit + 1` with checked
+arithmetic so N/N+1 is distinguishable, bound initial capacity, and retain the exact owner or source
+facts on rejection. A bounded semantic wrapper around an already-unbounded allocation is not bounded
+admission.
+
 ```rust
 // DON'T: make convenience ownership semantic.
 pub struct Object { pub bytes: Box<[u8]> }
@@ -245,9 +251,14 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
 - Put file-global magic/version/geometry once, not in every fixed record. Derive widths and offsets
   from typed records. Do not ship a bit-at-a-time checksum loop.
 - Declare fixed endian wire records once with `repr(C)` plus zerocopy where safe. Hash structured
-  identity through typed records; arbitrary chunks are for physical artifact identity.
+  identity through typed records; arbitrary chunks are for physical artifact identity. Hand-indexed
+  header offsets, literal record widths, and offset-mutating writers are rejected when one typed wire
+  record can make the geometry compile-time checked.
 - Distinguish semantic, artifact, pack, and range-proof identities. Version grammar with a closed
   encoding marker; do not repeat request-authenticated metadata without a measured recovery need.
+- Never embed a complete artifact identity inside the exact byte stream whose identity includes
+  every byte: that is a circular fixed-point contract. Carry the derived identity in the stable
+  receipt/content-addressed name, or define and type a deliberately excluded/zeroed digest cell.
 - Validate once into a compact borrowed witness. Write exact caller output only after total preflight;
   insufficient output leaves every byte unchanged.
 - A packed collection is binary-searchable/range-addressable and states whether it is complete or
