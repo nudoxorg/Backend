@@ -342,6 +342,9 @@ pub struct ShellProjection {
     pub form: Option<FormState>,
     /// Most recent closed form rejection, rendered beside the form without string conversion.
     pub form_error: Option<FormError>,
+    /// Most recent bounded projection rejection, retained instead of being dropped by an
+    /// asynchronous UI update.
+    pub projection_error: Option<ApplyError>,
 }
 
 impl Deref for ShellState {
@@ -549,12 +552,15 @@ impl ShellState {
         replies: &[ApplicationReply],
     ) -> Result<BatchReceipt, ApplyError> {
         if replies.len() > MAX_BATCH_REPLIES {
-            return Err(ApplyError::BatchTooLarge {
+            let error = ApplyError::BatchTooLarge {
                 limit: MAX_BATCH_REPLIES,
                 actual: replies.len(),
-            });
+            };
+            self.projection.projection_error = Some(error);
+            return Err(error);
         }
         if replies.is_empty() {
+            self.projection.projection_error = None;
             return Ok(BatchReceipt {
                 applied_replies: 0,
                 notifications: 0,
@@ -562,15 +568,16 @@ impl ShellState {
             });
         }
 
-        let epoch = self
-            .projection
-            .notification_epoch
-            .checked_add(1)
-            .ok_or(ApplyError::NotificationEpochExhausted)?;
+        let Some(epoch) = self.projection.notification_epoch.checked_add(1) else {
+            let error = ApplyError::NotificationEpochExhausted;
+            self.projection.projection_error = Some(error);
+            return Err(error);
+        };
         for reply in replies {
             self.apply_reply(reply);
         }
         self.projection.notification_epoch = epoch;
+        self.projection.projection_error = None;
         self.refresh_pages();
         Ok(BatchReceipt {
             applied_replies: replies.len(),
@@ -786,6 +793,7 @@ impl Default for ShellState {
                 },
                 form: None,
                 form_error: None,
+                projection_error: None,
             },
         }
     }

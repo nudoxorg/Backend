@@ -534,6 +534,13 @@ fn oversized_batch_is_rejected_before_state_mutation() {
     );
     assert_eq!(state.last_reply, None);
     assert_eq!(state.notification_epoch, 0);
+    assert_eq!(
+        state.projection_error,
+        Some(ApplyError::BatchTooLarge {
+            limit: MAX_BATCH_REPLIES,
+            actual: MAX_BATCH_REPLIES + 1,
+        })
+    );
 }
 
 #[test]

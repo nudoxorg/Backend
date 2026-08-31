@@ -154,7 +154,7 @@ fn assert_inconsistent_reply(reply: &wave_application_core::ApplicationReply, ob
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
-fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppContext) {
+fn entity_owns_service_and_completes_from_its_registered_wake(cx: &mut TestAppContext) {
     let (view, cx) =
         cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
     let recover = ApplicationInput::RecoverLocal {
@@ -176,40 +176,17 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
         assert_eq!(view.summaries()[2].state, ProjectionState::Accepted);
     });
 
-    let pending_input = ApplicationInput::PollExecution {
-        correlation: CorrelationId(92),
-        operation,
-    };
-    let pending_result = view.update(cx, |view, cx| view.execute(&pending_input, cx));
-    let Some(pending) = require_reply(&pending_result) else {
-        return;
-    };
-    assert!(matches!(
-        pending.body,
-        ReplyBody::Execution(ExecutionState::Pending { operation: observed, .. })
-            if observed == operation
-    ));
-    assert_eq!(pending.terminal, Terminal::Accepted { operation });
-    cx.read_entity(&view, |view, _| {
-        assert_eq!(view.summaries()[2].state, ProjectionState::Active);
-    });
-
-    let complete_input = ApplicationInput::PollExecution {
-        correlation: CorrelationId(93),
-        operation,
-    };
-    let completed_result = view.update(cx, |view, cx| view.execute(&complete_input, cx));
-    let Some(completed) = require_reply(&completed_result) else {
-        return;
-    };
-    assert!(matches!(
-        completed.body,
-        ReplyBody::Execution(ExecutionState::Completed { operation: observed, .. })
-            if observed == operation
-    ));
-    assert_eq!(completed.terminal, Terminal::Complete { emitted: 1 });
+    cx.run_until_parked();
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.summaries()[2].state, ProjectionState::Ready);
+        assert!(matches!(
+            view.execution,
+            wave_application_gpui_shell::ExecutionProjection::Reported {
+                state: ExecutionState::Completed { operation: observed, .. },
+                terminal: Terminal::Complete { emitted: 1 },
+            } if observed == operation
+        ));
+        assert_eq!(view.projection_error, None);
     });
 
     let (inconsistent, observed) = inconsistent_input();

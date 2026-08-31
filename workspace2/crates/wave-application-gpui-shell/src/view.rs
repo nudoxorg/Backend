@@ -14,11 +14,14 @@ use crate::{
 use core::ops::Deref;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FocusHandle, IntoElement, KeyBinding,
-    KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div,
+    KeyDownEvent, Render, ScrollStrategy, SharedString, Task, UniformListScrollHandle, Window, div,
     prelude::*, px, rgb, uniform_list,
 };
-use std::time::Duration;
-use wave_application_core::{Capability, Diagnostic, DiagnosticCode, DiagnosticDetail};
+use std::{cell::RefCell, future::poll_fn, rc::Rc, time::Duration};
+use wave_application_core::{
+    Capability, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
+    OperationKey, ReplyBody,
+};
 
 const SHELL_CONTEXT: &str = "wave-application-shell";
 const RAIL_WIDTH: f32 = 208.0;
@@ -44,15 +47,17 @@ const INTERACTION_DURATION: Duration = Duration::from_millis(90);
 ///
 /// The view has one service owner. All domain state crosses the UI boundary as an
 /// [`ApplicationInput`] and returns as an [`ApplicationReply`]; navigation and the palette only
-/// project those facts. No timer, task, poll loop, accessibility driver, or second command decoder
-/// participates in the shell.
+/// project those facts. The one retained foreground task is woken by the admitted execution future;
+/// no timer, polling loop, accessibility driver, or second command decoder participates in the
+/// shell.
 pub struct GpuiShellView {
-    service: ApplicationService,
+    service: Rc<RefCell<ApplicationService>>,
     state: ShellState,
     focus: FocusHandle,
     palette_focus: FocusHandle,
     palette_scroll: UniformListScrollHandle,
     next_correlation: u64,
+    execution_task: Option<Task<()>>,
 }
 
 impl GpuiShellView {
@@ -79,12 +84,13 @@ impl GpuiShellView {
         let palette_focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
-            service,
+            service: Rc::new(RefCell::new(service)),
             state: ShellState::default(),
             focus,
             palette_focus,
             palette_scroll: UniformListScrollHandle::new(),
             next_correlation: 1,
+            execution_task: None,
         }
     }
 
@@ -99,10 +105,57 @@ impl GpuiShellView {
         input: &ApplicationInput,
         cx: &mut Context<Self>,
     ) -> Result<ApplicationReply, ApplyError> {
-        let reply = self.service.execute(input);
+        if matches!(
+            input,
+            ApplicationInput::PollExecution { .. } | ApplicationInput::Cancel { .. }
+        ) {
+            self.execution_task = None;
+        }
+        let reply = self.service.borrow_mut().execute(input);
         self.state.apply_batch(&[reply])?;
         cx.notify();
+        match reply.body {
+            ReplyBody::ExecutionStarted { operation, .. }
+            | ReplyBody::Execution(ExecutionState::Pending { operation, .. }) => {
+                self.drive_admitted_execution(reply.correlation, operation, cx);
+            }
+            ReplyBody::DependencyUnavailable { .. }
+            | ReplyBody::Health(_)
+            | ReplyBody::Adaptive(_)
+            | ReplyBody::Execution(
+                ExecutionState::Completed { .. }
+                | ExecutionState::Cancelled { .. }
+                | ExecutionState::Failed { .. },
+            )
+            | ReplyBody::Rejected => {}
+        }
         Ok(reply)
+    }
+
+    fn drive_admitted_execution(
+        &mut self,
+        correlation: CorrelationId,
+        operation: OperationKey,
+        cx: &mut Context<Self>,
+    ) {
+        let service = Rc::clone(&self.service);
+        self.execution_task = Some(cx.spawn(async move |this, cx| {
+            let reply = poll_fn(|context| {
+                service
+                    .borrow_mut()
+                    .poll_admitted_execution(correlation, operation, context)
+            })
+            .await;
+            match this.update(cx, |view, cx| match view.state.apply_batch(&[reply]) {
+                Ok(_receipt) => cx.notify(),
+                Err(error) => {
+                    debug_assert_eq!(view.state.projection_error, Some(error));
+                    cx.notify();
+                }
+            }) {
+                Ok(()) | Err(_) => {}
+            }
+        }));
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -301,7 +354,7 @@ impl GpuiShellView {
     }
 
     fn submit_active_form(&mut self, cx: &mut Context<Self>) {
-        let correlation = wave_application_core::CorrelationId(self.next_correlation);
+        let correlation = CorrelationId(self.next_correlation);
         let input = self.state.submit_form(correlation);
         match input {
             Ok(input) => {
