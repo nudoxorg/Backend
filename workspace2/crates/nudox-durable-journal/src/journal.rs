@@ -2,16 +2,19 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
+    sync::Arc,
 };
 
 use nudox_workflow::{
-    Recovery, ReplayError, WorkflowEvent, WorkflowRecord, WorkflowState, reduce, replay_stream,
+    Recovery, ReductionError, ReplayError, WorkflowEvent, WorkflowRecord, WorkflowState, reduce,
+    replay_stream,
 };
+use thiserror::Error;
 use zerocopy::IntoBytes;
 
 use crate::{
     CommitError, CommitIoStep, FrameSequence, HeaderError, JournalError, JournalIoStep,
-    JournalOffset, StableReceipt,
+    JournalOffset, ReceiptFacts, StableReceipt,
     format::{FrameRecord, HeaderRecord, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES, frame_offset},
 };
 
@@ -27,6 +30,52 @@ pub struct FileJournal {
 pub(crate) struct PersistFailure {
     pub(crate) step: CommitIoStep,
     pub(crate) source: io::Error,
+}
+
+/// The exact failure fan-out for one physical group append.
+#[derive(Debug, Error)]
+pub(crate) enum GroupCommitError {
+    #[error("workflow reduction rejected grouped event")]
+    Reduction {
+        attempted: Arc<WorkflowRecord>,
+        #[source]
+        source: ReductionError,
+    },
+    #[error("journal is poisoned; reopen it before reconciling")]
+    Poisoned,
+    #[error("journal receipt cannot represent grouped sequence {sequence:?}")]
+    ReceiptOverflow { sequence: FrameSequence },
+    #[error("group storage requires {required} bytes but has {available}")]
+    StorageTooSmall { required: usize, available: usize },
+    #[error("journal group append outcome is unknown for {first_sequence:?} during {step:?}")]
+    OutcomeUnknown {
+        attempted: Arc<WorkflowRecord>,
+        first_sequence: FrameSequence,
+        count: usize,
+        step: CommitIoStep,
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Stable coordinates for every record in one successful physical group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GroupReceipt {
+    first_sequence: FrameSequence,
+    count: usize,
+}
+
+impl GroupReceipt {
+    pub(crate) fn receipt_at(self, index: usize) -> Option<StableReceipt> {
+        if index >= self.count {
+            return None;
+        }
+        let index = u64::try_from(index).ok()?;
+        let sequence = FrameSequence::from(self.first_sequence.value.checked_add(index)?);
+        let next = sequence.successor()?;
+        let durable_end = frame_offset(next)?;
+        Some(StableReceipt::committed(sequence, durable_end))
+    }
 }
 
 impl FileJournal {
@@ -59,6 +108,107 @@ impl FileJournal {
         self.append_using(event, persist_frame)
     }
 
+    /// Appends a prevalidated group through one physical write and one file sync.
+    pub(crate) fn append_group(
+        &mut self,
+        events: &[WorkflowEvent],
+        frames: &mut [u8],
+    ) -> Result<GroupReceipt, GroupCommitError> {
+        if self.poisoned {
+            return Err(GroupCommitError::Poisoned);
+        }
+        if events.is_empty() {
+            return Err(GroupCommitError::StorageTooSmall {
+                required: JOURNAL_FRAME_BYTES,
+                available: frames.len(),
+            });
+        }
+        let required = events.len().checked_mul(JOURNAL_FRAME_BYTES).ok_or(
+            GroupCommitError::StorageTooSmall {
+                required: usize::MAX,
+                available: frames.len(),
+            },
+        )?;
+        if frames.len() < required {
+            return Err(GroupCommitError::StorageTooSmall {
+                required,
+                available: frames.len(),
+            });
+        }
+
+        let first_sequence = self.next;
+        let mut reduced_state = self.state;
+        for (index, event) in events.iter().copied().enumerate() {
+            let attempted = WorkflowRecord::from(event);
+            reduced_state = reduce(reduced_state, event)
+                .map_err(|source| GroupCommitError::Reduction {
+                    attempted: Arc::new(attempted),
+                    source,
+                })?
+                .state;
+            let sequence = match first_sequence
+                .value
+                .checked_add(u64::try_from(index).map_err(|_| {
+                    GroupCommitError::ReceiptOverflow {
+                        sequence: first_sequence,
+                    }
+                })?)
+                .map(FrameSequence::from)
+            {
+                Some(sequence) => sequence,
+                None => {
+                    return Err(GroupCommitError::ReceiptOverflow {
+                        sequence: first_sequence,
+                    });
+                }
+            };
+            let frame = FrameRecord::encode(sequence, attempted);
+            let start = index * JOURNAL_FRAME_BYTES;
+            frames[start..start + JOURNAL_FRAME_BYTES].copy_from_slice(frame.as_bytes());
+        }
+        let count = events.len();
+        let last_sequence = match first_sequence
+            .value
+            .checked_add(u64::try_from(count - 1).map_err(|_| {
+                GroupCommitError::ReceiptOverflow {
+                    sequence: first_sequence,
+                }
+            })?)
+            .map(FrameSequence::from)
+        {
+            Some(sequence) => sequence,
+            None => {
+                return Err(GroupCommitError::ReceiptOverflow {
+                    sequence: first_sequence,
+                });
+            }
+        };
+        let next = last_sequence
+            .successor()
+            .ok_or(GroupCommitError::ReceiptOverflow {
+                sequence: last_sequence,
+            })?;
+        let _durable_end = frame_offset(next).ok_or(GroupCommitError::ReceiptOverflow {
+            sequence: last_sequence,
+        })?;
+        if let Err(failure) = persist_group(&mut self.file, &frames[..required]) {
+            self.poisoned = true;
+            return Err(GroupCommitError::OutcomeUnknown {
+                attempted: Arc::new(WorkflowRecord::from(events[0])),
+                first_sequence,
+                count,
+                step: failure.step,
+                source: failure.source,
+            });
+        }
+        self.state = reduced_state;
+        self.next = next;
+        Ok(GroupReceipt {
+            first_sequence,
+            count,
+        })
+    }
+
     pub fn replay(&mut self) -> Result<Recovery, JournalError> {
         if self.poisoned {
             return Err(JournalError::Poisoned);
@@ -72,6 +222,27 @@ impl FileJournal {
         self.state = recovery.state;
         self.next = next;
         Ok(recovery)
+    }
+
+    pub(crate) fn current_key(&self) -> Option<nudox_workflow::StageKey> {
+        match self.state {
+            WorkflowState::New => None,
+            WorkflowState::Keyed { key, .. } => Some(key),
+        }
+    }
+
+    pub(crate) fn last_receipt(&self) -> Option<StableReceipt> {
+        if self.next == FrameSequence::FIRST {
+            return None;
+        }
+        let sequence = FrameSequence::from(self.next.value - 1);
+        let durable_end = frame_offset(self.next)?;
+        Some(StableReceipt::committed(sequence, durable_end))
+    }
+
+    pub(crate) fn receipt_is_current(&self, receipt: ReceiptFacts) -> bool {
+        receipt.sequence.value.checked_add(1) == Some(self.next.value)
+            && frame_offset(self.next) == Some(receipt.durable_end)
     }
 
     fn create_using(
@@ -178,6 +349,22 @@ fn persist_frame(file: &mut File, frame: &FrameRecord) -> Result<(), PersistFail
             step: CommitIoStep::WriteFrame,
             source,
         })?;
+    file.sync_all().map_err(|source| PersistFailure {
+        step: CommitIoStep::SyncFrame,
+        source,
+    })
+}
+
+fn persist_group(file: &mut File, frames: &[u8]) -> Result<(), PersistFailure> {
+    file.seek(SeekFrom::End(0))
+        .map_err(|source| PersistFailure {
+            step: CommitIoStep::Position,
+            source,
+        })?;
+    file.write_all(frames).map_err(|source| PersistFailure {
+        step: CommitIoStep::WriteFrame,
+        source,
+    })?;
     file.sync_all().map_err(|source| PersistFailure {
         step: CommitIoStep::SyncFrame,
         source,

@@ -11,6 +11,8 @@ role = "adapter"
 
 [dependencies]
 nudox-workflow = { path = "../nudox-workflow" }
+nudox-hydration = { path = "../nudox-hydration" }
+nudox-id = { path = "../nudox-id" }
 blake3.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true

@@ -1,12 +1,20 @@
 mod error;
 mod format;
 mod journal;
+mod publication;
 
 use core::ops::Deref;
 
 pub use error::{CommitError, CommitIoStep, HeaderError, JournalError, JournalIoStep};
 pub use format::{JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES};
 pub use journal::FileJournal;
+pub use publication::{
+    ArtifactName, CancelError, DurablePublisher, ImmutablePublicationIdentity, PendingPublication,
+    PublicationConflict, PublicationError, PublicationFacts, PublicationFailure,
+    PublicationHeadIdentity, PublicationIoStep, PublicationLimitError, PublicationLimits,
+    PublicationOpenError, PublicationPaths, PublishedGeneration, SharedCommitError,
+    SharedPublicationFailure, ShutdownError, SubmitError,
+};
 
 /// Physical ordinal of a committed journal frame.
 #[repr(transparent)]
