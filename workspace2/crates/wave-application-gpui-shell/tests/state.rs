@@ -1,5 +1,9 @@
 //! Deterministic headless projection tests.
 
+#[allow(dead_code, unreachable_pub)]
+#[path = "../../wave-application-protocol/tests/support/golden_corpus.rs"]
+mod golden_corpus;
+
 use wave_application_core::{
     AdaptiveDisposition, ApplicationInput, ApplicationReply, ApplicationService, BatteryState,
     ByteCount, Capability, CapabilityDomain, CapabilityHealth, CorrelationId, DiagnosticCode,
@@ -7,15 +11,18 @@ use wave_application_core::{
     Pressure, ReplyBody, ResourceBudget, RetryBudget, Terminal,
 };
 use wave_application_gpui_shell::{
-    AdaptiveProjection, ApplyError, BatchReceipt, ExecutionProjection, HealthProjection,
-    MAX_BATCH_REPLIES, PaletteDirection, ProjectionState, Route, SURFACE_COUNT, ShellState,
-    Surface, SurfaceStatus,
+    AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
+    FormField, HealthProjection, MAX_BATCH_REPLIES, MotionPreference, PaletteDirection,
+    ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT, ServiceAction, ShellState, Surface,
+    SurfaceStatus,
 };
 
 #[derive(Debug)]
 enum TestError {
     Input(InputTextError),
     Apply(ApplyError),
+    Form(FormError),
+    Golden(golden_corpus::GoldenError),
     Unexpected(&'static str),
 }
 
@@ -24,6 +31,8 @@ impl std::fmt::Display for TestError {
         match self {
             Self::Input(error) => write!(formatter, "input error: {error:?}"),
             Self::Apply(error) => write!(formatter, "projection error: {error:?}"),
+            Self::Form(error) => write!(formatter, "form error: {error:?}"),
+            Self::Golden(error) => error.fmt(formatter),
             Self::Unexpected(message) => write!(formatter, "unexpected reply: {message}"),
         }
     }
@@ -40,6 +49,18 @@ impl From<InputTextError> for TestError {
 impl From<ApplyError> for TestError {
     fn from(error: ApplyError) -> Self {
         Self::Apply(error)
+    }
+}
+
+impl From<FormError> for TestError {
+    fn from(value: FormError) -> Self {
+        Self::Form(value)
+    }
+}
+
+impl From<golden_corpus::GoldenError> for TestError {
+    fn from(value: golden_corpus::GoldenError) -> Self {
+        Self::Golden(value)
     }
 }
 
@@ -106,7 +127,7 @@ fn first_frame_is_stable_without_polling_or_allocated_rows() {
             .into_iter()
             .all(|summary| summary.state == ProjectionState::Checking)
     );
-    assert_eq!(state.last_correlation(), None);
+    assert_eq!(state.last_reply, None);
     assert_eq!(state.notification_epoch, 0);
     assert_eq!(state.navigation.route, Route::Home);
     assert!(!state.navigation.palette.visible);
@@ -126,7 +147,10 @@ fn palette_selection_is_a_command_identity_and_returns_its_virtual_reveal_row() 
         state.move_palette_selection(PaletteDirection::Next),
         Some(2)
     );
-    assert_eq!(state.confirm_palette(), Some(Route::Search));
+    assert_eq!(
+        state.confirm_palette(),
+        Some(CommandId::OpenRoute(Route::Search))
+    );
     assert_eq!(state.navigation.route, Route::Search);
     assert!(!state.navigation.palette.visible);
 }
@@ -138,11 +162,11 @@ fn palette_and_navigation_share_the_connections_destination() {
     assert_eq!(state.navigation.route, Route::Connections);
 
     state.open_palette();
+    state.select_palette_command(CommandId::OpenRoute(Route::Settings));
     assert_eq!(
-        state.move_palette_selection(PaletteDirection::Previous),
-        Some(4)
+        state.confirm_palette(),
+        Some(CommandId::OpenRoute(Route::Settings))
     );
-    assert_eq!(state.confirm_palette(), Some(Route::Settings));
     assert_eq!(state.navigation.route, Route::Settings);
 }
 
@@ -153,8 +177,127 @@ fn palette_filter_reselects_a_matching_stable_identity() -> Result<(), TestError
     state.replace_palette_query(text("settings")?);
 
     assert_eq!(state.navigation.palette.result_count(), 1);
-    assert_eq!(state.confirm_palette(), Some(Route::Settings));
+    assert_eq!(
+        state.confirm_palette(),
+        Some(CommandId::OpenRoute(Route::Settings))
+    );
     assert_eq!(state.navigation.route, Route::Settings);
+    Ok(())
+}
+
+#[test]
+fn keyboard_shortcuts_and_status_destinations_are_closed_visible_facts() {
+    assert!(ROUTES[4].shortcut.is_some());
+    let Some(shortcut) = ROUTES[4].shortcut else {
+        return;
+    };
+    assert_eq!(shortcut.apple, "⌘,");
+    assert_eq!(shortcut.other, "Ctrl ,");
+
+    let mut state = ShellState::default();
+    state.select_palette_command(CommandId::InspectSurface(Surface::Health));
+    assert_eq!(
+        state.confirm_palette(),
+        Some(CommandId::InspectSurface(Surface::Health))
+    );
+    assert_eq!(state.navigation.route, Route::Settings);
+
+    state.open_palette();
+    state.select_palette_command(CommandId::InspectSurface(Surface::Execution));
+    assert_eq!(
+        state.confirm_palette(),
+        Some(CommandId::InspectSurface(Surface::Execution))
+    );
+    assert_eq!(state.navigation.route, Route::Connections);
+}
+
+#[test]
+fn reduced_and_no_motion_are_explicit_stable_projection_facts() {
+    let mut state = ShellState::default();
+    assert_eq!(state.motion, MotionPreference::Standard);
+    state.set_motion_preference(MotionPreference::Reduced);
+    assert_eq!(state.motion, MotionPreference::Reduced);
+    state.set_motion_preference(MotionPreference::None);
+    assert_eq!(state.motion, MotionPreference::None);
+    assert_eq!(state.notification_epoch, 0);
+}
+
+#[test]
+fn golden_corpus_projects_the_independent_core_journey_into_visible_gui_facts()
+-> Result<(), TestError> {
+    let expected = golden_corpus::direct_replies()?;
+    let replies = golden_corpus::direct_application_replies()?;
+    let mut state = ShellState::default();
+    for reply in replies {
+        apply(&mut state, &[reply])?;
+    }
+
+    assert_eq!(
+        state.last_reply.map(|reply| reply.correlation.0),
+        Some(expected[3].correlation)
+    );
+    assert_eq!(
+        state.pages.home.generation,
+        ProjectionState::Degraded(Capability::CompilerOutput)
+    );
+    assert_eq!(
+        state.pages.connections.execution,
+        ProjectionState::Cancelled
+    );
+    assert_eq!(
+        state.pages.settings.health,
+        ProjectionState::Degraded(Capability::CompilerOutput)
+    );
+    Ok(())
+}
+
+#[test]
+fn typed_generate_form_requires_each_field_and_constructs_only_application_input()
+-> Result<(), TestError> {
+    let mut state = ShellState::default();
+    state.select_action(ServiceAction::Generate);
+    assert_eq!(
+        state.submit_form(CorrelationId(60)),
+        Err(FormError::MissingText(FormField::Language))
+    );
+
+    state.replace_form_text(FormField::Language, text("rust")?)?;
+    state.replace_form_text(FormField::Stage, text("parse")?)?;
+    state.replace_form_text(FormField::Package, text("demo")?)?;
+    state.replace_form_text(FormField::Source, text("fn main() {}")?)?;
+    assert!(matches!(
+        state.submit_form(CorrelationId(61)),
+        Ok(ApplicationInput::Generate {
+            correlation: CorrelationId(61),
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn search_limit_is_typed_and_cannot_exceed_the_core_command_bound() -> Result<(), TestError> {
+    let mut state = ShellState::default();
+    state.select_action(ServiceAction::Search);
+    state.replace_form_text(FormField::Snapshot, text("published")?)?;
+    state.replace_form_text(FormField::Query, text("needle")?)?;
+    assert_eq!(
+        ResultLimit::new(5),
+        Err(FormError::LimitExceeded {
+            requested: 5,
+            maximum: 4,
+        })
+    );
+    let Ok(limit) = ResultLimit::new(2) else {
+        return Err(TestError::Unexpected(
+            "known typed limit should be accepted",
+        ));
+    };
+    state.replace_form_limit(limit)?;
+    assert!(matches!(
+        state.submit_form(CorrelationId(62)),
+        Ok(ApplicationInput::Search { limit: 2, .. })
+    ));
     Ok(())
 }
 
@@ -312,12 +455,18 @@ fn health_preserves_all_six_capability_facts() -> Result<(), TestError> {
             terminal: incoming.terminal,
         }
     );
-    assert_eq!(state.health.facts(), Some(facts));
+    assert!(matches!(
+        state.health,
+        HealthProjection::Reported { facts: observed, .. } if observed == facts
+    ));
     assert_eq!(
         state.summaries()[6].state,
         ProjectionState::Degraded(Capability::CompilerOutput)
     );
-    assert_eq!(state.last_correlation(), Some(CorrelationId(20)));
+    assert_eq!(
+        state.last_reply.map(|reply| reply.correlation),
+        Some(CorrelationId(20))
+    );
     Ok(())
 }
 
@@ -355,11 +504,17 @@ fn rejected_diagnostic_is_retained_without_erasing_its_code() -> Result<(), Test
     };
     let mut state = ShellState::default();
     apply(&mut state, &[incoming])?;
-    assert_eq!(
-        state.last_diagnostic_code(),
-        Some(DiagnosticCode::DependencyUnavailable)
-    );
-    assert_eq!(state.last_terminal(), Some(Terminal::Failed));
+    assert!(matches!(
+        state.last_reply,
+        Some(wave_application_gpui_shell::ReplyProjection {
+            terminal: Terminal::Failed,
+            diagnostic: Some(wave_application_core::Diagnostic {
+                code: DiagnosticCode::DependencyUnavailable,
+                detail: wave_application_core::DiagnosticDetail::Capability(Capability::Index),
+            }),
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -377,7 +532,7 @@ fn oversized_batch_is_rejected_before_state_mutation() {
             actual: MAX_BATCH_REPLIES + 1,
         })
     );
-    assert_eq!(state.last_correlation(), None);
+    assert_eq!(state.last_reply, None);
     assert_eq!(state.notification_epoch, 0);
 }
 

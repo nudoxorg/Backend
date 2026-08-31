@@ -1,7 +1,10 @@
 //! Deterministic actual-GPUI entity tests.
 
 #[cfg(feature = "real-gpui")]
-use gpui::{AppContext, TestAppContext};
+use gpui::{
+    AppContext, Context, IntoElement, Render, ScrollStrategy, TestAppContext,
+    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+};
 #[cfg(feature = "real-gpui")]
 use wave_application_core::{
     AdaptiveDisposition, ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability,
@@ -10,7 +13,73 @@ use wave_application_core::{
     RetryBudget, Terminal,
 };
 #[cfg(feature = "real-gpui")]
-use wave_application_gpui_shell::{CommandId, GpuiShellView, ProjectionState, Route};
+use wave_application_gpui_shell::{
+    CommandId, FormField, FormState, GpuiShellView, ProjectionState, Route,
+};
+
+#[cfg(feature = "real-gpui")]
+struct VirtualCatalogFixture {
+    entries: [usize; 200],
+    selected: usize,
+    first_rendered: usize,
+    rendered_end: usize,
+    scroll: UniformListScrollHandle,
+}
+
+#[cfg(feature = "real-gpui")]
+impl VirtualCatalogFixture {
+    fn new() -> Self {
+        Self {
+            entries: core::array::from_fn(|index| index),
+            selected: 0,
+            first_rendered: 0,
+            rendered_end: 0,
+            scroll: UniformListScrollHandle::new(),
+        }
+    }
+
+    fn select_next_keyboard_row(&mut self) -> bool {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| *entry == self.selected)
+        else {
+            return false;
+        };
+        let Some(next) = self.entries.get(index.saturating_add(1)).copied() else {
+            return false;
+        };
+        self.selected = next;
+        self.scroll
+            .scroll_to_item(index + 1, ScrollStrategy::Nearest);
+        true
+    }
+}
+
+#[cfg(feature = "real-gpui")]
+impl Render for VirtualCatalogFixture {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.entries.len();
+        uniform_list(
+            "synthetic-command-catalog",
+            count,
+            cx.processor(|this, range: core::ops::Range<usize>, _, _| {
+                this.first_rendered = range.start;
+                this.rendered_end = range.end;
+                range
+                    .map(|index| {
+                        div()
+                            .id(("synthetic-command", this.entries[index]))
+                            .h(px(28.0))
+                            .child("Synthetic test command")
+                    })
+                    .collect()
+            }),
+        )
+        .h(px(168.0))
+        .track_scroll(&self.scroll)
+    }
+}
 
 #[cfg(feature = "real-gpui")]
 fn pin() -> Pin {
@@ -104,7 +173,7 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
     };
     assert_eq!(admitted.terminal, Terminal::Accepted { operation });
     cx.read_entity(&view, |view, _| {
-        assert_eq!(view.state().summaries()[2].state, ProjectionState::Accepted);
+        assert_eq!(view.summaries()[2].state, ProjectionState::Accepted);
     });
 
     let pending_input = ApplicationInput::PollExecution {
@@ -122,7 +191,7 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
     ));
     assert_eq!(pending.terminal, Terminal::Accepted { operation });
     cx.read_entity(&view, |view, _| {
-        assert_eq!(view.state().summaries()[2].state, ProjectionState::Active);
+        assert_eq!(view.summaries()[2].state, ProjectionState::Active);
     });
 
     let complete_input = ApplicationInput::PollExecution {
@@ -140,7 +209,7 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
     ));
     assert_eq!(completed.terminal, Terminal::Complete { emitted: 1 });
     cx.read_entity(&view, |view, _| {
-        assert_eq!(view.state().summaries()[2].state, ProjectionState::Ready);
+        assert_eq!(view.summaries()[2].state, ProjectionState::Ready);
     });
 
     let (inconsistent, observed) = inconsistent_input();
@@ -186,10 +255,7 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
     ));
     assert_eq!(cancelled.terminal, Terminal::Cancelled { emitted: 0 });
     cx.read_entity(&view, |view, _| {
-        assert_eq!(
-            view.state().summaries()[2].state,
-            ProjectionState::Cancelled
-        );
+        assert_eq!(view.summaries()[2].state, ProjectionState::Cancelled);
     });
 
     let health_input = ApplicationInput::Health {
@@ -253,7 +319,7 @@ fn entity_projects_unavailable_compiler_output_without_claiming_artifact(cx: &mu
     );
     cx.read_entity(&view, |view, _| {
         assert_eq!(
-            view.state().summaries()[0].state,
+            view.summaries()[0].state,
             ProjectionState::Degraded(Capability::CompilerOutput)
         );
     });
@@ -267,24 +333,128 @@ fn entity_keyboard_palette_keeps_selection_by_command_identity(cx: &mut TestAppC
 
     cx.simulate_keystrokes("cmd-k");
     cx.read_entity(&view, |view, _| {
-        assert!(view.state().navigation.palette.visible);
+        assert!(view.navigation.palette.visible);
         assert_eq!(
-            view.state().navigation.palette.selected,
-            CommandId::OpenHome
+            view.navigation.palette.selected,
+            CommandId::OpenRoute(Route::Home)
         );
     });
 
     cx.simulate_keystrokes("down");
     cx.read_entity(&view, |view, _| {
         assert_eq!(
-            view.state().navigation.palette.selected,
-            CommandId::OpenLibraries
+            view.navigation.palette.selected,
+            CommandId::OpenRoute(Route::Libraries)
         );
     });
 
     cx.simulate_keystrokes("enter");
     cx.read_entity(&view, |view, _| {
-        assert!(!view.state().navigation.palette.visible);
-        assert_eq!(view.state().navigation.route, Route::Libraries);
+        assert!(!view.navigation.palette.visible);
+        assert_eq!(view.navigation.route, Route::Libraries);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-k s");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.navigation.palette.visible);
+        assert_eq!(view.navigation.palette.result_count(), 14);
+        assert_eq!(
+            view.navigation.palette.selected,
+            CommandId::OpenRoute(Route::Libraries)
+        );
+    });
+
+    cx.simulate_keystrokes("backspace");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.navigation.palette.result_count(), 24);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn virtual_catalog_fixture_keeps_keyboard_identity_and_reveals_a_far_row(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, _| VirtualCatalogFixture::new());
+
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.entries.len(), 200);
+        assert!(view.rendered_end > view.first_rendered);
+        assert!(view.rendered_end - view.first_rendered < view.entries.len());
+    });
+
+    let reveal_requested = view.update(cx, |view, cx| {
+        for _ in 0..199 {
+            assert!(view.select_next_keyboard_row());
+        }
+        cx.notify();
+        assert_eq!(view.selected, 199);
+        matches!(
+            view.scroll.0.borrow().deferred_scroll_to_item,
+            Some(gpui::DeferredScrollToItem {
+                item_index: 199,
+                strategy: ScrollStrategy::Nearest,
+                scroll_strict: false,
+                ..
+            })
+        )
+    });
+    assert!(reveal_requested);
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn entity_platform_settings_shortcuts_route_to_the_visible_destination(cx: &mut TestAppContext) {
+    let (command_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-,");
+    cx.read_entity(&command_view, |view, _| {
+        assert_eq!(view.navigation.route, Route::Settings);
+    });
+
+    let (control_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("ctrl-,");
+    cx.read_entity(&control_view, |view, _| {
+        assert_eq!(view.navigation.route, Route::Settings);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn entity_form_keyboard_navigation_and_escape_operate_on_typed_fields(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-k g e n e r a t e enter");
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.form,
+            Some(FormState::Generate {
+                focused: FormField::Language,
+                ..
+            })
+        ));
+    });
+
+    cx.simulate_keystrokes("tab");
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.form,
+            Some(FormState::Generate {
+                focused: FormField::Stage,
+                ..
+            })
+        ));
+    });
+
+    cx.simulate_keystrokes("shift-tab escape");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.form, None);
     });
 }

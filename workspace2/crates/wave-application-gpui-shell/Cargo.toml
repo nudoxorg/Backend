@@ -19,6 +19,10 @@ real-gpui = ["dep:gpui"]
 wave-application-core = { path = "../wave-application-core" }
 gpui = { workspace = true, optional = true }
 
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

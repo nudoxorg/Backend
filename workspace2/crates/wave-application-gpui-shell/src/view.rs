@@ -1,14 +1,24 @@
 //! Real GPUI product shell for the typed application service.
 
+use crate::navigation::{
+    action_label, command_facts, route_facts, surface_destination, surface_facts,
+};
 use crate::{
     ApplicationInput, ApplicationReply, ApplicationService, ApplyError, CommandId,
-    ConfirmPaletteCommand, DismissPalette, OpenPalette, PaletteDirection, Route,
-    SelectNextPaletteCommand, SelectPreviousPaletteCommand, ShellState,
+    ConfirmPaletteCommand, DismissForm, DismissPalette, FormError, FormField, FormState,
+    NextFormField, OpenPalette, OpenSettings, PaletteDirection, PreviousFormField, ResultLimit,
+    Route, SelectFirstPaletteCommand, SelectLastPaletteCommand, SelectNextPaletteCommand,
+    SelectNextPalettePage, SelectPreviousPaletteCommand, SelectPreviousPalettePage, ServiceAction,
+    ShellState,
 };
+use core::ops::Deref;
 use gpui::{
-    Context, FocusHandle, IntoElement, KeyBinding, Render, ScrollStrategy, UniformListScrollHandle,
-    Window, div, prelude::*, px, rgb, uniform_list,
+    Animation, AnimationExt, AnyElement, Context, FocusHandle, IntoElement, KeyBinding,
+    KeyDownEvent, Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window, div,
+    prelude::*, px, rgb, uniform_list,
 };
+use std::time::Duration;
+use wave_application_core::{Capability, Diagnostic, DiagnosticCode, DiagnosticDetail};
 
 const SHELL_CONTEXT: &str = "wave-application-shell";
 const RAIL_WIDTH: f32 = 208.0;
@@ -28,6 +38,7 @@ const PALETTE_BORDER: u32 = 0x0046_505f;
 const PALETTE_BACKGROUND: u32 = 0x0020_252c;
 const SELECTED_ROW: u32 = 0x0035_4052;
 const HOVERED_ROW: u32 = 0x002a_3039;
+const INTERACTION_DURATION: Duration = Duration::from_millis(90);
 
 /// Entity-backed production GPUI view for the bounded application shell.
 ///
@@ -39,7 +50,9 @@ pub struct GpuiShellView {
     service: ApplicationService,
     state: ShellState,
     focus: FocusHandle,
+    palette_focus: FocusHandle,
     palette_scroll: UniformListScrollHandle,
+    next_correlation: u64,
 }
 
 impl GpuiShellView {
@@ -49,25 +62,30 @@ impl GpuiShellView {
         cx.bind_keys([
             KeyBinding::new("cmd-k", OpenPalette, Some(SHELL_CONTEXT)),
             KeyBinding::new("ctrl-k", OpenPalette, Some(SHELL_CONTEXT)),
-            KeyBinding::new("escape", DismissPalette, Some(SHELL_CONTEXT)),
+            KeyBinding::new("escape", DismissForm, Some(SHELL_CONTEXT)),
             KeyBinding::new("down", SelectNextPaletteCommand, Some(SHELL_CONTEXT)),
             KeyBinding::new("up", SelectPreviousPaletteCommand, Some(SHELL_CONTEXT)),
             KeyBinding::new("enter", ConfirmPaletteCommand, Some(SHELL_CONTEXT)),
+            KeyBinding::new("home", SelectFirstPaletteCommand, Some(SHELL_CONTEXT)),
+            KeyBinding::new("end", SelectLastPaletteCommand, Some(SHELL_CONTEXT)),
+            KeyBinding::new("pageup", SelectPreviousPalettePage, Some(SHELL_CONTEXT)),
+            KeyBinding::new("pagedown", SelectNextPalettePage, Some(SHELL_CONTEXT)),
+            KeyBinding::new("cmd-,", OpenSettings, Some(SHELL_CONTEXT)),
+            KeyBinding::new("ctrl-,", OpenSettings, Some(SHELL_CONTEXT)),
+            KeyBinding::new("tab", NextFormField, Some(SHELL_CONTEXT)),
+            KeyBinding::new("shift-tab", PreviousFormField, Some(SHELL_CONTEXT)),
         ]);
         let focus = cx.focus_handle();
+        let palette_focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
             service,
             state: ShellState::default(),
             focus,
+            palette_focus,
             palette_scroll: UniformListScrollHandle::new(),
+            next_correlation: 1,
         }
-    }
-
-    /// Borrows the projected state for parent composition and deterministic tests.
-    #[must_use]
-    pub const fn state(&self) -> &ShellState {
-        &self.state
     }
 
     /// Executes one typed application command and projects its exact reply.
@@ -87,14 +105,51 @@ impl GpuiShellView {
         Ok(reply)
     }
 
-    fn open_palette(&mut self, _: &OpenPalette, _: &mut Window, cx: &mut Context<Self>) {
+    fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         self.state.open_palette();
+        window.focus(&self.palette_focus, cx);
         cx.notify();
     }
 
-    fn dismiss_palette(&mut self, _: &DismissPalette, _: &mut Window, cx: &mut Context<Self>) {
-        self.state.dismiss_palette();
+    fn open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_route(Route::Settings, cx);
+    }
+
+    fn dismiss_palette(&mut self, _: &DismissPalette, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.navigation.palette.visible {
+            self.state.dismiss_palette();
+        } else {
+            self.state.cancel_form();
+        }
+        window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    fn dismiss_form(&mut self, _: &DismissForm, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.navigation.palette.visible {
+            self.state.dismiss_palette();
+        } else {
+            self.state.cancel_form();
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn next_form_field(&mut self, _: &NextFormField, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.state.navigation.palette.visible && self.state.move_form_field(true).is_ok() {
+            cx.notify();
+        }
+    }
+
+    fn previous_form_field(
+        &mut self,
+        _: &PreviousFormField,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.navigation.palette.visible && self.state.move_form_field(false).is_ok() {
+            cx.notify();
+        }
     }
 
     fn select_next_palette_command(
@@ -103,8 +158,7 @@ impl GpuiShellView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.reveal_selection(PaletteDirection::Next);
-        cx.notify();
+        self.move_palette(PaletteDirection::Next, cx);
     }
 
     fn select_previous_palette_command(
@@ -113,31 +167,77 @@ impl GpuiShellView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.reveal_selection(PaletteDirection::Previous);
-        cx.notify();
+        self.move_palette(PaletteDirection::Previous, cx);
+    }
+
+    fn select_first_palette_command(
+        &mut self,
+        _: &SelectFirstPaletteCommand,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_palette(PaletteDirection::First, cx);
+    }
+
+    fn select_last_palette_command(
+        &mut self,
+        _: &SelectLastPaletteCommand,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_palette(PaletteDirection::Last, cx);
+    }
+
+    fn select_next_palette_page(
+        &mut self,
+        _: &SelectNextPalettePage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_palette(PaletteDirection::NextPage, cx);
+    }
+
+    fn select_previous_palette_page(
+        &mut self,
+        _: &SelectPreviousPalettePage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_palette(PaletteDirection::PreviousPage, cx);
     }
 
     fn confirm_palette_command(
         &mut self,
         _: &ConfirmPaletteCommand,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = self.state.confirm_palette();
-        cx.notify();
+        if self.state.navigation.palette.visible {
+            let _ = self.state.confirm_palette();
+            window.focus(&self.focus, cx);
+            cx.notify();
+        } else {
+            self.submit_active_form(cx);
+        }
     }
 
-    fn reveal_selection(&mut self, direction: PaletteDirection) {
+    fn move_palette(&mut self, direction: PaletteDirection, cx: &mut Context<Self>) {
         if self.state.navigation.palette.visible
             && let Some(index) = self.state.move_palette_selection(direction)
         {
             self.palette_scroll
                 .scroll_to_item(index, ScrollStrategy::Nearest);
         }
+        cx.notify();
     }
 
     fn select_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.state.select_route(route);
+        cx.notify();
+    }
+
+    fn select_action(&mut self, action: ServiceAction, cx: &mut Context<Self>) {
+        self.state.select_action(action);
         cx.notify();
     }
 
@@ -149,6 +249,68 @@ impl GpuiShellView {
     ) {
         self.state.select_palette_command(command);
         cx.notify();
+    }
+
+    fn update_palette_query(
+        &mut self,
+        event: &KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.is_held {
+            return;
+        }
+        if !self.state.navigation.palette.visible {
+            self.update_form_text(event, cx);
+            return;
+        }
+        let changed = match event.keystroke.key.as_str() {
+            "backspace" => self.state.erase_palette_character().is_ok(),
+            "escape" | "enter" | "up" | "down" | "home" | "end" | "pageup" | "pagedown" => false,
+            _ if !event.keystroke.modifiers.modified() => event
+                .keystroke
+                .key_char
+                .as_deref()
+                .is_some_and(|text| self.state.append_palette_text(text).is_ok()),
+            _ => false,
+        };
+        if changed {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn update_form_text(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        if self.state.form.is_none() {
+            return;
+        }
+        let changed = match event.keystroke.key.as_str() {
+            "backspace" => self.state.erase_form_text().is_ok(),
+            "escape" | "enter" | "tab" => false,
+            _ if !event.keystroke.modifiers.modified() => event
+                .keystroke
+                .key_char
+                .as_deref()
+                .is_some_and(|text| self.state.append_form_text(text).is_ok()),
+            _ => false,
+        };
+        if changed {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    fn submit_active_form(&mut self, cx: &mut Context<Self>) {
+        let correlation = wave_application_core::CorrelationId(self.next_correlation);
+        let input = self.state.submit_form(correlation);
+        match input {
+            Ok(input) => {
+                self.next_correlation = self.next_correlation.saturating_add(1);
+                let _ = self.execute(&input, cx);
+                cx.notify();
+            }
+            Err(_) => cx.notify(),
+        }
     }
 
     fn navigation_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -189,12 +351,18 @@ impl GpuiShellView {
                     .bg(rgb(PANEL_BACKGROUND))
                     .hover(|style| style.bg(rgb(PANEL_HOVER)))
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.state.open_palette();
+                        window.focus(&this.palette_focus, cx);
                         cx.notify();
                     }))
                     .child("Command palette")
-                    .child(div().text_sm().text_color(rgb(METADATA_TEXT)).child("⌘K")),
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(METADATA_TEXT))
+                            .child("⌘K · Ctrl K"),
+                    ),
             )
     }
 
@@ -203,8 +371,9 @@ impl GpuiShellView {
         selected: Route,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let facts = route_facts(route);
         div()
-            .id(route.element_id())
+            .id(facts.element_id)
             .h(px(36.0))
             .px(px(10.0))
             .flex()
@@ -216,11 +385,24 @@ impl GpuiShellView {
                 style.hover(|hovered| hovered.bg(rgb(PANEL_BACKGROUND)))
             })
             .on_click(cx.listener(move |this, _, _, cx| this.select_route(route, cx)))
-            .child(route.label())
+            .child(facts.label)
+            .when_some(facts.shortcut, |row, shortcut| {
+                row.child(
+                    div()
+                        .ml_auto()
+                        .text_sm()
+                        .text_color(rgb(METADATA_TEXT))
+                        .child(shortcut.apple)
+                        .child(" · ")
+                        .child(shortcut.other),
+                )
+            })
     }
 
-    fn page(&self) -> impl IntoElement {
+    fn page(&self, cx: &mut Context<Self>) -> AnyElement {
         let route = self.state.navigation.route;
+        let facts = route_facts(route);
+        let snapshot = self.route_snapshot(route, cx);
         div()
             .id("application-page")
             .flex_1()
@@ -235,7 +417,7 @@ impl GpuiShellView {
                 div()
                     .text_xl()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(route.label()),
+                    .child(facts.label),
             )
             .child(
                 div()
@@ -245,17 +427,462 @@ impl GpuiShellView {
             )
             .child(
                 div()
-                    .id("stable-capability-card")
+                    .id("route-capability-card")
                     .p(px(16.0))
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(rgb(BORDER))
                     .bg(rgb(PANEL_BACKGROUND))
-                    .child("Application facts appear here without replacing the page frame."),
+                    .child(snapshot),
+            )
+            .when_some(self.state.form, |page, form| {
+                page.child(self.action_form(form, cx))
+            })
+            .into_any_element()
+    }
+
+    fn route_snapshot(&self, route: Route, cx: &mut Context<Self>) -> AnyElement {
+        match route {
+            Route::Home => self.home_snapshot(cx),
+            Route::Libraries => self.libraries_snapshot(cx),
+            Route::Search => self.search_snapshot(cx),
+            Route::Connections => self.connections_snapshot(cx),
+            Route::Settings => self.settings_snapshot(cx),
+        }
+    }
+
+    fn home_snapshot(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("home-snapshot")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children([
+                Self::snapshot_row(
+                    "home-generation",
+                    "Compiler / publication",
+                    self.state.pages.home.generation,
+                ),
+                Self::snapshot_row(
+                    "home-execution",
+                    "Local operation",
+                    self.state.pages.home.execution,
+                ),
+                Self::snapshot_row(
+                    "home-health",
+                    "Capability health",
+                    self.state.pages.home.health,
+                ),
+            ])
+            .child(Self::action_button(
+                ServiceAction::Generate,
+                "Open generation form",
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn libraries_snapshot(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("libraries-snapshot")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children([
+                Self::snapshot_row(
+                    "libraries-index",
+                    "Local index coverage",
+                    self.state.pages.libraries.index,
+                ),
+                Self::snapshot_row(
+                    "libraries-graph",
+                    "Graph coverage",
+                    self.state.pages.libraries.graph,
+                ),
+                Self::snapshot_row(
+                    "libraries-vector",
+                    "Vector coverage",
+                    self.state.pages.libraries.vector,
+                ),
+            ])
+            .children([
+                Self::action_button(ServiceAction::SnapshotStatus, "Inspect snapshot status", cx),
+                Self::action_button(ServiceAction::Locality, "Inspect local placement", cx),
+            ])
+            .into_any_element()
+    }
+
+    fn search_snapshot(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("search-snapshot")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children([
+                Self::snapshot_row("search-exact", "Exact", self.state.pages.search.exact),
+                Self::snapshot_row("search-lexical", "Lexical", self.state.pages.search.lexical),
+                Self::snapshot_row("search-graph", "Graph", self.state.pages.search.graph),
+                Self::snapshot_row("search-vector", "Vector", self.state.pages.search.vector),
+            ])
+            .children([
+                Self::action_button(ServiceAction::Search, "Open exact / lexical search", cx),
+                Self::action_button(ServiceAction::Graph, "Open graph search", cx),
+                Self::action_button(ServiceAction::Vector, "Open vector search", cx),
+            ])
+            .into_any_element()
+    }
+
+    fn connections_snapshot(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("connections-snapshot")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children([
+                Self::snapshot_row(
+                    "connections-placement",
+                    "Placement",
+                    self.state.pages.connections.placement,
+                ),
+                Self::snapshot_row(
+                    "connections-execution",
+                    "Local operation",
+                    self.state.pages.connections.execution,
+                ),
+                Self::snapshot_row(
+                    "connections-health",
+                    "Connection health",
+                    self.state.pages.connections.health,
+                ),
+            ])
+            .children([
+                Self::action_button(ServiceAction::RecoverLocal, "Recover local analyzer", cx),
+                Self::action_button(
+                    ServiceAction::RecoverInconsistent,
+                    "Recover immutable mismatch",
+                    cx,
+                ),
+                Self::action_button(ServiceAction::ReleaseLocal, "Release local analyzer", cx),
+                Self::action_button(
+                    ServiceAction::PollExecution,
+                    "Observe selected operation",
+                    cx,
+                ),
+                Self::action_button(ServiceAction::Cancel, "Cancel selected operation", cx),
+            ])
+            .into_any_element()
+    }
+
+    fn settings_snapshot(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("settings-snapshot")
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(Self::snapshot_row(
+                "settings-health",
+                "Capability health",
+                self.state.pages.settings.health,
+            ))
+            .child(Self::diagnostic_row(self.state.pages.settings.diagnostic))
+            .child(Self::action_button(
+                ServiceAction::Health,
+                "Inspect capability health",
+                cx,
+            ))
+            .child(
+                div()
+                    .id("settings-notification-epoch")
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child("Coalesced UI epoch: ")
+                    .child(self.state.pages.settings.notification_epoch.to_string()),
+            )
+            .into_any_element()
+    }
+
+    fn snapshot_row(
+        id: &'static str,
+        label: &'static str,
+        state: crate::ProjectionState,
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(id)
+            .h(px(32.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(px(5.0))
+            .bg(rgb(PAGE_BACKGROUND))
+            .child(label)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child(projection_label(state)),
             )
     }
 
-    fn status_strip(&self) -> impl IntoElement {
+    fn diagnostic_row(diagnostic: Option<Diagnostic>) -> impl IntoElement + use<> {
+        let (code, detail) = diagnostic_text(diagnostic);
+        div()
+            .id("settings-last-diagnostic")
+            .p(px(10.0))
+            .rounded(px(5.0))
+            .bg(rgb(PAGE_BACKGROUND))
+            .child(div().text_sm().child(code))
+            .child(div().text_sm().text_color(rgb(METADATA_TEXT)).child(detail))
+    }
+
+    fn action_button(
+        action: ServiceAction,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(("application-action", action_element_id(action)))
+            .h(px(32.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .rounded(px(5.0))
+            .bg(rgb(PANEL_BACKGROUND))
+            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| this.select_action(action, cx)))
+            .child(label)
+    }
+
+    fn action_form(&self, form: FormState, cx: &mut Context<Self>) -> AnyElement {
+        let action = form_action(form);
+        div()
+            .id(("typed-action-form", action_element_id(action)))
+            .p(px(16.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(PALETTE_BORDER))
+            .bg(rgb(PALETTE_BACKGROUND))
+            .child(div().text_lg().child(action_label(action)))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child(action_form_hint(action)),
+            )
+            .child(Self::form_fields(form, cx))
+            .child(Self::limit_selector(form, cx))
+            .child(Self::form_error(self.state.form_error))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("submit-typed-action")
+                            .h(px(32.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(5.0))
+                            .bg(rgb(SELECTED_ROW))
+                            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.submit_active_form(cx)))
+                            .child("Submit"),
+                    )
+                    .child(
+                        div()
+                            .id("cancel-typed-action")
+                            .h(px(32.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(5.0))
+                            .bg(rgb(PANEL_BACKGROUND))
+                            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.cancel_form();
+                                cx.notify();
+                            }))
+                            .child("Cancel"),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn form_fields(form: FormState, cx: &mut Context<Self>) -> AnyElement {
+        match form {
+            FormState::Generate {
+                focused,
+                language,
+                stage,
+                package,
+                source,
+            } => Self::generate_form_fields(focused, language, stage, package, source, cx),
+            FormState::Snapshot {
+                focused, snapshot, ..
+            } => Self::snapshot_form_fields(focused, snapshot, cx),
+            FormState::Search {
+                focused,
+                snapshot,
+                query,
+                ..
+            } => div()
+                .id("search-form-fields")
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .children([
+                    Self::form_field(FormField::Snapshot, "Snapshot", snapshot, focused, cx),
+                    Self::form_field(FormField::Query, "Query", query, focused, cx),
+                ])
+                .into_any_element(),
+            FormState::Health => div()
+                .id("health-form-fields")
+                .text_sm()
+                .text_color(rgb(METADATA_TEXT))
+                .child("No arguments required.")
+                .into_any_element(),
+            FormState::Recovery { .. } => div()
+                .id("recovery-form-fields")
+                .text_sm()
+                .text_color(rgb(METADATA_TEXT))
+                .child("Waiting for a canonical pin, verified bundle, and resource budget.")
+                .into_any_element(),
+            FormState::Operation { operation, .. } => div()
+                .id("operation-form-fields")
+                .text_sm()
+                .text_color(rgb(METADATA_TEXT))
+                .child(operation.map_or(
+                    "No active operation",
+                    |_| "Actual service operation selected.",
+                ))
+                .into_any_element(),
+        }
+    }
+
+    fn generate_form_fields(
+        focused: FormField,
+        language: Option<wave_application_core::InputText>,
+        stage: Option<wave_application_core::InputText>,
+        package: Option<wave_application_core::InputText>,
+        source: Option<wave_application_core::InputText>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("generate-form-fields")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children([
+                Self::form_field(FormField::Language, "Language", language, focused, cx),
+                Self::form_field(FormField::Stage, "Stage", stage, focused, cx),
+                Self::form_field(FormField::Package, "Package", package, focused, cx),
+                Self::form_field(FormField::Source, "Source", source, focused, cx),
+            ])
+            .into_any_element()
+    }
+
+    fn snapshot_form_fields(
+        focused: FormField,
+        snapshot: Option<wave_application_core::InputText>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("snapshot-form-fields")
+            .child(Self::form_field(
+                FormField::Snapshot,
+                "Snapshot",
+                snapshot,
+                focused,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn form_field(
+        field: FormField,
+        label: &'static str,
+        value: Option<wave_application_core::InputText>,
+        focused: FormField,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(("typed-form-field", form_field_id(field)))
+            .h(px(32.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(px(5.0))
+            .when(focused == field, |row| row.bg(rgb(SELECTED_ROW)))
+            .when(focused != field, |row| row.bg(rgb(PAGE_BACKGROUND)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let _ = this.state.select_form_field(field);
+                cx.notify();
+            }))
+            .child(label)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(METADATA_TEXT))
+                    .child(form_value_label(value)),
+            )
+    }
+
+    fn limit_selector(form: FormState, cx: &mut Context<Self>) -> AnyElement {
+        let selected = match form {
+            FormState::Snapshot { limit, .. } | FormState::Search { limit, .. } => Some(limit),
+            FormState::Generate { .. }
+            | FormState::Health
+            | FormState::Recovery { .. }
+            | FormState::Operation { .. } => None,
+        };
+        let Some(selected) = selected else {
+            return div().id("no-result-limit").into_any_element();
+        };
+        div()
+            .id("typed-result-limit")
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .child("Results")
+            .children([1_u8, 2, 3, 4].map(|limit| {
+                div()
+                    .id(("result-limit", u64::from(limit)))
+                    .h(px(28.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .when(selected.0 == limit, |button| button.bg(rgb(SELECTED_ROW)))
+                    .when(selected.0 != limit, |button| {
+                        button.bg(rgb(PANEL_BACKGROUND))
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Ok(limit) = ResultLimit::new(limit) {
+                            let _ = this.state.replace_form_limit(limit);
+                        }
+                        cx.notify();
+                    }))
+                    .child(limit.to_string())
+            }))
+            .into_any_element()
+    }
+
+    fn form_error(error: Option<FormError>) -> impl IntoElement + use<> {
+        div()
+            .id("typed-form-error")
+            .text_sm()
+            .text_color(rgb(METADATA_TEXT))
+            .child(error.map_or("", form_error_label))
+    }
+
+    fn status_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let summaries = self.state.summaries();
         div()
             .id("application-status")
@@ -267,17 +894,27 @@ impl GpuiShellView {
             .bg(rgb(RAIL_BACKGROUND))
             .text_color(rgb(METADATA_TEXT))
             .children(summaries.into_iter().map(|summary| {
+                let facts = surface_facts(summary.surface);
                 div()
-                    .id(summary.surface.element_id())
+                    .id(facts.element_id)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(rgb(FOREGROUND)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_route(surface_destination(summary.surface), cx);
+                    }))
                     .text_sm()
-                    .child(summary.surface.label())
+                    .child(facts.label)
                     .child(": ")
-                    .child(summary.state.label())
+                    .child(projection_label(summary.state))
             }))
     }
 
     fn palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let query_label = match self.state.navigation.palette.query_text() {
+            Ok("") | Err(_) => SharedString::from("Type to filter · ↑↓ Enter Esc"),
+            Ok(query) => SharedString::from(query),
+        };
+        let palette = div()
             .id("command-palette-backdrop")
             .absolute()
             .size_full()
@@ -288,6 +925,7 @@ impl GpuiShellView {
             .child(
                 div()
                     .id("command-palette")
+                    .track_focus(&self.palette_focus)
                     .w(px(PALETTE_WIDTH))
                     .h(px(PALETTE_HEIGHT))
                     .flex()
@@ -297,12 +935,23 @@ impl GpuiShellView {
                     .border_color(rgb(PALETTE_BORDER))
                     .bg(rgb(PALETTE_BACKGROUND))
                     .text_color(rgb(FOREGROUND))
-                    .child(Self::palette_header())
+                    .child(Self::palette_header(query_label))
                     .child(self.palette_rows(cx)),
-            )
+            );
+        if self.state.motion == crate::MotionPreference::Standard {
+            palette
+                .with_animation(
+                    "command-palette-open",
+                    Animation::new(INTERACTION_DURATION),
+                    |element, progress| element.opacity(0.85 + (0.15 * progress)),
+                )
+                .into_any_element()
+        } else {
+            palette.into_any_element()
+        }
     }
 
-    fn palette_header() -> impl IntoElement {
+    fn palette_header(query: SharedString) -> impl IntoElement + use<> {
         div()
             .h(px(56.0))
             .px(px(18.0))
@@ -312,12 +961,7 @@ impl GpuiShellView {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(div().text_lg().child("Command palette"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(METADATA_TEXT))
-                    .child("↑↓ Enter Esc"),
-            )
+            .child(div().text_sm().text_color(rgb(METADATA_TEXT)).child(query))
     }
 
     fn palette_rows(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -331,24 +975,48 @@ impl GpuiShellView {
                     .filter_map(|index| {
                         let command = this.state.navigation.palette.command_at(index)?;
                         let row_selected = command == selected;
-                        Some(
-                            div()
-                                .id(("command-palette-row", index))
-                                .h(px(ROW_HEIGHT))
-                                .px(px(18.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .when(row_selected, |style| style.bg(rgb(SELECTED_ROW)))
-                                .when(!row_selected, |style| {
-                                    style.hover(|hovered| hovered.bg(rgb(HOVERED_ROW)))
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_palette_command(command, window, cx);
-                                }))
-                                .child(command.label()),
-                        )
+                        let row = div()
+                            .id(("command-palette-row", command_element_id(command)))
+                            .h(px(ROW_HEIGHT))
+                            .px(px(18.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .when(row_selected, |style| style.bg(rgb(SELECTED_ROW)))
+                            .when(!row_selected, |style| {
+                                style.hover(|hovered| hovered.bg(rgb(HOVERED_ROW)))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_palette_command(command, window, cx);
+                            }))
+                            .child(command_label(command))
+                            .when_some(command_facts(command).shortcut, |row, shortcut| {
+                                row.child(
+                                    div()
+                                        .ml_auto()
+                                        .text_sm()
+                                        .text_color(rgb(METADATA_TEXT))
+                                        .child(shortcut.apple)
+                                        .child(" · ")
+                                        .child(shortcut.other),
+                                )
+                            });
+                        if row_selected && this.state.motion == crate::MotionPreference::Standard {
+                            Some(
+                                row.with_animation(
+                                    ("command-palette-selected", command_element_id(command)),
+                                    Animation::new(INTERACTION_DURATION),
+                                    |element, progress| {
+                                        element
+                                            .bg(rgb(SELECTED_ROW).opacity(0.75 + (0.25 * progress)))
+                                    },
+                                )
+                                .into_any_element(),
+                            )
+                        } else {
+                            Some(row.into_any_element())
+                        }
                     })
                     .collect()
             }),
@@ -367,9 +1035,18 @@ impl Render for GpuiShellView {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::dismiss_palette))
+            .on_action(cx.listener(Self::dismiss_form))
             .on_action(cx.listener(Self::select_next_palette_command))
             .on_action(cx.listener(Self::select_previous_palette_command))
             .on_action(cx.listener(Self::confirm_palette_command))
+            .on_action(cx.listener(Self::select_first_palette_command))
+            .on_action(cx.listener(Self::select_last_palette_command))
+            .on_action(cx.listener(Self::select_next_palette_page))
+            .on_action(cx.listener(Self::select_previous_palette_page))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::next_form_field))
+            .on_action(cx.listener(Self::previous_form_field))
+            .on_key_down(cx.listener(Self::update_palette_query))
             .size_full()
             .relative()
             .flex()
@@ -380,10 +1057,18 @@ impl Render for GpuiShellView {
                     .flex()
                     .overflow_hidden()
                     .child(self.navigation_rail(cx))
-                    .child(self.page()),
+                    .child(self.page(cx)),
             )
-            .child(self.status_strip())
+            .child(self.status_strip(cx))
             .when(palette_visible, |shell| shell.child(self.palette(cx)))
+    }
+}
+
+impl Deref for GpuiShellView {
+    type Target = ShellState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
     }
 }
 
@@ -394,5 +1079,183 @@ fn route_description(route: Route) -> &'static str {
         Route::Search => "Run exact, lexical, graph, and vector retrieval through one service.",
         Route::Connections => "Configure and inspect AI-client and MCP connections.",
         Route::Settings => "Set preferences and inspect product diagnostics.",
+    }
+}
+
+fn projection_label(state: crate::ProjectionState) -> &'static str {
+    match state {
+        crate::ProjectionState::Checking => "Checking",
+        crate::ProjectionState::Accepted => "Accepted",
+        crate::ProjectionState::Ready => "Ready",
+        crate::ProjectionState::Degraded(_) => "Degraded",
+        crate::ProjectionState::Cancelled => "Cancelled",
+        crate::ProjectionState::Failed => "Failed",
+        crate::ProjectionState::Active => "Active",
+    }
+}
+
+fn command_label(command: CommandId) -> SharedString {
+    let facts = command_facts(command);
+    SharedString::from(facts.label)
+}
+
+fn diagnostic_text(diagnostic: Option<Diagnostic>) -> (&'static str, &'static str) {
+    let Some(diagnostic) = diagnostic else {
+        return (
+            "No diagnostic",
+            "No core rejection has reached this window.",
+        );
+    };
+    let code = match diagnostic.code {
+        DiagnosticCode::UnknownLanguage => "Unknown compiler language",
+        DiagnosticCode::UnknownStage => "Unknown compiler stage",
+        DiagnosticCode::SemanticTextTooLong => "Semantic text limit",
+        DiagnosticCode::ResultLimitExceeded => "Result limit",
+        DiagnosticCode::DependencyUnavailable => "Dependency unavailable",
+        DiagnosticCode::UnsupportedCompilerStage => "Unsupported compiler stage",
+        DiagnosticCode::CompilerOutputUnrepresentable => "Compiler output boundary",
+        DiagnosticCode::OperationUnavailable => "Operation unavailable",
+        DiagnosticCode::AdaptivePolicyRejected => "Adaptive policy rejected",
+    };
+    let detail = match diagnostic.detail {
+        DiagnosticDetail::Capability(capability) => capability_label(capability),
+        DiagnosticDetail::Frontend(_) => "The compiler vocabulary rejected the selected stage.",
+        DiagnosticDetail::Text(_) => "The supplied typed field failed semantic validation.",
+        DiagnosticDetail::Limit { .. } => "The requested result bound exceeds this local slice.",
+        DiagnosticDetail::TextLength { .. } => "The supplied field exceeds the semantic width.",
+        DiagnosticDetail::Operation(_) => "The requested operation is no longer active.",
+        DiagnosticDetail::Policy(_) => "The adaptive policy rejected the supplied immutable facts.",
+    };
+    (code, detail)
+}
+
+const fn capability_label(capability: Capability) -> &'static str {
+    match capability {
+        Capability::CompilerRegistry => "Compiler registry is local and ready.",
+        Capability::CompilerOutput => "A validated compiler/IR publication seam is unavailable.",
+        Capability::Index => "The local immutable index seam is unavailable.",
+        Capability::Graph => "The validated graph provider is unavailable.",
+        Capability::Vector => "The validated vector provider is unavailable.",
+        Capability::LocalAnalyzer => "The local analyzer bundle is unavailable.",
+        Capability::Remote => "The remote recovery adapter is unavailable.",
+    }
+}
+
+const fn command_element_id(command: CommandId) -> u64 {
+    match command {
+        CommandId::OpenRoute(Route::Home) => 1,
+        CommandId::OpenRoute(Route::Libraries) => 2,
+        CommandId::OpenRoute(Route::Search) => 3,
+        CommandId::OpenRoute(Route::Connections) => 4,
+        CommandId::OpenRoute(Route::Settings) => 5,
+        CommandId::InspectSurface(crate::Surface::Generation) => 10,
+        CommandId::InspectSurface(crate::Surface::Adaptive) => 11,
+        CommandId::InspectSurface(crate::Surface::Execution) => 12,
+        CommandId::InspectSurface(crate::Surface::Index) => 13,
+        CommandId::InspectSurface(crate::Surface::Graph) => 14,
+        CommandId::InspectSurface(crate::Surface::Vector) => 15,
+        CommandId::InspectSurface(crate::Surface::Health) => 16,
+        CommandId::FocusAction(action) => 100 + action_element_id(action),
+    }
+}
+
+const fn action_element_id(action: ServiceAction) -> u64 {
+    match action {
+        ServiceAction::Generate => 1,
+        ServiceAction::SnapshotStatus => 2,
+        ServiceAction::Search => 3,
+        ServiceAction::Graph => 4,
+        ServiceAction::Vector => 5,
+        ServiceAction::Locality => 6,
+        ServiceAction::Health => 7,
+        ServiceAction::RecoverLocal => 8,
+        ServiceAction::RecoverInconsistent => 9,
+        ServiceAction::ReleaseLocal => 10,
+        ServiceAction::PollExecution => 11,
+        ServiceAction::Cancel => 12,
+    }
+}
+
+const fn action_form_hint(action: ServiceAction) -> &'static str {
+    match action {
+        ServiceAction::Generate => {
+            "Provide language, stage, package, and source; output stays unavailable until the canonical compiler/publication seam arrives."
+        }
+        ServiceAction::SnapshotStatus | ServiceAction::Locality => {
+            "Select an immutable published snapshot before submitting this typed request."
+        }
+        ServiceAction::Search | ServiceAction::Graph | ServiceAction::Vector => {
+            "Select a published snapshot and enter a bounded query; result rows appear only from the canonical retrieval seam."
+        }
+        ServiceAction::Health => {
+            "This action has no arguments and can be run from the settings route."
+        }
+        ServiceAction::RecoverLocal
+        | ServiceAction::RecoverInconsistent
+        | ServiceAction::ReleaseLocal => {
+            "Select canonical immutable pins and a verified bundle before the service can act."
+        }
+        ServiceAction::PollExecution | ServiceAction::Cancel => {
+            "Select the actual operation emitted by the service; the operation authority is never guessed by this view."
+        }
+    }
+}
+
+const fn form_action(form: FormState) -> ServiceAction {
+    match form {
+        FormState::Generate { .. } => ServiceAction::Generate,
+        FormState::Snapshot { action, .. } => match action {
+            crate::SnapshotAction::Status => ServiceAction::SnapshotStatus,
+            crate::SnapshotAction::Locality => ServiceAction::Locality,
+            crate::SnapshotAction::Graph => ServiceAction::Graph,
+            crate::SnapshotAction::Vector => ServiceAction::Vector,
+        },
+        FormState::Search { .. } => ServiceAction::Search,
+        FormState::Health => ServiceAction::Health,
+        FormState::Recovery { action, .. } => match action {
+            crate::RecoveryAction::Local => ServiceAction::RecoverLocal,
+            crate::RecoveryAction::Inconsistent => ServiceAction::RecoverInconsistent,
+            crate::RecoveryAction::Release => ServiceAction::ReleaseLocal,
+        },
+        FormState::Operation { action, .. } => match action {
+            crate::OperationAction::Poll => ServiceAction::PollExecution,
+            crate::OperationAction::Cancel => ServiceAction::Cancel,
+        },
+    }
+}
+
+fn form_value_label(value: Option<wave_application_core::InputText>) -> SharedString {
+    match value {
+        Some(value) => String::from_utf8_lossy(value.as_ref()).into_owned().into(),
+        None => SharedString::from("Required"),
+    }
+}
+
+const fn form_field_id(field: FormField) -> u64 {
+    match field {
+        FormField::Language => 1,
+        FormField::Stage => 2,
+        FormField::Package => 3,
+        FormField::Source => 4,
+        FormField::Snapshot => 5,
+        FormField::Query => 6,
+    }
+}
+
+const fn form_error_label(error: FormError) -> &'static str {
+    match error {
+        FormError::NoActiveForm => "Open a typed action form first.",
+        FormError::FieldUnavailable(_) => "That field does not belong to this typed action.",
+        FormError::MissingText(_) => "Complete the required typed field before submitting.",
+        FormError::MissingRecoverySelection => "Select canonical immutable recovery facts first.",
+        FormError::MissingObservedPin => {
+            "Inconsistent recovery requires the observed pinned authority."
+        }
+        FormError::MissingOperation => "Select an actual service operation before submitting.",
+        FormError::LimitExceeded { .. } => "Choose a result count inside the local service bound.",
+        FormError::EmptyTextEdit { .. } => "Enter text in the selected typed field.",
+        FormError::InputTooLong { .. } => "That edit exceeds the fixed transport field width.",
+        FormError::LimitUnavailable => "This typed action has no caller-controlled result limit.",
+        FormError::NoEditableField => "This typed action has no editable text field.",
     }
 }
