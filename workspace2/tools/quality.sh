@@ -34,6 +34,13 @@ stable_cargo test \
   --lib \
   --locked \
   --offline
+stable_cargo test \
+  --manifest-path "$root_manifest" \
+  -p nudox-index-graph-vector \
+  --features loom-model \
+  --lib \
+  --locked \
+  --offline
 
 # Repository-level custody check: unsafe is denied by default, and local exceptions
 # must remain inside the named, independently reviewed proof modules.
