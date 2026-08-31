@@ -13,7 +13,7 @@ use core::{
 use super::{
     cancellation::{Cancellation, CancellationReservation},
     contract::{GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError},
-    storage::{EdgeSlot, MAX_EDGES_PER_PARTITION, SharedLease, SlotPhase},
+    storage::{EdgeRead, EdgeSlot, MAX_EDGES_PER_PARTITION, SharedLease, SlotPhase},
     wake::WakeCell,
 };
 use crate::{
@@ -432,8 +432,11 @@ impl<'lease, 'cancellation> EdgeBatchStream<'lease, 'cancellation> {
                         edges: slot.length(),
                     });
                     return Poll::Ready(GraphStreamEvent::Batch(LeasedGraphBatch {
-                        slot,
-                        producer_wake: &stream.shared.producer_wake,
+                        edges: slot.borrowed(),
+                        _release: BatchRelease {
+                            slot,
+                            producer_wake: &stream.shared.producer_wake,
+                        },
                     }));
                 }
                 SlotPhase::Ready | SlotPhase::Writing | SlotPhase::Vacant => {
@@ -526,17 +529,29 @@ impl Drop for EdgeBatchStream<'_, '_> {
 }
 
 /// Borrowed edge slice whose drop returns its exact slot to the producer.
+///
+/// A batch is deliberately `!Send`: its borrow guard must be dropped by the consumer task before
+/// that task polls again and permits the slot to be reused. Copy or process the edges before
+/// crossing an executor boundary.
+///
+/// ```compile_fail
+/// use nudox_index_graph_vector::LeasedGraphBatch;
+/// fn require_send<Type: Send>() {}
+/// require_send::<LeasedGraphBatch<'static>>();
+/// ```
 #[derive(Debug)]
 pub struct LeasedGraphBatch<'lease> {
-    slot: &'lease EdgeSlot,
-    producer_wake: &'lease WakeCell,
+    // Declaration order is deliberate: the tracked read guard must end before the release phase
+    // makes this slot available to a later producer.
+    edges: EdgeRead<'lease>,
+    _release: BatchRelease<'lease>,
 }
 
 impl Deref for LeasedGraphBatch<'_> {
     type Target = [GraphEdge];
 
     fn deref(&self) -> &Self::Target {
-        self.slot.borrowed()
+        &self.edges
     }
 }
 
@@ -546,7 +561,13 @@ impl AsRef<[GraphEdge]> for LeasedGraphBatch<'_> {
     }
 }
 
-impl Drop for LeasedGraphBatch<'_> {
+#[derive(Debug)]
+struct BatchRelease<'lease> {
+    slot: &'lease EdgeSlot,
+    producer_wake: &'lease WakeCell,
+}
+
+impl Drop for BatchRelease<'_> {
     fn drop(&mut self) {
         self.slot.release_read();
         self.producer_wake.wake();

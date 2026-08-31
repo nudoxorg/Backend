@@ -12,6 +12,7 @@
 //! owner releasing it, which is an intentional bounded-lease backpressure law.
 
 mod cancellation;
+mod cell;
 mod channel;
 mod contract;
 mod storage;

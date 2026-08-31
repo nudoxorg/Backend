@@ -21,7 +21,7 @@ pub(super) struct CancellationReservation {
 }
 
 impl CancellationSlot {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             claimed: AtomicBool::new(false),
             wake: WakeCell::new(),
@@ -150,6 +150,18 @@ mod tests {
 
     #[test]
     fn post_claim_cancellation_relinquishes_the_exact_slot() -> Result<(), CancellationTestError> {
+        #[cfg(feature = "loom-model")]
+        {
+            loom::model(|| assert!(check_post_claim_cancellation().is_ok()));
+            Ok(())
+        }
+        #[cfg(not(feature = "loom-model"))]
+        {
+            check_post_claim_cancellation()
+        }
+    }
+
+    fn check_post_claim_cancellation() -> Result<(), CancellationTestError> {
         let cancellation = Cancellation::new();
         let Some(reservation) = cancellation.claim_vacant() else {
             return Err(CancellationTestError::ReservationMissing);

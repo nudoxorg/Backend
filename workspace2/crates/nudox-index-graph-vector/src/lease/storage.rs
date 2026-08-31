@@ -3,13 +3,15 @@
 #[cfg(not(all(test, feature = "loom-model")))]
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::{
-    cell::UnsafeCell,
+    marker::PhantomData,
     mem::{MaybeUninit, size_of},
+    ops::Deref,
 };
 #[cfg(all(test, feature = "loom-model"))]
 use loom::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use super::{
+    cell::{self, UnsafeCell},
     contract::{GraphTerminal, LeaseCapacity, LeaseLoad, LeaseStateCell, StreamCapacityError},
     wake::WakeCell,
 };
@@ -65,7 +67,7 @@ impl TerminalState {
 pub(super) struct EdgeSlot {
     phase: AtomicU8,
     length: AtomicU8,
-    edges: [UnsafeCell<MaybeUninit<GraphEdge>>; MAX_EDGES_PER_PARTITION],
+    edges: UnsafeCell<[MaybeUninit<GraphEdge>; MAX_EDGES_PER_PARTITION]>,
 }
 
 impl EdgeSlot {
@@ -73,7 +75,7 @@ impl EdgeSlot {
         Self {
             phase: AtomicU8::new(SlotPhase::Vacant as u8),
             length: AtomicU8::new(0),
-            edges: core::array::from_fn(|_| UnsafeCell::new(MaybeUninit::uninit())),
+            edges: UnsafeCell::new(core::array::from_fn(|_| MaybeUninit::uninit())),
         }
     }
 
@@ -93,12 +95,20 @@ impl EdgeSlot {
     }
 
     pub(super) fn publish(&self, edges: &[GraphEdge]) -> bool {
-        // SAFETY: this producer owns Vacant -> Writing. A consumer reads only after the release
-        // publication below. `GraphEdge` is Copy, so a closed unpublished slot has no destructor.
-        for (storage, edge) in self.edges.iter().zip(edges.iter().copied()) {
-            // SAFETY: `Writing` grants this unique producer the only mutable raw slot access.
-            unsafe { (*storage.get()).write(edge) };
+        if edges.len() > MAX_EDGES_PER_PARTITION {
+            return false;
         }
+        // `Writing` grants this unique producer the only mutable payload access. A consumer reads
+        // only after the release publication below; `GraphEdge` is Copy, so a closed unpublished
+        // slot has no destructor.
+        cell::write(&self.edges, |storage| {
+            // SAFETY: the Writing phase grants this callback the unique mutable access to the
+            // initialized array storage, and the pointer never escapes the callback.
+            let storage = unsafe { &mut *storage };
+            for (destination, edge) in storage.iter_mut().zip(edges.iter().copied()) {
+                destination.write(edge);
+            }
+        });
         self.length.store(edges.len() as u8, Ordering::Relaxed);
         self.phase
             .compare_exchange(
@@ -148,11 +158,71 @@ impl EdgeSlot {
         }
     }
 
-    pub(super) fn borrowed(&self) -> &[GraphEdge] {
-        let length = usize::from(self.length.load(Ordering::Relaxed));
-        // SAFETY: Ready -> Reading acquired this producer's release. The batch borrow prevents a
-        // second consumer poll from returning this slot to Vacant while the slice is reachable.
-        unsafe { core::slice::from_raw_parts(self.edges.as_ptr().cast::<GraphEdge>(), length) }
+    pub(super) fn borrowed(&self) -> EdgeRead<'_> {
+        EdgeRead {
+            payload: ReadGuard::new(&self.edges),
+            length: usize::from(self.length.load(Ordering::Relaxed)),
+            not_send: PhantomData,
+        }
+    }
+}
+
+/// Tracked immutable access to the initialized prefix of one ready edge slot.
+#[derive(Debug)]
+pub(super) struct EdgeRead<'slot> {
+    payload: ReadGuard<'slot, [MaybeUninit<GraphEdge>; MAX_EDGES_PER_PARTITION]>,
+    length: usize,
+    // This borrow guard is intentionally confined to the task that owns the consumer endpoint.
+    // The slot must be released by that same task before the next poll may reuse it.
+    not_send: PhantomData<*mut ()>,
+}
+
+/// Immutable payload access retained for exactly as long as a borrowed batch is alive.
+#[derive(Debug)]
+struct ReadGuard<'cell, Payload: ?Sized> {
+    #[cfg(all(test, feature = "loom-model"))]
+    pointer: loom::cell::ConstPtr<Payload>,
+    #[cfg(not(all(test, feature = "loom-model")))]
+    pointer: *const Payload,
+    lifetime: PhantomData<&'cell Payload>,
+}
+
+impl<'cell, Payload: ?Sized> ReadGuard<'cell, Payload> {
+    /// Starts a tracked immutable access whose guard lifetime is tied to the source cell.
+    fn new(cell: &'cell UnsafeCell<Payload>) -> Self {
+        Self {
+            pointer: cell.get(),
+            lifetime: PhantomData,
+        }
+    }
+
+    /// Borrows the initialized payload while this guard remains alive.
+    unsafe fn as_ref(&self) -> &Payload {
+        #[cfg(all(test, feature = "loom-model"))]
+        {
+            // SAFETY: the guard came from this live cell and keeps Loom's immutable access open.
+            unsafe { self.pointer.deref() }
+        }
+        #[cfg(not(all(test, feature = "loom-model")))]
+        {
+            // SAFETY: the owner holds the phase that makes this pointer initialized and shared
+            // only immutably for the guard lifetime.
+            unsafe { &*self.pointer }
+        }
+    }
+}
+
+impl Deref for EdgeRead<'_> {
+    type Target = [GraphEdge];
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the slot's Ready -> Reading transition proves exactly `length` elements were
+        // initialized by the producer. The payload guard outlives this returned borrow, and the
+        // batch's release guard drops it before the slot can become Vacant again.
+        let payload = unsafe { self.payload.as_ref() };
+        // SAFETY: the initialized prefix is contiguous in the inline MaybeUninit array and its
+        // length was published by the producer before the Ready transition.
+        unsafe { core::slice::from_raw_parts(payload.as_ptr().cast::<GraphEdge>(), self.length) }
     }
 }
 
@@ -230,9 +300,13 @@ impl SharedLease {
         {
             return false;
         }
-        // SAFETY: Open -> Writing is the one terminal initializer. Ready's release precedes every
-        // terminal read; `GraphTerminal` is Copy and no destructive move occurs.
-        unsafe { (*self.terminal.get()).write(terminal) };
+        // Open -> Writing is the one terminal initializer. Ready's release precedes every terminal
+        // read; `GraphTerminal` is Copy and no destructive move occurs.
+        cell::write(&self.terminal, |storage| {
+            // SAFETY: Open -> Writing is the one terminal initializer; this pointer never
+            // escapes the callback.
+            unsafe { (*storage).write(terminal) };
+        });
         self.terminal_state
             .store(TerminalState::Ready as u8, Ordering::Release);
         self.consumer_wake.wake();
@@ -243,8 +317,12 @@ impl SharedLease {
         match self.terminal_state() {
             TerminalState::Open | TerminalState::Writing => Ok(None),
             TerminalState::Ready => {
-                // SAFETY: Ready acquire observes the one terminal initialization above.
-                Ok(Some(unsafe { (*self.terminal.get()).assume_init_read() }))
+                // Ready acquire observes the one terminal initialization above. The read stays
+                // inside Loom's access callback, so a concurrent invalid read is modeled.
+                Ok(Some(cell::read(&self.terminal, |storage| {
+                    // SAFETY: Ready acquire observes the one terminal initialization above.
+                    unsafe { (*storage).assume_init_read() }
+                })))
             }
             TerminalState::Corrupt => Err(StreamCapacityError::CorruptState {
                 cell: LeaseStateCell::Terminal,
@@ -278,6 +356,24 @@ impl SharedLease {
 // cell hand-off across a scoped thread.
 unsafe impl Sync for SharedLease {}
 
+#[cfg(test)]
+mod trait_contracts {
+    use super::{EdgeSlot, SharedLease, WakeCell};
+
+    fn require_send<Type: Send>() {}
+    fn require_sync<Type: Sync>() {}
+
+    #[test]
+    fn atomic_payload_boundaries_are_shareable_by_state_protocol() {
+        require_send::<EdgeSlot>();
+        require_send::<SharedLease>();
+        require_send::<WakeCell>();
+        require_sync::<EdgeSlot>();
+        require_sync::<SharedLease>();
+        require_sync::<WakeCell>();
+    }
+}
+
 #[cfg(all(test, feature = "loom-model"))]
 mod loom_tests {
     use core::sync::atomic::Ordering;
@@ -291,6 +387,8 @@ mod loom_tests {
 
     use super::{EdgeSlot, SlotPhase};
     use crate::{GraphAuthority, GraphEdge, PartitionId, ProjectionId};
+
+    const INITIALIZER_STACK_BYTES: usize = 64 * 1024;
 
     fn edge() -> GraphEdge {
         let authority = GraphAuthority::new(
@@ -309,22 +407,20 @@ mod loom_tests {
     fn ready_release_acquire_lends_exact_initialized_edge() {
         loom::model(|| {
             let slot = Arc::new(EdgeSlot::new());
-            let published = Arc::new(AtomicBool::new(false));
             let writer_slot = Arc::clone(&slot);
-            let writer_published = Arc::clone(&published);
             let writer = thread::spawn(move || {
                 assert!(writer_slot.try_begin_write());
                 assert!(writer_slot.publish(&[edge()]));
-                writer_published.store(true, Ordering::Release);
             });
             let reader_slot = Arc::clone(&slot);
-            let reader_published = Arc::clone(&published);
             let reader = thread::spawn(move || {
-                while !reader_published.load(Ordering::Acquire) {
+                while reader_slot.phase() != SlotPhase::Ready {
                     thread::yield_now();
                 }
                 assert!(reader_slot.try_begin_read());
-                assert_eq!(reader_slot.borrowed(), &[edge()]);
+                let borrowed = reader_slot.borrowed();
+                assert_eq!(&*borrowed, &[edge()]);
+                drop(borrowed);
                 reader_slot.release_read();
                 assert_eq!(reader_slot.phase(), SlotPhase::Vacant);
             });
@@ -359,6 +455,73 @@ mod loom_tests {
             });
             assert!(writer.join().is_ok());
             assert!(closer.join().is_ok());
+        });
+    }
+
+    #[test]
+    fn terminal_publish_close_and_read_have_one_valid_outcome() {
+        let mut model = loom::model::Builder::new();
+        model.max_branches = 128;
+        model.max_permutations = Some(32);
+        model.check(|| {
+            let authority = GraphAuthority::new(
+                IndexSnapshotId::from_canonical_bytes(b"terminal loom authority"),
+                ProjectionId::new(2),
+            );
+            let selected: [Option<PartitionId>; crate::MAX_PARTITIONS] =
+                core::array::from_fn(|index| (index == 0).then_some(PartitionId::new(0)));
+            let (sender, receiver) = loom::sync::mpsc::channel();
+            let initializer = loom::thread::Builder::new()
+                .stack_size(INITIALIZER_STACK_BYTES)
+                .spawn(move || {
+                    let shared = Arc::new(super::SharedLease::new(
+                        authority,
+                        selected,
+                        1,
+                        super::LeaseCapacity {
+                            edges_per_partition: 1,
+                            bytes_per_partition: core::mem::size_of::<GraphEdge>(),
+                        },
+                    ));
+                    sender.send(shared).is_ok()
+                });
+            assert!(initializer.is_ok());
+            let Ok(initializer) = initializer else {
+                return;
+            };
+            assert!(initializer.join().is_ok());
+            let shared = receiver.recv();
+            assert!(shared.is_ok());
+            let Ok(shared) = shared else {
+                return;
+            };
+
+            let publisher_shared = Arc::clone(&shared);
+            let publisher = thread::spawn(move || {
+                publisher_shared.publish_terminal(super::GraphTerminal::Complete { authority })
+            });
+            let closer_shared = Arc::clone(&shared);
+            let closer = thread::spawn(move || closer_shared.close());
+            let reader_shared = Arc::clone(&shared);
+            let reader = thread::spawn(move || match reader_shared.terminal() {
+                Ok(None) => true,
+                Ok(Some(super::GraphTerminal::Complete {
+                    authority: observed,
+                })) => observed == authority,
+                Ok(Some(_)) | Err(_) => false,
+            });
+            assert!(publisher.join().is_ok());
+            assert!(closer.join().is_ok());
+            assert!(matches!(reader.join(), Ok(true)));
+
+            let valid = match shared.terminal() {
+                Ok(None) => true,
+                Ok(Some(super::GraphTerminal::Complete {
+                    authority: observed,
+                })) => observed == authority,
+                Ok(Some(_)) | Err(_) => false,
+            };
+            assert!(valid);
         });
     }
 }
