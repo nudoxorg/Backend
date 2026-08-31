@@ -2,8 +2,9 @@ use super::*;
 use crate::wire::request::{IdentityFilter, IdentityPayload};
 use crate::{
     contract::{
-        ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY, MODEL_PAYLOAD_KEY, MalformedResponseCause,
-        PARTITION_PAYLOAD_KEY, PhysicalPointId, QdrantDataKey, QdrantError, RequestPhase,
+        CollectionField, CollectionValue, ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY,
+        MODEL_PAYLOAD_KEY, MalformedResponseCause, PARTITION_PAYLOAD_KEY, PayloadEncodingCause,
+        PayloadField, PayloadIndexKind, PhysicalPointId, QdrantDataKey, QdrantError, RequestPhase,
         SEGMENT_PAYLOAD_KEY, SNAPSHOT_PAYLOAD_KEY,
     },
     limits::{
@@ -85,6 +86,40 @@ fn query_fixture<Points: serde::Serialize>(points: Points) -> Result<String, ser
     serde_json::to_string(&QueryFixture {
         result: QueryResultFixture { points },
     })
+}
+
+#[test]
+fn payload_index_mismatch_retains_typed_expected_and_observed_schema() {
+    let expected = [PayloadIndexDescriptor::new(
+        PayloadField::Snapshot,
+        SNAPSHOT_PAYLOAD_KEY,
+        PayloadIndexKind::Keyword,
+    )];
+    let body = r#"{
+        "result": {
+            "config": {
+                "params": {
+                    "vectors": {"size": 2, "distance": "Euclid"},
+                    "replication_factor": 1,
+                    "write_consistency_factor": 1
+                }
+            },
+            "payload_schema": {
+                "nudox_snapshot": {"data_type": "integer"},
+                "foreign_open_key": {"data_type": "keyword"}
+            }
+        }
+    }"#;
+
+    assert!(matches!(
+        verify_payload_indexes(RequestPhase::ReadCollection, body, &expected),
+        Err(QdrantError::CollectionMismatch {
+            phase: RequestPhase::ReadCollection,
+            field: CollectionField::PayloadIndex(PayloadField::Snapshot),
+            expected: CollectionValue::PayloadIndex(PayloadIndexKind::Keyword),
+            observed: CollectionValue::PayloadIndex(PayloadIndexKind::Integer),
+        })
+    ));
 }
 
 #[test]
@@ -367,7 +402,56 @@ fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() -> Result<(
         parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &unknown_metric),
         Err(QdrantError::MalformedResponse {
             phase: RequestPhase::QueryPoints,
-            cause: MalformedResponseCause::UnknownMetric,
+            cause: MalformedResponseCause::UnknownMetric(observed),
+        }) if observed.0 == "cosine"
+    ));
+
+    let short_snapshot = query_fixture([PointFixture {
+        id: point_id.0,
+        payload: MetricPayloadFixture {
+            snapshot: String::from("00"),
+            model: encoded_hex(key.authority.model.as_ref()),
+            segment: encoded_hex(key.segment.as_ref()),
+            metric: "squared_euclidean",
+            partition: key.partition.raw,
+            entity: key.entity.raw,
+        },
+        vector: [1.0, 2.0],
+    }])?;
+    assert!(matches!(
+        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &short_snapshot),
+        Err(QdrantError::InvalidFieldEncoding {
+            phase: RequestPhase::QueryPoints,
+            field: PayloadField::Snapshot,
+            cause: PayloadEncodingCause::HexLength {
+                expected: 64,
+                observed: 2,
+            },
+        })
+    ));
+
+    let invalid_snapshot_digit = format!("z{}", "0".repeat(63));
+    let invalid_snapshot = query_fixture([PointFixture {
+        id: point_id.0,
+        payload: MetricPayloadFixture {
+            snapshot: invalid_snapshot_digit,
+            model: encoded_hex(key.authority.model.as_ref()),
+            segment: encoded_hex(key.segment.as_ref()),
+            metric: "squared_euclidean",
+            partition: key.partition.raw,
+            entity: key.entity.raw,
+        },
+        vector: [1.0, 2.0],
+    }])?;
+    assert!(matches!(
+        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &invalid_snapshot),
+        Err(QdrantError::InvalidFieldEncoding {
+            phase: RequestPhase::QueryPoints,
+            field: PayloadField::Snapshot,
+            cause: PayloadEncodingCause::HexDigit {
+                index: 0,
+                observed: b'z',
+            },
         })
     ));
 

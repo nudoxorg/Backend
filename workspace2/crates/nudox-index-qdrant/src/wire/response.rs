@@ -5,14 +5,14 @@ use serde::Deserialize;
 
 use super::super::{
     contract::{
-        AuthorityMismatchEvidence, CollectionField, MalformedResponseCause, PayloadField,
-        PayloadMismatchCause, PhysicalPointId, QdrantCandidate, QdrantDataKey, QdrantError,
-        RequestPhase,
+        AuthorityMismatchEvidence, CollectionField, CollectionValue, MalformedResponseCause,
+        PayloadEncodingCause, PayloadField, PayloadIndexKind, PayloadMismatchCause,
+        PhysicalPointId, QdrantCandidate, QdrantDataKey, QdrantError, RejectedMetric, RequestPhase,
     },
     limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS},
     scoring::projected_score,
 };
-use super::request::{CollectionMetric, PayloadDataType, PayloadIndexDescriptor};
+use super::request::{CollectionMetric, PayloadIndexDescriptor};
 use nudox_index_graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, VectorAuthority, VectorSegmentDescriptor,
 };
@@ -86,15 +86,16 @@ pub(crate) fn verify_payload_indexes(
 ) -> Result<(), QdrantError> {
     let response: CollectionResponse = decode(phase, body)?;
     for descriptor in expected {
-        let observed = response
-            .result
-            .payload_schema
-            .get(descriptor.wire_name)
-            .map(|entry| entry.data_type);
+        let observed = response.result.payload_schema.kind(descriptor.wire_name);
         if observed != Some(descriptor.schema) {
             return Err(QdrantError::CollectionMismatch {
                 phase,
                 field: CollectionField::PayloadIndex(descriptor.field),
+                expected: CollectionValue::PayloadIndex(descriptor.schema),
+                observed: observed.map_or(
+                    CollectionValue::MissingPayloadIndex,
+                    CollectionValue::PayloadIndex,
+                ),
             });
         }
     }
@@ -248,7 +249,19 @@ struct CollectionResponse {
 struct CollectionResult {
     config: CollectionConfig,
     #[serde(default)]
-    payload_schema: std::collections::BTreeMap<String, PayloadSchema>,
+    payload_schema: PayloadSchemaMap,
+}
+
+/// Qdrant owns an open payload-schema object. The transport's response-byte limit bounds this map;
+/// only the five declarative adapter keys are inspected and every other external key is ignored.
+#[derive(Default, Deserialize)]
+#[serde(transparent)]
+struct PayloadSchemaMap(std::collections::BTreeMap<String, PayloadSchema>);
+
+impl PayloadSchemaMap {
+    fn kind(&self, wire_name: &str) -> Option<PayloadIndexKind> {
+        self.0.get(wire_name).map(|entry| entry.data_type)
+    }
 }
 
 #[derive(Deserialize)]
@@ -271,7 +284,7 @@ struct CollectionVectors {
 
 #[derive(Deserialize)]
 struct PayloadSchema {
-    data_type: PayloadDataType,
+    data_type: PayloadIndexKind,
 }
 
 #[derive(Deserialize)]
@@ -422,7 +435,7 @@ fn decode_metric(value: &str, phase: RequestPhase) -> Result<VectorMetric, Qdran
         "negative_dot_product" => Ok(VectorMetric::NegativeDotProduct),
         _ => Err(QdrantError::MalformedResponse {
             phase,
-            cause: MalformedResponseCause::UnknownMetric,
+            cause: MalformedResponseCause::UnknownMetric(RejectedMetric(value.to_owned())),
         }),
     }
 }
@@ -453,15 +466,44 @@ fn decode_hex<const BYTES: usize>(
     phase: RequestPhase,
 ) -> Result<[u8; BYTES], QdrantError> {
     let Some(expected_digits) = BYTES.checked_mul(2) else {
-        return Err(QdrantError::InvalidFieldRange { phase, field });
+        return Err(QdrantError::InvalidFieldEncoding {
+            phase,
+            field,
+            cause: PayloadEncodingCause::HexWidthOverflow { bytes: BYTES },
+        });
     };
     if value.len() != expected_digits {
-        return Err(QdrantError::InvalidFieldRange { phase, field });
+        return Err(QdrantError::InvalidFieldEncoding {
+            phase,
+            field,
+            cause: PayloadEncodingCause::HexLength {
+                expected: expected_digits,
+                observed: value.len(),
+            },
+        });
     }
     let mut bytes = [0_u8; BYTES];
-    for (output, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
-        let high = hex_nibble(pair[0]).ok_or(QdrantError::InvalidFieldRange { phase, field })?;
-        let low = hex_nibble(pair[1]).ok_or(QdrantError::InvalidFieldRange { phase, field })?;
+    for (byte_index, (output, pair)) in bytes
+        .iter_mut()
+        .zip(value.as_bytes().chunks_exact(2))
+        .enumerate()
+    {
+        let high = hex_nibble(pair[0]).ok_or(QdrantError::InvalidFieldEncoding {
+            phase,
+            field,
+            cause: PayloadEncodingCause::HexDigit {
+                index: byte_index * 2,
+                observed: pair[0],
+            },
+        })?;
+        let low = hex_nibble(pair[1]).ok_or(QdrantError::InvalidFieldEncoding {
+            phase,
+            field,
+            cause: PayloadEncodingCause::HexDigit {
+                index: byte_index * 2 + 1,
+                observed: pair[1],
+            },
+        })?;
         *output = (high << 4) | low;
     }
     Ok(bytes)

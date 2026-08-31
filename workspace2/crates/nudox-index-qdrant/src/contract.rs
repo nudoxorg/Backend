@@ -251,7 +251,7 @@ pub enum RequestPhase {
 }
 
 /// The required part of a successful Qdrant response that was absent or had an invalid shape.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum MalformedResponseCause {
     /// A point list exceeded the adapter's bounded batch shape.
     PointBatchExceeded,
@@ -262,13 +262,23 @@ pub enum MalformedResponseCause {
     /// A point omitted its vector where the operation requires one.
     MissingVector,
     /// The metric payload was a string outside this adapter's owned metric vocabulary.
-    UnknownMetric,
+    UnknownMetric(RejectedMetric),
     /// Internal bounded retry bookkeeping reached an impossible terminal state.
     RetryExhaustionWithoutResponse,
     /// A successful HTTP response explicitly rejected the requested mutation.
     RejectedAcknowledgement,
     /// A verified readback could not be placed in the admitted output slice.
     ReadbackOutputIndex,
+}
+
+/// Metric spelling rejected at the external Qdrant payload edge.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RejectedMetric(pub String);
+
+impl std::fmt::Display for RejectedMetric {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 /// A typed payload member owned by the immutable Qdrant identity contract.
@@ -333,6 +343,16 @@ pub struct AuthorityMismatchEvidence {
     pub observed: VectorAuthority,
 }
 
+/// Qdrant payload-index types owned by this adapter's collection protocol.
+#[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PayloadIndexKind {
+    /// String equality index.
+    Keyword,
+    /// Integer equality index.
+    Integer,
+}
+
 /// The collection property that disagreed with the adapter's pinned contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CollectionField {
@@ -344,6 +364,45 @@ pub enum CollectionField {
     WriteConsistency,
     /// A required payload index.
     PayloadIndex(PayloadField),
+}
+
+/// Typed expected or observed value retained by a collection mismatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CollectionValue {
+    /// Vector coordinate count.
+    Dimension(u64),
+    /// Vector distance recipe.
+    Metric(Metric),
+    /// Replication or write-consistency factor.
+    Consistency(u64),
+    /// Present payload-index type.
+    PayloadIndex(PayloadIndexKind),
+    /// Required payload index was absent.
+    MissingPayloadIndex,
+}
+
+/// Exact invalid encoding observed for a typed payload field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PayloadEncodingCause {
+    /// The typed identity width could not be represented as hexadecimal digits.
+    HexWidthOverflow {
+        /// Identity width in bytes.
+        bytes: usize,
+    },
+    /// The external spelling had the wrong number of hexadecimal digits.
+    HexLength {
+        /// Required hexadecimal digit count.
+        expected: usize,
+        /// Complete observed digit count.
+        observed: usize,
+    },
+    /// One byte was outside the ASCII hexadecimal alphabet.
+    HexDigit {
+        /// Zero-based digit position.
+        index: usize,
+        /// Exact rejected byte.
+        observed: u8,
+    },
 }
 
 /// A rejected endpoint retained by configuration errors.
@@ -685,13 +744,19 @@ pub enum QdrantError {
         /// Exact identity invariant that failed.
         cause: PayloadMismatchCause,
     },
-    /// Collection metadata disagreed with the pinned model shape or metric.
-    #[error("Qdrant {phase:?} collection metadata disagrees in {field:?}")]
+    /// Collection metadata disagreed with the pinned model shape, metric, or payload indexes.
+    #[error(
+        "Qdrant {phase:?} collection metadata disagrees in {field:?}: expected {expected:?}, observed {observed:?}"
+    )]
     CollectionMismatch {
         /// Operation phase.
         phase: RequestPhase,
         /// Mismatched collection property.
         field: CollectionField,
+        /// Typed value required by the adapter.
+        expected: CollectionValue,
+        /// Typed value returned by Qdrant.
+        observed: CollectionValue,
     },
     /// A remote vector was malformed or differed from the uploaded coordinates.
     #[error("Qdrant {phase:?} vector differs for point {physical_id:?}")]
@@ -712,13 +777,15 @@ pub enum QdrantError {
         #[source]
         source: CoordinateCapacity,
     },
-    /// A numeric response field exceeded its semantic coordinate range.
-    #[error("Qdrant {phase:?} payload field {field:?} is outside its semantic range")]
-    InvalidFieldRange {
+    /// A textual response field violated its typed identity encoding.
+    #[error("Qdrant {phase:?} payload field {field:?} has invalid encoding: {cause:?}")]
+    InvalidFieldEncoding {
         /// Operation phase.
         phase: RequestPhase,
         /// Payload field whose range was invalid.
         field: PayloadField,
+        /// Exact rejected width or digit.
+        cause: PayloadEncodingCause,
     },
     /// Snapshot bytes had the right width but failed the typed domain conversion.
     #[error("Qdrant {phase:?} snapshot payload conversion failed")]

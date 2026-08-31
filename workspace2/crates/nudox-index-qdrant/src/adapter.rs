@@ -5,7 +5,9 @@ use serde::Serialize;
 
 use super::{
     config,
-    contract::{CollectionField, QdrantError, RequestPhase, RetryPolicy},
+    contract::{
+        CollectionField, CollectionValue, PayloadIndexKind, QdrantError, RequestPhase, RetryPolicy,
+    },
     limits::{CREATE_COLLECTION_PATH, CREATE_PAYLOAD_INDEX_PATH, REQUEST_TIMEOUT},
     transport::{self, Method},
     wire,
@@ -15,27 +17,27 @@ const PAYLOAD_INDEXES: [wire::PayloadIndexDescriptor; 5] = [
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Snapshot,
         super::contract::SNAPSHOT_PAYLOAD_KEY,
-        wire::PayloadDataType::Keyword,
+        PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Model,
         super::contract::MODEL_PAYLOAD_KEY,
-        wire::PayloadDataType::Keyword,
+        PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Segment,
         super::contract::SEGMENT_PAYLOAD_KEY,
-        wire::PayloadDataType::Keyword,
+        PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Metric,
         super::contract::METRIC_PAYLOAD_KEY,
-        wire::PayloadDataType::Keyword,
+        PayloadIndexKind::Keyword,
     ),
     wire::PayloadIndexDescriptor::new(
         super::contract::PayloadField::Partition,
         super::contract::PARTITION_PAYLOAD_KEY,
-        wire::PayloadDataType::Integer,
+        PayloadIndexKind::Integer,
     ),
 ];
 
@@ -177,18 +179,24 @@ impl QdrantBlockingAdapter {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
                 field: CollectionField::VectorDimension,
+                expected: CollectionValue::Dimension(expected_size),
+                observed: CollectionValue::Dimension(metadata.dimension),
             });
         }
         if metadata.metric != self.authority.metric.into() {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
                 field: CollectionField::VectorMetric,
+                expected: CollectionValue::Metric(self.authority.metric),
+                observed: CollectionValue::Metric(metadata.metric.into()),
             });
         }
         if metadata.write_consistency_factor < metadata.replication_factor {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
                 field: CollectionField::WriteConsistency,
+                expected: CollectionValue::Consistency(metadata.replication_factor),
+                observed: CollectionValue::Consistency(metadata.write_consistency_factor),
             });
         }
         Ok(())

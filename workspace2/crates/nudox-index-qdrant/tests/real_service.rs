@@ -9,8 +9,8 @@ use nudox_index_graph_vector::{
     VectorQueryError, VectorSegmentError, exact_vector_query,
 };
 use nudox_index_qdrant::{
-    CollectionField, MalformedResponseCause, QdrantBlockingAdapter, QdrantDataKey, QdrantError,
-    RequestPhase,
+    CollectionField, CollectionValue, MalformedResponseCause, QdrantBlockingAdapter,
+    QdrantDataKey, QdrantError, RequestPhase,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
@@ -205,7 +205,9 @@ fn metric_matrix_case(endpoint: &str, metric: Metric) -> Result<(), JourneyError
             Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
                 field: CollectionField::VectorMetric,
-            })
+                expected: CollectionValue::Metric(expected),
+                observed: CollectionValue::Metric(observed),
+            }) if expected == conflicting_metric && observed == primary_authority.metric
         ));
 
         let first_coordinates = [1_i16, 0];

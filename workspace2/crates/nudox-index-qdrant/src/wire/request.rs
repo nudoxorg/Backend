@@ -12,7 +12,7 @@ use super::super::{
     admission::PreparedIdentity,
     contract::{
         ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY, MODEL_PAYLOAD_KEY, PARTITION_PAYLOAD_KEY,
-        PayloadField, QdrantDataKey, SEGMENT_PAYLOAD_KEY, SNAPSHOT_PAYLOAD_KEY,
+        PayloadField, PayloadIndexKind, QdrantDataKey, SEGMENT_PAYLOAD_KEY, SNAPSHOT_PAYLOAD_KEY,
     },
     limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS, QUERY_SCAN_LIMIT},
 };
@@ -39,6 +39,15 @@ impl From<VectorMetric> for CollectionMetric {
     }
 }
 
+impl From<CollectionMetric> for VectorMetric {
+    fn from(metric: CollectionMetric) -> Self {
+        match metric {
+            CollectionMetric::Euclid => Self::SquaredEuclidean,
+            CollectionMetric::Dot => Self::NegativeDotProduct,
+        }
+    }
+}
+
 /// Stable metric name stored in every immutable point payload.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,27 +65,19 @@ impl From<VectorMetric> for PayloadMetric {
     }
 }
 
-/// Qdrant's payload-index schema vocabulary used by this adapter.
-#[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum PayloadDataType {
-    Keyword,
-    Integer,
-}
-
 /// The complete descriptor needed to create and verify one payload index.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PayloadIndexDescriptor {
     pub(crate) field: PayloadField,
     pub(crate) wire_name: &'static str,
-    pub(crate) schema: PayloadDataType,
+    pub(crate) schema: PayloadIndexKind,
 }
 
 impl PayloadIndexDescriptor {
     pub(crate) const fn new(
         field: PayloadField,
         wire_name: &'static str,
-        schema: PayloadDataType,
+        schema: PayloadIndexKind,
     ) -> Self {
         Self {
             field,
@@ -117,11 +118,11 @@ impl CollectionRequest {
 #[derive(Serialize)]
 pub(crate) struct PayloadIndexRequest {
     field_name: PayloadField,
-    field_schema: PayloadDataType,
+    field_schema: PayloadIndexKind,
 }
 
 impl PayloadIndexRequest {
-    pub(crate) const fn new(field: PayloadField, schema: PayloadDataType) -> Self {
+    pub(crate) const fn new(field: PayloadField, schema: PayloadIndexKind) -> Self {
         Self {
             field_name: field,
             field_schema: schema,
