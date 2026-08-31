@@ -6,11 +6,12 @@ use nudox_compile_driver::{
 use nudox_compile_publication::{
     PublicationScratch, PublishControl, PublishedCompilation, publish_compiled,
 };
+use nudox_compile_registry::{AdapterRoute, FullRegistry};
 use nudox_durable_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
-use nudox_id::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use nudox_id::{ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain};
 use wave_application_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
-    CompilerTerminal, GeneratedArtifact, PublicationAuthority,
+    CompilerTerminal, GeneratedArtifact, PublicationAuthority, SourceAuthority,
 };
 
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
     terminal::{compile_terminal, publication_terminal, source_authority},
 };
 
-/// Concrete local compiler with one explicit native toolchain, publisher, paths, and scratch owner.
+/// Concrete local compiler with bounded explicit native toolchains, publisher, paths, and scratch.
 pub struct LocalCompiler<'path, 'scratch, 'cancel> {
     config: LocalCompilerConfig<'path, 'cancel>,
     publisher: DurablePublisher,
@@ -28,9 +29,9 @@ pub struct LocalCompiler<'path, 'scratch, 'cancel> {
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     /// Creates the only durable publication owner used by this configured local compiler.
     ///
-    /// The caller supplies an absolute resolved executable, artifact directory, journal directory,
-    /// native work directory, cancellation authority, and all reusable scratch. No process-global
-    /// discovery or heap-backed per-request arena is introduced here.
+    /// The caller supplies a validated explicit toolchain table, artifact directory, journal
+    /// directory, native work directory, cancellation authority, and all reusable scratch. No
+    /// process-global discovery or heap-backed per-request arena is introduced here.
     ///
     /// # Errors
     ///
@@ -77,14 +78,24 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         &mut self,
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
+        let source = request_source(request)?;
+        let toolchain = self.toolchain(request, source)?;
+        let deadline = self.config.control.deadline().map_err(|timeout| {
+            CompilerTerminal::DeadlineConstruction {
+                source,
+                language: request.language,
+                stage: request.stage,
+                timeout: *timeout,
+            }
+        })?;
         let compiled = compile(
             CompileRequest {
                 language: request.language,
                 stage: request.stage,
                 source: request.source.as_bytes(),
-                toolchain: ToolchainSelection::ResolvedNative(self.config.toolchain),
+                toolchain,
                 control: CompileControl {
-                    deadline: self.config.control.deadline,
+                    deadline,
                     cancelled: self.config.control.cancelled,
                 },
             },
@@ -118,6 +129,35 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         .map_err(|error| publication_terminal(source, recipe, error))?;
         Ok(generated(source, recipe, fragment, &publication))
     }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "the closed terminal retains source, language, stage, and selected-tool authorities; boxing this early validation path would allocate before native work"
+    )]
+    fn toolchain(
+        &self,
+        request: ApplicationCompilerRequest<'_>,
+        source: SourceAuthority,
+    ) -> Result<ToolchainSelection<'path>, CompilerTerminal> {
+        let route = FullRegistry
+            .route(request.language, request.stage)
+            .map_err(|_| CompilerTerminal::UnsupportedStage {
+                source,
+                language: request.language,
+                stage: request.stage,
+            })?;
+        let selected = route_tool(route);
+        self.config
+            .toolchains
+            .select(selected)
+            .ok_or(CompilerTerminal::Toolchain {
+                source,
+                language: request.language,
+                stage: request.stage,
+                selected,
+                configured: None,
+            })
+    }
 }
 
 impl CompilerCapability for LocalCompiler<'_, '_, '_> {
@@ -138,7 +178,7 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
 }
 
 const fn generated(
-    source: wave_application_core::SourceAuthority,
+    source: SourceAuthority,
     recipe: nudox_compile_vocab::CompileRecipeFact,
     fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
     publication: &PublishedCompilation,
@@ -155,5 +195,28 @@ const fn generated(
             manifest: publication.manifest.identity,
             binding: publication.binding.identity,
         },
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the closed terminal preserves the exact source-width rejection; boxing would allocate before a compiler capability is selected"
+)]
+fn request_source(
+    request: ApplicationCompilerRequest<'_>,
+) -> Result<SourceAuthority, CompilerTerminal> {
+    let byte_len =
+        u32::try_from(request.source.len()).map_err(|_| CompilerTerminal::SourceLength {
+            actual: request.source.len(),
+        })?;
+    Ok(SourceAuthority {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(request.source.as_bytes()),
+        byte_len,
+    })
+}
+
+const fn route_tool(route: AdapterRoute) -> nudox_compile_vocab::NativeTool {
+    match route {
+        AdapterRoute::Native { tool } | AdapterRoute::ToolingUnavailable { tool } => tool,
     }
 }

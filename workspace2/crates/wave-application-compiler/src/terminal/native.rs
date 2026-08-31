@@ -1,12 +1,13 @@
 //! Exhaustive native-driver terminal projection.
 
 use nudox_compile_driver::{
-    CompileFailure, LoweringUnsupported, NativeDiagnostic, NativeWorkError, NativeWorkPrimary,
-    ToolchainSelectionFact,
+    CompileFailure, LoweringUnsupported, NativeArtifactRole as DriverNativeArtifactRole,
+    NativeDiagnostic, NativeWorkError, NativeWorkPrimary, ToolchainSelectionFact,
 };
 use wave_application_core::{
-    CompilerCause, CompilerTerminal, FragmentCause, LoweringCause, NativeDirectoryCause,
-    NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase,
+    CompilerCause, CompilerTerminal, FragmentCause, LoweringCause, NativeArtifactAction,
+    NativeArtifactRole, NativeDirectoryCause, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
+    NativeWorkCleanupCause, NativeWorkPhase,
 };
 
 use super::common::{attempt, compile_from_driver, diagnostic_copy, io_fact, source_authority};
@@ -18,7 +19,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::SourceLength { actual, .. } => CompilerTerminal::SourceLength { actual },
         CompileFailure::UnsupportedStage { source_identity, language, stage, .. } => unsupported_stage(source_identity, language, stage),
         CompileFailure::ToolchainSelectionMismatch { source_identity, language, stage, selected, provided } => toolchain(source_identity, language, stage, selected, configured_tool(provided)),
-        CompileFailure::ToolchainMismatch { source_identity, language, stage, selected, resolved } => toolchain(source_identity, language, stage, selected, resolved),
+        CompileFailure::ToolchainMismatch { source_identity, language, stage, selected, resolved } => toolchain(source_identity, language, stage, selected, Some(resolved)),
         CompileFailure::ToolingUnavailable { source_identity, language, stage, tool } => tooling_unavailable(source_identity, language, stage, tool),
         CompileFailure::Cancelled { source_identity, recipe, diagnostic } => cancelled(source_identity, recipe, diagnostic),
         CompileFailure::NativeWork { source_identity, recipe, phase, cause } => native_work_terminal(source_identity, recipe, phase, cause),
@@ -61,14 +62,14 @@ const fn toolchain(
     language: nudox_compile_vocab::Language,
     stage: nudox_compile_vocab::Stage,
     selected: nudox_compile_vocab::NativeTool,
-    configured: nudox_compile_vocab::NativeTool,
+    configured: Option<nudox_compile_vocab::NativeTool>,
 ) -> CompilerTerminal {
     CompilerTerminal::Toolchain {
         source: source_authority(source),
         language,
         stage,
         selected,
-        configured: Some(configured),
+        configured,
     }
 }
 
@@ -210,10 +211,10 @@ const fn fragment_terminal(
     compile_from_driver(source, recipe, CompilerCause::Fragment(cause))
 }
 
-const fn configured_tool(fact: ToolchainSelectionFact) -> nudox_compile_vocab::NativeTool {
+const fn configured_tool(fact: ToolchainSelectionFact) -> Option<nudox_compile_vocab::NativeTool> {
     match fact {
-        ToolchainSelectionFact::ResolvedNative { tool }
-        | ToolchainSelectionFact::ExplicitlyUnavailable { tool } => tool,
+        ToolchainSelectionFact::ResolvedNative { tool } => Some(tool),
+        ToolchainSelectionFact::ExplicitlyUnavailable { .. } => None,
     }
 }
 
@@ -225,6 +226,10 @@ const fn lowering(cause: LoweringUnsupported) -> LoweringCause {
         LoweringUnsupported::PythonAssignmentName => LoweringCause::PythonAssignmentName,
         LoweringUnsupported::PythonAssignmentValue => LoweringCause::PythonAssignmentValue,
         LoweringUnsupported::ClangDeclarationForm => LoweringCause::ClangDeclarationForm,
+        LoweringUnsupported::TypeScriptDeclarationForm => LoweringCause::TypeScriptDeclarationForm,
+        LoweringUnsupported::TypeScriptDeclarationType => LoweringCause::TypeScriptDeclarationType,
+        LoweringUnsupported::CSharpDeclarationForm => LoweringCause::CSharpDeclarationForm,
+        LoweringUnsupported::CSharpDeclarationType => LoweringCause::CSharpDeclarationType,
     }
 }
 
@@ -232,19 +237,26 @@ fn native_work_cause(
     phase: nudox_compile_driver::NativeWorkPhase,
     cause: NativeWorkError,
 ) -> NativeWorkCause {
-    NativeWorkCause::Directory {
-        phase: match phase {
-            nudox_compile_driver::NativeWorkPhase::Prepare => NativeWorkPhase::Prepare,
-            nudox_compile_driver::NativeWorkPhase::Cleanup => NativeWorkPhase::Cleanup,
-        },
-        cause: match cause {
-            NativeWorkError::RelativeDirectory => NativeDirectoryCause::RelativeDirectory,
-            NativeWorkError::NotEmpty => NativeDirectoryCause::NotEmpty,
-            NativeWorkError::Inspect(cause) => NativeDirectoryCause::InspectIo(io_fact(&cause)),
-            NativeWorkError::RemoveMetadata(cause) => {
-                NativeDirectoryCause::RemoveMetadataIo(io_fact(&cause))
-            }
-        },
+    match cause {
+        NativeWorkError::RelativeDirectory => {
+            directory(phase, NativeDirectoryCause::RelativeDirectory)
+        }
+        NativeWorkError::NotEmpty => directory(phase, NativeDirectoryCause::NotEmpty),
+        NativeWorkError::Inspect(cause) => {
+            directory(phase, NativeDirectoryCause::InspectIo(io_fact(&cause)))
+        }
+        NativeWorkError::WriteArtifact { artifact, cause } => {
+            native_artifact(phase, NativeArtifactAction::Write, artifact, &cause)
+        }
+        NativeWorkError::CreateArtifactDirectory { artifact, cause } => native_artifact(
+            phase,
+            NativeArtifactAction::CreateDirectory,
+            artifact,
+            &cause,
+        ),
+        NativeWorkError::RemoveArtifact { artifact, cause } => {
+            native_artifact(phase, NativeArtifactAction::Remove, artifact, &cause)
+        }
     }
 }
 
@@ -252,14 +264,85 @@ fn native_work_cleanup(cause: NativeWorkError) -> NativeWorkCleanupCause {
     match cause {
         NativeWorkError::RelativeDirectory => NativeWorkCleanupCause::RelativeDirectory,
         NativeWorkError::NotEmpty => NativeWorkCleanupCause::NotEmpty,
-        NativeWorkError::Inspect(cause) | NativeWorkError::RemoveMetadata(cause) => {
-            NativeWorkCleanupCause::Io(io_fact(&cause))
+        NativeWorkError::Inspect(cause) => NativeWorkCleanupCause::Io(io_fact(&cause)),
+        NativeWorkError::WriteArtifact { artifact, cause } => NativeWorkCleanupCause::Artifact {
+            action: NativeArtifactAction::Write,
+            artifact: artifact_role(artifact),
+            cause: io_fact(&cause),
+        },
+        NativeWorkError::CreateArtifactDirectory { artifact, cause } => {
+            NativeWorkCleanupCause::Artifact {
+                action: NativeArtifactAction::CreateDirectory,
+                artifact: artifact_role(artifact),
+                cause: io_fact(&cause),
+            }
         }
+        NativeWorkError::RemoveArtifact { artifact, cause } => NativeWorkCleanupCause::Artifact {
+            action: NativeArtifactAction::Remove,
+            artifact: artifact_role(artifact),
+            cause: io_fact(&cause),
+        },
+    }
+}
+
+fn native_artifact(
+    phase: nudox_compile_driver::NativeWorkPhase,
+    action: NativeArtifactAction,
+    artifact: DriverNativeArtifactRole,
+    cause: &std::io::Error,
+) -> NativeWorkCause {
+    NativeWorkCause::Artifact {
+        phase: work_phase(phase),
+        action,
+        artifact: artifact_role(artifact),
+        cause: io_fact(cause),
+    }
+}
+
+const fn directory(
+    phase: nudox_compile_driver::NativeWorkPhase,
+    cause: NativeDirectoryCause,
+) -> NativeWorkCause {
+    NativeWorkCause::Directory {
+        phase: work_phase(phase),
+        cause,
+    }
+}
+
+const fn work_phase(phase: nudox_compile_driver::NativeWorkPhase) -> NativeWorkPhase {
+    match phase {
+        nudox_compile_driver::NativeWorkPhase::Prepare => NativeWorkPhase::Prepare,
+        nudox_compile_driver::NativeWorkPhase::Cleanup => NativeWorkPhase::Cleanup,
+    }
+}
+
+const fn artifact_role(role: DriverNativeArtifactRole) -> NativeArtifactRole {
+    match role {
+        DriverNativeArtifactRole::RustMetadata => NativeArtifactRole::RustMetadata,
+        DriverNativeArtifactRole::TypeScriptSource => NativeArtifactRole::TypeScriptSource,
+        DriverNativeArtifactRole::TypeScriptWork => NativeArtifactRole::TypeScriptWork,
+        DriverNativeArtifactRole::CSharpSource => NativeArtifactRole::CSharpSource,
+        DriverNativeArtifactRole::CSharpProject => NativeArtifactRole::CSharpProject,
+        DriverNativeArtifactRole::CSharpNuGetConfig => NativeArtifactRole::CSharpNuGetConfig,
+        DriverNativeArtifactRole::CSharpIntermediateOutput => {
+            NativeArtifactRole::CSharpIntermediateOutput
+        }
+        DriverNativeArtifactRole::CSharpBuildOutput => NativeArtifactRole::CSharpBuildOutput,
+        DriverNativeArtifactRole::CSharpWork => NativeArtifactRole::CSharpWork,
+        DriverNativeArtifactRole::CSharpDotnetHome => NativeArtifactRole::CSharpDotnetHome,
+        DriverNativeArtifactRole::CSharpNuGetPackages => NativeArtifactRole::CSharpNuGetPackages,
+        DriverNativeArtifactRole::GoSource => NativeArtifactRole::GoSource,
+        DriverNativeArtifactRole::GoObject => NativeArtifactRole::GoObject,
+        DriverNativeArtifactRole::GoWork => NativeArtifactRole::GoWork,
+        DriverNativeArtifactRole::JavaSource => NativeArtifactRole::JavaSource,
+        DriverNativeArtifactRole::JavaArguments => NativeArtifactRole::JavaArguments,
+        DriverNativeArtifactRole::JavaWork => NativeArtifactRole::JavaWork,
     }
 }
 
 fn native_primary(primary: NativeWorkPrimary<'_>) -> NativePrimaryCause {
     match primary {
+        NativeWorkPrimary::Prepare { cause } => prepare_primary(cause),
         NativeWorkPrimary::ToolStart { cause } => NativePrimaryCause::ToolStart(io_fact(&cause)),
         NativeWorkPrimary::MissingToolInput => NativePrimaryCause::MissingInput { cleanup: None },
         NativeWorkPrimary::MissingToolInputCleanup { cleanup } => {
@@ -316,5 +399,38 @@ fn native_primary(primary: NativeWorkPrimary<'_>) -> NativePrimaryCause {
             code: status.code(),
             diagnostic: diagnostic_copy(diagnostic),
         },
+    }
+}
+
+fn prepare_primary(cause: NativeWorkError) -> NativePrimaryCause {
+    match cause {
+        NativeWorkError::RelativeDirectory => {
+            NativePrimaryCause::PrepareDirectory(NativeDirectoryCause::RelativeDirectory)
+        }
+        NativeWorkError::NotEmpty => {
+            NativePrimaryCause::PrepareDirectory(NativeDirectoryCause::NotEmpty)
+        }
+        NativeWorkError::Inspect(cause) => {
+            NativePrimaryCause::PrepareDirectory(NativeDirectoryCause::InspectIo(io_fact(&cause)))
+        }
+        NativeWorkError::WriteArtifact { artifact, cause } => NativePrimaryCause::PrepareArtifact {
+            action: NativeArtifactAction::Write,
+            artifact: artifact_role(artifact),
+            cause: io_fact(&cause),
+        },
+        NativeWorkError::CreateArtifactDirectory { artifact, cause } => {
+            NativePrimaryCause::PrepareArtifact {
+                action: NativeArtifactAction::CreateDirectory,
+                artifact: artifact_role(artifact),
+                cause: io_fact(&cause),
+            }
+        }
+        NativeWorkError::RemoveArtifact { artifact, cause } => {
+            NativePrimaryCause::PrepareArtifact {
+                action: NativeArtifactAction::Remove,
+                artifact: artifact_role(artifact),
+                cause: io_fact(&cause),
+            }
+        }
     }
 }

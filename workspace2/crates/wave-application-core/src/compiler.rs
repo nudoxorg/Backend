@@ -1,6 +1,6 @@
 //! Lean, monomorphized compiler capability boundary for the application service.
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, time::Duration};
 
 use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_id::{
@@ -149,6 +149,17 @@ pub enum CompilerTerminal {
         /// Requested closed compiler stage.
         stage: Stage,
     },
+    /// A fresh bounded timeout could not be represented by this platform's monotonic clock.
+    DeadlineConstruction {
+        /// Identity and byte length of the exact source under evaluation.
+        source: SourceAuthority,
+        /// Requested closed language family.
+        language: Language,
+        /// Requested closed compiler stage.
+        stage: Stage,
+        /// Validated per-invocation timeout that could not be added to the current clock instant.
+        timeout: Duration,
+    },
     /// The configured local toolchain cannot service this registry-selected native tool.
     Toolchain {
         /// Identity and byte length of the exact source under evaluation.
@@ -245,6 +256,17 @@ pub enum NativeWorkCause {
         /// Closed typed directory failure cause.
         cause: NativeDirectoryCause,
     },
+    /// A named native adapter artifact could not be materialized or removed.
+    Artifact {
+        /// Native-work lifecycle phase owning the operation.
+        phase: NativeWorkPhase,
+        /// Exact filesystem action the adapter attempted.
+        action: NativeArtifactAction,
+        /// Closed owned artifact role.
+        artifact: NativeArtifactRole,
+        /// Portable and platform I/O facts.
+        cause: NativeIoFact,
+    },
     /// A native child reached one exact terminal without a second work-directory terminal.
     Primary(NativePrimaryCause),
     /// A native primary terminal and cleanup terminal both occurred; neither is fabricated.
@@ -274,8 +296,56 @@ pub enum NativeDirectoryCause {
     NotEmpty,
     /// Inspecting the configured work directory had this I/O category.
     InspectIo(NativeIoFact),
-    /// Removing the exact known metadata file had this I/O category.
-    RemoveMetadataIo(NativeIoFact),
+}
+
+/// Exact filesystem action applied to one named native adapter artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeArtifactAction {
+    /// Materializing the artifact before or during native execution.
+    Write,
+    /// Creating the exact adapter-owned directory that contains an artifact family.
+    CreateDirectory,
+    /// Removing the artifact after native execution.
+    Remove,
+}
+
+/// Closed artifact roles owned by one native adapter invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeArtifactRole {
+    /// Rust's metadata-only parser probe output.
+    RustMetadata,
+    /// TypeScript source passed to the explicit compiler.
+    TypeScriptSource,
+    /// TypeScript's fixed adapter-owned work directory.
+    TypeScriptWork,
+    /// C# source passed through the explicit SDK project.
+    CSharpSource,
+    /// C# project that fixes the compilation shape.
+    CSharpProject,
+    /// C# `NuGet` configuration that clears remote package feeds.
+    CSharpNuGetConfig,
+    /// C# SDK restore/intermediate output directory.
+    CSharpIntermediateOutput,
+    /// C# SDK compiler output directory.
+    CSharpBuildOutput,
+    /// C#'s fixed adapter-owned work directory.
+    CSharpWork,
+    /// C#'s isolated .NET CLI home.
+    CSharpDotnetHome,
+    /// C#'s isolated `NuGet` package cache.
+    CSharpNuGetPackages,
+    /// Go source passed to the explicit compiler.
+    GoSource,
+    /// Go object output from the explicit compiler.
+    GoObject,
+    /// Go's fixed adapter-owned work directory.
+    GoWork,
+    /// Java source passed to the explicit compiler.
+    JavaSource,
+    /// Java argument file carrying the selected source name.
+    JavaArguments,
+    /// Java's fixed adapter-owned work directory.
+    JavaWork,
 }
 
 /// Allocation-free native I/O facts that retain both the portable class and platform code.
@@ -290,6 +360,17 @@ pub struct NativeIoFact {
 /// Named primary native terminal retained when cleanup also failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativePrimaryCause {
+    /// Adapter preparation failed and subsequent cleanup also failed.
+    PrepareDirectory(NativeDirectoryCause),
+    /// A named preparation artifact operation and subsequent cleanup both failed.
+    PrepareArtifact {
+        /// Exact preparation action.
+        action: NativeArtifactAction,
+        /// Exact adapter-owned artifact.
+        artifact: NativeArtifactRole,
+        /// Portable and platform I/O facts.
+        cause: NativeIoFact,
+    },
     /// Native child startup failed.
     ToolStart(NativeIoFact),
     /// Native standard input was unavailable.
@@ -351,6 +432,15 @@ pub enum NativeWorkCleanupCause {
     NotEmpty,
     /// Cleanup inspection or removal had this I/O category.
     Io(NativeIoFact),
+    /// Cleanup of one named native adapter artifact failed.
+    Artifact {
+        /// Exact cleanup operation.
+        action: NativeArtifactAction,
+        /// Exact adapter-owned artifact.
+        artifact: NativeArtifactRole,
+        /// Portable and platform I/O facts.
+        cause: NativeIoFact,
+    },
 }
 
 /// Named native child lifecycle phase for compact I/O diagnostics.
@@ -383,6 +473,14 @@ pub enum LoweringCause {
     PythonAssignmentValue,
     /// Clang declaration shape is outside the compact recipe vocabulary.
     ClangDeclarationForm,
+    /// TypeScript declaration shape is outside the compact recipe vocabulary.
+    TypeScriptDeclarationForm,
+    /// TypeScript declaration type is outside the compact recipe vocabulary.
+    TypeScriptDeclarationType,
+    /// C# declaration shape is outside the compact recipe vocabulary.
+    CSharpDeclarationForm,
+    /// C# declaration type is outside the compact recipe vocabulary.
+    CSharpDeclarationType,
 }
 
 /// Closed compact-IR construction phase.

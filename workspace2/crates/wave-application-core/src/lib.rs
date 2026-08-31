@@ -12,9 +12,10 @@ mod text;
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic, CompilerReadiness,
     CompilerRequest, CompilerTerminal, FragmentCause, GeneratedArtifact, GenerationAuthority,
-    LoweringCause, MAX_COMPILER_DIAGNOSTIC_BYTES, NativeDirectoryCause, NativeIoFact,
-    NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase,
-    PublicationAuthority, PublicationCause, PublicationPhase, SourceAuthority, UnavailableCompiler,
+    LoweringCause, MAX_COMPILER_DIAGNOSTIC_BYTES, NativeArtifactAction, NativeArtifactRole,
+    NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
+    NativeWorkCleanupCause, NativeWorkPhase, PublicationAuthority, PublicationCause,
+    PublicationPhase, SourceAuthority, UnavailableCompiler,
 };
 pub use model::{
     AdaptiveDisposition, ApplicationEvent, ApplicationInput, ApplicationReply, Capability,

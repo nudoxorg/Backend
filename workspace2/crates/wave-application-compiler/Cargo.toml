@@ -11,6 +11,7 @@ role = "adapter"
 
 [dependencies]
 nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-registry = { path = "../nudox-compile-registry" }
 nudox-compile-publication = { path = "../nudox-compile-publication" }
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
 nudox-durable-journal = { path = "../nudox-durable-journal" }

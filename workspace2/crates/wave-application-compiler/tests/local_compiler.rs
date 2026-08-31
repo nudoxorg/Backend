@@ -5,21 +5,22 @@ use std::{
     num::NonZeroUsize,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use nudox_compile_driver::{NativeTool, ResolvedToolchain};
+use nudox_compile_driver::{NativeTool, ResolvedToolchain, ToolchainSelection};
 use nudox_compile_vocab::{Language, Stage};
 use nudox_durable_journal::PublicationLimits;
 use nudox_id::{ContentId, SourceFactDomain};
 use thiserror::Error;
 use wave_application_compiler::{
     LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerOpenError,
-    LocalCompilerScratch,
+    LocalCompilerScratch, LocalCompilerTimeout, LocalCompilerTimeoutError, LocalToolchainSet,
+    LocalToolchainSetError,
 };
 use wave_application_core::{
     ApplicationInput, ApplicationReply, ApplicationService, CompilerTerminal, CorrelationId,
-    DiagnosticCode, DiagnosticDetail, InputText, ReplyBody, Terminal,
+    Diagnostic, DiagnosticCode, DiagnosticDetail, InputText, ReplyBody, Terminal,
 };
 
 static FIXTURE_ORDINAL: AtomicUsize = AtomicUsize::new(0);
@@ -34,6 +35,10 @@ enum LocalCompilerTestError {
     RustcPath(#[source] io::Error),
     #[error("resolved rustc toolchain was rejected")]
     Toolchain(#[from] nudox_compile_driver::ToolchainResolutionError),
+    #[error("local compiler toolchain table was rejected")]
+    ToolchainSet(#[from] LocalToolchainSetError),
+    #[error("local compiler timeout was rejected")]
+    Timeout(#[from] LocalCompilerTimeoutError),
     #[error("durable publication limits were rejected")]
     Limits(#[from] nudox_durable_journal::PublicationLimitError),
     #[error("local compiler publication owner could not open")]
@@ -42,13 +47,40 @@ enum LocalCompilerTestError {
     Shutdown(#[from] nudox_durable_journal::ShutdownError),
     #[error("transport fixture text was rejected")]
     Input(wave_application_core::InputTextError),
-    #[error("monotonic fixture deadline overflowed")]
-    DeadlineOverflow,
-    #[error("expected {expected}, observed {observed}")]
-    Assertion {
-        expected: &'static str,
-        observed: &'static str,
+    #[error("generated reply facts did not satisfy the public journey")]
+    GeneratedBody { observed: ReplyBodyClass },
+    #[error("generated reply had an unexpected terminal")]
+    GeneratedTerminal { observed: Terminal },
+    #[error("generated recipe did not retain the requested Rust LowerIr authority")]
+    GeneratedRecipe { language: Language, stage: Stage },
+    #[error("generated source authority had an unexpected byte length")]
+    GeneratedSourceLength { observed: u32 },
+    #[error("generated publication binding was zero")]
+    GeneratedBindingZero,
+    #[error("compiler diagnostic did not preserve the expected closed terminal")]
+    CompilerDiagnostic { observed: Option<DiagnosticCode> },
+    #[error("toolchain table order did not produce the required typed rejection")]
+    ToolchainOrder {
+        observed: Option<LocalToolchainSetError>,
     },
+    #[error("toolchain table duplication did not produce the required typed rejection")]
+    ToolchainDuplicate {
+        observed: Option<LocalToolchainSetError>,
+    },
+    #[error("cancelled test source exceeded the compact source authority width")]
+    CancelledSourceLength { actual: usize },
+}
+
+/// Closed reply classification retained by the journey test without carrying a large payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplyBodyClass {
+    Generated,
+    DependencyUnavailable,
+    Health,
+    Adaptive,
+    ExecutionStarted,
+    Execution,
+    Rejected,
 }
 
 impl From<wave_application_core::InputTextError> for LocalCompilerTestError {
@@ -96,21 +128,8 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     let cancelled = AtomicBool::new(false);
     let mut scratch = LocalCompilerScratch::default();
     let rustc = rustc_path()?;
-    let config = LocalCompilerConfig {
-        toolchain: ResolvedToolchain::from_version(
-            NativeTool::Rustc,
-            &rustc,
-            b"wave-application-local-compiler-test-v1",
-        )?,
-        artifact_directory: &fixture.artifacts,
-        journal_directory: &fixture.journal,
-        native_work_directory: &fixture.native_work,
-        control: LocalCompilerControl {
-            deadline: future_deadline()?,
-            cancelled: &cancelled,
-        },
-    };
-    let compiler = LocalCompiler::create(config, one_slot()?, &mut scratch)?;
+    let toolchains = rust_toolchains(&rustc)?;
+    let compiler = open_local_compiler(&fixture, &toolchains, &cancelled, &mut scratch)?;
     let mut service = ApplicationService::with_compiler(compiler);
 
     assert_generated(&service.execute(&generate(
@@ -119,10 +138,16 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
         "pub const READY: i32 = 1;",
     )?))?;
 
-    assert_toolchain_mismatch(&service.execute(&generate(
-        Language::Clang,
+    assert_missing_native_toolchain(&service.execute(&generate(
+        Language::Python,
         "lower-ir",
-        "const char *ready = \"yes\";",
+        "ready = 1",
+    )?))?;
+
+    assert_explicitly_unavailable_tool(&service.execute(&generate(
+        Language::TypeScript,
+        "lower-ir",
+        "export const READY = 1;",
     )?))?;
 
     assert_unsupported_stage(&service.execute(&generate(
@@ -146,30 +171,110 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     Ok(())
 }
 
+fn rust_toolchains(
+    rustc: &std::path::Path,
+) -> Result<[ToolchainSelection<'_>; 3], LocalCompilerTestError> {
+    Ok([
+        ToolchainSelection::ResolvedNative(ResolvedToolchain::from_version(
+            NativeTool::Rustc,
+            rustc,
+            b"wave-application-local-compiler-test-v1",
+        )?),
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::Python,
+        },
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        },
+    ])
+}
+
+fn open_local_compiler<'path, 'scratch, 'cancel>(
+    fixture: &'path Fixture,
+    toolchains: &'path [ToolchainSelection<'path>],
+    cancelled: &'cancel AtomicBool,
+    scratch: &'scratch mut LocalCompilerScratch,
+) -> Result<LocalCompiler<'path, 'scratch, 'cancel>, LocalCompilerTestError> {
+    let config = LocalCompilerConfig {
+        toolchains: LocalToolchainSet::validate(toolchains)?,
+        artifact_directory: &fixture.artifacts,
+        journal_directory: &fixture.journal,
+        native_work_directory: &fixture.native_work,
+        control: LocalCompilerControl {
+            timeout: LocalCompilerTimeout::new(Duration::from_secs(10))?,
+            cancelled,
+        },
+    };
+    LocalCompiler::create(config, one_slot()?, scratch)
+        .map_err(LocalCompilerTestError::CompilerOpen)
+}
+
+#[test]
+fn toolchain_table_requires_bounded_unique_canonical_tool_order()
+-> Result<(), LocalCompilerTestError> {
+    let unordered = [
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::Python,
+        },
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::Rustc,
+        },
+    ];
+    match LocalToolchainSet::validate(&unordered) {
+        Err(LocalToolchainSetError::OutOfOrder {
+            preceding: NativeTool::Python,
+            observed: NativeTool::Rustc,
+        }) => {}
+        Err(error) => {
+            return Err(LocalCompilerTestError::ToolchainOrder {
+                observed: Some(error),
+            });
+        }
+        Ok(_) => {
+            return Err(LocalCompilerTestError::ToolchainOrder { observed: None });
+        }
+    }
+
+    let duplicate = [
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::Python,
+        },
+        ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::Python,
+        },
+    ];
+    match LocalToolchainSet::validate(&duplicate) {
+        Err(LocalToolchainSetError::Duplicate {
+            tool: NativeTool::Python,
+        }) => Ok(()),
+        Err(error) => Err(LocalCompilerTestError::ToolchainDuplicate {
+            observed: Some(error),
+        }),
+        Ok(_) => Err(LocalCompilerTestError::ToolchainDuplicate { observed: None }),
+    }
+}
+
 fn assert_generated(reply: &ApplicationReply) -> Result<(), LocalCompilerTestError> {
     let ReplyBody::Generated(facts) = &reply.body else {
-        return Err(observed(
-            "a generated durable compilation",
-            "another reply body",
-        ));
+        return Err(LocalCompilerTestError::GeneratedBody {
+            observed: body_class(&reply.body),
+        });
     };
     if reply.terminal != (Terminal::Complete { emitted: 1 }) {
-        return Err(observed(
-            "one complete generated terminal",
-            "another terminal",
-        ));
+        return Err(LocalCompilerTestError::GeneratedTerminal {
+            observed: reply.terminal,
+        });
     }
     if facts.recipe.language != Language::Rust || facts.recipe.stage != Stage::LowerIr {
-        return Err(observed(
-            "Rust LowerIr recipe authority",
-            "another recipe authority",
-        ));
+        return Err(LocalCompilerTestError::GeneratedRecipe {
+            language: facts.recipe.language,
+            stage: facts.recipe.stage,
+        });
     }
     if facts.source.byte_len != 25 {
-        return Err(observed(
-            "exact Rust source length",
-            "different source length",
-        ));
+        return Err(LocalCompilerTestError::GeneratedSourceLength {
+            observed: facts.source.byte_len,
+        });
     }
     if facts
         .publication
@@ -178,51 +283,72 @@ fn assert_generated(reply: &ApplicationReply) -> Result<(), LocalCompilerTestErr
         .iter()
         .all(|byte| *byte == 0)
     {
-        return Err(observed(
-            "a nonzero immutable publication binding authority",
-            "all-zero binding authority",
-        ));
+        return Err(LocalCompilerTestError::GeneratedBindingZero);
     }
     Ok(())
 }
 
-const fn assert_toolchain_mismatch(reply: &ApplicationReply) -> Result<(), LocalCompilerTestError> {
+fn assert_missing_native_toolchain(reply: &ApplicationReply) -> Result<(), LocalCompilerTestError> {
     match reply.diagnostic {
-        Some(wave_application_core::Diagnostic {
+        Some(Diagnostic {
             code: DiagnosticCode::CompilerTerminal,
             detail:
                 DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
-                    language: Language::Clang,
+                    language: Language::Python,
                     stage: Stage::LowerIr,
-                    selected: NativeTool::Clang,
-                    configured: Some(NativeTool::Rustc),
+                    selected: NativeTool::Python,
+                    configured: None,
                     ..
                 }),
         }) => Ok(()),
-        _ => Err(observed(
-            "typed selected/configured toolchain mismatch",
-            "another diagnostic",
-        )),
+        _ => Err(LocalCompilerTestError::CompilerDiagnostic {
+            observed: reply.diagnostic.map(|diagnostic| diagnostic.code),
+        }),
+    }
+}
+
+fn assert_explicitly_unavailable_tool(
+    reply: &ApplicationReply,
+) -> Result<(), LocalCompilerTestError> {
+    match reply.diagnostic {
+        Some(Diagnostic {
+            code: DiagnosticCode::CompilerTerminal,
+            detail:
+                DiagnosticDetail::Compiler(CompilerTerminal::Toolchain {
+                    language: Language::TypeScript,
+                    stage: Stage::LowerIr,
+                    selected: NativeTool::TypeScriptCompiler,
+                    configured: None,
+                    ..
+                }),
+        }) => Ok(()),
+        _ => Err(LocalCompilerTestError::CompilerDiagnostic {
+            observed: reply.diagnostic.map(|diagnostic| diagnostic.code),
+        }),
     }
 }
 
 fn assert_unsupported_stage(reply: &ApplicationReply) -> Result<(), LocalCompilerTestError> {
-    (reply.diagnostic.map(|diagnostic| diagnostic.code)
-        == Some(DiagnosticCode::UnsupportedCompilerStage))
-    .then_some(())
-    .ok_or_else(|| observed("typed unsupported compiler stage", "another diagnostic"))
+    match reply.diagnostic {
+        Some(Diagnostic {
+            code: DiagnosticCode::UnsupportedCompilerStage,
+            ..
+        }) => Ok(()),
+        _ => Err(LocalCompilerTestError::CompilerDiagnostic {
+            observed: reply.diagnostic.map(|diagnostic| diagnostic.code),
+        }),
+    }
 }
 
 fn assert_cancelled(reply: &ApplicationReply, source: &[u8]) -> Result<(), LocalCompilerTestError> {
     let Ok(byte_len) = u32::try_from(source.len()) else {
-        return Err(observed(
-            "u32 source authority width",
-            "larger source input",
-        ));
+        return Err(LocalCompilerTestError::CancelledSourceLength {
+            actual: source.len(),
+        });
     };
     let expected = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
     match reply.diagnostic {
-        Some(wave_application_core::Diagnostic {
+        Some(Diagnostic {
             code: DiagnosticCode::CompilerTerminal,
             detail:
                 DiagnosticDetail::Compiler(CompilerTerminal::Cancelled {
@@ -237,10 +363,21 @@ fn assert_cancelled(reply: &ApplicationReply, source: &[u8]) -> Result<(), Local
         {
             Ok(())
         }
-        _ => Err(observed(
-            "typed compiler cancellation",
-            "another diagnostic",
-        )),
+        _ => Err(LocalCompilerTestError::CompilerDiagnostic {
+            observed: reply.diagnostic.map(|diagnostic| diagnostic.code),
+        }),
+    }
+}
+
+const fn body_class(body: &ReplyBody) -> ReplyBodyClass {
+    match body {
+        ReplyBody::Generated(_) => ReplyBodyClass::Generated,
+        ReplyBody::DependencyUnavailable { .. } => ReplyBodyClass::DependencyUnavailable,
+        ReplyBody::Health(_) => ReplyBodyClass::Health,
+        ReplyBody::Adaptive(_) => ReplyBodyClass::Adaptive,
+        ReplyBody::ExecutionStarted { .. } => ReplyBodyClass::ExecutionStarted,
+        ReplyBody::Execution(_) => ReplyBodyClass::Execution,
+        ReplyBody::Rejected => ReplyBodyClass::Rejected,
     }
 }
 
@@ -252,12 +389,6 @@ fn rustc_path() -> Result<PathBuf, LocalCompilerTestError> {
         .canonicalize()
         .map_err(LocalCompilerTestError::RustcPath)?;
     Ok(executable)
-}
-
-fn future_deadline() -> Result<Instant, LocalCompilerTestError> {
-    Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .ok_or(LocalCompilerTestError::DeadlineOverflow)
 }
 
 fn one_slot() -> Result<PublicationLimits, LocalCompilerTestError> {
@@ -289,8 +420,4 @@ fn language_input(language: Language) -> Result<InputText, LocalCompilerTestErro
         Language::Clang => "clang",
     };
     InputText::try_from_str(text).map_err(LocalCompilerTestError::Input)
-}
-
-const fn observed(expected: &'static str, observed: &'static str) -> LocalCompilerTestError {
-    LocalCompilerTestError::Assertion { expected, observed }
 }
