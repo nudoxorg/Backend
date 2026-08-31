@@ -6,7 +6,9 @@ use crate::store::StoredObject;
 
 /// A one-based entry coordinate proven to lie inside the store geometry.
 #[derive(Clone, Copy)]
-pub(crate) struct EntryOrdinal(u32);
+pub(crate) struct EntryOrdinal {
+    pub(crate) one_based: u32,
+}
 
 impl EntryOrdinal {
     #[allow(
@@ -28,12 +30,9 @@ impl EntryOrdinal {
         let position = position as u32;
         // The strict capacity comparison and StoreLayout upper bound prove
         // this one-based coordinate non-zero and non-overflowing.
-        Ok(Self(position + 1))
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn get(self) -> u32 {
-        self.0
+        Ok(Self {
+            one_based: position + 1,
+        })
     }
 
     #[allow(
@@ -41,7 +40,7 @@ impl EntryOrdinal {
         reason = "the admitted u32 ordinal is lossless on the crate's target-gated 32/64-bit usize architectures"
     )]
     pub(crate) fn position(self) -> OccupiedSlots {
-        ((self.0 - 1) as usize).into()
+        ((self.one_based - 1) as usize).into()
     }
 
     #[allow(
@@ -49,29 +48,35 @@ impl EntryOrdinal {
         reason = "the admitted u32 ordinal is lossless on the crate's target-gated 32/64-bit usize architectures"
     )]
     pub(crate) fn occupancy(self) -> OccupiedSlots {
-        (self.0 as usize).into()
+        (self.one_based as usize).into()
     }
 }
 
 /// One compact index bucket. Zero is the typed vacant state; every other
 /// value came from an admitted [`EntryOrdinal`].
 #[derive(Clone, Copy)]
-pub(crate) struct BucketSlot(u32);
+pub(crate) struct BucketSlot {
+    one_based: u32,
+}
 
 impl BucketSlot {
-    const VACANT: Self = Self(0);
+    const VACANT: Self = Self { one_based: 0 };
 
     const fn occupied(self) -> Option<EntryOrdinal> {
-        if self.0 == Self::VACANT.0 {
+        if self.one_based == Self::VACANT.one_based {
             None
         } else {
-            Some(EntryOrdinal(self.0))
+            Some(EntryOrdinal {
+                one_based: self.one_based,
+            })
         }
     }
 }
 
 /// A linear proof that one currently probed bucket is vacant.
-pub(crate) struct VacantBucket(usize);
+pub(crate) struct VacantBucket {
+    index: usize,
+}
 
 /// Bounded result of an open-addressed content lookup.
 pub(crate) enum IndexProbe<'entries, DomainTag, PayloadOwner> {
@@ -134,7 +139,7 @@ impl<BucketBacking: MetadataBacking> ContentIndex<BucketBacking> {
         loop {
             let Some(entry) = self.buckets[bucket].occupied() else {
                 return IndexProbe::Vacant {
-                    bucket: VacantBucket(bucket),
+                    bucket: VacantBucket { index: bucket },
                     probes,
                 };
             };
@@ -155,7 +160,9 @@ impl<BucketBacking: MetadataBacking> ContentIndex<BucketBacking> {
         reason = "consuming the linear vacancy prevents reuse; it was produced by a masked probe over this exact bucket table"
     )]
     pub(crate) fn install(&mut self, bucket: VacantBucket, entry: EntryOrdinal) {
-        self.buckets[bucket.0] = BucketSlot(entry.0);
+        self.buckets[bucket.index] = BucketSlot {
+            one_based: entry.one_based,
+        };
     }
 }
 
@@ -164,7 +171,7 @@ impl<BucketBacking: MetadataBacking> ContentIndex<BucketBacking> {
     reason = "store geometry caps entry ordinals below the addressable range on every supported 32/64-bit target"
 )]
 const fn entry_offset(entry: EntryOrdinal) -> usize {
-    (entry.0 - 1) as usize
+    (entry.one_based - 1) as usize
 }
 
 /// Uses the foundation-owned low little-endian routing word directly.

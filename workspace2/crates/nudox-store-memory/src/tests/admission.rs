@@ -23,9 +23,10 @@ fn maximum_admitted_ordinal_is_exactly_bounded_by_validated_geometry() -> Result
             });
         }
     };
-    assert_eq!(last.get(), MAX_INDEX_SLOTS);
+    assert_eq!(last.one_based, MAX_INDEX_SLOTS);
     assert_eq!(
-        EntryOrdinal::for_append(layout.entry_capacity, capacity.slots).map(EntryOrdinal::get),
+        EntryOrdinal::for_append(layout.entry_capacity, capacity.slots)
+            .map(|entry| entry.one_based),
         Err(maximum_slots.into())
     );
     #[cfg(target_pointer_width = "64")]
@@ -33,7 +34,8 @@ fn maximum_admitted_ordinal_is_exactly_bounded_by_validated_geometry() -> Result
         let truncation_candidate =
             usize::try_from(u64::from(u32::MAX) + 1).map_err(ScenarioError::Geometry)?;
         assert_eq!(
-            EntryOrdinal::for_append(truncation_candidate, capacity.slots).map(EntryOrdinal::get),
+            EntryOrdinal::for_append(truncation_candidate, capacity.slots)
+                .map(|entry| entry.one_based),
             Err(truncation_candidate.into())
         );
     }
