@@ -17,9 +17,31 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 bolero.workspace = true
 fearless_simd = { workspace = true, features = ["force_support_fallback", "std"] }
+nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-publication = { path = "../nudox-compile-publication" }
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-durable-journal = { path = "../nudox-durable-journal" }
+nudox-index-build = { path = "../nudox-index-build" }
+nudox-index-core = { path = "../nudox-index-core" }
+nudox-index-graph-vector = { path = "../nudox-index-graph-vector" }
+nudox-index-tantivy = { path = "../nudox-index-tantivy" }
+nudox-ir-format = { path = "../nudox-ir-format" }
+nudox-ir-vocab = { path = "../nudox-ir-vocab" }
 nudox-schema = { path = "../nudox-schema" }
+serde.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "capacity-planning"
+path = "benches/capacity_planning.rs"
+harness = false
+
+[[example]]
+name = "capacity-worksheet"
+path = "examples/capacity_worksheet.rs"
 
 [lints]
 workspace = true
