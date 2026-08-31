@@ -73,10 +73,14 @@ omit diagnostics, or hide branches to manufacture simplicity.
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.
-- Do not hide plain independent facts behind one-line inherent accessors. If replacing a field cannot
-  invalidate another field or counterfeit authority, make it public. Keep fields private only when
-  the type owns a correlated invariant, and expose the smallest semantic operation rather than a
-  getter with the same name.
+- Do not hide plain independent facts behind one-line inherent accessors at any visibility. This law
+  covers `pub`, `pub(crate)`, `pub(super)`, and restricted-public methods: crate boundaries do not
+  make ceremonial getters useful. If replacing a field cannot invalidate another field or
+  counterfeit authority, expose the fact at the narrowest required field visibility. Keep fields
+  private only when the type owns a correlated invariant, and expose the smallest semantic operation
+  rather than a getter with the same name. When several immutable facts form one validated view,
+  keep one private invariant owner and expose a sealed read-only projection through an exact standard
+  trait; do not add a parallel getter surface.
 
 ```rust
 // DON'T: ceremony around an unconstrained borrowed fact.
@@ -242,8 +246,11 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
 - Model owned protocol requests and responses as typed `serde` records and closed enums. Constructing
   nested shipping JSON with `json!`, `Map<String, Value>`, string keys, and later field lookups is a
   rejected intermediate representation: it postpones schema errors to runtime, allocates needless
-  maps/strings, and makes protocol review visual guesswork. `Value` is allowed only for genuinely
-  open extension data or at the final dynamic boundary; name that boundary and test it.
+  maps/strings, and makes protocol review visual guesswork. This includes integration tests, examples,
+  benches, and fixtures: those targets specify the protocol and must fail to compile when its schema
+  changes. `Value` is allowed only for genuinely open extension data or at the final dynamic boundary.
+  Isolate that openness behind one named adapter-edge newtype, state why its key space cannot be
+  closed, and test its size, bounds, and rejection behavior. Never silence the dynamic-JSON lint.
 - Keep transport, request/response DTOs, domain validation, and orchestration in separate modules when
   they carry different error types or proof surfaces. A single adapter module that owns HTTP, JSON
   construction, response parsing, domain identity checks, retries, and public service behavior has
@@ -345,10 +352,11 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
   choose and document a deterministic source-preserving priority.
 - A semantic law is enforced only when its quality command compiles every shipping target that can
   contain the violation (`--all-targets` and the applicable features), its UI suite contains a
-  realistic failing mutant, and an attempted local `#[allow]` cannot waive architectural laws. A
-  green library-only lint pass says nothing about integration-test code. When review finds a pattern
-  the lint should already reject, first attack target/feature/macro/waiver coverage; do not merely add
-  a second source matcher.
+  realistic failing mutant, and an attempted local `#[allow]` cannot waive architectural laws. Run
+  architectural Dylints at force level; lint help must prescribe the accepted representation and
+  must never recommend `allow`. A green library-only lint pass says nothing about integration-test
+  code. When review finds a pattern the lint should already reject, first attack
+  target/feature/macro/waiver/visibility coverage; do not merely add a second source matcher.
 - Test plumbing may not restate the wire grammar once per integer width or mutable/immutable access.
   Use one typed test record/view or one checked const-width cell primitive. If fixture and mutation
   support exceeds the code containing laws and exact assertions, redesign the fixture before adding
