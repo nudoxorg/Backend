@@ -7,11 +7,11 @@ use support::multilingual_corpus::{
     corpus_packages,
 };
 
-const EXPECTED_PACKAGES_PER_LANGUAGE: usize = 51;
-const EXPECTED_PACKAGE_COUNT: usize = 204;
+const EXPECTED_PACKAGES_PER_LANGUAGE: usize = 30;
+const EXPECTED_PACKAGE_COUNT: usize = 210;
 
 #[test]
-fn corpus_has_two_hundred_four_stable_multilingual_packages() -> Result<(), CorpusRenderError> {
+fn corpus_has_two_hundred_ten_stable_multilingual_packages() -> Result<(), CorpusRenderError> {
     let packages = corpus_packages();
 
     assert_eq!(packages.len(), EXPECTED_PACKAGE_COUNT);
@@ -96,7 +96,10 @@ struct LanguageCounts {
     rust: usize,
     typescript: usize,
     python: usize,
+    go: usize,
+    java: usize,
     csharp: usize,
+    clang: usize,
 }
 
 impl LanguageCounts {
@@ -105,7 +108,10 @@ impl LanguageCounts {
             CorpusLanguage::Rust => self.rust += 1,
             CorpusLanguage::TypeScript => self.typescript += 1,
             CorpusLanguage::Python => self.python += 1,
+            CorpusLanguage::Go => self.go += 1,
+            CorpusLanguage::Java => self.java += 1,
             CorpusLanguage::CSharp => self.csharp += 1,
+            CorpusLanguage::Clang => self.clang += 1,
         }
     }
 
@@ -114,7 +120,10 @@ impl LanguageCounts {
             CorpusLanguage::Rust => self.rust,
             CorpusLanguage::TypeScript => self.typescript,
             CorpusLanguage::Python => self.python,
+            CorpusLanguage::Go => self.go,
+            CorpusLanguage::Java => self.java,
             CorpusLanguage::CSharp => self.csharp,
+            CorpusLanguage::Clang => self.clang,
         }
     }
 }

@@ -1,9 +1,9 @@
 use core::{ops::Range, str::Utf8Error};
 
-pub(crate) const PACKAGE_COUNT: usize = 204;
+pub(crate) const PACKAGE_COUNT: usize = 210;
 pub(crate) const SOURCE_BYTE_LIMIT: usize = 96;
 
-const PACKAGES_PER_LANGUAGE: usize = 51;
+const PACKAGES_PER_LANGUAGE: usize = 30;
 const ORDINAL_DIGITS: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -11,11 +11,22 @@ pub(crate) enum CorpusLanguage {
     Rust,
     TypeScript,
     Python,
+    Go,
+    Java,
     CSharp,
+    Clang,
 }
 
 impl CorpusLanguage {
-    pub(crate) const ALL: [Self; 4] = [Self::Rust, Self::TypeScript, Self::Python, Self::CSharp];
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Rust,
+        Self::TypeScript,
+        Self::Python,
+        Self::Go,
+        Self::Java,
+        Self::CSharp,
+        Self::Clang,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -145,11 +156,29 @@ impl SourceTemplate {
                 middle: b" = \"python-",
                 suffix: b"\"\n",
             },
+            CorpusLanguage::Go => Self {
+                lead: b"package fixture\nconst ",
+                symbol_prefix: b"package_",
+                middle: b" = \"go-",
+                suffix: b"\"\n",
+            },
+            CorpusLanguage::Java => Self {
+                lead: b"public final class ",
+                symbol_prefix: b"Package",
+                middle: b" { public static final String NAME = \"java-",
+                suffix: b"\"; }\n",
+            },
             CorpusLanguage::CSharp => Self {
                 lead: b"public static class ",
                 symbol_prefix: b"Package",
                 middle: b" { public const string Name = \"csharp-",
                 suffix: b"\"; }\n",
+            },
+            CorpusLanguage::Clang => Self {
+                lead: b"const char *",
+                symbol_prefix: b"package_",
+                middle: b" = \"clang-",
+                suffix: b"\";\n",
             },
         }
     }
@@ -205,7 +234,10 @@ const fn language_for(ordinal: usize) -> CorpusLanguage {
         0 => CorpusLanguage::Rust,
         1 => CorpusLanguage::TypeScript,
         2 => CorpusLanguage::Python,
-        _ => CorpusLanguage::CSharp,
+        3 => CorpusLanguage::Go,
+        4 => CorpusLanguage::Java,
+        5 => CorpusLanguage::CSharp,
+        _ => CorpusLanguage::Clang,
     }
 }
 
