@@ -3677,6 +3677,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-compile-publication"
+version = "0.1.0"
+dependencies = [
+ "nudox-compile-driver",
+ "nudox-compile-vocab",
+ "nudox-durable-journal",
+ "nudox-hydration",
+ "nudox-id",
+ "nudox-ir-format",
+ "nudox-ir-vocab",
+ "nudox-object",
+ "nudox-root",
+ "nudox-schema",
+ "nudox-store-memory",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "nudox-compile-registry"
 version = "0.1.0"
 dependencies = [
@@ -3800,6 +3818,7 @@ dependencies = [
 name = "nudox-ir-format"
 version = "0.1.0"
 dependencies = [
+ "memmap2",
  "nudox-compile-vocab",
  "nudox-id",
  "nudox-ir-vocab",
@@ -3864,7 +3883,9 @@ name = "nudox-operation"
 version = "0.1.0"
 dependencies = [
  "nudox-compile-driver",
+ "nudox-compile-publication",
  "nudox-compile-vocab",
+ "nudox-durable-journal",
  "nudox-hydration",
  "nudox-id",
  "nudox-ir-format",

@@ -2,6 +2,7 @@
 
 use core::{cmp::Ordering, num::TryFromIntError, ops::Deref};
 
+use nudox_compile_driver::CompiledFragment;
 use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_id::{
     ArtifactId, ArtifactIdDecodeError, CompileRecipeDomain, ContentId, ContentIdDecodeError,
@@ -48,7 +49,7 @@ const SECTION_ORDER: [SectionKind; RANGE_COUNT] = [
 
 /// A complete borrowed IR fragment admitted only through its validated range manifest.
 #[derive(Clone, Copy)]
-pub struct PublicationFragment<'view, 'fragment> {
+pub(crate) struct PublicationFragment<'view, 'fragment> {
     view: &'view FragmentView<'fragment>,
     manifest: FragmentRangeManifest,
 }
@@ -59,7 +60,7 @@ impl<'view, 'fragment> PublicationFragment<'view, 'fragment> {
         clippy::result_large_err,
         reason = "the terminal preserves both exact typed recipe facts without allocation or erasure"
     )]
-    pub fn from_view(
+    pub(crate) fn from_view(
         view: &'view FragmentView<'fragment>,
     ) -> Result<Self, PublicationFragmentError> {
         let manifest = FragmentRangeManifest::from_view(view)
@@ -83,6 +84,31 @@ impl<'view, 'fragment> PublicationFragment<'view, 'fragment> {
             });
         }
         Ok(Self { view, manifest })
+    }
+
+    /// Admits only a compiler driver's typed lowering result after independently checking that
+    /// the driver's terminal facts are the facts retained by its validated compact IR bytes.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the terminal preserves exact typed compiler and fragment facts without allocation or erasure"
+    )]
+    pub(crate) fn from_compiled(
+        compiled: &'view CompiledFragment<'fragment>,
+    ) -> Result<Self, PublicationFragmentError> {
+        let fragment = Self::from_view(&compiled.fragment)?;
+        if fragment.source != compiled.source {
+            return Err(PublicationFragmentError::CompilerSource {
+                compiler: compiled.source,
+                fragment: fragment.source,
+            });
+        }
+        if fragment.recipe != compiled.recipe {
+            return Err(PublicationFragmentError::CompilerRecipe {
+                compiler: compiled.recipe,
+                fragment: fragment.recipe,
+            });
+        }
+        Ok(fragment)
     }
 }
 
@@ -121,19 +147,39 @@ pub enum PublicationFragmentError {
         /// Rejected closed recipe stage.
         observed: Stage,
     },
+    /// The driver's terminal source fact differed from the source fact retained by its IR.
+    #[error("compiler terminal source fact differs from its validated compact IR source fact")]
+    CompilerSource {
+        /// Source fact returned by the driver terminal.
+        compiler: SourceIdentity,
+        /// Source fact decoded from the compact IR bytes.
+        fragment: SourceIdentity,
+    },
+    /// The driver's terminal recipe fact differed from the recipe fact retained by its IR.
+    #[error("compiler terminal recipe fact differs from its validated compact IR recipe fact")]
+    CompilerRecipe {
+        /// Recipe fact returned by the driver terminal.
+        compiler: RecipeFact,
+        /// Recipe fact decoded from the compact IR bytes.
+        fragment: RecipeFact,
+    },
 }
 
 /// Canonically sorted package inputs borrowing the exact fragment output buffers.
-pub struct CanonicalCompilation<'input, 'scratch, 'view, 'fragment> {
-    inputs: &'input [PublicationFragment<'view, 'fragment>],
+pub(crate) struct CanonicalCompilation<'input, 'scratch, 'fragment> {
+    inputs: &'input [CompiledFragment<'fragment>],
     ordinals: &'scratch [usize],
 }
 
-impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 'view, 'fragment> {
+impl<'input, 'scratch, 'fragment> CanonicalCompilation<'input, 'scratch, 'fragment> {
     /// Writes caller input ordinals into caller scratch, sorts them by typed fragment identity,
     /// and rejects duplicate immutable fragments before any manifest byte is written.
-    pub fn prepare(
-        inputs: &'input [PublicationFragment<'view, 'fragment>],
+    #[allow(
+        clippy::result_large_err,
+        reason = "admission retains exact typed fragment facts"
+    )]
+    pub(crate) fn prepare(
+        inputs: &'input [CompiledFragment<'fragment>],
         scratch: &'scratch mut [usize],
     ) -> Result<Self, CompilationPrepareError> {
         if scratch.len() < inputs.len() {
@@ -144,13 +190,15 @@ impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 
         }
         let ordinals = &mut scratch[..inputs.len()];
         for (ordinal, slot) in ordinals.iter_mut().enumerate() {
+            PublicationFragment::from_compiled(&inputs[ordinal])
+                .map_err(|source| CompilationPrepareError::Fragment { ordinal, source })?;
             *slot = ordinal;
         }
-        ordinals.sort_unstable_by_key(|ordinal| inputs[*ordinal].fragment);
+        ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal]));
         for pair in ordinals.windows(2) {
-            if inputs[pair[0]].fragment == inputs[pair[1]].fragment {
+            if fragment_identity(&inputs[pair[0]]) == fragment_identity(&inputs[pair[1]]) {
                 return Err(CompilationPrepareError::DuplicateFragment {
-                    identity: inputs[pair[0]].fragment,
+                    identity: fragment_identity(&inputs[pair[0]]),
                 });
             }
         }
@@ -158,7 +206,11 @@ impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 
     }
 
     /// Exact canonical package byte count required for [`Self::write_into`].
-    pub fn required_bytes(&self) -> Result<usize, CompilationPrepareError> {
+    #[allow(
+        clippy::result_large_err,
+        reason = "exact admission errors are preserved"
+    )]
+    pub(crate) fn required_bytes(&self) -> Result<usize, CompilationPrepareError> {
         let entries = self.ordinals.len();
         COMPILATION_MANIFEST_HEADER_BYTES
             .checked_add(
@@ -174,10 +226,11 @@ impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 
         clippy::result_large_err,
         reason = "the terminal retains exact independent manifest-validation facts without allocation or erasure"
     )]
-    pub fn write_into<'output>(
+    pub(crate) fn write_into<'output, 'facts>(
         &self,
         output: &'output mut [u8],
-    ) -> Result<CompilationManifestView<'output>, CompilationWriteError> {
+        fact_scratch: &'facts mut [Option<StoredFragmentFacts>],
+    ) -> Result<CompilationManifestView<'output, 'facts>, CompilationWriteError> {
         let required = self
             .required_bytes()
             .map_err(CompilationWriteError::Preparation)?;
@@ -199,7 +252,8 @@ impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 
         written[10..12].copy_from_slice(&0_u16.to_le_bytes());
         written[12..16].copy_from_slice(&count.to_le_bytes());
         for (ordinal, input_ordinal) in self.ordinals.iter().copied().enumerate() {
-            let fragment = &self.inputs[input_ordinal];
+            let fragment = PublicationFragment::from_compiled(&self.inputs[input_ordinal])
+                .map_err(|source| CompilationWriteError::Fragment { ordinal, source })?;
             let offset =
                 COMPILATION_MANIFEST_HEADER_BYTES + ordinal * COMPILATION_MANIFEST_ENTRY_BYTES;
             write_entry(
@@ -207,11 +261,12 @@ impl<'input, 'scratch, 'view, 'fragment> CanonicalCompilation<'input, 'scratch, 
                 &fragment.manifest,
             );
         }
-        CompilationManifestView::validate(written).map_err(CompilationWriteError::FreshValidation)
+        CompilationManifestView::validate(written, fact_scratch)
+            .map_err(CompilationWriteError::FreshValidation)
     }
 
     /// Iterates the sorted borrowed fragments whose bytes must be persisted before publication.
-    pub fn fragments(&self) -> impl Iterator<Item = &PublicationFragment<'view, 'fragment>> {
+    pub(crate) fn fragments(&self) -> impl Iterator<Item = &CompiledFragment<'fragment>> {
         self.ordinals
             .iter()
             .copied()
@@ -236,6 +291,15 @@ pub enum CompilationPrepareError {
     DuplicateFragment {
         /// Duplicate complete fragment identity.
         identity: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
+    },
+    /// One driver output did not agree with its own validated compact fragment facts.
+    #[error("compiler output {ordinal} cannot enter a canonical publication")]
+    Fragment {
+        /// Input ordinal retaining the exact mismatch location.
+        ordinal: usize,
+        /// Exact typed source, recipe, range, or stage rejection.
+        #[source]
+        source: PublicationFragmentError,
     },
     /// Canonical output extent overflowed native address-space arithmetic.
     #[error("publication manifest length overflowed for {entries} fragments")]
@@ -269,6 +333,15 @@ pub enum CompilationWriteError {
         #[source]
         source: TryFromIntError,
     },
+    /// A previously admitted driver fragment ceased to satisfy admission while being written.
+    #[error("compiler output {ordinal} ceased to satisfy canonical fragment admission")]
+    Fragment {
+        /// Canonical output ordinal.
+        ordinal: usize,
+        /// Exact typed source, recipe, range, or stage rejection.
+        #[source]
+        source: PublicationFragmentError,
+    },
     /// Fresh bytes did not pass the same decoder used for persisted manifests.
     #[error("fresh canonical compiler manifest failed independent validation")]
     FreshValidation(#[source] CompilationManifestError),
@@ -286,18 +359,22 @@ pub struct CompilationManifestFacts {
 }
 
 /// A borrowed validated compiler package manifest.
-pub struct CompilationManifestView<'manifest> {
+pub struct CompilationManifestView<'manifest, 'facts> {
     bytes: &'manifest [u8],
     facts: CompilationManifestFacts,
+    entries: &'facts [Option<StoredFragmentFacts>],
 }
 
-impl<'manifest> CompilationManifestView<'manifest> {
+impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
     /// Validates all fixed header, recipe, fragment, range, and canonical-order facts.
     #[allow(
         clippy::result_large_err,
         reason = "the decoder retains exact typed malformed-record facts without allocation or erasure"
     )]
-    pub fn validate(bytes: &'manifest [u8]) -> Result<Self, CompilationManifestError> {
+    pub fn validate(
+        bytes: &'manifest [u8],
+        fact_scratch: &'facts mut [Option<StoredFragmentFacts>],
+    ) -> Result<Self, CompilationManifestError> {
         if bytes.len() < COMPILATION_MANIFEST_HEADER_BYTES {
             return Err(CompilationManifestError::HeaderLength {
                 observed: bytes.len(),
@@ -322,6 +399,12 @@ impl<'manifest> CompilationManifestView<'manifest> {
                 source,
             }
         })?;
+        if fact_scratch.len() < count {
+            return Err(CompilationManifestError::FactScratchTooSmall {
+                required: count,
+                available: fact_scratch.len(),
+            });
+        }
         let expected = COMPILATION_MANIFEST_HEADER_BYTES
             .checked_add(
                 count
@@ -335,8 +418,10 @@ impl<'manifest> CompilationManifestView<'manifest> {
                 observed: bytes.len(),
             });
         }
+        let entries = &mut fact_scratch[..count];
+        entries.fill(None);
         let mut previous: Option<ArtifactId<IrFragmentEncoding, IrFragmentDomain>> = None;
-        for ordinal in 0..count {
+        for (ordinal, slot) in entries.iter_mut().enumerate() {
             let offset =
                 COMPILATION_MANIFEST_HEADER_BYTES + ordinal * COMPILATION_MANIFEST_ENTRY_BYTES;
             let entry = decode_entry(
@@ -353,6 +438,7 @@ impl<'manifest> CompilationManifestView<'manifest> {
                 });
             }
             previous = Some(entry.fragment);
+            *slot = Some(entry);
         }
         let byte_length = u32::try_from(bytes.len()).map_err(|source| {
             CompilationManifestError::ByteLengthAddressSpace {
@@ -367,20 +453,21 @@ impl<'manifest> CompilationManifestView<'manifest> {
                 fragment_count,
                 byte_length,
             },
+            entries,
         })
     }
 
-    /// Iterates independently decoded complete fragment facts in canonical package order.
+    /// Iterates complete fragment facts in canonical package order.
+    ///
+    /// This view has already validated every entry before it exists, so iteration is infallible.
     pub fn fragments(&self) -> CompilationManifestEntries<'_> {
         CompilationManifestEntries {
-            bytes: self.bytes,
-            next: 0,
-            end: self.facts.fragment_count,
+            entries: self.entries.iter(),
         }
     }
 }
 
-impl Deref for CompilationManifestView<'_> {
+impl Deref for CompilationManifestView<'_, '_> {
     type Target = CompilationManifestFacts;
 
     fn deref(&self) -> &Self::Target {
@@ -388,7 +475,7 @@ impl Deref for CompilationManifestView<'_> {
     }
 }
 
-impl AsRef<[u8]> for CompilationManifestView<'_> {
+impl AsRef<[u8]> for CompilationManifestView<'_, '_> {
     fn as_ref(&self) -> &[u8] {
         self.bytes
     }
@@ -411,34 +498,14 @@ pub struct StoredFragmentFacts {
 
 /// Cursor over validated package fragment records.
 pub struct CompilationManifestEntries<'manifest> {
-    bytes: &'manifest [u8],
-    next: u32,
-    end: u32,
+    entries: core::slice::Iter<'manifest, Option<StoredFragmentFacts>>,
 }
 
 impl Iterator for CompilationManifestEntries<'_> {
-    type Item = Result<StoredFragmentFacts, CompilationManifestError>;
+    type Item = StoredFragmentFacts;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next == self.end {
-            return None;
-        }
-        let ordinal = self.next;
-        self.next += 1;
-        let ordinal = match usize::try_from(ordinal) {
-            Ok(ordinal) => ordinal,
-            Err(source) => {
-                return Some(Err(CompilationManifestError::FragmentCountAddressSpace {
-                    fragment_count: self.end,
-                    source,
-                }));
-            }
-        };
-        let offset = COMPILATION_MANIFEST_HEADER_BYTES + ordinal * COMPILATION_MANIFEST_ENTRY_BYTES;
-        Some(decode_entry(
-            &self.bytes[offset..offset + COMPILATION_MANIFEST_ENTRY_BYTES],
-            ordinal,
-        ))
+        self.entries.find_map(|entry| *entry)
     }
 }
 
@@ -477,6 +544,9 @@ pub enum CompilationManifestError {
     /// Exact complete file length did not match its declared entry count.
     #[error("compiler manifest has {observed} bytes, expected {expected}")]
     Length { expected: usize, observed: usize },
+    /// Caller fact scratch could not retain every fully decoded package entry.
+    #[error("compiler manifest fact scratch holds {available} entries, requires {required}")]
+    FactScratchTooSmall { required: usize, available: usize },
     /// Complete manifest bytes cannot fit the compact public byte length.
     #[error("compiler manifest length {observed} cannot fit the compact fact")]
     ByteLengthAddressSpace {
@@ -616,6 +686,14 @@ fn write_entry(output: &mut [u8], manifest: &FragmentRangeManifest) {
         output[offset + 8..offset + 12].copy_from_slice(&range.length.to_le_bytes());
         output[offset + 12..offset + 44].copy_from_slice(range.identity.as_ref());
     }
+}
+
+fn fragment_identity(
+    compiled: &CompiledFragment<'_>,
+) -> ArtifactId<IrFragmentEncoding, IrFragmentDomain> {
+    ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+        compiled.fragment.as_ref(),
+    )
 }
 
 #[allow(
@@ -763,6 +841,7 @@ fn fixed<const WIDTH: usize>(input: &[u8], offset: usize) -> [u8; WIDTH] {
     reason = "focused tests preserve exact terminal diagnostics through a single typed fixture error"
 )]
 mod tests {
+    use nudox_compile_driver::CompiledFragment;
     use nudox_id::{
         ArtifactId, ContentId, IrManifestDomain, IrManifestEncoding, SourceFactDomain,
         ToolchainDomain,
@@ -776,8 +855,7 @@ mod tests {
 
     use super::{
         CanonicalCompilation, CompilationManifestError, CompilationManifestView,
-        CompilationPrepareError, CompilationWriteError, PublicationFragment,
-        PublicationFragmentError,
+        CompilationPrepareError, CompilationWriteError,
     };
     use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 
@@ -789,8 +867,6 @@ mod tests {
         Write(#[from] nudox_ir_format::WriteError),
         #[error(transparent)]
         Fragment(#[from] nudox_ir_format::FragmentError),
-        #[error(transparent)]
-        PublicationFragment(#[from] PublicationFragmentError),
         #[error(transparent)]
         Canonical(#[from] CompilationPrepareError),
         #[error(transparent)]
@@ -806,35 +882,40 @@ mod tests {
     -> Result<(), TestError> {
         let (alpha_bytes, alpha_length) = fragment(b"alpha-source", b"alpha")?;
         let (bravo_bytes, bravo_length) = fragment(b"bravo-source", b"bravo")?;
-        let alpha_view = FragmentView::validate(&alpha_bytes[..alpha_length])?;
-        let bravo_view = FragmentView::validate(&bravo_bytes[..bravo_length])?;
-        let alpha = PublicationFragment::from_view(&alpha_view)?;
-        let bravo = PublicationFragment::from_view(&bravo_view)?;
-
         let mut first_scratch = [0; 2];
-        let first_inputs = [bravo, alpha];
+        let first_inputs = [
+            compiled(FragmentView::validate(&bravo_bytes[..bravo_length])?),
+            compiled(FragmentView::validate(&alpha_bytes[..alpha_length])?),
+        ];
         let first = CanonicalCompilation::prepare(&first_inputs, &mut first_scratch)?;
         let mut first_output = [0_u8; 1024];
-        let first_manifest = first.write_into(&mut first_output)?;
+        let mut first_facts = [None; 2];
+        let first_manifest = first.write_into(&mut first_output, &mut first_facts)?;
         requires_ir_manifest_identity(first_manifest.identity);
 
         let mut second_scratch = [0; 2];
-        let second_inputs = [alpha, bravo];
+        let second_inputs = [
+            compiled(FragmentView::validate(&alpha_bytes[..alpha_length])?),
+            compiled(FragmentView::validate(&bravo_bytes[..bravo_length])?),
+        ];
         let second = CanonicalCompilation::prepare(&second_inputs, &mut second_scratch)?;
         let mut second_output = [0_u8; 1024];
-        let second_manifest = second.write_into(&mut second_output)?;
+        let mut second_facts = [None; 2];
+        let second_manifest = second.write_into(&mut second_output, &mut second_facts)?;
         assert_eq!(first_manifest.as_ref(), second_manifest.as_ref());
         assert_eq!(first_manifest.identity, second_manifest.identity);
 
-        let reopened = CompilationManifestView::validate(first_manifest.as_ref())?;
+        let mut reopened_facts = [None; 2];
+        let reopened =
+            CompilationManifestView::validate(first_manifest.as_ref(), &mut reopened_facts)?;
         let first_entry = reopened
             .fragments()
             .next()
-            .ok_or(TestError::MissingFragment { ordinal: 0 })??;
+            .ok_or(TestError::MissingFragment { ordinal: 0 })?;
         let second_entry = reopened
             .fragments()
             .nth(1)
-            .ok_or(TestError::MissingFragment { ordinal: 1 })??;
+            .ok_or(TestError::MissingFragment { ordinal: 1 })?;
         assert!(first_entry.fragment < second_entry.fragment);
         assert_eq!(reopened.fragment_count, 2);
         Ok(())
@@ -844,20 +925,24 @@ mod tests {
     fn manifest_rejects_a_recipe_identity_mutant_without_losing_the_fragment_ordinal()
     -> Result<(), TestError> {
         let (bytes, length) = fragment(b"alpha-source", b"alpha")?;
-        let view = FragmentView::validate(&bytes[..length])?;
-        let fragment = PublicationFragment::from_view(&view)?;
+        let fragment = compiled(FragmentView::validate(&bytes[..length])?);
         let mut scratch = [0];
         let inputs = [fragment];
         let canonical = CanonicalCompilation::prepare(&inputs, &mut scratch)?;
         let mut output = [0_u8; 512];
-        let manifest = canonical.write_into(&mut output)?;
+        let mut facts = [None; 1];
+        let manifest = canonical.write_into(&mut output, &mut facts)?;
         let mut mutant = [0_u8; 512];
         mutant[..manifest.as_ref().len()].copy_from_slice(manifest.as_ref());
         let identity_payload =
             super::COMPILATION_MANIFEST_HEADER_BYTES + super::RECIPE_IDENTITY_OFFSET + 2;
         mutant[identity_payload] ^= 1;
+        let mut mutant_facts = [None; 1];
         assert!(matches!(
-            CompilationManifestView::validate(&mutant[..manifest.as_ref().len()]),
+            CompilationManifestView::validate(
+                &mutant[..manifest.as_ref().len()],
+                &mut mutant_facts
+            ),
             Err(CompilationManifestError::RecipeIdentity { ordinal: 0, .. })
         ));
         Ok(())
@@ -867,19 +952,23 @@ mod tests {
     fn manifest_rejects_a_range_extent_overflow_without_losing_its_location()
     -> Result<(), TestError> {
         let (bytes, length) = fragment(b"alpha-source", b"alpha")?;
-        let view = FragmentView::validate(&bytes[..length])?;
-        let fragment = PublicationFragment::from_view(&view)?;
+        let fragment = compiled(FragmentView::validate(&bytes[..length])?);
         let inputs = [fragment];
         let mut scratch = [0];
         let canonical = CanonicalCompilation::prepare(&inputs, &mut scratch)?;
         let mut output = [0_u8; 512];
-        let manifest = canonical.write_into(&mut output)?;
+        let mut facts = [None; 1];
+        let manifest = canonical.write_into(&mut output, &mut facts)?;
         let mut mutant = [0_u8; 512];
         mutant[..manifest.as_ref().len()].copy_from_slice(manifest.as_ref());
         let offset = super::COMPILATION_MANIFEST_HEADER_BYTES + super::RANGE_OFFSET + 4;
         mutant[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut mutant_facts = [None; 1];
         assert!(matches!(
-            CompilationManifestView::validate(&mutant[..manifest.as_ref().len()]),
+            CompilationManifestView::validate(
+                &mutant[..manifest.as_ref().len()],
+                &mut mutant_facts
+            ),
             Err(CompilationManifestError::RangeExtentOverflow {
                 ordinal: 0,
                 range: 0,
@@ -892,7 +981,7 @@ mod tests {
     #[test]
     fn empty_packages_use_empty_ordinal_scratch_and_have_a_canonical_header()
     -> Result<(), TestError> {
-        let inputs: &[PublicationFragment<'_, '_>] = &[];
+        let inputs: &[CompiledFragment<'_>] = &[];
         let mut scratch = [];
         let package = CanonicalCompilation::prepare(inputs, &mut scratch)?;
         assert_eq!(
@@ -900,7 +989,8 @@ mod tests {
             super::COMPILATION_MANIFEST_HEADER_BYTES
         );
         let mut output = [0_u8; super::COMPILATION_MANIFEST_HEADER_BYTES];
-        let manifest = package.write_into(&mut output)?;
+        let mut facts = [];
+        let manifest = package.write_into(&mut output, &mut facts)?;
         assert_eq!(manifest.fragment_count, 0);
         assert!(manifest.fragments().next().is_none());
         Ok(())
@@ -909,8 +999,7 @@ mod tests {
     #[test]
     fn canonicalization_reports_undersized_ordinal_scratch() -> Result<(), TestError> {
         let (bytes, length) = fragment(b"alpha-source", b"alpha")?;
-        let view = FragmentView::validate(&bytes[..length])?;
-        let fragment = PublicationFragment::from_view(&view)?;
+        let fragment = compiled(FragmentView::validate(&bytes[..length])?);
         let mut scratch = [];
         assert!(matches!(
             CanonicalCompilation::prepare(&[fragment], &mut scratch),
@@ -923,6 +1012,14 @@ mod tests {
     }
 
     fn requires_ir_manifest_identity(_: ArtifactId<IrManifestEncoding, IrManifestDomain>) {}
+
+    fn compiled(fragment: FragmentView<'_>) -> CompiledFragment<'_> {
+        CompiledFragment {
+            source: fragment.source,
+            recipe: fragment.recipe,
+            fragment,
+        }
+    }
 
     fn fragment(source_bytes: &[u8], name: &[u8]) -> Result<([u8; 256], usize), TestError> {
         let source = SourceIdentity {

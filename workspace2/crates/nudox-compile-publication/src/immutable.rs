@@ -1,147 +1,39 @@
 //! Single-owner storage for validated immutable IR fragment bytes.
-//!
-//! The caller owns semantic validation. This adapter only accepts a complete byte stream together
-//! with its typed complete-fragment manifest, rechecks that manifest before any write, and then
-//! makes the identity path durable. Existing identity paths are independently revalidated before
-//! reuse; a mutable store reference serializes all local namespace transitions.
 
-use std::{
-    convert::TryFrom,
-    fs::{self, File, OpenOptions},
-    io::{self, ErrorKind, Read, Write},
-    num::TryFromIntError,
-    path::{Path, PathBuf},
-    str::Utf8Error,
+use std::path::{Path, PathBuf};
+
+use nudox_id::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
+use nudox_ir_format::{
+    FragmentError, FragmentRangeManifest, FragmentRangeVerifyError, FragmentView,
 };
-
-use nudox_id::{ArtifactHasher, ArtifactId, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding};
-use nudox_ir_format::{FragmentRangeManifest, FragmentRangeVerifyError, FragmentView};
 use thiserror::Error;
+
+use crate::storage::{ImmutableFileError, ImmutableFileStore, StoredFile};
+
+pub use crate::storage::ImmutableIoPhase;
 
 /// Typed identity used for complete canonical IR fragment artifacts.
 pub type FragmentIdentity = ArtifactId<IrFragmentEncoding, IrFragmentDomain>;
 
 const ARTIFACT_DIRECTORY: &str = "fragments";
-const ARTIFACT_EXTENSION: &str = ".irfrag";
-const READ_CHUNK_BYTES: usize = 8 * 1024;
-const TEMP_ATTEMPTS: u8 = 16;
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-const HEX_NAME_BYTES: usize = HASH_BYTES * 2;
-const ARTIFACT_NAME_BYTES: usize = HEX_NAME_BYTES + ARTIFACT_EXTENSION.len();
+const ARTIFACT_EXTENSION: &[u8; 7] = b".irfrag";
 
-/// Exact filesystem transition whose source is retained in [`ImmutableArtifactError::Io`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImmutableIoPhase {
-    /// Create the sibling immutable-artifact directory.
-    CreateArtifactDirectory,
-    /// Open the sibling immutable-artifact directory for a durability barrier.
-    OpenArtifactDirectory,
-    /// Sync the sibling immutable-artifact directory after a namespace transition.
-    SyncArtifactDirectory,
-    /// Open an existing identity path for validation.
-    OpenExisting,
-    /// Read metadata for an existing identity path.
-    ReadExistingMetadata,
-    /// Read bytes from an existing identity path.
-    ReadExisting,
-    /// Create a same-directory temporary artifact without replacing a prior temporary file.
-    CreateTemporary,
-    /// Write caller-owned bytes to a temporary artifact.
-    WriteTemporary,
-    /// Sync temporary artifact bytes before publication.
-    SyncTemporary,
-    /// Publish a temporary artifact under its immutable identity path.
-    PublishTemporary,
-    /// Remove a temporary path after its immutable link is durable.
-    RemoveTemporary,
-}
-
-/// Failure while validating or durably storing one complete immutable artifact.
+/// Failure while validating or durably storing one complete immutable fragment.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ImmutableArtifactError {
     /// The caller did not provide complete bytes satisfying the validated fragment manifest.
     #[error("fragment bytes do not satisfy their complete validated manifest")]
     Fragment(#[source] FragmentRangeVerifyError),
-    /// A filesystem operation failed at one exact storage phase.
-    #[error("immutable artifact I/O failed during {phase:?}")]
-    Io {
-        /// Exact filesystem phase.
-        phase: ImmutableIoPhase,
-        /// Original filesystem source.
-        #[source]
-        source: io::Error,
-    },
-    /// A failed temporary transition and its cleanup failure are both retained.
-    #[error(
-        "immutable artifact I/O failed during {phase:?}; cleanup failed during {cleanup_phase:?}"
-    )]
-    IoWithCleanup {
-        /// Primary filesystem phase.
-        phase: ImmutableIoPhase,
-        /// Primary filesystem source.
-        #[source]
-        source: io::Error,
-        /// Cleanup filesystem phase.
-        cleanup_phase: ImmutableIoPhase,
-        /// Cleanup filesystem source.
-        cleanup_source: io::Error,
-    },
-    /// A final identity path already exists with a different byte length.
-    #[error("existing immutable artifact has length {observed}, expected {expected}")]
-    ExistingLengthMismatch {
-        /// Expected immutable byte length.
-        expected: u32,
-        /// Existing file metadata length.
-        observed: u64,
-    },
-    /// A final identity path already exists with different bytes.
-    #[error("existing immutable artifact identity differs from the requested identity")]
-    ExistingIdentityMismatch {
-        /// Requested immutable identity.
-        expected: FragmentIdentity,
-        /// Identity calculated from the existing bytes.
-        observed: FragmentIdentity,
-    },
-    /// Existing metadata claimed the expected length but the file ended early while being read.
-    #[error("existing immutable artifact ended after {observed} bytes, expected {expected}")]
-    ExistingTruncated {
-        /// Expected immutable byte length.
-        expected: u32,
-        /// Number of bytes actually read.
-        observed: usize,
-        /// Synthetic unexpected-EOF cause retaining the failed read condition.
-        #[source]
-        source: io::Error,
-    },
-    /// Every bounded temporary-name attempt collided with an existing path.
-    #[error("could not allocate a temporary immutable-artifact name after {attempts} attempts")]
-    TemporaryNamesExhausted {
-        /// Number of bounded attempts made.
-        attempts: u8,
-        /// Last collision source.
-        #[source]
-        source: io::Error,
-    },
-    /// The fixed generated artifact name unexpectedly was not UTF-8.
-    #[error("generated immutable artifact name is not valid UTF-8")]
-    InvalidArtifactName {
-        /// Conversion source retained for diagnostics.
-        #[source]
-        source: Utf8Error,
-    },
-    /// The platform could not represent a claimed u32 length as a native buffer coordinate.
-    #[error("artifact byte length {observed} cannot be represented in this address space")]
-    LengthAddressSpace {
-        /// Claimed protocol length.
-        observed: u32,
-        /// Checked conversion source.
-        #[source]
-        source: TryFromIntError,
-    },
+    /// Stored immutable fragment bytes did not pass the compact IR grammar.
+    #[error("stored immutable fragment bytes did not pass compact IR validation")]
+    FragmentGrammar(#[source] FragmentError),
+    /// The exact typed immutable filesystem terminal.
+    #[error(transparent)]
+    Storage(#[from] ImmutableFileError<IrFragmentEncoding, IrFragmentDomain>),
 }
 
-/// Location and immutable facts of one stored artifact.
+/// Location and immutable facts of one stored IR fragment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredArtifact {
     /// Typed identity of the complete canonical bytes.
@@ -154,38 +46,38 @@ pub struct StoredArtifact {
 
 /// Filesystem owner for one sibling immutable-fragment directory.
 ///
-/// The owner contains only a temporary-name nonce; no lock, asynchronous worker, or per-operation
-/// heap owner is needed. A mutable store reference serializes its local temp-to-final transitions.
-///
-/// This adapter has a single-process ownership contract. `rename` is intentionally used for the
-/// requested temp-to-final durability transition and may replace a path written concurrently by a
-/// different process; callers needing cross-process ownership must acquire it outside this type.
+/// A mutable store reference serializes local temp-to-final transitions. This is a single-process
+/// ownership contract: the requested `rename` may replace a same-path write by another process,
+/// so callers needing cross-process ownership must establish it outside this type.
 #[derive(Debug)]
 pub struct ImmutableArtifactStore {
-    fragments: PathBuf,
-    next_temporary: u64,
+    store: ImmutableFileStore,
 }
 
 impl ImmutableArtifactStore {
-    /// Creates the sibling immutable-fragment directory and syncs its namespace.
+    /// Opens the sibling immutable-fragment directory without creating any paths.
+    pub(crate) fn existing(directory: &Path) -> Self {
+        Self {
+            store: ImmutableFileStore::existing(directory, ARTIFACT_DIRECTORY, ARTIFACT_EXTENSION),
+        }
+    }
+
+    /// Opens or creates the sibling immutable-fragment directory.
     pub fn new(directory: &Path) -> Result<Self, ImmutableArtifactError> {
-        let fragments = directory.join(ARTIFACT_DIRECTORY);
-        fs::create_dir_all(&fragments).map_err(|source| ImmutableArtifactError::Io {
-            phase: ImmutableIoPhase::CreateArtifactDirectory,
-            source,
-        })?;
-        sync_directory(&fragments)?;
         Ok(Self {
-            fragments,
-            next_temporary: initial_nonce(),
+            store: ImmutableFileStore::new::<IrFragmentEncoding, IrFragmentDomain>(
+                directory,
+                ARTIFACT_DIRECTORY,
+                ARTIFACT_EXTENSION,
+            )?,
         })
     }
 
-    /// Ensures one manifest-validated complete fragment is durably available by its typed identity.
+    /// Ensures one manifest-validated complete fragment is durably available by typed identity.
     ///
-    /// The manifest checks length, identity, and IR grammar before probing or writing. A missing
-    /// path is staged in the same directory, file-synced, renamed under its immutable identity,
-    /// and directory-synced. An existing path is streamed and revalidated before reuse.
+    /// Validation precedes every filesystem action. A missing path is staged in the same
+    /// directory, file-synced, renamed under its immutable identity, and directory-synced. An
+    /// existing path is rehashed and returned without a directory barrier or rewrite.
     pub fn ensure(
         &mut self,
         manifest: &FragmentRangeManifest,
@@ -194,394 +86,31 @@ impl ImmutableArtifactStore {
         manifest
             .verify_fragment(fragment.as_ref())
             .map_err(ImmutableArtifactError::Fragment)?;
-        let identity = manifest.fragment;
-        let length = manifest.fragment_length;
-        let bytes = fragment.as_ref();
-        let final_path = self.artifact_path(identity)?;
-        if let Some(stored) = self.inspect_existing(&final_path, identity, length)? {
-            return Ok(stored);
-        }
-        self.publish_missing(final_path, identity, length, bytes)
+        let stored = self.store.ensure(
+            manifest.fragment,
+            manifest.fragment_length,
+            fragment.as_ref(),
+        )?;
+        Ok(stored_artifact(stored))
     }
 
-    fn artifact_path(&self, identity: FragmentIdentity) -> Result<PathBuf, ImmutableArtifactError> {
-        let name = artifact_name(identity);
-        let name = core::str::from_utf8(&name)
-            .map_err(|source| ImmutableArtifactError::InvalidArtifactName { source })?;
-        Ok(self.fragments.join(name))
-    }
-
-    fn inspect_existing(
+    /// Reads one complete immutable fragment into caller storage and validates its compact grammar.
+    pub fn open<'fragment>(
         &self,
-        final_path: &Path,
-        identity: FragmentIdentity,
-        length: u32,
-    ) -> Result<Option<StoredArtifact>, ImmutableArtifactError> {
-        let mut file = match File::open(final_path) {
-            Ok(file) => file,
-            Err(source) if source.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(ImmutableArtifactError::Io {
-                    phase: ImmutableIoPhase::OpenExisting,
-                    source,
-                });
-            }
-        };
-        let metadata = file
-            .metadata()
-            .map_err(|source| ImmutableArtifactError::Io {
-                phase: ImmutableIoPhase::ReadExistingMetadata,
-                source,
-            })?;
-        let observed_length = metadata.len();
-        if observed_length != u64::from(length) {
-            return Err(ImmutableArtifactError::ExistingLengthMismatch {
-                expected: length,
-                observed: observed_length,
-            });
-        }
-        let observed = hash_file(&mut file, length)?;
-        if observed != identity {
-            return Err(ImmutableArtifactError::ExistingIdentityMismatch {
-                expected: identity,
-                observed,
-            });
-        }
-        let post_read_metadata = file
-            .metadata()
-            .map_err(|source| ImmutableArtifactError::Io {
-                phase: ImmutableIoPhase::ReadExistingMetadata,
-                source,
-            })?;
-        if post_read_metadata.len() != u64::from(length) {
-            return Err(ImmutableArtifactError::ExistingLengthMismatch {
-                expected: length,
-                observed: post_read_metadata.len(),
-            });
-        }
-        Ok(Some(StoredArtifact {
-            identity,
-            length,
-            path: final_path.to_path_buf(),
-        }))
-    }
-
-    fn publish_missing(
-        &mut self,
-        final_path: PathBuf,
-        identity: FragmentIdentity,
-        length: u32,
-        bytes: &[u8],
-    ) -> Result<StoredArtifact, ImmutableArtifactError> {
-        let mut last_collision = io::Error::from(ErrorKind::AlreadyExists);
-        for _attempt in 0..TEMP_ATTEMPTS {
-            let nonce = self.next_temporary;
-            self.next_temporary = self.next_temporary.wrapping_add(1);
-            let temporary_path = self.temporary_path(identity, nonce)?;
-            let mut temporary = match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary_path)
-            {
-                Ok(file) => file,
-                Err(source) if source.kind() == ErrorKind::AlreadyExists => {
-                    last_collision = source;
-                    continue;
-                }
-                Err(source) => {
-                    return Err(ImmutableArtifactError::Io {
-                        phase: ImmutableIoPhase::CreateTemporary,
-                        source,
-                    });
-                }
-            };
-            if let Err(source) = temporary.write_all(bytes) {
-                return Err(self.with_cleanup(
-                    ImmutableIoPhase::WriteTemporary,
-                    source,
-                    &temporary_path,
-                ));
-            }
-            if let Err(source) = temporary.sync_all() {
-                return Err(self.with_cleanup(
-                    ImmutableIoPhase::SyncTemporary,
-                    source,
-                    &temporary_path,
-                ));
-            }
-            drop(temporary);
-            return self.publish_temporary(temporary_path, final_path, identity, length);
-        }
-        Err(ImmutableArtifactError::TemporaryNamesExhausted {
-            attempts: TEMP_ATTEMPTS,
-            source: last_collision,
-        })
-    }
-
-    fn publish_temporary(
-        &mut self,
-        temporary_path: PathBuf,
-        final_path: PathBuf,
-        identity: FragmentIdentity,
-        length: u32,
-    ) -> Result<StoredArtifact, ImmutableArtifactError> {
-        match fs::rename(&temporary_path, &final_path) {
-            Ok(()) => {
-                sync_directory(&self.fragments)?;
-                Ok(StoredArtifact {
-                    identity,
-                    length,
-                    path: final_path,
-                })
-            }
-            Err(source) => {
-                Err(self.with_cleanup(ImmutableIoPhase::PublishTemporary, source, &temporary_path))
-            }
-        }
-    }
-
-    fn temporary_path(
-        &self,
-        identity: FragmentIdentity,
-        nonce: u64,
-    ) -> Result<PathBuf, ImmutableArtifactError> {
-        let name = artifact_name(identity);
-        let name = core::str::from_utf8(&name)
-            .map_err(|source| ImmutableArtifactError::InvalidArtifactName { source })?;
-        Ok(self.fragments.join(format!("{name}.tmp.{nonce}")))
-    }
-
-    fn with_cleanup(
-        &self,
-        phase: ImmutableIoPhase,
-        source: io::Error,
-        temporary_path: &Path,
-    ) -> ImmutableArtifactError {
-        match self.cleanup_temporary(temporary_path) {
-            Ok(()) => ImmutableArtifactError::Io { phase, source },
-            Err((cleanup_phase, cleanup_source)) => ImmutableArtifactError::IoWithCleanup {
-                phase,
-                source,
-                cleanup_phase,
-                cleanup_source,
-            },
-        }
-    }
-
-    fn cleanup_temporary(
-        &self,
-        temporary_path: &Path,
-    ) -> Result<(), (ImmutableIoPhase, io::Error)> {
-        fs::remove_file(temporary_path)
-            .map_err(|source| (ImmutableIoPhase::RemoveTemporary, source))?;
-        sync_directory(&self.fragments).map_err(|error| match error {
-            ImmutableArtifactError::Io { phase, source } => (phase, source),
-            _ => (
-                ImmutableIoPhase::SyncArtifactDirectory,
-                io::Error::other("unexpected directory-sync error"),
-            ),
-        })
+        facts: crate::manifest::StoredFragmentFacts,
+        output: &'fragment mut [u8],
+    ) -> Result<FragmentView<'fragment>, ImmutableArtifactError> {
+        let bytes = self
+            .store
+            .read_into(facts.fragment, Some(facts.fragment_length), output)?;
+        FragmentView::validate(bytes).map_err(ImmutableArtifactError::FragmentGrammar)
     }
 }
 
-fn hash_file(file: &mut File, length: u32) -> Result<FragmentIdentity, ImmutableArtifactError> {
-    let mut remaining =
-        usize::try_from(length).map_err(|source| ImmutableArtifactError::LengthAddressSpace {
-            observed: length,
-            source,
-        })?;
-    let mut observed_bytes = 0_usize;
-    let mut buffer = [0_u8; READ_CHUNK_BYTES];
-    let mut hasher = ArtifactHasher::<IrFragmentEncoding, IrFragmentDomain>::new();
-    while remaining != 0 {
-        let requested = remaining.min(buffer.len());
-        let read =
-            file.read(&mut buffer[..requested])
-                .map_err(|source| ImmutableArtifactError::Io {
-                    phase: ImmutableIoPhase::ReadExisting,
-                    source,
-                })?;
-        if read == 0 {
-            return Err(ImmutableArtifactError::ExistingTruncated {
-                expected: length,
-                observed: observed_bytes,
-                source: io::Error::from(ErrorKind::UnexpectedEof),
-            });
-        }
-        hasher.write_chunk(&buffer[..read]);
-        remaining -= read;
-        observed_bytes += read;
-    }
-    let mut extra = [0_u8; 1];
-    let extra_read = file
-        .read(&mut extra)
-        .map_err(|source| ImmutableArtifactError::Io {
-            phase: ImmutableIoPhase::ReadExisting,
-            source,
-        })?;
-    if extra_read != 0 {
-        let observed = file
-            .metadata()
-            .map_err(|source| ImmutableArtifactError::Io {
-                phase: ImmutableIoPhase::ReadExistingMetadata,
-                source,
-            })?;
-        return Err(ImmutableArtifactError::ExistingLengthMismatch {
-            expected: length,
-            observed: observed.len(),
-        });
-    }
-    Ok(hasher.finalize())
-}
-
-fn sync_directory(directory: &Path) -> Result<(), ImmutableArtifactError> {
-    let directory_file = File::open(directory).map_err(|source| ImmutableArtifactError::Io {
-        phase: ImmutableIoPhase::OpenArtifactDirectory,
-        source,
-    })?;
-    directory_file
-        .sync_all()
-        .map_err(|source| ImmutableArtifactError::Io {
-            phase: ImmutableIoPhase::SyncArtifactDirectory,
-            source,
-        })
-}
-
-fn artifact_name(identity: FragmentIdentity) -> [u8; ARTIFACT_NAME_BYTES] {
-    let raw: &[u8; HASH_BYTES] = identity.as_ref();
-    let mut name = [0_u8; ARTIFACT_NAME_BYTES];
-    for (index, byte) in raw.iter().copied().enumerate() {
-        name[index * 2] = HEX_DIGITS[usize::from(byte >> 4)];
-        name[index * 2 + 1] = HEX_DIGITS[usize::from(byte & 0x0f)];
-    }
-    name[HEX_NAME_BYTES..].copy_from_slice(ARTIFACT_EXTENSION.as_bytes());
-    name
-}
-
-fn initial_nonce() -> u64 {
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        });
-    time ^ u64::from(std::process::id()).rotate_left(17)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        fs::{self, File},
-        io::{self, Read},
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
-    use nudox_id::HASH_BYTES;
-    use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
-    use nudox_ir_format::{
-        AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PreparedFragment,
-        PrimitiveType, SourceIdentity, TypeNode,
-    };
-    use nudox_ir_vocab::{AtomId, TypeId};
-
-    use super::{ImmutableArtifactError, ImmutableArtifactStore};
-
-    #[derive(Debug, thiserror::Error)]
-    enum TestError {
-        #[error(transparent)]
-        Io(#[from] io::Error),
-        #[error(transparent)]
-        Artifact(#[from] ImmutableArtifactError),
-        #[error("system clock is before the Unix epoch")]
-        Clock(#[source] std::time::SystemTimeError),
-        #[error(transparent)]
-        Prepare(#[from] nudox_ir_format::PrepareError),
-        #[error(transparent)]
-        Write(#[from] nudox_ir_format::WriteError),
-        #[error(transparent)]
-        Fragment(#[from] nudox_ir_format::FragmentError),
-        #[error(transparent)]
-        Manifest(#[from] nudox_ir_format::FragmentRangeManifestError),
-    }
-
-    #[test]
-    fn ensure_reuses_valid_identity_without_rewriting_final_bytes() -> Result<(), TestError> {
-        let directory = unique_directory()?;
-        let mut store = ImmutableArtifactStore::new(&directory)?;
-        let (bytes, length) = fragment()?;
-        let view = FragmentView::validate(&bytes[..length])?;
-        let manifest = FragmentRangeManifest::from_view(&view)?;
-        let first = store.ensure(&manifest, &view)?;
-
-        let file_name = first
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "artifact path is not valid UTF-8",
-                )
-            })?;
-        assert_eq!(file_name.len(), HASH_BYTES * 2 + ".irfrag".len());
-        assert!(
-            file_name[..HASH_BYTES * 2]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        );
-
-        let before = fs::metadata(&first.path)?;
-        let mut observed = [0_u8; 256];
-        File::open(&first.path)?.read_exact(&mut observed[..length])?;
-        assert_eq!(&observed[..length], view.as_ref());
-
-        let second = store.ensure(&manifest, &view)?;
-        let after = fs::metadata(&second.path)?;
-        assert_eq!(first, second);
-        assert_eq!(before.len(), after.len());
-        assert_eq!(before.modified()?, after.modified()?);
-
-        fs::remove_dir_all(directory)?;
-        Ok(())
-    }
-
-    fn fragment() -> Result<([u8; 256], usize), TestError> {
-        let source = SourceIdentity {
-            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"storage-source"),
-            byte_len: 14,
-        };
-        let recipe = CompileRecipeFact::derive(
-            Language::Rust,
-            Stage::LowerIr,
-            NativeTool::Rustc,
-            source.identity,
-            ContentId::<ToolchainDomain>::from_canonical_bytes(b"storage-toolchain"),
-        );
-        let entities = [EntityRecord {
-            semantic_type: TypeId::new(0),
-            name: AtomId::new(0),
-            kind: EntityKind::Constant,
-        }];
-        let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
-        let atoms = [AtomInput { bytes: b"stored" }];
-        let prepared = PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms)?;
-        let mut bytes = [0; 256];
-        let length = prepared.required_capacity();
-        let _ = prepared.write_into(&mut bytes)?;
-        Ok((bytes, length))
-    }
-
-    fn unique_directory() -> Result<PathBuf, TestError> {
-        let elapsed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(TestError::Clock)?
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "nudox-compile-publication-immutable-{}-{elapsed}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory)?;
-        Ok(directory)
+fn stored_artifact(stored: StoredFile<IrFragmentEncoding, IrFragmentDomain>) -> StoredArtifact {
+    StoredArtifact {
+        identity: stored.identity,
+        length: stored.length,
+        path: stored.path,
     }
 }

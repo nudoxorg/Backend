@@ -8,9 +8,15 @@ publish.workspace = true
 
 [dependencies]
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-durable-journal = { path = "../nudox-durable-journal" }
 nudox-hydration = { path = "../nudox-hydration" }
 nudox-id = { path = "../nudox-id" }
 nudox-ir-format = { path = "../nudox-ir-format" }
+nudox-object = { path = "../nudox-object" }
+nudox-root = { path = "../nudox-root" }
+nudox-schema = { path = "../nudox-schema" }
+nudox-store-memory = { path = "../nudox-store-memory" }
 thiserror.workspace = true
 
 [dev-dependencies]
