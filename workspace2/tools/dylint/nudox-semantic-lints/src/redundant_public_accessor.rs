@@ -7,13 +7,13 @@ use rustc_session::declare_lint;
 declare_lint! {
     /// ### What it does
     ///
-    /// Finds public inherent methods that only return one field from `self`.
+    /// Finds crate-visible inherent methods that only return one field from `self`.
     ///
     /// Direct public facts should be fields. When construction must remain sealed, expose a
     /// read-only public view through `Deref` rather than multiplying one-line getters.
     pub NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
     Warn,
-    "a public method only returns a field"
+    "a crate-visible method only returns a field"
 }
 
 pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>) {
@@ -23,7 +23,10 @@ pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>)
             .tcx
             .associated_item(item.owner_id.def_id)
             .is_method()
-        || !context.tcx.visibility(item.owner_id.def_id).is_public()
+        || !context
+            .tcx
+            .visibility(item.owner_id.def_id)
+            .is_accessible_from(rustc_hir::def_id::CRATE_DEF_ID.to_def_id(), context.tcx)
     {
         return;
     }
@@ -59,7 +62,7 @@ pub(crate) fn check<'tcx>(context: &LateContext<'tcx>, item: &'tcx ImplItem<'_>)
         NUDOX_REDUNDANT_PUBLIC_ACCESSOR,
         item.span,
         format!(
-            "public accessor only returns the field `{}`",
+            "crate-visible accessor only returns the field `{}`",
             field_name.name
         ),
         None,

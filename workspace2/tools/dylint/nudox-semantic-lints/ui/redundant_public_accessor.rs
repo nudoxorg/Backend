@@ -50,4 +50,14 @@ impl ProtectedFact {
     }
 }
 
+struct CrateFact {
+    bytes: usize,
+}
+
+impl CrateFact {
+    pub(crate) const fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
 fn main() {}
