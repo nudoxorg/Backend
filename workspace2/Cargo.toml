@@ -18,10 +18,22 @@ futures-core = { version = "0.3.31", default-features = false }
 fearless_simd = { version = "0.7.0", default-features = false }
 atomic-waker = { version = "1.1.2", default-features = false }
 allocation-counter = "0.8.1"
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["test-support"] }
+loom = "0.7.2"
+opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "=0.32.0"
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
 rstest = { version = "0.26.1", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+tantivy = "0.26.1"
 thiserror = { version = "2", default-features = false }
+tracing = "=0.1.44"
+tracing-opentelemetry = "=0.33.0"
+tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 trybuild = "1.0.118"
+ureq = "=3.4.0"
 zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
 
 [workspace.lints.rust]

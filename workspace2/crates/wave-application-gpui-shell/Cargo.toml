@@ -1,0 +1,23 @@
+[package]
+name = "wave-application-gpui-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[package.metadata.nudox]
+role = "adapter"
+
+[features]
+default = []
+# The fallback state projection is always available. This feature gates only the
+# actual GPUI entity/view so dependency resolution can be measured independently.
+real-gpui = ["dep:gpui"]
+
+[dependencies]
+wave-application-core = { path = "../wave-application-core" }
+gpui = { workspace = true, optional = true }
+
+[lints]
+workspace = true
