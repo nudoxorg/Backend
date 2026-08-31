@@ -30,7 +30,7 @@ pub(crate) struct HeaderRecord {
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub(crate) struct FrameRecord {
     sequence: U64<LittleEndian>,
-    record: WorkflowRecord,
+    pub(crate) record: WorkflowRecord,
     checksum: [u8; CHECKSUM_BYTES],
 }
 
@@ -111,10 +111,6 @@ impl FrameRecord {
 
     pub(crate) fn sequence(&self) -> FrameSequence {
         FrameSequence::from(self.sequence.get())
-    }
-
-    pub(crate) fn record(&self) -> WorkflowRecord {
-        self.record
     }
 
     pub(crate) fn checksum_is_valid(&self) -> bool {

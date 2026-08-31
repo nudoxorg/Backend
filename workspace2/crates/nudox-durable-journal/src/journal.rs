@@ -269,7 +269,7 @@ fn read_record(file: &mut File, expected: FrameSequence) -> Result<WorkflowRecor
                 .ok_or(JournalError::OffsetOverflow { sequence: observed })?,
         });
     }
-    Ok(frame.record())
+    Ok(frame.record)
 }
 
 fn map_replay_error(error: ReplayError<JournalError>) -> JournalError {
