@@ -20,9 +20,10 @@ use crate::{
 
 /// One concrete service that owns at most one bounded adaptive effect.
 ///
-/// The compiler registry is an identity passthrough today and is reported as such. Immutable
-/// index, graph, and vector providers have no accepted production seam, so their commands return
-/// typed degraded dependency facts. C6 policy selection and its local bundle execution are real.
+/// The compiler registry currently accepts vocabulary rows but has no typed compiler/IR
+/// publication result. Immutable index, graph, and vector providers have no accepted
+/// production seam, so their commands return typed degraded dependency facts. C6 policy
+/// selection and its local bundle execution are real.
 pub struct ApplicationService {
     active_bundle: Option<ActiveBundle>,
     execution: Option<ActiveExecution>,
@@ -157,32 +158,13 @@ impl ApplicationService {
             return Self::rejected(correlation, Self::unknown_stage(stage));
         };
         match FullRegistry.dispatch(language, stage, source.as_ref()) {
-            Ok(compiled) => match InputText::from_compiler_bytes(compiled) {
-                Some(passthrough) => ApplicationReply {
-                    correlation,
-                    body: ReplyBody::CompilerPassthrough {
-                        package,
-                        language,
-                        stage,
-                        source: passthrough,
-                    },
-                    terminal: Terminal::Partial {
-                        emitted: 1,
-                        unavailable: Capability::CompilerOutput,
-                    },
-                    diagnostic: Some(Diagnostic {
-                        code: DiagnosticCode::DependencyUnavailable,
-                        detail: DiagnosticDetail::Capability(Capability::CompilerOutput),
-                    }),
-                },
-                None => Self::rejected(
-                    correlation,
-                    Diagnostic {
-                        code: DiagnosticCode::CompilerOutputUnrepresentable,
-                        detail: DiagnosticDetail::Text(source),
-                    },
-                ),
-            },
+            // The registry currently lends its input bytes back to its caller.  They are not a
+            // validated compiler/IR result, so they must never enter a generated reply.  The
+            // compiler manager owns the next seam; until it returns a typed publication result,
+            // this is an honest degraded terminal.
+            Ok(_accepted_source) => {
+                Self::dependency_unavailable(correlation, Capability::CompilerOutput)
+            }
             Err(source) => Self::rejected(
                 correlation,
                 Diagnostic {

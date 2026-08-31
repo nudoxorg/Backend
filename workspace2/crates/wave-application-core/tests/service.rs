@@ -112,46 +112,58 @@ fn acquire_and_complete(
 }
 
 #[test]
-fn compiler_registry_passthrough_is_source_sensitive_but_never_claims_an_artifact()
+fn accepted_registry_bytes_never_claim_compiler_output_and_rejections_keep_causes()
 -> Result<(), ServiceTestError> {
     let mut service = ApplicationService::new();
-    let first_source = text("fn first() {}")?;
-    let first = service.execute(&ApplicationInput::Generate {
+    let accepted = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(11),
         language: text("rust")?,
         stage: text("lower-ir")?,
         package: text("demo")?,
-        source: first_source,
+        source: text("fn first() {}")?,
     });
     assert_eq!(
-        first.terminal,
-        Terminal::Partial {
-            emitted: 1,
+        accepted.terminal,
+        Terminal::Degraded {
+            emitted: 0,
             unavailable: Capability::CompilerOutput,
         }
     );
     assert!(matches!(
-        first.body,
-        ReplyBody::CompilerPassthrough { source, .. } if source == first_source
+        accepted.body,
+        ReplyBody::DependencyUnavailable {
+            capability: Capability::CompilerOutput,
+        }
     ));
     assert_eq!(
-        first.diagnostic.map(|diagnostic| diagnostic.code),
-        Some(DiagnosticCode::DependencyUnavailable)
+        accepted.diagnostic,
+        Some(wave_application_core::Diagnostic {
+            code: DiagnosticCode::DependencyUnavailable,
+            detail: wave_application_core::DiagnosticDetail::Capability(Capability::CompilerOutput,),
+        })
     );
 
-    let second_source = text("fn second() {}")?;
-    let second = service.execute(&ApplicationInput::Generate {
+    let rejected = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(12),
-        language: text("rust")?,
-        stage: text("parse")?,
+        language: text("typescript")?,
+        stage: text("lower-ir")?,
         package: text("demo")?,
-        source: second_source,
+        source: text("const second = true;")?,
     });
+    assert!(matches!(rejected.body, ReplyBody::Rejected));
+    assert_eq!(
+        rejected.diagnostic.map(|diagnostic| diagnostic.code),
+        Some(DiagnosticCode::UnsupportedCompilerStage)
+    );
     assert!(matches!(
-        second.body,
-        ReplyBody::CompilerPassthrough { source, .. } if source == second_source
+        rejected.diagnostic.map(|diagnostic| diagnostic.detail),
+        Some(wave_application_core::DiagnosticDetail::Frontend(
+            nudox_compile_vocab::FrontendError::UnsupportedStage {
+                language: nudox_compile_vocab::Language::TypeScriptSubset,
+                stage: nudox_compile_vocab::Stage::LowerIr,
+            }
+        ))
     ));
-    assert_ne!(first.body, second.body);
     Ok(())
 }
 

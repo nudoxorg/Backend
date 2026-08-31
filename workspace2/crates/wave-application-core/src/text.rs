@@ -43,13 +43,6 @@ impl InputText {
             length: value.len(),
         })
     }
-
-    /// Retains one UTF-8 compiler result only when it fits the same fixed reply capacity.
-    #[must_use]
-    pub(crate) fn from_compiler_bytes(value: &[u8]) -> Option<Self> {
-        let value = core::str::from_utf8(value).ok()?;
-        Self::try_from_str(value).ok()
-    }
 }
 
 impl Deref for InputText {

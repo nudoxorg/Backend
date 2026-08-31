@@ -5,7 +5,7 @@ use nudox_adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
     RecoveryCause, ResourceBudget, RetryBudget,
 };
-use nudox_compile_vocab::{FrontendError, Language, Stage};
+use nudox_compile_vocab::FrontendError;
 
 /// Largest result list accepted by the concrete service.
 pub const MAX_REPLY_ROWS: u8 = 4;
@@ -371,17 +371,6 @@ pub struct Diagnostic {
 /// Semantic reply body; all business behavior is represented here rather than in adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplyBody {
-    /// The compiler registry accepted the vocabulary row but returned caller source unchanged.
-    CompilerPassthrough {
-        /// Package named by the request.
-        package: InputText,
-        /// Accepted compiler language.
-        language: Language,
-        /// Accepted compiler stage.
-        stage: Stage,
-        /// Exact source returned by the current registry row, not a claimed compiler artifact.
-        source: InputText,
-    },
     /// A lower-plane dependency is not present in this application slice.
     DependencyUnavailable {
         /// Exact missing lower-plane capability.
