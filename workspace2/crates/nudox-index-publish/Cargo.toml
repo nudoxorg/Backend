@@ -1,0 +1,28 @@
+[package]
+name = "nudox-index-publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nudox-durable-journal = { path = "../nudox-durable-journal" }
+nudox-id = { path = "../nudox-id" }
+nudox-index-core = { path = "../nudox-index-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+nudox-hydration = { path = "../nudox-hydration" }
+nudox-index-graph-vector = { path = "../nudox-index-graph-vector" }
+nudox-index-tantivy = { path = "../nudox-index-tantivy" }
+nudox-index-trustfall = { path = "../nudox-index-trustfall" }
+nudox-ir-format = { path = "../nudox-ir-format" }
+nudox-ir-vocab = { path = "../nudox-ir-vocab" }
+nudox-object = { path = "../nudox-object" }
+nudox-root = { path = "../nudox-root" }
+nudox-schema = { path = "../nudox-schema" }
+nudox-store-memory = { path = "../nudox-store-memory" }
+
+[lints]
+workspace = true
