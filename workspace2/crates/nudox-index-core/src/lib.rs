@@ -17,17 +17,18 @@ mod snapshot;
 pub use document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError};
 
 pub use exact::{
-    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentView,
-    MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
+    ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentVerifier,
+    ExactSegmentView, MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
 };
 pub use lexical::{
-    LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalRowValue, LexicalScore,
-    LexicalSegment, LexicalSegmentError, LexicalSegmentView, LexicalSnapshotHit, LexicalTopK,
-    LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
+    LexicalHit, LexicalOperation, LexicalOrderKey, LexicalOutputError, LexicalRow, LexicalRowValue,
+    LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentVerifier, LexicalSegmentView,
+    LexicalSnapshotHit, LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
+    MAX_LEXICAL_TOP_K,
 };
 pub use nudox_id::GenerationId;
 pub use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
-pub use snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotView};
+pub use snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotLane, IndexSnapshotView};
 
 /// Maximum exact or lexical segments a single borrowed manifest can select.
 pub const MAX_SELECTED_SEGMENTS: usize = 8;

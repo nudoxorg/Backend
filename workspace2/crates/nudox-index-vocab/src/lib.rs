@@ -16,8 +16,8 @@
 //! ```
 
 use nudox_id::{
-    ContentId, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
-    IndexVectorSegmentDomain,
+    ArtifactId, ContentId, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexPackDomain,
+    IndexPackEncoding, IndexSnapshotDomain, IndexVectorSegmentDomain,
 };
 
 /// Identity of one immutable index snapshot.
@@ -31,3 +31,6 @@ pub type LexicalSegmentId = ContentId<IndexLexicalSegmentDomain>;
 
 /// Identity of one immutable vector segment.
 pub type VectorSegmentId = ContentId<IndexVectorSegmentDomain>;
+
+/// Physical identity of one complete immutable exact-and-lexical index pack.
+pub type IndexPackId = ArtifactId<IndexPackEncoding, IndexPackDomain>;

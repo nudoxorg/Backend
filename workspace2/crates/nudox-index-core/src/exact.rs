@@ -31,21 +31,14 @@ fn write_bytes(hasher: &mut ContentHasher<IndexExactSegmentDomain>, bytes: &[u8]
     }
 }
 
-fn segment_id(rows: &[ExactRow<'_>]) -> ExactSegmentId {
-    let mut hasher = ContentHasher::<IndexExactSegmentDomain>::new();
-    hasher.write_record(&CanonicalRecord(*b"nudox.exact.rows.v1"));
-    hasher.write_record(&CanonicalRecord((rows.len() as u64).to_le_bytes()));
+fn segment_id<'bytes>(
+    rows: &[ExactRow<'bytes>],
+) -> Result<ExactSegmentId, ExactSegmentError<'bytes>> {
+    let mut verifier = ExactSegmentVerifier::new(rows.len())?;
     for row in rows {
-        write_bytes(&mut hasher, row.key);
-        match row.value_bytes() {
-            Some(value) => {
-                hasher.write_record(&CanonicalRecord([1]));
-                write_bytes(&mut hasher, value);
-            }
-            None => hasher.write_record(&CanonicalRecord([0])),
-        }
+        verifier.admit(*row)?;
     }
-    hasher.finalize()
+    verifier.finish()
 }
 
 /// One borrowed exact row. A tombstone is an immutable deletion fact.
@@ -153,6 +146,124 @@ pub enum ExactSegmentError<'bytes> {
         /// Complete duplicate key.
         key: &'bytes [u8],
     },
+    /// A streaming verifier received a different count than its declared canonical lane.
+    RowCount {
+        /// Canonical row count declared before stream admission began.
+        expected: usize,
+        /// Rows admitted before completion or rejection.
+        observed: usize,
+    },
+}
+
+/// Incremental verifier for one canonical exact-row lane.
+///
+/// It reuses the exact segment's production identity grammar while holding only counters, a
+/// borrowed predecessor, and the hasher. This is for durable streaming readers that must prove
+/// semantic identity without materializing a row array.
+pub struct ExactSegmentVerifier<'bytes> {
+    expected_rows: usize,
+    admitted_rows: usize,
+    payload_bytes: usize,
+    previous: Option<&'bytes [u8]>,
+    hasher: ContentHasher<IndexExactSegmentDomain>,
+}
+
+impl<'bytes> ExactSegmentVerifier<'bytes> {
+    /// Starts a verifier for one declared canonical row count.
+    pub fn new(expected_rows: usize) -> Result<Self, ExactSegmentError<'bytes>> {
+        if expected_rows > MAX_EXACT_ROWS {
+            return Err(ExactSegmentError::TooManyRows {
+                max: MAX_EXACT_ROWS,
+                observed: expected_rows,
+            });
+        }
+        let mut hasher = ContentHasher::<IndexExactSegmentDomain>::new();
+        hasher.write_record(&CanonicalRecord(*b"nudox.exact.rows.v1"));
+        hasher.write_record(&CanonicalRecord((expected_rows as u64).to_le_bytes()));
+        Ok(Self {
+            expected_rows,
+            admitted_rows: 0,
+            payload_bytes: 0,
+            previous: None,
+            hasher,
+        })
+    }
+
+    /// Admits one row in canonical order and incorporates its existing segment grammar.
+    pub fn admit(&mut self, row: ExactRow<'bytes>) -> Result<(), ExactSegmentError<'bytes>> {
+        let observed_rows =
+            self.admitted_rows
+                .checked_add(1)
+                .ok_or(ExactSegmentError::RowCount {
+                    expected: self.expected_rows,
+                    observed: usize::MAX,
+                })?;
+        if observed_rows > self.expected_rows {
+            return Err(ExactSegmentError::RowCount {
+                expected: self.expected_rows,
+                observed: observed_rows,
+            });
+        }
+        let row_payload = row
+            .key
+            .len()
+            .checked_add(row.value_bytes().map_or(0, <[u8]>::len))
+            .ok_or(ExactSegmentError::PayloadBytesOverflow {
+                index: self.admitted_rows,
+            })?;
+        let payload_bytes = self.payload_bytes.checked_add(row_payload).ok_or(
+            ExactSegmentError::PayloadBytesOverflow {
+                index: self.admitted_rows,
+            },
+        )?;
+        if payload_bytes > MAX_EXACT_PAYLOAD_BYTES {
+            return Err(ExactSegmentError::PayloadBytesLimit {
+                max: MAX_EXACT_PAYLOAD_BYTES,
+                observed: payload_bytes,
+            });
+        }
+        if let Some(previous) = self.previous {
+            match previous.cmp(row.key) {
+                core::cmp::Ordering::Less => {}
+                core::cmp::Ordering::Equal => {
+                    return Err(ExactSegmentError::DuplicateKey {
+                        index: self.admitted_rows,
+                        key: row.key,
+                    });
+                }
+                core::cmp::Ordering::Greater => {
+                    return Err(ExactSegmentError::OutOfOrder {
+                        index: self.admitted_rows,
+                        previous,
+                        observed: row.key,
+                    });
+                }
+            }
+        }
+        write_bytes(&mut self.hasher, row.key);
+        match row.value_bytes() {
+            Some(value) => {
+                self.hasher.write_record(&CanonicalRecord([1]));
+                write_bytes(&mut self.hasher, value);
+            }
+            None => self.hasher.write_record(&CanonicalRecord([0])),
+        }
+        self.admitted_rows = observed_rows;
+        self.payload_bytes = payload_bytes;
+        self.previous = Some(row.key);
+        Ok(())
+    }
+
+    /// Finishes only after exactly the declared number of rows was admitted.
+    pub fn finish(self) -> Result<ExactSegmentId, ExactSegmentError<'bytes>> {
+        if self.admitted_rows != self.expected_rows {
+            return Err(ExactSegmentError::RowCount {
+                expected: self.expected_rows,
+                observed: self.admitted_rows,
+            });
+        }
+        Ok(self.hasher.finalize())
+    }
 }
 
 /// Immutable public facts of one validated exact segment.
@@ -232,7 +343,7 @@ impl<'bytes> ExactSegment<'bytes> {
         }
 
         Ok(Self(ExactSegmentView {
-            id: segment_id(rows),
+            id: segment_id(rows)?,
             rows,
         }))
     }

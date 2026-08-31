@@ -9,10 +9,18 @@ use nudox_id::ObjectDomain;
 use nudox_index_core::IndexSnapshot;
 
 mod compiler;
+mod pack;
 
 pub use compiler::{
     CompilationIndexError, CompilationIndexScratch, OpenedCompilationSnapshot,
     RejectedCompilationIndex, seal_compilation_index,
+};
+pub use pack::{
+    ExactPackRow, ExactPackSegment, ExactPackValue, IndexPack, IndexPackCleanup, IndexPackConflict,
+    IndexPackEncodeError, IndexPackFacts, IndexPackLane, IndexPackOpenError, IndexPackPathRole,
+    IndexPackPlan, IndexPackPlanFacts, IndexPackRegion, IndexPackRowInvariant, IndexPackStore,
+    IndexPackStoreError, IndexPackStorePhase, IndexPackView, LexicalPackRow, LexicalPackSegment,
+    LexicalPackValue, RejectedIndexPack, StoredIndexPack, encode_index_pack, plan_index_pack,
 };
 
 /// Immutable public facts of a snapshot tied to one durable canonical publication.

@@ -101,7 +101,8 @@ protocol_registry!(
         (ToolchainDomain, Toolchain, 15, b"nudox.tool.v1\0\0\0"),
         (CompilationTargetDomain, CompilationTarget, 16, b"nudox.target.v1\0"),
         (CompileRecipeDomain, CompileRecipe, 17, b"nudox.recipe.v1\0"),
-        (CompilePublicationDomain, CompilePublication, 18, b"nudox.publish.v1")
+        (CompilePublicationDomain, CompilePublication, 18, b"nudox.publish.v1"),
+        (IndexPackDomain, IndexPack, 19, b"nudox.idx.pack.1")
     }
     encodings {
         (FrameEncoding, Frame, 1, b"nudox.frame.v1\0\0"),
@@ -110,7 +111,8 @@ protocol_registry!(
         (IrFragmentEncoding, IrFragment, 4, b"nudox.irfrag.w1\0"),
         (IrManifestEncoding, IrManifest, 5, b"nudox.irmani.w1\0"),
         (CompilePublicationEncoding, CompilePublication, 6, b"nudox.publish.w1"),
-        (IrFragmentRangeEncoding, IrFragmentRange, 7, b"nudox.irrange.w1")
+        (IrFragmentRangeEncoding, IrFragmentRange, 7, b"nudox.irrange.w1"),
+        (IndexPackEncoding, IndexPack, 8, b"nudox.idxpack.w1")
     }
 );
 
@@ -120,10 +122,10 @@ mod tests {
         CapabilityDomain, CompilationTargetDomain, CompilePublicationDomain,
         CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DependencySetDomain,
         Domain, Encoding, FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
-        IndexSnapshotDomain, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
-        IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding, LocalitySortedEncoding,
-        ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain,
-        StageKeyDomain, ToolchainDomain,
+        IndexPackDomain, IndexPackEncoding, IndexSnapshotDomain, IndexVectorSegmentDomain,
+        IrFragmentDomain, IrFragmentEncoding, IrFragmentRangeEncoding, IrManifestDomain,
+        IrManifestEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
+        OperationDomain, RootDomain, SourceFactDomain, StageKeyDomain, ToolchainDomain,
     };
 
     #[test]
@@ -147,6 +149,7 @@ mod tests {
             CompilationTargetDomain::TAG,
             CompileRecipeDomain::TAG,
             CompilePublicationDomain::TAG,
+            IndexPackDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {
@@ -161,6 +164,7 @@ mod tests {
             IrManifestEncoding::TAG,
             CompilePublicationEncoding::TAG,
             IrFragmentRangeEncoding::TAG,
+            IndexPackEncoding::TAG,
         ];
         for (index, encoding) in encodings.iter().enumerate() {
             for other in encodings.iter().skip(index + 1) {

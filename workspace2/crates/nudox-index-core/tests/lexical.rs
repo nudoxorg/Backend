@@ -33,8 +33,8 @@ fn input_permutation_is_rejected_and_ties_rank_by_document() {
         LexicalSegment::new(&permuted),
         Err(LexicalSegmentError::OutOfOrder {
             index: 1,
-            previous: permuted[0],
-            observed: permuted[1],
+            previous: permuted[0].into(),
+            observed: permuted[1].into(),
         })
     );
 

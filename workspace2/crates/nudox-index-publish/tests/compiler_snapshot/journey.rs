@@ -10,6 +10,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use allocation_counter::{AllocationInfo, measure};
 use nudox_compile_driver::CompiledFragment;
 use nudox_compile_publication::{
     OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
@@ -24,7 +25,11 @@ use nudox_durable_journal::{
 use nudox_id::{ContentId, SourceFactDomain, ToolchainDomain};
 use nudox_index_build::{EntityFact, EntityProjection, IndexBuildScratch, PreparedIndex, build};
 use nudox_index_core::{ExactRow, LexicalRow};
-use nudox_index_publish::{CompilationIndexError, CompilationIndexScratch, seal_compilation_index};
+use nudox_index_publish::{
+    CompilationIndexError, CompilationIndexScratch, IndexPackEncodeError, IndexPackOpenError,
+    IndexPackStore, IndexPackStoreError, encode_index_pack, plan_index_pack,
+    seal_compilation_index,
+};
 use nudox_ir_format::{
     Atom, AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
     PreparedFragment, PrimitiveType, SourceIdentity, TypeNode, WriteError,
@@ -126,6 +131,30 @@ pub(super) enum ReopenError {
     OpenedPublicationLost,
     #[error("compiler-index seal rejected a complete prepared index")]
     Seal(#[from] CompilationIndexError),
+    #[error("index-pack planning or caller-buffer encoding failed")]
+    PackEncode(#[from] IndexPackEncodeError),
+    #[error("durable index-pack publication or reopen failed")]
+    PackStore(#[from] IndexPackStoreError),
+    #[error("validated index pack rejected its own encoded bytes")]
+    PackOpen(#[from] IndexPackOpenError),
+    #[error("published index pack did not preserve compiler snapshot facts")]
+    PackFactsMismatch,
+    #[error("published index pack did not expose the selected exact segment")]
+    MissingExactSegment,
+    #[error("published index pack did not expose the selected lexical segment")]
+    MissingLexicalSegment,
+    #[error("published index pack exact lookup did not preserve the source row")]
+    ExactQueryMismatch,
+    #[error("published index pack lexical lookup did not preserve the source row")]
+    LexicalQueryMismatch,
+    #[error("short caller output did not retain the exact required pack width")]
+    ShortOutputCause,
+    #[error("short caller output was mutated before rejection")]
+    ShortOutputMutated,
+    #[error("reopened hot index query allocated memory")]
+    HotQueryAllocation { observed: AllocationInfo },
+    #[error("hot index query measurement did not execute")]
+    MissingHotQueryMeasurement,
 }
 
 impl From<OpenedFragmentError> for ReopenError {
@@ -161,6 +190,10 @@ impl Fixture {
 
     fn artifacts(&self) -> PathBuf {
         self.directory.join("artifacts")
+    }
+
+    fn index_packs(&self) -> PathBuf {
+        self.directory.join("index-packs")
     }
 
     fn remove(self) -> Result<(), io::Error> {
@@ -213,7 +246,7 @@ fn run_journey(fixture: &Fixture) -> Result<(), JourneyError> {
         }
         journal.shutdown()?;
         let reopened = DurablePublisher::reopen(&fixture.journal(), limits)?;
-        let operation = reopen_and_seal(&reopened, &fixture.artifacts(), &published);
+        let operation = reopen_and_seal(fixture, &reopened, &fixture.artifacts(), &published);
         let shutdown = reopened.shutdown();
         match (operation, shutdown) {
             (Ok(()), Ok(())) => {}
@@ -263,6 +296,7 @@ fn compact_fragment(
 }
 
 fn reopen_and_seal(
+    fixture: &Fixture,
     journal: &DurablePublisher,
     artifacts: &Path,
     selected: &PublishedCompilation,
@@ -322,6 +356,108 @@ fn reopen_and_seal(
         || sealed.snapshot.lexical != [prepared.lexical.id].as_slice()
     {
         return Err(ReopenError::ReopenedFactsMismatch);
+    }
+    publish_and_reopen_index_pack(fixture, &sealed, &prepared)?;
+    Ok(())
+}
+
+fn publish_and_reopen_index_pack(
+    fixture: &Fixture,
+    sealed: &nudox_index_publish::OpenedCompilationSnapshot<'_, '_, '_, '_, '_>,
+    prepared: &PreparedIndex<'_>,
+) -> Result<(), ReopenError> {
+    let plan = plan_index_pack(sealed)?;
+    let before = [0xA5_u8];
+    let mut short_output = before;
+    match encode_index_pack(&plan, &mut short_output) {
+        Err(IndexPackEncodeError::OutputTooSmall {
+            required,
+            available: 1,
+        }) if required == plan.encoded_bytes => {}
+        _ => return Err(ReopenError::ShortOutputCause),
+    }
+    if short_output != before {
+        return Err(ReopenError::ShortOutputMutated);
+    }
+    let mut encoded = vec![0_u8; plan.encoded_bytes];
+    let id = encode_index_pack(&plan, &mut encoded)?;
+    let store = IndexPackStore::create(fixture.index_packs())?;
+    let stored = store.publish(&plan)?;
+    let duplicate = store.publish(&plan)?;
+    if stored.id != id
+        || duplicate.id != id
+        || stored.generation != sealed.snapshot.generation
+        || stored.snapshot != sealed.snapshot.id
+    {
+        return Err(ReopenError::PackFactsMismatch);
+    }
+    drop(store);
+    let reopened_store = IndexPackStore::create(fixture.index_packs())?;
+    let pack = reopened_store.open(id)?;
+    if pack.generation != sealed.snapshot.generation || pack.snapshot != sealed.snapshot.id {
+        return Err(ReopenError::PackFactsMismatch);
+    }
+    let exact = pack
+        .view()
+        .exact(prepared.exact.id)?
+        .ok_or(ReopenError::MissingExactSegment)?;
+    let expected_exact = prepared
+        .exact
+        .rows
+        .first()
+        .ok_or(ReopenError::ExactQueryMismatch)?;
+    let observed_exact = exact
+        .lookup(expected_exact.key)?
+        .ok_or(ReopenError::ExactQueryMismatch)?;
+    if observed_exact.key != expected_exact.key {
+        return Err(ReopenError::ExactQueryMismatch);
+    }
+    let lexical = pack
+        .view()
+        .lexical(prepared.lexical.id)?
+        .ok_or(ReopenError::MissingLexicalSegment)?;
+    let expected_lexical = prepared
+        .lexical
+        .rows
+        .first()
+        .ok_or(ReopenError::LexicalQueryMismatch)?;
+    let lexical_range = lexical.term_range(expected_lexical.term)?;
+    let observed_lexical = lexical.row(lexical_range.start)?;
+    if observed_lexical.term != expected_lexical.term
+        || observed_lexical.document != expected_lexical.document
+    {
+        return Err(ReopenError::LexicalQueryMismatch);
+    }
+    assert_hot_queries_do_not_allocate(&pack, prepared.exact.id, expected_exact.key)?;
+    Ok(())
+}
+
+fn assert_hot_queries_do_not_allocate(
+    pack: &nudox_index_publish::IndexPack<Vec<u8>>,
+    selected: nudox_index_core::ExactSegmentId,
+    key: &[u8],
+) -> Result<(), ReopenError> {
+    let _warm_exact = pack.view().exact(selected)?;
+    let mut result = None;
+    let allocation = measure(|| {
+        result = Some(pack.view().exact(selected).and_then(|selected| {
+            selected
+                .ok_or(IndexPackOpenError::LayoutSlot {
+                    lane: nudox_index_publish::IndexPackLane::Exact,
+                    ordinal: 0,
+                })?
+                .lookup(key)
+        }));
+    });
+    match result {
+        Some(Ok(Some(_row))) => {}
+        Some(Ok(None)) | None => return Err(ReopenError::MissingHotQueryMeasurement),
+        Some(Err(error)) => return Err(ReopenError::PackOpen(error)),
+    }
+    if allocation != AllocationInfo::default() {
+        return Err(ReopenError::HotQueryAllocation {
+            observed: allocation,
+        });
     }
     Ok(())
 }

@@ -2,7 +2,9 @@
 
 use core::ops::Deref;
 
-use nudox_id::{ContentHasher, FixedCanonicalRecord, GenerationId, IndexSnapshotDomain};
+use nudox_id::{
+    ContentHasher, FixedCanonicalRecord, GenerationId, HASH_BYTES, IndexSnapshotDomain,
+};
 use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::MAX_SELECTED_SEGMENTS;
@@ -110,6 +112,99 @@ impl<'selection> IndexSnapshot<'selection> {
             lexical,
         }))
     }
+
+    /// Derives the existing snapshot identity from fixed-capacity canonical directory slots.
+    ///
+    /// Durable readers use this when parsed entries must remain `Option`-backed until every
+    /// directory position is proved present. It shares the same hash grammar as [`Self::new`]
+    /// without fabricating placeholder segment identities for unused capacity.
+    pub fn canonical_identity_from_slots<const CAPACITY: usize>(
+        generation: GenerationId,
+        exact: &[Option<ExactSegmentId>; CAPACITY],
+        exact_count: usize,
+        lexical: &[Option<LexicalSegmentId>; CAPACITY],
+        lexical_count: usize,
+    ) -> Result<IndexSnapshotId, IndexSnapshotError> {
+        if exact_count > MAX_SELECTED_SEGMENTS {
+            return Err(IndexSnapshotError::ExactSegmentLimit {
+                limit: MAX_SELECTED_SEGMENTS,
+                observed: exact_count,
+            });
+        }
+        if lexical_count > MAX_SELECTED_SEGMENTS {
+            return Err(IndexSnapshotError::LexicalSegmentLimit {
+                limit: MAX_SELECTED_SEGMENTS,
+                observed: lexical_count,
+            });
+        }
+        let exact = exact
+            .get(..exact_count)
+            .ok_or(IndexSnapshotError::CanonicalExactSlots {
+                required: exact_count,
+                available: CAPACITY,
+            })?;
+        let lexical =
+            lexical
+                .get(..lexical_count)
+                .ok_or(IndexSnapshotError::CanonicalLexicalSlots {
+                    required: lexical_count,
+                    available: CAPACITY,
+                })?;
+        let mut hasher = ContentHasher::<IndexSnapshotDomain>::new();
+        hasher.write_record(&CanonicalRecord(*b"nudox.index.snapshot.v2"));
+        hasher.write_record(&CanonicalRecord(*generation));
+        hash_canonical_lane(&mut hasher, exact, IndexSnapshotLane::Exact)?;
+        hash_canonical_lane(&mut hasher, lexical, IndexSnapshotLane::Lexical)?;
+        Ok(hasher.finalize())
+    }
+}
+
+fn hash_canonical_lane<SegmentId>(
+    hasher: &mut ContentHasher<IndexSnapshotDomain>,
+    slots: &[Option<SegmentId>],
+    lane: IndexSnapshotLane,
+) -> Result<(), IndexSnapshotError>
+where
+    SegmentId: CanonicalSnapshotId,
+{
+    hasher.write_record(&CanonicalRecord((slots.len() as u64).to_le_bytes()));
+    let mut previous = None;
+    for (ordinal, slot) in slots.iter().copied().enumerate() {
+        let id = slot.ok_or(IndexSnapshotError::CanonicalSlotMissing { lane, ordinal })?;
+        if let Some(previous) = previous
+            && previous >= id
+        {
+            return Err(IndexSnapshotError::CanonicalOrder { lane, ordinal });
+        }
+        hasher.write_record(&CanonicalRecord(id.canonical_bytes()));
+        previous = Some(id);
+    }
+    Ok(())
+}
+
+trait CanonicalSnapshotId: Copy + Ord {
+    fn canonical_bytes(self) -> [u8; HASH_BYTES];
+}
+
+impl CanonicalSnapshotId for ExactSegmentId {
+    fn canonical_bytes(self) -> [u8; HASH_BYTES] {
+        *self
+    }
+}
+
+impl CanonicalSnapshotId for LexicalSegmentId {
+    fn canonical_bytes(self) -> [u8; HASH_BYTES] {
+        *self
+    }
+}
+
+/// One immutable snapshot directory lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexSnapshotLane {
+    /// Exact-key segment identities.
+    Exact,
+    /// Lexical term/document segment identities.
+    Lexical,
 }
 
 /// Rejection while deriving an immutable snapshot selection.
@@ -150,5 +245,37 @@ pub enum IndexSnapshotError {
         right_position: usize,
         /// Repeated lexical segment identity.
         id: LexicalSegmentId,
+    },
+    /// Fixed-capacity exact slots could not cover the declared canonical prefix.
+    #[error("canonical exact slots cannot cover the declared prefix")]
+    CanonicalExactSlots {
+        /// Declared canonical exact prefix width.
+        required: usize,
+        /// Available fixed exact slot capacity.
+        available: usize,
+    },
+    /// Fixed-capacity lexical slots could not cover the declared canonical prefix.
+    #[error("canonical lexical slots cannot cover the declared prefix")]
+    CanonicalLexicalSlots {
+        /// Declared canonical lexical prefix width.
+        required: usize,
+        /// Available fixed lexical slot capacity.
+        available: usize,
+    },
+    /// A declared canonical directory position had not been proved present.
+    #[error("canonical snapshot slot was not proved present")]
+    CanonicalSlotMissing {
+        /// Lane containing the absent fixed slot.
+        lane: IndexSnapshotLane,
+        /// Declared canonical position without an identity.
+        ordinal: usize,
+    },
+    /// Canonical directory identities were not strictly ordered.
+    #[error("canonical snapshot identities were not strictly ordered")]
+    CanonicalOrder {
+        /// Lane containing the out-of-order identity.
+        lane: IndexSnapshotLane,
+        /// Later noncanonical identity position.
+        ordinal: usize,
     },
 }
