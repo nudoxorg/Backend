@@ -142,7 +142,7 @@ impl<Generation, Work, Failure> PayloadSlot<Generation, Work, Failure> {
         // SAFETY: the unique work-ready bit acquires queued publication and grants the only move.
         match unsafe { self.payload.take() } {
             SlotPayload::Queued(queued) => {
-                let owned = self.slot.dequeue(queued.slot_proof());
+                let owned = self.slot.dequeue(&queued.slot);
                 OwnerPayload::Queued(queued.into_dequeued(), owned)
             }
             SlotPayload::Terminal(terminal) => OwnerPayload::Terminal(terminal),

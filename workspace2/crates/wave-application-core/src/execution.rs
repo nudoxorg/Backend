@@ -13,7 +13,7 @@ use crate::CapabilityTransition;
 /// One non-cloneable local action owner with an explicit wake and fused terminal.
 pub(crate) struct LocalCapabilityExecution {
     request: Option<ExecutionRequest>,
-    transition: CapabilityTransition,
+    pub(crate) transition: CapabilityTransition,
     phase: WakePhase,
 }
 
@@ -31,10 +31,6 @@ impl LocalCapabilityExecution {
             transition,
             phase: WakePhase::Armed,
         }
-    }
-
-    pub(crate) const fn transition(&self) -> CapabilityTransition {
-        self.transition
     }
 
     pub(crate) fn cancel(mut self) -> Option<ExecutionTerminal> {

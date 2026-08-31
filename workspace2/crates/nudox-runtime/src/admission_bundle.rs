@@ -33,8 +33,8 @@ pub(crate) struct BytesHeld<Generation, Work> {
 pub(crate) struct QueuedWork<Generation, Work> {
     permit: WorkPermit,
     byte_reservation: ReservedCredits,
-    slot: QueuedSlot,
-    handle: WorkHandle,
+    pub(crate) slot: QueuedSlot,
+    pub(crate) handle: WorkHandle,
     pub(crate) generation: Generation,
     pub(crate) work: Work,
 }
@@ -173,7 +173,7 @@ impl<Generation, Work: BoundedWork> BytesHeld<Generation, Work> {
     where
         StoragePolicy::Payloads: RuntimePayloadTable<Generation, Work, Failure>,
     {
-        let index = self.permit.index();
+        let index = self.permit.index;
         match fabric.payload_slot(index).claim(fabric.identity, index) {
             Ok((handle, slot)) => Ok(QueuedWork {
                 permit: self.permit,
@@ -189,13 +189,6 @@ impl<Generation, Work: BoundedWork> BytesHeld<Generation, Work> {
 }
 
 impl<Generation, Work> QueuedWork<Generation, Work> {
-    pub(crate) const fn handle(&self) -> WorkHandle {
-        self.handle
-    }
-    pub(crate) const fn slot_proof(&self) -> &QueuedSlot {
-        &self.slot
-    }
-
     pub(crate) fn into_dequeued(self) -> DequeuedWork<Generation, Work> {
         let Self {
             permit,

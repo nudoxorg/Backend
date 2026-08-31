@@ -18,13 +18,7 @@ pub(crate) const MAX_WORK_SLOTS: usize = u64::BITS as usize;
 /// Unique permission to use one physical payload coordinate and its matching slot state.
 #[derive(Debug)]
 pub(crate) struct WorkPermit {
-    index: SlotIndex,
-}
-
-impl WorkPermit {
-    pub(crate) const fn index(&self) -> SlotIndex {
-        self.index
-    }
+    pub(crate) index: SlotIndex,
 }
 
 /// Lock-free fixed-capacity issuer. A returned permit restores exactly the bit it consumed.
@@ -123,14 +117,14 @@ mod tests {
         let retired = permits
             .acquire()
             .ok_or(PermitTestError::InitialPermitMissing)?;
-        let retired_index = retired.index();
+        let retired_index = retired.index;
         let retiring = Arc::clone(&permits);
         let retire = thread::spawn(move || retiring.retire(retired));
         let competing = Arc::clone(&permits);
         let acquire = thread::spawn(move || competing.acquire());
         crate::test_report::join(retire.join())?;
         if let Some(permit) = crate::test_report::join(acquire.join())? {
-            if permit.index() == retired_index {
+            if permit.index == retired_index {
                 return Err(PermitTestError::RetiredCoordinateReissued);
             }
             permits.restore(permit);
@@ -142,7 +136,7 @@ mod tests {
             });
         }
         let survivor = permits.acquire().ok_or(PermitTestError::SurvivorMissing)?;
-        if survivor.index() == retired_index {
+        if survivor.index == retired_index {
             return Err(PermitTestError::RetiredCoordinateReissued);
         }
         permits.restore(survivor);

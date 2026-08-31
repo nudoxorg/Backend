@@ -183,7 +183,7 @@ where
                 (event, permit)
             }
             crate::payload_slot::TerminalPayload::Queued(queued) => {
-                let handle = queued.handle();
+                let handle = queued.handle;
                 self.fabric.payload_slot(index).restore_queued(queued);
                 self.fabric.ready.publish(index);
                 return Err(OwnerFault::TerminalReadyContainedWork { handle });
@@ -317,7 +317,7 @@ fn finish<
     let completed = queued.complete(outcome);
     fabric.byte_credits.release(completed.byte_reservation);
     fabric.accounting.terminal(completed.event.outcome.class());
-    let index = completed.permit.index();
+    let index = completed.permit.index;
     fabric.payload_slot(index).retain_terminal(
         owned,
         TerminalRecord {

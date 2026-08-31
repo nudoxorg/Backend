@@ -505,7 +505,7 @@ impl ApplicationService {
             self.execution = Some(execution);
             return Self::rejected(correlation, Self::operation_unavailable(operation));
         }
-        let transition = execution.task.transition();
+        let transition = execution.task.transition;
         let waker = std::task::Waker::noop();
         let mut context = Context::from_waker(waker);
         match TaskPin::new(&mut execution.task).poll(&mut context) {
@@ -580,7 +580,7 @@ impl ApplicationService {
             self.execution = Some(execution);
             return Self::rejected(correlation, Self::operation_unavailable(operation));
         }
-        let transition = execution.task.transition();
+        let transition = execution.task.transition;
         let Some(terminal) = execution.task.cancel() else {
             return self.fused_or_rejected(correlation, operation);
         };

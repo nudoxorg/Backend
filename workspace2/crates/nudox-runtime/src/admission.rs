@@ -124,7 +124,7 @@ where
                 });
             }
         };
-        let handle = queued.handle();
+        let handle = queued.handle;
         let index = handle.index();
         self.fabric.payload_slot(index).publish(queued);
         self.fabric.ready.publish(index);
