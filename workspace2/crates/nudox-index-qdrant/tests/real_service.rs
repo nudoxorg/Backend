@@ -4,7 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
+use nudox_index_graph_vector::{
+    Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
+    VectorQueryError, VectorSegmentError, exact_vector_query,
+};
 use nudox_index_qdrant::{
     MalformedResponseCause, QdrantAdmissionError, QdrantBlockingAdapter, QdrantError, QdrantPoint,
 };
@@ -31,9 +34,35 @@ fn unique_collection() -> String {
     format!("nudox_it_{}_{}", std::process::id(), nanos)
 }
 
-fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
+#[derive(Debug, thiserror::Error)]
+enum JourneyError {
+    #[error("Qdrant journey failed: {0}")]
+    Qdrant(#[from] QdrantError),
+    #[error("graph-vector oracle rejected the differential query: {0:?}")]
+    Graph(VectorQueryError),
+    #[error("graph-vector oracle rejected a canonical segment: {0:?}")]
+    Segment(VectorSegmentError),
+}
+
+impl From<VectorQueryError> for JourneyError {
+    fn from(error: VectorQueryError) -> Self {
+        Self::Graph(error)
+    }
+}
+
+impl From<VectorSegmentError> for JourneyError {
+    fn from(error: VectorSegmentError) -> Self {
+        Self::Segment(error)
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the live differential keeps complete graph-vector rejection evidence"
+)]
+fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
     adapter.ensure_collection()?;
-    let authority = adapter.authority();
+    let authority = adapter.config().authority;
     let first_coordinates = [1_i16, 0];
     let second_coordinates = [0_i16, 2];
     let first = QdrantPoint::new(
@@ -59,10 +88,10 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
     let mut readback = [None, None];
     assert_eq!(adapter.readback(&keys, &mut readback)?, 2);
     let Some(first_readback) = readback.first().and_then(Option::as_ref) else {
-        return Err(QdrantError::MalformedResponse {
+        return Err(JourneyError::Qdrant(QdrantError::MalformedResponse {
             phase: nudox_index_qdrant::RequestPhase::ReadPoints,
             cause: MalformedResponseCause::ReadbackOutputIndex,
-        });
+        }));
     };
     assert_eq!(first_readback.key, first.key);
     assert_eq!(first_readback.coordinates, &[1.0, 0.0]);
@@ -78,22 +107,33 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
     assert_eq!(remote[0].map(|hit| hit.entity), Some(EntityId::new(4)));
     assert_eq!(remote[1].map(|hit| hit.entity), Some(EntityId::new(7)));
 
+    let first_points = [VectorPoint::new(first.key.entity, first.coordinates)];
+    let second_points = [VectorPoint::new(second.key.entity, second.coordinates)];
+    let segments = [
+        ValidatedVectorSegment::try_new(authority, first.key.partition, &first_points)?,
+        ValidatedVectorSegment::try_new(authority, second.key.partition, &second_points)?,
+    ];
     let mut local = [None, None];
-    let local_count = adapter.local_brute_force(
+    let local_count = exact_vector_query(
+        authority,
         &[PartitionId::new(1), PartitionId::new(2)],
-        &points,
+        &segments,
         &[0, 0],
         2,
         &mut local,
     )?;
-    assert_eq!(local_count.count, 2);
+    assert_eq!(local_count.written, 2);
     assert_eq!(
         local.map(|hit| hit.map(|hit| hit.entity)),
         remote.map(|hit| hit.map(|hit| hit.entity))
     );
     assert_eq!(
         local.map(|hit| hit.map(|hit| hit.score)),
-        remote.map(|hit| hit.map(|hit| hit.score))
+        [Some(1), Some(4)]
+    );
+    assert_eq!(
+        remote.map(|hit| hit.map(|hit| hit.score)),
+        [Some(1.0), Some(4.0)]
     );
 
     let repeat = adapter.upsert(&points)?;
@@ -149,7 +189,7 @@ fn unavailable_endpoint_preserves_transport_phase_and_retry_bound() {
     let Ok(adapter) = QdrantBlockingAdapter::new(&endpoint, "nudox_outage", authority()) else {
         return;
     };
-    let attempts = adapter.retry_policy().attempts.get();
+    let attempts = adapter.config().retry.attempts.get();
     let result = adapter.ensure_collection();
     assert!(matches!(
         result,

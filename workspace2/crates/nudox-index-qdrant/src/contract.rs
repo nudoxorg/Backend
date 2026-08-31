@@ -8,8 +8,22 @@ use std::{
 use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority, VectorFact};
 use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
+use serde::Serialize;
 
-use super::{DEFAULT_MAX_ATTEMPTS, FnvHasher, MetricIdentityTag, PHYSICAL_ID_ZERO_REPLACEMENT};
+use super::limits::DEFAULT_MAX_ATTEMPTS;
+
+/// Payload key carrying the immutable snapshot digest as lowercase hexadecimal.
+pub const SNAPSHOT_PAYLOAD_KEY: &str = "nudox_snapshot";
+/// Payload key carrying the complete model registry identity as lowercase hexadecimal.
+pub const MODEL_PAYLOAD_KEY: &str = "nudox_model";
+/// Payload key carrying the immutable vector-segment identity as lowercase hexadecimal.
+pub const SEGMENT_PAYLOAD_KEY: &str = "nudox_segment";
+/// Payload key carrying the metric recipe name.
+pub const METRIC_PAYLOAD_KEY: &str = "nudox_metric";
+/// Payload key carrying the projection partition coordinate.
+pub const PARTITION_PAYLOAD_KEY: &str = "nudox_partition";
+/// Payload key carrying the semantic entity coordinate.
+pub const ENTITY_PAYLOAD_KEY: &str = "nudox_entity";
 
 /// A bounded retry policy for idempotent Qdrant requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,31 +47,24 @@ impl RetryPolicy {
     }
 }
 
+/// Immutable adapter facts exposed together so callers cannot mistake one field for a mutable
+/// authority update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QdrantAdapterConfig<'adapter> {
+    /// Normalized endpoint without a trailing slash.
+    pub endpoint: &'adapter str,
+    /// Validated collection path component.
+    pub collection: &'adapter str,
+    /// Snapshot/model/dimension/metric authority pinned by this adapter.
+    pub authority: VectorAuthority,
+    /// Bounded retry policy used by every request.
+    pub retry: RetryPolicy,
+}
+
 /// A disposable physical integer coordinate in one Qdrant collection.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalPointId(pub u64);
-
-impl PhysicalPointId {
-    /// Derives a deterministic physical coordinate from complete semantic authority.
-    #[must_use]
-    pub fn for_key(key: QdrantDataKey) -> Self {
-        let mut hasher = FnvHasher::new();
-        hasher.write(key.authority.snapshot().as_ref());
-        hasher.write(key.authority.model().as_ref());
-        hasher.write(key.segment.as_ref());
-        hasher.write(&key.authority.dimension().to_be_bytes());
-        hasher.write(&[u8::from(MetricIdentityTag::from(key.authority.metric()))]);
-        hasher.write(&key.partition.raw.to_be_bytes());
-        hasher.write(&key.entity.raw.to_be_bytes());
-        let raw = hasher.finish();
-        Self(if raw == 0 {
-            PHYSICAL_ID_ZERO_REPLACEMENT
-        } else {
-            raw
-        })
-    }
-}
 
 /// The full immutable identity carried by each projected point and delete key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,19 +264,25 @@ pub enum MalformedResponseCause {
 }
 
 /// A typed payload member owned by the immutable Qdrant identity contract.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum PayloadField {
     /// Immutable snapshot digest.
+    #[serde(rename = "nudox_snapshot")]
     Snapshot,
     /// Complete model identity.
+    #[serde(rename = "nudox_model")]
     Model,
     /// Immutable vector segment identity.
+    #[serde(rename = "nudox_segment")]
     Segment,
     /// Metric recipe.
+    #[serde(rename = "nudox_metric")]
     Metric,
     /// Projection partition.
+    #[serde(rename = "nudox_partition")]
     Partition,
     /// Semantic entity coordinate.
+    #[serde(rename = "nudox_entity")]
     Entity,
 }
 
