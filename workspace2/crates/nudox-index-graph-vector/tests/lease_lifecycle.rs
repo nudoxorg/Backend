@@ -216,6 +216,9 @@ fn dropping_ready_batch_returns_both_credits_and_allows_next_partition() -> Test
     let (mut producer, mut stream) = lease.split().map_err(TestFailure::Admission)?;
     let first_edges = [edge(graph, first, 50, 51), edge(graph, first, 52, 53)];
     assert_eq!(producer.settle(first, &first_edges), Ok(()));
+    let retained = stream.load();
+    assert_eq!(retained.edges, first_edges.len());
+    assert_eq!(retained.bytes, size_of::<GraphEdge>() * CAPACITY_TWO);
     let noop = Waker::noop();
     let mut context = Context::from_waker(noop);
     {
@@ -226,11 +229,11 @@ fn dropping_ready_batch_returns_both_credits_and_allows_next_partition() -> Test
             TestPhase::DropConservation,
         )?;
         assert_eq!(batch.len(), first_edges.len());
-        assert_eq!(stream.load().bytes, size_of::<GraphEdge>() * CAPACITY_TWO);
         drop(batch);
     }
-    assert_eq!(stream.load().edges, 0);
-    assert_eq!(stream.load().bytes, 0);
+    let released = stream.load();
+    assert_eq!(released.edges, 0);
+    assert_eq!(released.bytes, 0);
     assert_eq!(producer.poll_ready(&mut context), Poll::Ready(Ok(())));
 
     let second_edges = [edge(graph, second, 60, 61)];
