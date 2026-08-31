@@ -1,8 +1,4 @@
-use std::{
-    error::Error,
-    fmt,
-    io::{self, Cursor},
-};
+use std::io::{self, Cursor};
 
 use nudox_id::ContentIdDecodeError;
 use wave_application_core::{
@@ -15,31 +11,10 @@ use wave_application_protocol::{
     McpRequestId, decode_cli, decode_mcp, read_frame,
 };
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum TestError {
-    Io(io::Error),
-}
-
-impl fmt::Display for TestError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(source) => source.fmt(formatter),
-        }
-    }
-}
-
-impl Error for TestError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(source) => Some(source),
-        }
-    }
-}
-
-impl From<io::Error> for TestError {
-    fn from(source: io::Error) -> Self {
-        Self::Io(source)
-    }
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 fn policy_arguments() -> Vec<String> {

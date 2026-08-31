@@ -17,6 +17,9 @@ serde.workspace = true
 serde_json.workspace = true
 wave-application-core = { path = "../wave-application-core" }
 
+[dev-dependencies]
+thiserror.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 unused_lifetimes = "warn"
