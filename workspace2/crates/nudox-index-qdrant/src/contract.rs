@@ -10,7 +10,7 @@ use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 use serde::Serialize;
 
-use super::limits::DEFAULT_MAX_ATTEMPTS;
+use super::limits::{DEFAULT_MAX_ATTEMPTS, MAX_QUERY_PARTITIONS};
 
 /// Payload key carrying the immutable snapshot digest as lowercase hexadecimal.
 pub const SNAPSHOT_PAYLOAD_KEY: &str = "nudox_snapshot";
@@ -287,14 +287,33 @@ pub enum PayloadField {
 }
 
 /// The payload invariant that a response point violated.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum PayloadMismatchCause {
     /// The complete snapshot/model/dimension/metric authority differs.
-    Authority,
+    Authority(Box<AuthorityMismatchEvidence>),
     /// The point is outside the caller's selected partition set.
-    PartitionSelection,
+    PartitionSelection {
+        /// Complete bounded selection in request order.
+        selected: [Option<PartitionId>; MAX_QUERY_PARTITIONS],
+        /// Partition decoded from the response.
+        observed: PartitionId,
+    },
     /// A retrieved point's complete identity differs from its requested identity.
-    RequestedIdentity,
+    RequestedIdentity {
+        /// Complete requested semantic key.
+        expected: QdrantKeyEvidence,
+        /// Complete semantic key decoded from the response.
+        observed: QdrantKeyEvidence,
+    },
+}
+
+/// Complete authorities retained out-of-line on a cold payload-rejection path.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AuthorityMismatchEvidence {
+    /// Authority pinned by the adapter.
+    pub expected: VectorAuthority,
+    /// Authority decoded from the response.
+    pub observed: VectorAuthority,
 }
 
 /// The collection property that disagreed with the adapter's pinned contract.
@@ -473,20 +492,14 @@ pub enum QdrantAdmissionError {
         key: QdrantKeyEvidence,
     },
     /// Two distinct semantic keys mapped to one disposable point ID.
-    #[error(
-        "physical point id {physical_id:?} collides for ({first_partition:?}, {first_entity:?}) and ({second_partition:?}, {second_entity:?})"
-    )]
+    #[error("physical point id {physical_id:?} collides for {first:?} and {second:?}")]
     PhysicalIdCollision {
         /// Colliding disposable physical coordinate.
         physical_id: PhysicalPointId,
-        /// First partition coordinate under the already-validated adapter authority.
-        first_partition: PartitionId,
-        /// First entity coordinate under the already-validated adapter authority.
-        first_entity: EntityId,
-        /// Later partition coordinate under the same authority.
-        second_partition: PartitionId,
-        /// Later entity coordinate under the same authority.
-        second_entity: EntityId,
+        /// Complete first semantic key.
+        first: QdrantKeyEvidence,
+        /// Complete later semantic key.
+        second: QdrantKeyEvidence,
     },
     /// A remote point ID was reused for a different full payload identity.
     #[error("remote point {physical_id:?} has a different payload identity for {key:?}")]

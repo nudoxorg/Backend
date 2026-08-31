@@ -212,7 +212,10 @@ impl QdrantBlockingAdapter {
                 return Err(QdrantError::PayloadMismatch {
                     phase,
                     physical_id,
-                    cause: super::contract::PayloadMismatchCause::RequestedIdentity,
+                    cause: super::contract::PayloadMismatchCause::RequestedIdentity {
+                        expected: expected.key().into(),
+                        observed: key.into(),
+                    },
                 });
             }
             let coordinates = if require_vectors {

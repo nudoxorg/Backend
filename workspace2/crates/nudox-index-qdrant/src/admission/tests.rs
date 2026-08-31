@@ -36,10 +36,8 @@ fn collision_checker_rejects_same_physical_id_for_distinct_keys() {
         reject_identity_pair(0, first, physical_id, 1, second, physical_id),
         Err(QdrantAdmissionError::PhysicalIdCollision {
             physical_id,
-            first_partition: first.partition,
-            first_entity: first.entity,
-            second_partition: second.partition,
-            second_entity: second.entity,
+            first: first.into(),
+            second: second.into(),
         })
     );
 }

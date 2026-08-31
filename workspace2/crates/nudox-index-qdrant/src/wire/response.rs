@@ -5,10 +5,10 @@ use serde::Deserialize;
 
 use super::super::{
     contract::{
-        CollectionField, MalformedResponseCause, PayloadField, PayloadMismatchCause,
-        PhysicalPointId, QdrantDataKey, QdrantError, QdrantHit, RequestPhase,
+        AuthorityMismatchEvidence, CollectionField, MalformedResponseCause, PayloadField,
+        PayloadMismatchCause, PhysicalPointId, QdrantDataKey, QdrantError, QdrantHit, RequestPhase,
     },
-    limits::MAX_BATCH_POINTS,
+    limits::{MAX_BATCH_POINTS, MAX_QUERY_PARTITIONS},
     scoring::projected_score,
 };
 use super::request::{CollectionMetric, PayloadDataType, PayloadIndexDescriptor};
@@ -321,9 +321,21 @@ fn validate_query_scope(
     selected: &[PartitionId],
 ) -> Result<(), QdrantError> {
     let cause = if key.authority != authority {
-        Some(PayloadMismatchCause::Authority)
+        Some(PayloadMismatchCause::Authority(Box::new(
+            AuthorityMismatchEvidence {
+                expected: authority,
+                observed: key.authority,
+            },
+        )))
     } else if !selected.is_empty() && !selected.contains(&key.partition) {
-        Some(PayloadMismatchCause::PartitionSelection)
+        let mut selection = [None; MAX_QUERY_PARTITIONS];
+        for (slot, partition) in selection.iter_mut().zip(selected.iter().copied()) {
+            *slot = Some(partition);
+        }
+        Some(PayloadMismatchCause::PartitionSelection {
+            selected: selection,
+            observed: key.partition,
+        })
     } else {
         None
     };

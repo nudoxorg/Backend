@@ -274,10 +274,8 @@ pub(super) fn reject_identity_pair(
     if first_physical_id == second_physical_id {
         return Err(QdrantAdmissionError::PhysicalIdCollision {
             physical_id: second_physical_id,
-            first_partition: first.partition,
-            first_entity: first.entity,
-            second_partition: second.partition,
-            second_entity: second.entity,
+            first: first.into(),
+            second: second.into(),
         });
     }
     Ok(())
