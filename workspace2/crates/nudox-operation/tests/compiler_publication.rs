@@ -2,11 +2,12 @@
 
 use nudox_compile_driver::{CompileFailure, CompileRequest, CompileScratch, compile};
 use nudox_compile_vocab::Language;
+use nudox_ir_format::{EntityKind, PrimitiveType, TypeNode};
 
 #[test]
 fn distinct_equal_shape_declarations_produce_distinct_semantic_ir() -> Result<(), CompileFailure> {
-    let alpha_source = b"pub fn alpha() {}";
-    let bravo_source = b"pub fn bravo() {}";
+    let alpha_source = b"pub const alpha: bool = true;";
+    let bravo_source = b"pub const bravo: i32 = 1    ;";
     assert_eq!(alpha_source.len(), bravo_source.len());
 
     let mut alpha_output = [0; 256];
@@ -30,7 +31,47 @@ fn distinct_equal_shape_declarations_produce_distinct_semantic_ir() -> Result<()
         },
     )?;
 
-    assert_ne!(alpha.source.digest, bravo.source.digest);
+    assert_ne!(alpha.source.identity, bravo.source.identity);
     assert_ne!(alpha.fragment.as_ref(), bravo.fragment.as_ref());
+    assert!(
+        alpha
+            .fragment
+            .entities()
+            .map(|entity| (entity.kind, entity.name.raw))
+            .eq([(EntityKind::Constant, 0)])
+    );
+    assert!(
+        bravo
+            .fragment
+            .entities()
+            .map(|entity| (entity.kind, entity.name.raw))
+            .eq([(EntityKind::Constant, 0)])
+    );
+    assert!(
+        alpha
+            .fragment
+            .atoms()
+            .map(|atom| atom.bytes)
+            .eq([b"alpha".as_slice()])
+    );
+    assert!(
+        bravo
+            .fragment
+            .atoms()
+            .map(|atom| atom.bytes)
+            .eq([b"bravo".as_slice()])
+    );
+    assert!(
+        alpha
+            .fragment
+            .type_nodes()
+            .eq([TypeNode::Primitive(PrimitiveType::Bool)])
+    );
+    assert!(
+        bravo
+            .fragment
+            .type_nodes()
+            .eq([TypeNode::Primitive(PrimitiveType::I32)])
+    );
     Ok(())
 }
