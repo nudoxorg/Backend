@@ -15,12 +15,15 @@ impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> 
 
 // The admitted width is eight: this performs at most 28 comparisons and retains no scratch owner.
 fn duplicate_positions<SegmentId: Eq>(segments: &[SegmentId]) -> Option<(usize, usize)> {
-    segments.iter().enumerate().find_map(|(left_position, left)| {
-        segments[left_position + 1..]
-            .iter()
-            .position(|right| left == right)
-            .map(|right_offset| (left_position, left_position + right_offset + 1))
-    })
+    segments
+        .iter()
+        .enumerate()
+        .find_map(|(left_position, left)| {
+            segments[left_position + 1..]
+                .iter()
+                .position(|right| left == right)
+                .map(|right_offset| (left_position, left_position + right_offset + 1))
+        })
 }
 
 /// A validated borrowed selection whose identity is derived from every selected segment.

@@ -111,7 +111,6 @@ impl<'query> ExactOperation<'query> {
     pub const fn new(key: &'query [u8]) -> Self {
         Self { key }
     }
-
 }
 
 /// A rejected exact segment retains the offending row and bounds.
