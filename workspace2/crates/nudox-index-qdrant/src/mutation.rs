@@ -42,7 +42,10 @@ impl QdrantBlockingAdapter {
             ));
         }
         wire::parse_completed_ack(RequestPhase::UpsertPoints, &response.body)?;
-        let mut readback = vec![None; prepared.len()];
+        let mut readback: ArrayVec<Option<QdrantReadback>, MAX_BATCH_POINTS> = ArrayVec::new();
+        for _ in &prepared {
+            readback.push(None);
+        }
         let verified = self.readback_into(&prepared, &mut readback)?;
         Ok(QdrantMutationReceipt {
             attempted: prepared.len(),
@@ -223,16 +226,16 @@ impl QdrantBlockingAdapter {
             } else {
                 Vec::new()
             };
-            readbacks
-                .try_push(QdrantReadback {
-                    key,
-                    physical_id,
-                    coordinates,
-                })
-                .map_err(|_| QdrantError::MalformedResponse {
+            if let Err(_rejected) = readbacks.try_push(QdrantReadback {
+                key,
+                physical_id,
+                coordinates,
+            }) {
+                return Err(QdrantError::MalformedResponse {
                     phase,
                     cause: MalformedResponseCause::PointBatchExceeded,
-                })?;
+                });
+            }
         }
         if require_all {
             for key in keys {
@@ -299,16 +302,16 @@ impl QdrantBlockingAdapter {
                     cause: MalformedResponseCause::DuplicatePhysicalPoint,
                 });
             }
-            readbacks
-                .try_push(QdrantReadback {
-                    key,
-                    physical_id,
-                    coordinates: Vec::new(),
-                })
-                .map_err(|_| QdrantError::MalformedResponse {
+            if let Err(_rejected) = readbacks.try_push(QdrantReadback {
+                key,
+                physical_id,
+                coordinates: Vec::new(),
+            }) {
+                return Err(QdrantError::MalformedResponse {
                     phase,
                     cause: MalformedResponseCause::PointBatchExceeded,
-                })?;
+                });
+            }
         }
         Ok(readbacks)
     }

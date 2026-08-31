@@ -123,17 +123,18 @@ pub(super) fn prepare_points<'coordinates>(
                 physical_id,
             )?;
         }
-        prepared
-            .try_push(PreparedPoint {
-                index,
-                key: point.key,
-                coordinates: point.coordinates,
-                physical_id,
-            })
-            .map_err(|_| QdrantAdmissionError::BatchTooLarge {
+        if let Err(_rejected) = prepared.try_push(PreparedPoint {
+            index,
+            key: point.key,
+            coordinates: point.coordinates,
+            physical_id,
+        }) {
+            return Err(QdrantAdmissionError::BatchTooLarge {
                 maximum: MAX_BATCH_POINTS,
                 observed: points.len(),
-            })?;
+            }
+            .into());
+        }
     }
     Ok(prepared)
 }
@@ -163,16 +164,17 @@ pub(super) fn prepare_keys(
                 physical_id,
             )?;
         }
-        prepared
-            .try_push(PreparedKey {
-                index,
-                key,
-                physical_id,
-            })
-            .map_err(|_| QdrantAdmissionError::BatchTooLarge {
+        if let Err(_rejected) = prepared.try_push(PreparedKey {
+            index,
+            key,
+            physical_id,
+        }) {
+            return Err(QdrantAdmissionError::BatchTooLarge {
                 maximum: MAX_BATCH_POINTS,
                 observed: keys.len(),
-            })?;
+            }
+            .into());
+        }
     }
     Ok(prepared)
 }

@@ -150,18 +150,19 @@ pub(crate) fn parse_query_hits(
         }
         let coordinates =
             decode_vector(point, phase, physical_id, usize::from(authority.dimension))?;
-        hits.try_push(QdrantHit {
+        if let Err(_rejected) = hits.try_push(QdrantHit {
             authority,
             segment: key.segment,
             partition: key.partition,
             entity: key.entity,
             score: projected_score(authority.metric, query_coordinates, coordinates),
             physical_id,
-        })
-        .map_err(|_| QdrantError::ProjectionCapacity {
-            maximum: MAX_BATCH_POINTS,
-            observed: points.len(),
-        })?;
+        }) {
+            return Err(QdrantError::ProjectionCapacity {
+                maximum: MAX_BATCH_POINTS,
+                observed: points.len(),
+            });
+        }
     }
     Ok(hits)
 }
@@ -278,8 +279,9 @@ struct QueryResponse<'body> {
 
 #[derive(Deserialize)]
 struct QueryResult<'body> {
-    // The same decode boundary is the only Vec in the query path; parse_query_hits bounds it before
-    // moving fixed-size hits into an inline ArrayVec for sorting and publication.
+    // serde_json must own both this response list and each numeric vector array: neither can borrow
+    // the response string. parse_query_hits bounds the list before moving fixed-size hits into an
+    // inline ArrayVec, and checks each owned vector against the authority dimension.
     #[serde(borrow)]
     points: Vec<WirePoint<'body>>,
 }
@@ -289,6 +291,8 @@ pub(crate) struct WirePoint<'body> {
     pub(crate) id: u64,
     #[serde(borrow)]
     payload: WirePayload<'body>,
+    // Numeric JSON values are not borrowable; this allocation is released after score/readback
+    // conversion and is bounded by the response byte limit plus the authority dimension check.
     #[serde(default)]
     vector: Option<Vec<f64>>,
 }
