@@ -8,6 +8,7 @@ use core::ops::Deref;
 pub use error::{CommitError, CommitIoStep, HeaderError, JournalError, JournalIoStep};
 pub use format::{JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES};
 pub use journal::FileJournal;
+#[cfg(not(all(test, feature = "loom-model")))]
 pub use publication::{
     ArtifactName, CancelError, DurablePublisher, ImmutablePublicationIdentity, PendingPublication,
     PublicationConflict, PublicationError, PublicationFacts, PublicationFailure,

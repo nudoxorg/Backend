@@ -2473,6 +2473,13 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "blake3",
+ "loom",
+ "nudox-hydration",
+ "nudox-id",
+ "nudox-object",
+ "nudox-root",
+ "nudox-schema",
+ "nudox-store-memory",
  "nudox-workflow",
  "thiserror 2.0.20",
  "zerocopy",

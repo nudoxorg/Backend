@@ -12,7 +12,7 @@ use nudox_workflow::{
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
-use super::{FileJournal, PersistFailure, persist_header};
+use super::{FileJournal, GroupCommitError, PersistFailure, persist_header};
 use crate::{
     CommitError, CommitIoStep, FrameSequence, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES,
     JournalError, JournalIoStep,
@@ -110,6 +110,14 @@ fn requested(key_byte: u8) -> WorkflowEvent {
         version: WorkflowVersion::WAVE1,
         key: StageKey::from([key_byte; 32]),
         kind: EventKind::Requested,
+    }
+}
+
+fn admitted(key_byte: u8) -> WorkflowEvent {
+    WorkflowEvent {
+        version: WorkflowVersion::WAVE1,
+        key: StageKey::from([key_byte; 32]),
+        kind: EventKind::Admitted,
     }
 }
 
@@ -417,5 +425,100 @@ fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), FaultT
         },
     )?;
     fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn grouped_append_reduces_before_one_write_and_one_sync() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new("grouped-success");
+    let mut journal = FileJournal::create(fixture.path())?;
+    let events = [requested(29), admitted(29)];
+    let mut frames = vec![0xA5; JOURNAL_FRAME_BYTES * events.len()];
+    let mut writes = 0;
+    let mut syncs = 0;
+    let receipt = journal.append_group_using(&events, &mut frames, |file, bytes| {
+        writes += 1;
+        file.seek(SeekFrom::End(0))
+            .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
+        file.write_all(bytes)
+            .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
+        syncs += 1;
+        file.sync_all().map_err(|source| PersistFailure {
+            step: CommitIoStep::SyncFrame,
+            source,
+        })
+    })?;
+    assert_eq!(writes, 1);
+    assert_eq!(syncs, 1);
+    assert_eq!(
+        receipt.receipt_at(0),
+        Some(crate::StableReceipt::committed(
+            FrameSequence::from(0),
+            crate::JournalOffset::from((JOURNAL_HEADER_BYTES + JOURNAL_FRAME_BYTES) as u64),
+        ))
+    );
+    assert!(receipt.receipt_at(2).is_none());
+    assert_eq!(
+        fs::metadata(fixture.path())?.len(),
+        (JOURNAL_HEADER_BYTES + JOURNAL_FRAME_BYTES * events.len()) as u64
+    );
+    drop(journal);
+    let reopened = FileJournal::open(fixture.path())?;
+    assert_eq!(reopened.last_receipt(), receipt.receipt_at(1));
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    for prefix in 0..=(JOURNAL_FRAME_BYTES * 2) {
+        let fixture = Fixture::new("grouped-prefix");
+        let mut journal = FileJournal::create(fixture.path())?;
+        let events = [requested(31), admitted(31)];
+        let attempted = WorkflowRecord::from(events[0]);
+        let mut frames = vec![0; JOURNAL_FRAME_BYTES * events.len()];
+        let result = journal.append_group_using(&events, &mut frames, |file, bytes| {
+            file.seek(SeekFrom::End(0))
+                .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
+            file.write_all(&bytes[..prefix])
+                .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
+            Err(PersistFailure {
+                step: CommitIoStep::SyncFrame,
+                source: injected(InjectedFault::FrameSync),
+            })
+        });
+        match result {
+            Err(GroupCommitError::OutcomeUnknown {
+                attempted: observed,
+                first_sequence: FrameSequence::FIRST,
+                count: 2,
+                step: CommitIoStep::SyncFrame,
+                source,
+            }) => {
+                assert_eq!(*observed, attempted);
+                assert_eq!(observed_fault(&source), Some(&InjectedFault::FrameSync));
+            }
+            Err(other) => panic!("unexpected grouped failure: {other:?}"),
+            Ok(_) => panic!("group fault unexpectedly produced a receipt"),
+        }
+        assert!(matches!(journal.replay(), Err(JournalError::Poisoned)));
+        assert_eq!(
+            fs::metadata(fixture.path())?.len(),
+            (JOURNAL_HEADER_BYTES + prefix) as u64
+        );
+        drop(journal);
+        let mut reopened = FileJournal::open(fixture.path())?;
+        let recovery = reopened.replay()?;
+        if prefix == JOURNAL_FRAME_BYTES * 2 {
+            assert_eq!(recovery.state.phase(), nudox_workflow::PhaseName::Admitted);
+        } else if prefix >= JOURNAL_FRAME_BYTES {
+            assert_eq!(recovery.state.phase(), nudox_workflow::PhaseName::Requested);
+        } else {
+            assert_eq!(recovery.state, WorkflowState::New);
+        }
+        fixture.remove()?;
+    }
     Ok(())
 }

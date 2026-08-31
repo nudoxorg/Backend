@@ -1,14 +1,19 @@
-use std::{io, path::PathBuf};
+use std::{io, mem::size_of, path::PathBuf, sync::mpsc::sync_channel};
 
 use allocation_counter::{AllocationInfo, measure};
 use nudox_durable_journal::{
     CommitError, FileJournal, FrameSequence, JOURNAL_FRAME_BYTES, JOURNAL_HEADER_BYTES,
-    JournalError, JournalOffset,
+    JournalError, JournalOffset, PublicationFacts, PublicationLimits,
 };
 use nudox_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
 use thiserror::Error;
 
 const REPLAY_RECORDS: usize = 64;
+// Measured on the supported 64-bit Linux target with the workspace toolchain. The bound is kept
+// explicit so a changed std channel layout fails this ledger rather than being mistaken for a
+// zero-allocation admission path.
+const SYNC_CHANNEL_COUNT: u64 = 3;
+const SYNC_CHANNEL_BYTES: u64 = 720;
 
 #[derive(Debug, Error)]
 enum AllocationTestError {
@@ -102,4 +107,28 @@ fn warmed_nonempty_append_has_no_heap_allocation_and_exact_control_receipt()
     );
     std::fs::remove_file(fixture)?;
     Ok(())
+}
+
+#[test]
+fn publication_layout_and_response_channel_allocation_are_explicit() {
+    assert_eq!(size_of::<PublicationFacts>(), 48);
+    assert_eq!(size_of::<PublicationLimits>(), 2 * size_of::<usize>());
+
+    let allocations = measure(|| {
+        let (sender, receiver) = sync_channel::<u8>(1);
+        drop(sender);
+        drop(receiver);
+    });
+    assert_eq!(
+        allocations.count_total, SYNC_CHANNEL_COUNT,
+        "std::sync::sync_channel(1) allocation count changed: {allocations:?}"
+    );
+    assert_eq!(
+        allocations.bytes_total, SYNC_CHANNEL_BYTES,
+        "std::sync::sync_channel(1) allocation bytes changed: {allocations:?}"
+    );
+    assert_eq!(allocations.count_max, SYNC_CHANNEL_COUNT);
+    assert_eq!(allocations.bytes_max, SYNC_CHANNEL_BYTES);
+    assert_eq!(allocations.count_current, 0);
+    assert_eq!(allocations.bytes_current, 0);
 }

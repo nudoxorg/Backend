@@ -1,6 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    num::TryFromIntError,
     path::Path,
     sync::Arc,
 };
@@ -45,6 +46,12 @@ pub(crate) enum GroupCommitError {
     Poisoned,
     #[error("journal receipt cannot represent grouped sequence {sequence:?}")]
     ReceiptOverflow { sequence: FrameSequence },
+    #[error("journal grouped receipt conversion failed for {sequence:?}")]
+    ReceiptConversion {
+        sequence: FrameSequence,
+        #[source]
+        source: TryFromIntError,
+    },
     #[error("group storage requires {required} bytes but has {available}")]
     StorageTooSmall { required: usize, available: usize },
     #[error("journal group append outcome is unknown for {first_sequence:?} during {step:?}")]
@@ -114,6 +121,15 @@ impl FileJournal {
         events: &[WorkflowEvent],
         frames: &mut [u8],
     ) -> Result<GroupReceipt, GroupCommitError> {
+        self.append_group_using(events, frames, persist_group)
+    }
+
+    fn append_group_using(
+        &mut self,
+        events: &[WorkflowEvent],
+        frames: &mut [u8],
+        persist: impl FnOnce(&mut File, &[u8]) -> Result<(), PersistFailure>,
+    ) -> Result<GroupReceipt, GroupCommitError> {
         if self.poisoned {
             return Err(GroupCommitError::Poisoned);
         }
@@ -148,9 +164,10 @@ impl FileJournal {
                 .state;
             let sequence = match first_sequence
                 .value
-                .checked_add(u64::try_from(index).map_err(|_| {
-                    GroupCommitError::ReceiptOverflow {
+                .checked_add(u64::try_from(index).map_err(|source| {
+                    GroupCommitError::ReceiptConversion {
                         sequence: first_sequence,
+                        source,
                     }
                 })?)
                 .map(FrameSequence::from)
@@ -169,9 +186,10 @@ impl FileJournal {
         let count = events.len();
         let last_sequence = match first_sequence
             .value
-            .checked_add(u64::try_from(count - 1).map_err(|_| {
-                GroupCommitError::ReceiptOverflow {
+            .checked_add(u64::try_from(count - 1).map_err(|source| {
+                GroupCommitError::ReceiptConversion {
                     sequence: first_sequence,
+                    source,
                 }
             })?)
             .map(FrameSequence::from)
@@ -191,7 +209,7 @@ impl FileJournal {
         let _durable_end = frame_offset(next).ok_or(GroupCommitError::ReceiptOverflow {
             sequence: last_sequence,
         })?;
-        if let Err(failure) = persist_group(&mut self.file, &frames[..required]) {
+        if let Err(failure) = persist(&mut self.file, &frames[..required]) {
             self.poisoned = true;
             return Err(GroupCommitError::OutcomeUnknown {
                 attempted: Arc::new(WorkflowRecord::from(events[0])),
