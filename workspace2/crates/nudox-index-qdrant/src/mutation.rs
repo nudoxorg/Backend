@@ -1,13 +1,14 @@
 //! Verified point mutations and readback admission.
 
 use arrayvec::ArrayVec;
+use nudox_index_graph_vector::ValidatedVectorSegment;
 
 use super::{
     QdrantBlockingAdapter,
     admission::{self, PreparedIdentity, PreparedPoint},
     contract::{
-        MalformedResponseCause, QdrantAdmissionError, QdrantDataKey, QdrantError,
-        QdrantMutationReceipt, QdrantReadback, RequestPhase,
+        MalformedResponseCause, QdrantAdmissionError, QdrantCoordinates, QdrantDataKey,
+        QdrantError, QdrantMutationReceipt, QdrantReadback, RequestPhase,
     },
     limits::{DELETE_POINTS_PATH, MAX_BATCH_POINTS, READ_POINTS_PATH, UPSERT_POINTS_PATH},
     transport::{self, Method},
@@ -18,9 +19,9 @@ impl QdrantBlockingAdapter {
     /// Upserts a bounded batch, then independently reads every physical point back.
     pub fn upsert(
         &self,
-        points: &[super::contract::QdrantPoint<'_>],
+        segments: &[ValidatedVectorSegment<'_>],
     ) -> Result<QdrantMutationReceipt, QdrantError> {
-        let prepared = admission::prepare_points(self.authority, points)?;
+        let prepared = admission::prepare_segments(self.authority, segments)?;
         if prepared.is_empty() {
             return Ok(QdrantMutationReceipt {
                 attempted: 0,
@@ -219,15 +220,21 @@ impl QdrantBlockingAdapter {
                 });
             }
             let coordinates = if require_vectors {
-                wire::decode_vector(
+                let decoded = wire::decode_vector(
                     point,
                     phase,
                     physical_id,
                     usize::from(self.authority.dimension),
-                )?
-                .to_vec()
+                )?;
+                QdrantCoordinates::copy_from(decoded).map_err(|source| {
+                    QdrantError::CoordinateCapacity {
+                        phase,
+                        physical_id,
+                        source,
+                    }
+                })?
             } else {
-                Vec::new()
+                QdrantCoordinates::empty()
             };
             if let Err(_rejected) = readbacks.try_push(QdrantReadback {
                 key,
@@ -308,7 +315,7 @@ impl QdrantBlockingAdapter {
             if let Err(_rejected) = readbacks.try_push(QdrantReadback {
                 key,
                 physical_id,
-                coordinates: Vec::new(),
+                coordinates: QdrantCoordinates::empty(),
             }) {
                 return Err(QdrantError::MalformedResponse {
                     phase,

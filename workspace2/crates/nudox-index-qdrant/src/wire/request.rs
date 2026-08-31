@@ -14,10 +14,12 @@ use super::super::{
         ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY, MODEL_PAYLOAD_KEY, PARTITION_PAYLOAD_KEY,
         PayloadField, QdrantDataKey, SEGMENT_PAYLOAD_KEY, SNAPSHOT_PAYLOAD_KEY,
     },
-    limits::{MAX_BATCH_POINTS, MAX_QUERY_PARTITIONS, QUERY_SCAN_LIMIT},
+    limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS, QUERY_SCAN_LIMIT},
 };
-use nudox_index_graph_vector::{Metric as VectorMetric, ModelId, PartitionId, VectorAuthority};
-use nudox_index_vocab::IndexSnapshotId;
+use nudox_index_graph_vector::{
+    Metric as VectorMetric, ModelId, VectorAuthority, VectorSegmentDescriptor,
+};
+use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 
 /// Qdrant's closed collection-level distance vocabulary.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -208,7 +210,7 @@ struct ExactParams {
 impl<'coordinates> QueryRequest<'coordinates> {
     pub(crate) fn new(
         authority: VectorAuthority,
-        selected: &[PartitionId],
+        selected: &[VectorSegmentDescriptor],
         coordinates: &'coordinates [i16],
     ) -> Self {
         Self {
@@ -263,7 +265,7 @@ pub(crate) struct IdentityFilter {
 
 #[derive(Serialize)]
 struct MinimumShould {
-    conditions: ArrayVec<MatchCondition, MAX_QUERY_PARTITIONS>,
+    conditions: ArrayVec<MatchCondition, MAX_QUERY_SEGMENTS>,
     min_count: u8,
 }
 
@@ -282,11 +284,11 @@ enum MatchScalar {
     Snapshot(IndexSnapshotId),
     Model(ModelId),
     Metric(PayloadMetric),
-    Integer(u16),
+    Segment(VectorSegmentId),
 }
 
 impl IdentityFilter {
-    pub(crate) fn new(authority: VectorAuthority, selected: &[PartitionId]) -> Self {
+    pub(crate) fn new(authority: VectorAuthority, selected: &[VectorSegmentDescriptor]) -> Self {
         let mut must = ArrayVec::new();
         must.push(MatchCondition::new(
             PayloadField::Snapshot,
@@ -301,8 +303,8 @@ impl IdentityFilter {
             MatchScalar::Metric(authority.metric.into()),
         ));
         let min_should = match selected {
-            [partition] => {
-                must.push(MatchCondition::partition(*partition));
+            [segment] => {
+                must.push(MatchCondition::segment(segment.id));
                 None
             }
             [] => None,
@@ -310,7 +312,7 @@ impl IdentityFilter {
                 conditions: selected
                     .iter()
                     .copied()
-                    .map(MatchCondition::partition)
+                    .map(|segment| MatchCondition::segment(segment.id))
                     .collect(),
                 min_count: 1,
             }),
@@ -327,11 +329,11 @@ impl MatchCondition {
         }
     }
 
-    fn partition(partition: PartitionId) -> Self {
+    fn segment(segment: VectorSegmentId) -> Self {
         Self {
-            key: PayloadField::Partition,
+            key: PayloadField::Segment,
             r#match: MatchValue {
-                value: MatchScalar::Integer(partition.raw),
+                value: MatchScalar::Segment(segment),
             },
         }
     }
@@ -346,7 +348,7 @@ impl Serialize for MatchScalar {
             Self::Snapshot(snapshot) => serializer.collect_str(&Hex(snapshot.as_ref())),
             Self::Model(model) => serializer.collect_str(&Hex(model.as_ref())),
             Self::Metric(metric) => metric.serialize(serializer),
-            Self::Integer(value) => value.serialize(serializer),
+            Self::Segment(segment) => serializer.collect_str(&Hex(segment.as_ref())),
         }
     }
 }

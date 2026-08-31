@@ -112,13 +112,21 @@ pub enum AdmissionError {
 ///     authority: GraphAuthority,
 ///     rows: &'facts [GraphRow<'facts>],
 /// ) {
-///     let _ = ValidatedGraphView { authority, rows };
+///     let _ = ValidatedGraphView(nudox_index_graph_vector::GraphView { authority, rows });
 /// }
 /// ```
 #[derive(Debug, Eq, PartialEq)]
-pub struct ValidatedGraphView<'facts> {
-    authority: GraphAuthority,
-    rows: &'facts [GraphRow<'facts>],
+pub struct ValidatedGraphView<'facts>(GraphView<'facts>);
+
+/// Immutable facts exposed by a validated graph without exposing its constructor.
+///
+/// [`ValidatedGraphView`] dereferences to this view but deliberately has no `DerefMut`.
+#[derive(Debug, Eq, PartialEq)]
+pub struct GraphView<'facts> {
+    /// Authority proved for every row and edge.
+    pub authority: GraphAuthority,
+    /// Validated, unique partition rows.
+    pub rows: &'facts [GraphRow<'facts>],
 }
 
 impl<'facts> ValidatedGraphView<'facts> {
@@ -173,13 +181,7 @@ impl<'facts> ValidatedGraphView<'facts> {
                 }
             }
         }
-        Ok(Self { authority, rows })
-    }
-
-    /// Returns the authority proved for every borrowed row.
-    #[must_use]
-    pub const fn authority(&self) -> GraphAuthority {
-        self.authority
+        Ok(Self(GraphView { authority, rows }))
     }
 
     /// Returns all neighbors from selected available partitions in stable entity order.
@@ -236,10 +238,10 @@ impl<'facts> AsRef<[GraphRow<'facts>]> for ValidatedGraphView<'facts> {
 }
 
 impl<'facts> Deref for ValidatedGraphView<'facts> {
-    type Target = [GraphRow<'facts>];
+    type Target = GraphView<'facts>;
 
     fn deref(&self) -> &Self::Target {
-        self.rows
+        &self.0
     }
 }
 

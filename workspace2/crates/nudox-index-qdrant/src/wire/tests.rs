@@ -1,7 +1,6 @@
 use super::*;
 use crate::wire::request::{IdentityFilter, IdentityPayload};
 use crate::{
-    admission::PreparedPoint,
     contract::{
         ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY, MODEL_PAYLOAD_KEY, MalformedResponseCause,
         PARTITION_PAYLOAD_KEY, PhysicalPointId, QdrantDataKey, QdrantError, RequestPhase,
@@ -15,9 +14,9 @@ use crate::{
 };
 use nudox_index_graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
-    exact_vector_query,
+    VectorSegmentError, exact_vector_query,
 };
-use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
+use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
 
 fn authority(byte: u8) -> VectorAuthority {
@@ -29,19 +28,77 @@ fn authority(byte: u8) -> VectorAuthority {
     )
 }
 
-fn segment(byte: u8) -> VectorSegmentId {
-    VectorSegmentId::from_canonical_bytes(&[byte; 32])
-}
-
 fn encoded_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[derive(Debug, thiserror::Error)]
+enum WireTestError {
+    #[error("vector fixture failed validation: {cause:?}")]
+    Segment { cause: Box<VectorSegmentError> },
+    #[error("typed query fixture failed serialization")]
+    Encode(#[from] serde_json::Error),
+}
+
+impl From<VectorSegmentError> for WireTestError {
+    fn from(cause: VectorSegmentError) -> Self {
+        Self::Segment {
+            cause: Box::new(cause),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct QueryFixture<Points> {
+    result: QueryResultFixture<Points>,
+}
+
+#[derive(serde::Serialize)]
+struct QueryResultFixture<Points> {
+    points: Points,
+}
+
+#[derive(serde::Serialize)]
+struct PointFixture<Payload> {
+    id: u64,
+    payload: Payload,
+    vector: [f64; 2],
+}
+
+#[derive(serde::Serialize)]
+struct MetricPayloadFixture {
+    #[serde(rename = "nudox_snapshot")]
+    snapshot: String,
+    #[serde(rename = "nudox_model")]
+    model: String,
+    #[serde(rename = "nudox_segment")]
+    segment: String,
+    #[serde(rename = "nudox_metric")]
+    metric: &'static str,
+    #[serde(rename = "nudox_partition")]
+    partition: u16,
+    #[serde(rename = "nudox_entity")]
+    entity: u32,
+}
+
+fn query_fixture<Points: serde::Serialize>(points: Points) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&QueryFixture {
+        result: QueryResultFixture { points },
+    })
+}
+
 #[test]
 fn identity_payload_and_filter_include_full_authority() {
+    let authority = authority(7);
+    let coordinates = [1_i16, 2];
+    let points = [VectorPoint::new(EntityId::new(13), &coordinates)];
+    let Ok(segment) = ValidatedVectorSegment::try_new(authority, PartitionId::new(11), &points)
+    else {
+        return;
+    };
     let key = QdrantDataKey::new(
-        authority(7),
-        segment(7),
+        authority,
+        segment.id,
         PartitionId::new(11),
         EntityId::new(13),
     );
@@ -78,7 +135,7 @@ fn identity_payload_and_filter_include_full_authority() {
         payload.get(ENTITY_PAYLOAD_KEY),
         Some(&serde_json::Value::from(13_u32))
     );
-    let filter = serde_json::to_value(IdentityFilter::new(key.authority, &[key.partition]));
+    let filter = serde_json::to_value(IdentityFilter::new(key.authority, &[segment.descriptor()]));
     assert!(filter.is_ok());
     let Ok(filter) = filter else {
         return;
@@ -88,26 +145,25 @@ fn identity_payload_and_filter_include_full_authority() {
     assert_eq!(
         must.and_then(|must| must.get(3))
             .and_then(|condition| condition.get("key")),
-        Some(&serde_json::Value::from(PARTITION_PAYLOAD_KEY))
+        Some(&serde_json::Value::from(SEGMENT_PAYLOAD_KEY))
     );
 }
 
 #[test]
 fn request_shapes_are_batched_and_idempotent() {
     let coordinates = [1_i16, -2];
-    let point = crate::contract::QdrantPoint::new(
-        authority(3),
-        segment(3),
-        PartitionId::new(1),
-        EntityId::new(5),
-        &coordinates,
-    );
-    let prepared = [PreparedPoint {
-        index: 0,
-        key: point.key,
-        coordinates: point.coordinates,
-        physical_id: point.physical_id(),
-    }];
+    let authority = authority(3);
+    let points = [VectorPoint::new(EntityId::new(5), &coordinates)];
+    let Ok(segment) = ValidatedVectorSegment::try_new(authority, PartitionId::new(1), &points)
+    else {
+        return;
+    };
+    let Ok(prepared) = crate::admission::prepare_segments(authority, &[segment]) else {
+        return;
+    };
+    let Some(point) = prepared.first().copied() else {
+        return;
+    };
     let upsert = serde_json::to_value(UpsertRequest::from_points(&prepared));
     assert!(upsert.is_ok());
     let Ok(upsert) = upsert else {
@@ -126,12 +182,12 @@ fn request_shapes_are_batched_and_idempotent() {
             .and_then(serde_json::Value::as_array)
             .and_then(|points| points.first())
             .and_then(|point| point.get("id")),
-        Some(&serde_json::Value::from(point.physical_id().0))
+        Some(&serde_json::Value::from(point.physical_id.0))
     );
     let keys = [crate::admission::PreparedKey {
         index: 0,
         key: point.key,
-        physical_id: point.physical_id(),
+        physical_id: point.physical_id,
     }];
     let delete = serde_json::to_value(DeleteRequest::new(&keys));
     assert!(delete.is_ok());
@@ -143,7 +199,7 @@ fn request_shapes_are_batched_and_idempotent() {
             .get("points")
             .and_then(serde_json::Value::as_array)
             .and_then(|points| points.first()),
-        Some(&serde_json::Value::from(point.physical_id().0))
+        Some(&serde_json::Value::from(point.physical_id.0))
     );
     let retrieve = serde_json::to_value(RetrieveRequest::new(&keys, true));
     assert!(retrieve.is_ok());
@@ -155,8 +211,8 @@ fn request_shapes_are_batched_and_idempotent() {
         Some(&serde_json::Value::from(true))
     );
     let query = serde_json::to_value(QueryRequest::new(
-        authority(3),
-        &[PartitionId::new(1)],
+        authority,
+        &[segment.descriptor()],
         &[0, 0],
     ));
     assert!(query.is_ok());
@@ -241,29 +297,26 @@ fn backend_coordinates_reconstruct_graph_vector_scores() {
 }
 
 #[test]
-fn query_rejects_alias_physical_id_and_duplicate_semantic_key() {
+fn query_rejects_alias_physical_id_and_duplicate_semantic_key() -> Result<(), WireTestError> {
     let authority = authority(6);
-    let key = QdrantDataKey::new(authority, segment(6), PartitionId::new(2), EntityId::new(7));
+    let first_coordinates = [1_i16, 2];
+    let second_coordinates = [2_i16, 3];
+    let points = [
+        VectorPoint::new(EntityId::new(7), &first_coordinates),
+        VectorPoint::new(EntityId::new(8), &second_coordinates),
+    ];
+    let segment = ValidatedVectorSegment::try_new(authority, PartitionId::new(2), &points)?;
+    let key = QdrantDataKey::new(authority, segment.id, segment.partition, EntityId::new(7));
     let canonical_id = PhysicalPointId::for_key(key);
     let alias_id = PhysicalPointId(canonical_id.0.wrapping_add(1));
-    let payload = serde_json::to_value(IdentityPayload::from_key(key));
-    assert!(payload.is_ok());
-    let Ok(payload) = payload else {
-        return;
+    let point = |physical_id: PhysicalPointId| PointFixture {
+        id: physical_id.0,
+        payload: IdentityPayload::from_key(key),
+        vector: [1.0, 2.0],
     };
-    let point = |physical_id: PhysicalPointId| {
-        serde_json::json!({
-            "id": physical_id.0,
-            "payload": payload,
-            "vector": [1.0, 2.0],
-        })
-    };
-    let alias_body = serde_json::json!({
-        "result": { "points": [point(alias_id)] },
-    })
-    .to_string();
+    let alias_body = query_fixture([point(alias_id)])?;
     assert!(matches!(
-        parse_query_hits(authority, &[key.partition], &[0, 0], &alias_body),
+        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &alias_body),
         Err(QdrantError::PhysicalIdentityMismatch {
             phase: RequestPhase::QueryPoints,
             key: observed_key,
@@ -274,12 +327,9 @@ fn query_rejects_alias_physical_id_and_duplicate_semantic_key() {
             && expected_physical_id == canonical_id
     ));
 
-    let duplicate_body = serde_json::json!({
-        "result": { "points": [point(canonical_id), point(canonical_id)] },
-    })
-    .to_string();
+    let duplicate_body = query_fixture([point(canonical_id), point(canonical_id)])?;
     assert!(matches!(
-        parse_query_hits(authority, &[key.partition], &[0, 0], &duplicate_body),
+        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &duplicate_body),
         Err(QdrantError::DuplicateSemanticPoint {
             phase: RequestPhase::QueryPoints,
             key: observed_key,
@@ -289,38 +339,32 @@ fn query_rejects_alias_physical_id_and_duplicate_semantic_key() {
             && first_physical_id == canonical_id
             && second_physical_id == canonical_id
     ));
+    Ok(())
 }
 
 #[test]
-fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() {
+fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() -> Result<(), WireTestError> {
     let authority = authority(12);
-    let key = QdrantDataKey::new(
-        authority,
-        segment(12),
-        PartitionId::new(2),
-        EntityId::new(7),
-    );
+    let coordinates = [1_i16, 2];
+    let points = [VectorPoint::new(EntityId::new(7), &coordinates)];
+    let segment = ValidatedVectorSegment::try_new(authority, PartitionId::new(2), &points)?;
+    let key = QdrantDataKey::new(authority, segment.id, segment.partition, EntityId::new(7));
     let point_id = PhysicalPointId::for_key(key);
-    let payload = serde_json::to_value(IdentityPayload::from_key(key));
-    assert!(payload.is_ok());
-    let Ok(mut invalid_metric) = payload else {
-        return;
+    let invalid_metric = MetricPayloadFixture {
+        snapshot: encoded_hex(key.authority.snapshot.as_ref()),
+        model: encoded_hex(key.authority.model.as_ref()),
+        segment: encoded_hex(key.segment.as_ref()),
+        metric: "cosine",
+        partition: key.partition.raw,
+        entity: key.entity.raw,
     };
-    let Some(payload) = invalid_metric.as_object_mut() else {
-        return;
-    };
-    payload.insert(
-        METRIC_PAYLOAD_KEY.to_owned(),
-        serde_json::Value::from("cosine"),
-    );
-    let unknown_metric = serde_json::json!({
-        "result": { "points": [{
-            "id": point_id.0, "payload": invalid_metric, "vector": [1.0, 2.0],
-        }] },
-    })
-    .to_string();
+    let unknown_metric = query_fixture([PointFixture {
+        id: point_id.0,
+        payload: invalid_metric,
+        vector: [1.0, 2.0],
+    }])?;
     assert!(matches!(
-        parse_query_hits(authority, &[key.partition], &[0, 0], &unknown_metric),
+        parse_query_candidates(authority, &[segment.descriptor()], &[0, 0], &unknown_metric),
         Err(QdrantError::MalformedResponse {
             phase: RequestPhase::QueryPoints,
             cause: MalformedResponseCause::UnknownMetric,
@@ -329,7 +373,7 @@ fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() {
 
     let missing_payload = r#"{\"result\":{\"points\":[{\"id\":1,\"vector\":[1.0,2.0]}]}}"#;
     assert!(matches!(
-        parse_query_hits(authority, &[], &[0, 0], missing_payload),
+        parse_query_candidates(authority, &[], &[0, 0], missing_payload),
         Err(QdrantError::Decode {
             phase: RequestPhase::QueryPoints,
             ..
@@ -338,10 +382,11 @@ fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() {
 
     let points_not_array = r#"{\"result\":{\"points\":{}}}"#;
     assert!(matches!(
-        parse_query_hits(authority, &[], &[0, 0], points_not_array),
+        parse_query_candidates(authority, &[], &[0, 0], points_not_array),
         Err(QdrantError::Decode {
             phase: RequestPhase::QueryPoints,
             ..
         })
     ));
+    Ok(())
 }

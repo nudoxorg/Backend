@@ -16,7 +16,7 @@ pub use authority::{
 };
 pub use graph::{
     AdmissionError, GraphEdge, GraphHit, GraphQueryError, GraphQueryOutcome, GraphQueryTerminal,
-    GraphRow, ValidatedGraphView,
+    GraphRow, GraphView, ValidatedGraphView,
 };
 pub use lease::{
     Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphLease, GraphStreamEvent, GraphTerminal,
@@ -24,8 +24,9 @@ pub use lease::{
 };
 pub use trace::{GraphTraceEvent, TraceProbe, TraceRecorder};
 pub use vector::{
-    ValidatedVectorSegment, VectorFact, VectorHit, VectorPoint, VectorQueryError,
-    VectorQueryOutcome, VectorQueryTerminal, VectorSegmentError, VectorTerminal,
+    MAX_VECTOR_DIMENSION, ValidatedVectorSegment, VectorFact, VectorHit, VectorPoint,
+    VectorQueryError, VectorQueryOutcome, VectorQueryTerminal, VectorSegmentDescriptor,
+    VectorSegmentError, VectorSegmentSelection, VectorSegmentView, VectorTerminal,
     compact_vector_facts, exact_vector_query,
 };
 

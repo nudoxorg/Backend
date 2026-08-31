@@ -6,13 +6,16 @@ use serde::Deserialize;
 use super::super::{
     contract::{
         AuthorityMismatchEvidence, CollectionField, MalformedResponseCause, PayloadField,
-        PayloadMismatchCause, PhysicalPointId, QdrantDataKey, QdrantError, QdrantHit, RequestPhase,
+        PayloadMismatchCause, PhysicalPointId, QdrantCandidate, QdrantDataKey, QdrantError,
+        RequestPhase,
     },
-    limits::{MAX_BATCH_POINTS, MAX_QUERY_PARTITIONS},
+    limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS},
     scoring::projected_score,
 };
 use super::request::{CollectionMetric, PayloadDataType, PayloadIndexDescriptor};
-use nudox_index_graph_vector::{Metric as VectorMetric, ModelId, PartitionId, VectorAuthority};
+use nudox_index_graph_vector::{
+    Metric as VectorMetric, ModelId, PartitionId, VectorAuthority, VectorSegmentDescriptor,
+};
 use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 
@@ -107,12 +110,12 @@ pub(crate) fn retrieve_points(
 }
 
 /// Parses, proves, and locally reranks one query response.
-pub(crate) fn parse_query_hits(
+pub(crate) fn parse_query_candidates(
     authority: VectorAuthority,
-    selected: &[PartitionId],
+    selected: &[VectorSegmentDescriptor],
     query_coordinates: &[i16],
     body: &str,
-) -> Result<ArrayVec<QdrantHit, MAX_BATCH_POINTS>, QdrantError> {
+) -> Result<ArrayVec<QdrantCandidate, MAX_BATCH_POINTS>, QdrantError> {
     let phase = RequestPhase::QueryPoints;
     let points = decode::<QueryResponse>(phase, body)?.result.points;
     if points.len() > MAX_BATCH_POINTS {
@@ -121,13 +124,21 @@ pub(crate) fn parse_query_hits(
             observed: points.len(),
         });
     }
-    let mut hits: ArrayVec<QdrantHit, MAX_BATCH_POINTS> = ArrayVec::new();
+    let mut hits: ArrayVec<QdrantCandidate, MAX_BATCH_POINTS> = ArrayVec::new();
+    let mut segment_counts = [0_u8; MAX_QUERY_SEGMENTS];
     for point in &points {
         let physical_id = PhysicalPointId(point.id);
         let key = decode_identity(point, phase, authority.dimension)?;
-        validate_query_scope(phase, physical_id, key, authority, selected)?;
+        observe_query_scope(
+            phase,
+            physical_id,
+            key,
+            authority,
+            selected,
+            &mut segment_counts,
+        )?;
         reject_remote_physical_identity(phase, physical_id, key)?;
-        if let Some(first) = hits.iter().find(|hit: &&QdrantHit| {
+        if let Some(first) = hits.iter().find(|hit: &&QdrantCandidate| {
             hit.authority == key.authority
                 && hit.partition == key.partition
                 && hit.entity == key.entity
@@ -141,7 +152,7 @@ pub(crate) fn parse_query_hits(
         }
         if hits
             .iter()
-            .any(|hit: &QdrantHit| hit.physical_id == physical_id)
+            .any(|hit: &QdrantCandidate| hit.physical_id == physical_id)
         {
             return Err(QdrantError::MalformedResponse {
                 phase,
@@ -150,7 +161,7 @@ pub(crate) fn parse_query_hits(
         }
         let coordinates =
             decode_vector(point, phase, physical_id, usize::from(authority.dimension))?;
-        if let Err(_rejected) = hits.try_push(QdrantHit {
+        if let Err(_rejected) = hits.try_push(QdrantCandidate {
             authority,
             segment: key.segment,
             partition: key.partition,
@@ -280,7 +291,7 @@ struct QueryResponse<'body> {
 #[derive(Deserialize)]
 struct QueryResult<'body> {
     // serde_json must own both this response list and each numeric vector array: neither can borrow
-    // the response string. parse_query_hits bounds the list before moving fixed-size hits into an
+    // the response string. parse_query_candidates bounds the list before moving fixed-size hits into an
     // inline ArrayVec, and checks each owned vector against the authority dimension.
     #[serde(borrow)]
     points: Vec<WirePoint<'body>>,
@@ -313,40 +324,64 @@ struct WirePayload<'body> {
     entity: u64,
 }
 
-fn validate_query_scope(
+fn observe_query_scope(
     phase: RequestPhase,
     physical_id: PhysicalPointId,
     key: QdrantDataKey,
     authority: VectorAuthority,
-    selected: &[PartitionId],
+    selected: &[VectorSegmentDescriptor],
+    segment_counts: &mut [u8; MAX_QUERY_SEGMENTS],
 ) -> Result<(), QdrantError> {
-    let cause = if key.authority != authority {
-        Some(PayloadMismatchCause::Authority(Box::new(
-            AuthorityMismatchEvidence {
-                expected: authority,
-                observed: key.authority,
-            },
-        )))
-    } else if !selected.is_empty() && !selected.contains(&key.partition) {
-        let mut selection = [None; MAX_QUERY_PARTITIONS];
-        for (slot, partition) in selection.iter_mut().zip(selected.iter().copied()) {
-            *slot = Some(partition);
-        }
-        Some(PayloadMismatchCause::PartitionSelection {
-            selected: selection,
-            observed: key.partition,
-        })
-    } else {
-        None
-    };
-    match cause {
-        Some(cause) => Err(QdrantError::PayloadMismatch {
+    if key.authority != authority {
+        return Err(QdrantError::PayloadMismatch {
             phase,
             physical_id,
-            cause,
-        }),
-        None => Ok(()),
+            cause: PayloadMismatchCause::Authority(Box::new(AuthorityMismatchEvidence {
+                expected: authority,
+                observed: key.authority,
+            })),
+        });
     }
+    let Some((descriptor, observed)) = selected
+        .iter()
+        .copied()
+        .zip(segment_counts)
+        .find(|(descriptor, _)| descriptor.id == key.segment)
+    else {
+        let mut selection = [None; MAX_QUERY_SEGMENTS];
+        for (slot, descriptor) in selection.iter_mut().zip(selected.iter().copied()) {
+            *slot = Some(descriptor.id);
+        }
+        return Err(QdrantError::PayloadMismatch {
+            phase,
+            physical_id,
+            cause: PayloadMismatchCause::SegmentSelection {
+                selected: Box::new(selection),
+                observed: key.segment,
+            },
+        });
+    };
+    if descriptor.partition != key.partition {
+        return Err(QdrantError::PayloadMismatch {
+            phase,
+            physical_id,
+            cause: PayloadMismatchCause::SegmentPartition {
+                segment: key.segment,
+                expected: descriptor.partition,
+                observed: key.partition,
+            },
+        });
+    }
+    *observed += 1;
+    if *observed > descriptor.point_count {
+        return Err(QdrantError::SegmentCardinalityExceeded {
+            phase,
+            segment: descriptor.id,
+            maximum: descriptor.point_count,
+            observed: *observed,
+        });
+    }
+    Ok(())
 }
 
 fn reject_remote_physical_identity(

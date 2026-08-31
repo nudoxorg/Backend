@@ -9,9 +9,9 @@ use nudox_index_graph_vector::{
     VectorQueryError, VectorSegmentError, exact_vector_query,
 };
 use nudox_index_qdrant::{
-    MalformedResponseCause, QdrantAdmissionError, QdrantBlockingAdapter, QdrantError, QdrantPoint,
+    MalformedResponseCause, QdrantBlockingAdapter, QdrantDataKey, QdrantError,
 };
-use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
+use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
 
 fn authority() -> VectorAuthority {
@@ -21,10 +21,6 @@ fn authority() -> VectorAuthority {
         2,
         Metric::SquaredEuclidean,
     )
-}
-
-fn segment() -> VectorSegmentId {
-    VectorSegmentId::from_canonical_bytes(b"qdrant-real-service-vector-segment")
 }
 
 fn unique_collection() -> String {
@@ -65,26 +61,30 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
     let authority = adapter.config().authority;
     let first_coordinates = [1_i16, 0];
     let second_coordinates = [0_i16, 2];
-    let first = QdrantPoint::new(
-        authority,
-        segment(),
-        PartitionId::new(1),
-        EntityId::new(4),
-        &first_coordinates,
-    );
-    let second = QdrantPoint::new(
-        authority,
-        segment(),
-        PartitionId::new(2),
-        EntityId::new(7),
-        &second_coordinates,
-    );
-    let points = [first, second];
-    let receipt = adapter.upsert(&points)?;
+    let first_points = [VectorPoint::new(EntityId::new(4), &first_coordinates)];
+    let second_points = [VectorPoint::new(EntityId::new(7), &second_coordinates)];
+    let segments = [
+        ValidatedVectorSegment::try_new(authority, PartitionId::new(1), &first_points)?,
+        ValidatedVectorSegment::try_new(authority, PartitionId::new(2), &second_points)?,
+    ];
+    let receipt = adapter.upsert(&segments)?;
     assert_eq!(receipt.attempted, 2);
     assert_eq!(receipt.verified, 2);
 
-    let keys = [first.key, second.key];
+    let keys = [
+        QdrantDataKey::new(
+            authority,
+            segments[0].id,
+            segments[0].partition,
+            EntityId::new(4),
+        ),
+        QdrantDataKey::new(
+            authority,
+            segments[1].id,
+            segments[1].partition,
+            EntityId::new(7),
+        ),
+    ];
     let mut readback = [None, None];
     assert_eq!(adapter.readback(&keys, &mut readback)?, 2);
     let Some(first_readback) = readback.first().and_then(Option::as_ref) else {
@@ -93,12 +93,12 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
             cause: MalformedResponseCause::ReadbackOutputIndex,
         }));
     };
-    assert_eq!(first_readback.key, first.key);
-    assert_eq!(first_readback.coordinates, &[1.0, 0.0]);
+    assert_eq!(first_readback.key, keys[0]);
+    assert_eq!(first_readback.coordinates.as_ref(), &[1.0, 0.0]);
 
     let mut remote = [None, None];
     let remote_count = adapter.query(
-        &[PartitionId::new(1), PartitionId::new(2)],
+        &[segments[0].descriptor(), segments[1].descriptor()],
         &[0, 0],
         2,
         &mut remote,
@@ -107,12 +107,6 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
     assert_eq!(remote[0].map(|hit| hit.entity), Some(EntityId::new(4)));
     assert_eq!(remote[1].map(|hit| hit.entity), Some(EntityId::new(7)));
 
-    let first_points = [VectorPoint::new(first.key.entity, first.coordinates)];
-    let second_points = [VectorPoint::new(second.key.entity, second.coordinates)];
-    let segments = [
-        ValidatedVectorSegment::try_new(authority, first.key.partition, &first_points)?,
-        ValidatedVectorSegment::try_new(authority, second.key.partition, &second_points)?,
-    ];
     let mut local = [None, None];
     let local_count = exact_vector_query(
         authority,
@@ -136,38 +130,29 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
         [Some(1.0), Some(4.0)]
     );
 
-    let repeat = adapter.upsert(&points)?;
+    let repeat = adapter.upsert(&segments)?;
     assert_eq!(repeat.attempted, 2);
     assert_eq!(repeat.verified, 2);
     let conflicting_coordinates = [2_i16, 0];
-    let conflict = QdrantPoint::new(
-        authority,
-        first.key.segment,
-        first.key.partition,
-        first.key.entity,
-        &conflicting_coordinates,
-    );
-    assert!(matches!(
-        adapter.upsert(&[conflict]),
-        Err(QdrantError::Admission(
-            QdrantAdmissionError::ImmutableVectorConflict { key, .. }
-        )) if *key == first.key
-    ));
+    let conflicting_points = [VectorPoint::new(EntityId::new(4), &conflicting_coordinates)];
+    let conflicting_segment =
+        ValidatedVectorSegment::try_new(authority, PartitionId::new(1), &conflicting_points)?;
+    assert_ne!(conflicting_segment.id, segments[0].id);
     let mut unchanged = [None];
-    assert_eq!(adapter.readback(&[first.key], &mut unchanged)?, 1);
+    assert_eq!(adapter.readback(&[keys[0]], &mut unchanged)?, 1);
     assert_eq!(
         unchanged[0]
             .as_ref()
-            .map(|point| point.coordinates.as_slice()),
+            .map(|point| point.coordinates.as_ref()),
         Some([1.0, 0.0].as_slice())
     );
-    let deleted = adapter.delete(&[first.key])?;
+    let deleted = adapter.delete(&[keys[0]])?;
     assert_eq!(deleted.attempted, 1);
     assert_eq!(deleted.verified, 1);
 
     let mut after_delete = [None, None];
     let count = adapter.query(
-        &[PartitionId::new(1), PartitionId::new(2)],
+        &[segments[0].descriptor(), segments[1].descriptor()],
         &[0, 0],
         2,
         &mut after_delete,

@@ -1,11 +1,11 @@
 //! Bounded point/query admission and prepared request identities.
 
 use arrayvec::ArrayVec;
-use nudox_index_graph_vector::{PartitionId, VectorAuthority};
+use nudox_index_graph_vector::{ValidatedVectorSegment, VectorAuthority, VectorSegmentDescriptor};
 
 use super::{
-    contract::{PhysicalPointId, QdrantAdmissionError, QdrantDataKey, QdrantError, QdrantPoint},
-    limits::{MAX_BATCH_POINTS, MAX_QUERY_PARTITIONS},
+    contract::{PhysicalPointId, QdrantAdmissionError, QdrantDataKey, QdrantError},
+    limits::{MAX_BATCH_POINTS, MAX_QUERY_SEGMENTS},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -60,14 +60,14 @@ impl<'coordinates> PreparedIdentity for PreparedPoint<'coordinates> {
 
 pub(super) fn validate_query(
     authority: VectorAuthority,
-    selected: &[PartitionId],
+    selected: &[VectorSegmentDescriptor],
     query_coordinates: &[i16],
     requested_limit: usize,
     available_output: usize,
 ) -> Result<(), QdrantError> {
-    if selected.len() > MAX_QUERY_PARTITIONS {
-        return Err(QdrantAdmissionError::TooManyPartitions {
-            maximum: MAX_QUERY_PARTITIONS,
+    if selected.len() > MAX_QUERY_SEGMENTS {
+        return Err(QdrantAdmissionError::TooManySegments {
+            maximum: MAX_QUERY_SEGMENTS,
             observed: selected.len(),
         }
         .into());
@@ -94,46 +94,60 @@ pub(super) fn validate_query(
         }
         .into());
     }
-    reject_duplicate_partitions(selected)?;
+    for (index, descriptor) in selected.iter().copied().enumerate() {
+        reject_wrong_authority(index, authority, descriptor.authority)?;
+        for (first_index, first) in selected[..index].iter().copied().enumerate() {
+            if first.id == descriptor.id {
+                return Err(QdrantAdmissionError::DuplicateSegment {
+                    first_index,
+                    index,
+                    segment: descriptor.id,
+                }
+                .into());
+            }
+        }
+    }
     Ok(())
 }
 
-pub(super) fn prepare_points<'coordinates>(
+pub(super) fn prepare_segments<'coordinates>(
     authority: VectorAuthority,
-    points: &[QdrantPoint<'coordinates>],
+    segments: &[ValidatedVectorSegment<'coordinates>],
 ) -> Result<ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS>, QdrantError> {
-    if points.len() > MAX_BATCH_POINTS {
-        return Err(QdrantAdmissionError::BatchTooLarge {
-            maximum: MAX_BATCH_POINTS,
-            observed: points.len(),
-        }
-        .into());
-    }
     let mut prepared: ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS> = ArrayVec::new();
-    for (index, point) in points.iter().copied().enumerate() {
-        validate_point(authority, index, point)?;
-        let physical_id = point.physical_id();
-        for first in prepared.iter().copied() {
-            reject_identity_pair(
-                first.index,
-                first.key,
-                first.physical_id,
-                index,
-                point.key,
-                physical_id,
-            )?;
-        }
-        if let Err(_rejected) = prepared.try_push(PreparedPoint {
-            index,
-            key: point.key,
-            coordinates: point.coordinates,
-            physical_id,
-        }) {
-            return Err(QdrantAdmissionError::BatchTooLarge {
-                maximum: MAX_BATCH_POINTS,
-                observed: points.len(),
+    for (segment_index, segment) in segments.iter().enumerate() {
+        reject_wrong_authority(segment_index, authority, segment.authority)?;
+        for point in segment.facts.iter().copied() {
+            let index = prepared.len();
+            let key = QdrantDataKey::new(
+                segment.authority,
+                segment.id,
+                segment.partition,
+                point.entity,
+            );
+            let physical_id = PhysicalPointId::for_key(key);
+            for first in prepared.iter().copied() {
+                reject_identity_pair(
+                    first.index,
+                    first.key,
+                    first.physical_id,
+                    index,
+                    key,
+                    physical_id,
+                )?;
             }
-            .into());
+            if let Err(_rejected) = prepared.try_push(PreparedPoint {
+                index,
+                key,
+                coordinates: point.coordinates,
+                physical_id,
+            }) {
+                return Err(QdrantAdmissionError::BatchTooLarge {
+                    maximum: MAX_BATCH_POINTS,
+                    observed: index.saturating_add(1),
+                }
+                .into());
+            }
         }
     }
     Ok(prepared)
@@ -179,24 +193,6 @@ pub(super) fn prepare_keys(
     Ok(prepared)
 }
 
-fn validate_point(
-    authority: VectorAuthority,
-    index: usize,
-    point: QdrantPoint<'_>,
-) -> Result<(), QdrantError> {
-    reject_wrong_authority(index, authority, point.key.authority)?;
-    let expected = usize::from(authority.dimension);
-    if point.coordinates.len() != expected {
-        return Err(QdrantAdmissionError::WrongDimension {
-            index,
-            expected,
-            observed: point.coordinates.len(),
-        }
-        .into());
-    }
-    Ok(())
-}
-
 pub(super) fn reject_wrong_authority(
     index: usize,
     expected: VectorAuthority,
@@ -229,29 +225,6 @@ pub(super) fn reject_wrong_authority(
             expected: expected.metric,
             observed: observed.metric,
         });
-    }
-    Ok(())
-}
-
-pub(super) fn reject_duplicate_partitions(
-    selected: &[PartitionId],
-) -> Result<(), QdrantAdmissionError> {
-    for index in 0..selected.len() {
-        for first_index in 0..index {
-            let Some(first) = selected.get(first_index) else {
-                continue;
-            };
-            let Some(current) = selected.get(index) else {
-                continue;
-            };
-            if first == current {
-                return Err(QdrantAdmissionError::DuplicatePartition {
-                    first_index,
-                    index,
-                    partition: *current,
-                });
-            }
-        }
     }
     Ok(())
 }

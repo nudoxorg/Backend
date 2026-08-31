@@ -9,7 +9,7 @@ pub(super) use request::{
 };
 pub(super) use response::{
     collection_metadata, decode_identity, decode_vector, parse_boolean_ack, parse_completed_ack,
-    parse_query_hits, retrieve_points, verify_payload_indexes,
+    parse_query_candidates, retrieve_points, verify_payload_indexes,
 };
 
 #[cfg(test)]

@@ -5,12 +5,15 @@ use std::{
     ops::Deref,
 };
 
-use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority, VectorFact};
+use arrayvec::ArrayVec;
+use nudox_index_graph_vector::{
+    MAX_VECTOR_DIMENSION, Metric, ModelId, PartitionId, VectorAuthority,
+};
 use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 use serde::Serialize;
 
-use super::limits::{DEFAULT_MAX_ATTEMPTS, MAX_QUERY_PARTITIONS};
+use super::limits::{DEFAULT_MAX_ATTEMPTS, MAX_QUERY_SEGMENTS};
 
 /// Payload key carrying the immutable snapshot digest as lowercase hexadecimal.
 pub const SNAPSHOT_PAYLOAD_KEY: &str = "nudox_snapshot";
@@ -118,55 +121,15 @@ impl Deref for QdrantKeyEvidence {
     }
 }
 
-/// One borrowed vector row admitted for remote projection or local comparison.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantPoint<'coordinates> {
-    /// Complete semantic point identity.
-    pub key: QdrantDataKey,
-    /// Borrowed vector coordinates.
-    pub coordinates: &'coordinates [i16],
-}
-
-impl<'coordinates> QdrantPoint<'coordinates> {
-    /// Creates a borrowed point without performing remote I/O.
-    #[must_use]
-    pub const fn new(
-        authority: VectorAuthority,
-        segment: VectorSegmentId,
-        partition: PartitionId,
-        entity: EntityId,
-        coordinates: &'coordinates [i16],
-    ) -> Self {
-        Self {
-            key: QdrantDataKey::new(authority, segment, partition, entity),
-            coordinates,
-        }
-    }
-
-    /// Returns this point's disposable physical coordinate.
-    #[must_use]
-    pub fn physical_id(self) -> PhysicalPointId {
-        PhysicalPointId::for_key(self.key)
-    }
-}
-
-impl<'coordinates> From<QdrantPoint<'coordinates>> for VectorFact<'coordinates> {
-    fn from(point: QdrantPoint<'coordinates>) -> Self {
-        Self::new(
-            point.key.authority,
-            point.key.partition,
-            point.key.entity,
-            point.coordinates,
-        )
-    }
-}
-
-/// The deterministic score and complete provenance returned by a remote query.
+/// One bounded remote candidate after typed scope checks and deterministic local reranking.
+///
+/// The segment is a remote payload claim, not a membership proof. Exact consumers must resolve the
+/// candidate against an authenticated segment artifact before promoting it to a trusted hit.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct QdrantHit {
+pub struct QdrantCandidate {
     /// Snapshot, model, dimension, and metric authority.
     pub authority: VectorAuthority,
-    /// Immutable vector segment that produced the row.
+    /// Remotely claimed immutable vector segment.
     pub segment: VectorSegmentId,
     /// Source partition.
     pub partition: PartitionId,
@@ -180,18 +143,18 @@ pub struct QdrantHit {
 
 /// Number of initialized query-output slots.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct QueryHitCount {
+pub struct QueryCandidateCount {
     /// Exact initialized slot count.
     pub count: usize,
 }
 
-impl From<usize> for QueryHitCount {
+impl From<usize> for QueryCandidateCount {
     fn from(count: usize) -> Self {
         Self { count }
     }
 }
 
-impl Deref for QueryHitCount {
+impl Deref for QueryCandidateCount {
     type Target = usize;
 
     fn deref(&self) -> &Self::Target {
@@ -216,7 +179,52 @@ pub struct QdrantReadback {
     /// Disposable physical coordinate.
     pub physical_id: PhysicalPointId,
     /// Remotely stored coordinates.
-    pub coordinates: Vec<f64>,
+    pub coordinates: QdrantCoordinates,
+}
+
+/// Stack-resident coordinates retained by a verified remote readback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QdrantCoordinates(ArrayVec<f64, MAX_VECTOR_DIMENSION>);
+
+impl QdrantCoordinates {
+    pub(crate) fn copy_from(coordinates: &[f64]) -> Result<Self, CoordinateCapacity> {
+        let observed = coordinates.len();
+        match ArrayVec::try_from(coordinates) {
+            Ok(values) => Ok(Self(values)),
+            Err(_capacity) => Err(CoordinateCapacity {
+                maximum: MAX_VECTOR_DIMENSION,
+                observed,
+            }),
+        }
+    }
+
+    pub(crate) const fn empty() -> Self {
+        Self(ArrayVec::new_const())
+    }
+}
+
+impl Deref for QdrantCoordinates {
+    type Target = [f64];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[f64]> for QdrantCoordinates {
+    fn as_ref(&self) -> &[f64] {
+        self
+    }
+}
+
+/// Complete coordinate capacity rejection from a bounded readback conversion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("readback has {observed} coordinates; stack capacity is {maximum}")]
+pub struct CoordinateCapacity {
+    /// Maximum retained coordinates.
+    pub maximum: usize,
+    /// Complete observed coordinate count.
+    pub observed: usize,
 }
 
 /// Exact request phase retained by transport, status, and decode failures.
@@ -291,10 +299,19 @@ pub enum PayloadField {
 pub enum PayloadMismatchCause {
     /// The complete snapshot/model/dimension/metric authority differs.
     Authority(Box<AuthorityMismatchEvidence>),
-    /// The point is outside the caller's selected partition set.
-    PartitionSelection {
-        /// Complete bounded selection in request order.
-        selected: [Option<PartitionId>; MAX_QUERY_PARTITIONS],
+    /// The point is outside the caller's selected immutable segment set.
+    SegmentSelection {
+        /// Complete bounded selection in request order, allocated only on this cold rejection.
+        selected: Box<[Option<VectorSegmentId>; MAX_QUERY_SEGMENTS]>,
+        /// Segment decoded from the response.
+        observed: VectorSegmentId,
+    },
+    /// The response paired a selected segment with a partition outside its descriptor.
+    SegmentPartition {
+        /// Selected immutable segment.
+        segment: VectorSegmentId,
+        /// Partition committed by the selected descriptor.
+        expected: PartitionId,
         /// Partition decoded from the response.
         observed: PartitionId,
     },
@@ -437,16 +454,6 @@ pub enum QdrantAdmissionError {
         /// Rejected point metric.
         observed: Metric,
     },
-    /// A point's coordinates do not match its model dimension.
-    #[error("point {index} has {observed} coordinates; expected {expected}")]
-    WrongDimension {
-        /// Rejected point position.
-        index: usize,
-        /// Required coordinate count.
-        expected: usize,
-        /// Complete observed coordinate count.
-        observed: usize,
-    },
     /// A query coordinate slice does not match the pinned model dimension.
     #[error("query has {observed} coordinates; expected {expected}")]
     WrongQueryDimension {
@@ -463,23 +470,23 @@ pub enum QdrantAdmissionError {
         /// Caller-provided output capacity.
         available: usize,
     },
-    /// Too many selected partitions were admitted.
-    #[error("selected partition fanout has {observed}; maximum is {maximum}")]
-    TooManyPartitions {
-        /// Maximum selected partition fanout.
+    /// Too many immutable segments were selected for one bounded query.
+    #[error("selected segment fanout has {observed}; maximum is {maximum}")]
+    TooManySegments {
+        /// Maximum selected segment fanout.
         maximum: usize,
-        /// Complete observed fanout.
+        /// Complete rejected fanout.
         observed: usize,
     },
-    /// A selected partition was repeated.
-    #[error("selected partition {partition:?} appears at {first_index} and {index}")]
-    DuplicatePartition {
+    /// An immutable vector segment was selected more than once.
+    #[error("selected segment {segment:?} appears at {first_index} and {index}")]
+    DuplicateSegment {
         /// First occurrence position.
         first_index: usize,
         /// Later occurrence position.
         index: usize,
-        /// Repeated partition coordinate.
-        partition: PartitionId,
+        /// Repeated immutable segment.
+        segment: VectorSegmentId,
     },
     /// A batch key was repeated.
     #[error("batch key {key:?} appears at {first_index} and {index}")]
@@ -644,6 +651,20 @@ pub enum QdrantError {
         /// Later disposable coordinate carrying the same identity.
         second_physical_id: PhysicalPointId,
     },
+    /// A response returned more rows for one segment than its immutable descriptor commits.
+    #[error(
+        "Qdrant {phase:?} returned {observed} rows for segment {segment:?}; descriptor commits {maximum}"
+    )]
+    SegmentCardinalityExceeded {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Immutable selected segment.
+        segment: VectorSegmentId,
+        /// Maximum committed row count.
+        maximum: u8,
+        /// Complete observed count at rejection.
+        observed: u8,
+    },
     /// The response omitted a point required for verification.
     #[error("Qdrant {phase:?} omitted point {physical_id:?} for {key:?}")]
     MissingPoint {
@@ -679,6 +700,17 @@ pub enum QdrantError {
         phase: RequestPhase,
         /// Physical point coordinate.
         physical_id: PhysicalPointId,
+    },
+    /// A typed vector passed dimension validation but exceeded retained inline storage.
+    #[error("Qdrant {phase:?} point {physical_id:?} exceeded coordinate capacity")]
+    CoordinateCapacity {
+        /// Operation phase.
+        phase: RequestPhase,
+        /// Physical point coordinate.
+        physical_id: PhysicalPointId,
+        /// Original complete capacity rejection.
+        #[source]
+        source: CoordinateCapacity,
     },
     /// A numeric response field exceeded its semantic coordinate range.
     #[error("Qdrant {phase:?} payload field {field:?} is outside its semantic range")]

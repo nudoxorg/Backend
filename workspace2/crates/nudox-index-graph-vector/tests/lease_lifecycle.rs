@@ -18,11 +18,18 @@ const CAPACITY_TWO: usize = 2;
 #[derive(Debug, Eq, PartialEq)]
 enum TestFailure {
     Admission(StreamCapacityError),
-    CapacityConversion,
+    CapacityConversion { source: core::num::TryFromIntError },
     ExpectedBatch { phase: TestPhase },
     ExpectedTerminal { phase: TestPhase },
     ExpectedRejection { phase: TestPhase },
-    ThreadPanicked { worker: Worker },
+    ThreadPanicked { worker: Worker, report: PanicReport },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PanicReport {
+    Static(&'static str),
+    Owned(String),
+    NonText,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,7 +73,7 @@ fn lease<'cancellation>(
     trace: &mut TraceProbe<'_>,
 ) -> Result<GraphLease<'cancellation>, TestFailure> {
     let edges_per_partition =
-        u8::try_from(item_capacity).map_err(|_| TestFailure::CapacityConversion)?;
+        u8::try_from(item_capacity).map_err(|source| TestFailure::CapacityConversion { source })?;
     let capacity = LeaseCapacity {
         edges_per_partition,
         bytes_per_partition: item_capacity * size_of::<GraphEdge>(),
@@ -401,9 +408,22 @@ fn scoped_atomic_race_has_one_completion_winner_and_no_corrupt_batch() -> TestRe
                 }
             }
         }
-        worker.join().map_err(|_| TestFailure::ThreadPanicked {
-            worker: Worker::First,
-        })
+        match worker.join() {
+            Ok(result) => Ok(result),
+            Err(panic) => {
+                let report = if let Some(message) = panic.downcast_ref::<&'static str>() {
+                    PanicReport::Static(message)
+                } else if let Some(message) = panic.downcast_ref::<String>() {
+                    PanicReport::Owned(message.clone())
+                } else {
+                    PanicReport::NonText
+                };
+                Err(TestFailure::ThreadPanicked {
+                    worker: Worker::First,
+                    report,
+                })
+            }
+        }
     })?;
     assert_eq!(worker_result.0, Ok(()));
     assert_eq!(worker_result.1, Ok(()));

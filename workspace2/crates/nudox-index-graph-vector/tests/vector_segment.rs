@@ -62,13 +62,13 @@ fn canonical_identity_is_streamed_and_private_proof_lends_exact_points() -> Resu
         0xb4, 0x00,
     ];
     assert_eq!(
-        segment.map(|segment| segment.id()),
+        segment.map(|segment| segment.id),
         Ok(VectorSegmentId::from_digest(GOLDEN))
     );
     let borrowed = ValidatedVectorSegment::try_new(authority, partition, &points)
         .map_err(|error| format!("valid points rejected: {error:?}"))?;
-    assert_eq!(borrowed.authority(), authority);
-    assert_eq!(borrowed.partition(), partition);
+    assert_eq!(borrowed.authority, authority);
+    assert_eq!(borrowed.partition, partition);
     assert_eq!(borrowed.as_ref(), points.as_slice());
 
     let permutation = [points[1], points[0]];
@@ -105,8 +105,8 @@ fn duplicate_and_coordinate_mutations_cannot_reuse_identity() {
     let original = ValidatedVectorSegment::try_new(authority, partition, &points);
     let changed = ValidatedVectorSegment::try_new(authority, partition, &changed);
     assert_ne!(
-        original.map(|segment| segment.id()),
-        changed.map(|segment| segment.id())
+        original.map(|segment| segment.id),
+        changed.map(|segment| segment.id)
     );
 }
 
@@ -213,13 +213,13 @@ fn empty_segment_is_valid_but_authority_and_partition_are_identity_inputs() {
     assert!(first.is_ok());
     assert!(second.is_ok());
     assert_ne!(
-        first.map(|segment| segment.id()),
-        second.map(|segment| segment.id())
+        first.map(|segment| segment.id),
+        second.map(|segment| segment.id)
     );
     let cross_authority = ValidatedVectorSegment::try_new(authority(7), PartitionId::new(0), &[]);
     assert_ne!(
-        first.map(|segment| segment.id()),
-        cross_authority.map(|segment| segment.id())
+        first.map(|segment| segment.id),
+        cross_authority.map(|segment| segment.id)
     );
 
     let invalid = VectorAuthority::new(

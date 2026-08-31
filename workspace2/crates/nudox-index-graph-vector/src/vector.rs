@@ -6,7 +6,8 @@ use nudox_ir_vocab::EntityId;
 
 use crate::{MAX_PARTITIONS, Metric, MissingPartitions, PartitionId, VectorAuthority};
 
-const MAX_VECTOR_DIMENSION: usize = 16;
+/// Maximum coordinates admitted by stack-resident graph/vector projection structures.
+pub const MAX_VECTOR_DIMENSION: usize = 16;
 const MAX_FACTS_PER_ROW: usize = 16;
 
 /// Vector-specific stream terminal facts. This type cannot substitute for graph terminals.
@@ -238,20 +239,67 @@ pub fn compact_vector_facts<'coordinates>(
 ///     facts: &'facts [nudox_index_graph_vector::VectorPoint<'facts>],
 ///     id: VectorSegmentId,
 /// ) {
-///     let _ = ValidatedVectorSegment {
+///     let _ = ValidatedVectorSegment(nudox_index_graph_vector::VectorSegmentView {
 ///         authority,
 ///         partition: nudox_index_graph_vector::PartitionId { raw: 0 },
+///         point_count: 0,
 ///         facts,
 ///         id,
-///     };
+///     });
 /// }
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ValidatedVectorSegment<'facts> {
-    authority: VectorAuthority,
-    partition: PartitionId,
-    facts: &'facts [VectorPoint<'facts>],
-    id: VectorSegmentId,
+pub struct ValidatedVectorSegment<'facts>(VectorSegmentView<'facts>);
+
+/// Immutable facts exposed by a validated segment without exposing its constructor.
+///
+/// [`ValidatedVectorSegment`] dereferences to this view but deliberately has no `DerefMut`.
+/// Callers get direct field access while the correlated proof remains impossible to forge or edit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorSegmentView<'facts> {
+    /// Authority proved for every point.
+    pub authority: VectorAuthority,
+    /// Partition proved for every point.
+    pub partition: PartitionId,
+    /// Canonical narrowed point count committed by `id`.
+    pub point_count: u8,
+    /// Canonically ordered validated point lane.
+    pub facts: &'facts [VectorPoint<'facts>],
+    /// Identity committing to every field in this view.
+    pub id: VectorSegmentId,
+}
+
+/// Copyable immutable segment selection derived from a validated point lane.
+///
+/// The fields stay private because the identity commits to the correlated authority, partition,
+/// point count, entity order, and coordinates. Remote adapters may select by this descriptor, but
+/// the descriptor alone does not prove that a remote candidate's coordinates are members of the
+/// segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorSegmentDescriptor(VectorSegmentSelection);
+
+/// Portable immutable facts exposed by a validated segment descriptor.
+///
+/// The descriptor dereferences to this view without `DerefMut`, so adapters can use direct field
+/// access while construction remains sealed behind validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorSegmentSelection {
+    /// Authority bound into the segment identity.
+    pub authority: VectorAuthority,
+    /// Partition bound into the segment identity.
+    pub partition: PartitionId,
+    /// Exact canonical point count.
+    pub point_count: u8,
+    /// Identity of the complete ordered point lane.
+    pub id: VectorSegmentId,
+}
+
+impl Deref for VectorSegmentDescriptor {
+    type Target = VectorSegmentSelection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl<'facts> ValidatedVectorSegment<'facts> {
@@ -312,30 +360,24 @@ impl<'facts> ValidatedVectorSegment<'facts> {
             }
         }
 
-        Ok(Self {
+        Ok(Self(VectorSegmentView {
             authority,
             partition,
+            point_count: fact_count,
             facts,
             id: vector_segment_id(authority, partition, fact_count, facts),
+        }))
+    }
+
+    /// Derives a portable immutable selection without lending resident coordinates.
+    #[must_use]
+    pub const fn descriptor(&self) -> VectorSegmentDescriptor {
+        VectorSegmentDescriptor(VectorSegmentSelection {
+            authority: self.0.authority,
+            partition: self.0.partition,
+            point_count: self.0.point_count,
+            id: self.0.id,
         })
-    }
-
-    /// Returns the authority proved for every fact in this segment.
-    #[must_use]
-    pub const fn authority(&self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the partition proved for every fact in this segment.
-    #[must_use]
-    pub const fn partition(&self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the streamed identity derived from this authority, partition, and fact lane.
-    #[must_use]
-    pub const fn id(&self) -> VectorSegmentId {
-        self.id
     }
 }
 
@@ -361,10 +403,10 @@ impl<'facts> AsRef<[VectorPoint<'facts>]> for ValidatedVectorSegment<'facts> {
 }
 
 impl<'facts> Deref for ValidatedVectorSegment<'facts> {
-    type Target = [VectorPoint<'facts>];
+    type Target = VectorSegmentView<'facts>;
 
     fn deref(&self) -> &Self::Target {
-        self.facts
+        &self.0
     }
 }
 
@@ -574,11 +616,11 @@ pub fn exact_vector_query(
     }
     let mut written = 0;
     for segment in segments {
-        if selected.contains(&segment.partition()) {
-            for fact in segment.iter().copied() {
+        if selected.contains(&segment.partition) {
+            for fact in segment.facts.iter().copied() {
                 let candidate = VectorHit {
                     authority,
-                    partition: segment.partition(),
+                    partition: segment.partition,
                     entity: fact.entity,
                     score: score(authority.metric, query, fact.coordinates),
                 };
@@ -614,11 +656,11 @@ fn validate_vector_segments(
         });
     }
     for (segment_index, segment) in segments.iter().enumerate() {
-        if segment.authority() != authority {
+        if segment.authority != authority {
             return Err(VectorQueryError::WrongSegmentAuthority {
                 segment_index,
                 expected: authority,
-                observed: segment.authority(),
+                observed: segment.authority,
             });
         }
     }
@@ -647,11 +689,11 @@ fn reject_duplicate_partitions(
     }
     for index in 0..segments.len() {
         for first_index in 0..index {
-            if segments[first_index].partition() == segments[index].partition() {
+            if segments[first_index].partition == segments[index].partition {
                 return Err(VectorQueryError::DuplicateSegment {
                     first_index,
                     index,
-                    partition: segments[index].partition(),
+                    partition: segments[index].partition,
                 });
             }
         }
@@ -718,7 +760,7 @@ fn vector_terminal(
     for partition in selected.iter().copied() {
         if !segments
             .iter()
-            .any(|segment| segment.partition() == partition)
+            .any(|segment| segment.partition == partition)
         {
             missing[missing_len] = partition;
             missing_len += 1;

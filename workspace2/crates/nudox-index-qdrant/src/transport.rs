@@ -165,8 +165,18 @@ mod tests {
         Io(#[from] std::io::Error),
         #[error("response-bound request failed before the expected terminal")]
         Qdrant(#[from] QdrantError),
-        #[error("response-bound server thread panicked")]
-        ServerPanicked,
+        #[error("response-bound server thread panicked: {report}")]
+        ServerPanicked { report: ServerPanicReport },
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    enum ServerPanicReport {
+        #[error("{message}")]
+        Static { message: &'static str },
+        #[error("{message}")]
+        Owned { message: String },
+        #[error("non-text panic payload")]
+        NonText,
     }
 
     #[test]
@@ -201,9 +211,21 @@ mod tests {
             &endpoint,
             (),
         );
-        let server_result = server
-            .join()
-            .map_err(|_| ResponseBoundTestError::ServerPanicked)?;
+        let server_result = match server.join() {
+            Ok(result) => result,
+            Err(panic) => {
+                let report = if let Some(message) = panic.downcast_ref::<&'static str>() {
+                    ServerPanicReport::Static { message }
+                } else if let Some(message) = panic.downcast_ref::<String>() {
+                    ServerPanicReport::Owned {
+                        message: message.clone(),
+                    }
+                } else {
+                    ServerPanicReport::NonText
+                };
+                return Err(ResponseBoundTestError::ServerPanicked { report });
+            }
+        };
         server_result?;
         assert!(matches!(
             result,
