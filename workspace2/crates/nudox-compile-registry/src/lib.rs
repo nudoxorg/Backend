@@ -33,16 +33,16 @@ impl FullRegistry {
                 Language::Clang => AdapterRoute::Native {
                     tool: NativeTool::Clang,
                 },
-                Language::TypeScript => AdapterRoute::ToolingUnavailable {
+                Language::TypeScript => AdapterRoute::Native {
                     tool: NativeTool::TypeScriptCompiler,
                 },
-                Language::Go => AdapterRoute::ToolingUnavailable {
+                Language::Go => AdapterRoute::Native {
                     tool: NativeTool::GoCompiler,
                 },
-                Language::Java => AdapterRoute::ToolingUnavailable {
+                Language::Java => AdapterRoute::Native {
                     tool: NativeTool::JavaCompiler,
                 },
-                Language::CSharp => AdapterRoute::ToolingUnavailable {
+                Language::CSharp => AdapterRoute::Native {
                     tool: NativeTool::CSharpCompiler,
                 },
             }),

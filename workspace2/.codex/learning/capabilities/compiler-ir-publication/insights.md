@@ -46,6 +46,16 @@
   state: closed
   owner and closing artifact: terra / native compile integration test
 
+- fingerprint: native-child-poll-interval-is-bounded-but-not-yet-scaling-proven
+  role: terra
+  capability and commit: compiler-ir-publication / pending all-native frontend slice
+  observed behavior and concrete artifact: `native::terminal::wait_for_terminal` polls `try_wait` every 1ms; its deadline and cancellation fixtures prove bounded interruption, but long-lived child wakeups scale linearly with elapsed duration.
+  local correction attempted and result: retained the 1ms interval because the current process API has no cancellation-aware blocking wait; replacing it needs focused cancellation-latency and wakeup-rate evidence rather than an unmeasured retry-policy change.
+  suggested enforcement: benchmark
+  occurrences: compiler-ir-publication
+  state: open
+  owner and closing artifact: terra / native child lifecycle benchmark
+
 - fingerprint: mapped-fragment-borrows-require-one-complete-proof
   role: terra
   capability and commit: compiler-ir-publication / mapped fragment retrieval

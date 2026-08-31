@@ -8,9 +8,12 @@ mod lower;
 mod native;
 mod types;
 
+pub use nudox_compile_vocab::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
 pub use types::{
     CompileControl, CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest,
-    CompileScratch, CompiledFragment, LoweringUnsupported, NativeDiagnostic, NativeTool,
-    NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain, SourceIdentity,
-    ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, compile,
+    CompileScratch, CompiledFragment, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
+    NativeDiagnostic, NativeTool, NativeWorkError, NativeWorkPrimary, NativeWorker,
+    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, ResolvedToolchain,
+    ResolvedToolchainView, SourceIdentity, ToolchainResolutionError, ToolchainSelection,
+    ToolchainSelectionFact, compile,
 };

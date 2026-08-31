@@ -12,7 +12,7 @@ fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
         ),
         (
             Language::TypeScript,
-            AdapterRoute::ToolingUnavailable {
+            AdapterRoute::Native {
                 tool: NativeTool::TypeScriptCompiler,
             },
         ),
@@ -24,19 +24,19 @@ fn closed_lowering_rows_select_one_native_adapter_or_typed_terminal() {
         ),
         (
             Language::Go,
-            AdapterRoute::ToolingUnavailable {
+            AdapterRoute::Native {
                 tool: NativeTool::GoCompiler,
             },
         ),
         (
             Language::Java,
-            AdapterRoute::ToolingUnavailable {
+            AdapterRoute::Native {
                 tool: NativeTool::JavaCompiler,
             },
         ),
         (
             Language::CSharp,
-            AdapterRoute::ToolingUnavailable {
+            AdapterRoute::Native {
                 tool: NativeTool::CSharpCompiler,
             },
         ),

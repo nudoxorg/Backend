@@ -1,6 +1,7 @@
 #![no_std]
 
 use nudox_id::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
+use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Language {
@@ -85,7 +86,7 @@ impl TryFrom<u8> for Stage {
 }
 
 /// Concrete native tool family selected only by the closed compiler registry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NativeTool {
     Rustc,
     Clang,
@@ -125,6 +126,170 @@ impl TryFrom<u8> for NativeTool {
             value => Err(value),
         }
     }
+}
+
+impl NativeTool {
+    /// Canonical native-tool order used by compiler capability schedules and reports.
+    pub const ALL: [Self; 7] = [
+        Self::Rustc,
+        Self::Clang,
+        Self::Python,
+        Self::TypeScriptCompiler,
+        Self::GoCompiler,
+        Self::JavaCompiler,
+        Self::CSharpCompiler,
+    ];
+}
+
+/// Maximum native diagnostic bytes retained by the portable compiler service boundary.
+pub const MAX_NATIVE_DIAGNOSTIC_BYTES: usize = 256;
+
+/// Exact caller-owned native work-directory phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeWorkPhase {
+    /// The directory was prepared and proved empty before native work.
+    Prepare,
+    /// The directory was cleaned and proved empty after native work.
+    Cleanup,
+}
+
+/// Closed artifact roles owned by one native adapter invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeArtifactRole {
+    /// Rust's metadata-only parser probe output.
+    RustMetadata,
+    /// TypeScript source passed to the explicit compiler.
+    TypeScriptSource,
+    /// TypeScript's fixed adapter-owned work directory.
+    TypeScriptWork,
+    /// C# source passed through the explicit SDK project.
+    CSharpSource,
+    /// C# project that fixes the compilation shape.
+    CSharpProject,
+    /// C# `NuGet` configuration that clears remote package feeds.
+    CSharpNuGetConfig,
+    /// C# SDK restore/intermediate output directory.
+    CSharpIntermediateOutput,
+    /// C# SDK compiler output directory.
+    CSharpBuildOutput,
+    /// C#'s fixed adapter-owned work directory.
+    CSharpWork,
+    /// C#'s isolated .NET CLI home.
+    CSharpDotnetHome,
+    /// C#'s isolated `NuGet` package cache.
+    CSharpNuGetPackages,
+    /// Go source passed to the explicit compiler.
+    GoSource,
+    /// Go object output from the explicit compiler.
+    GoObject,
+    /// Go's fixed adapter-owned work directory.
+    GoWork,
+    /// Java source passed to the explicit compiler.
+    JavaSource,
+    /// Java argument file carrying the selected source name.
+    JavaArguments,
+    /// Java's fixed adapter-owned work directory.
+    JavaWork,
+}
+
+/// Exact malformed-UTF-8 position retained without carrying a runtime error object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidUtf8Fact {
+    /// Valid source-byte prefix immediately before the malformed UTF-8 sequence.
+    pub valid_up_to: usize,
+    /// Exact malformed sequence length when known; `None` denotes incomplete trailing bytes.
+    pub error_len: Option<usize>,
+}
+
+/// Closed worker identity retained when a scoped native I/O worker panics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeWorker {
+    /// The worker sending exact source through native standard input.
+    SourceWriter,
+    /// The worker draining native standard output into the bounded diagnostic lease.
+    StandardOutputReader,
+    /// The worker draining native standard error into the bounded diagnostic lease.
+    StandardErrorReader,
+}
+
+/// Closed class of payload produced by a scoped native I/O worker panic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeWorkerPanicClass {
+    /// A static string payload was retained.
+    StaticMessage,
+    /// An owned string payload was retained.
+    OwnedMessage,
+    /// The panic payload had no supported text representation.
+    Opaque,
+}
+
+/// Fixed retained byte capacity for one native worker panic message.
+pub const MAX_NATIVE_WORKER_PANIC_BYTES: usize = 96;
+
+/// Bounded UTF-8 message fact preserved from a scoped native worker panic payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeWorkerPanicMessage {
+    /// Exact retained UTF-8 byte prefix.
+    pub bytes: [u8; MAX_NATIVE_WORKER_PANIC_BYTES],
+    /// Number of meaningful bytes in `bytes`.
+    pub byte_len: usize,
+    /// Whether the original panic text exceeded the retained prefix.
+    pub truncated: bool,
+}
+
+/// Typed scoped-worker panic terminal retained instead of unwinding a compiler caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeWorkerPanic {
+    /// Exact native I/O worker whose join reported the panic.
+    pub worker: NativeWorker,
+    /// Closed panic-payload class.
+    pub class: NativeWorkerPanicClass,
+    /// Bounded exact message facts, empty only for an opaque payload.
+    pub message: NativeWorkerPanicMessage,
+}
+
+/// Closed semantic terminal for syntax-native source whose declaration facts lack a compact recipe.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LoweringUnsupported {
+    /// No declaration form has a compact semantic recipe in this compiler slice.
+    #[error("no supported declaration form")]
+    NoSupportedDeclaration,
+    /// Rust function signatures need a distinct semantic recipe and are not lowered as constants.
+    #[error("Rust function recipe is not represented")]
+    RustFunction,
+    /// Rust constant type is outside the closed Bool/I32/String recipe set.
+    #[error("Rust constant type is not represented")]
+    RustConstantType,
+    /// Python assignment has no nonempty identifier fact.
+    #[error("Python assignment identifier is not represented")]
+    PythonAssignmentName,
+    /// Python assignment value is outside the closed Bool/I32/String recipe set.
+    #[error("Python assignment value is not represented")]
+    PythonAssignmentValue,
+    /// Clang declaration is outside the closed `const char *` String recipe.
+    #[error("Clang declaration form is not represented")]
+    ClangDeclarationForm,
+    /// TypeScript is outside the closed top-level `const` or return-typed `function` subset.
+    #[error("TypeScript declaration form is not represented")]
+    TypeScriptDeclarationForm,
+    /// TypeScript declaration type is outside the closed `boolean`/`number`/`string` recipe.
+    #[error("TypeScript declaration type is not represented")]
+    TypeScriptDeclarationType,
+    /// C# is outside the closed `const` or return-typed `static` method subset.
+    #[error("C# declaration form is not represented")]
+    CSharpDeclarationForm,
+    /// C# declaration type is outside the closed `bool`/`int`/`string` recipe.
+    #[error("C# declaration type is not represented")]
+    CSharpDeclarationType,
+    /// Go is outside the closed top-level `const` or return-typed `func` subset.
+    #[error("Go declaration form is not represented")]
+    GoDeclarationForm,
+    /// Go declaration type is outside the closed `bool`/`int`/`string` recipe.
+    #[error("Go declaration type is not represented")]
+    GoDeclarationType,
+    /// Java lacks the closed top-level type or class-member recipe required for compact IR.
+    #[error("Java declaration form is not represented")]
+    JavaDeclarationForm,
 }
 
 /// Copyable canonical recipe facts retained by compact compiler artifacts.

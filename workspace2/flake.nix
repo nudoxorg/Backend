@@ -184,16 +184,25 @@
               dylintTools
               pkgs.clang
               pkgs.curl
+              pkgs.dotnet-sdk_8
+              pkgs.go
               pkgs.jq
+              pkgs.jdk
               pkgs.libiconv
+              pkgs.nodejs_22
               pkgs.qdrant
               pkgs.rustup
+              pkgs.typescript
               pkgs.zlib
             ];
             NUDOX_STABLE_TOOLCHAIN = stable;
             NUDOX_DYLINT_TOOLCHAIN = dylintNightly;
             NUDOX_CARGO_CONFIG = qualityCargoConfig;
             NUDOX_CARGO_VENDOR = qualityCargoDeps;
+            NUDOX_CSHARP_COMPILER = "${pkgs.dotnet-sdk_8}/bin/dotnet";
+            NUDOX_GO_COMPILER = "${pkgs.go}/bin/go";
+            NUDOX_JAVA_COMPILER = "${pkgs.jdk}/bin/javac";
+            NUDOX_TYPESCRIPT_COMPILER = "${pkgs.typescript}/bin/tsc";
             LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.libiconv
               pkgs.zlib
