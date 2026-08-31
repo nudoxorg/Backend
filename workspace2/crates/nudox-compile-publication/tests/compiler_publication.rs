@@ -8,8 +8,8 @@ use std::{
 use nudox_compile_driver::CompiledFragment;
 use nudox_compile_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use nudox_compile_publication::{
-    OpenPublicationScratch, PublicationScratch, PublishCompiledError, PublishControl,
-    UncommittedPublication,
+    OpenPublicationScratch, OpenedFragment, OpenedFragmentCursor, OpenedFragmentError,
+    PublicationScratch, PublishCompiledError, PublishControl, UncommittedPublication,
     immutable::ImmutableArtifactStore,
     publication::{open_published, publish_compiled},
 };
@@ -53,6 +53,8 @@ enum TestError {
     Publish(#[from] PublishCompiledError),
     #[error("compiler publication reopen failed")]
     Open(#[from] nudox_compile_publication::publication::OpenPublishedError),
+    #[error("opened compiler fragment could not reconstruct its exact immutable view")]
+    OpenedFragment(#[from] OpenedFragmentError),
     #[error("fixture source length cannot fit source facts")]
     SourceLength(#[from] core::num::TryFromIntError),
     #[error("expected {expected}, observed {observed}")]
@@ -60,6 +62,10 @@ enum TestError {
         expected: &'static str,
         observed: &'static str,
     },
+    #[error("opened compiler package did not contain fragment {ordinal}")]
+    MissingOpenedFragment { ordinal: usize },
+    #[error("opened compiler package contained more fragment views than its manifest")]
+    ExtraOpenedFragment,
 }
 
 struct Fixture {
@@ -239,6 +245,68 @@ fn package_manifest_is_order_invariant_and_unchanged_fragment_is_reused() -> Res
     assert_eq!(original.identity, first.manifest.identity);
     reopened.shutdown()?;
     changed_publisher.shutdown()?;
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "the integration path retains exact publication and reopened-fragment terminals"
+)]
+fn reopened_fragment_cursor_borrows_only_manifest_named_immutable_bytes() -> Result<(), TestError> {
+    let fixture = Fixture::new("opened-fragment-views")?;
+    let paths = PublicationPaths::in_directory(&fixture.journal());
+    let publisher = DurablePublisher::create(&paths, limits()?)?;
+    let mut alpha_bytes = [0_u8; 256];
+    let mut bravo_bytes = [0_u8; 256];
+    let alpha_length = write_fragment(&mut alpha_bytes, b"opened-alpha-source", b"opened-alpha")?;
+    let bravo_length = write_fragment(&mut bravo_bytes, b"opened-bravo-source", b"opened-bravo")?;
+    let alpha = compiled(&alpha_bytes[..alpha_length])?;
+    let bravo = compiled(&bravo_bytes[..bravo_length])?;
+    publish(
+        &publisher,
+        &fixture.artifacts(),
+        &[
+            compiled(&bravo_bytes[..bravo_length])?,
+            compiled(&alpha_bytes[..alpha_length])?,
+        ],
+        PublishControl::Continue,
+    )?;
+
+    let mut manifest_output = [0_u8; 1024];
+    let mut manifest_facts = [None; 2];
+    let mut fragment_output = [0_u8; 512];
+    let mut locality_output = [0_u8; 1024];
+    let opened = open_published(
+        &publisher,
+        &fixture.artifacts(),
+        OpenPublicationScratch {
+            manifest_output: &mut manifest_output,
+            manifest_facts: &mut manifest_facts,
+            fragment_output: &mut fragment_output,
+            locality_output: &mut locality_output,
+        },
+    )?
+    .ok_or(TestError::Assertion {
+        expected: "a selected durable compiler package",
+        observed: "no selected compiler package",
+    })?;
+    let mut fragments = opened.fragments();
+    let first = next_opened_fragment(&mut fragments, 0)?;
+    let second = next_opened_fragment(&mut fragments, 1)?;
+    if fragments.next().is_some() {
+        return Err(TestError::ExtraOpenedFragment);
+    }
+    if first.facts.fragment >= second.facts.fragment {
+        return Err(TestError::Assertion {
+            expected: "strict canonical fragment identity order",
+            observed: "non-increasing reopened fragment identities",
+        });
+    }
+    assert_opened_fragment(&first, &alpha, &bravo)?;
+    assert_opened_fragment(&second, &alpha, &bravo)?;
+    publisher.shutdown()?;
     fixture.remove()?;
     Ok(())
 }
@@ -561,6 +629,56 @@ fn compiled(bytes: &[u8]) -> Result<CompiledFragment<'_>, TestError> {
         recipe: fragment.recipe,
         fragment,
     })
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the integration assertion retains exact cold reopen corruption evidence without boxing"
+)]
+fn next_opened_fragment<'opened, 'fragment>(
+    fragments: &mut OpenedFragmentCursor<'opened, 'fragment>,
+    ordinal: usize,
+) -> Result<OpenedFragment<'fragment>, TestError> {
+    match fragments.next() {
+        Some(fragment) => fragment.map_err(TestError::OpenedFragment),
+        None => Err(TestError::MissingOpenedFragment { ordinal }),
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the integration assertion preserves exact durable and reopened-fragment failures"
+)]
+fn assert_opened_fragment(
+    opened: &OpenedFragment<'_>,
+    alpha: &CompiledFragment<'_>,
+    bravo: &CompiledFragment<'_>,
+) -> Result<(), TestError> {
+    let expected = if opened.facts.fragment
+        == FragmentRangeManifest::from_view(&alpha.fragment)?.fragment
+    {
+        alpha
+    } else if opened.facts.fragment == FragmentRangeManifest::from_view(&bravo.fragment)?.fragment {
+        bravo
+    } else {
+        return Err(TestError::Assertion {
+            expected: "one of the two manifest-selected fragment identities",
+            observed: "an identity outside the published compact fragments",
+        });
+    };
+    if opened.view.as_ref() != expected.fragment.as_ref() {
+        return Err(TestError::Assertion {
+            expected: "reopened view bytes to equal the immutable manifest-named fragment",
+            observed: "different reopened fragment bytes",
+        });
+    }
+    if opened.view.source != expected.source || opened.view.recipe != expected.recipe {
+        return Err(TestError::Assertion {
+            expected: "reopened view facts to equal its exact compiler fragment",
+            observed: "reopened source or recipe facts differed",
+        });
+    }
+    Ok(())
 }
 
 fn limits() -> Result<PublicationLimits, nudox_durable_journal::PublicationLimitError> {

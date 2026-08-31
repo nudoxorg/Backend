@@ -1,5 +1,6 @@
 //! Durable compiler publication from driver-issued compact fragments only.
 
+use core::ops::Deref;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::RecvError,
@@ -7,7 +8,10 @@ use std::sync::{
 
 use nudox_durable_journal::{PublicationFacts, SharedPublicationFailure};
 use nudox_hydration::VerifiedGenerationFacts;
-use nudox_ir_format::FragmentRangeManifestError;
+use nudox_ir_format::{
+    FragmentError, FragmentRange, FragmentRangeManifest, FragmentRangeManifestError, FragmentView,
+    RecipeFact, SectionKind, SourceIdentity,
+};
 use thiserror::Error;
 
 use crate::{
@@ -108,6 +112,296 @@ pub struct OpenedCompilation<'manifest, 'facts> {
     pub binding: CompilationBindingFacts,
     /// Borrowed canonical manifest validated along with every referenced fragment and generation root.
     pub manifest: CompilationManifestView<'manifest, 'facts>,
+    pub(super) fragments: &'manifest [u8],
+}
+
+impl<'manifest, 'facts> OpenedCompilation<'manifest, 'facts> {
+    /// Reconstructs manifest-named IR views from the exact immutable bytes verified during reopen.
+    ///
+    /// The cursor derives each region from the canonical manifest's typed fragment length.  It
+    /// independently validates the fragment grammar and all six committed semantic ranges before
+    /// yielding it, so a consumer cannot pair a manifest fact with arbitrary caller bytes.
+    pub fn fragments(&self) -> OpenedFragmentCursor<'_, 'manifest> {
+        OpenedFragmentCursor {
+            facts: self.manifest.fragments(),
+            bytes: self.fragments,
+            offset: 0,
+            ordinal: 0,
+            failed: false,
+        }
+    }
+}
+
+/// One manifest-named compact IR fragment borrowed from an opened durable compilation.
+pub struct OpenedFragment<'fragment> {
+    view: OpenedFragmentView<'fragment>,
+}
+
+impl<'fragment> Deref for OpenedFragment<'fragment> {
+    type Target = OpenedFragmentView<'fragment>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+/// Immutable readable facts of one exact manifest-named reopened IR fragment.
+///
+/// This projection deliberately has no public constructor.  Only [`OpenedCompilation::fragments`]
+/// can bind its paired manifest fact and compact IR view after validating their exact bytes.
+pub struct OpenedFragmentView<'fragment> {
+    /// Complete canonical facts selected by the immutable package manifest.
+    pub facts: StoredFragmentFacts,
+    /// The exact validated compact IR bytes committed by `facts.fragment`.
+    pub view: FragmentView<'fragment>,
+}
+
+/// Cursor over immutable fragments selected by one opened durable compiler publication.
+pub struct OpenedFragmentCursor<'opened, 'fragments> {
+    facts: crate::manifest::CompilationManifestEntries<'opened>,
+    bytes: &'fragments [u8],
+    offset: usize,
+    ordinal: usize,
+    failed: bool,
+}
+
+impl<'opened, 'fragments> Iterator for OpenedFragmentCursor<'opened, 'fragments> {
+    type Item = Result<OpenedFragment<'fragments>, OpenedFragmentError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        let facts = self.facts.next()?;
+        let ordinal = self.ordinal;
+        let Some(next_ordinal) = ordinal.checked_add(1) else {
+            self.failed = true;
+            return Some(Err(OpenedFragmentError::OrdinalOverflow { facts }));
+        };
+        self.ordinal = next_ordinal;
+        match opened_fragment(self.bytes, self.offset, ordinal, facts) {
+            Ok((fragment, next_offset)) => {
+                self.offset = next_offset;
+                Some(Ok(fragment))
+            }
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+impl core::iter::FusedIterator for OpenedFragmentCursor<'_, '_> {}
+
+/// Rejection while reconstructing one manifest-named borrowed fragment view.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OpenedFragmentError {
+    /// Advancing the host-side manifest ordinal overflowed before a fragment could be exposed.
+    #[error("opened compiler fragment ordinal overflowed this address space")]
+    OrdinalOverflow {
+        /// Exact manifest facts that could not receive a host ordinal.
+        facts: StoredFragmentFacts,
+    },
+    /// The immutable manifest's complete fragment length does not fit this address space.
+    #[error("opened compiler fragment {ordinal} length cannot fit this address space")]
+    LengthAddressSpace {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Exact manifest facts for the rejected fragment.
+        facts: StoredFragmentFacts,
+        /// Exact address-space conversion source.
+        #[source]
+        source: core::num::TryFromIntError,
+    },
+    /// Deriving the manifest-named byte interval overflowed native address space.
+    #[error("opened compiler fragment {ordinal} range overflows this address space")]
+    RangeOverflow {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Exact manifest facts for the rejected fragment.
+        facts: StoredFragmentFacts,
+        /// Validated output offset before this fragment.
+        offset: usize,
+        /// Required complete fragment length.
+        length: usize,
+    },
+    /// The exact reopened region was shorter than the immutable manifest requires.
+    #[error(
+        "opened compiler fragment {ordinal} has {available} bytes remaining, requires {required}"
+    )]
+    RegionTruncated {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Exact manifest facts for the rejected fragment.
+        facts: StoredFragmentFacts,
+        /// Bytes remaining in the immutable reopened region.
+        available: usize,
+        /// Complete bytes required by the immutable manifest.
+        required: usize,
+    },
+    /// The immutable reopened region no longer satisfies the compact IR grammar.
+    #[error("opened compiler fragment {ordinal} failed compact IR validation")]
+    Grammar {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Exact manifest facts for the rejected fragment.
+        facts: StoredFragmentFacts,
+        /// Exact compact-IR grammar rejection.
+        #[source]
+        source: FragmentError,
+    },
+    /// The fragment's derived semantic range commitments differ from its package manifest facts.
+    #[error(
+        "opened compiler fragment {ordinal} semantic range commitments differ from its manifest"
+    )]
+    Ranges {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Exact manifest facts for the rejected fragment.
+        facts: StoredFragmentFacts,
+        /// Exact compact-IR range derivation rejection.
+        #[source]
+        source: FragmentRangeManifestError,
+    },
+    /// The complete reopened fragment facts differ from the canonical package manifest.
+    #[error("opened compiler fragment {ordinal} facts differ from its immutable package manifest")]
+    Facts {
+        /// Canonical manifest position.
+        ordinal: usize,
+        /// Complete facts selected by the immutable package manifest.
+        expected: StoredFragmentFacts,
+        /// Exact derived fact that differs while the complete expected package fact is retained.
+        mismatch: OpenedFragmentFactMismatch,
+    },
+}
+
+/// One exact fact that disagreed while reopening a manifest-named immutable fragment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum OpenedFragmentFactMismatch {
+    /// The complete content-addressed immutable fragment identity changed.
+    FragmentIdentity {
+        /// Identity derived from the reopened bytes.
+        observed: crate::immutable::FragmentIdentity,
+    },
+    /// The complete immutable fragment byte length changed.
+    Length {
+        /// Length derived from the reopened bytes.
+        observed: u32,
+    },
+    /// The source provenance fact changed.
+    Source {
+        /// Source fact derived from the reopened bytes.
+        observed: SourceIdentity,
+    },
+    /// The compiler recipe fact changed.
+    Recipe {
+        /// Recipe fact derived from the reopened bytes.
+        observed: RecipeFact,
+    },
+    /// One canonical semantic section commitment changed.
+    Range {
+        /// Canonical expected section kind.
+        section: SectionKind,
+        /// Commitment derived from the reopened bytes.
+        observed: FragmentRange,
+    },
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "cold integrity failures retain complete typed manifest facts and compact-IR sources without allocation"
+)]
+fn opened_fragment<'fragment>(
+    bytes: &'fragment [u8],
+    offset: usize,
+    ordinal: usize,
+    facts: StoredFragmentFacts,
+) -> Result<(OpenedFragment<'fragment>, usize), OpenedFragmentError> {
+    let length = usize::try_from(facts.fragment_length).map_err(|source| {
+        OpenedFragmentError::LengthAddressSpace {
+            ordinal,
+            facts,
+            source,
+        }
+    })?;
+    let end = offset
+        .checked_add(length)
+        .ok_or(OpenedFragmentError::RangeOverflow {
+            ordinal,
+            facts,
+            offset,
+            length,
+        })?;
+    let Some(region) = bytes.get(offset..end) else {
+        return Err(OpenedFragmentError::RegionTruncated {
+            ordinal,
+            facts,
+            available: bytes.len().saturating_sub(offset),
+            required: length,
+        });
+    };
+    let view = FragmentView::validate(region).map_err(|source| OpenedFragmentError::Grammar {
+        ordinal,
+        facts,
+        source,
+    })?;
+    let ranges =
+        FragmentRangeManifest::from_view(&view).map_err(|source| OpenedFragmentError::Ranges {
+            ordinal,
+            facts,
+            source,
+        })?;
+    let Some(mismatch) = fragment_fact_mismatch(facts, ranges) else {
+        return Ok((
+            OpenedFragment {
+                view: OpenedFragmentView { facts, view },
+            },
+            end,
+        ));
+    };
+    Err(OpenedFragmentError::Facts {
+        ordinal,
+        expected: facts,
+        mismatch,
+    })
+}
+
+fn fragment_fact_mismatch(
+    expected: StoredFragmentFacts,
+    observed: FragmentRangeManifest,
+) -> Option<OpenedFragmentFactMismatch> {
+    if observed.fragment != expected.fragment {
+        return Some(OpenedFragmentFactMismatch::FragmentIdentity {
+            observed: observed.fragment,
+        });
+    }
+    if observed.fragment_length != expected.fragment_length {
+        return Some(OpenedFragmentFactMismatch::Length {
+            observed: observed.fragment_length,
+        });
+    }
+    if observed.source != expected.source {
+        return Some(OpenedFragmentFactMismatch::Source {
+            observed: observed.source,
+        });
+    }
+    if observed.recipe != expected.recipe {
+        return Some(OpenedFragmentFactMismatch::Recipe {
+            observed: observed.recipe,
+        });
+    }
+    for (expected_range, observed_range) in expected.ranges.into_iter().zip(observed.ranges) {
+        if expected_range != observed_range {
+            return Some(OpenedFragmentFactMismatch::Range {
+                section: expected_range.section,
+                observed: observed_range,
+            });
+        }
+    }
+    None
 }
 
 /// Exact attempted compiler publication facts retained when journal publication did not commit.

@@ -7,7 +7,8 @@ mod types;
 pub use open::open_published;
 pub use publish::publish_compiled;
 pub use types::{
-    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, PublicationScratch,
-    PublishCompiledError, PublishControl, PublishedCompilation, UncommittedPublication,
-    UncommittedPublicationFacts,
+    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragment,
+    OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch, OpenedFragmentView,
+    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
+    UncommittedPublication, UncommittedPublicationFacts,
 };

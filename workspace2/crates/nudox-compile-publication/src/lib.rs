@@ -22,8 +22,9 @@ pub use binding_store::{BindingIoPhase, BindingStoreError};
 pub use generation::GenerationBuildError;
 /// Durable compiler publication and verified reopen public boundary.
 pub use publication::{
-    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, PublicationScratch,
-    PublishCompiledError, PublishControl, PublishedCompilation, UncommittedPublication,
-    UncommittedPublicationFacts, open_published, publish_compiled,
+    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragment,
+    OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch, OpenedFragmentView,
+    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
+    UncommittedPublication, UncommittedPublicationFacts, open_published, publish_compiled,
 };
 pub use storage::ImmutableFileError;

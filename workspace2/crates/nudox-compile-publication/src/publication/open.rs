@@ -21,7 +21,7 @@ use crate::{
 pub fn open_published<'manifest, 'facts>(
     publisher: &DurablePublisher,
     artifact_directory: &Path,
-    scratch: OpenPublicationScratch<'manifest, 'facts, '_, '_>,
+    scratch: OpenPublicationScratch<'manifest, 'facts, 'manifest, '_>,
 ) -> Result<Option<OpenedCompilation<'manifest, 'facts>>, OpenPublishedError> {
     let Some(publication) = publisher.published().map_err(OpenPublishedError::Journal)? else {
         return Ok(None);
@@ -108,6 +108,7 @@ pub fn open_published<'manifest, 'facts>(
         publication,
         binding: binding.facts,
         manifest,
+        fragments: fragment_output,
     }))
 }
 
