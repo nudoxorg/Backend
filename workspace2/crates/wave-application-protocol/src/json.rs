@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt, io, ops::Deref};
 
-use request::{ApplicationArgumentsDto, RequestDto, RequestIdField, RequestIdentityDto};
+use request::{RequestDto, RequestIdField, RequestIdentityDto};
 use serde_json::Value;
 use wave_application_core::{ApplicationInput, ApplicationReply, InputText};
 
@@ -187,9 +187,8 @@ fn tool_input(params: request::ParamsDto) -> Result<ApplicationInput, AdapterErr
     if params.name.as_deref() != Some("nudox.application") {
         return Err(unknown("tool"));
     }
-    let arguments: ApplicationArgumentsDto =
-        params.arguments.ok_or_else(|| missing("arguments"))?;
-    arguments.application_input()
+    let arguments = params.arguments.ok_or_else(|| missing("arguments"))?;
+    arguments.try_into()
 }
 
 fn cancellation_input(params: request::ParamsDto) -> Result<CancellationTarget, AdapterError> {

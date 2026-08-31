@@ -4,6 +4,7 @@
 //! `wave-application-core`, which remains the sole owner of semantic validation and behavior.
 
 mod cli;
+mod command;
 mod frame;
 mod json;
 
