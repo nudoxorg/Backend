@@ -8,7 +8,12 @@ publish.workspace = true
 
 [dependencies]
 nudox-id = { path = "../nudox-id" }
+nudox-ir-format = { path = "../nudox-ir-format" }
 thiserror.workspace = true
+
+[dev-dependencies]
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-ir-vocab = { path = "../nudox-ir-vocab" }
 
 [lib]
 path = "src/lib.rs"
