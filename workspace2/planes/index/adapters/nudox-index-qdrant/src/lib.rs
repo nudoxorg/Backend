@@ -10,6 +10,7 @@
 
 use std::{num::NonZeroU8, time::Duration};
 
+use arrayvec::ArrayVec;
 use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
 use serde::Serialize;
 
@@ -32,6 +33,7 @@ const QUERY_POINTS_PATH: &str = "/points/query?consistency=all";
 const UPSERT_POINTS_PATH: &str = "/points?wait=true&ordering=strong";
 const DELETE_POINTS_PATH: &str = "/points/delete?wait=true&ordering=strong";
 const CREATE_PAYLOAD_INDEX_PATH: &str = "/index?wait=true&ordering=strong";
+const CREATE_COLLECTION_PATH: &str = "?timeout=15";
 const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
 const FNV_PRIME: u64 = 1_099_511_628_211;
 const PHYSICAL_ID_ZERO_REPLACEMENT: u64 = 1;
@@ -40,6 +42,8 @@ const PHYSICAL_ID_ZERO_REPLACEMENT: u64 = 1;
 pub const SNAPSHOT_PAYLOAD_KEY: &str = "nudox_snapshot";
 /// Payload key carrying the complete model registry identity as lowercase hexadecimal.
 pub const MODEL_PAYLOAD_KEY: &str = "nudox_model";
+/// Payload key carrying the immutable vector-segment identity as lowercase hexadecimal.
+pub const SEGMENT_PAYLOAD_KEY: &str = "nudox_segment";
 /// Payload key carrying the metric recipe name.
 pub const METRIC_PAYLOAD_KEY: &str = "nudox_metric";
 /// Payload key carrying the projection partition coordinate.
@@ -47,11 +51,12 @@ pub const PARTITION_PAYLOAD_KEY: &str = "nudox_partition";
 /// Payload key carrying the semantic entity coordinate.
 pub const ENTITY_PAYLOAD_KEY: &str = "nudox_entity";
 
-const PAYLOAD_INDEXES: [(PayloadField, &str); 4] = [
-    (PayloadField::Snapshot, "keyword"),
-    (PayloadField::Model, "keyword"),
-    (PayloadField::Metric, "keyword"),
-    (PayloadField::Partition, "integer"),
+const PAYLOAD_INDEXES: [(PayloadField, wire::PayloadDataType); 5] = [
+    (PayloadField::Snapshot, wire::PayloadDataType::Keyword),
+    (PayloadField::Model, wire::PayloadDataType::Keyword),
+    (PayloadField::Segment, wire::PayloadDataType::Keyword),
+    (PayloadField::Metric, wire::PayloadDataType::Keyword),
+    (PayloadField::Partition, wire::PayloadDataType::Integer),
 ];
 
 /// A named blocking Qdrant adapter owning endpoint, collection, authority, and connection pool.
@@ -134,27 +139,23 @@ impl QdrantBlockingAdapter {
 
     /// Creates the collection when absent and verifies its dimension and metric when present.
     pub fn ensure_collection(&self) -> Result<(), QdrantError> {
-        let body = wire::CollectionRequest::new(self.authority);
-        let response = self.request_json(
-            RequestPhase::CreateCollection,
-            Method::Put,
-            &self.url(""),
-            body,
-        )?;
-        if response.status == 404 || response.status == 409 {
-            if response.status == 404 {
-                let create = self.request_json(
-                    RequestPhase::CreateCollection,
-                    Method::Put,
-                    &self.url("?wait=true"),
-                    wire::CollectionRequest::new(self.authority),
-                )?;
-                if !is_success(create.status) && create.status != 409 {
-                    return Err(status_error(RequestPhase::CreateCollection, create));
-                }
+        let observed =
+            self.request_json(RequestPhase::ReadCollection, Method::Get, &self.url(""), ())?;
+        if observed.status == 404 {
+            let created = self.request_json(
+                RequestPhase::CreateCollection,
+                Method::Put,
+                &self.url(CREATE_COLLECTION_PATH),
+                wire::CollectionRequest::new(self.authority),
+            )?;
+            if !is_success(created.status) && created.status != 409 {
+                return Err(status_error(RequestPhase::CreateCollection, created));
             }
-        } else if !is_success(response.status) {
-            return Err(status_error(RequestPhase::CreateCollection, response));
+            if is_success(created.status) {
+                wire::parse_boolean_ack(RequestPhase::CreateCollection, &created.body)?;
+            }
+        } else if !is_success(observed.status) {
+            return Err(status_error(RequestPhase::ReadCollection, observed));
         }
         self.verify_collection()?;
         self.ensure_payload_indexes()?;
@@ -172,7 +173,7 @@ impl QdrantBlockingAdapter {
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::DeleteCollection, response));
         }
-        wire::parse_ack(RequestPhase::DeleteCollection, &response.body)
+        wire::parse_boolean_ack(RequestPhase::DeleteCollection, &response.body)
     }
 
     /// Upserts a bounded batch, then independently reads every physical point back.
@@ -195,7 +196,7 @@ impl QdrantBlockingAdapter {
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::UpsertPoints, response));
         }
-        wire::parse_ack(RequestPhase::UpsertPoints, &response.body)?;
+        wire::parse_completed_ack(RequestPhase::UpsertPoints, &response.body)?;
         let mut readback = vec![None; prepared.len()];
         let verified = self.readback_into(&prepared, &mut readback)?;
         Ok(QdrantMutationReceipt {
@@ -265,7 +266,7 @@ impl QdrantBlockingAdapter {
         if !is_success(response.status) {
             return Err(status_error(RequestPhase::DeletePoints, response));
         }
-        wire::parse_ack(RequestPhase::DeletePoints, &response.body)?;
+        wire::parse_completed_ack(RequestPhase::DeletePoints, &response.body)?;
         let remaining = self.fetch_points_allow_missing(&prepared, RequestPhase::VerifyDelete)?;
         if let Some(point) = remaining.first() {
             return Err(QdrantError::VectorMismatch {
@@ -286,7 +287,7 @@ impl QdrantBlockingAdapter {
         query_coordinates: &[i16],
         requested_limit: usize,
         output: &mut [Option<QdrantHit>],
-    ) -> Result<QdrantQueryOutcome, QdrantError> {
+    ) -> Result<QueryHitCount, QdrantError> {
         self.validate_query(selected, query_coordinates, requested_limit, output.len())?;
         let response = self.request_json(
             RequestPhase::QueryPoints,
@@ -299,7 +300,6 @@ impl QdrantBlockingAdapter {
         }
         let mut hits =
             wire::parse_query_hits(self.authority, selected, query_coordinates, &response.body)?;
-        let terminal = remote_terminal(self.authority, selected, &hits);
         hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
         let written = hits.len();
@@ -309,7 +309,7 @@ impl QdrantBlockingAdapter {
         for (slot, hit) in output.iter_mut().zip(hits) {
             *slot = Some(hit);
         }
-        Ok(QdrantQueryOutcome { written, terminal })
+        Ok(written.into())
     }
 
     /// Builds the local scalar control using the same authority and identity types as the graph/vector plane.
@@ -320,16 +320,17 @@ impl QdrantBlockingAdapter {
         query_coordinates: &[i16],
         requested_limit: usize,
         output: &mut [Option<QdrantHit>],
-    ) -> Result<QdrantQueryOutcome, QdrantError> {
+    ) -> Result<QueryHitCount, QdrantError> {
         self.validate_query(selected, query_coordinates, requested_limit, output.len())?;
         let prepared = self.prepare_points(points)?;
         let mut hits = Vec::with_capacity(prepared.len());
         for point in prepared.iter().copied() {
-            if selected.is_empty() || selected.contains(&point.key.partition()) {
+            if selected.is_empty() || selected.contains(&point.key.partition) {
                 hits.push(QdrantHit {
                     authority: self.authority,
-                    partition: point.key.partition(),
-                    entity: point.key.entity(),
+                    segment: point.key.segment,
+                    partition: point.key.partition,
+                    entity: point.key.entity,
                     score: local_score(
                         self.authority.metric(),
                         query_coordinates,
@@ -342,14 +343,13 @@ impl QdrantBlockingAdapter {
         hits.sort_by(|left, right| compare_hits(*left, *right));
         hits.truncate(requested_limit);
         let written = hits.len();
-        let terminal = local_terminal(self.authority, selected, &prepared);
         for slot in output.iter_mut().take(requested_limit) {
             *slot = None;
         }
         for (slot, hit) in output.iter_mut().zip(hits) {
             *slot = Some(hit);
         }
-        Ok(QdrantQueryOutcome { written, terminal })
+        Ok(written.into())
     }
 
     fn verify_collection(&self) -> Result<(), QdrantError> {
@@ -366,7 +366,7 @@ impl QdrantBlockingAdapter {
                 field: CollectionField::VectorDimension,
             });
         }
-        if metadata.metric != metric_name(self.authority.metric()) {
+        if metadata.metric != self.authority.metric().into() {
             return Err(QdrantError::CollectionMismatch {
                 phase: RequestPhase::ReadCollection,
                 field: CollectionField::VectorMetric,
@@ -393,7 +393,7 @@ impl QdrantBlockingAdapter {
                 return Err(status_error(RequestPhase::CreatePayloadIndex, response));
             }
             if is_success(response.status) {
-                wire::parse_ack(RequestPhase::CreatePayloadIndex, &response.body)?;
+                wire::parse_completed_ack(RequestPhase::CreatePayloadIndex, &response.body)?;
             }
         }
         Ok(())
@@ -455,7 +455,7 @@ impl QdrantBlockingAdapter {
     fn prepare_points<'coordinates>(
         &self,
         points: &[QdrantPoint<'coordinates>],
-    ) -> Result<Vec<PreparedPoint<'coordinates>>, QdrantError> {
+    ) -> Result<ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS>, QdrantError> {
         if points.len() > MAX_BATCH_POINTS {
             return Err(QdrantAdmissionError::BatchTooLarge {
                 maximum: MAX_BATCH_POINTS,
@@ -463,7 +463,7 @@ impl QdrantBlockingAdapter {
             }
             .into());
         }
-        let mut prepared: Vec<PreparedPoint<'_>> = Vec::with_capacity(points.len());
+        let mut prepared: ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS> = ArrayVec::new();
         for (index, point) in points.iter().copied().enumerate() {
             self.validate_point(index, point)?;
             let physical_id = point.physical_id();
@@ -473,21 +473,29 @@ impl QdrantBlockingAdapter {
                     first.key,
                     first.physical_id,
                     index,
-                    point.key(),
+                    point.key,
                     physical_id,
                 )?;
             }
-            prepared.push(PreparedPoint {
-                index,
-                key: point.key(),
-                coordinates: point.coordinates(),
-                physical_id,
-            });
+            prepared
+                .try_push(PreparedPoint {
+                    index,
+                    key: point.key,
+                    coordinates: point.coordinates,
+                    physical_id,
+                })
+                .map_err(|_| QdrantAdmissionError::BatchTooLarge {
+                    maximum: MAX_BATCH_POINTS,
+                    observed: points.len(),
+                })?;
         }
         Ok(prepared)
     }
 
-    fn prepare_keys(&self, keys: &[QdrantDataKey]) -> Result<Vec<PreparedKey>, QdrantError> {
+    fn prepare_keys(
+        &self,
+        keys: &[QdrantDataKey],
+    ) -> Result<ArrayVec<PreparedKey, MAX_BATCH_POINTS>, QdrantError> {
         if keys.len() > MAX_BATCH_POINTS {
             return Err(QdrantAdmissionError::BatchTooLarge {
                 maximum: MAX_BATCH_POINTS,
@@ -495,9 +503,9 @@ impl QdrantBlockingAdapter {
             }
             .into());
         }
-        let mut prepared: Vec<PreparedKey> = Vec::with_capacity(keys.len());
+        let mut prepared: ArrayVec<PreparedKey, MAX_BATCH_POINTS> = ArrayVec::new();
         for (index, key) in keys.iter().copied().enumerate() {
-            reject_wrong_authority(index, self.authority, key.authority())?;
+            reject_wrong_authority(index, self.authority, key.authority)?;
             let physical_id = PhysicalPointId::for_key(key);
             for first in prepared.iter().copied() {
                 reject_identity_pair(
@@ -509,23 +517,28 @@ impl QdrantBlockingAdapter {
                     physical_id,
                 )?;
             }
-            prepared.push(PreparedKey {
-                index,
-                key,
-                physical_id,
-            });
+            prepared
+                .try_push(PreparedKey {
+                    index,
+                    key,
+                    physical_id,
+                })
+                .map_err(|_| QdrantAdmissionError::BatchTooLarge {
+                    maximum: MAX_BATCH_POINTS,
+                    observed: keys.len(),
+                })?;
         }
         Ok(prepared)
     }
 
     fn validate_point(&self, index: usize, point: QdrantPoint<'_>) -> Result<(), QdrantError> {
-        reject_wrong_authority(index, self.authority, point.key.authority())?;
+        reject_wrong_authority(index, self.authority, point.key.authority)?;
         let expected = usize::from(self.authority.dimension());
-        if point.coordinates().len() != expected {
+        if point.coordinates.len() != expected {
             return Err(QdrantAdmissionError::WrongDimension {
                 index,
                 expected,
-                observed: point.coordinates().len(),
+                observed: point.coordinates.len(),
             }
             .into());
         }
@@ -536,7 +549,9 @@ impl QdrantBlockingAdapter {
         &self,
         keys: &[impl PreparedIdentity],
     ) -> Result<(), QdrantError> {
-        let readbacks = self.fetch_points(keys, RequestPhase::ReadPoints, false, false)?;
+        let compare_coordinates = keys.iter().any(|key| key.coordinates().is_some());
+        let readbacks =
+            self.fetch_points(keys, RequestPhase::ReadPoints, compare_coordinates, false)?;
         for readback in readbacks {
             let Some(expected) = keys
                 .iter()
@@ -550,7 +565,16 @@ impl QdrantBlockingAdapter {
             if expected.key() != readback.key {
                 return Err(QdrantAdmissionError::RemoteIdentityMismatch {
                     physical_id: readback.physical_id,
-                    key: expected.key(),
+                    key: expected.key().into(),
+                }
+                .into());
+            }
+            if let Some(coordinates) = expected.coordinates()
+                && !vector_matches(coordinates, &readback.coordinates)
+            {
+                return Err(QdrantAdmissionError::ImmutableVectorConflict {
+                    physical_id: readback.physical_id,
+                    key: readback.key.into(),
                 }
                 .into());
             }
@@ -593,9 +617,7 @@ impl QdrantBlockingAdapter {
                     cause: MalformedResponseCause::DuplicatePhysicalPoint,
                 });
             }
-            let Some(expected) = keys
-                .iter()
-                .find(|key| key.physical_id().raw() == physical_id.raw())
+            let Some(expected) = keys.iter().find(|key| key.physical_id().0 == physical_id.0)
             else {
                 return Err(QdrantError::UnexpectedPoint { phase, physical_id });
             };
@@ -633,7 +655,7 @@ impl QdrantBlockingAdapter {
                     return Err(QdrantError::MissingPoint {
                         phase,
                         physical_id: key.physical_id(),
-                        key: key.key(),
+                        key: key.key().into(),
                     });
                 };
                 if let Some(point) = key.coordinates()
@@ -737,7 +759,7 @@ impl QdrantBlockingAdapter {
                 return Err(QdrantError::MissingPoint {
                     phase: RequestPhase::ReadPoints,
                     physical_id: key.physical_id,
-                    key: key.key,
+                    key: key.key.into(),
                 });
             }
         }
@@ -769,12 +791,12 @@ impl QdrantBlockingAdapter {
                     .agent
                     .put(url)
                     .content_type("application/json")
-                    .send(encoded.clone()),
+                    .send(encoded.as_slice()),
                 Method::Post => self
                     .agent
                     .post(url)
                     .content_type("application/json")
-                    .send(encoded.clone()),
+                    .send(encoded.as_slice()),
                 Method::Delete => self.agent.delete(url).call(),
             };
             match result {
@@ -1026,16 +1048,16 @@ fn reject_identity_pair(
         return Err(QdrantAdmissionError::DuplicateKey {
             first_index,
             index,
-            key: second,
+            key: second.into(),
         });
     }
     if first_physical_id == second_physical_id {
         return Err(QdrantAdmissionError::PhysicalIdCollision {
             physical_id: second_physical_id,
-            first_partition: first.partition(),
-            first_entity: first.entity(),
-            second_partition: second.partition(),
-            second_entity: second.entity(),
+            first_partition: first.partition,
+            first_entity: first.entity,
+            second_partition: second.partition,
+            second_entity: second.entity,
         });
     }
     Ok(())
@@ -1066,24 +1088,24 @@ fn vector_matches(expected: &[i16], observed: &[f64]) -> bool {
             .all(|(expected, observed)| f64::from(*expected) == *observed)
 }
 
-fn metric_name(metric: Metric) -> &'static str {
-    match metric {
-        Metric::SquaredEuclidean => "Euclid",
-        Metric::NegativeDotProduct => "Dot",
+#[repr(u8)]
+enum MetricIdentityTag {
+    SquaredEuclidean = 1,
+    NegativeDotProduct = 2,
+}
+
+impl From<Metric> for MetricIdentityTag {
+    fn from(metric: Metric) -> Self {
+        match metric {
+            Metric::SquaredEuclidean => Self::SquaredEuclidean,
+            Metric::NegativeDotProduct => Self::NegativeDotProduct,
+        }
     }
 }
 
-fn metric_payload_name(metric: Metric) -> &'static str {
-    match metric {
-        Metric::SquaredEuclidean => "squared_euclidean",
-        Metric::NegativeDotProduct => "negative_dot_product",
-    }
-}
-
-fn metric_tag(metric: Metric) -> u8 {
-    match metric {
-        Metric::SquaredEuclidean => 1,
-        Metric::NegativeDotProduct => 2,
+impl From<MetricIdentityTag> for u8 {
+    fn from(tag: MetricIdentityTag) -> Self {
+        tag as Self
     }
 }
 
@@ -1130,83 +1152,6 @@ fn compare_hits(left: QdrantHit, right: QdrantHit) -> std::cmp::Ordering {
         .then_with(|| left.partition.raw.cmp(&right.partition.raw))
 }
 
-fn local_terminal(
-    authority: VectorAuthority,
-    selected: &[PartitionId],
-    points: &[PreparedPoint<'_>],
-) -> QdrantQueryTerminal {
-    let mut missing = [None; MAX_QUERY_PARTITIONS];
-    let mut missing_len = 0;
-    for partition in selected.iter().copied() {
-        if !points
-            .iter()
-            .any(|point| point.key.partition() == partition)
-            && let Some(slot) = missing.get_mut(missing_len)
-        {
-            *slot = Some(partition);
-            missing_len += 1;
-        }
-    }
-    QdrantQueryTerminal {
-        authority,
-        missing,
-        missing_len,
-    }
-}
-
-fn remote_terminal(
-    authority: VectorAuthority,
-    selected: &[PartitionId],
-    hits: &[QdrantHit],
-) -> QdrantQueryTerminal {
-    let mut missing = [None; MAX_QUERY_PARTITIONS];
-    let mut missing_len = 0;
-    for partition in selected.iter().copied() {
-        if !hits.iter().any(|hit| hit.partition == partition)
-            && let Some(slot) = missing.get_mut(missing_len)
-        {
-            *slot = Some(partition);
-            missing_len += 1;
-        }
-    }
-    QdrantQueryTerminal {
-        authority,
-        missing,
-        missing_len,
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(hex_digit(*byte >> 4));
-        output.push(hex_digit(*byte & 0x0f));
-    }
-    output
-}
-
-fn hex_digit(nibble: u8) -> char {
-    match nibble {
-        0 => '0',
-        1 => '1',
-        2 => '2',
-        3 => '3',
-        4 => '4',
-        5 => '5',
-        6 => '6',
-        7 => '7',
-        8 => '8',
-        9 => '9',
-        10 => 'a',
-        11 => 'b',
-        12 => 'c',
-        13 => 'd',
-        14 => 'e',
-        15 => 'f',
-        _ => '?',
-    }
-}
-
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -1219,7 +1164,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_index_vocab::IndexSnapshotId;
+    use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
     use nudox_ir_vocab::EntityId;
 
     fn authority(byte: u8) -> VectorAuthority {
@@ -1231,11 +1176,35 @@ mod tests {
         )
     }
 
+    fn segment(byte: u8) -> VectorSegmentId {
+        VectorSegmentId::from_canonical_bytes(&[byte; 32])
+    }
+
+    fn encoded_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     #[test]
     fn physical_id_is_deterministic_and_retains_every_identity_axis() {
-        let first = QdrantDataKey::new(authority(1), PartitionId::new(2), EntityId::new(3));
-        let same = QdrantDataKey::new(authority(1), PartitionId::new(2), EntityId::new(3));
-        let snapshot = QdrantDataKey::new(authority(2), PartitionId::new(2), EntityId::new(3));
+        let first = QdrantDataKey::new(
+            authority(1),
+            segment(1),
+            PartitionId::new(2),
+            EntityId::new(3),
+        );
+        let same = first;
+        let snapshot = QdrantDataKey::new(
+            authority(2),
+            segment(1),
+            PartitionId::new(2),
+            EntityId::new(3),
+        );
+        let segment_key = QdrantDataKey::new(
+            authority(1),
+            segment(2),
+            PartitionId::new(2),
+            EntityId::new(3),
+        );
         let model = QdrantDataKey::new(
             VectorAuthority::new(
                 authority(1).snapshot(),
@@ -1243,11 +1212,22 @@ mod tests {
                 2,
                 Metric::SquaredEuclidean,
             ),
+            segment(1),
             PartitionId::new(2),
             EntityId::new(3),
         );
-        let partition = QdrantDataKey::new(authority(1), PartitionId::new(4), EntityId::new(3));
-        let entity = QdrantDataKey::new(authority(1), PartitionId::new(2), EntityId::new(5));
+        let partition = QdrantDataKey::new(
+            authority(1),
+            segment(1),
+            PartitionId::new(4),
+            EntityId::new(3),
+        );
+        let entity = QdrantDataKey::new(
+            authority(1),
+            segment(1),
+            PartitionId::new(2),
+            EntityId::new(5),
+        );
         assert_eq!(
             PhysicalPointId::for_key(first),
             PhysicalPointId::for_key(same)
@@ -1262,6 +1242,10 @@ mod tests {
         );
         assert_ne!(
             PhysicalPointId::for_key(first),
+            PhysicalPointId::for_key(segment_key)
+        );
+        assert_ne!(
+            PhysicalPointId::for_key(first),
             PhysicalPointId::for_key(partition)
         );
         assert_ne!(
@@ -1272,7 +1256,12 @@ mod tests {
 
     #[test]
     fn identity_payload_and_filter_include_full_authority() {
-        let key = QdrantDataKey::new(authority(7), PartitionId::new(11), EntityId::new(13));
+        let key = QdrantDataKey::new(
+            authority(7),
+            segment(7),
+            PartitionId::new(11),
+            EntityId::new(13),
+        );
         let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
         assert!(payload.is_ok());
         let Ok(payload) = payload else {
@@ -1280,11 +1269,19 @@ mod tests {
         };
         assert_eq!(
             payload.get(SNAPSHOT_PAYLOAD_KEY),
-            Some(&serde_json::Value::from(hex(key.snapshot().as_ref())))
+            Some(&serde_json::Value::from(encoded_hex(
+                key.authority.snapshot().as_ref()
+            )))
         );
         assert_eq!(
             payload.get(MODEL_PAYLOAD_KEY),
-            Some(&serde_json::Value::from(hex(key.model().as_ref())))
+            Some(&serde_json::Value::from(encoded_hex(
+                key.authority.model().as_ref()
+            )))
+        );
+        assert_eq!(
+            payload.get(SEGMENT_PAYLOAD_KEY),
+            Some(&serde_json::Value::from(encoded_hex(key.segment.as_ref())))
         );
         assert_eq!(
             payload.get(METRIC_PAYLOAD_KEY),
@@ -1298,10 +1295,8 @@ mod tests {
             payload.get(ENTITY_PAYLOAD_KEY),
             Some(&serde_json::Value::from(13_u32))
         );
-        let filter = serde_json::to_value(wire::IdentityFilter::new(
-            key.authority(),
-            &[key.partition()],
-        ));
+        let filter =
+            serde_json::to_value(wire::IdentityFilter::new(key.authority, &[key.partition]));
         assert!(filter.is_ok());
         let Ok(filter) = filter else {
             return;
@@ -1320,14 +1315,15 @@ mod tests {
         let coordinates = [1_i16, -2];
         let point = QdrantPoint::new(
             authority(3),
+            segment(3),
             PartitionId::new(1),
             EntityId::new(5),
             &coordinates,
         );
         let prepared = [PreparedPoint {
             index: 0,
-            key: point.key(),
-            coordinates: point.coordinates(),
+            key: point.key,
+            coordinates: point.coordinates,
             physical_id: point.physical_id(),
         }];
         let upsert = serde_json::to_value(wire::UpsertRequest::from_points(&prepared));
@@ -1348,11 +1344,11 @@ mod tests {
                 .and_then(serde_json::Value::as_array)
                 .and_then(|points| points.first())
                 .and_then(|point| point.get("id")),
-            Some(&serde_json::Value::from(point.physical_id().raw()))
+            Some(&serde_json::Value::from(point.physical_id().0))
         );
         let keys = [PreparedKey {
             index: 0,
-            key: point.key(),
+            key: point.key,
             physical_id: point.physical_id(),
         }];
         let delete = serde_json::to_value(wire::DeleteRequest::new(&keys));
@@ -1365,7 +1361,7 @@ mod tests {
                 .get("points")
                 .and_then(serde_json::Value::as_array)
                 .and_then(|points| points.first()),
-            Some(&serde_json::Value::from(point.physical_id().raw()))
+            Some(&serde_json::Value::from(point.physical_id().0))
         );
         let retrieve = serde_json::to_value(wire::RetrieveRequest::new(&keys, true));
         assert!(retrieve.is_ok());
@@ -1429,17 +1425,27 @@ mod tests {
 
     #[test]
     fn collision_checker_rejects_same_physical_id_for_distinct_keys() {
-        let first = QdrantDataKey::new(authority(1), PartitionId::new(1), EntityId::new(1));
-        let second = QdrantDataKey::new(authority(1), PartitionId::new(2), EntityId::new(3));
+        let first = QdrantDataKey::new(
+            authority(1),
+            segment(1),
+            PartitionId::new(1),
+            EntityId::new(1),
+        );
+        let second = QdrantDataKey::new(
+            authority(1),
+            segment(1),
+            PartitionId::new(2),
+            EntityId::new(3),
+        );
         let physical_id = PhysicalPointId(42);
         assert_eq!(
             reject_identity_pair(0, first, physical_id, 1, second, physical_id),
             Err(QdrantAdmissionError::PhysicalIdCollision {
                 physical_id,
-                first_partition: first.partition(),
-                first_entity: first.entity(),
-                second_partition: second.partition(),
-                second_entity: second.entity(),
+                first_partition: first.partition,
+                first_entity: first.entity,
+                second_partition: second.partition,
+                second_entity: second.entity,
             })
         );
     }
@@ -1457,34 +1463,36 @@ mod tests {
         let points = [
             QdrantPoint::new(
                 authority,
+                segment(9),
                 PartitionId::new(0),
                 EntityId::new(9),
                 &first_coordinates,
             ),
             QdrantPoint::new(
                 authority,
+                segment(9),
                 PartitionId::new(0),
                 EntityId::new(3),
                 &second_coordinates,
             ),
         ];
         let mut output = [None, None];
-        let outcome = adapter.local_brute_force(&[], &points, &[0, 0], 2, &mut output);
-        assert!(outcome.is_ok());
-        let Ok(outcome) = outcome else {
+        let count = adapter.local_brute_force(&[], &points, &[0, 0], 2, &mut output);
+        assert!(count.is_ok());
+        let Ok(count) = count else {
             return;
         };
-        assert_eq!(outcome.written(), 2);
+        assert_eq!(count.count, 2);
         assert_eq!(
-            output.first().copied().flatten().map(QdrantHit::entity),
+            output.first().copied().flatten().map(|hit| hit.entity),
             Some(EntityId::new(3))
         );
         assert_eq!(
-            output.get(1).copied().flatten().map(QdrantHit::entity),
+            output.get(1).copied().flatten().map(|hit| hit.entity),
             Some(EntityId::new(9))
         );
         assert_eq!(
-            output.first().copied().flatten().map(QdrantHit::authority),
+            output.first().copied().flatten().map(|hit| hit.authority),
             Some(authority)
         );
     }
@@ -1507,9 +1515,9 @@ mod tests {
     #[test]
     fn query_rejects_alias_physical_id_and_duplicate_semantic_key() {
         let authority = authority(6);
-        let key = QdrantDataKey::new(authority, PartitionId::new(2), EntityId::new(7));
+        let key = QdrantDataKey::new(authority, segment(6), PartitionId::new(2), EntityId::new(7));
         let canonical_id = PhysicalPointId::for_key(key);
-        let alias_id = PhysicalPointId(canonical_id.raw().wrapping_add(1));
+        let alias_id = PhysicalPointId(canonical_id.0.wrapping_add(1));
         let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
         assert!(payload.is_ok());
         let Ok(payload) = payload else {
@@ -1517,7 +1525,7 @@ mod tests {
         };
         let point = |physical_id: PhysicalPointId| {
             serde_json::json!({
-                "id": physical_id.raw(),
+                "id": physical_id.0,
                 "payload": payload,
                 "vector": [1.0, 2.0],
             })
@@ -1527,13 +1535,13 @@ mod tests {
         })
         .to_string();
         assert!(matches!(
-            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &alias_body),
+            wire::parse_query_hits(authority, &[key.partition], &[0, 0], &alias_body),
             Err(QdrantError::PhysicalIdentityMismatch {
                 phase: RequestPhase::QueryPoints,
                 key: observed_key,
                 observed_physical_id,
                 expected_physical_id,
-            }) if observed_key == key
+            }) if *observed_key == key
                 && observed_physical_id == alias_id
                 && expected_physical_id == canonical_id
         ));
@@ -1543,13 +1551,13 @@ mod tests {
         })
         .to_string();
         assert!(matches!(
-            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &duplicate_body),
+            wire::parse_query_hits(authority, &[key.partition], &[0, 0], &duplicate_body),
             Err(QdrantError::DuplicateSemanticPoint {
                 phase: RequestPhase::QueryPoints,
                 key: observed_key,
                 first_physical_id,
                 second_physical_id,
-            }) if observed_key == key
+            }) if *observed_key == key
                 && first_physical_id == canonical_id
                 && second_physical_id == canonical_id
         ));
@@ -1558,7 +1566,12 @@ mod tests {
     #[test]
     fn typed_decoder_rejects_unknown_metric_and_malformed_query_shapes() {
         let authority = authority(12);
-        let key = QdrantDataKey::new(authority, PartitionId::new(2), EntityId::new(7));
+        let key = QdrantDataKey::new(
+            authority,
+            segment(12),
+            PartitionId::new(2),
+            EntityId::new(7),
+        );
         let point_id = PhysicalPointId::for_key(key);
         let payload = serde_json::to_value(wire::IdentityPayload::from_key(key));
         assert!(payload.is_ok());
@@ -1574,12 +1587,12 @@ mod tests {
         );
         let unknown_metric = serde_json::json!({
             "result": { "points": [{
-                "id": point_id.raw(), "payload": invalid_metric, "vector": [1.0, 2.0],
+                "id": point_id.0, "payload": invalid_metric, "vector": [1.0, 2.0],
             }] },
         })
         .to_string();
         assert!(matches!(
-            wire::parse_query_hits(authority, &[key.partition()], &[0, 0], &unknown_metric),
+            wire::parse_query_hits(authority, &[key.partition], &[0, 0], &unknown_metric),
             Err(QdrantError::MalformedResponse {
                 phase: RequestPhase::QueryPoints,
                 cause: MalformedResponseCause::UnknownMetric,
@@ -1603,24 +1616,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn remote_terminal_uses_the_complete_pre_truncation_scan() {
-        let authority = authority(8);
-        let present = PartitionId::new(2);
-        let absent = PartitionId::new(3);
-        let key = QdrantDataKey::new(authority, present, EntityId::new(9));
-        let hits = [QdrantHit {
-            authority,
-            partition: present,
-            entity: key.entity(),
-            score: 4.0,
-            physical_id: PhysicalPointId::for_key(key),
-        }];
-        let terminal = remote_terminal(authority, &[present, absent], &hits);
-        assert_eq!(terminal.authority(), authority);
-        assert_eq!(terminal.missing_len(), 1);
-        assert_eq!(terminal.missing_at(0), Some(absent));
     }
 }

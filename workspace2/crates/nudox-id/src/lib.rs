@@ -31,8 +31,9 @@ pub use generation::{GenerationHasher, GenerationId};
 pub use marker::{
     CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, DomainCode, DomainTag,
     Encoding, EncodingCode, EncodingTag, FrameEncoding, IndexExactSegmentDomain,
-    IndexLexicalSegmentDomain, IndexSnapshotDomain, LocalitySortedEncoding, ObjectDomain,
-    ObjectPackEncoding, OperationDomain, RootDomain, StageKeyDomain,
+    IndexLexicalSegmentDomain, IndexSnapshotDomain, IndexVectorSegmentDomain,
+    LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain,
+    StageKeyDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};

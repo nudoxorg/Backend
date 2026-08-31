@@ -93,7 +93,8 @@ protocol_registry!(
         (StageKeyDomain, StageKey, 7, b"nudox.stage.v1\0\0"),
         (IndexSnapshotDomain, IndexSnapshot, 8, b"nudox.idx.snap.1"),
         (IndexExactSegmentDomain, IndexExactSegment, 9, b"nudox.idx.exact1"),
-        (IndexLexicalSegmentDomain, IndexLexicalSegment, 10, b"nudox.idx.lexic1")
+        (IndexLexicalSegmentDomain, IndexLexicalSegment, 10, b"nudox.idx.lexic1"),
+        (IndexVectorSegmentDomain, IndexVectorSegment, 11, b"nudox.idx.vectr1")
     }
     encodings {
         (FrameEncoding, Frame, 1, b"nudox.frame.v1\0\0"),
@@ -107,8 +108,8 @@ mod tests {
     use super::{
         CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, Encoding,
         FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
-        LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain,
-        StageKeyDomain,
+        IndexVectorSegmentDomain, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
+        OperationDomain, RootDomain, StageKeyDomain,
     };
 
     #[test]
@@ -124,6 +125,7 @@ mod tests {
             IndexSnapshotDomain::TAG,
             IndexExactSegmentDomain::TAG,
             IndexLexicalSegmentDomain::TAG,
+            IndexVectorSegmentDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {

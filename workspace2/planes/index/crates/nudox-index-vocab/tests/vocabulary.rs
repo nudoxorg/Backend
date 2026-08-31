@@ -6,7 +6,7 @@ use core::{
     ops::Deref,
 };
 use nudox_id::{ContentIdDecodeError, DomainCode};
-use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
+use nudox_index_vocab::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId, VectorSegmentId};
 use std::hint::black_box;
 
 const CANONICAL_BYTES: usize = 24;
@@ -25,6 +25,7 @@ fn local_and_remote_bytes_produce_the_same_typed_ids() {
     let local_snapshot = IndexSnapshotId::from_canonical_bytes(&local);
     let local_exact = ExactSegmentId::from_canonical_bytes(&local);
     let local_lexical = LexicalSegmentId::from_canonical_bytes(&local);
+    let local_vector = VectorSegmentId::from_canonical_bytes(&local);
 
     assert_eq!(
         local_snapshot,
@@ -36,6 +37,7 @@ fn local_and_remote_bytes_produce_the_same_typed_ids() {
         LexicalSegmentId::from_canonical_bytes(&remote)
     );
     assert_ne!(local_exact.as_ref(), local_lexical.as_ref());
+    assert_ne!(local_vector.as_ref(), local_lexical.as_ref());
     assert_ne!(
         local_snapshot,
         IndexSnapshotId::from_canonical_bytes(&different)
@@ -47,6 +49,10 @@ fn local_and_remote_bytes_produce_the_same_typed_ids() {
     assert_ne!(
         local_lexical,
         LexicalSegmentId::from_canonical_bytes(&different)
+    );
+    assert_ne!(
+        local_vector,
+        VectorSegmentId::from_canonical_bytes(&different)
     );
 }
 
@@ -69,12 +75,15 @@ fn ids_retain_the_content_digest_layout() {
     type SnapshotDigest = <IndexSnapshotId as Deref>::Target;
     type ExactDigest = <ExactSegmentId as Deref>::Target;
     type LexicalDigest = <LexicalSegmentId as Deref>::Target;
+    type VectorDigest = <VectorSegmentId as Deref>::Target;
     assert_eq!(size_of::<IndexSnapshotId>(), size_of::<SnapshotDigest>());
     assert_eq!(align_of::<IndexSnapshotId>(), align_of::<SnapshotDigest>());
     assert_eq!(size_of::<ExactSegmentId>(), size_of::<ExactDigest>());
     assert_eq!(align_of::<ExactSegmentId>(), align_of::<ExactDigest>());
     assert_eq!(size_of::<LexicalSegmentId>(), size_of::<LexicalDigest>());
     assert_eq!(align_of::<LexicalSegmentId>(), align_of::<LexicalDigest>());
+    assert_eq!(size_of::<VectorSegmentId>(), size_of::<VectorDigest>());
+    assert_eq!(align_of::<VectorSegmentId>(), align_of::<VectorDigest>());
 }
 
 #[test]
@@ -83,10 +92,12 @@ fn canonical_construction_allocates_nothing_after_warmup() {
     black_box(IndexSnapshotId::from_canonical_bytes(&bytes));
     black_box(ExactSegmentId::from_canonical_bytes(&bytes));
     black_box(LexicalSegmentId::from_canonical_bytes(&bytes));
+    black_box(VectorSegmentId::from_canonical_bytes(&bytes));
     let allocations = measure(|| {
         black_box(IndexSnapshotId::from_canonical_bytes(&bytes));
         black_box(ExactSegmentId::from_canonical_bytes(&bytes));
         black_box(LexicalSegmentId::from_canonical_bytes(&bytes));
+        black_box(VectorSegmentId::from_canonical_bytes(&bytes));
     });
     assert_eq!(allocations, AllocationInfo::default());
 }

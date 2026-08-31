@@ -1,36 +1,63 @@
 //! Qdrant's JSON wire contract, isolated from adapter admission and transport policy.
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::fmt;
+
+use arrayvec::ArrayVec;
+use serde::{
+    Deserialize, Serialize, Serializer,
+    ser::{SerializeSeq, SerializeStruct},
+};
 
 use super::{
     CollectionField, ENTITY_PAYLOAD_KEY, METRIC_PAYLOAD_KEY, MODEL_PAYLOAD_KEY,
     MalformedResponseCause, ModelId, PARTITION_PAYLOAD_KEY, PayloadField, PayloadMismatchCause,
     PhysicalPointId, PreparedIdentity, PreparedPoint, QdrantDataKey, QdrantError, QdrantHit,
-    RequestPhase, SNAPSHOT_PAYLOAD_KEY, VectorAuthority, hex, metric_name, metric_payload_name,
-    projected_score,
+    RequestPhase, SEGMENT_PAYLOAD_KEY, SNAPSHOT_PAYLOAD_KEY, VectorAuthority, projected_score,
 };
 use nudox_index_graph_vector::{Metric as VectorMetric, PartitionId};
-use nudox_index_vocab::IndexSnapshotId;
+use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 
 /// Decodes one JSON response into its endpoint-specific DTO.
-pub(super) fn decode<T: DeserializeOwned>(
+pub(super) fn decode<'body, T: Deserialize<'body>>(
     phase: RequestPhase,
-    body: &str,
+    body: &'body str,
 ) -> Result<T, QdrantError> {
     serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })
 }
 
-/// Verifies the minimal acknowledgement response contract.
-pub(super) fn parse_ack(phase: RequestPhase, body: &str) -> Result<(), QdrantError> {
-    let _: Acknowledgement = decode(phase, body)?;
-    Ok(())
+/// Verifies collection create/delete's boolean acknowledgement contract.
+pub(super) fn parse_boolean_ack(phase: RequestPhase, body: &str) -> Result<(), QdrantError> {
+    if decode::<BooleanAcknowledgement>(phase, body)?.result {
+        Ok(())
+    } else {
+        Err(QdrantError::MalformedResponse {
+            phase,
+            cause: MalformedResponseCause::RejectedAcknowledgement,
+        })
+    }
+}
+
+/// Verifies a wait-bound point or payload-index operation reached `completed`.
+pub(super) fn parse_completed_ack(phase: RequestPhase, body: &str) -> Result<(), QdrantError> {
+    if decode::<OperationAcknowledgement>(phase, body)?
+        .result
+        .status
+        == OperationStatus::Completed
+    {
+        Ok(())
+    } else {
+        Err(QdrantError::MalformedResponse {
+            phase,
+            cause: MalformedResponseCause::RejectedAcknowledgement,
+        })
+    }
 }
 
 /// The collection metadata that participates in this adapter's contract.
 pub(super) struct CollectionMetadata {
     pub(super) dimension: u64,
-    pub(super) metric: String,
+    pub(super) metric: CollectionMetric,
     pub(super) replication_factor: u64,
     pub(super) write_consistency_factor: u64,
 }
@@ -54,7 +81,7 @@ pub(super) fn collection_metadata(
 pub(super) fn verify_payload_indexes(
     phase: RequestPhase,
     body: &str,
-    expected: &[(PayloadField, &'static str)],
+    expected: &[(PayloadField, PayloadDataType)],
 ) -> Result<(), QdrantError> {
     let response: CollectionResponse = decode(phase, body)?;
     for (field, expected_type) in expected {
@@ -63,7 +90,7 @@ pub(super) fn verify_payload_indexes(
             .result
             .payload_schema
             .get(name)
-            .map(|entry| entry.data_type.as_str());
+            .map(|entry| entry.data_type);
         if observed != Some(*expected_type) {
             return Err(QdrantError::CollectionMismatch {
                 phase,
@@ -78,7 +105,7 @@ pub(super) fn verify_payload_indexes(
 pub(super) fn retrieve_points(
     phase: RequestPhase,
     body: &str,
-) -> Result<Vec<WirePoint>, QdrantError> {
+) -> Result<Vec<WirePoint<'_>>, QdrantError> {
     Ok(decode::<RetrieveResponse>(phase, body)?.result)
 }
 
@@ -104,13 +131,13 @@ pub(super) fn parse_query_hits(
         validate_query_scope(phase, physical_id, key, authority, selected)?;
         reject_remote_physical_identity(phase, physical_id, key)?;
         if let Some(first) = hits.iter().find(|hit: &&QdrantHit| {
-            hit.authority == key.authority()
-                && hit.partition == key.partition()
-                && hit.entity == key.entity()
+            hit.authority == key.authority
+                && hit.partition == key.partition
+                && hit.entity == key.entity
         }) {
             return Err(QdrantError::DuplicateSemanticPoint {
                 phase,
-                key,
+                key: key.into(),
                 first_physical_id: first.physical_id,
                 second_physical_id: physical_id,
             });
@@ -132,8 +159,9 @@ pub(super) fn parse_query_hits(
         )?;
         hits.push(QdrantHit {
             authority,
-            partition: key.partition(),
-            entity: key.entity(),
+            segment: key.segment,
+            partition: key.partition,
+            entity: key.entity,
             score: projected_score(authority.metric(), query_coordinates, coordinates),
             physical_id,
         });
@@ -143,29 +171,31 @@ pub(super) fn parse_query_hits(
 
 /// Decodes a point payload into its complete semantic identity.
 pub(super) fn decode_identity(
-    point: &WirePoint,
+    point: &WirePoint<'_>,
     phase: RequestPhase,
     dimension: u16,
 ) -> Result<QdrantDataKey, QdrantError> {
-    let snapshot = decode_snapshot(&point.payload.snapshot, phase)?;
-    let model = decode_model(&point.payload.model, phase)?;
-    let metric = decode_metric(&point.payload.metric, phase)?;
+    let snapshot = decode_snapshot(point.payload.snapshot, phase)?;
+    let model = decode_model(point.payload.model, phase)?;
+    let segment = decode_segment(point.payload.segment, phase)?;
+    let metric = decode_metric(point.payload.metric, phase)?;
     let partition = decode_partition(point.payload.partition, phase)?;
     let entity = decode_entity(point.payload.entity, phase)?;
     Ok(QdrantDataKey::new(
         VectorAuthority::new(snapshot, model, dimension, metric),
+        segment,
         partition,
         entity,
     ))
 }
 
 /// Decodes a required point vector and checks its exact dimension.
-pub(super) fn decode_vector(
-    point: &WirePoint,
+pub(super) fn decode_vector<'point>(
+    point: &'point WirePoint<'_>,
     phase: RequestPhase,
     physical_id: PhysicalPointId,
     expected_dimension: usize,
-) -> Result<&[f64], QdrantError> {
+) -> Result<&'point [f64], QdrantError> {
     let Some(vector) = point.vector.as_ref() else {
         return Err(QdrantError::MalformedResponse {
             phase,
@@ -176,6 +206,58 @@ pub(super) fn decode_vector(
         return Err(QdrantError::VectorMismatch { phase, physical_id });
     }
     Ok(vector)
+}
+
+/// Qdrant's closed collection-level distance vocabulary.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) enum CollectionMetric {
+    /// Squared Euclidean distance.
+    Euclid,
+    /// Dot-product similarity.
+    Dot,
+}
+
+impl From<VectorMetric> for CollectionMetric {
+    fn from(metric: VectorMetric) -> Self {
+        match metric {
+            VectorMetric::SquaredEuclidean => Self::Euclid,
+            VectorMetric::NegativeDotProduct => Self::Dot,
+        }
+    }
+}
+
+/// Stable metric name stored in every immutable point payload.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PayloadMetric {
+    SquaredEuclidean,
+    NegativeDotProduct,
+}
+
+impl From<VectorMetric> for PayloadMetric {
+    fn from(metric: VectorMetric) -> Self {
+        match metric {
+            VectorMetric::SquaredEuclidean => Self::SquaredEuclidean,
+            VectorMetric::NegativeDotProduct => Self::NegativeDotProduct,
+        }
+    }
+}
+
+impl From<PayloadMetric> for VectorMetric {
+    fn from(metric: PayloadMetric) -> Self {
+        match metric {
+            PayloadMetric::SquaredEuclidean => Self::SquaredEuclidean,
+            PayloadMetric::NegativeDotProduct => Self::NegativeDotProduct,
+        }
+    }
+}
+
+/// Qdrant's payload-index schema vocabulary used by this adapter.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum PayloadDataType {
+    Keyword,
+    Integer,
 }
 
 /// Typed request body for collection creation.
@@ -189,7 +271,7 @@ pub(super) struct CollectionRequest {
 #[derive(Serialize)]
 struct VectorConfig {
     size: u16,
-    distance: &'static str,
+    distance: CollectionMetric,
 }
 
 impl CollectionRequest {
@@ -197,7 +279,7 @@ impl CollectionRequest {
         Self {
             vectors: VectorConfig {
                 size: authority.dimension(),
-                distance: metric_name(authority.metric()),
+                distance: authority.metric().into(),
             },
             replication_factor: 1,
             write_consistency_factor: 1,
@@ -209,11 +291,11 @@ impl CollectionRequest {
 #[derive(Serialize)]
 pub(super) struct PayloadIndexRequest {
     field_name: &'static str,
-    field_schema: &'static str,
+    field_schema: PayloadDataType,
 }
 
 impl PayloadIndexRequest {
-    pub(super) const fn new(field: PayloadField, schema: &'static str) -> Self {
+    pub(super) const fn new(field: PayloadField, schema: PayloadDataType) -> Self {
         Self {
             field_name: payload_field_name(field),
             field_schema: schema,
@@ -223,29 +305,25 @@ impl PayloadIndexRequest {
 
 /// Typed request body for a point upsert.
 #[derive(Serialize)]
-pub(super) struct UpsertRequest {
-    points: Vec<UpsertPoint>,
+pub(super) struct UpsertRequest<'coordinates> {
+    points: ArrayVec<UpsertPoint<'coordinates>, { super::MAX_BATCH_POINTS }>,
 }
 
 #[derive(Serialize)]
-struct UpsertPoint {
+struct UpsertPoint<'coordinates> {
     id: u64,
-    vector: Vec<f64>,
+    vector: Coordinates<'coordinates>,
     payload: IdentityPayload,
 }
 
-impl UpsertRequest {
-    pub(super) fn from_points(points: &[PreparedPoint<'_>]) -> Self {
+impl<'coordinates> UpsertRequest<'coordinates> {
+    pub(super) fn from_points(points: &[PreparedPoint<'coordinates>]) -> Self {
         Self {
             points: points
                 .iter()
                 .map(|point| UpsertPoint {
-                    id: point.physical_id.raw(),
-                    vector: point
-                        .coordinates
-                        .iter()
-                        .map(|coordinate| f64::from(*coordinate))
-                        .collect(),
+                    id: point.physical_id.0,
+                    vector: Coordinates(point.coordinates),
                     payload: IdentityPayload::from_key(point.key),
                 })
                 .collect(),
@@ -256,7 +334,7 @@ impl UpsertRequest {
 /// Typed request body for retrieve operations.
 #[derive(Serialize)]
 pub(super) struct RetrieveRequest {
-    ids: Vec<u64>,
+    ids: ArrayVec<u64, { super::MAX_BATCH_POINTS }>,
     with_payload: bool,
     with_vector: bool,
 }
@@ -264,7 +342,7 @@ pub(super) struct RetrieveRequest {
 impl RetrieveRequest {
     pub(super) fn new(keys: &[impl PreparedIdentity], with_vector: bool) -> Self {
         Self {
-            ids: keys.iter().map(|key| key.physical_id().raw()).collect(),
+            ids: keys.iter().map(|key| key.physical_id().0).collect(),
             with_payload: true,
             with_vector,
         }
@@ -274,21 +352,21 @@ impl RetrieveRequest {
 /// Typed request body for delete operations.
 #[derive(Serialize)]
 pub(super) struct DeleteRequest {
-    points: Vec<u64>,
+    points: ArrayVec<u64, { super::MAX_BATCH_POINTS }>,
 }
 
 impl DeleteRequest {
     pub(super) fn new(keys: &[impl PreparedIdentity]) -> Self {
         Self {
-            points: keys.iter().map(|key| key.physical_id().raw()).collect(),
+            points: keys.iter().map(|key| key.physical_id().0).collect(),
         }
     }
 }
 
 /// Typed request body for exact vector queries.
 #[derive(Serialize)]
-pub(super) struct QueryRequest {
-    query: Vec<f64>,
+pub(super) struct QueryRequest<'coordinates> {
+    query: Coordinates<'coordinates>,
     limit: usize,
     with_payload: bool,
     with_vector: bool,
@@ -301,17 +379,14 @@ struct ExactParams {
     exact: bool,
 }
 
-impl QueryRequest {
+impl<'coordinates> QueryRequest<'coordinates> {
     pub(super) fn new(
         authority: VectorAuthority,
         selected: &[PartitionId],
-        coordinates: &[i16],
+        coordinates: &'coordinates [i16],
     ) -> Self {
         Self {
-            query: coordinates
-                .iter()
-                .map(|coordinate| f64::from(*coordinate))
-                .collect(),
+            query: Coordinates(coordinates),
             limit: super::QUERY_SCAN_LIMIT,
             with_payload: true,
             with_vector: true,
@@ -321,42 +396,48 @@ impl QueryRequest {
     }
 }
 
-#[derive(Serialize)]
 pub(super) struct IdentityPayload {
-    #[serde(rename = "nudox_snapshot")]
-    snapshot: String,
-    #[serde(rename = "nudox_model")]
-    model: String,
-    #[serde(rename = "nudox_metric")]
-    metric: &'static str,
-    #[serde(rename = "nudox_partition")]
-    partition: u16,
-    #[serde(rename = "nudox_entity")]
-    entity: u32,
+    key: QdrantDataKey,
 }
 
 impl IdentityPayload {
-    pub(super) fn from_key(key: QdrantDataKey) -> Self {
-        Self {
-            snapshot: hex(key.snapshot().as_ref()),
-            model: hex(key.model().as_ref()),
-            metric: metric_payload_name(key.metric()),
-            partition: key.partition().raw,
-            entity: key.entity().raw,
-        }
+    pub(super) const fn from_key(key: QdrantDataKey) -> Self {
+        Self { key }
+    }
+}
+
+impl Serialize for IdentityPayload {
+    fn serialize<Output>(&self, serializer: Output) -> Result<Output::Ok, Output::Error>
+    where
+        Output: Serializer,
+    {
+        let mut payload = serializer.serialize_struct("IdentityPayload", 6)?;
+        payload.serialize_field(
+            SNAPSHOT_PAYLOAD_KEY,
+            &Hex(self.key.authority.snapshot().as_ref()),
+        )?;
+        payload.serialize_field(MODEL_PAYLOAD_KEY, &Hex(self.key.authority.model().as_ref()))?;
+        payload.serialize_field(SEGMENT_PAYLOAD_KEY, &Hex(self.key.segment.as_ref()))?;
+        payload.serialize_field(
+            METRIC_PAYLOAD_KEY,
+            &PayloadMetric::from(self.key.authority.metric()),
+        )?;
+        payload.serialize_field(PARTITION_PAYLOAD_KEY, &self.key.partition.raw)?;
+        payload.serialize_field(ENTITY_PAYLOAD_KEY, &self.key.entity.raw)?;
+        payload.end()
     }
 }
 
 #[derive(Serialize)]
 pub(super) struct IdentityFilter {
-    must: Vec<MatchCondition>,
+    must: ArrayVec<MatchCondition, 4>,
     #[serde(skip_serializing_if = "Option::is_none")]
     min_should: Option<MinimumShould>,
 }
 
 #[derive(Serialize)]
 struct MinimumShould {
-    conditions: Vec<MatchCondition>,
+    conditions: ArrayVec<MatchCondition, { super::MAX_QUERY_PARTITIONS }>,
     min_count: u8,
 }
 
@@ -371,23 +452,28 @@ struct MatchValue {
     value: MatchScalar,
 }
 
-#[derive(Serialize)]
-#[serde(untagged)]
 enum MatchScalar {
-    Text(String),
+    Snapshot(IndexSnapshotId),
+    Model(ModelId),
+    Metric(PayloadMetric),
     Integer(u16),
 }
 
 impl IdentityFilter {
     pub(super) fn new(authority: VectorAuthority, selected: &[PartitionId]) -> Self {
-        let mut must = vec![
-            MatchCondition::text(SNAPSHOT_PAYLOAD_KEY, hex(authority.snapshot().as_ref())),
-            MatchCondition::text(MODEL_PAYLOAD_KEY, hex(authority.model().as_ref())),
-            MatchCondition::text(
-                METRIC_PAYLOAD_KEY,
-                metric_payload_name(authority.metric()).to_owned(),
-            ),
-        ];
+        let mut must = ArrayVec::new();
+        must.push(MatchCondition::new(
+            SNAPSHOT_PAYLOAD_KEY,
+            MatchScalar::Snapshot(authority.snapshot()),
+        ));
+        must.push(MatchCondition::new(
+            MODEL_PAYLOAD_KEY,
+            MatchScalar::Model(authority.model()),
+        ));
+        must.push(MatchCondition::new(
+            METRIC_PAYLOAD_KEY,
+            MatchScalar::Metric(authority.metric().into()),
+        ));
         let min_should = match selected {
             [partition] => {
                 must.push(MatchCondition::partition(*partition));
@@ -408,12 +494,10 @@ impl IdentityFilter {
 }
 
 impl MatchCondition {
-    fn text(key: &'static str, value: String) -> Self {
+    const fn new(key: &'static str, value: MatchScalar) -> Self {
         Self {
             key,
-            r#match: MatchValue {
-                value: MatchScalar::Text(value),
-            },
+            r#match: MatchValue { value },
         }
     }
 
@@ -427,10 +511,76 @@ impl MatchCondition {
     }
 }
 
+impl Serialize for MatchScalar {
+    fn serialize<Output>(&self, serializer: Output) -> Result<Output::Ok, Output::Error>
+    where
+        Output: Serializer,
+    {
+        match self {
+            Self::Snapshot(snapshot) => serializer.collect_str(&Hex(snapshot.as_ref())),
+            Self::Model(model) => serializer.collect_str(&Hex(model.as_ref())),
+            Self::Metric(metric) => metric.serialize(serializer),
+            Self::Integer(value) => value.serialize(serializer),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Coordinates<'coordinates>(&'coordinates [i16]);
+
+impl Serialize for Coordinates<'_> {
+    fn serialize<Output>(&self, serializer: Output) -> Result<Output::Ok, Output::Error>
+    where
+        Output: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for coordinate in self.0 {
+            sequence.serialize_element(&f64::from(*coordinate))?;
+        }
+        sequence.end()
+    }
+}
+
+struct Hex<'bytes>(&'bytes [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for Hex<'_> {
+    fn serialize<Output>(&self, serializer: Output) -> Result<Output::Ok, Output::Error>
+    where
+        Output: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
 #[derive(Deserialize)]
-struct Acknowledgement {
-    #[serde(rename = "result")]
-    _result: serde::de::IgnoredAny,
+struct BooleanAcknowledgement {
+    result: bool,
+}
+
+#[derive(Deserialize)]
+struct OperationAcknowledgement {
+    result: OperationResult,
+}
+
+#[derive(Deserialize)]
+struct OperationResult {
+    status: OperationStatus,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum OperationStatus {
+    Acknowledged,
+    Completed,
 }
 
 #[derive(Deserialize)]
@@ -460,45 +610,51 @@ struct CollectionParameters {
 #[derive(Deserialize)]
 struct CollectionVectors {
     size: u64,
-    distance: String,
+    distance: CollectionMetric,
 }
 
 #[derive(Deserialize)]
 struct PayloadSchema {
-    data_type: String,
+    data_type: PayloadDataType,
 }
 
 #[derive(Deserialize)]
-struct RetrieveResponse {
-    result: Vec<WirePoint>,
+struct RetrieveResponse<'body> {
+    #[serde(borrow)]
+    result: Vec<WirePoint<'body>>,
 }
 
 #[derive(Deserialize)]
-struct QueryResponse {
-    result: QueryResult,
+struct QueryResponse<'body> {
+    #[serde(borrow)]
+    result: QueryResult<'body>,
 }
 
 #[derive(Deserialize)]
-struct QueryResult {
-    points: Vec<WirePoint>,
+struct QueryResult<'body> {
+    #[serde(borrow)]
+    points: Vec<WirePoint<'body>>,
 }
 
 #[derive(Deserialize)]
-pub(super) struct WirePoint {
+pub(super) struct WirePoint<'body> {
     pub(super) id: u64,
-    payload: WirePayload,
+    #[serde(borrow)]
+    payload: WirePayload<'body>,
     #[serde(default)]
     vector: Option<Vec<f64>>,
 }
 
 #[derive(Deserialize)]
-struct WirePayload {
+struct WirePayload<'body> {
     #[serde(rename = "nudox_snapshot")]
-    snapshot: String,
+    snapshot: &'body str,
     #[serde(rename = "nudox_model")]
-    model: String,
+    model: &'body str,
+    #[serde(rename = "nudox_segment")]
+    segment: &'body str,
     #[serde(rename = "nudox_metric")]
-    metric: String,
+    metric: &'body str,
     #[serde(rename = "nudox_partition")]
     partition: u64,
     #[serde(rename = "nudox_entity")]
@@ -512,9 +668,9 @@ fn validate_query_scope(
     authority: VectorAuthority,
     selected: &[PartitionId],
 ) -> Result<(), QdrantError> {
-    let cause = if key.authority() != authority {
+    let cause = if key.authority != authority {
         Some(PayloadMismatchCause::Authority)
-    } else if !selected.is_empty() && !selected.contains(&key.partition()) {
+    } else if !selected.is_empty() && !selected.contains(&key.partition) {
         Some(PayloadMismatchCause::PartitionSelection)
     } else {
         None
@@ -540,25 +696,25 @@ fn reject_remote_physical_identity(
     }
     Err(QdrantError::PhysicalIdentityMismatch {
         phase,
-        key,
+        key: key.into(),
         observed_physical_id,
         expected_physical_id,
     })
 }
 
 fn decode_snapshot(value: &str, phase: RequestPhase) -> Result<IndexSnapshotId, QdrantError> {
-    let bytes = decode_hex(value, PayloadField::Snapshot, 32, phase)?;
-    IndexSnapshotId::try_from(bytes.as_slice())
-        .map_err(|source| QdrantError::SnapshotDecode { phase, source })
+    let bytes = decode_hex::<32>(value, PayloadField::Snapshot, phase)?;
+    IndexSnapshotId::try_from(bytes).map_err(|source| QdrantError::SnapshotDecode { phase, source })
 }
 
 fn decode_model(value: &str, phase: RequestPhase) -> Result<ModelId, QdrantError> {
-    let bytes = decode_hex(value, PayloadField::Model, 16, phase)?;
-    let bytes: [u8; 16] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|source| QdrantError::ModelDecode { phase, source })?;
+    let bytes = decode_hex::<16>(value, PayloadField::Model, phase)?;
     Ok(ModelId::new(bytes))
+}
+
+fn decode_segment(value: &str, phase: RequestPhase) -> Result<VectorSegmentId, QdrantError> {
+    let bytes = decode_hex::<32>(value, PayloadField::Segment, phase)?;
+    VectorSegmentId::try_from(bytes).map_err(|source| QdrantError::SegmentDecode { phase, source })
 }
 
 fn decode_metric(value: &str, phase: RequestPhase) -> Result<VectorMetric, QdrantError> {
@@ -592,22 +748,24 @@ fn decode_entity(value: u64, phase: RequestPhase) -> Result<EntityId, QdrantErro
     Ok(EntityId::new(raw))
 }
 
-fn decode_hex(
+fn decode_hex<const BYTES: usize>(
     value: &str,
     field: PayloadField,
-    expected_bytes: usize,
     phase: RequestPhase,
-) -> Result<Vec<u8>, QdrantError> {
-    if value.len() != expected_bytes * 2 {
+) -> Result<[u8; BYTES], QdrantError> {
+    let Some(expected_digits) = BYTES.checked_mul(2) else {
+        return Err(QdrantError::InvalidFieldRange { phase, field });
+    };
+    if value.len() != expected_digits {
         return Err(QdrantError::InvalidFieldRange { phase, field });
     }
-    let mut bytes = Vec::with_capacity(expected_bytes);
-    for pair in value.as_bytes().chunks_exact(2) {
+    let mut bytes = [0_u8; BYTES];
+    for (output, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
         let high =
             super::hex_nibble(pair[0]).ok_or(QdrantError::InvalidFieldRange { phase, field })?;
         let low =
             super::hex_nibble(pair[1]).ok_or(QdrantError::InvalidFieldRange { phase, field })?;
-        bytes.push((high << 4) | low);
+        *output = (high << 4) | low;
     }
     Ok(bytes)
 }
@@ -616,6 +774,7 @@ const fn payload_field_name(field: PayloadField) -> &'static str {
     match field {
         PayloadField::Snapshot => SNAPSHOT_PAYLOAD_KEY,
         PayloadField::Model => MODEL_PAYLOAD_KEY,
+        PayloadField::Segment => SEGMENT_PAYLOAD_KEY,
         PayloadField::Metric => METRIC_PAYLOAD_KEY,
         PayloadField::Partition => PARTITION_PAYLOAD_KEY,
         PayloadField::Entity => ENTITY_PAYLOAD_KEY,

@@ -5,8 +5,10 @@ use std::{
 };
 
 use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority};
-use nudox_index_qdrant::{MalformedResponseCause, QdrantBlockingAdapter, QdrantError, QdrantPoint};
-use nudox_index_vocab::IndexSnapshotId;
+use nudox_index_qdrant::{
+    MalformedResponseCause, QdrantAdmissionError, QdrantBlockingAdapter, QdrantError, QdrantPoint,
+};
+use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 
 fn authority() -> VectorAuthority {
@@ -16,6 +18,10 @@ fn authority() -> VectorAuthority {
         2,
         Metric::SquaredEuclidean,
     )
+}
+
+fn segment() -> VectorSegmentId {
+    VectorSegmentId::from_canonical_bytes(b"qdrant-real-service-vector-segment")
 }
 
 fn unique_collection() -> String {
@@ -32,22 +38,24 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
     let second_coordinates = [0_i16, 2];
     let first = QdrantPoint::new(
         authority,
+        segment(),
         PartitionId::new(1),
         EntityId::new(4),
         &first_coordinates,
     );
     let second = QdrantPoint::new(
         authority,
+        segment(),
         PartitionId::new(2),
         EntityId::new(7),
         &second_coordinates,
     );
     let points = [first, second];
     let receipt = adapter.upsert(&points)?;
-    assert_eq!(receipt.attempted(), 2);
-    assert_eq!(receipt.verified(), 2);
+    assert_eq!(receipt.attempted, 2);
+    assert_eq!(receipt.verified, 2);
 
-    let keys = [first.key(), second.key()];
+    let keys = [first.key, second.key];
     let mut readback = [None, None];
     assert_eq!(adapter.readback(&keys, &mut readback)?, 2);
     let Some(first_readback) = readback.first().and_then(Option::as_ref) else {
@@ -56,56 +64,75 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), QdrantError> {
             cause: MalformedResponseCause::ReadbackOutputIndex,
         });
     };
-    assert_eq!(first_readback.key(), first.key());
-    assert_eq!(first_readback.coordinates(), &[1.0, 0.0]);
+    assert_eq!(first_readback.key, first.key);
+    assert_eq!(first_readback.coordinates, &[1.0, 0.0]);
 
     let mut remote = [None, None];
-    let remote_outcome = adapter.query(
+    let remote_count = adapter.query(
         &[PartitionId::new(1), PartitionId::new(2)],
         &[0, 0],
         2,
         &mut remote,
     )?;
-    assert_eq!(remote_outcome.written(), 2);
-    assert!(remote_outcome.terminal().is_complete());
-    assert_eq!(remote[0].map(|hit| hit.entity()), Some(EntityId::new(4)));
-    assert_eq!(remote[1].map(|hit| hit.entity()), Some(EntityId::new(7)));
+    assert_eq!(remote_count.count, 2);
+    assert_eq!(remote[0].map(|hit| hit.entity), Some(EntityId::new(4)));
+    assert_eq!(remote[1].map(|hit| hit.entity), Some(EntityId::new(7)));
 
     let mut local = [None, None];
-    let local_outcome = adapter.local_brute_force(
+    let local_count = adapter.local_brute_force(
         &[PartitionId::new(1), PartitionId::new(2)],
         &points,
         &[0, 0],
         2,
         &mut local,
     )?;
-    assert_eq!(local_outcome.written(), 2);
+    assert_eq!(local_count.count, 2);
     assert_eq!(
-        local.map(|hit| hit.map(|hit| hit.entity())),
-        remote.map(|hit| hit.map(|hit| hit.entity()))
+        local.map(|hit| hit.map(|hit| hit.entity)),
+        remote.map(|hit| hit.map(|hit| hit.entity))
     );
     assert_eq!(
-        local.map(|hit| hit.map(|hit| hit.score())),
-        remote.map(|hit| hit.map(|hit| hit.score()))
+        local.map(|hit| hit.map(|hit| hit.score)),
+        remote.map(|hit| hit.map(|hit| hit.score))
     );
 
     let repeat = adapter.upsert(&points)?;
-    assert_eq!(repeat.attempted(), 2);
-    assert_eq!(repeat.verified(), 2);
-    let deleted = adapter.delete(&[first.key()])?;
-    assert_eq!(deleted.attempted(), 1);
-    assert_eq!(deleted.verified(), 1);
+    assert_eq!(repeat.attempted, 2);
+    assert_eq!(repeat.verified, 2);
+    let conflicting_coordinates = [2_i16, 0];
+    let conflict = QdrantPoint::new(
+        authority,
+        first.key.segment,
+        first.key.partition,
+        first.key.entity,
+        &conflicting_coordinates,
+    );
+    assert!(matches!(
+        adapter.upsert(&[conflict]),
+        Err(QdrantError::Admission(
+            QdrantAdmissionError::ImmutableVectorConflict { key, .. }
+        )) if *key == first.key
+    ));
+    let mut unchanged = [None];
+    assert_eq!(adapter.readback(&[first.key], &mut unchanged)?, 1);
+    assert_eq!(
+        unchanged[0]
+            .as_ref()
+            .map(|point| point.coordinates.as_slice()),
+        Some([1.0, 0.0].as_slice())
+    );
+    let deleted = adapter.delete(&[first.key])?;
+    assert_eq!(deleted.attempted, 1);
+    assert_eq!(deleted.verified, 1);
 
     let mut after_delete = [None, None];
-    let outcome = adapter.query(
+    let count = adapter.query(
         &[PartitionId::new(1), PartitionId::new(2)],
         &[0, 0],
         2,
         &mut after_delete,
     )?;
-    assert_eq!(outcome.written(), 1);
-    assert_eq!(outcome.terminal().missing_len(), 1);
-    assert_eq!(outcome.terminal().missing_at(0), Some(PartitionId::new(1)));
+    assert_eq!(count.count, 1);
     Ok(())
 }
 
@@ -122,12 +149,12 @@ fn unavailable_endpoint_preserves_transport_phase_and_retry_bound() {
     let Ok(adapter) = QdrantBlockingAdapter::new(&endpoint, "nudox_outage", authority()) else {
         return;
     };
-    let attempts = adapter.retry_policy().attempts().get();
+    let attempts = adapter.retry_policy().attempts.get();
     let result = adapter.ensure_collection();
     assert!(matches!(
         result,
         Err(QdrantError::Transport {
-            phase: nudox_index_qdrant::RequestPhase::CreateCollection,
+            phase: nudox_index_qdrant::RequestPhase::ReadCollection,
             attempts: observed,
             ..
         }) if observed == attempts

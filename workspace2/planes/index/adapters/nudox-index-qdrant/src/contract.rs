@@ -1,19 +1,21 @@
 //! Public immutable Qdrant projection contract and typed failure taxonomy.
 
-use std::num::{NonZeroU8, TryFromIntError};
+use std::{
+    num::{NonZeroU8, TryFromIntError},
+    ops::Deref,
+};
 
 use nudox_index_graph_vector::{Metric, ModelId, PartitionId, VectorAuthority, VectorFact};
-use nudox_index_vocab::IndexSnapshotId;
+use nudox_index_vocab::{IndexSnapshotId, VectorSegmentId};
 use nudox_ir_vocab::EntityId;
 
-use super::{
-    DEFAULT_MAX_ATTEMPTS, FnvHasher, MAX_QUERY_PARTITIONS, PHYSICAL_ID_ZERO_REPLACEMENT, metric_tag,
-};
+use super::{DEFAULT_MAX_ATTEMPTS, FnvHasher, MetricIdentityTag, PHYSICAL_ID_ZERO_REPLACEMENT};
 
 /// A bounded retry policy for idempotent Qdrant requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
-    pub(crate) attempts: NonZeroU8,
+    /// Complete positive request-attempt bound.
+    pub attempts: NonZeroU8,
 }
 
 impl RetryPolicy {
@@ -29,34 +31,23 @@ impl RetryPolicy {
     pub const fn new(attempts: NonZeroU8) -> Self {
         Self { attempts }
     }
-
-    /// Returns the complete attempt bound.
-    #[must_use]
-    pub const fn attempts(self) -> NonZeroU8 {
-        self.attempts
-    }
 }
 
 /// A disposable physical integer coordinate in one Qdrant collection.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PhysicalPointId(pub(crate) u64);
+pub struct PhysicalPointId(pub u64);
 
 impl PhysicalPointId {
-    /// Returns the integer sent to Qdrant.
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-
     /// Derives a deterministic physical coordinate from complete semantic authority.
     #[must_use]
     pub fn for_key(key: QdrantDataKey) -> Self {
         let mut hasher = FnvHasher::new();
-        hasher.write(key.snapshot().as_ref());
-        hasher.write(key.model().as_ref());
-        hasher.write(&key.dimension().to_be_bytes());
-        hasher.write(&[metric_tag(key.metric())]);
+        hasher.write(key.authority.snapshot().as_ref());
+        hasher.write(key.authority.model().as_ref());
+        hasher.write(key.segment.as_ref());
+        hasher.write(&key.authority.dimension().to_be_bytes());
+        hasher.write(&[u8::from(MetricIdentityTag::from(key.authority.metric()))]);
         hasher.write(&key.partition.raw.to_be_bytes());
         hasher.write(&key.entity.raw.to_be_bytes());
         let raw = hasher.finish();
@@ -71,70 +62,62 @@ impl PhysicalPointId {
 /// The full immutable identity carried by each projected point and delete key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QdrantDataKey {
-    pub(crate) authority: VectorAuthority,
-    pub(crate) partition: PartitionId,
-    pub(crate) entity: EntityId,
+    /// Snapshot, model, dimension, and metric authority.
+    pub authority: VectorAuthority,
+    /// Immutable vector segment that produced the row.
+    pub segment: VectorSegmentId,
+    /// Immutable projection partition.
+    pub partition: PartitionId,
+    /// Semantic entity coordinate.
+    pub entity: EntityId,
 }
 
 impl QdrantDataKey {
     /// Binds one semantic entity to the complete vector authority.
     #[must_use]
-    pub const fn new(authority: VectorAuthority, partition: PartitionId, entity: EntityId) -> Self {
+    pub const fn new(
+        authority: VectorAuthority,
+        segment: VectorSegmentId,
+        partition: PartitionId,
+        entity: EntityId,
+    ) -> Self {
         Self {
             authority,
+            segment,
             partition,
             entity,
         }
     }
+}
 
-    /// Returns snapshot, model, dimension, and metric authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
+/// Complete immutable key retained out-of-line only on diagnostic paths.
+///
+/// Keeping this cold evidence out of the error discriminant makes every successful `Result`
+/// materially smaller without truncating the authority reported on failure.
+#[derive(Debug, Eq, PartialEq)]
+pub struct QdrantKeyEvidence(Box<QdrantDataKey>);
+
+impl From<QdrantDataKey> for QdrantKeyEvidence {
+    fn from(key: QdrantDataKey) -> Self {
+        Self(Box::new(key))
     }
+}
 
-    /// Returns the immutable snapshot identity.
-    #[must_use]
-    pub const fn snapshot(self) -> IndexSnapshotId {
-        self.authority.snapshot()
-    }
+impl Deref for QdrantKeyEvidence {
+    type Target = QdrantDataKey;
 
-    /// Returns the embedding model identity.
-    #[must_use]
-    pub const fn model(self) -> ModelId {
-        self.authority.model()
-    }
-
-    /// Returns the model dimension.
-    #[must_use]
-    pub const fn dimension(self) -> u16 {
-        self.authority.dimension()
-    }
-
-    /// Returns the distance metric.
-    #[must_use]
-    pub const fn metric(self) -> Metric {
-        self.authority.metric()
-    }
-
-    /// Returns the immutable projection partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the semantic entity coordinate.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
 /// One borrowed vector row admitted for remote projection or local comparison.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QdrantPoint<'coordinates> {
-    pub(crate) key: QdrantDataKey,
-    pub(crate) coordinates: &'coordinates [i16],
+    /// Complete semantic point identity.
+    pub key: QdrantDataKey,
+    /// Borrowed vector coordinates.
+    pub coordinates: &'coordinates [i16],
 }
 
 impl<'coordinates> QdrantPoint<'coordinates> {
@@ -142,37 +125,15 @@ impl<'coordinates> QdrantPoint<'coordinates> {
     #[must_use]
     pub const fn new(
         authority: VectorAuthority,
+        segment: VectorSegmentId,
         partition: PartitionId,
         entity: EntityId,
         coordinates: &'coordinates [i16],
     ) -> Self {
         Self {
-            key: QdrantDataKey::new(authority, partition, entity),
+            key: QdrantDataKey::new(authority, segment, partition, entity),
             coordinates,
         }
-    }
-
-    /// Returns the complete semantic key.
-    #[must_use]
-    pub const fn key(self) -> QdrantDataKey {
-        self.key
-    }
-
-    /// Returns the borrowed coordinates.
-    #[must_use]
-    pub const fn coordinates(self) -> &'coordinates [i16] {
-        self.coordinates
-    }
-
-    /// Projects this borrowed point into the portable graph/vector fact vocabulary.
-    #[must_use]
-    pub const fn as_vector_fact(self) -> VectorFact<'coordinates> {
-        VectorFact::new(
-            self.key.authority(),
-            self.key.partition(),
-            self.key.entity(),
-            self.coordinates,
-        )
     }
 
     /// Returns this point's disposable physical coordinate.
@@ -182,154 +143,73 @@ impl<'coordinates> QdrantPoint<'coordinates> {
     }
 }
 
+impl<'coordinates> From<QdrantPoint<'coordinates>> for VectorFact<'coordinates> {
+    fn from(point: QdrantPoint<'coordinates>) -> Self {
+        Self::new(
+            point.key.authority,
+            point.key.partition,
+            point.key.entity,
+            point.coordinates,
+        )
+    }
+}
+
 /// The deterministic score and complete provenance returned by a remote query.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct QdrantHit {
-    pub(crate) authority: VectorAuthority,
-    pub(crate) partition: PartitionId,
-    pub(crate) entity: EntityId,
-    pub(crate) score: f64,
-    pub(crate) physical_id: PhysicalPointId,
+    /// Snapshot, model, dimension, and metric authority.
+    pub authority: VectorAuthority,
+    /// Immutable vector segment that produced the row.
+    pub segment: VectorSegmentId,
+    /// Source partition.
+    pub partition: PartitionId,
+    /// Semantic entity coordinate.
+    pub entity: EntityId,
+    /// Qdrant's metric-specific score.
+    pub score: f64,
+    /// Disposable physical coordinate observed in the response.
+    pub physical_id: PhysicalPointId,
 }
 
-impl QdrantHit {
-    /// Returns snapshot, model, dimension, and metric authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
+/// Number of initialized query-output slots.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct QueryHitCount {
+    /// Exact initialized slot count.
+    pub count: usize,
+}
 
-    /// Returns the source partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the semantic entity coordinate.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
-    }
-
-    /// Returns Qdrant's metric-specific score.
-    #[must_use]
-    pub const fn score(self) -> f64 {
-        self.score
-    }
-
-    /// Returns the disposable physical coordinate observed in the response.
-    #[must_use]
-    pub const fn physical_id(self) -> PhysicalPointId {
-        self.physical_id
+impl From<usize> for QueryHitCount {
+    fn from(count: usize) -> Self {
+        Self { count }
     }
 }
 
-/// A remote query terminal retaining exact absence facts for selected partitions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantQueryTerminal {
-    pub(crate) authority: VectorAuthority,
-    pub(crate) missing: [Option<PartitionId>; MAX_QUERY_PARTITIONS],
-    pub(crate) missing_len: usize,
-}
+impl Deref for QueryHitCount {
+    type Target = usize;
 
-impl QdrantQueryTerminal {
-    /// Returns the complete vector authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the number of absent selected partitions.
-    #[must_use]
-    pub const fn missing_len(self) -> usize {
-        self.missing_len
-    }
-
-    /// Returns one absent selected partition by semantic position.
-    #[must_use]
-    pub const fn missing_at(self, index: usize) -> Option<PartitionId> {
-        if index < self.missing_len {
-            self.missing[index]
-        } else {
-            None
-        }
-    }
-
-    /// Returns whether the query had no absent selected partition.
-    #[must_use]
-    pub const fn is_complete(self) -> bool {
-        self.missing_len == 0
-    }
-}
-
-/// A bounded remote query result and its typed terminal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QdrantQueryOutcome {
-    pub(crate) written: usize,
-    pub(crate) terminal: QdrantQueryTerminal,
-}
-
-impl QdrantQueryOutcome {
-    /// Returns the number of initialized output slots.
-    #[must_use]
-    pub const fn written(self) -> usize {
-        self.written
-    }
-
-    /// Returns the complete/partial terminal.
-    #[must_use]
-    pub const fn terminal(self) -> QdrantQueryTerminal {
-        self.terminal
+    fn deref(&self) -> &Self::Target {
+        &self.count
     }
 }
 
 /// A successful mutation receipt after the remote operation and readback verification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QdrantMutationReceipt {
-    pub(crate) attempted: usize,
-    pub(crate) verified: usize,
-}
-
-impl QdrantMutationReceipt {
-    /// Returns the number of submitted keys.
-    #[must_use]
-    pub const fn attempted(self) -> usize {
-        self.attempted
-    }
-
-    /// Returns the number independently verified after the operation.
-    #[must_use]
-    pub const fn verified(self) -> usize {
-        self.verified
-    }
+    /// Number of submitted keys.
+    pub attempted: usize,
+    /// Number independently verified after the operation.
+    pub verified: usize,
 }
 
 /// A verified remote point readback, retaining its identity and coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QdrantReadback {
-    pub(crate) key: QdrantDataKey,
-    pub(crate) physical_id: PhysicalPointId,
-    pub(crate) coordinates: Vec<f64>,
-}
-
-impl QdrantReadback {
-    /// Returns the complete semantic key.
-    #[must_use]
-    pub const fn key(&self) -> QdrantDataKey {
-        self.key
-    }
-
-    /// Returns the disposable physical coordinate.
-    #[must_use]
-    pub const fn physical_id(&self) -> PhysicalPointId {
-        self.physical_id
-    }
-
-    /// Returns the remotely stored coordinates.
-    #[must_use]
-    pub fn coordinates(&self) -> &[f64] {
-        &self.coordinates
-    }
+    /// Complete semantic key.
+    pub key: QdrantDataKey,
+    /// Disposable physical coordinate.
+    pub physical_id: PhysicalPointId,
+    /// Remotely stored coordinates.
+    pub coordinates: Vec<f64>,
 }
 
 /// Exact request phase retained by transport, status, and decode failures.
@@ -370,6 +250,8 @@ pub enum MalformedResponseCause {
     UnknownMetric,
     /// Internal bounded retry bookkeeping reached an impossible terminal state.
     RetryExhaustionWithoutResponse,
+    /// A successful HTTP response explicitly rejected the requested mutation.
+    RejectedAcknowledgement,
     /// A verified readback could not be placed in the admitted output slice.
     ReadbackOutputIndex,
 }
@@ -381,6 +263,8 @@ pub enum PayloadField {
     Snapshot,
     /// Complete model identity.
     Model,
+    /// Immutable vector segment identity.
+    Segment,
     /// Metric recipe.
     Metric,
     /// Projection partition.
@@ -425,15 +309,7 @@ impl std::fmt::Display for RejectedEndpoint {
 
 /// A rejected collection name retained by configuration errors.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RejectedCollectionName(pub(crate) String);
-
-impl RejectedCollectionName {
-    /// Returns the complete rejected collection name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub struct RejectedCollectionName(pub String);
 
 impl std::fmt::Display for RejectedCollectionName {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -581,7 +457,7 @@ pub enum QdrantAdmissionError {
         /// Later occurrence position.
         index: usize,
         /// Repeated full key.
-        key: QdrantDataKey,
+        key: QdrantKeyEvidence,
     },
     /// Two distinct semantic keys mapped to one disposable point ID.
     #[error(
@@ -605,7 +481,15 @@ pub enum QdrantAdmissionError {
         /// Reused disposable physical coordinate.
         physical_id: PhysicalPointId,
         /// Expected full semantic key.
-        key: QdrantDataKey,
+        key: QdrantKeyEvidence,
+    },
+    /// An immutable key already exists with different vector coordinates.
+    #[error("immutable point {physical_id:?} already has different coordinates for {key:?}")]
+    ImmutableVectorConflict {
+        /// Existing disposable physical coordinate.
+        physical_id: PhysicalPointId,
+        /// Complete immutable semantic key.
+        key: QdrantKeyEvidence,
     },
 }
 
@@ -691,7 +575,7 @@ pub enum QdrantError {
         /// Operation phase.
         phase: RequestPhase,
         /// Full semantic identity decoded from the payload.
-        key: QdrantDataKey,
+        key: QdrantKeyEvidence,
         /// Disposable coordinate returned by the service.
         observed_physical_id: PhysicalPointId,
         /// Collision-checked coordinate derived from the semantic identity.
@@ -705,7 +589,7 @@ pub enum QdrantError {
         /// Operation phase.
         phase: RequestPhase,
         /// Repeated full semantic identity.
-        key: QdrantDataKey,
+        key: QdrantKeyEvidence,
         /// First disposable coordinate carrying the identity.
         first_physical_id: PhysicalPointId,
         /// Later disposable coordinate carrying the same identity.
@@ -719,7 +603,7 @@ pub enum QdrantError {
         /// Missing physical coordinate.
         physical_id: PhysicalPointId,
         /// Expected semantic key.
-        key: QdrantDataKey,
+        key: QdrantKeyEvidence,
     },
     /// The service returned a payload that disagreed with the requested identity.
     #[error("Qdrant {phase:?} payload identity disagrees for point {physical_id:?}: {cause:?}")]
@@ -764,14 +648,14 @@ pub enum QdrantError {
         #[source]
         source: <IndexSnapshotId as TryFrom<[u8; 32]>>::Error,
     },
-    /// A fixed-width model payload could not be represented as its typed byte array.
-    #[error("Qdrant {phase:?} model payload conversion failed")]
-    ModelDecode {
+    /// Segment bytes had the right width but failed the typed domain conversion.
+    #[error("Qdrant {phase:?} vector-segment payload conversion failed")]
+    SegmentDecode {
         /// Operation phase.
         phase: RequestPhase,
-        /// Original fixed-width conversion failure.
+        /// Original typed segment conversion failure.
         #[source]
-        source: core::array::TryFromSliceError,
+        source: <VectorSegmentId as TryFrom<[u8; 32]>>::Error,
     },
     /// An integer payload field could not fit its typed coordinate owner.
     #[error(
