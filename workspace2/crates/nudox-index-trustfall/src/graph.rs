@@ -1,6 +1,9 @@
 //! Borrowed graph adapter and typed Trustfall result boundary.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
 use nudox_index_graph_vector::{GraphAuthority, PartitionId, ValidatedGraphView};
 use nudox_ir_vocab::EntityId;
@@ -13,11 +16,15 @@ use trustfall::{
         resolve_neighbors_with, resolve_property_with, resolve_typename,
     },
 };
-use trustfall_core::{frontend::parse, interpreter::execution::interpret_ir};
+use trustfall_core::{
+    frontend::parse, interpreter::execution::interpret_ir, ir::IndexedQuery,
+};
 
 use crate::schema::{GRAPH_SCHEMA, NEIGHBORS_QUERY};
 
 const ENTITY_HALF_BITS: u32 = 16;
+static PARSED_GRAPH_SCHEMA: OnceLock<Option<Schema>> = OnceLock::new();
+static PARSED_NEIGHBORS_QUERY: OnceLock<Option<Arc<IndexedQuery>>> = OnceLock::new();
 
 /// One typed graph fact returned by the synchronous Trustfall projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,8 +107,10 @@ pub enum TrustfallGraphError {
 
 /// Synchronous Trustfall adapter over one already validated borrowed graph view.
 ///
-/// This type owns no graph data, task, runtime, or transport. Its only allocation is Trustfall's
-/// required short-lived execution [`Arc`], whose lifetime is the one synchronous query call.
+/// This type owns no graph data, task, runtime, or transport. The crate-owned static schema and
+/// query are parsed once into immutable process state. Each call still pays Trustfall's required
+/// adapter/argument [`Arc`]s, boxed iterators, result maps, and a bounded preflight edge pass; those
+/// allocations are confined to the upstream dynamic ABI while canonical graph facts stay borrowed.
 #[derive(Debug)]
 pub struct TrustfallGraph<'view> {
     view: &'view ValidatedGraphView<'view>,
@@ -128,25 +137,11 @@ impl<'view> TrustfallGraph<'view> {
             });
         }
 
-        let schema = match Schema::parse(GRAPH_SCHEMA) {
-            Ok(schema) => schema,
-            Err(_rejected) => {
-                return Err(TrustfallGraphError::StaticGrammar {
-                    phase: TrustfallStaticPhase::Schema,
-                });
-            }
-        };
-        let query = match parse(&schema, NEIGHBORS_QUERY) {
-            Ok(query) => query,
-            Err(_rejected) => {
-                return Err(TrustfallGraphError::StaticGrammar {
-                    phase: TrustfallStaticPhase::Query,
-                });
-            }
-        };
+        let schema = parsed_schema()?;
+        let query = parsed_query(schema)?;
         let adapter = Arc::new(BorrowedGraphAdapter {
             view: self.view,
-            schema: &schema,
+            schema,
         });
         let arguments = Arc::new(source_arguments(source));
         let rows = match interpret_ir(adapter, query, arguments) {
@@ -186,6 +181,25 @@ impl<'view> TrustfallGraph<'view> {
             .filter(|edge| edge.source == source)
             .count()
     }
+}
+
+fn parsed_schema() -> Result<&'static Schema, TrustfallGraphError> {
+    PARSED_GRAPH_SCHEMA
+        .get_or_init(|| Schema::parse(GRAPH_SCHEMA).ok())
+        .as_ref()
+        .ok_or(TrustfallGraphError::StaticGrammar {
+            phase: TrustfallStaticPhase::Schema,
+        })
+}
+
+fn parsed_query(schema: &Schema) -> Result<Arc<IndexedQuery>, TrustfallGraphError> {
+    PARSED_NEIGHBORS_QUERY
+        .get_or_init(|| parse(schema, NEIGHBORS_QUERY).ok())
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or(TrustfallGraphError::StaticGrammar {
+            phase: TrustfallStaticPhase::Query,
+        })
 }
 
 #[derive(Clone, Copy, Debug)]

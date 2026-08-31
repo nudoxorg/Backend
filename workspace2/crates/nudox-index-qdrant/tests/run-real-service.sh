@@ -13,8 +13,8 @@ fi
 source "$project_dir/tools/pinned-toolchains.sh"
 
 qdrant_test_dir="$(mktemp -d /tmp/nudox-qdrant-service.XXXXXX)"
-qdrant_http_port="${QDRANT_TEST_HTTP_PORT:-6339}"
-qdrant_grpc_port="${QDRANT_TEST_GRPC_PORT:-6340}"
+qdrant_http_port="${QDRANT_TEST_HTTP_PORT:-$((20000 + RANDOM % 20000))}"
+qdrant_grpc_port="${QDRANT_TEST_GRPC_PORT:-$((qdrant_http_port + 1))}"
 recovery_collection="${QDRANT_TEST_COLLECTION:-nudox_restart_$$}"
 qdrant_pid=''
 
@@ -27,6 +27,10 @@ trap cleanup EXIT
 qdrant_url="http://127.0.0.1:$qdrant_http_port"
 
 start_qdrant() {
+  if curl --fail --silent --max-time 1 "$qdrant_url/readyz" >/dev/null 2>&1; then
+    echo "refusing to test a pre-existing Qdrant service at $qdrant_url" >&2
+    return 1
+  fi
   (
     cd "$qdrant_test_dir"
     exec env \
@@ -38,8 +42,12 @@ start_qdrant() {
   qdrant_pid="$!"
 
   for _ in $(seq 1 100); do
-    if curl --fail --silent "$qdrant_url/readyz" >/dev/null; then
-      return 0
+    if curl --fail --silent --max-time 1 "$qdrant_url/readyz" >/dev/null; then
+      if kill -0 "$qdrant_pid" 2>/dev/null; then
+        return 0
+      fi
+      echo "a foreign Qdrant service became ready after the launched child exited" >&2
+      return 1
     fi
     if ! kill -0 "$qdrant_pid" 2>/dev/null; then
       break
