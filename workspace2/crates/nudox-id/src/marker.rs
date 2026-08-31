@@ -109,7 +109,8 @@ protocol_registry!(
         (ObjectPackEncoding, ObjectPack, 3, b"nudox.objpack.v1"),
         (IrFragmentEncoding, IrFragment, 4, b"nudox.irfrag.w1\0"),
         (IrManifestEncoding, IrManifest, 5, b"nudox.irmani.w1\0"),
-        (CompilePublicationEncoding, CompilePublication, 6, b"nudox.publish.w1")
+        (CompilePublicationEncoding, CompilePublication, 6, b"nudox.publish.w1"),
+        (IrFragmentRangeEncoding, IrFragmentRange, 7, b"nudox.irrange.w1")
     }
 );
 
@@ -120,9 +121,9 @@ mod tests {
         CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DependencySetDomain,
         Domain, Encoding, FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
         IndexSnapshotDomain, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
-        IrManifestDomain, IrManifestEncoding, LocalitySortedEncoding, ObjectDomain,
-        ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain, StageKeyDomain,
-        ToolchainDomain,
+        IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding, LocalitySortedEncoding,
+        ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain,
+        StageKeyDomain, ToolchainDomain,
     };
 
     #[test]
@@ -159,6 +160,7 @@ mod tests {
             IrFragmentEncoding::TAG,
             IrManifestEncoding::TAG,
             CompilePublicationEncoding::TAG,
+            IrFragmentRangeEncoding::TAG,
         ];
         for (index, encoding) in encodings.iter().enumerate() {
             for other in encodings.iter().skip(index + 1) {
