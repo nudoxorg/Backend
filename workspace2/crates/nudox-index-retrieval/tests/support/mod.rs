@@ -17,11 +17,16 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_durable_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use nudox_hydration::{PlanScratch, Projection, demand, plan};
-use nudox_id::{ContentId, ObjectDomain};
+use nudox_id::{
+    ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, SourceFactDomain,
+    ToolchainDomain,
+};
 use nudox_index_core::{
-    ExactRow, ExactSegment, IndexSnapshot, LexicalRow, LexicalScore, LexicalSegment,
+    EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow, LexicalScore,
+    LexicalSegment,
 };
 use nudox_index_graph_vector::{
     Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
@@ -33,14 +38,26 @@ use nudox_index_qdrant::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use nudox_index_retrieval::{
     RetrievalBoundary, RetrievalFailure, RetrievalOperationTerminal, RetrievalResult, VectorRoute,
 };
-use nudox_ir_format::{EntityRecord, FragmentView, PreparedFragment, PrimitiveType, TypeNode};
-use nudox_ir_vocab::{EntityId, TypeId};
+use nudox_ir_format::{
+    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
+    SourceIdentity, TypeNode,
+};
+use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use nudox_object::ObjectRef;
 use nudox_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
 use nudox_schema::SchemaId;
 use nudox_store_memory::{InsertOutcome, MemoryStore, StoreCapacity};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn lexical_document(entity: u32) -> EntityDocumentId {
+    EntityDocumentId {
+        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"sealed-retrieval-fixture-fragment",
+        ),
+        entity: EntityId::new(entity),
+    }
+}
 
 /// All immutable borrowed facts shared by one sealed retrieval test closure.
 #[derive(Clone, Copy)]
@@ -61,12 +78,29 @@ pub(crate) struct SealedFixture<'fixture> {
 
 /// Executes one test closure with a published immutable snapshot and cleans its durable fixture.
 pub(crate) fn with_sealed_fixture(exercise: impl for<'fixture> FnOnce(&SealedFixture<'fixture>)) {
+    let source = SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"retrieval-fixture-source"),
+        byte_len: 24,
+    };
+    let recipe = CompileRecipeFact::derive(
+        Language::Rust,
+        Stage::LowerIr,
+        NativeTool::Rustc,
+        source.identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"retrieval-fixture-toolchain"),
+    );
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
+        name: AtomId::new(0),
+        kind: EntityKind::Constant,
     }];
     let types = [TypeNode::Primitive(PrimitiveType::Bool)];
-    let prepared = PreparedFragment::prepare(&entities, &types).expect("valid fragment");
-    let mut fragment_storage = [0_u8; 128];
+    let atoms = [AtomInput {
+        bytes: b"published",
+    }];
+    let prepared = PreparedFragment::prepare(source, recipe, &entities, &types, &atoms)
+        .expect("valid fragment");
+    let mut fragment_storage = [0_u8; 512];
     let fragment = prepared
         .write_into(&mut fragment_storage)
         .expect("fragment storage is sufficient");
@@ -134,8 +168,16 @@ pub(crate) fn with_sealed_fixture(exercise: impl for<'fixture> FnOnce(&SealedFix
 
     let exact_present_rows = [ExactRow::present(b"entity/0", b"published")];
     let exact_missing_rows = [ExactRow::present(b"entity/1", b"unavailable")];
-    let lexical_present_rows = [LexicalRow::new(b"bool", 0, LexicalScore::from(1))];
-    let lexical_missing_rows = [LexicalRow::new(b"other", 1, LexicalScore::from(1))];
+    let lexical_present_rows = [LexicalRow::new(
+        b"bool",
+        lexical_document(0),
+        LexicalScore::from(1),
+    )];
+    let lexical_missing_rows = [LexicalRow::new(
+        b"other",
+        lexical_document(1),
+        LexicalScore::from(1),
+    )];
     let exact = [
         ExactSegment::new(&exact_present_rows).expect("valid exact present segment"),
         ExactSegment::new(&exact_missing_rows).expect("valid exact missing segment"),

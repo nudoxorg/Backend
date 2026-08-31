@@ -7,12 +7,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+nudox-compile-publication = { path = "../nudox-compile-publication" }
 nudox-durable-journal = { path = "../nudox-durable-journal" }
 nudox-id = { path = "../nudox-id" }
+nudox-index-build = { path = "../nudox-index-build" }
 nudox-index-core = { path = "../nudox-index-core" }
 thiserror.workspace = true
 
 [dev-dependencies]
+nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
 nudox-hydration = { path = "../nudox-hydration" }
 nudox-index-graph-vector = { path = "../nudox-index-graph-vector" }
 nudox-index-qdrant = { path = "../nudox-index-qdrant" }

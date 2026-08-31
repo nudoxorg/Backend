@@ -23,6 +23,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
+nudox-compile-vocab = { path = "../nudox-compile-vocab" }
 nudox-durable-journal = { path = "../nudox-durable-journal" }
 nudox-hydration = { path = "../nudox-hydration" }
 nudox-id = { path = "../nudox-id" }

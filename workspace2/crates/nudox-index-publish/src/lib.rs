@@ -8,6 +8,13 @@ use nudox_durable_journal::{PublicationFacts, PublishedGeneration};
 use nudox_id::ObjectDomain;
 use nudox_index_core::IndexSnapshot;
 
+mod compiler;
+
+pub use compiler::{
+    CompilationIndexError, CompilationIndexScratch, OpenedCompilationSnapshot,
+    RejectedCompilationIndex, seal_compilation_index,
+};
+
 /// Immutable public facts of a snapshot tied to one durable canonical publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublishedIndexSnapshotView<'selection> {

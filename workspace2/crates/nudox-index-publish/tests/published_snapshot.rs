@@ -7,12 +7,17 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use nudox_compile_vocab::{CompileRecipeFact, Language, NativeTool, Stage};
 use nudox_durable_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use nudox_hydration::{PlanScratch, Projection, demand, plan};
-use nudox_id::{ContentId, GenerationId, ObjectDomain};
+use nudox_id::{
+    ArtifactId, ContentId, GenerationId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain,
+    SourceFactDomain, ToolchainDomain,
+};
 use nudox_index_core::{
-    ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment, ExactTerminal,
-    IndexSnapshot, IndexSnapshotId, LexicalManifest, LexicalRow, LexicalScore, LexicalSegment,
+    EntityDocumentId, ExactManifest, ExactOperation, ExactResolution, ExactRow, ExactSegment,
+    ExactTerminal, IndexSnapshot, IndexSnapshotId, LexicalManifest, LexicalRow, LexicalScore,
+    LexicalSegment,
 };
 use nudox_index_graph_vector::{
     GraphAuthority, GraphEdge, GraphRow, Metric, ModelId, PartitionId, ProjectionId,
@@ -22,14 +27,26 @@ use nudox_index_publish::{PublishedIndexSnapshot, PublishedIndexSnapshotError};
 use nudox_index_qdrant::{QdrantBlockingAdapter, QdrantDataKey, QdrantError};
 use nudox_index_tantivy::{TantivyHit, TantivyLexical};
 use nudox_index_trustfall::TrustfallGraph;
-use nudox_ir_format::{EntityRecord, FragmentView, PreparedFragment, PrimitiveType, TypeNode};
-use nudox_ir_vocab::{EntityId, TypeId};
+use nudox_ir_format::{
+    AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
+    SourceIdentity, TypeNode,
+};
+use nudox_ir_vocab::{AtomId, EntityId, TypeId};
 use nudox_object::ObjectRef;
 use nudox_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
 use nudox_schema::SchemaId;
 use nudox_store_memory::{InsertOutcome, MemoryStore, StoreCapacity};
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+fn lexical_document(entity: u32) -> EntityDocumentId {
+    EntityDocumentId {
+        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+            b"published-index-test-fragment",
+        ),
+        entity: EntityId::new(entity),
+    }
+}
 
 fn fixture_path() -> PathBuf {
     let ordinal = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
@@ -128,16 +145,32 @@ fn query_qdrant_if_provisioned(
     reason = "one chronological top-level journey deliberately retains every public boundary"
 )]
 fn durable_ir_publication_seals_exact_and_real_tantivy_queries() {
+    let source = SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"published-index-source"),
+        byte_len: 22,
+    };
+    let recipe = CompileRecipeFact::derive(
+        Language::Rust,
+        Stage::LowerIr,
+        NativeTool::Rustc,
+        source.identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"published-index-toolchain"),
+    );
     let entities = [EntityRecord {
         semantic_type: TypeId::new(0),
+        name: AtomId::new(0),
+        kind: EntityKind::Constant,
     }];
     let type_nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
-    let prepared = PreparedFragment::prepare(&entities, &type_nodes);
+    let atoms = [AtomInput {
+        bytes: b"published",
+    }];
+    let prepared = PreparedFragment::prepare(source, recipe, &entities, &type_nodes, &atoms);
     assert!(prepared.is_ok());
     let Ok(prepared) = prepared else {
         return;
     };
-    let mut fragment_storage = [0_u8; 128];
+    let mut fragment_storage = [0_u8; 512];
     let fragment = prepared.write_into(&mut fragment_storage);
     assert!(fragment.is_ok());
     let Ok(fragment) = fragment else {
@@ -260,7 +293,11 @@ fn durable_ir_publication_seals_exact_and_real_tantivy_queries() {
     };
 
     let exact_rows = [ExactRow::present(b"entity/0", fragment)];
-    let lexical_rows = [LexicalRow::new(b"bool", 0, LexicalScore::from(1))];
+    let lexical_rows = [LexicalRow::new(
+        b"bool",
+        lexical_document(0),
+        LexicalScore::from(1),
+    )];
     let exact = ExactSegment::new(&exact_rows);
     let lexical = LexicalSegment::new(&lexical_rows);
     assert!(exact.is_ok() && lexical.is_ok());
@@ -330,7 +367,12 @@ fn durable_ir_publication_seals_exact_and_real_tantivy_queries() {
     let mut output = [None];
     let terminal = tantivy.search(sealed.snapshot.id, "bool", 1, &mut output);
     assert!(terminal.is_ok());
-    assert_eq!(output, [Some(TantivyHit { document: 0 })]);
+    assert_eq!(
+        output,
+        [Some(TantivyHit {
+            document: lexical_document(0),
+        })]
+    );
 
     let graph_authority = GraphAuthority::new(sealed.snapshot.id, ProjectionId::new(1));
     let partition = PartitionId::new(0);

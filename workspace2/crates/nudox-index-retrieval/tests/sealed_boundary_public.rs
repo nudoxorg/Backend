@@ -10,8 +10,8 @@
 mod support;
 
 use nudox_index_core::{
-    ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalDocumentId,
-    LexicalManifest, LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,
+    ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalManifest,
+    LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,
 };
 use nudox_index_graph_vector::{
     Cancellation, GraphDegradation, GraphEdge, GraphRow, GraphTerminal, PartitionId,
@@ -28,8 +28,8 @@ use nudox_index_trustfall::TrustfallHit;
 use nudox_ir_vocab::EntityId;
 
 use support::{
-    GraphAcquisitionKind, SealedFixture, acquired_terminal, query_qdrant_if_provisioned,
-    with_sealed_fixture,
+    GraphAcquisitionKind, SealedFixture, acquired_terminal, lexical_document,
+    query_qdrant_if_provisioned, with_sealed_fixture,
 };
 
 #[test]
@@ -111,7 +111,12 @@ fn assert_complete_exact_lexical_and_tantivy(fixture: &SealedFixture<'_>) {
             ..
         } if result.written == 1
     ));
-    assert_eq!(tantivy_output, [Some(TantivyHit { document: 0 })]);
+    assert_eq!(
+        tantivy_output,
+        [Some(TantivyHit {
+            document: lexical_document(0)
+        })]
+    );
 }
 
 fn assert_partial_and_degraded_exact_lexical(fixture: &SealedFixture<'_>) {
@@ -453,7 +458,7 @@ fn lexical_sentinel<'fixture>(fixture: &SealedFixture<'fixture>) -> LexicalSnaps
     LexicalSnapshotHit::new(
         fixture.lexical[0].id,
         b"sentinel",
-        LexicalDocumentId::from(99),
+        lexical_document(99),
         LexicalScore::from(0),
     )
 }

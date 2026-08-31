@@ -113,9 +113,10 @@ impl<'selection> IndexSnapshot<'selection> {
 }
 
 /// Rejection while deriving an immutable snapshot selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IndexSnapshotError {
     /// Too many exact segments were selected.
+    #[error("exact segment selection exceeds the immutable snapshot limit")]
     ExactSegmentLimit {
         /// Maximum admitted exact segments.
         limit: usize,
@@ -123,6 +124,7 @@ pub enum IndexSnapshotError {
         observed: usize,
     },
     /// Too many lexical segments were selected.
+    #[error("lexical segment selection exceeds the immutable snapshot limit")]
     LexicalSegmentLimit {
         /// Maximum admitted lexical segments.
         limit: usize,
@@ -130,6 +132,7 @@ pub enum IndexSnapshotError {
         observed: usize,
     },
     /// One exact identity occupied two selected positions.
+    #[error("exact segment identity is duplicated in the immutable snapshot")]
     DuplicateExactSegment {
         /// Earlier selected position.
         left_position: usize,
@@ -139,6 +142,7 @@ pub enum IndexSnapshotError {
         id: ExactSegmentId,
     },
     /// One lexical identity occupied two selected positions.
+    #[error("lexical segment identity is duplicated in the immutable snapshot")]
     DuplicateLexicalSegment {
         /// Earlier selected position.
         left_position: usize,

@@ -23,7 +23,7 @@ use nudox_index_tantivy::{TantivyAdapterError, TantivyHit, TantivyLexical};
 use nudox_index_trustfall::TrustfallHit;
 use nudox_ir_vocab::EntityId;
 
-use support::{SealedFixture, with_sealed_fixture};
+use support::{SealedFixture, lexical_document, with_sealed_fixture};
 
 #[test]
 fn sealed_boundary_rejects_a_foreign_graph_authority_before_mutating_output() {
@@ -292,7 +292,9 @@ fn reject_unselected_descriptor_and_wrong_tantivy(fixture: &SealedFixture<'_>) {
         .expect("alternate lexical snapshot");
     let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("alternate manifest");
     let tantivy = TantivyLexical::build(manifest).expect("alternate Tantivy");
-    let sentinel = Some(TantivyHit { document: 77 });
+    let sentinel = Some(TantivyHit {
+        document: lexical_document(77),
+    });
     let mut output = [sentinel];
     let terminal = boundary.tantivy(&tantivy, "bool", 1, &mut output);
     assert!(matches!(

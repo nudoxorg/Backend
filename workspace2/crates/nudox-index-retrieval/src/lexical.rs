@@ -1,7 +1,7 @@
 //! Lexical manifest construction and terminal classification.
 
 use nudox_index_core::{
-    LexicalDegradation, LexicalDocumentId, LexicalManifest, LexicalOperation, LexicalSegment,
+    EntityDocumentId, LexicalDegradation, LexicalManifest, LexicalOperation, LexicalSegment,
     LexicalSnapshotHit, LexicalTerminal, LexicalTopK,
 };
 use nudox_index_vocab::LexicalSegmentId;
@@ -35,7 +35,7 @@ where
         missing: &'coverage [LexicalSegmentId],
         operation: LexicalOperation<'_>,
         top_k: LexicalTopK,
-        seen_documents: &mut [Option<LexicalDocumentId>],
+        seen_documents: &mut [Option<EntityDocumentId>],
         output: &'output mut [LexicalSnapshotHit<'bytes>],
     ) -> RetrievalOperationTerminal<'coverage, 'output, 'bytes> {
         let snapshot = self.published.snapshot;
