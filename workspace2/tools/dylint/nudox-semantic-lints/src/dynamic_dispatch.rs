@@ -37,7 +37,7 @@ pub(crate) fn check(context: &LateContext<'_>, ty: &HirTy<'_, AmbigArg>) {
 fn alias_is_dynamic(context: &LateContext<'_>, kind: TyKind<'_, AmbigArg>) -> bool {
     match kind {
         TyKind::Path(QPath::Resolved(_, path)) => match path.res {
-            Res::Def(DefKind::TyAlias, alias) => {
+            Res::Def(DefKind::TyAlias, alias) if alias.is_local() => {
                 let resolved = context
                     .tcx
                     .type_of(alias)

@@ -38,6 +38,20 @@ in Terra's lane and continuously sharpens the rubric; Luna keeps implementing ot
 Commits are recovery/integration points, not approval requests. Pre-edit review, rubric refinement,
 preferred model availability, and evidence formatting never gate reversible implementation.
 
+Use a proof ladder so verification accelerates implementation instead of restarting the world:
+
+1. Each coherent edit runs the smallest named red/green test and strict Clippy for touched targets.
+2. Each capability commit runs its crate/workspace tests, semantic lints, and mechanism-specific proof.
+3. The owning lane runs expensive Nix, live-service, Loom/Miri, corpus, and end-to-end gates once after
+   the vertical is composed; the chief reruns them once after integration.
+
+Do not repeat an unchanged expensive gate after documentation, formatting, or an unrelated commit.
+Record a stable command/result and invalidate it only when its inputs or environment changed. One
+failed environment-provisioning retry is enough; preserve the diagnostic and continue executable
+work that does not depend on it. Verification depth follows risk: unsafe concurrency still requires
+its model/provenance proof before integration, while a typed fixture rewrite does not require a cold
+full-workspace Nix rebuild at every checkpoint.
+
 Scope is governed by invariant ownership, state-space complexity, dependency direction, retained
 resources, and reviewability—not line, word, file, parameter, or commit counts. Split a plane when
 responsibilities or proof surfaces diverge. After behavior becomes green, Terra performs a distinct

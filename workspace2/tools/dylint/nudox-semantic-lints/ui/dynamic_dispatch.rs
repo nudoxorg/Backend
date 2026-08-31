@@ -34,6 +34,12 @@ fn ordinary_alias(bytes: Bytes) {
     let _ = bytes;
 }
 
+// External APIs may necessarily erase private implementation details. Merely naming their public
+// result alias does not introduce a new dynamic boundary in shipping code.
+fn external_alias(result: std::thread::Result<()>) {
+    let _ = result;
+}
+
 fn generic(source: &impl Source) {
     let _ = source;
 }
