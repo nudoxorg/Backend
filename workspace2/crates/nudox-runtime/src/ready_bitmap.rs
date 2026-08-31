@@ -157,7 +157,7 @@ mod tests {
     enum ReadyTestError {
         #[error("ready producer panicked")]
         Join(#[from] crate::test_report::ThreadPanic),
-        #[error("first ready dequeue expected coordinate 3 but observed {observed:?}")]
+        #[error("first ready dequeue expected coordinate zero but observed {observed:?}")]
         FirstTake { observed: Option<usize> },
         #[error("ready bitmap retained an already-consumed coordinate {observed:?}")]
         SecondTake { observed: Option<usize> },
