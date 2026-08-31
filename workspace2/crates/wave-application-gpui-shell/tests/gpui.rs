@@ -9,8 +9,8 @@ use gpui::{
 use wave_application_core::{
     AdaptiveDisposition, ApplicationInput, ApplicationService, BatteryState, ByteCount, Capability,
     CapabilityDomain, CorrelationId, ExecutionState, GenerationId, InconsistentRecovery,
-    IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ReplyBody, ResourceBudget,
-    RetryBudget, Terminal,
+    IndexSnapshotId, OperationBudget, OperationKey, Pin, Pressure, RecoveryCause, ReplyBody,
+    ResourceBudget, RetryBudget, Terminal,
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_gpui_shell::{
@@ -255,6 +255,53 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
+fn stale_cancel_keeps_the_admitted_execution_wake_driver(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    let recover = ApplicationInput::RecoverLocal {
+        correlation: CorrelationId(104),
+        pin: pin(),
+        bundle: bundle(),
+        budget: budget(1, 1),
+    };
+    let admitted_result = view.update(cx, |view, cx| view.execute(&recover, cx));
+    let Some(admitted) = require_reply(&admitted_result) else {
+        return;
+    };
+    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
+        assert!(matches!(admitted.body, ReplyBody::ExecutionStarted { .. }));
+        return;
+    };
+
+    let stale_cancel = ApplicationInput::Cancel {
+        correlation: CorrelationId(105),
+        operation: OperationKey(operation.0.saturating_add(1)),
+    };
+    let stale_result = view.update(cx, |view, cx| view.execute(&stale_cancel, cx));
+    let Some(stale) = require_reply(&stale_result) else {
+        return;
+    };
+    assert!(matches!(stale.body, ReplyBody::Rejected));
+    assert_eq!(stale.terminal, Terminal::Failed);
+
+    cx.run_until_parked();
+    cx.read_entity(&view, |view, _| {
+        assert!(matches!(
+            view.execution,
+            wave_application_gpui_shell::ExecutionProjection::Reported {
+                state: ExecutionState::Completed {
+                    operation: observed,
+                    ..
+                },
+                terminal: Terminal::Complete { emitted: 1 },
+            } if observed == operation
+        ));
+        assert_eq!(view.summaries()[2].state, ProjectionState::Ready);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
 fn entity_projects_unavailable_compiler_output_without_claiming_artifact(cx: &mut TestAppContext) {
     let (view, cx) =
         cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
@@ -338,7 +385,8 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
     let (view, cx) =
         cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
 
-    cx.simulate_keystrokes("cmd-k s");
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("s");
     cx.read_entity(&view, |view, _| {
         assert!(view.navigation.palette.visible);
         assert_eq!(view.navigation.palette.result_count(), 14);
@@ -351,6 +399,36 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
     cx.simulate_keystrokes("backspace");
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.navigation.palette.result_count(), 24);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn native_text_handler_accepts_multibyte_palette_and_form_input(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_input("sé");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.navigation.palette.visible);
+        assert_eq!(view.navigation.palette.result_count(), 0);
+    });
+
+    cx.simulate_keystrokes("escape cmd-k");
+    cx.simulate_input("generate");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("rüst");
+    cx.read_entity(&view, |view, _| {
+        let Some(FormState::Generate { language, .. }) = view.form else {
+            assert!(matches!(view.form, Some(FormState::Generate { .. })));
+            return;
+        };
+        let Some(language) = language else {
+            assert!(language.is_some());
+            return;
+        };
+        assert_eq!(language.as_ref(), b"r\xC3\xBCst");
     });
 }
 

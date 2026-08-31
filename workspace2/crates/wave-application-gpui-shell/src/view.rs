@@ -1,5 +1,7 @@
 //! Real GPUI product shell for the typed application service.
 
+mod input;
+
 use crate::navigation::{
     action_label, command_facts, route_facts, surface_destination, surface_facts,
 };
@@ -57,7 +59,13 @@ pub struct GpuiShellView {
     palette_focus: FocusHandle,
     palette_scroll: UniformListScrollHandle,
     next_correlation: u64,
-    execution_task: Option<Task<()>>,
+    driven_execution: Option<DrivenExecution>,
+    native_input: input::NativeInputState,
+}
+
+struct DrivenExecution {
+    operation: OperationKey,
+    _task: Task<()>,
 }
 
 impl GpuiShellView {
@@ -90,7 +98,8 @@ impl GpuiShellView {
             palette_focus,
             palette_scroll: UniformListScrollHandle::new(),
             next_correlation: 1,
-            execution_task: None,
+            driven_execution: None,
+            native_input: input::NativeInputState::default(),
         }
     }
 
@@ -105,12 +114,6 @@ impl GpuiShellView {
         input: &ApplicationInput,
         cx: &mut Context<Self>,
     ) -> Result<ApplicationReply, ApplyError> {
-        if matches!(
-            input,
-            ApplicationInput::PollExecution { .. } | ApplicationInput::Cancel { .. }
-        ) {
-            self.execution_task = None;
-        }
         let reply = self.service.borrow_mut().execute(input);
         self.state.apply_batch(&[reply])?;
         cx.notify();
@@ -119,14 +122,22 @@ impl GpuiShellView {
             | ReplyBody::Execution(ExecutionState::Pending { operation, .. }) => {
                 self.drive_admitted_execution(reply.correlation, operation, cx);
             }
+            ReplyBody::Execution(
+                ExecutionState::Completed { operation, .. }
+                | ExecutionState::Cancelled { operation, .. }
+                | ExecutionState::Failed { operation, .. },
+            ) => {
+                if self
+                    .driven_execution
+                    .as_ref()
+                    .is_some_and(|driven| driven.operation == operation)
+                {
+                    self.driven_execution = None;
+                }
+            }
             ReplyBody::DependencyUnavailable { .. }
             | ReplyBody::Health(_)
             | ReplyBody::Adaptive(_)
-            | ReplyBody::Execution(
-                ExecutionState::Completed { .. }
-                | ExecutionState::Cancelled { .. }
-                | ExecutionState::Failed { .. },
-            )
             | ReplyBody::Rejected => {}
         }
         Ok(reply)
@@ -138,8 +149,15 @@ impl GpuiShellView {
         operation: OperationKey,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .driven_execution
+            .as_ref()
+            .is_some_and(|driven| driven.operation == operation)
+        {
+            return;
+        }
         let service = Rc::clone(&self.service);
-        self.execution_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let reply = poll_fn(|context| {
                 service
                     .borrow_mut()
@@ -155,7 +173,11 @@ impl GpuiShellView {
             }) {
                 Ok(()) | Err(_) => {}
             }
-        }));
+        });
+        self.driven_execution = Some(DrivenExecution {
+            operation,
+            _task: task,
+        });
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -317,16 +339,8 @@ impl GpuiShellView {
             self.update_form_text(event, cx);
             return;
         }
-        let changed = match event.keystroke.key.as_str() {
-            "backspace" => self.state.erase_palette_character().is_ok(),
-            "escape" | "enter" | "up" | "down" | "home" | "end" | "pageup" | "pagedown" => false,
-            _ if !event.keystroke.modifiers.modified() => event
-                .keystroke
-                .key_char
-                .as_deref()
-                .is_some_and(|text| self.state.append_palette_text(text).is_ok()),
-            _ => false,
-        };
+        let changed =
+            event.keystroke.key == "backspace" && self.state.erase_palette_character().is_ok();
         if changed {
             cx.stop_propagation();
             cx.notify();
@@ -337,16 +351,7 @@ impl GpuiShellView {
         if self.state.form.is_none() {
             return;
         }
-        let changed = match event.keystroke.key.as_str() {
-            "backspace" => self.state.erase_form_text().is_ok(),
-            "escape" | "enter" | "tab" => false,
-            _ if !event.keystroke.modifiers.modified() => event
-                .keystroke
-                .key_char
-                .as_deref()
-                .is_some_and(|text| self.state.append_form_text(text).is_ok()),
-            _ => false,
-        };
+        let changed = event.keystroke.key == "backspace" && self.state.erase_form_text().is_ok();
         if changed {
             cx.stop_propagation();
             cx.notify();
@@ -359,8 +364,9 @@ impl GpuiShellView {
         match input {
             Ok(input) => {
                 self.next_correlation = self.next_correlation.saturating_add(1);
-                let _ = self.execute(&input, cx);
-                cx.notify();
+                if self.execute(&input, cx).is_err() {
+                    cx.notify();
+                }
             }
             Err(_) => cx.notify(),
         }
@@ -1008,9 +1014,12 @@ impl GpuiShellView {
     }
 
     fn palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query_label = match self.state.navigation.palette.query_text() {
-            Ok("") | Err(_) => SharedString::from("Type to filter · ↑↓ Enter Esc"),
-            Ok(query) => SharedString::from(query),
+        let query_label = match self.native_input_error_message() {
+            Some(error) => SharedString::from(error),
+            None => match self.state.navigation.palette.query_text() {
+                Ok("") | Err(_) => SharedString::from("Type to filter · ↑↓ Enter Esc"),
+                Ok(query) => SharedString::from(query),
+            },
         };
         let palette = div()
             .id("command-palette-backdrop")
@@ -1149,6 +1158,7 @@ impl Render for GpuiShellView {
             .relative()
             .flex()
             .flex_col()
+            .child(self.native_input_bridge(cx))
             .child(
                 div()
                     .flex_1()
@@ -1211,7 +1221,6 @@ fn diagnostic_text(diagnostic: Option<Diagnostic>) -> (&'static str, &'static st
         DiagnosticCode::ResultLimitExceeded => "Result limit",
         DiagnosticCode::DependencyUnavailable => "Dependency unavailable",
         DiagnosticCode::UnsupportedCompilerStage => "Unsupported compiler stage",
-        DiagnosticCode::CompilerOutputUnrepresentable => "Compiler output boundary",
         DiagnosticCode::OperationUnavailable => "Operation unavailable",
         DiagnosticCode::AdaptivePolicyRejected => "Adaptive policy rejected",
     };

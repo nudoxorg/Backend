@@ -385,6 +385,12 @@ impl ShellState {
             .replace_text(field, value)
     }
 
+    /// Retains the exact rejection reported by a native platform text edit.
+    #[cfg(feature = "real-gpui")]
+    pub(crate) fn retain_form_error(&mut self, error: Option<FormError>) {
+        self.projection.form_error = error;
+    }
+
     /// Replaces the active graph/vector/search typed result limit.
     ///
     /// # Errors

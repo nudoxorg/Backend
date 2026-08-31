@@ -142,7 +142,6 @@ pub enum GoldenDiagnosticCode {
     ResultLimitExceeded,
     DependencyUnavailable,
     UnsupportedCompilerStage,
-    CompilerOutputUnrepresentable,
     OperationUnavailable,
     AdaptivePolicyRejected,
 }
@@ -503,7 +502,6 @@ impl From<DiagnosticCode> for GoldenDiagnosticCode {
             DiagnosticCode::ResultLimitExceeded => Self::ResultLimitExceeded,
             DiagnosticCode::DependencyUnavailable => Self::DependencyUnavailable,
             DiagnosticCode::UnsupportedCompilerStage => Self::UnsupportedCompilerStage,
-            DiagnosticCode::CompilerOutputUnrepresentable => Self::CompilerOutputUnrepresentable,
             DiagnosticCode::OperationUnavailable => Self::OperationUnavailable,
             DiagnosticCode::AdaptivePolicyRejected => Self::AdaptivePolicyRejected,
         }

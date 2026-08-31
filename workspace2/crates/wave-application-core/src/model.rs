@@ -320,8 +320,6 @@ pub enum DiagnosticCode {
     DependencyUnavailable,
     /// Existing compiler registry rejected the selected vocabulary row.
     UnsupportedCompilerStage,
-    /// Existing compiler registry returned a result that cannot fit the bounded text reply.
-    CompilerOutputUnrepresentable,
     /// Cancellation or polling named an unknown operation.
     OperationUnavailable,
     /// Adaptive policy input was rejected with its typed cause retained.
