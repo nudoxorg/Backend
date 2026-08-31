@@ -44,6 +44,7 @@ export DYLINT_RUSTFLAGS="-Aunknown-lints -Dwarnings \
   -Fnudox_dynamic_json_construction \
   -Fnudox_enum_static_str_projection \
   -Fnudox_erased_map_err \
+  -Fnudox_non_exhaustive_semantic_enum \
   -Fnudox_poison_sync_primitive \
   -Fnudox_redundant_public_accessor \
   -Fnudox_stringly_state_field"

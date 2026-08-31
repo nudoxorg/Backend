@@ -1,5 +1,5 @@
 error: closed state/error field `step` is stringly typed
-  --> $DIR/stringly_state_field.rs:4:5
+  --> $DIR/stringly_state_field.rs:6:5
    |
 LL |     step: &'static str,
    |     ^^^^^^^^^^^^^^^^^^
@@ -8,7 +8,7 @@ LL |     step: &'static str,
    = note: requested on the command line with `-F nudox-stringly-state-field`
 
 error: closed state/error field `field` is stringly typed
-  --> $DIR/stringly_state_field.rs:12:20
+  --> $DIR/stringly_state_field.rs:14:20
    |
 LL |     UnknownField { field: &'static str },
    |                    ^^^^^^^^^^^^^^^^^^^
@@ -16,7 +16,7 @@ LL |     UnknownField { field: &'static str },
    = help: replace the static string vocabulary with a closed enum or semantic type
 
 error: closed state/error field `detail` is stringly typed
-  --> $DIR/stringly_state_field.rs:13:21
+  --> $DIR/stringly_state_field.rs:15:21
    |
 LL |     InvalidDetail { detail: &'static str },
    |                     ^^^^^^^^^^^^^^^^^^^^
@@ -24,15 +24,31 @@ LL |     InvalidDetail { detail: &'static str },
    = help: replace the static string vocabulary with a closed enum or semantic type
 
 error: closed state/error field `stage` is stringly typed
-  --> $DIR/stringly_state_field.rs:14:18
+  --> $DIR/stringly_state_field.rs:16:18
    |
 LL |     WrongStage { stage: &'static str },
    |                  ^^^^^^^^^^^^^^^^^^^
    |
    = help: replace the static string vocabulary with a closed enum or semantic type
 
+error: closed state/error field `expected` is stringly typed
+  --> $DIR/stringly_state_field.rs:27:9
+   |
+LL |         expected: &'static str,
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: replace the static string vocabulary with a closed enum or semantic type
+
+error: closed state/error field `observed` is stringly typed
+  --> $DIR/stringly_state_field.rs:28:9
+   |
+LL |         observed: &'static str,
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: replace the static string vocabulary with a closed enum or semantic type
+
 error: closed state/error field `phase` is stringly typed
-  --> $DIR/stringly_state_field.rs:20:13
+  --> $DIR/stringly_state_field.rs:35:13
    |
 LL |             phase: &'static str,
    |             ^^^^^^^^^^^^^^^^^^^
@@ -43,5 +59,13 @@ LL | local_state!(ExpandedScenario);
    = help: replace the static string vocabulary with a closed enum or semantic type
    = note: this error originates in the macro `local_state` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to 5 previous errors
+error: closed state/error field `phase` is stringly typed
+  --> $DIR/stringly_state_field.rs:55:5
+   |
+LL |     phase: &'response str,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: replace the static string vocabulary with a closed enum or semantic type
+
+error: aborting due to 8 previous errors
 

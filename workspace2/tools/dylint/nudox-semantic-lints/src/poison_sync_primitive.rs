@@ -1,8 +1,12 @@
 use clippy_utils::diagnostics::span_lint_and_help;
-use rustc_hir::{AmbigArg, Expr, ExprKind, Ty, TyKind as HirTyKind, def::DefKind, def::Res};
+use rustc_hir::{
+    AmbigArg, Expr, ExprKind, Ty, TyKind as HirTyKind,
+    def::{DefKind, Res},
+};
 use rustc_lint::{LateContext, LintContext};
 use rustc_middle::ty::{Ty as RustType, TyKind as RustTyKind};
 use rustc_session::declare_lint;
+use rustc_span::def_id::DefId;
 
 declare_lint! {
     /// ### What it does
@@ -19,8 +23,15 @@ fn forbidden_type(context: &LateContext<'_>, rust_type: RustType<'_>) -> bool {
     let RustTyKind::Adt(definition, _) = rust_type.kind() else {
         return false;
     };
+    forbidden_definition(context, definition.did())
+}
+
+/// Match the compiler-resolved definition, rather than the spelling used at a call site. This
+/// keeps imports and type aliases covered while namespaced lookalikes (including local `loom`,
+/// `tokio`, and `parking_lot` modules) remain outside the law.
+fn forbidden_definition(context: &LateContext<'_>, definition: DefId) -> bool {
     matches!(
-        context.tcx.def_path_str(definition.did()).as_str(),
+        context.tcx.def_path_str(definition).as_str(),
         "std::sync::Mutex"
             | "std::sync::RwLock"
             | "std::sync::Condvar"
@@ -29,6 +40,7 @@ fn forbidden_type(context: &LateContext<'_>, rust_type: RustType<'_>) -> bool {
             | "std::sync::poison::condvar::Condvar"
             | "loom::sync::mutex::Mutex"
             | "loom::sync::rwlock::RwLock"
+            | "loom::sync::condvar::Condvar"
     )
 }
 
@@ -52,17 +64,7 @@ pub(crate) fn check_ty<'tcx>(context: &LateContext<'tcx>, rust_ty: &'tcx Ty<'tcx
     };
     let resolved = context.qpath_res(&path, rust_ty.hir_id);
     let forbidden = match resolved {
-        Res::Def(DefKind::Struct, definition) => matches!(
-            context.tcx.def_path_str(definition).as_str(),
-            "std::sync::Mutex"
-                | "std::sync::RwLock"
-                | "std::sync::Condvar"
-                | "std::sync::poison::mutex::Mutex"
-                | "std::sync::poison::rwlock::RwLock"
-                | "std::sync::poison::condvar::Condvar"
-                | "loom::sync::mutex::Mutex"
-                | "loom::sync::rwlock::RwLock"
-        ),
+        Res::Def(DefKind::Struct, definition) => forbidden_definition(context, definition),
         Res::Def(DefKind::TyAlias, alias) => forbidden_type(
             context,
             context

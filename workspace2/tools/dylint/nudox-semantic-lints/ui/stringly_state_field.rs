@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::{borrow::Cow, sync::Arc};
+
 struct BorrowedScenario {
     step: &'static str,
 }
@@ -12,6 +14,19 @@ enum DecodeError {
     UnknownField { field: &'static str },
     InvalidDetail { detail: &'static str },
     WrongStage { stage: &'static str },
+}
+
+enum TransportCause {
+    Owned { status: String },
+    Shared { operation: Arc<str> },
+    Borrowed { resource: Cow<'static, str> },
+}
+
+enum LocalCompilerTestError {
+    Assertion {
+        expected: &'static str,
+        observed: &'static str,
+    },
 }
 
 macro_rules! local_state {

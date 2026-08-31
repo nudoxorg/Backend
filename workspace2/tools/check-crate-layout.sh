@@ -11,49 +11,24 @@ else
   cargo_bin="$(command -v cargo)"
 fi
 
-# These predate the single-crates-root rule. Keep the gate green while making the migration debt
-# explicit; no new exception may be added without a Sol-owned roadmap row.
-legacy_layout_exceptions=(
-  "$project_dir/planes/index/adapters/nudox-index-qdrant/Cargo.toml"
-  "$project_dir/planes/index/adapters/nudox-index-tantivy/Cargo.toml"
-  "$project_dir/planes/application/gpui_shell/Cargo.toml"
+workspace_manifest="$project_dir/$shipping_workspace_manifest"
+while IFS= read -r package_manifest; do
+  if [[ "$package_manifest" == "$project_dir/$shipping_source_root"/*/Cargo.toml ]]; then
+    continue
+  fi
+  echo "shipping crate must live in the single crates/ directory: $package_manifest" >&2
+  exit 1
+done < <(
+  "$cargo_bin" metadata \
+    --manifest-path "$workspace_manifest" \
+    --format-version 1 \
+    --no-deps \
+    --locked \
+    --offline |
+    jq -r '.packages[].manifest_path'
 )
 
-is_legacy_exception() {
-  local manifest="$1"
-  local exception
-  for exception in "${legacy_layout_exceptions[@]}"; do
-    if [[ "$manifest" == "$exception" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-for relative_manifest in "${shipping_workspace_manifests[@]}"; do
-  workspace_manifest="$project_dir/$relative_manifest"
-  workspace_root="$(dirname "$workspace_manifest")"
-  while IFS= read -r package_manifest; do
-    if [[ "$package_manifest" == "$workspace_manifest" || "$package_manifest" == "$workspace_root"/crates/*/Cargo.toml ]]; then
-      continue
-    fi
-    if is_legacy_exception "$package_manifest"; then
-      continue
-    fi
-    echo "shipping crate must live at the workspace root or its single crates/ directory: $package_manifest" >&2
-    exit 1
-  done < <(
-    "$cargo_bin" metadata \
-      --manifest-path "$workspace_manifest" \
-      --format-version 1 \
-      --no-deps \
-      --locked \
-      --offline |
-      jq -r '.packages[].manifest_path'
-  )
-done
-
-scenario_modules="$(rg -n --glob 'src/scenario.rs' '.' "${shipping_source_roots[@]/#/$project_dir/}" || true)"
+scenario_modules="$(rg -n --glob 'src/scenario.rs' '.' "$project_dir/$shipping_source_root" || true)"
 if [[ -n "$scenario_modules" ]]; then
   printf '%s\n' "$scenario_modules" >&2
   echo 'integration scenarios belong in a top-level tests/ tree, not shipping src/scenario.rs' >&2

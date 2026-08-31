@@ -14,6 +14,7 @@ mod dynamic_dispatch;
 mod dynamic_json_construction;
 mod enum_static_str_projection;
 mod erased_map_err;
+mod non_exhaustive_semantic_enum;
 mod poison_sync_primitive;
 mod redundant_public_accessor;
 mod stringly_state_field;
@@ -32,6 +33,7 @@ impl_lint_pass!(NudoxSemanticLints => [
     dynamic_dispatch::NUDOX_DYNAMIC_DISPATCH,
     dynamic_json_construction::NUDOX_DYNAMIC_JSON_CONSTRUCTION,
     enum_static_str_projection::NUDOX_ENUM_STATIC_STR_PROJECTION,
+    non_exhaustive_semantic_enum::NUDOX_NON_EXHAUSTIVE_SEMANTIC_ENUM,
 ]);
 
 struct NudoxSemanticLints {
@@ -48,6 +50,7 @@ pub fn register_lints(_session: &Session, lint_store: &mut LintStore) {
         dynamic_dispatch::NUDOX_DYNAMIC_DISPATCH,
         dynamic_json_construction::NUDOX_DYNAMIC_JSON_CONSTRUCTION,
         enum_static_str_projection::NUDOX_ENUM_STATIC_STR_PROJECTION,
+        non_exhaustive_semantic_enum::NUDOX_NON_EXHAUSTIVE_SEMANTIC_ENUM,
     ]);
     lint_store.register_late_pass(|_| {
         Box::new(NudoxSemanticLints {
@@ -77,6 +80,7 @@ impl<'tcx> LateLintPass<'tcx> for NudoxSemanticLints {
 
     fn check_item(&mut self, context: &LateContext<'tcx>, item: &'tcx Item<'tcx>) {
         enum_static_str_projection::check(context, item);
+        non_exhaustive_semantic_enum::check(context, item);
     }
 
     fn check_ty(&mut self, context: &LateContext<'tcx>, ty: &'tcx Ty<'tcx, AmbigArg>) {
@@ -117,6 +121,7 @@ fn ui() -> std::io::Result<()> {
             "-Fnudox_dynamic_dispatch",
             "-Fnudox_dynamic_json_construction",
             "-Fnudox_erased_map_err",
+            "-Fnudox_non_exhaustive_semantic_enum",
             "-Fnudox_poison_sync_primitive",
             "-Fnudox_redundant_public_accessor",
             "-Fnudox_stringly_state_field",

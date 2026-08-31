@@ -1,14 +1,38 @@
 error: poisoning synchronization is forbidden in shipping targets
-  --> $DIR/poison_sync_primitive.rs:6:12
+  --> $DIR/poison_sync_primitive.rs:35:19
    |
-LL |     mutex: Mutex<u8>,
-   |            ^^^^^^^^^
+LL | type MutexAlias = Mutex<u8>;
+   |                   ^^^^^^^^^
    |
    = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
    = note: requested on the command line with `-F nudox-poison-sync-primitive`
 
 error: poisoning synchronization is forbidden in shipping targets
-  --> $DIR/poison_sync_primitive.rs:7:14
+  --> $DIR/poison_sync_primitive.rs:36:20
+   |
+LL | type RwLockAlias = RwLock<u8>;
+   |                    ^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:37:21
+   |
+LL | type CondvarAlias = Condvar;
+   |                     ^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:40:12
+   |
+LL |     mutex: Mutex<u8>,
+   |            ^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:41:14
    |
 LL |     readers: RwLock<u8>,
    |              ^^^^^^^^^^
@@ -16,7 +40,7 @@ LL |     readers: RwLock<u8>,
    = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
 
 error: poisoning synchronization is forbidden in shipping targets
-  --> $DIR/poison_sync_primitive.rs:8:11
+  --> $DIR/poison_sync_primitive.rs:42:11
    |
 LL |     wake: Condvar,
    |           ^^^^^^^
@@ -24,7 +48,7 @@ LL |     wake: Condvar,
    = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
 
 error: poisoning synchronization is forbidden in shipping targets
-  --> $DIR/poison_sync_primitive.rs:12:17
+  --> $DIR/poison_sync_primitive.rs:46:17
    |
 LL |     let mutex = Mutex::new(0_u8);
    |                 ^^^^^
@@ -32,12 +56,84 @@ LL |     let mutex = Mutex::new(0_u8);
    = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
 
 error: poisoning synchronization is forbidden in shipping targets
-  --> $DIR/poison_sync_primitive.rs:13:10
+  --> $DIR/poison_sync_primitive.rs:47:10
    |
 LL |     drop(mutex.lock());
    |          ^^^^^^^^^^^^
    |
    = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
 
-error: aborting due to 5 previous errors
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:51:17
+   |
+LL |     let mutex = MutexAlias::new(0_u8);
+   |                 ^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:52:10
+   |
+LL |     drop(mutex.lock());
+   |          ^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:55:26
+   |
+LL | fn alias_methods(mutex: &MutexAlias, readers: &RwLockAlias, wake: &CondvarAlias) {
+   |                          ^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:55:48
+   |
+LL | fn alias_methods(mutex: &MutexAlias, readers: &RwLockAlias, wake: &CondvarAlias) {
+   |                                                ^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:55:68
+   |
+LL | fn alias_methods(mutex: &MutexAlias, readers: &RwLockAlias, wake: &CondvarAlias) {
+   |                                                                    ^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:56:10
+   |
+LL |     drop(mutex.lock());
+   |          ^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:57:10
+   |
+LL |     drop(readers.read());
+   |          ^^^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:58:13
+   |
+LL |     let _ = wake.wait_timeout(mutex.lock().unwrap(), std::time::Duration::ZERO);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: poisoning synchronization is forbidden in shipping targets
+  --> $DIR/poison_sync_primitive.rs:58:31
+   |
+LL |     let _ = wake.wait_timeout(mutex.lock().unwrap(), std::time::Duration::ZERO);
+   |                               ^^^^^^^^^^^^
+   |
+   = help: prefer ownership transfer, bounded channels, atomics, or a proved lock-free structure; if a cold lock is genuinely required, use a non-poisoning primitive and document its contention boundary
+
+error: aborting due to 17 previous errors
 

@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_help;
-use rustc_hir::{FieldDef, Mutability, def::DefKind};
+use rustc_hir::{FieldDef, def::DefKind};
 use rustc_lint::{LateContext, LintContext};
-use rustc_middle::ty::{self, TyKind};
+use rustc_middle::ty::{GenericArgsRef, Ty, TyKind};
 use rustc_session::declare_lint;
 
 declare_lint! {
@@ -25,12 +25,7 @@ pub(crate) fn check(context: &LateContext<'_>, field: &FieldDef<'_>) {
         .type_of(field.def_id)
         .instantiate_identity()
         .skip_norm_wip();
-    let is_string_slice = matches!(
-        field_type.kind(),
-        TyKind::Ref(region, inner, Mutability::Not)
-            if inner.is_str() && matches!(region.kind(), ty::RegionKind::ReStatic)
-    );
-    if !is_string_slice {
+    if !is_open_text(context, field_type) {
         return;
     }
 
@@ -49,22 +44,46 @@ pub(crate) fn check(context: &LateContext<'_>, field: &FieldDef<'_>) {
 
 fn is_closed_vocabulary_name(context: &LateContext<'_>, field: &FieldDef<'_>) -> bool {
     match field.ident.name.as_str() {
-        "step" | "stage" | "phase" => true,
-        "detail" | "expected" | "observed" | "field" => belongs_to_error_enum(context, field),
+        "class" | "kind" | "phase" | "role" | "stage" | "state" | "status" | "step" => true,
+        "detail" | "expected" | "field" | "observed" | "operation" | "resource" => {
+            belongs_to_diagnostic_enum(context, field)
+        }
         _ => false,
     }
 }
 
-fn belongs_to_error_enum(context: &LateContext<'_>, field: &FieldDef<'_>) -> bool {
+fn is_open_text(context: &LateContext<'_>, field_type: Ty<'_>) -> bool {
+    let field_type = field_type.peel_refs();
+    if field_type.is_str() {
+        return true;
+    }
+    let TyKind::Adt(definition, arguments) = field_type.kind() else {
+        return false;
+    };
+    match context.tcx.def_path_str(definition.did()).as_str() {
+        "alloc::string::String" => true,
+        "alloc::borrow::Cow" | "alloc::boxed::Box" | "alloc::rc::Rc" | "alloc::sync::Arc" => {
+            contains_str(arguments)
+        }
+        _ => false,
+    }
+}
+
+fn contains_str(arguments: GenericArgsRef<'_>) -> bool {
+    arguments.types().any(|argument| argument.is_str())
+}
+
+fn belongs_to_diagnostic_enum(context: &LateContext<'_>, field: &FieldDef<'_>) -> bool {
     let variant = context.tcx.parent(field.def_id.into());
     if context.tcx.def_kind(variant) != DefKind::Variant {
         return false;
     }
     let enum_definition = context.tcx.parent(variant);
-    context.tcx.def_kind(enum_definition) == DefKind::Enum
-        && context
-            .tcx
-            .item_name(enum_definition)
-            .as_str()
-            .ends_with("Error")
+    if context.tcx.def_kind(enum_definition) != DefKind::Enum {
+        return false;
+    }
+    let name = context.tcx.item_name(enum_definition);
+    ["Cause", "Error", "Failure", "Rejection", "Terminal"]
+        .into_iter()
+        .any(|suffix| name.as_str().ends_with(suffix))
 }
