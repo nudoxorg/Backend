@@ -12,7 +12,8 @@ mod trace;
 mod vector;
 
 pub use authority::{
-    GraphAuthority, Metric, MissingPartitions, ModelId, PartitionId, ProjectionId, VectorAuthority,
+    GraphAuthority, Metric, MissingPartitions, MissingPartitionsError, ModelId, PartitionId,
+    ProjectionId, VectorAuthority,
 };
 pub use graph::{
     AdmissionError, GraphEdge, GraphHit, GraphQueryError, GraphQueryOutcome, GraphQueryTerminal,

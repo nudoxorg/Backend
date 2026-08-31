@@ -96,15 +96,15 @@ run_ignored() {
       --nocapture
 }
 
-run_published_snapshot() {
+run_retrieval_facade() {
   QDRANT_URL="$qdrant_url" \
     stable_cargo test \
       --manifest-path "$project_dir/Cargo.toml" \
-      -p nudox-index-publish \
-      --test published_snapshot \
+      -p nudox-index-retrieval \
+      --test sealed_boundary \
       --locked \
       --offline \
-      durable_ir_publication_seals_exact_and_real_tantivy_queries \
+      sealed_boundary_classifies_retrieval_terminals_without_mutating_pre_cancelled_outputs \
       -- \
       --exact \
       --nocapture
@@ -112,7 +112,7 @@ run_published_snapshot() {
 
 start_qdrant
 run_ignored real_qdrant_service_metric_matrix_isolates_authority_and_stabilizes_ties
-run_published_snapshot
+run_retrieval_facade
 run_ignored real_qdrant_service_prepare_restart_fixture
 stop_qdrant
 run_ignored real_qdrant_service_reports_transport_during_launcher_outage

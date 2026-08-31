@@ -278,22 +278,6 @@ impl TantivyLexical {
         })
     }
 
-    /// Validates immutable snapshot authority before a Tantivy search.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TantivyAdapterError::WrongSnapshot`] before opening a searcher when the caller
-    /// presents a different immutable snapshot authority.
-    pub fn verify_snapshot(&self, snapshot: IndexSnapshotId) -> Result<(), TantivyAdapterError> {
-        if snapshot != self.snapshot {
-            return Err(TantivyAdapterError::WrongSnapshot {
-                expected: self.snapshot,
-                observed: snapshot,
-            });
-        }
-        Ok(())
-    }
-
     /// Executes Tantivy, then applies the portable recipe's deterministic identity tie order.
     pub fn search(
         &self,
@@ -302,7 +286,12 @@ impl TantivyLexical {
         requested_limit: usize,
         output: &mut [Option<TantivyHit>],
     ) -> Result<TantivyTerminal, TantivyAdapterError> {
-        self.verify_snapshot(snapshot)?;
+        if snapshot != self.snapshot {
+            return Err(TantivyAdapterError::WrongSnapshot {
+                expected: self.snapshot,
+                observed: snapshot,
+            });
+        }
         if requested_limit > output.len() {
             return Err(TantivyAdapterError::InsufficientOutput {
                 required: requested_limit,

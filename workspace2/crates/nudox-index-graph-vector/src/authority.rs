@@ -51,6 +51,65 @@ enum MissingPartitionsRepr {
 }
 
 impl MissingPartitions {
+    /// Derives exact absent partitions from a validated selected/reachable partition relation.
+    ///
+    /// The returned partitions preserve the original selected order. Every reachable partition
+    /// must occur exactly once in the selected bounded set, so a caller cannot turn a foreign or
+    /// duplicate partition into an apparent absence fact.
+    pub fn from_selected_reachable(
+        selected: &[PartitionId],
+        reachable: &[PartitionId],
+    ) -> Result<Option<Self>, MissingPartitionsError> {
+        if selected.len() > crate::MAX_PARTITIONS {
+            return Err(MissingPartitionsError::SelectedCapacity {
+                maximum: crate::MAX_PARTITIONS,
+                observed: selected.len(),
+            });
+        }
+        if reachable.len() > crate::MAX_PARTITIONS {
+            return Err(MissingPartitionsError::ReachableCapacity {
+                maximum: crate::MAX_PARTITIONS,
+                observed: reachable.len(),
+            });
+        }
+        for (index, partition) in selected.iter().copied().enumerate() {
+            if let Some(first_index) = selected[..index]
+                .iter()
+                .position(|first| *first == partition)
+            {
+                return Err(MissingPartitionsError::DuplicateSelected {
+                    first_index,
+                    index,
+                    partition,
+                });
+            }
+        }
+        for (index, partition) in reachable.iter().copied().enumerate() {
+            if let Some(first_index) = reachable[..index]
+                .iter()
+                .position(|first| *first == partition)
+            {
+                return Err(MissingPartitionsError::DuplicateReachable {
+                    first_index,
+                    index,
+                    partition,
+                });
+            }
+            if !selected.contains(&partition) {
+                return Err(MissingPartitionsError::ReachableNotSelected { index, partition });
+            }
+        }
+        let mut absent = [PartitionId::new(0); crate::MAX_PARTITIONS];
+        let mut absent_len = 0_usize;
+        for partition in selected.iter().copied() {
+            if !reachable.contains(&partition) {
+                absent[absent_len] = partition;
+                absent_len += 1;
+            }
+        }
+        Ok(Self::from_prefix(absent, absent_len))
+    }
+
     pub(crate) fn from_prefix(
         values: [PartitionId; crate::MAX_PARTITIONS],
         length: usize,
@@ -68,6 +127,50 @@ impl MissingPartitions {
             _ => None,
         }
     }
+}
+
+/// Exact selected/reachable partition relation rejected before an absence fact was created.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MissingPartitionsError {
+    /// Selected partitions exceeded the fixed request bound.
+    SelectedCapacity {
+        /// Maximum selected partition count.
+        maximum: usize,
+        /// Complete selected partition count.
+        observed: usize,
+    },
+    /// Reachable partitions exceeded the fixed request bound.
+    ReachableCapacity {
+        /// Maximum reachable partition count.
+        maximum: usize,
+        /// Complete reachable partition count.
+        observed: usize,
+    },
+    /// One selected partition occurred twice.
+    DuplicateSelected {
+        /// Earlier selected position.
+        first_index: usize,
+        /// Later selected position.
+        index: usize,
+        /// Repeated partition.
+        partition: PartitionId,
+    },
+    /// One reachable partition occurred twice.
+    DuplicateReachable {
+        /// Earlier reachable position.
+        first_index: usize,
+        /// Later reachable position.
+        index: usize,
+        /// Repeated partition.
+        partition: PartitionId,
+    },
+    /// A reachable partition was absent from the selected authoritative relation.
+    ReachableNotSelected {
+        /// Reachable position.
+        index: usize,
+        /// Foreign partition.
+        partition: PartitionId,
+    },
 }
 
 impl AsRef<[PartitionId]> for MissingPartitions {

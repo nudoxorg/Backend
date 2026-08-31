@@ -19,7 +19,7 @@ pub enum ExactRoute {
     Degraded(ExactDegradation),
 }
 
-impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, PayloadOwner>
+impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, '_, PayloadOwner>
 where
     PayloadOwner: AsRef<[u8]>,
 {

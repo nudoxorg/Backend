@@ -11,7 +11,7 @@ use crate::{
     RetrievalDegradation, RetrievalFailure, RetrievalOperationTerminal, RetrievalResult,
 };
 
-impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, PayloadOwner>
+impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, '_, PayloadOwner>
 where
     PayloadOwner: AsRef<[u8]>,
 {
@@ -35,7 +35,7 @@ where
                 cause: CancellationCause::Preflight,
             };
         }
-        let (authority, classification) = match graph_admission(snapshot.id, acquisition) {
+        let (authority, classification) = match graph_admission(self.graph_authority, acquisition) {
             GraphAdmission::Ready {
                 authority,
                 classification,
@@ -76,14 +76,11 @@ where
     }
 }
 
-fn graph_admission(
-    snapshot: nudox_index_vocab::IndexSnapshotId,
-    terminal: GraphTerminal,
-) -> GraphAdmission {
+fn graph_admission(expected: GraphAuthority, terminal: GraphTerminal) -> GraphAdmission {
     let authority = graph_terminal_authority(terminal);
-    if authority.snapshot != snapshot {
-        return GraphAdmission::Failed(RetrievalFailure::GraphAuthority {
-            expected: snapshot,
+    if authority != expected {
+        return GraphAdmission::Failed(RetrievalFailure::PinnedGraphAuthority {
+            expected,
             observed: authority,
         });
     }

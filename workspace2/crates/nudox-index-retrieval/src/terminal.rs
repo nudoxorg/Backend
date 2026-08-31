@@ -5,7 +5,8 @@ use nudox_index_core::{
     LexicalManifestError, LexicalQueryError, LexicalSnapshotHit,
 };
 use nudox_index_graph_vector::{
-    GraphAuthority, GraphDegradation, MissingPartitions, StreamCapacityError, VectorAuthority,
+    GraphAuthority, GraphDegradation, MissingPartitions, MissingPartitionsError,
+    StreamCapacityError, VectorAuthority, VectorSegmentDescriptor,
 };
 use nudox_index_qdrant::{QdrantError, QueryCandidateCount};
 use nudox_index_tantivy::{TantivyAdapterError, TantivyTerminal};
@@ -41,6 +42,26 @@ pub enum RetrievalDegradation {
     Lexical(LexicalDegradation),
     /// The graph acquisition degraded while retaining the sealed snapshot.
     Graph(GraphDegradation),
+    /// The vector route degraded while retaining the sealed snapshot and full vector authority.
+    Vector(VectorDegradation),
+}
+
+/// Health provenance supplied by the server vector acquisition route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorDegradation {
+    /// A stale vector route was retried against the same pinned authority and selection.
+    StaleRoute,
+    /// One selected vector partition source was unavailable.
+    PartitionSourceUnavailable,
+}
+
+/// Health provenance supplied by the server vector acquisition route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorRoute {
+    /// Every reachable vector descriptor arrived through a healthy route.
+    Healthy,
+    /// The route degraded without changing the boundary's pinned vector authority or selection.
+    Degraded(VectorDegradation),
 }
 
 /// The vector surface whose snapshot authority failed before an adapter request.
@@ -48,8 +69,8 @@ pub enum RetrievalDegradation {
 pub enum VectorAuthoritySurface {
     /// The blocking Qdrant adapter's immutable configuration.
     QdrantAdapter,
-    /// A vector segment descriptor selected for a Qdrant request.
-    QdrantSelection {
+    /// A reachable vector descriptor presented for a Qdrant request.
+    QdrantReachable {
         /// Position in the caller's bounded selection.
         position: usize,
     },
@@ -96,6 +117,14 @@ pub enum RetrievalFailure {
         /// Complete graph authority observed before constructing Trustfall.
         observed: GraphAuthority,
     },
+    /// A graph acquisition terminal differs from the boundary's pinned full graph authority.
+    #[error("graph acquisition authority differs from the retrieval boundary")]
+    PinnedGraphAuthority {
+        /// Full graph authority pinned by the validated retrieval boundary.
+        expected: GraphAuthority,
+        /// Complete graph authority reported by bounded acquisition.
+        observed: GraphAuthority,
+    },
     /// The graph view does not belong to the acquisition terminal that named it.
     #[error("graph view authority differs from graph acquisition authority")]
     GraphTerminalAuthority {
@@ -104,16 +133,47 @@ pub enum RetrievalFailure {
         /// Authority carried by the validated graph view passed to Trustfall.
         observed: GraphAuthority,
     },
-    /// A Qdrant configuration or descriptor belongs to another immutable snapshot.
-    #[error("Qdrant vector snapshot authority differs from the sealed publication")]
+    /// A Qdrant configuration or reachable descriptor differs from the pinned full authority.
+    #[error("Qdrant vector authority differs from the retrieval boundary")]
     VectorAuthority {
-        /// Snapshot pinned by the durable publication witness.
-        expected: IndexSnapshotId,
-        /// Blocking adapter or selection surface rejected before transport.
+        /// Full vector authority pinned by the validated retrieval boundary.
+        expected: VectorAuthority,
+        /// Blocking adapter or reachable descriptor surface rejected before transport.
         surface: VectorAuthoritySurface,
         /// Complete vector authority observed before Qdrant query admission.
         observed: VectorAuthority,
     },
+    /// A reachable descriptor was not in the boundary's exact pinned vector selection.
+    #[error("reachable Qdrant descriptor {position} is not pinned by this retrieval boundary")]
+    UnpinnedVectorDescriptor {
+        /// Position in the caller's reachable descriptor subset.
+        position: usize,
+        /// Complete rejected descriptor.
+        observed: VectorSegmentDescriptor,
+    },
+    /// Reachable descriptors did not preserve the boundary's pinned selection order.
+    #[error("reachable Qdrant descriptor {position} violates pinned selection order")]
+    VectorSelectionOrder {
+        /// Position in the reachable descriptor subset.
+        position: usize,
+        /// Pinned position of the preceding reachable descriptor.
+        preceding_position: usize,
+        /// Pinned position of the rejected descriptor.
+        selected_position: usize,
+        /// Complete rejected descriptor.
+        observed: VectorSegmentDescriptor,
+    },
+    /// The reachable descriptor subset exceeded the fixed server boundary.
+    #[error("reachable Qdrant descriptor selection has {observed} entries, limit is {maximum}")]
+    VectorSelectionCapacity {
+        /// Fixed descriptor capacity.
+        maximum: usize,
+        /// Complete reachable descriptor count.
+        observed: usize,
+    },
+    /// Exact vector partition coverage could not be derived from the pinned/reachable relation.
+    #[error("vector partition coverage relation was invalid")]
+    VectorCoverage(MissingPartitionsError),
 }
 
 /// Successful query result facts, with result storage remaining caller-owned.

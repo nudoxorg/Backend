@@ -7,7 +7,7 @@ use crate::{
     RetrievalResult,
 };
 
-impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, PayloadOwner>
+impl<PayloadOwner> RetrievalBoundary<'_, '_, '_, '_, PayloadOwner>
 where
     PayloadOwner: AsRef<[u8]>,
 {
@@ -27,12 +27,6 @@ where
             return RetrievalOperationTerminal::Cancelled {
                 snapshot: snapshot.id,
                 cause: CancellationCause::Preflight,
-            };
-        }
-        if let Err(cause) = adapter.verify_snapshot(snapshot.id) {
-            return RetrievalOperationTerminal::Failed {
-                snapshot: snapshot.id,
-                cause: RetrievalFailure::Tantivy(cause),
             };
         }
         match adapter.search(snapshot.id, query, requested_limit, output) {
