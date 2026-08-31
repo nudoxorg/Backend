@@ -8,8 +8,8 @@ use std::hint::black_box;
 use allocation_counter::{AllocationInfo, measure};
 use nudox_index_graph_vector::{
     Cancellation, EdgeBatchStream, GraphAuthority, GraphEdge, GraphRow, Metric, ModelId,
-    PartitionId, ProjectionId, TraceProbe, TrustfallGraph, VectorAuthority, VectorFact, VectorRow,
-    exact_vector_query,
+    PartitionId, ProjectionId, TraceProbe, ValidatedGraphView, ValidatedVectorSegment,
+    VectorAuthority, VectorPoint, exact_vector_query,
 };
 use nudox_index_vocab::IndexSnapshotId;
 use nudox_ir_vocab::EntityId;
@@ -28,8 +28,11 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
         EntityId::new(1),
         EntityId::new(2),
     )];
-    let graph_rows = [GraphRow::new(partition, &edges)];
-    let graph = TrustfallGraph::try_new(graph_authority, &graph_rows);
+    let graph_rows = [GraphRow {
+        partition,
+        edges: &edges,
+    }];
+    let graph = ValidatedGraphView::try_new(graph_authority, &graph_rows);
     assert!(graph.is_ok());
     let Ok(graph) = graph else {
         return;
@@ -41,13 +44,14 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
         Metric::SquaredEuclidean,
     );
     let coordinates = [1_i16, 2];
-    let vector_facts = [VectorFact::new(
-        vector_authority,
-        partition,
-        EntityId::new(1),
-        &coordinates,
-    )];
-    let vector_rows = [VectorRow::new(partition, &vector_facts)];
+    let vector_facts = [VectorPoint::new(EntityId::new(1), &coordinates)];
+    let vector_segment =
+        ValidatedVectorSegment::try_new(vector_authority, partition, &vector_facts);
+    assert!(vector_segment.is_ok());
+    let Ok(vector_segment) = vector_segment else {
+        return;
+    };
+    let vector_segments = [vector_segment];
     let mut graph_output = [None; 1];
     let mut vector_output = [None; 1];
     let cancellation = Cancellation::new();
@@ -78,7 +82,7 @@ fn borrowed_queries_and_pending_poll_allocate_nothing_after_setup() {
         let vector_result = black_box(exact_vector_query(
             vector_authority,
             &[partition],
-            &vector_rows,
+            &vector_segments,
             &[0, 0],
             1,
             &mut vector_output,

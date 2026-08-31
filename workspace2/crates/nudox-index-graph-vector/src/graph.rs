@@ -1,16 +1,36 @@
+use core::ops::Deref;
+
 use nudox_ir_vocab::EntityId;
 
-use crate::{GraphAuthority, MAX_PARTITIONS, PartitionId};
+use crate::{GraphAuthority, MAX_PARTITIONS, MissingPartitions, PartitionId};
 
 const MAX_EDGES_PER_ROW: usize = 16;
 
 /// One immutable directed graph edge with complete projection authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphEdge {
-    authority: GraphAuthority,
-    partition: PartitionId,
-    source: EntityId,
-    target: EntityId,
+    /// Snapshot and projection recipe that give this edge meaning.
+    pub authority: GraphAuthority,
+    /// Immutable partition containing this edge.
+    pub partition: PartitionId,
+    /// Entity at the edge's origin.
+    pub source: EntityId,
+    /// Entity reached by the edge.
+    pub target: EntityId,
+}
+
+impl GraphEdge {
+    /// Internal lease accounting cannot borrow the complete edge after its caller-owned batch ends.
+    #[must_use]
+    pub(crate) const fn authority(self) -> GraphAuthority {
+        self.authority
+    }
+
+    /// Internal lease accounting checks that each borrowed edge remains in its supplied partition.
+    #[must_use]
+    pub(crate) const fn partition(self) -> PartitionId {
+        self.partition
+    }
 }
 
 impl GraphEdge {
@@ -29,57 +49,15 @@ impl GraphEdge {
             target,
         }
     }
-
-    /// Returns the complete immutable graph authority.
-    #[must_use]
-    pub const fn authority(self) -> GraphAuthority {
-        self.authority
-    }
-
-    /// Returns the owning partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the source entity.
-    #[must_use]
-    pub const fn source(self) -> EntityId {
-        self.source
-    }
-
-    /// Returns the target entity.
-    #[must_use]
-    pub const fn target(self) -> EntityId {
-        self.target
-    }
 }
 
 /// Borrowed graph facts supplied by one immutable partition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphRow<'facts> {
-    partition: PartitionId,
-    edges: &'facts [GraphEdge],
-}
-
-impl<'facts> GraphRow<'facts> {
-    /// Binds a complete borrowed edge slice to its partition coordinate.
-    #[must_use]
-    pub const fn new(partition: PartitionId, edges: &'facts [GraphEdge]) -> Self {
-        Self { partition, edges }
-    }
-
-    /// Returns the partition coordinate.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Lends the complete immutable edge slice.
-    #[must_use]
-    pub const fn edges(self) -> &'facts [GraphEdge] {
-        self.edges
-    }
+    /// Partition coordinate claimed by this row.
+    pub partition: PartitionId,
+    /// Borrowed edge facts supplied by the partition.
+    pub edges: &'facts [GraphEdge],
 }
 
 /// Exact reason a borrowed graph was rejected before entering the query adapter.
@@ -134,14 +112,30 @@ pub enum AdmissionError {
     },
 }
 
-/// Validated borrowed graph view consumed by the nested Trustfall adapter.
+/// Validated borrowed graph view consumed by a graph adapter.
+///
+/// The authority and rows remain private because they are correlated by the
+/// validation performed by [`Self::try_new`]. Constructing a view by mixing a
+/// row slice with an unrelated authority is therefore not part of the public
+/// API.
+///
+/// ```compile_fail
+/// use nudox_index_graph_vector::{GraphAuthority, GraphRow, ValidatedGraphView};
+///
+/// fn forge<'facts>(
+///     authority: GraphAuthority,
+///     rows: &'facts [GraphRow<'facts>],
+/// ) {
+///     let _ = ValidatedGraphView { authority, rows };
+/// }
+/// ```
 #[derive(Debug, Eq, PartialEq)]
-pub struct TrustfallGraph<'facts> {
+pub struct ValidatedGraphView<'facts> {
     authority: GraphAuthority,
     rows: &'facts [GraphRow<'facts>],
 }
 
-impl<'facts> TrustfallGraph<'facts> {
+impl<'facts> ValidatedGraphView<'facts> {
     /// Validates global work bounds before scanning duplicates or facts.
     pub fn try_new(
         authority: GraphAuthority,
@@ -196,16 +190,10 @@ impl<'facts> TrustfallGraph<'facts> {
         Ok(Self { authority, rows })
     }
 
-    /// Returns the graph authority pinned by validation.
+    /// Returns the authority proved for every borrowed row.
     #[must_use]
     pub const fn authority(&self) -> GraphAuthority {
         self.authority
-    }
-
-    /// Lends validated partition rows without copying their edges.
-    #[must_use]
-    pub const fn rows(&self) -> &'facts [GraphRow<'facts>] {
-        self.rows
     }
 
     /// Returns all neighbors from selected available partitions in stable entity order.
@@ -255,32 +243,29 @@ impl<'facts> TrustfallGraph<'facts> {
     }
 }
 
+impl<'facts> AsRef<[GraphRow<'facts>]> for ValidatedGraphView<'facts> {
+    fn as_ref(&self) -> &[GraphRow<'facts>] {
+        self.rows
+    }
+}
+
+impl<'facts> Deref for ValidatedGraphView<'facts> {
+    type Target = [GraphRow<'facts>];
+
+    fn deref(&self) -> &Self::Target {
+        self.rows
+    }
+}
+
 /// Stable graph result carrying all authority required for interpretation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphHit {
-    authority: GraphAuthority,
-    partition: PartitionId,
-    entity: EntityId,
-}
-
-impl GraphHit {
-    /// Returns the complete graph authority.
-    #[must_use]
-    pub const fn authority(self) -> GraphAuthority {
-        self.authority
-    }
-
-    /// Returns the source partition for provenance.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the neighboring entity.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
-    }
+    /// Snapshot and projection recipe that give this hit meaning.
+    pub authority: GraphAuthority,
+    /// Source partition for result provenance.
+    pub partition: PartitionId,
+    /// Neighboring entity returned by the query.
+    pub entity: EntityId,
 }
 
 /// Exact graph-query validation or output rejection.
@@ -313,38 +298,42 @@ pub enum GraphQueryError {
 
 /// Snapshot-pinned complete or exact-partial graph terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GraphQueryTerminal {
-    authority: GraphAuthority,
-    missing: [Option<PartitionId>; MAX_PARTITIONS],
-    missing_len: usize,
+pub enum GraphQueryTerminal {
+    /// Every selected partition was available, including an available empty row.
+    Complete {
+        /// Snapshot and projection recipe for the result.
+        authority: GraphAuthority,
+    },
+    /// At least one selected partition was unavailable.
+    Partial {
+        /// Snapshot and projection recipe for the partial result.
+        authority: GraphAuthority,
+        /// Exact missing coordinates in the caller's selection order.
+        missing: MissingPartitions,
+    },
 }
 
 impl GraphQueryTerminal {
     /// Returns the complete graph authority.
     #[must_use]
     pub const fn authority(self) -> GraphAuthority {
-        self.authority
+        match self {
+            Self::Complete { authority } | Self::Partial { authority, .. } => authority,
+        }
     }
 
     /// Returns true when at least one selected partition was unavailable.
     #[must_use]
     pub const fn is_partial(self) -> bool {
-        self.missing_len != 0
+        matches!(self, Self::Partial { .. })
     }
 
-    /// Returns the exact missing count.
+    /// Borrows the exact missing coordinates in selection order.
     #[must_use]
-    pub const fn missing_len(self) -> usize {
-        self.missing_len
-    }
-
-    /// Returns one exact missing coordinate by semantic position.
-    #[must_use]
-    pub const fn missing_at(self, index: usize) -> Option<PartitionId> {
-        if index < self.missing_len {
-            self.missing[index]
-        } else {
-            None
+    pub fn missing(&self) -> &[PartitionId] {
+        match self {
+            Self::Complete { .. } => &[],
+            Self::Partial { missing, .. } => missing,
         }
     }
 }
@@ -352,22 +341,10 @@ impl GraphQueryTerminal {
 /// Bounded graph result and its exact terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphQueryOutcome {
-    written: usize,
-    terminal: GraphQueryTerminal,
-}
-
-impl GraphQueryOutcome {
-    /// Returns the number of initialized result slots.
-    #[must_use]
-    pub const fn written(self) -> usize {
-        self.written
-    }
-
-    /// Returns the pinned complete/partial terminal.
-    #[must_use]
-    pub const fn terminal(self) -> GraphQueryTerminal {
-        self.terminal
-    }
+    /// Number of initialized result slots.
+    pub written: usize,
+    /// Pinned complete/partial terminal.
+    pub terminal: GraphQueryTerminal,
 }
 
 fn validate_selection(selected: &[PartitionId]) -> Result<(), GraphQueryError> {
@@ -400,18 +377,17 @@ fn graph_terminal(
     selected: &[PartitionId],
     rows: &[GraphRow<'_>],
 ) -> GraphQueryTerminal {
-    let mut missing = [None; MAX_PARTITIONS];
+    let mut missing = [PartitionId::new(0); MAX_PARTITIONS];
     let mut missing_len = 0;
     for partition in selected.iter().copied() {
         if !rows.iter().any(|row| row.partition == partition) {
-            missing[missing_len] = Some(partition);
+            missing[missing_len] = partition;
             missing_len += 1;
         }
     }
-    GraphQueryTerminal {
-        authority,
-        missing,
-        missing_len,
+    match MissingPartitions::from_prefix(missing, missing_len) {
+        Some(missing) => GraphQueryTerminal::Partial { authority, missing },
+        None => GraphQueryTerminal::Complete { authority },
     }
 }
 

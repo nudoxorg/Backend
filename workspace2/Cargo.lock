@@ -2529,6 +2529,7 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "loom",
+ "nudox-id",
  "nudox-index-vocab",
  "nudox-ir-vocab",
 ]

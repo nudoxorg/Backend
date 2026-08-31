@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+nudox-id = { path = "../nudox-id" }
 nudox-index-vocab = { path = "../nudox-index-vocab" }
 nudox-ir-vocab = { path = "../nudox-ir-vocab" }
 loom = { workspace = true, optional = true }

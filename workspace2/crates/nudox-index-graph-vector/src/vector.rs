@@ -1,6 +1,10 @@
+use core::ops::Deref;
+
+use nudox_id::{ContentHasher, FixedCanonicalRecord, IndexVectorSegmentDomain};
+use nudox_index_vocab::VectorSegmentId;
 use nudox_ir_vocab::EntityId;
 
-use crate::{MAX_PARTITIONS, Metric, PartitionId, VectorAuthority};
+use crate::{MAX_PARTITIONS, Metric, MissingPartitions, PartitionId, VectorAuthority};
 
 const MAX_VECTOR_DIMENSION: usize = 16;
 const MAX_FACTS_PER_ROW: usize = 16;
@@ -30,17 +34,25 @@ impl VectorTerminal {
     }
 }
 
-/// One borrowed exact-vector projection fact.
+/// One raw borrowed exact-vector projection fact.
+///
+/// This is an adapter-ingress shape only: its repeated authority and partition labels must pass
+/// through [`compact_vector_facts`] before a query or publication path can consume the compact
+/// segment representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VectorFact<'coordinates> {
-    authority: VectorAuthority,
-    partition: PartitionId,
-    entity: EntityId,
-    coordinates: &'coordinates [i16],
+    /// Snapshot, model, dimension, and metric authority for this fact.
+    pub authority: VectorAuthority,
+    /// Immutable projection partition containing this fact.
+    pub partition: PartitionId,
+    /// Semantic entity coordinate represented by this vector.
+    pub entity: EntityId,
+    /// Borrowed fixed-width vector coordinates.
+    pub coordinates: &'coordinates [i16],
 }
 
 impl<'coordinates> VectorFact<'coordinates> {
-    /// Creates a fact that is revalidated against query authority before ranking.
+    /// Creates one raw ingress fact without claiming that its labels are validated.
     #[must_use]
     pub const fn new(
         authority: VectorAuthority,
@@ -57,54 +69,349 @@ impl<'coordinates> VectorFact<'coordinates> {
     }
 }
 
-/// Borrowed vector facts supplied by one immutable partition.
+/// One compact vector point whose authority is supplied by its segment owner.
+///
+/// Keeping only the semantic entity and borrowed coordinates here avoids repeating the snapshot,
+/// model, dimension, metric, and partition in every point. Raw adapter ingress can be checked as a
+/// [`VectorFact`] first and then converted into this segment-scoped representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VectorRow<'facts, 'coordinates> {
-    partition: PartitionId,
-    facts: &'facts [VectorFact<'coordinates>],
+pub struct VectorPoint<'coordinates> {
+    /// Semantic entity coordinate represented by this vector.
+    pub entity: EntityId,
+    /// Borrowed fixed-width vector coordinates.
+    pub coordinates: &'coordinates [i16],
 }
 
-impl<'facts, 'coordinates> VectorRow<'facts, 'coordinates> {
-    /// Binds a complete borrowed fact slice to one partition coordinate.
+impl<'coordinates> VectorPoint<'coordinates> {
+    /// Creates a compact point without copying its coordinate borrow.
     #[must_use]
-    pub const fn new(partition: PartitionId, facts: &'facts [VectorFact<'coordinates>]) -> Self {
-        Self { partition, facts }
+    pub const fn new(entity: EntityId, coordinates: &'coordinates [i16]) -> Self {
+        Self {
+            entity,
+            coordinates,
+        }
     }
+}
+
+/// Exact rejection while sealing one borrowed vector segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorSegmentError {
+    /// The segment authority has no supported coordinate shape.
+    AuthorityDimension {
+        /// Maximum supported coordinate count.
+        maximum: usize,
+        /// Rejected authority dimension.
+        observed: usize,
+    },
+    /// The segment would exceed its bounded fact count.
+    TooManyFacts {
+        /// Maximum facts admitted in one segment.
+        maximum: usize,
+        /// Complete observed fact count.
+        observed: usize,
+    },
+    /// The caller-provided compact point buffer cannot retain every raw ingress fact.
+    InsufficientPointOutput {
+        /// Compact points required to preserve all raw facts.
+        required: usize,
+        /// Caller-provided compact point slots.
+        available: usize,
+    },
+    /// A fact belongs to a different immutable vector authority.
+    WrongAuthority {
+        /// Zero-based rejected fact position.
+        index: usize,
+        /// Authority pinned by the segment owner.
+        expected: VectorAuthority,
+        /// Authority carried by the rejected fact.
+        observed: VectorAuthority,
+    },
+    /// A fact belongs to a different projection partition.
+    WrongPartition {
+        /// Zero-based rejected fact position.
+        index: usize,
+        /// Partition pinned by the segment owner.
+        expected: PartitionId,
+        /// Partition carried by the rejected fact.
+        observed: PartitionId,
+    },
+    /// A fact has a coordinate count different from the authority.
+    FactDimension {
+        /// Zero-based rejected fact position.
+        index: usize,
+        /// Required coordinate count.
+        expected: usize,
+        /// Complete observed coordinate count.
+        observed: usize,
+    },
+    /// Two adjacent facts carry the same entity identity.
+    DuplicateEntity {
+        /// First occurrence position.
+        first_index: usize,
+        /// Later duplicate position.
+        index: usize,
+        /// Repeated semantic entity.
+        entity: EntityId,
+    },
+    /// Facts are not in canonical strictly ascending entity order.
+    OutOfOrder {
+        /// Later offending fact position.
+        index: usize,
+        /// Immediately preceding entity identity.
+        previous: EntityId,
+        /// Offending entity identity.
+        observed: EntityId,
+    },
+}
+
+/// Validates raw adapter facts and writes compact points into caller-owned storage.
+///
+/// This is the only vector ingress boundary that accepts repeated per-fact authority labels.
+/// It validates the entire batch before writing any output, preserving the caller's point buffer
+/// on rejection. Pass the returned prefix to [`ValidatedVectorSegment::try_new`] to seal its
+/// authority, partition, canonical order, and identity for querying or publication.
+#[allow(
+    clippy::result_large_err,
+    reason = "cross-authority rejection retains both complete authority facts"
+)]
+pub fn compact_vector_facts<'coordinates>(
+    authority: VectorAuthority,
+    partition: PartitionId,
+    facts: &[VectorFact<'coordinates>],
+    output: &mut [VectorPoint<'coordinates>],
+) -> Result<usize, VectorSegmentError> {
+    let dimension = checked_vector_dimension(authority)?;
+    if facts.len() > MAX_FACTS_PER_ROW {
+        return Err(VectorSegmentError::TooManyFacts {
+            maximum: MAX_FACTS_PER_ROW,
+            observed: facts.len(),
+        });
+    }
+    if output.len() < facts.len() {
+        return Err(VectorSegmentError::InsufficientPointOutput {
+            required: facts.len(),
+            available: output.len(),
+        });
+    }
+    for (index, fact) in facts.iter().copied().enumerate() {
+        if fact.authority != authority {
+            return Err(VectorSegmentError::WrongAuthority {
+                index,
+                expected: authority,
+                observed: fact.authority,
+            });
+        }
+        if fact.partition != partition {
+            return Err(VectorSegmentError::WrongPartition {
+                index,
+                expected: partition,
+                observed: fact.partition,
+            });
+        }
+        if fact.coordinates.len() != dimension {
+            return Err(VectorSegmentError::FactDimension {
+                index,
+                expected: dimension,
+                observed: fact.coordinates.len(),
+            });
+        }
+    }
+    for (slot, fact) in output.iter_mut().zip(facts.iter().copied()) {
+        *slot = VectorPoint::new(fact.entity, fact.coordinates);
+    }
+    Ok(facts.len())
+}
+
+/// One validated immutable vector segment borrowed from caller-owned facts.
+///
+/// Construction validates the complete authority, partition, dimension, uniqueness, and
+/// canonical entity order before streaming the same points into a typed [`VectorSegmentId`]. The
+/// identity and borrowed points are private correlated state, so callers cannot re-label a segment
+/// after validation or forge a proof by constructing this type directly.
+///
+/// ```compile_fail
+/// use nudox_index_graph_vector::{VectorAuthority, ValidatedVectorSegment};
+/// use nudox_index_vocab::VectorSegmentId;
+///
+/// fn forge<'facts>(
+///     authority: VectorAuthority,
+///     facts: &'facts [nudox_index_graph_vector::VectorPoint<'facts>],
+///     id: VectorSegmentId,
+/// ) {
+///     let _ = ValidatedVectorSegment {
+///         authority,
+///         partition: nudox_index_graph_vector::PartitionId { raw: 0 },
+///         facts,
+///         id,
+///     };
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedVectorSegment<'facts> {
+    authority: VectorAuthority,
+    partition: PartitionId,
+    facts: &'facts [VectorPoint<'facts>],
+    id: VectorSegmentId,
+}
+
+impl<'facts> ValidatedVectorSegment<'facts> {
+    /// Validates one canonical borrowed segment and computes its identity without allocation.
+    #[allow(
+        clippy::result_large_err,
+        reason = "cross-authority rejection retains both complete authority facts"
+    )]
+    pub fn try_new(
+        authority: VectorAuthority,
+        partition: PartitionId,
+        facts: &'facts [VectorPoint<'facts>],
+    ) -> Result<Self, VectorSegmentError> {
+        let dimension = checked_vector_dimension(authority)?;
+        if facts.len() > MAX_FACTS_PER_ROW {
+            return Err(VectorSegmentError::TooManyFacts {
+                maximum: MAX_FACTS_PER_ROW,
+                observed: facts.len(),
+            });
+        }
+        // The bounded admission proof above makes this narrowing lossless on every target before
+        // the canonical stream widens the count back to its fixed u64 record.
+        let fact_count = match u8::try_from(facts.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(VectorSegmentError::TooManyFacts {
+                    maximum: MAX_FACTS_PER_ROW,
+                    observed: facts.len(),
+                });
+            }
+        };
+        for (index, fact) in facts.iter().enumerate() {
+            if fact.coordinates.len() != dimension {
+                return Err(VectorSegmentError::FactDimension {
+                    index,
+                    expected: dimension,
+                    observed: fact.coordinates.len(),
+                });
+            }
+        }
+        for (index, pair) in facts.windows(2).enumerate() {
+            match pair[0].entity.raw.cmp(&pair[1].entity.raw) {
+                core::cmp::Ordering::Less => {}
+                core::cmp::Ordering::Equal => {
+                    return Err(VectorSegmentError::DuplicateEntity {
+                        first_index: index,
+                        index: index + 1,
+                        entity: pair[1].entity,
+                    });
+                }
+                core::cmp::Ordering::Greater => {
+                    return Err(VectorSegmentError::OutOfOrder {
+                        index: index + 1,
+                        previous: pair[0].entity,
+                        observed: pair[1].entity,
+                    });
+                }
+            }
+        }
+
+        Ok(Self {
+            authority,
+            partition,
+            facts,
+            id: vector_segment_id(authority, partition, fact_count, facts),
+        })
+    }
+
+    /// Returns the authority proved for every fact in this segment.
+    #[must_use]
+    pub const fn authority(&self) -> VectorAuthority {
+        self.authority
+    }
+
+    /// Returns the partition proved for every fact in this segment.
+    #[must_use]
+    pub const fn partition(&self) -> PartitionId {
+        self.partition
+    }
+
+    /// Returns the streamed identity derived from this authority, partition, and fact lane.
+    #[must_use]
+    pub const fn id(&self) -> VectorSegmentId {
+        self.id
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "dimension rejection preserves the complete authority evidence"
+)]
+fn checked_vector_dimension(authority: VectorAuthority) -> Result<usize, VectorSegmentError> {
+    let dimension = usize::from(authority.dimension);
+    if dimension == 0 || dimension > MAX_VECTOR_DIMENSION {
+        return Err(VectorSegmentError::AuthorityDimension {
+            maximum: MAX_VECTOR_DIMENSION,
+            observed: dimension,
+        });
+    }
+    Ok(dimension)
+}
+
+impl<'facts> AsRef<[VectorPoint<'facts>]> for ValidatedVectorSegment<'facts> {
+    fn as_ref(&self) -> &[VectorPoint<'facts>] {
+        self.facts
+    }
+}
+
+impl<'facts> Deref for ValidatedVectorSegment<'facts> {
+    type Target = [VectorPoint<'facts>];
+
+    fn deref(&self) -> &Self::Target {
+        self.facts
+    }
+}
+
+const VECTOR_SEGMENT_VERSION: [u8; 23] = *b"nudox.vector.segment.v1";
+
+struct CanonicalRecord<const BYTES: usize>([u8; BYTES]);
+
+impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> {
+    fn canonical_bytes(&self) -> &[u8; BYTES] {
+        &self.0
+    }
+}
+
+fn vector_segment_id(
+    authority: VectorAuthority,
+    partition: PartitionId,
+    fact_count: u8,
+    facts: &[VectorPoint<'_>],
+) -> VectorSegmentId {
+    let mut hasher = ContentHasher::<IndexVectorSegmentDomain>::new();
+    hasher.write_record(&CanonicalRecord(VECTOR_SEGMENT_VERSION));
+    hasher.write_record(&CanonicalRecord(*authority.snapshot.as_ref()));
+    hasher.write_record(&CanonicalRecord(*authority.model.as_ref()));
+    hasher.write_record(&CanonicalRecord(authority.dimension.to_le_bytes()));
+    hasher.write_record(&CanonicalRecord([authority.metric as u8]));
+    hasher.write_record(&CanonicalRecord(partition.raw.to_le_bytes()));
+    hasher.write_record(&CanonicalRecord((u64::from(fact_count)).to_le_bytes()));
+    for fact in facts {
+        hasher.write_record(&CanonicalRecord(fact.entity.raw.to_le_bytes()));
+        for coordinate in fact.coordinates.iter().copied() {
+            hasher.write_record(&CanonicalRecord(coordinate.to_le_bytes()));
+        }
+    }
+    hasher.finalize()
 }
 
 /// Stable exact-vector result with complete model/metric provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VectorHit {
-    authority: VectorAuthority,
-    partition: PartitionId,
-    entity: EntityId,
-    score: i64,
-}
-
-impl VectorHit {
-    /// Returns snapshot, model, dimension, and metric authority.
-    #[must_use]
-    pub const fn authority(self) -> VectorAuthority {
-        self.authority
-    }
-
-    /// Returns the source partition.
-    #[must_use]
-    pub const fn partition(self) -> PartitionId {
-        self.partition
-    }
-
-    /// Returns the semantic entity.
-    #[must_use]
-    pub const fn entity(self) -> EntityId {
-        self.entity
-    }
-
-    /// Returns the metric-specific deterministic score; smaller ranks first.
-    #[must_use]
-    pub const fn score(self) -> i64 {
-        self.score
-    }
+    /// Snapshot, model, dimension, and metric authority.
+    pub authority: VectorAuthority,
+    /// Source partition.
+    pub partition: PartitionId,
+    /// Semantic entity.
+    pub entity: EntityId,
+    /// Metric-specific deterministic score; smaller ranks first.
+    pub score: i64,
 }
 
 /// Exact rejection from bounded vector admission or validation.
@@ -131,24 +438,31 @@ pub enum VectorQueryError {
         /// Caller output slots.
         available: usize,
     },
-    /// Selected or available fan-out exceeds its global bound.
-    TooManyRows {
+    /// Selected partition fan-out exceeds its global bound.
+    TooManySelected {
         /// Maximum fan-out.
         maximum: usize,
         /// Complete observed fan-out.
         observed: usize,
     },
-    /// Per-row fact bound; checked before duplicate work.
-    TooManyFacts {
-        /// Rejected row.
-        row_index: usize,
-        /// Maximum facts in one row.
+    /// Supplied validated-segment fan-out exceeds its global bound.
+    TooManySegments {
+        /// Maximum segment count.
         maximum: usize,
-        /// Complete observed fact count.
+        /// Complete observed segment count.
         observed: usize,
     },
-    /// A row coordinate was repeated.
-    DuplicateRow {
+    /// A sealed segment is pinned to a different vector authority.
+    WrongSegmentAuthority {
+        /// Zero-based sealed segment position.
+        segment_index: usize,
+        /// Query authority.
+        expected: VectorAuthority,
+        /// Authority sealed into the segment.
+        observed: VectorAuthority,
+    },
+    /// A sealed segment partition was repeated.
+    DuplicateSegment {
         /// First occurrence.
         first_index: usize,
         /// Later occurrence.
@@ -165,108 +479,46 @@ pub enum VectorQueryError {
         /// Repeated coordinate.
         partition: PartitionId,
     },
-    /// A fact belongs to another snapshot.
-    WrongSnapshot {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Pinned query snapshot.
-        expected: nudox_index_vocab::IndexSnapshotId,
-        /// Rejected fact snapshot.
-        observed: nudox_index_vocab::IndexSnapshotId,
-    },
-    /// A fact belongs to another embedding model.
-    WrongModel {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Query model.
-        expected: crate::ModelId,
-        /// Rejected model.
-        observed: crate::ModelId,
-    },
-    /// A fact belongs to another model dimension.
-    WrongModelDimension {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Query dimension.
-        expected: u16,
-        /// Rejected dimension.
-        observed: u16,
-    },
-    /// A fact belongs to another distance metric.
-    WrongMetric {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Query metric.
-        expected: Metric,
-        /// Rejected metric.
-        observed: Metric,
-    },
-    /// A row coordinate and fact coordinate disagree.
-    WrongPartition {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Row coordinate.
-        expected: PartitionId,
-        /// Fact coordinate.
-        observed: PartitionId,
-    },
-    /// A fact has the wrong coordinate count.
-    FactDimension {
-        /// Rejected row.
-        row_index: usize,
-        /// Rejected fact.
-        fact_index: usize,
-        /// Required coordinate count.
-        expected: usize,
-        /// Complete observed coordinate count.
-        observed: usize,
-    },
 }
 
 /// Snapshot/model/metric-pinned complete or partial terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VectorQueryTerminal {
-    authority: VectorAuthority,
-    missing: [Option<PartitionId>; MAX_PARTITIONS],
-    missing_len: usize,
+pub enum VectorQueryTerminal {
+    /// Every selected partition was available, including an available empty segment.
+    Complete {
+        /// Snapshot, model, dimension, and metric authority.
+        authority: VectorAuthority,
+    },
+    /// At least one selected partition was unavailable.
+    Partial {
+        /// Snapshot, model, dimension, and metric authority.
+        authority: VectorAuthority,
+        /// Exact missing coordinates in selection order.
+        missing: MissingPartitions,
+    },
 }
 
 impl VectorQueryTerminal {
     /// Returns the complete vector authority.
     #[must_use]
     pub const fn authority(self) -> VectorAuthority {
-        self.authority
+        match self {
+            Self::Complete { authority } | Self::Partial { authority, .. } => authority,
+        }
     }
 
     /// Returns true when at least one selected partition was unavailable.
     #[must_use]
     pub const fn is_partial(self) -> bool {
-        self.missing_len != 0
+        matches!(self, Self::Partial { .. })
     }
 
-    /// Returns the exact missing count.
+    /// Borrows exact missing coordinates in selection order.
     #[must_use]
-    pub const fn missing_len(self) -> usize {
-        self.missing_len
-    }
-
-    /// Returns one exact missing coordinate by semantic position.
-    #[must_use]
-    pub const fn missing_at(self, index: usize) -> Option<PartitionId> {
-        if index < self.missing_len {
-            self.missing[index]
-        } else {
-            None
+    pub fn missing(&self) -> &[PartitionId] {
+        match self {
+            Self::Complete { .. } => &[],
+            Self::Partial { missing, .. } => missing,
         }
     }
 }
@@ -274,34 +526,30 @@ impl VectorQueryTerminal {
 /// Bounded exact-vector result and its typed terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VectorQueryOutcome {
-    written: usize,
-    terminal: VectorQueryTerminal,
+    /// Number of initialized top-k slots.
+    pub written: usize,
+    /// Complete/partial typed terminal.
+    pub terminal: VectorQueryTerminal,
 }
 
-impl VectorQueryOutcome {
-    /// Returns the number of initialized top-k slots.
-    #[must_use]
-    pub const fn written(self) -> usize {
-        self.written
-    }
-
-    /// Returns the complete/partial typed terminal.
-    #[must_use]
-    pub const fn terminal(self) -> VectorQueryTerminal {
-        self.terminal
-    }
-}
-
-/// Executes the scalar local oracle over borrowed immutable vector facts.
+/// Executes the scalar local oracle over authority-sealed borrowed vector segments.
+///
+/// The query never accepts an unproved point row: every point is reached only through a
+/// [`ValidatedVectorSegment`], whose private owner pins the authority and partition used for the
+/// returned hit. Segment authority is preflighted before the caller's output is cleared.
+#[allow(
+    clippy::result_large_err,
+    reason = "query rejection preserves complete authority evidence"
+)]
 pub fn exact_vector_query(
     authority: VectorAuthority,
     selected: &[PartitionId],
-    rows: &[VectorRow<'_, '_>],
+    segments: &[ValidatedVectorSegment<'_>],
     query: &[i16],
     requested_limit: usize,
     output: &mut [Option<VectorHit>],
 ) -> Result<VectorQueryOutcome, VectorQueryError> {
-    let dimension = usize::from(authority.dimension());
+    let dimension = usize::from(authority.dimension);
     if dimension == 0 || dimension > MAX_VECTOR_DIMENSION {
         return Err(VectorQueryError::AuthorityDimension {
             maximum: MAX_VECTOR_DIMENSION,
@@ -320,19 +568,19 @@ pub fn exact_vector_query(
             available: output.len(),
         });
     }
-    validate_vector_rows(authority, selected, rows, dimension)?;
+    validate_vector_segments(authority, selected, segments)?;
     for slot in output.iter_mut().take(requested_limit) {
         *slot = None;
     }
     let mut written = 0;
-    for row in rows.iter().copied() {
-        if selected.contains(&row.partition) {
-            for fact in row.facts.iter().copied() {
+    for segment in segments {
+        if selected.contains(&segment.partition()) {
+            for fact in segment.iter().copied() {
                 let candidate = VectorHit {
                     authority,
-                    partition: row.partition,
+                    partition: segment.partition(),
                     entity: fact.entity,
-                    score: score(authority.metric(), query, fact.coordinates),
+                    score: score(authority.metric, query, fact.coordinates),
                 };
                 insert_top_k(output, requested_limit, &mut written, candidate);
             }
@@ -340,96 +588,51 @@ pub fn exact_vector_query(
     }
     Ok(VectorQueryOutcome {
         written,
-        terminal: vector_terminal(authority, selected, rows),
+        terminal: vector_terminal(authority, selected, segments),
     })
 }
 
-fn validate_vector_rows(
+#[allow(
+    clippy::result_large_err,
+    reason = "segment validation rejection preserves complete authority evidence"
+)]
+fn validate_vector_segments(
     authority: VectorAuthority,
     selected: &[PartitionId],
-    rows: &[VectorRow<'_, '_>],
-    dimension: usize,
+    segments: &[ValidatedVectorSegment<'_>],
 ) -> Result<(), VectorQueryError> {
     if selected.len() > MAX_PARTITIONS {
-        return Err(VectorQueryError::TooManyRows {
+        return Err(VectorQueryError::TooManySelected {
             maximum: MAX_PARTITIONS,
             observed: selected.len(),
         });
     }
-    if rows.len() > MAX_PARTITIONS {
-        return Err(VectorQueryError::TooManyRows {
+    if segments.len() > MAX_PARTITIONS {
+        return Err(VectorQueryError::TooManySegments {
             maximum: MAX_PARTITIONS,
-            observed: rows.len(),
+            observed: segments.len(),
         });
     }
-    for (row_index, row) in rows.iter().enumerate() {
-        if row.facts.len() > MAX_FACTS_PER_ROW {
-            return Err(VectorQueryError::TooManyFacts {
-                row_index,
-                maximum: MAX_FACTS_PER_ROW,
-                observed: row.facts.len(),
+    for (segment_index, segment) in segments.iter().enumerate() {
+        if segment.authority() != authority {
+            return Err(VectorQueryError::WrongSegmentAuthority {
+                segment_index,
+                expected: authority,
+                observed: segment.authority(),
             });
         }
     }
-    reject_duplicate_partitions(selected, rows)?;
-    for (row_index, row) in rows.iter().enumerate() {
-        for (fact_index, fact) in row.facts.iter().enumerate() {
-            if fact.authority.snapshot() != authority.snapshot() {
-                return Err(VectorQueryError::WrongSnapshot {
-                    row_index,
-                    fact_index,
-                    expected: authority.snapshot(),
-                    observed: fact.authority.snapshot(),
-                });
-            }
-            if fact.authority.model() != authority.model() {
-                return Err(VectorQueryError::WrongModel {
-                    row_index,
-                    fact_index,
-                    expected: authority.model(),
-                    observed: fact.authority.model(),
-                });
-            }
-            if fact.authority.dimension() != authority.dimension() {
-                return Err(VectorQueryError::WrongModelDimension {
-                    row_index,
-                    fact_index,
-                    expected: authority.dimension(),
-                    observed: fact.authority.dimension(),
-                });
-            }
-            if fact.authority.metric() != authority.metric() {
-                return Err(VectorQueryError::WrongMetric {
-                    row_index,
-                    fact_index,
-                    expected: authority.metric(),
-                    observed: fact.authority.metric(),
-                });
-            }
-            if fact.partition != row.partition {
-                return Err(VectorQueryError::WrongPartition {
-                    row_index,
-                    fact_index,
-                    expected: row.partition,
-                    observed: fact.partition,
-                });
-            }
-            if fact.coordinates.len() != dimension {
-                return Err(VectorQueryError::FactDimension {
-                    row_index,
-                    fact_index,
-                    expected: dimension,
-                    observed: fact.coordinates.len(),
-                });
-            }
-        }
-    }
+    reject_duplicate_partitions(selected, segments)?;
     Ok(())
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "duplicate rejection uses the same exact query error taxonomy"
+)]
 fn reject_duplicate_partitions(
     selected: &[PartitionId],
-    rows: &[VectorRow<'_, '_>],
+    segments: &[ValidatedVectorSegment<'_>],
 ) -> Result<(), VectorQueryError> {
     for index in 0..selected.len() {
         for first_index in 0..index {
@@ -442,13 +645,13 @@ fn reject_duplicate_partitions(
             }
         }
     }
-    for index in 0..rows.len() {
+    for index in 0..segments.len() {
         for first_index in 0..index {
-            if rows[first_index].partition == rows[index].partition {
-                return Err(VectorQueryError::DuplicateRow {
+            if segments[first_index].partition() == segments[index].partition() {
+                return Err(VectorQueryError::DuplicateSegment {
                     first_index,
                     index,
-                    partition: rows[index].partition,
+                    partition: segments[index].partition(),
                 });
             }
         }
@@ -508,19 +711,21 @@ fn vector_hit_precedes(left: VectorHit, right: VectorHit) -> bool {
 fn vector_terminal(
     authority: VectorAuthority,
     selected: &[PartitionId],
-    rows: &[VectorRow<'_, '_>],
+    segments: &[ValidatedVectorSegment<'_>],
 ) -> VectorQueryTerminal {
-    let mut missing = [None; MAX_PARTITIONS];
+    let mut missing = [PartitionId::new(0); MAX_PARTITIONS];
     let mut missing_len = 0;
     for partition in selected.iter().copied() {
-        if !rows.iter().any(|row| row.partition == partition) {
-            missing[missing_len] = Some(partition);
+        if !segments
+            .iter()
+            .any(|segment| segment.partition() == partition)
+        {
+            missing[missing_len] = partition;
             missing_len += 1;
         }
     }
-    VectorQueryTerminal {
-        authority,
-        missing,
-        missing_len,
+    match MissingPartitions::from_prefix(missing, missing_len) {
+        Some(missing) => VectorQueryTerminal::Partial { authority, missing },
+        None => VectorQueryTerminal::Complete { authority },
     }
 }

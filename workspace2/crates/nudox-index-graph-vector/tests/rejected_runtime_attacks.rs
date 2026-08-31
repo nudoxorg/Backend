@@ -7,7 +7,7 @@ use core::{
 use nudox_index_graph_vector::{
     AdmissionError, Cancellation, EdgeBatchProducer, EdgeBatchStream, GraphAuthority, GraphEdge,
     GraphRow, GraphStreamEvent, GraphTerminal, GraphTraceEvent, MAX_PARTITIONS, Metric, ModelId,
-    PartitionId, ProjectionId, TraceProbe, TraceRecorder, TrustfallGraph, VectorAuthority,
+    PartitionId, ProjectionId, TraceProbe, TraceRecorder, ValidatedGraphView, VectorAuthority,
     VectorTerminal,
 };
 use nudox_index_vocab::IndexSnapshotId;
@@ -314,10 +314,13 @@ fn hostile_row_bound_fires_before_duplicate_work() {
         EntityId::new(1),
         EntityId::new(2),
     )];
-    let duplicate = GraphRow::new(PartitionId::new(0), &edge);
+    let duplicate = GraphRow {
+        partition: PartitionId::new(0),
+        edges: &edge,
+    };
     let rows = [duplicate; MAX_PARTITIONS + 1];
     assert_eq!(
-        TrustfallGraph::try_new(authority, &rows),
+        ValidatedGraphView::try_new(authority, &rows),
         Err(AdmissionError::TooManyRows {
             maximum: MAX_PARTITIONS,
             observed: MAX_PARTITIONS + 1,
@@ -326,7 +329,7 @@ fn hostile_row_bound_fires_before_duplicate_work() {
 }
 
 #[test]
-fn wrong_snapshot_edges_never_enter_the_trustfall_view() {
+fn wrong_snapshot_edges_never_enter_the_validated_view() {
     let requested = graph_authority(5);
     let stale = graph_authority(6);
     let edge = [GraphEdge::new(
@@ -335,9 +338,12 @@ fn wrong_snapshot_edges_never_enter_the_trustfall_view() {
         EntityId::new(1),
         EntityId::new(2),
     )];
-    let rows = [GraphRow::new(PartitionId::new(0), &edge)];
+    let rows = [GraphRow {
+        partition: PartitionId::new(0),
+        edges: &edge,
+    }];
     assert_eq!(
-        TrustfallGraph::try_new(requested, &rows),
+        ValidatedGraphView::try_new(requested, &rows),
         Err(AdmissionError::WrongGraphAuthority {
             row_index: 0,
             edge_index: 0,
