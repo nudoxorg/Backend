@@ -15,8 +15,8 @@ use wave_application_core::{
 };
 #[cfg(feature = "real-gpui")]
 use wave_application_gpui_shell::{
-    CommandId, FormField, FormState, GpuiShellView, NativeTextInputError, ProjectionState, Route,
-    TextInputTarget,
+    CommandId, FormField, FormState, GpuiShellView, NativeTextInputError, PaletteEditError,
+    ProjectionState, Route, TextInputTarget,
 };
 
 #[cfg(feature = "real-gpui")]
@@ -544,6 +544,11 @@ fn native_text_handler_accepts_multibyte_palette_and_form_input(cx: &mut TestApp
         assert!(view.navigation.palette.visible);
         assert_eq!(view.navigation.palette.result_count(), 0);
     });
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.navigation.palette.visible);
+        assert_eq!(view.navigation.palette.result_count(), 0);
+    });
 
     cx.simulate_keystrokes("escape cmd-k");
     cx.simulate_input("generate");
@@ -564,6 +569,44 @@ fn native_text_handler_accepts_multibyte_palette_and_form_input(cx: &mut TestApp
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
+fn empty_palette_backspace_retains_a_visible_query_rejection(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-k backspace");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.palette_error, Some(PaletteEditError::NothingToErase));
+        assert!(view.navigation.palette.visible);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn released_view_closes_the_admitted_completion_delivery(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    let recover = ApplicationInput::RecoverLocal {
+        correlation: CorrelationId(119),
+        pin: pin(),
+        bundle: bundle(),
+        budget: budget(1, 1),
+    };
+    let admitted = view.update(cx, |view, cx| view.execute(&recover, cx));
+    assert!(matches!(
+        admitted,
+        Ok(wave_application_core::ApplicationReply {
+            body: ReplyBody::ExecutionStarted { .. },
+            ..
+        })
+    ));
+
+    cx.update(|window, _cx| window.remove_window());
+    drop(view);
+    cx.run_until_parked();
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
 fn native_text_handler_retains_exact_palette_and_form_overflow(cx: &mut TestAppContext) {
     const OVER_BOUND_INPUT: &str = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
@@ -574,7 +617,7 @@ fn native_text_handler_retains_exact_palette_and_form_overflow(cx: &mut TestAppC
     cx.read_entity(&palette_view, |view, _| {
         assert_eq!(
             view.input_error,
-            Some(NativeTextInputError {
+            Some(NativeTextInputError::InputTooLong {
                 target: TextInputTarget::Palette,
                 actual: OVER_BOUND_INPUT.len(),
                 maximum: INPUT_TEXT_BYTES,
@@ -592,7 +635,7 @@ fn native_text_handler_retains_exact_palette_and_form_overflow(cx: &mut TestAppC
     cx.read_entity(&form_view, |view, _| {
         assert_eq!(
             view.input_error,
-            Some(NativeTextInputError {
+            Some(NativeTextInputError::InputTooLong {
                 target: TextInputTarget::Form(FormField::Language),
                 actual: OVER_BOUND_INPUT.len(),
                 maximum: INPUT_TEXT_BYTES,
@@ -672,6 +715,16 @@ fn entity_form_keyboard_navigation_and_escape_operate_on_typed_fields(cx: &mut T
                 ..
             })
         ));
+    });
+
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.form_error,
+            Some(wave_application_gpui_shell::FormError::MissingText(
+                FormField::Language
+            ))
+        );
     });
 
     cx.simulate_keystrokes("tab");

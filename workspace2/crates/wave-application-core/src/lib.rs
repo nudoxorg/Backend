@@ -20,4 +20,4 @@ pub use nudox_adaptive::{
     RetryBudget,
 };
 pub use service::ApplicationService;
-pub use text::{INPUT_TEXT_BYTES, InputText, InputTextError};
+pub use text::{INPUT_TEXT_BYTES, InputText, InputTextError, InputTextJoinError};

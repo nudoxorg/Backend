@@ -316,13 +316,27 @@ pub enum TextInputTarget {
 
 /// Exact fixed-bound rejection from platform paste or composition input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeTextInputError {
-    /// Native text surface that rejected the replacement.
-    pub target: TextInputTarget,
-    /// Requested UTF-8 byte length after replacement.
-    pub actual: usize,
-    /// Fixed accepted UTF-8 byte length.
-    pub maximum: usize,
+pub enum NativeTextInputError {
+    /// The representable replacement exceeds fixed input capacity.
+    InputTooLong {
+        /// Native text surface that rejected the replacement.
+        target: TextInputTarget,
+        /// Requested UTF-8 byte length after replacement.
+        actual: usize,
+        /// Fixed accepted UTF-8 byte length.
+        maximum: usize,
+    },
+    /// The mathematical joined replacement length cannot be represented by `usize`.
+    InputLengthOverflow {
+        /// Native text surface that rejected the replacement.
+        target: TextInputTarget,
+        /// Existing prefix byte length.
+        prefix: usize,
+        /// Inserted byte length.
+        inserted: usize,
+        /// Existing suffix byte length.
+        suffix: usize,
+    },
 }
 
 /// Fixed-capacity presentation state for one application window.
@@ -362,6 +376,8 @@ pub struct ShellProjection {
     pub form: Option<FormState>,
     /// Most recent closed form rejection, rendered beside the form without string conversion.
     pub form_error: Option<FormError>,
+    /// Most recent closed command-palette edit rejection.
+    pub palette_error: Option<PaletteEditError>,
     /// Most recent bounded projection rejection, retained instead of being dropped by an
     /// asynchronous UI update.
     pub projection_error: Option<ApplyError>,
@@ -402,11 +418,13 @@ impl ShellState {
         field: FormField,
         value: InputText,
     ) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .replace_text(field, value)
+            .ok_or(FormError::NoActiveForm)
+            .and_then(|form| form.replace_text(field, value));
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Retains the exact rejection reported by a native platform text edit.
@@ -433,11 +451,13 @@ impl ShellState {
     ///
     /// Returns a closed form error if this form has no bounded result limit.
     pub fn replace_form_limit(&mut self, value: ResultLimit) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .replace_limit(value)
+            .ok_or(FormError::NoActiveForm)
+            .and_then(|form| form.replace_limit(value));
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Selects one visible field in the active closed form.
@@ -446,11 +466,13 @@ impl ShellState {
     ///
     /// Returns a closed form error if no form or matching field is active.
     pub fn select_form_field(&mut self, field: FormField) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .select_field(field)
+            .ok_or(FormError::NoActiveForm)
+            .and_then(|form| form.select_field(field));
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Moves keyboard focus to the next or previous field in the active closed form.
@@ -459,11 +481,13 @@ impl ShellState {
     ///
     /// Returns a closed form error when the active form has no editable field.
     pub fn move_form_field(&mut self, forward: bool) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .move_field_focus(forward)
+            .ok_or(FormError::NoActiveForm)
+            .and_then(|form| form.move_field_focus(forward));
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Appends keyboard text to the focused bounded form field.
@@ -472,11 +496,13 @@ impl ShellState {
     ///
     /// Returns a closed form error if the focused field cannot accept the text.
     pub fn append_form_text(&mut self, text: &str) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .append_focused_text(text)
+            .ok_or(FormError::NoActiveForm)
+            .and_then(|form| form.append_focused_text(text));
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Erases one character from the focused bounded form field.
@@ -485,11 +511,13 @@ impl ShellState {
     ///
     /// Returns a closed form error if the field is unavailable or empty.
     pub fn erase_form_text(&mut self) -> Result<(), FormError> {
-        self.projection
+        let result = self
+            .projection
             .form
             .as_mut()
-            .ok_or(FormError::NoActiveForm)?
-            .erase_focused_text()
+            .ok_or(FormError::NoActiveForm)
+            .and_then(FormState::erase_focused_text);
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Builds one typed service command from the active form without semantic revalidation.
@@ -506,8 +534,7 @@ impl ShellState {
             .form
             .ok_or(FormError::NoActiveForm)
             .and_then(|form| form.submit(correlation));
-        self.projection.form_error = result.as_ref().err().copied();
-        result
+        retain_transition(&mut self.projection.form_error, result)
     }
 
     /// Closes the active typed form without submitting it.
@@ -523,12 +550,14 @@ impl ShellState {
 
     /// Opens the visible-only command palette.
     pub fn open_palette(&mut self) {
+        self.projection.palette_error = None;
         self.projection.navigation.palette.open();
     }
 
     /// Dismisses the command palette and clears its transient query.
     pub fn dismiss_palette(&mut self) {
         self.projection.navigation.palette.dismiss();
+        self.projection.palette_error = None;
     }
 
     /// Moves the authoritative command identity and returns its virtual row for reveal.
@@ -545,6 +574,7 @@ impl ShellState {
     /// Replaces the palette's visible-only filter with transport-validated text.
     pub fn replace_palette_query(&mut self, query: InputText) {
         self.projection.navigation.palette.replace_query(query);
+        self.projection.palette_error = None;
     }
 
     /// Appends input typed while the command palette is visible.
@@ -554,7 +584,8 @@ impl ShellState {
     /// Returns the palette's closed edit rejection when the bounded query cannot retain the
     /// requested input.
     pub fn append_palette_text(&mut self, text: &str) -> Result<(), PaletteEditError> {
-        self.projection.navigation.palette.append_text(text)
+        let result = self.projection.navigation.palette.append_text(text);
+        retain_transition(&mut self.projection.palette_error, result)
     }
 
     /// Erases one UTF-8 character from the visible command-palette query.
@@ -563,7 +594,8 @@ impl ShellState {
     ///
     /// Returns the palette's closed edit rejection when its canonical query is empty.
     pub fn erase_palette_character(&mut self) -> Result<(), PaletteEditError> {
-        self.projection.navigation.palette.erase_last_character()
+        let result = self.projection.navigation.palette.erase_last_character();
+        retain_transition(&mut self.projection.palette_error, result)
     }
 
     /// Confirms the palette selection, routing through the same navigation state as the rail.
@@ -835,10 +867,27 @@ impl Default for ShellState {
                 },
                 form: None,
                 form_error: None,
+                palette_error: None,
                 projection_error: None,
                 input_error: None,
                 foreground_operation: None,
             },
+        }
+    }
+}
+
+fn retain_transition<Value, Error: Copy>(
+    slot: &mut Option<Error>,
+    result: Result<Value, Error>,
+) -> Result<Value, Error> {
+    match result {
+        Ok(value) => {
+            *slot = None;
+            Ok(value)
+        }
+        Err(error) => {
+            *slot = Some(error);
+            Err(error)
         }
     }
 }

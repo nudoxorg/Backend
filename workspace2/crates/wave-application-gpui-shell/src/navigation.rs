@@ -1,6 +1,6 @@
 //! Stable product navigation and command-palette selection state.
 
-use wave_application_core::InputText;
+use wave_application_core::{InputText, InputTextJoinError};
 
 use crate::Surface;
 
@@ -144,7 +144,21 @@ pub enum PaletteEditError {
     /// The edit supplied no visible text.
     EmptyInput,
     /// The fixed transport-width query field cannot retain the requested text.
-    InputTooLong,
+    InputTooLong {
+        /// Requested UTF-8 byte length after the edit.
+        actual: usize,
+        /// Fixed accepted UTF-8 byte length.
+        maximum: usize,
+    },
+    /// The joined query length cannot be represented by `usize`.
+    InputLengthOverflow {
+        /// Existing query prefix byte length.
+        prefix: usize,
+        /// Inserted query byte length.
+        inserted: usize,
+        /// Existing query suffix byte length.
+        suffix: usize,
+    },
     /// Backspace was requested for an empty query.
     NothingToErase,
 }
@@ -301,18 +315,10 @@ impl CommandPalette {
             .position(|command| command == self.selected)
     }
 
-    /// Returns the validated query used by the production renderer.
-    ///
-    /// # Errors
-    ///
-    /// The fixed query is created only from UTF-8 input. An error therefore signals a violated
-    /// private storage invariant, and callers render the safe empty-query affordance.
+    /// Returns the optional validated query used by the production renderer.
     #[cfg(feature = "real-gpui")]
-    pub(crate) fn query_text(&self) -> Result<&str, core::str::Utf8Error> {
-        match &self.query {
-            Some(query) => core::str::from_utf8(query.as_ref()),
-            None => Ok(""),
-        }
+    pub(crate) fn query_text(&self) -> Option<&str> {
+        self.query.as_deref()
     }
 }
 
@@ -344,44 +350,47 @@ fn append_query(
     if appended.is_empty() {
         return Err(PaletteEditError::EmptyInput);
     }
-    let current = current.as_ref().map_or(&[][..], |value| value.as_ref());
-    let next_length = current
-        .len()
-        .checked_add(appended.len())
-        .ok_or(PaletteEditError::InputTooLong)?;
-    if next_length > wave_application_core::INPUT_TEXT_BYTES {
-        return Err(PaletteEditError::InputTooLong);
-    }
-    let mut bytes = [0; wave_application_core::INPUT_TEXT_BYTES];
-    bytes[..current.len()].copy_from_slice(current);
-    bytes[current.len()..next_length].copy_from_slice(appended.as_bytes());
-    let text =
-        core::str::from_utf8(&bytes[..next_length]).map_err(|_| PaletteEditError::InputTooLong)?;
-    InputText::try_from_str(text)
+    let current = current.as_deref().map_or("", |current| current);
+    InputText::try_from_parts(current, appended, "")
         .map(Some)
-        .map_err(|_| PaletteEditError::InputTooLong)
+        .map_err(palette_join_error)
 }
 
 fn erase_query_character(
     current: Option<InputText>,
 ) -> Result<Option<InputText>, PaletteEditError> {
     let value = current.ok_or(PaletteEditError::NothingToErase)?;
-    let bytes = value.as_ref();
-    if bytes.is_empty() {
+    if value.is_empty() {
         return Err(PaletteEditError::NothingToErase);
     }
-    let mut boundary = bytes.len() - 1;
-    while boundary > 0 && bytes[boundary] & 0b1100_0000 == 0b1000_0000 {
-        boundary -= 1;
-    }
+    let boundary = value
+        .char_indices()
+        .next_back()
+        .map_or(0, |(boundary, _character)| boundary);
     if boundary == 0 {
         return Ok(None);
     }
-    let text =
-        core::str::from_utf8(&bytes[..boundary]).map_err(|_| PaletteEditError::NothingToErase)?;
-    InputText::try_from_str(text)
+    InputText::try_from_parts(&value[..boundary], "", "")
         .map(Some)
-        .map_err(|_| PaletteEditError::NothingToErase)
+        .map_err(palette_join_error)
+}
+
+const fn palette_join_error(error: InputTextJoinError) -> PaletteEditError {
+    match error {
+        InputTextJoinError::LengthOverflow {
+            prefix,
+            inserted,
+            suffix,
+        } => PaletteEditError::InputLengthOverflow {
+            prefix,
+            inserted,
+            suffix,
+        },
+        InputTextJoinError::InputTooLong(error) => PaletteEditError::InputTooLong {
+            actual: error.actual,
+            maximum: error.maximum,
+        },
+    }
 }
 
 pub(crate) const fn route_facts(route: Route) -> RouteFacts {

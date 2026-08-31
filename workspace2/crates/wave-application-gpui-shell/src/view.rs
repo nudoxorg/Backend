@@ -66,7 +66,13 @@ pub struct GpuiShellView {
 
 struct DrivenExecution {
     operation: OperationKey,
-    task: Task<()>,
+    task: Task<CompletionDelivery>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompletionDelivery {
+    Projected,
+    ViewReleased,
 }
 
 impl GpuiShellView {
@@ -187,7 +193,11 @@ impl GpuiShellView {
                     }
                 }
             }) {
-                Ok(()) | Err(_) => {}
+                Ok(()) => CompletionDelivery::Projected,
+                Err(view_released) => {
+                    drop(view_released);
+                    CompletionDelivery::ViewReleased
+                }
             }
         });
         self.driven_execution = Some(DrivenExecution { operation, task });
@@ -225,9 +235,14 @@ impl GpuiShellView {
     }
 
     fn next_form_field(&mut self, _: &NextFormField, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.state.navigation.palette.visible && self.state.move_form_field(true).is_ok() {
-            cx.notify();
+        if self.state.navigation.palette.visible {
+            return;
         }
+        match self.state.move_form_field(true) {
+            Ok(()) => {}
+            Err(error) => debug_assert_eq!(self.state.form_error, Some(error)),
+        }
+        cx.notify();
     }
 
     fn previous_form_field(
@@ -236,9 +251,14 @@ impl GpuiShellView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.state.navigation.palette.visible && self.state.move_form_field(false).is_ok() {
-            cx.notify();
+        if self.state.navigation.palette.visible {
+            return;
         }
+        match self.state.move_form_field(false) {
+            Ok(()) => {}
+            Err(error) => debug_assert_eq!(self.state.form_error, Some(error)),
+        }
+        cx.notify();
     }
 
     fn select_next_palette_command(
@@ -302,8 +322,13 @@ impl GpuiShellView {
         cx: &mut Context<Self>,
     ) {
         if self.state.navigation.palette.visible {
-            let _ = self.state.confirm_palette();
-            window.focus(&self.focus, cx);
+            if let Some(confirmed) = self.state.confirm_palette() {
+                debug_assert_eq!(
+                    self.state.navigation.route,
+                    command_facts(confirmed).destination
+                );
+                window.focus(&self.focus, cx);
+            }
             cx.notify();
         } else {
             self.submit_active_form(cx);
@@ -353,9 +378,11 @@ impl GpuiShellView {
             self.update_form_text(event, cx);
             return;
         }
-        let changed =
-            event.keystroke.key == "backspace" && self.state.erase_palette_character().is_ok();
-        if changed {
+        if event.keystroke.key == "backspace" {
+            match self.state.erase_palette_character() {
+                Ok(()) => {}
+                Err(error) => debug_assert_eq!(self.state.palette_error, Some(error)),
+            }
             cx.stop_propagation();
             cx.notify();
         }
@@ -365,8 +392,11 @@ impl GpuiShellView {
         if self.state.form.is_none() {
             return;
         }
-        let changed = event.keystroke.key == "backspace" && self.state.erase_form_text().is_ok();
-        if changed {
+        if event.keystroke.key == "backspace" {
+            match self.state.erase_form_text() {
+                Ok(()) => {}
+                Err(error) => debug_assert_eq!(self.state.form_error, Some(error)),
+            }
             cx.stop_propagation();
             cx.notify();
         }
@@ -378,11 +408,15 @@ impl GpuiShellView {
         match input {
             Ok(input) => {
                 self.next_correlation = self.next_correlation.saturating_add(1);
-                if self.execute(&input, cx).is_err() {
+                if let Err(error) = self.execute(&input, cx) {
+                    debug_assert_eq!(self.state.projection_error, Some(error));
                     cx.notify();
                 }
             }
-            Err(_) => cx.notify(),
+            Err(error) => {
+                debug_assert_eq!(self.state.form_error, Some(error));
+                cx.notify();
+            }
         }
     }
 
@@ -939,14 +973,15 @@ impl GpuiShellView {
             .when(focused != field, |row| row.bg(rgb(PAGE_BACKGROUND)))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
-                let _ = this.state.select_form_field(field);
+                match this.state.select_form_field(field) {
+                    Ok(()) => {}
+                    Err(error) => debug_assert_eq!(this.state.form_error, Some(error)),
+                }
                 cx.notify();
             }))
             .child(label)
             .child(
                 div()
-                    .id("palette-native-input-field")
-                    .debug_selector(|| "palette-native-input-field".to_owned())
                     .relative()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
@@ -992,8 +1027,14 @@ impl GpuiShellView {
                     })
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Ok(limit) = ResultLimit::new(limit) {
-                            let _ = this.state.replace_form_limit(limit);
+                        let result = ResultLimit::new(limit)
+                            .and_then(|limit| this.state.replace_form_limit(limit));
+                        match result {
+                            Ok(()) => {}
+                            Err(error) => {
+                                this.state.retain_form_error(Some(error));
+                                debug_assert_eq!(this.state.form_error, Some(error));
+                            }
                         }
                         cx.notify();
                     }))
@@ -1006,15 +1047,8 @@ impl GpuiShellView {
         error: Option<FormError>,
         input_error: Option<crate::NativeTextInputError>,
     ) -> impl IntoElement + use<> {
-        let label = match input_error
-            .filter(|error| matches!(error.target, crate::TextInputTarget::Form(_)))
-        {
-            Some(error) => SharedString::from(format!(
-                "{} input: {} / {} bytes",
-                text_input_target_label(error.target),
-                error.actual,
-                error.maximum
-            )),
+        let label = match input_error.filter(native_error_targets_form) {
+            Some(error) => native_input_error_label(error),
             None => SharedString::from(error.map_or("", form_error_label)),
         };
         div()
@@ -1052,20 +1086,14 @@ impl GpuiShellView {
     }
 
     fn palette(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query_label = match self
-            .state
-            .input_error
-            .filter(|error| error.target == crate::TextInputTarget::Palette)
-        {
-            Some(error) => SharedString::from(format!(
-                "{} input: {} / {} bytes",
-                text_input_target_label(error.target),
-                error.actual,
-                error.maximum
-            )),
-            None => match self.state.navigation.palette.query_text() {
-                Ok("") | Err(_) => SharedString::from("Type to filter · ↑↓ Enter Esc"),
-                Ok(query) => SharedString::from(query),
+        let query_label = match self.state.input_error.filter(native_error_targets_palette) {
+            Some(error) => native_input_error_label(error),
+            None => match self.state.palette_error {
+                Some(error) => palette_error_label(error),
+                None => match self.state.navigation.palette.query_text() {
+                    Some(query) => SharedString::from(query),
+                    None => SharedString::from("Type to filter · ↑↓ Enter Esc"),
+                },
             },
         };
         let palette = div()
@@ -1390,7 +1418,7 @@ const fn form_action(form: FormState) -> ServiceAction {
 
 fn form_value_label(value: Option<wave_application_core::InputText>) -> SharedString {
     match value {
-        Some(value) => String::from_utf8_lossy(value.as_ref()).into_owned().into(),
+        Some(value) => value.to_string().into(),
         None => SharedString::from("Required"),
     }
 }
@@ -1431,7 +1459,77 @@ const fn form_error_label(error: FormError) -> &'static str {
         FormError::LimitExceeded { .. } => "Choose a result count inside the local service bound.",
         FormError::EmptyTextEdit { .. } => "Enter text in the selected typed field.",
         FormError::InputTooLong { .. } => "That edit exceeds the fixed transport field width.",
+        FormError::InputLengthOverflow { .. } => {
+            "That edit cannot be represented by the native text boundary."
+        }
         FormError::LimitUnavailable => "This typed action has no caller-controlled result limit.",
         FormError::NoEditableField => "This typed action has no editable text field.",
+    }
+}
+
+const fn native_error_targets_form(error: &crate::NativeTextInputError) -> bool {
+    matches!(
+        error,
+        crate::NativeTextInputError::InputTooLong {
+            target: crate::TextInputTarget::Form(_),
+            ..
+        } | crate::NativeTextInputError::InputLengthOverflow {
+            target: crate::TextInputTarget::Form(_),
+            ..
+        }
+    )
+}
+
+const fn native_error_targets_palette(error: &crate::NativeTextInputError) -> bool {
+    matches!(
+        error,
+        crate::NativeTextInputError::InputTooLong {
+            target: crate::TextInputTarget::Palette,
+            ..
+        } | crate::NativeTextInputError::InputLengthOverflow {
+            target: crate::TextInputTarget::Palette,
+            ..
+        }
+    )
+}
+
+fn native_input_error_label(error: crate::NativeTextInputError) -> SharedString {
+    match error {
+        crate::NativeTextInputError::InputTooLong {
+            target,
+            actual,
+            maximum,
+        } => SharedString::from(format!(
+            "{} input: {actual} / {maximum} bytes",
+            text_input_target_label(target)
+        )),
+        crate::NativeTextInputError::InputLengthOverflow {
+            target,
+            prefix,
+            inserted,
+            suffix,
+        } => SharedString::from(format!(
+            "{} input length overflow: {prefix} + {inserted} + {suffix} bytes",
+            text_input_target_label(target)
+        )),
+    }
+}
+
+fn palette_error_label(error: crate::PaletteEditError) -> SharedString {
+    match error {
+        crate::PaletteEditError::EmptyInput => SharedString::from("Enter a palette query."),
+        crate::PaletteEditError::InputTooLong { actual, maximum } => {
+            SharedString::from(format!("Palette input: {actual} / {maximum} bytes"))
+        }
+        crate::PaletteEditError::InputLengthOverflow {
+            prefix,
+            inserted,
+            suffix,
+        } => SharedString::from(format!(
+            "Palette input length overflow: {prefix} + {inserted} + {suffix} bytes"
+        )),
+        crate::PaletteEditError::NothingToErase => {
+            SharedString::from("The palette query is already empty.")
+        }
     }
 }

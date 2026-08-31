@@ -1,8 +1,8 @@
 //! Closed, bounded GPUI form state that constructs only typed application inputs.
 
 use wave_application_core::{
-    ApplicationInput, ContentId, CorrelationId, InconsistentRecovery, InputText, OperationKey, Pin,
-    ResourceBudget,
+    ApplicationInput, ContentId, CorrelationId, InconsistentRecovery, InputText,
+    InputTextJoinError, OperationKey, Pin, ResourceBudget,
 };
 
 use crate::ServiceAction;
@@ -186,6 +186,17 @@ pub enum FormError {
         actual: usize,
         /// Fixed accepted UTF-8 byte length.
         maximum: usize,
+    },
+    /// A text edit's mathematical joined length cannot be represented by `usize`.
+    InputLengthOverflow {
+        /// Closed field that rejected the edit.
+        field: FormField,
+        /// Existing prefix byte length.
+        prefix: usize,
+        /// Inserted byte length.
+        inserted: usize,
+        /// Existing suffix byte length.
+        suffix: usize,
     },
     /// The selected closed form has no caller-controlled result limit.
     LimitUnavailable,
@@ -632,36 +643,10 @@ fn append_input(
     if appended.is_empty() {
         return Err(FormError::EmptyTextEdit { field });
     }
-    let current = slot.as_ref().map_or(&[][..], |value| value.as_ref());
-    let next = current
-        .len()
-        .checked_add(appended.len())
-        .ok_or(FormError::InputTooLong {
-            field,
-            actual: usize::MAX,
-            maximum: wave_application_core::INPUT_TEXT_BYTES,
-        })?;
-    if next > wave_application_core::INPUT_TEXT_BYTES {
-        return Err(FormError::InputTooLong {
-            field,
-            actual: next,
-            maximum: wave_application_core::INPUT_TEXT_BYTES,
-        });
-    }
-    let mut bytes = [0; wave_application_core::INPUT_TEXT_BYTES];
-    bytes[..current.len()].copy_from_slice(current);
-    bytes[current.len()..next].copy_from_slice(appended.as_bytes());
-    let text = core::str::from_utf8(&bytes[..next]).map_err(|_| FormError::InputTooLong {
-        field,
-        actual: next,
-        maximum: wave_application_core::INPUT_TEXT_BYTES,
-    })?;
+    let current = slot.as_deref().map_or("", |current| current);
     *slot = Some(
-        InputText::try_from_str(text).map_err(|error| FormError::InputTooLong {
-            field,
-            actual: error.actual,
-            maximum: error.maximum,
-        })?,
+        InputText::try_from_parts(current, appended, "")
+            .map_err(|error| form_join_error(field, error))?,
     );
     Ok(())
 }
@@ -670,20 +655,40 @@ fn erase_input(slot: &mut Option<InputText>, field: FormField) -> Result<(), For
     let Some(current) = slot else {
         return Err(FormError::EmptyTextEdit { field });
     };
-    let bytes = current.as_ref();
-    if bytes.is_empty() {
+    if current.is_empty() {
         return Err(FormError::EmptyTextEdit { field });
     }
-    let mut boundary = bytes.len() - 1;
-    while boundary > 0 && bytes[boundary] & 0b1100_0000 == 0b1000_0000 {
-        boundary -= 1;
-    }
+    let boundary = current
+        .char_indices()
+        .next_back()
+        .map_or(0, |(boundary, _character)| boundary);
     if boundary == 0 {
         *slot = None;
         return Ok(());
     }
-    let text =
-        core::str::from_utf8(&bytes[..boundary]).map_err(|_| FormError::EmptyTextEdit { field })?;
-    *slot = Some(InputText::try_from_str(text).map_err(|_| FormError::EmptyTextEdit { field })?);
+    *slot = Some(
+        InputText::try_from_parts(&current[..boundary], "", "")
+            .map_err(|error| form_join_error(field, error))?,
+    );
     Ok(())
+}
+
+const fn form_join_error(field: FormField, error: InputTextJoinError) -> FormError {
+    match error {
+        InputTextJoinError::LengthOverflow {
+            prefix,
+            inserted,
+            suffix,
+        } => FormError::InputLengthOverflow {
+            field,
+            prefix,
+            inserted,
+            suffix,
+        },
+        InputTextJoinError::InputTooLong(error) => FormError::InputTooLong {
+            field,
+            actual: error.actual,
+            maximum: error.maximum,
+        },
+    }
 }

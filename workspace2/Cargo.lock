@@ -7073,6 +7073,7 @@ dependencies = [
 name = "wave-application-core"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "nudox-adaptive",
  "nudox-compile-registry",
  "nudox-compile-vocab",

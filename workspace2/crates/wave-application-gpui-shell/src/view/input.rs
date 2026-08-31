@@ -7,7 +7,7 @@ use gpui::{
     Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, IntoElement, Pixels,
     Point, UTF16Selection, Window, canvas, point, prelude::*, px, size,
 };
-use wave_application_core::{INPUT_TEXT_BYTES, InputText};
+use wave_application_core::{InputText, InputTextJoinError};
 
 use crate::{FormError, FormField, FormState, NativeTextInputError, TextInputTarget};
 
@@ -62,20 +62,18 @@ impl GpuiShellView {
     }
 
     fn text_for_target(&self, target: TextInputTarget) -> &str {
-        let value = match target {
-            TextInputTarget::Palette => {
-                return self
-                    .state
-                    .navigation
-                    .palette
-                    .query_text()
-                    .unwrap_or_default();
-            }
-            TextInputTarget::Form(field) => form_text(self.state.form.as_ref(), field),
-        };
-        value
-            .and_then(|text| core::str::from_utf8(text.as_ref()).ok())
-            .unwrap_or_default()
+        match target {
+            TextInputTarget::Palette => self
+                .state
+                .navigation
+                .palette
+                .query_text()
+                .map_or("", |query| query),
+            TextInputTarget::Form(field) => match form_text(self.state.form.as_ref(), field) {
+                Some(text) => text,
+                None => "",
+            },
+        }
     }
 
     fn synchronize_native_target(&mut self) -> Option<TextInputTarget> {
@@ -106,31 +104,35 @@ impl GpuiShellView {
         let current = self.text_for_target(target);
         let range_utf16 = requested_range.unwrap_or_else(|| self.native_input.selection.clone());
         let range = byte_range_from_utf16(current, range_utf16);
-        let next_length = current
-            .len()
-            .checked_sub(range.end.saturating_sub(range.start))
-            .and_then(|retained| retained.checked_add(replacement.len()))
-            .unwrap_or(usize::MAX);
-        if next_length > INPUT_TEXT_BYTES {
-            let error = NativeTextInputError {
-                target,
-                actual: next_length,
-                maximum: INPUT_TEXT_BYTES,
-            };
-            self.retain_native_input_error(error);
-            return Err(error);
-        }
-
-        let mut bytes = [0_u8; INPUT_TEXT_BYTES];
-        bytes[..range.start].copy_from_slice(&current.as_bytes()[..range.start]);
-        let inserted_end = range.start + replacement.len();
-        bytes[range.start..inserted_end].copy_from_slice(replacement.as_bytes());
-        bytes[inserted_end..next_length].copy_from_slice(&current.as_bytes()[range.end..]);
-        let Some(next) = core::str::from_utf8(&bytes[..next_length]).ok() else {
-            return Ok(None);
-        };
-        let Some(value) = InputText::try_from_str(next).ok() else {
-            return Ok(None);
+        let value = match InputText::try_from_parts(
+            &current[..range.start],
+            replacement,
+            &current[range.end..],
+        ) {
+            Ok(value) => value,
+            Err(source) => {
+                let error = match source {
+                    InputTextJoinError::InputTooLong(source) => {
+                        NativeTextInputError::InputTooLong {
+                            target,
+                            actual: source.actual,
+                            maximum: source.maximum,
+                        }
+                    }
+                    InputTextJoinError::LengthOverflow {
+                        prefix,
+                        inserted,
+                        suffix,
+                    } => NativeTextInputError::InputLengthOverflow {
+                        target,
+                        prefix,
+                        inserted,
+                        suffix,
+                    },
+                };
+                self.retain_native_input_error(error);
+                return Err(error);
+            }
         };
         let insertion_start = current[..range.start].encode_utf16().count();
         self.replace_target_text(target, value);
@@ -145,21 +147,46 @@ impl GpuiShellView {
     fn replace_target_text(&mut self, target: TextInputTarget, value: InputText) {
         match target {
             TextInputTarget::Palette => self.state.replace_palette_query(value),
-            TextInputTarget::Form(field) => {
-                let error = self.state.replace_form_text(field, value).err();
-                self.state.retain_form_error(error);
-            }
+            TextInputTarget::Form(field) => match self.state.replace_form_text(field, value) {
+                Ok(()) => {}
+                Err(error) => debug_assert_eq!(self.state.form_error, Some(error)),
+            },
         }
     }
 
     fn retain_native_input_error(&mut self, error: NativeTextInputError) {
         self.state.retain_input_error(Some(error));
-        if let TextInputTarget::Form(field) = error.target {
-            self.state.retain_form_error(Some(FormError::InputTooLong {
+        match error {
+            NativeTextInputError::InputTooLong {
+                target: TextInputTarget::Form(field),
+                actual,
+                maximum,
+            } => self.state.retain_form_error(Some(FormError::InputTooLong {
                 field,
-                actual: error.actual,
-                maximum: error.maximum,
-            }));
+                actual,
+                maximum,
+            })),
+            NativeTextInputError::InputLengthOverflow {
+                target: TextInputTarget::Form(field),
+                prefix,
+                inserted,
+                suffix,
+            } => self
+                .state
+                .retain_form_error(Some(FormError::InputLengthOverflow {
+                    field,
+                    prefix,
+                    inserted,
+                    suffix,
+                })),
+            NativeTextInputError::InputTooLong {
+                target: TextInputTarget::Palette,
+                ..
+            }
+            | NativeTextInputError::InputLengthOverflow {
+                target: TextInputTarget::Palette,
+                ..
+            } => {}
         }
     }
 }
@@ -229,7 +256,8 @@ impl EntityInputHandler for GpuiShellView {
     ) {
         let inserted = match self.replace_native_text(range, new_text) {
             Ok(Some(inserted)) => inserted,
-            Err(_) => {
+            Err(error) => {
+                debug_assert_eq!(self.state.input_error, Some(error));
                 cx.notify();
                 return;
             }

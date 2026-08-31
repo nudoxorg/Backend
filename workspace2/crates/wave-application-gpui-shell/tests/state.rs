@@ -13,8 +13,8 @@ use wave_application_core::{
 use wave_application_gpui_shell::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
     FormField, HealthProjection, MAX_BATCH_REPLIES, MotionPreference, PaletteDirection,
-    ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT, ServiceAction, ShellState, Surface,
-    SurfaceStatus,
+    PaletteEditError, ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT, ServiceAction,
+    ShellState, Surface, SurfaceStatus,
 };
 
 #[derive(Debug)]
@@ -186,6 +186,26 @@ fn palette_filter_reselects_a_matching_stable_identity() -> Result<(), TestError
 }
 
 #[test]
+fn palette_edit_rejections_retain_the_exact_closed_cause() {
+    let mut state = ShellState::default();
+    state.open_palette();
+
+    assert_eq!(
+        state.erase_palette_character(),
+        Err(PaletteEditError::NothingToErase)
+    );
+    assert_eq!(state.palette_error, Some(PaletteEditError::NothingToErase));
+
+    let over_bound = "x".repeat(wave_application_core::INPUT_TEXT_BYTES + 1);
+    let expected = PaletteEditError::InputTooLong {
+        actual: over_bound.len(),
+        maximum: wave_application_core::INPUT_TEXT_BYTES,
+    };
+    assert_eq!(state.append_palette_text(&over_bound), Err(expected));
+    assert_eq!(state.palette_error, Some(expected));
+}
+
+#[test]
 fn keyboard_shortcuts_and_status_destinations_are_closed_visible_facts() {
     assert!(ROUTES[4].shortcut.is_some());
     let Some(shortcut) = ROUTES[4].shortcut else {
@@ -260,6 +280,10 @@ fn typed_generate_form_requires_each_field_and_constructs_only_application_input
         state.submit_form(CorrelationId(60)),
         Err(FormError::MissingText(FormField::Language))
     );
+    assert_eq!(
+        state.form_error,
+        Some(FormError::MissingText(FormField::Language))
+    );
 
     state.replace_form_text(FormField::Language, text("rust")?)?;
     state.replace_form_text(FormField::Stage, text("parse")?)?;
@@ -272,6 +296,38 @@ fn typed_generate_form_requires_each_field_and_constructs_only_application_input
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn field_and_limit_transitions_retain_exact_form_rejections() -> Result<(), TestError> {
+    let mut state = ShellState::default();
+    assert_eq!(
+        state.select_form_field(FormField::Query),
+        Err(FormError::NoActiveForm)
+    );
+    assert_eq!(state.form_error, Some(FormError::NoActiveForm));
+
+    state.select_action(ServiceAction::Health);
+    assert_eq!(
+        state.select_form_field(FormField::Snapshot),
+        Err(FormError::FieldUnavailable(FormField::Snapshot))
+    );
+    assert_eq!(
+        state.form_error,
+        Some(FormError::FieldUnavailable(FormField::Snapshot))
+    );
+
+    let Ok(limit) = ResultLimit::new(2) else {
+        return Err(TestError::Unexpected(
+            "the fixed visible result limit must remain accepted",
+        ));
+    };
+    assert_eq!(
+        state.replace_form_limit(limit),
+        Err(FormError::LimitUnavailable)
+    );
+    assert_eq!(state.form_error, Some(FormError::LimitUnavailable));
     Ok(())
 }
 
