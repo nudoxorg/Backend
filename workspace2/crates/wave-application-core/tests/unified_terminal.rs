@@ -1,23 +1,15 @@
-use std::error::Error;
-
 use nudox_compile_vocab::{FrontendError, Language, Stage};
 use wave_application_core::{
     ApplicationInput, ApplicationService, Capability, CapabilityHealth, CorrelationId,
-    DiagnosticCode, DiagnosticDetail, InputText, ReplyBody, Terminal,
+    DiagnosticCode, DiagnosticDetail, InputText, InputTextError, ReplyBody, Terminal,
 };
 
-fn text(value: &str) -> Result<InputText, Box<dyn Error>> {
-    InputText::try_from_str(value).map_err(|error| {
-        format!(
-            "test input has {} bytes but the transport accepts {}",
-            error.actual, error.maximum
-        )
-        .into()
-    })
+fn text(value: &str) -> Result<InputText, InputTextError> {
+    InputText::try_from_str(value)
 }
 
 #[test]
-fn registry_echo_is_not_generated_compiler_truth() -> Result<(), Box<dyn Error>> {
+fn registry_echo_is_not_generated_compiler_truth() -> Result<(), InputTextError> {
     let mut service = ApplicationService::new();
 
     let generated = service.execute(&ApplicationInput::Generate {
@@ -45,17 +37,18 @@ fn registry_echo_is_not_generated_compiler_truth() -> Result<(), Box<dyn Error>>
     let health = service.execute(&ApplicationInput::Health {
         correlation: CorrelationId(2),
     });
-    let ReplyBody::Health(facts) = health.body else {
-        return Err("health request did not return typed capability facts".into());
-    };
-    assert!(facts.contains(&CapabilityHealth::LocalReady(Capability::CompilerRegistry,)));
-    assert!(facts.contains(&CapabilityHealth::Unavailable(Capability::CompilerOutput,)));
+    assert!(matches!(
+        health.body,
+        ReplyBody::Health(facts)
+            if facts.contains(&CapabilityHealth::LocalReady(Capability::CompilerRegistry))
+                && facts.contains(&CapabilityHealth::Unavailable(Capability::CompilerOutput))
+    ));
 
     Ok(())
 }
 
 #[test]
-fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), Box<dyn Error>> {
+fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), InputTextError> {
     let mut service = ApplicationService::new();
     let rejected = service.execute(&ApplicationInput::Generate {
         correlation: CorrelationId(3),
