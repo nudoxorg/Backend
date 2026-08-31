@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-hydration = { path = "../nudox-hydration" }
 nudox-id = { path = "../nudox-id" }
 nudox-ir-format = { path = "../nudox-ir-format" }
 thiserror.workspace = true
