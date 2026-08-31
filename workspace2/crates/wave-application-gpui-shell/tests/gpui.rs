@@ -10,7 +10,7 @@ use wave_application_core::{
     RetryBudget, Terminal,
 };
 #[cfg(feature = "real-gpui")]
-use wave_application_gpui_shell::{GpuiShellView, ProjectionState};
+use wave_application_gpui_shell::{CommandId, GpuiShellView, ProjectionState, Route};
 
 #[cfg(feature = "real-gpui")]
 fn pin() -> Pin {
@@ -86,7 +86,8 @@ fn assert_inconsistent_reply(reply: &wave_application_core::ApplicationReply, ob
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
 fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|_, _| GpuiShellView::new(ApplicationService::new()));
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
     let recover = ApplicationInput::RecoverLocal {
         correlation: CorrelationId(91),
         pin: pin(),
@@ -153,7 +154,8 @@ fn entity_owns_service_and_projects_recover_pending_completed(cx: &mut TestAppCo
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
 fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|_, _| GpuiShellView::new(ApplicationService::new()));
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
     let recover = ApplicationInput::RecoverLocal {
         correlation: CorrelationId(101),
         pin: pin(),
@@ -210,8 +212,9 @@ fn entity_cancellation_projects_cancelled_and_keeps_bundle_inactive(cx: &mut Tes
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
-fn entity_projects_compiler_passthrough_without_claiming_artifact(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(|_, _| GpuiShellView::default());
+fn entity_projects_unavailable_compiler_output_without_claiming_artifact(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
     let source = bounded_text("fn entity() {} ");
     let language = bounded_text("rust");
     let stage = bounded_text("parse");
@@ -235,11 +238,16 @@ fn entity_projects_compiler_passthrough_without_claiming_artifact(cx: &mut TestA
     let Some(reply) = require_reply(&result) else {
         return;
     };
-    assert!(matches!(reply.body, ReplyBody::CompilerPassthrough { .. }));
+    assert!(matches!(
+        reply.body,
+        ReplyBody::DependencyUnavailable {
+            capability: Capability::CompilerOutput,
+        }
+    ));
     assert_eq!(
         reply.terminal,
-        Terminal::Partial {
-            emitted: 1,
+        Terminal::Degraded {
+            emitted: 0,
             unavailable: Capability::CompilerOutput,
         }
     );
@@ -248,5 +256,35 @@ fn entity_projects_compiler_passthrough_without_claiming_artifact(cx: &mut TestA
             view.state().summaries()[0].state,
             ProjectionState::Degraded(Capability::CompilerOutput)
         );
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn entity_keyboard_palette_keeps_selection_by_command_identity(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-k");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.state().navigation.palette.visible);
+        assert_eq!(
+            view.state().navigation.palette.selected,
+            CommandId::OpenHome
+        );
+    });
+
+    cx.simulate_keystrokes("down");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(
+            view.state().navigation.palette.selected,
+            CommandId::OpenLibraries
+        );
+    });
+
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert!(!view.state().navigation.palette.visible);
+        assert_eq!(view.state().navigation.route, Route::Libraries);
     });
 }

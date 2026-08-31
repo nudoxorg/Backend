@@ -8,7 +8,8 @@ use wave_application_core::{
 };
 use wave_application_gpui_shell::{
     AdaptiveProjection, ApplyError, BatchReceipt, ExecutionProjection, HealthProjection,
-    MAX_BATCH_REPLIES, ProjectionState, SURFACE_COUNT, ShellState, Surface, SurfaceStatus,
+    MAX_BATCH_REPLIES, PaletteDirection, ProjectionState, Route, SURFACE_COUNT, ShellState,
+    Surface, SurfaceStatus,
 };
 
 #[derive(Debug)]
@@ -107,10 +108,58 @@ fn first_frame_is_stable_without_polling_or_allocated_rows() {
     );
     assert_eq!(state.last_correlation(), None);
     assert_eq!(state.notification_epoch, 0);
+    assert_eq!(state.navigation.route, Route::Home);
+    assert!(!state.navigation.palette.visible);
 }
 
 #[test]
-fn compiler_passthrough_is_projected_as_degraded_artifact_output() -> Result<(), TestError> {
+fn palette_selection_is_a_command_identity_and_returns_its_virtual_reveal_row() {
+    let mut state = ShellState::default();
+    state.open_palette();
+
+    assert!(state.navigation.palette.visible);
+    assert_eq!(
+        state.move_palette_selection(PaletteDirection::Next),
+        Some(1)
+    );
+    assert_eq!(
+        state.move_palette_selection(PaletteDirection::Next),
+        Some(2)
+    );
+    assert_eq!(state.confirm_palette(), Some(Route::Search));
+    assert_eq!(state.navigation.route, Route::Search);
+    assert!(!state.navigation.palette.visible);
+}
+
+#[test]
+fn palette_and_navigation_share_the_connections_destination() {
+    let mut state = ShellState::default();
+    state.select_route(Route::Connections);
+    assert_eq!(state.navigation.route, Route::Connections);
+
+    state.open_palette();
+    assert_eq!(
+        state.move_palette_selection(PaletteDirection::Previous),
+        Some(4)
+    );
+    assert_eq!(state.confirm_palette(), Some(Route::Settings));
+    assert_eq!(state.navigation.route, Route::Settings);
+}
+
+#[test]
+fn palette_filter_reselects_a_matching_stable_identity() -> Result<(), TestError> {
+    let mut state = ShellState::default();
+    state.open_palette();
+    state.replace_palette_query(text("settings")?);
+
+    assert_eq!(state.navigation.palette.result_count(), 1);
+    assert_eq!(state.confirm_palette(), Some(Route::Settings));
+    assert_eq!(state.navigation.route, Route::Settings);
+    Ok(())
+}
+
+#[test]
+fn unavailable_compiler_output_is_projected_without_an_echo_artifact() -> Result<(), TestError> {
     let mut service = ApplicationService::new();
     let source = text("fn gpui() {}")?;
     let reply = service.execute(&ApplicationInput::Generate {
@@ -123,14 +172,17 @@ fn compiler_passthrough_is_projected_as_degraded_artifact_output() -> Result<(),
     let mut state = ShellState::default();
     apply(&mut state, &[reply])?;
 
-    assert!(
-        matches!(reply.body, ReplyBody::CompilerPassthrough { source: returned, .. } if returned == source)
-    );
+    assert!(matches!(
+        reply.body,
+        ReplyBody::DependencyUnavailable {
+            capability: Capability::CompilerOutput,
+        }
+    ));
     assert_eq!(
         state.generation,
         SurfaceStatus::Degraded {
-            terminal: Terminal::Partial {
-                emitted: 1,
+            terminal: Terminal::Degraded {
+                emitted: 0,
                 unavailable: Capability::CompilerOutput,
             },
             capability: Capability::CompilerOutput,

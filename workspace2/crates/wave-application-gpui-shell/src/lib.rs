@@ -6,7 +6,29 @@
 //! and terminal semantics. The fallback projection is useful to headless
 //! callers; the `real-gpui` feature adds the entity-backed [`GpuiShellView`].
 
+mod navigation;
 mod state;
+
+#[cfg(feature = "real-gpui")]
+gpui::actions!(
+    wave_application_shell,
+    [
+        /// Opens the keyboard-first command palette.
+        OpenPalette,
+        /// Dismisses the visible command palette.
+        DismissPalette,
+        /// Moves the palette selection down one visible row.
+        SelectNextPaletteCommand,
+        /// Moves the palette selection up one visible row.
+        SelectPreviousPaletteCommand,
+        /// Confirms the selected palette command.
+        ConfirmPaletteCommand
+    ]
+);
+
+pub use navigation::{
+    CommandId, CommandPalette, MAX_PALETTE_RESULTS, NavigationState, PaletteDirection, Route,
+};
 
 pub use state::{
     AdaptiveProjection, ApplyError, BatchReceipt, ExecutionProjection, HealthProjection,

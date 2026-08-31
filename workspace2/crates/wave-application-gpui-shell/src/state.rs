@@ -7,6 +7,9 @@ use wave_application_core::{
     DiagnosticCode, ExecutionState, OperationKey, ReplyBody, Terminal,
 };
 
+use crate::{CommandId, NavigationState, PaletteDirection, Route};
+use wave_application_core::InputText;
+
 /// Maximum number of replies accepted at one UI boundary.
 pub const MAX_BATCH_REPLIES: usize = 8;
 
@@ -295,6 +298,8 @@ pub struct ShellState {
 /// Immutable public projection facts for one application window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShellProjection {
+    /// Stable product information architecture and visible-only palette state.
+    pub navigation: NavigationState,
     /// Compiler-generation surface state.
     pub generation: SurfaceStatus,
     /// Adaptive placement projection.
@@ -322,6 +327,44 @@ impl Deref for ShellState {
 }
 
 impl ShellState {
+    /// Selects a product route without changing application-service facts.
+    pub fn select_route(&mut self, route: Route) {
+        self.projection.navigation.select_route(route);
+    }
+
+    /// Opens the visible-only command palette.
+    pub fn open_palette(&mut self) {
+        self.projection.navigation.palette.open();
+    }
+
+    /// Dismisses the command palette and clears its transient query.
+    pub fn dismiss_palette(&mut self) {
+        self.projection.navigation.palette.dismiss();
+    }
+
+    /// Moves the authoritative command identity and returns its virtual row for reveal.
+    #[must_use]
+    pub fn move_palette_selection(&mut self, direction: PaletteDirection) -> Option<usize> {
+        self.projection.navigation.palette.move_selection(direction)
+    }
+
+    /// Selects a visible palette command by its stable identity.
+    pub fn select_palette_command(&mut self, command: CommandId) {
+        self.projection.navigation.palette.select(command);
+    }
+
+    /// Replaces the palette's visible-only filter with transport-validated text.
+    pub fn replace_palette_query(&mut self, query: InputText) {
+        self.projection.navigation.palette.replace_query(query);
+    }
+
+    /// Confirms the palette selection, routing through the same navigation state as the rail.
+    #[must_use]
+    pub fn confirm_palette(&mut self) -> Option<Route> {
+        let route = self.projection.navigation.palette.confirm()?;
+        self.select_route(route);
+        Some(route)
+    }
     /// Applies a caller-owned bounded reply slice and emits one coalesced notification epoch.
     ///
     /// The length check happens before any projection mutation. The state contains only fixed
@@ -436,10 +479,6 @@ impl ShellState {
         });
 
         match reply.body {
-            ReplyBody::CompilerPassthrough { .. } => {
-                self.projection.generation =
-                    status_from_terminal(reply.terminal, reply.diagnostic);
-            }
             ReplyBody::DependencyUnavailable { capability } => {
                 if let Some(status) = self.status_for(capability) {
                     status.set_degraded(reply.terminal, capability);
@@ -512,6 +551,7 @@ impl Default for ShellState {
     fn default() -> Self {
         Self {
             projection: ShellProjection {
+                navigation: NavigationState::default(),
                 generation: SurfaceStatus::Checking,
                 adaptive: AdaptiveProjection::Checking,
                 execution: ExecutionProjection::Checking,
