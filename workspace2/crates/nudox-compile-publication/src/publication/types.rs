@@ -417,7 +417,6 @@ pub struct UncommittedPublicationFacts {
 
 /// Journal terminal after immutable compiler bytes existed but before a stable publication receipt.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum UncommittedPublication {
     /// Bounded durable publisher admission was full; no compiler generation became selected.
     #[error("compiler publication admission is full")]
@@ -469,7 +468,6 @@ pub enum UncommittedPublication {
     clippy::large_enum_variant,
     reason = "cold exact fragment mismatch retains both complete 404-byte package facts without an allocation"
 )]
-#[non_exhaustive]
 #[allow(
     missing_docs,
     reason = "each field repeats the exact fact documented by its enclosing terminal"
