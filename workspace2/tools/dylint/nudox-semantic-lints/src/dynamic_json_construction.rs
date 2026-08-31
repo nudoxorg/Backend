@@ -32,7 +32,7 @@ pub(crate) fn check(
         call_site,
         "shipping JSON is constructed through `serde_json::json!`",
         None,
-        "replace the closed payload with a typed Serialize DTO; allow this lint only at a documented genuinely open JSON boundary",
+        "replace closed payloads with typed Serialize DTOs; wrap genuinely open extension data in one typed adapter-edge newtype",
     );
 }
 
