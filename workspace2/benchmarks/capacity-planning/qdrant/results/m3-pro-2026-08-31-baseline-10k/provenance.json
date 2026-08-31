@@ -1,0 +1,99 @@
+{
+  "schema": "nudox.qdrant-capacity.provenance.v1",
+  "config": {
+    "output": "/Users/mileswirht/Downloads/backend/workspace2/benchmarks/capacity-planning/qdrant/results/m3-pro-2026-08-31-baseline-10k",
+    "project": "/Users/mileswirht/Downloads/backend/workspace2",
+    "qdrant_binary": "/nix/store/cdyx63w084jhk3yg8x0v1f25z8d06myi-qdrant-1.18.2/bin/qdrant",
+    "runner": "/Users/mileswirht/Downloads/backend/workspace2/benchmarks/capacity-planning/qdrant/runner.py",
+    "http_port": 26335,
+    "grpc_port": 26336,
+    "scenario_set": "baseline-10k",
+    "restart_scenario": "baseline-768d-10k",
+    "batch_points": 128,
+    "query_samples": 48,
+    "multicore_concurrency": 4,
+    "timeout_seconds": 30.0,
+    "optimizer_timeout_seconds": 900.0,
+    "seed": 336437989208
+  },
+  "commands": {
+    "qdrant_version": {
+      "command": [
+        "/nix/store/cdyx63w084jhk3yg8x0v1f25z8d06myi-qdrant-1.18.2/bin/qdrant",
+        "--version"
+      ],
+      "output": "qdrant 1.18.2",
+      "availability": "measured"
+    },
+    "rustc_version": {
+      "command": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "output": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+      "availability": "measured"
+    },
+    "uname": {
+      "command": [
+        "uname",
+        "-a"
+      ],
+      "output": "Darwin mileswirht 24.6.0 Darwin Kernel Version 24.6.0: Mon Jan 19 21:59:23 PST 2026; root:xnu-11417.140.69.708.3~1/RELEASE_ARM64_T6030 arm64 Darwin",
+      "availability": "measured"
+    },
+    "macos_version": {
+      "command": [
+        "sw_vers"
+      ],
+      "output": "ProductName:\t\tmacOS\nProductVersion:\t\t15.7.4\nBuildVersion:\t\t24G517",
+      "availability": "measured"
+    },
+    "cpu_brand": {
+      "command": [
+        "sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "output": "Apple M3 Pro",
+      "availability": "measured"
+    },
+    "physical_cores": {
+      "command": [
+        "sysctl",
+        "-n",
+        "hw.physicalcpu"
+      ],
+      "output": "11",
+      "availability": "measured"
+    },
+    "memory_bytes": {
+      "command": [
+        "sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "output": "38654705664",
+      "availability": "measured"
+    },
+    "source_head": {
+      "command": [
+        "git",
+        "-C",
+        "/Users/mileswirht/Downloads/backend/workspace2",
+        "rev-parse",
+        "HEAD"
+      ],
+      "output": "f7e6d26cb2f5bd4798998703e6ee2ee8ceb25cca",
+      "availability": "measured"
+    }
+  },
+  "qdrant_binary_sha256": "be7cfb737763a43f7f63bcc6495f6969bbcef22e24796f68ca79b93b795fa3d4",
+  "benchmark_source_sha256": {
+    "benchmarks/capacity-planning/qdrant/runner.py": "2c22e594462f188f7f071e17ca2ccae3acea7038fefd7b1b542b633691124ba3",
+    "benchmarks/capacity-planning/qdrant/launch.py": "f0e7ce6638ab78f175244676e7d3103f6196e70e04c9f71fe6d88823d1e6b724",
+    "benchmarks/capacity-planning/qdrant/run-local-nix.sh": "56a6403293e5718564a064f17d29ad3d78b17dca7654e305baf718e96d8000ae"
+  },
+  "base_binary_includes_embedding_runtime": false,
+  "embedding_inference": "unmeasured_external_service"
+}

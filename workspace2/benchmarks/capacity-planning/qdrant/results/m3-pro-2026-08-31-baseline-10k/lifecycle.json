@@ -1,0 +1,51 @@
+{
+  "schema": "nudox.qdrant-capacity.lifecycle.v1",
+  "cold": {
+    "service": {
+      "phase": "start_cold",
+      "readiness_wall_ns": 270422000,
+      "qdrant_pid": 96986,
+      "time_wrapper_pid": 96982,
+      "command": [
+        "/usr/bin/time",
+        "-l",
+        "/nix/store/cdyx63w084jhk3yg8x0v1f25z8d06myi-qdrant-1.18.2/bin/qdrant",
+        "--disable-telemetry"
+      ]
+    },
+    "stop": {
+      "exit_code": 0,
+      "time_wrapper_pid": 96982,
+      "qdrant_pid": 96986
+    },
+    "process_time": {
+      "raw_file": "qdrant-start_cold.time.txt",
+      "maximum_resident_set_bytes": 1744470016,
+      "raw": "      222.26 real        45.98 user        32.04 sys\n          1744470016  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n             1124130  page reclaims\n             1756095  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                1497  messages sent\n                8875  messages received\n                   1  signals received\n              127188  voluntary context switches\n              601544  involuntary context switches\n        470308283237  instructions retired\n        235298593640  cycles elapsed\n           334273408  peak memory footprint\n"
+    }
+  },
+  "warm": {
+    "service": {
+      "phase": "start_warm",
+      "readiness_wall_ns": 476766000,
+      "qdrant_pid": 55674,
+      "time_wrapper_pid": 55672,
+      "command": [
+        "/usr/bin/time",
+        "-l",
+        "/nix/store/cdyx63w084jhk3yg8x0v1f25z8d06myi-qdrant-1.18.2/bin/qdrant",
+        "--disable-telemetry"
+      ]
+    },
+    "stop": {
+      "exit_code": 0,
+      "time_wrapper_pid": 55672,
+      "qdrant_pid": 55674
+    },
+    "process_time": {
+      "raw_file": "qdrant-start_warm.time.txt",
+      "maximum_resident_set_bytes": 1371734016,
+      "raw": "        4.26 real         0.91 user         0.29 sys\n          1371734016  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               83842  page reclaims\n                 552  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 389  messages sent\n                 946  messages received\n                   1  signals received\n                 347  voluntary context switches\n               11558  involuntary context switches\n          4402262954  instructions retired\n          3604113784  cycles elapsed\n           109696512  peak memory footprint\n"
+    }
+  }
+}

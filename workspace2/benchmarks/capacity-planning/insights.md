@@ -21,7 +21,19 @@ inferences from those sources and must be recomputed with the worksheet and curr
 - Vector: Qdrant’s capacity guide provides a concrete planning method: data plus HNSW graph plus
   quantization/rescore copies, then about 20% headroom; its graph is random-read sensitive and
   should remain on low-latency storage. Its cited formula is a planning input, not a NUDOX
-  measurement. Source: [Qdrant capacity planning](https://qdrant.tech/documentation/capacity-planning/).
+  measurement. Qdrant documents that each filtered field needs a payload index; that index has
+  its own RAM/disk cost. It also documents that disk/cold vectors depend on the OS page cache and
+  fast NVMe, while indexed payload values stay in RAM. Sources: [Qdrant capacity planning](https://qdrant.tech/documentation/capacity-planning/),
+  [storage tiers](https://qdrant.tech/documentation/manage-data/storage/), and
+  [payload/vector indexing](https://qdrant.tech/documentation/manage-data/indexing/).
+- Index construction: Qdrant's optimizer documentation says indexing can be disabled during bulk
+  ingestion and enabled afterwards, but an indexing threshold of zero disables vector indexing.
+  The real runner therefore uses threshold one and refuses to call a collection complete until
+  Qdrant reports at least the requested vector count indexed. `m`, `ef_construct`, and query `ef`
+  trade graph bytes/build work/search quality and need a model-specific recall test; scalar
+  quantization changes f32 to 8-bit values and may reduce accuracy. Sources:
+  [optimizer](https://qdrant.tech/documentation/operations/optimizer/) and
+  [quantization](https://qdrant.tech/documentation/manage-data/quantization/).
 - Storage: Samsung specifies PM9D3a sequential 12 GB/s read, 6.8 GB/s write, up to 2M/400k random
   read/write IOPS, power-loss protection, and 1 DWPD over five years for selected capacities.
   Endurance must instead be calculated as measured immutable publish bytes/day × observed write
@@ -66,6 +78,37 @@ inferences from those sources and must be recomputed with the worksheet and curr
 The worksheet examples are intentionally not hardware orders. Re-run them after replacing their
 assumed p95 CPU-ms, durable bytes, query slots, model parameter count, bits, workspace, batch, and
 measured embedding throughput.
+
+## Fleet partition and scale decisions
+
+The following is a recommendation, not a reading of the M3 Pro sample. Raw 768d f32 vector bytes
+are `vectors × 3,072`: 10 million is 28.6 GiB, 100 million is 286 GiB, and one billion is 2.86 TiB
+before Qdrant payload, HNSW, WAL, optimizer, and replica overhead. The measured 10k collection
+directory is deliberately not multiplied by those figures: segment/WAL overhead at that scale is
+not fleet calibration. Package count is likewise not a compiler sizing input; use measured
+CPU-ms/request and concurrent working-set bytes in the worksheet.
+
+| tier and planning envelope | compiler/publish worker | Qdrant nodes | embedding workers | failure/scale rule |
+| --- | --- | --- | --- | --- |
+| Pilot: up to 10M 768d vectors, raw 28.6 GiB | two independently replaceable high-clock/ECC/NVMe workers; admit at 70% CPU | one shard, two replicas in two domains; 64–128 GiB ECC RAM and enterprise NVMe per node is a starting purchase envelope, subject to a 100k+ calibration | external CPU/SIMD or one isolated provider worker only after model benchmark | survive one node loss by replica/object recovery; scale compiler **up** before adding queue workers, and Qdrant **up** while a shard fits reserved RAM/NVMe |
+| Production: 100M 768d vectors, raw 286 GiB | two or more large-memory workers, idempotent publication and bounded queues | start with three replicas across three zones; shard count is `ceil(max(replicated durable / usable NVMe, hot set / usable RAM, measured QPS / admitted QPS))` | queue-fed GPU pool, VRAM admission = weights + provider workspace + batch activations | add Qdrant shards/nodes when any formula reaches 70–80% reserve or p99/SLO regresses; replicas do not substitute for shards |
+| Growth: 1B 768d vectors, raw 2.86 TiB | separate priority/tenant pools and spread independent builds; keep a vertical fast-core lane for latency | at least three zones, several shards with three replicas each; plan maintenance capacity with one node unavailable | provider/model-specific pools; no GPU runtime in the client | scale **out** shards for durable/RAM/query saturation; scale embedding horizontally on measured items/s and queue delay, not advertised FLOPS |
+
+For a bare-metal compiler candidate, the dated [AMD EPYC 9565](https://www.amd.com/en/products/processors/server/epyc/9005-series/amd-epyc-9565.html)
+is a 72-core, 12-channel DDR5 option; pair it with the PLP enterprise
+[Samsung PM9D3a](https://semiconductor.samsung.com/ssd/datacenter-ssd/) family and benchmark the
+actual compiler working set. For Qdrant's NVMe-sensitive tier, the current AWS storage-optimized
+[i7i family specification](https://docs.aws.amazon.com/ec2/latest/instancetypes/so.html) lists an
+`i7i.2xlarge` with one 1,875 GB NVMe SSD and 300k/165k read/write IOPS; use the worksheet to choose
+the size rather than treating it as a universal node. For an optional embedding worker, the primary
+cloud example remains AWS [G6e/L40S with 44 GiB](https://docs.aws.amazon.com/ec2/latest/instancetypes/ac.html).
+No current price is included because a regional authoritative quote was not captured on this date.
+
+Lean clients are a fourth, separate pool: the <50 MiB base binary contains no model, tokenizer,
+toolchain adapter, provider, or architecture kernel. Each is a signed, content-addressed optional
+capability shard with resumable range download, verification before mmap/activation, leases/LRU,
+offline policy, CPU/SIMD fallback, and only measured Metal/CUDA/DirectML/ONNX sidecars. This keeps
+downloaded capability footprint distinct from the base-binary budget.
 
 ## Calibration record
 
@@ -146,9 +189,41 @@ workspace lockfile changed independently and rejected a new locked rebuild. The 
 executable and source/executable digests above were used for those remaining wrapper captures; no
 lockfile was changed. Raw machine-readable samples remain under ignored `.runs/`.
 
-Qdrant vector transport is **not measured**: no public Qdrant client is linked. Embedding
-inference is **not measured**: no tokenizer/model runtime is linked. Vector rows are local
-projection/oracle measurements only, never embeddings or Qdrant claims.
+The Rust target has no linked Qdrant client; its vector rows remain local projection/oracle
+measurements only. The separate Qdrant REST runner is now measured below. Embedding inference is
+still **not measured**: no tokenizer/model runtime is linked, and no local model is hidden inside
+the client or Qdrant fixture.
+
+### Qdrant REST calibration — actual M3 Pro observations
+
+Pinned Nix Qdrant 1.18.2, binary SHA-256
+`be7cfb737763a43f7f63bcc6495f6969bbcef22e24796f68ca79b93b795fa3d4`, ran on the M3 Pro machine
+above at source `f7e6d26cb2f5bd4798998703e6ee2ee8ceb25cca`. The real service used one shard,
+fresh storage, f32 REST vectors, five typed payload indexes, 128-point upserts, and 48 query
+samples at concurrency 1 and 4. It waited for a green collection with `indexed_vectors_count >=
+10,000`; all captured collection results preserve the exact observed count and optimizer state.
+
+| actual 10k collection | REST upsert pts/s | end-to-end client pts/s | HNSW s | post-HNSW bytes | steady RSS bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 384d f32 | 8,337 | 351 | 2.610 | 383,248,769 | 582,762,496 |
+| 768d f32 | 6,166 | 162 | 0.788 | 416,758,182 | 997,703,680 |
+| 1536d f32 | 6,358 | 93 | 1.046 | 530,059,700 | 1,472,167,936 |
+
+The REST upsert number excludes vector generation and JSON encoding; the end-to-end number includes
+both. It is therefore an honest local client/server observation, not portable Qdrant ingest
+capacity. The service's cold three-collection envelope was 222.26 s real / 45.98 s user / 32.04 s
+system and 1,744,470,016 maximum resident-set bytes; restart was ready in 476.766 ms and its query
+envelope was 4.26 s real / 0.91 s user / 0.29 s system. Those are explicitly service envelopes,
+not stage CPU claims. Qdrant's public collection/telemetry responses exposed segment counts and
+request telemetry, but not vector/index RAM; that fact is unavailable rather than estimated.
+
+The measured 768d approximate+typed-payload C4 lever p50/p95/p99/QPS was on-disk
+5.020/20.488/40.557 ms/151.1, scalar-int8 4.811/9.579/13.781/171.0, `m=32`
+5.601/16.761/23.313/139.1, `ef_construct=200` 5.497/9.422/16.733/149.1, and `hnsw_ef=128`
+3.058/12.199/23.517/197.7. These are no-recall, one-host results: they select the next
+multi-scale/recall experiment, not an automatic production tuning choice. Multiple shards, 100k+
+collections, write-amplification after long-term compaction, and embedding inference remain
+unmeasured.
 
 ## Unmeasured sizing recommendations
 
@@ -166,9 +241,9 @@ uses 72 cores; the remaining cores serve independent requests.
 
 For an index/vector-heavy tier, compute max(replicated durable bytes / usable NVMe, hot working
 set / usable RAM, CPU-equivalent query slots, replica-domain count), then retain the configured
-reserve before declaring capacity. Qdrant's documented graph/data/quantization calculation and
-20% headroom are an external planning input; a future Qdrant transport benchmark must replace
-that planning estimate with observed transport/ingestion/query measurements.
+reserve before declaring capacity. The 10k Qdrant transport/ingestion/query observations above
+replace a missing transport claim, but do not replace a 100k+ scale, recall, or failure exercise.
+Qdrant's documented graph/data/quantization calculation and 20% headroom remain planning inputs.
 
 The same worksheet's illustrative 100 TiB primary × three replicas, 6 TiB usable NVMe/node, 16
 TiB hot set, 512 GiB usable RAM/node, and query/failure facts derive
