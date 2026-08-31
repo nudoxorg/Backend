@@ -3798,6 +3798,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-index-retrieval"
+version = "0.1.0"
+dependencies = [
+ "nudox-durable-journal",
+ "nudox-hydration",
+ "nudox-id",
+ "nudox-index-core",
+ "nudox-index-graph-vector",
+ "nudox-index-publish",
+ "nudox-index-qdrant",
+ "nudox-index-tantivy",
+ "nudox-index-trustfall",
+ "nudox-index-vocab",
+ "nudox-ir-format",
+ "nudox-ir-vocab",
+ "nudox-object",
+ "nudox-root",
+ "nudox-schema",
+ "nudox-store-memory",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "nudox-index-tantivy"
 version = "0.1.0"
 dependencies = [

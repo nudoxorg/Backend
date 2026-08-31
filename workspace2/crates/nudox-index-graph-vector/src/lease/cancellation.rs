@@ -123,7 +123,13 @@ impl Cancellation {
         slot.claimed.store(false, Ordering::Release);
     }
 
-    pub(super) fn is_cancelled(&self) -> bool {
+    /// Observes whether cancellation won before a synchronous boundary begins work.
+    ///
+    /// A blocking adapter samples this fact once before it mutates caller-owned buffers or starts
+    /// transport. It does not claim that cancellation can interrupt an already-running blocking
+    /// operation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 }
