@@ -106,6 +106,11 @@ mod tests {
         loom::model(|| crate::test_report::assert_loom(loom_transition));
     }
 
+    #[test]
+    fn loom_competing_owners_linearize_one_ready_coordinate_once() {
+        loom::model(|| crate::test_report::assert_loom(competing_take_transition));
+    }
+
     fn loom_transition() -> Result<(), ReadyTestError> {
         let ready = Arc::new(ReadyCore::new());
         let producer_ready = Arc::clone(&ready);
@@ -128,6 +133,26 @@ mod tests {
         Ok(())
     }
 
+    fn competing_take_transition() -> Result<(), ReadyTestError> {
+        let ready = Arc::new(ReadyCore::new());
+        ready.publish(SlotIndex::from_ready_word(core::num::NonZeroU64::MIN));
+
+        let first_owner = Arc::clone(&ready);
+        let first = thread::spawn(move || first_owner.take());
+        let second_owner = Arc::clone(&ready);
+        let second = thread::spawn(move || second_owner.take());
+        let first = crate::test_report::join(first.join())?;
+        let second = crate::test_report::join(second.join())?;
+
+        match (
+            first.map(SlotIndex::array_index),
+            second.map(SlotIndex::array_index),
+        ) {
+            (Some(0), None) | (None, Some(0)) => Ok(()),
+            observed => Err(ReadyTestError::CompetingTake { observed }),
+        }
+    }
+
     #[derive(Debug, Error)]
     enum ReadyTestError {
         #[error("ready producer panicked")]
@@ -136,5 +161,9 @@ mod tests {
         FirstTake { observed: Option<usize> },
         #[error("ready bitmap retained an already-consumed coordinate {observed:?}")]
         SecondTake { observed: Option<usize> },
+        #[error("two owners observed one ready coordinate as {observed:?}")]
+        CompetingTake {
+            observed: (Option<usize>, Option<usize>),
+        },
     }
 }

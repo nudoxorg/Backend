@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::{cell::Cell, rc::Rc, thread};
 use thiserror::Error;
 
 use crate::{
@@ -19,7 +19,7 @@ type ObservedRuntime<Generation, Work, Failure = core::convert::Infallible> =
 #[derive(Debug)]
 struct PanicWork {
     bytes: RetainedBytes,
-    drops: std::sync::Arc<core::sync::atomic::AtomicUsize>,
+    drops: Rc<Cell<usize>>,
     panic_on_drop: bool,
 }
 
@@ -42,7 +42,7 @@ impl Drop for PanicWork {
         reason = "this test fixture deliberately simulates an untrusted Work destructor"
     )]
     fn drop(&mut self) {
-        self.drops.fetch_add(1, Ordering::Release);
+        self.drops.set(self.drops.get().saturating_add(1));
         if self.panic_on_drop {
             panic!("adversarial work destructor panic");
         }
@@ -275,7 +275,7 @@ fn terminal_retention_is_in_place_and_inline_or_local_storage_needs_no_heap_owne
 #[test]
 fn payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop() -> Result<(), PanicScenarioError>
 {
-    let drops = std::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let drops = Rc::new(Cell::new(0));
     {
         let mut runtime = InlineRuntime::<u8, PanicWork, 1, 1>::new(budget(1)?)?;
         {
@@ -284,7 +284,7 @@ fn payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop() -> Result<(), 
                 1,
                 PanicWork {
                     bytes: RetainedBytes::from(1),
-                    drops: std::sync::Arc::clone(&drops),
+                    drops: Rc::clone(&drops),
                     panic_on_drop: false,
                 },
             )?;
@@ -304,7 +304,7 @@ fn payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop() -> Result<(), 
                 1,
                 PanicWork {
                     bytes: RetainedBytes::from(1),
-                    drops: std::sync::Arc::clone(&drops),
+                    drops: Rc::clone(&drops),
                     panic_on_drop: false,
                 },
             )?;
@@ -314,7 +314,7 @@ fn payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop() -> Result<(), 
             );
         }
     }
-    assert_eq!(drops.load(Ordering::Acquire), 2);
+    assert_eq!(drops.get(), 2);
 
     // A queued payload takes the other safe enum branch at fabric drop.
     {
@@ -324,18 +324,23 @@ fn payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop() -> Result<(), 
             1,
             PanicWork {
                 bytes: RetainedBytes::from(1),
-                drops: std::sync::Arc::clone(&drops),
+                drops: Rc::clone(&drops),
                 panic_on_drop: false,
             },
         )?;
     }
-    assert_eq!(drops.load(Ordering::Acquire), 3);
+    assert_eq!(drops.get(), 3);
     Ok(())
 }
 
 #[test]
 fn scoped_concurrent_admission_cancellation_and_owner_drain_conserve_every_credit()
 -> Result<(), TestError> {
+    fn assert_send_sync<Type: Send + Sync>() {}
+
+    // `Admission` borrows the fabric; the concurrent producer test below moves that borrowed
+    // capability through `thread::scope` without allocating an owner-lifetime `Arc`.
+    assert_send_sync::<crate::Admission<'static, u8, Work, AtomicAccounting>>();
     assert_sustained_outcome(run_sustained_outcome()?)
 }
 
@@ -590,14 +595,14 @@ fn exhausted_slot_is_retired_while_a_healthy_slot_keeps_progressing() -> Result<
 )]
 fn callback_unwind_commits_executor_unwound_before_the_original_panic_continues()
 -> Result<(), PanicScenarioError> {
-    let drops = std::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let drops = Rc::new(Cell::new(0));
     let mut runtime = ObservedRuntime::<u8, PanicWork, CallbackFailure>::new(1, budget(1)?)?;
     let (admission, mut owner) = runtime.split();
     admission.admit(
         1,
         PanicWork {
             bytes: RetainedBytes::from(1),
-            drops: std::sync::Arc::clone(&drops),
+            drops: Rc::clone(&drops),
             panic_on_drop: false,
         },
     )?;
@@ -613,7 +618,7 @@ fn callback_unwind_commits_executor_unwound_before_the_original_panic_continues(
         .poll_terminal()?
         .ok_or(PanicScenarioError::MissingTerminal)?;
     assert_eq!(terminal.outcome, TerminalOutcome::ExecutorUnwound);
-    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(drops.get(), 1);
     let metrics = runtime.metrics();
     assert_eq!(metrics.available, metrics.capacity);
     assert_eq!(metrics.checked_out, 0);
@@ -624,14 +629,14 @@ fn callback_unwind_commits_executor_unwound_before_the_original_panic_continues(
 
 #[test]
 fn typed_callback_failure_is_retained_without_panic() -> Result<(), PanicScenarioError> {
-    let drops = std::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let drops = Rc::new(Cell::new(0));
     let mut runtime = ObservedRuntime::<u8, PanicWork, CallbackFailure>::new(1, budget(1)?)?;
     let (admission, mut owner) = runtime.split();
     admission.admit(
         1,
         PanicWork {
             bytes: RetainedBytes::from(1),
-            drops: std::sync::Arc::clone(&drops),
+            drops: Rc::clone(&drops),
             panic_on_drop: false,
         },
     )?;
@@ -648,7 +653,7 @@ fn typed_callback_failure_is_retained_without_panic() -> Result<(), PanicScenari
             failure: CallbackFailure { code: 7 }
         }
     );
-    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(drops.get(), 1);
     Ok(())
 }
 
@@ -700,14 +705,14 @@ fn wrong_readiness_lanes_restore_payload_and_exact_terminal() -> Result<(), Test
 #[test]
 fn destructor_panic_after_normal_callback_keeps_the_committed_terminal()
 -> Result<(), PanicScenarioError> {
-    let drops = std::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let drops = Rc::new(Cell::new(0));
     let mut runtime = ObservedRuntime::<u8, PanicWork>::new(1, budget(1)?)?;
     let (admission, mut owner) = runtime.split();
     admission.admit(
         1,
         PanicWork {
             bytes: RetainedBytes::from(1),
-            drops: std::sync::Arc::clone(&drops),
+            drops: Rc::clone(&drops),
             panic_on_drop: true,
         },
     )?;
@@ -721,7 +726,7 @@ fn destructor_panic_after_normal_callback_keeps_the_committed_terminal()
         .poll_terminal()?
         .ok_or(PanicScenarioError::MissingTerminal)?;
     assert_eq!(terminal.outcome, TerminalOutcome::Completed);
-    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert_eq!(drops.get(), 1);
     let metrics = runtime.metrics();
     assert_eq!(metrics.available, metrics.capacity);
     assert_eq!(metrics.checked_out, 0);
