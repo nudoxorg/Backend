@@ -16,7 +16,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 nudox-compile-driver = { path = "../nudox-compile-driver" }
+nudox-compile-publication = { path = "../nudox-compile-publication" }
 nudox-compile-vocab = { path = "../nudox-compile-vocab" }
+nudox-durable-journal = { path = "../nudox-durable-journal" }
 nudox-ir-format = { path = "../nudox-ir-format" }
 nudox-store-memory = { path = "../nudox-store-memory" }
 
