@@ -1,6 +1,10 @@
 //! The concrete, fixture-free application behavior owner.
 
-use std::{future::Future, pin::Pin as TaskPin, task::Context};
+use std::{
+    future::Future,
+    pin::Pin as TaskPin,
+    task::{Context, Poll, Waker},
+};
 
 use nudox_adaptive::{
     BundleFact, BundleState, CapabilityDomain, CapabilityKind, ContentId, ExecutionRequest,
@@ -80,6 +84,30 @@ impl ApplicationService {
         reply
     }
 
+    /// Drives one admitted execution from the caller's scheduler wake rather than a request
+    /// polling loop.
+    ///
+    /// The execution future registers `context.waker()` before returning [`Poll::Pending`]. A UI
+    /// or other in-process scheduler can therefore await the operation and publish its terminal
+    /// reply without manufacturing `PollExecution` commands or using a timer. Process adapters
+    /// retain the explicit command because their framed transports are request/response based.
+    pub fn poll_admitted_execution(
+        &mut self,
+        correlation: crate::CorrelationId,
+        operation: OperationKey,
+        context: &mut Context<'_>,
+    ) -> Poll<ApplicationReply> {
+        let reply = self.poll_execution(correlation, operation, context.waker());
+        if matches!(
+            reply.body,
+            ReplyBody::Execution(ExecutionState::Pending { .. })
+        ) {
+            Poll::Pending
+        } else {
+            Poll::Ready(reply)
+        }
+    }
+
     fn dispatch(&mut self, input: &ApplicationInput) -> ApplicationReply {
         match *input {
             ApplicationInput::Generate {
@@ -130,7 +158,7 @@ impl ApplicationService {
             ApplicationInput::PollExecution {
                 correlation,
                 operation,
-            } => self.poll_execution(correlation, operation),
+            } => self.poll_execution(correlation, operation, Waker::noop()),
             ApplicationInput::Cancel {
                 correlation,
                 operation,
@@ -479,6 +507,7 @@ impl ApplicationService {
         &mut self,
         correlation: crate::CorrelationId,
         operation: OperationKey,
+        waker: &Waker,
     ) -> ApplicationReply {
         let Some(mut execution) = self.execution.take() else {
             return self.fused_or_rejected(correlation, operation);
@@ -488,10 +517,9 @@ impl ApplicationService {
             return Self::rejected(correlation, Self::operation_unavailable(operation));
         }
         let transition = execution.task.transition;
-        let waker = std::task::Waker::noop();
         let mut context = Context::from_waker(waker);
         match TaskPin::new(&mut execution.task).poll(&mut context) {
-            std::task::Poll::Pending => {
+            Poll::Pending => {
                 self.execution = Some(execution);
                 Self::execution_reply(
                     correlation,
@@ -501,13 +529,13 @@ impl ApplicationService {
                     },
                 )
             }
-            std::task::Poll::Ready(Some(terminal)) => {
+            Poll::Ready(Some(terminal)) => {
                 let state =
                     self.apply_execution_terminal(operation, execution.pin, transition, terminal);
                 self.last_execution = Some(state);
                 Self::execution_reply(correlation, state)
             }
-            std::task::Poll::Ready(None) => self.fused_or_rejected(correlation, operation),
+            Poll::Ready(None) => self.fused_or_rejected(correlation, operation),
         }
     }
 

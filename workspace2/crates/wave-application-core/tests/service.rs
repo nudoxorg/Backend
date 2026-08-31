@@ -1,5 +1,13 @@
 use core::cell::Cell;
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Wake, Waker},
+};
 
 use nudox_observe::{DropNewest, FlightRecorder, Probe};
 use wave_application_core::{
@@ -61,6 +69,19 @@ impl Error for ServiceTestError {}
 impl From<InputTextError> for ServiceTestError {
     fn from(error: InputTextError) -> Self {
         Self::Input(error)
+    }
+}
+
+#[derive(Debug, Default)]
+struct WakeFlag(AtomicBool);
+
+impl Wake for WakeFlag {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -345,6 +366,47 @@ fn cancellation_fuses_without_acquiring_and_critical_contraction_releases_after_
             ..
         }
     ));
+    Ok(())
+}
+
+#[test]
+fn admitted_execution_wakes_an_in_process_scheduler_without_poll_commands()
+-> Result<(), ServiceTestError> {
+    let mut service = ApplicationService::new();
+    let admitted = service.execute(&ApplicationInput::RecoverLocal {
+        correlation: CorrelationId(48),
+        pin: pin(),
+        bundle: bundle(),
+        budget: budget(1, 1, BatteryState::Normal),
+    });
+    let ReplyBody::ExecutionStarted { operation, .. } = admitted.body else {
+        return Err(ServiceTestError::UnexpectedReply(
+            "wake-driven acquisition admission",
+        ));
+    };
+
+    let wake_flag = Arc::new(WakeFlag::default());
+    let waker = Waker::from(Arc::clone(&wake_flag));
+    let mut context = Context::from_waker(&waker);
+    assert!(matches!(
+        service.poll_admitted_execution(CorrelationId(48), operation, &mut context),
+        Poll::Pending
+    ));
+    assert!(wake_flag.0.load(Ordering::Acquire));
+
+    let Poll::Ready(completed) =
+        service.poll_admitted_execution(CorrelationId(48), operation, &mut context)
+    else {
+        return Err(ServiceTestError::UnexpectedReply(
+            "wake-driven acquisition completion",
+        ));
+    };
+    assert!(matches!(
+        completed.body,
+        ReplyBody::Execution(ExecutionState::Completed { operation: observed, .. })
+            if observed == operation
+    ));
+    assert_eq!(completed.terminal, Terminal::Complete { emitted: 1 });
     Ok(())
 }
 
