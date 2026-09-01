@@ -9,7 +9,7 @@ use server_index_core::{
 };
 use server_index_graph_vector::{
     GraphAuthority, GraphDegradation, MissingPartitions, MissingPartitionsError,
-    StreamCapacityError, VectorAuthority, VectorSegmentDescriptor,
+    StreamCapacityError, VectorAuthority, VectorHit, VectorQueryError, VectorSegmentDescriptor,
 };
 use server_index_qdrant::{QdrantError, QueryCandidateCount};
 use server_index_tantivy::{TantivyAdapterError, TantivyTerminal};
@@ -177,6 +177,17 @@ pub enum RetrievalFailure {
     /// Exact vector partition coverage could not be derived from the pinned/reachable relation.
     #[error("vector partition coverage relation was invalid")]
     VectorCoverage(MissingPartitionsError),
+    /// Local exact-vector query rejected its retained authority, query, or output facts.
+    #[error("local vector query failed")]
+    VectorQuery(VectorQueryError),
+    /// A supplied local vector segment was not selected by the pinned boundary.
+    #[error("local vector segment {position} is not pinned for partition {partition:?}")]
+    UnpinnedVectorSegment {
+        /// Position in the supplied segment slice.
+        position: usize,
+        /// Rejected segment partition.
+        partition: server_index_graph_vector::PartitionId,
+    },
 }
 
 /// Successful query result facts, with result storage remaining caller-owned.
@@ -192,6 +203,13 @@ pub enum RetrievalResult<'output, 'bytes> {
     Trustfall(TrustfallTerminal),
     /// Qdrant initialized this many caller-owned candidate slots.
     Qdrant(QueryCandidateCount),
+    /// Caller-owned local exact-vector hits, ordered by score and stable keys.
+    Vector {
+        /// Caller-owned output slots containing the initialized hits.
+        hits: &'output [Option<VectorHit>],
+        /// Number of initialized slots in `hits`.
+        written: usize,
+    },
 }
 
 /// The sole server-operation terminal vocabulary for retrieval adapters.
