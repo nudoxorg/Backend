@@ -1,6 +1,7 @@
 //! Measures the complete sealed-snapshot ingest and query path over a deterministic 64-entity fixture.
 //! Every printed numeric value is explicitly marked measured, analytic, or unknown.
 //! The test is an executable correctness check before it is a performance observation.
+//! Publish and reopen are inherently cold single-shot setup rows; their wall values are cold.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
@@ -460,15 +461,25 @@ fn journey(directory: &std::path::Path) -> Result<(), BenchError> {
         | server_index_core::LexicalTerminal::Degraded { hits, .. } => hits,
     };
     assert_eq!(lexical_hits.len(), 8);
+    // Canonical name ordering places the eight prefix-alpha rows at entity ordinals 16..23.
+    let expected_entities = [16_u32, 17, 18, 19, 20, 21, 22, 23];
+    for (hit, expected) in lexical_hits.iter().zip(expected_entities) {
+        assert_eq!(hit.document.entity, EntityId::new(expected));
+    }
+    let mut previous_score = None;
+    for hit in lexical_hits {
+        if let Some(previous) = previous_score {
+            assert!(previous >= hit.score);
+        }
+        previous_score = Some(hit.score);
+    }
     let mut table = FacetTable::new();
     let facet = join_facets(&lexical_terminal, &exact_manifest, &mut table)
         .map_err(|_| BenchError::Query("facet".to_owned()))?;
-    assert_eq!(
-        facet.counts.count(FacetCell::Function)
-            + facet.counts.count(FacetCell::Constant)
-            + facet.counts.count(FacetCell::Record),
-        8
-    );
+    assert_eq!(facet.counts.count(FacetCell::Function), 3);
+    assert_eq!(facet.counts.count(FacetCell::Constant), 3);
+    assert_eq!(facet.counts.count(FacetCell::Record), 2);
+    assert_eq!(facet.counts.count(FacetCell::Unresolved), 0);
     let facet_reading = readings(|| {
         let mut table = FacetTable::new();
         let _ = join_facets(&lexical_terminal, &exact_manifest, &mut table);
@@ -526,21 +537,21 @@ fn journey(directory: &std::path::Path) -> Result<(), BenchError> {
     assert_eq!(vector_out[0].map(|hit| hit.entity), Some(EntityId::new(0)));
     let rss_before = rss();
     let rss_after = rss();
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     println!(
-        "environment | os={} (measured) | arch={} (measured) | profile=debug (measured)",
+        "environment | os={} (measured) | arch={} (measured) | profile={} (declared)",
         std::env::consts::OS,
-        std::env::consts::ARCH
+        std::env::consts::ARCH,
+        profile
     );
     println!(
         "stage | wall_ns_median (measured) | alloc_count (measured) | alloc_bytes (measured) | rss (measured|unknown) | work_label (analytic)"
     );
-    row(
-        "publish cold",
-        publish_wall,
-        AllocationInfo::default(),
-        rss_before,
-        "O(F·durability)",
-    );
+    row_unknown_alloc("publish cold", publish_wall, rss_before, "O(F·durability)");
     row(
         "build exact+lexical",
         build_reading.wall,
@@ -608,6 +619,17 @@ fn row(
         Err(reason) => println!(
             "{stage} | {wall} (measured) | {} (measured) | {} (measured) | unknown ({reason}) | {work} (analytic)",
             alloc.count_total, alloc.bytes_total
+        ),
+    }
+}
+
+fn row_unknown_alloc(stage: &str, wall: u128, rss_value: Result<u64, &'static str>, work: &str) {
+    match rss_value {
+        Ok(value) => println!(
+            "{stage} | {wall} (measured) | unknown (cold single-shot; not measured) | unknown (cold single-shot; not measured) | {value} (measured) | {work} (analytic)"
+        ),
+        Err(reason) => println!(
+            "{stage} | {wall} (measured) | unknown (cold single-shot; not measured) | unknown (cold single-shot; not measured) | unknown ({reason}) | {work} (analytic)"
         ),
     }
 }
