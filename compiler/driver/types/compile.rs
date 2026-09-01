@@ -27,12 +27,17 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
     let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
-    lower::emit(prepared.language, request.source, &mut facts).map_err(|cause| {
-        CompileFailure::LoweringUnsupported {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        }
+    let mut unsupported = lower::UnsupportedLane::new();
+    lower::emit(
+        prepared.language,
+        request.source,
+        &mut facts,
+        &mut unsupported,
+    )
+    .map_err(|cause| CompileFailure::LoweringUnsupported {
+        source_identity: prepared.source,
+        recipe: prepared.recipe,
+        cause,
     })?;
     let bytes = lower::admit(
         &facts,
@@ -41,22 +46,22 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
         output.fragment_output,
     )
     .map_err(|fault| match fault {
-                AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: PrepareError::SemanticData { cause },
-                },
-                AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause,
-                },
-                AdmissionFault::Write(cause) => CompileFailure::Write {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause,
-                },
-            })?;
+        AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
+            source_identity: prepared.source,
+            recipe: prepared.recipe,
+            cause: PrepareError::SemanticData { cause },
+        },
+        AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
+            source_identity: prepared.source,
+            recipe: prepared.recipe,
+            cause,
+        },
+        AdmissionFault::Write(cause) => CompileFailure::Write {
+            source_identity: prepared.source,
+            recipe: prepared.recipe,
+            cause,
+        },
+    })?;
     let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
         source_identity: prepared.source,
         recipe: prepared.recipe,
@@ -102,10 +107,10 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             recipe: prepared.recipe,
             cause,
         })?;
-    let semantic_type = tree
-        .intern_concrete(ConcreteType::Builtin(builtin_type(
-            declaration.semantic_type,
-        )))
+    let semantic_type = declaration
+        .semantic_type
+        .map(|primitive| tree.intern_concrete(ConcreteType::Builtin(builtin_type(primitive))))
+        .transpose()
         .map_err(|cause| CompileFailure::Build {
             source_identity: prepared.source,
             recipe: prepared.recipe,
@@ -116,7 +121,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         kind: item_kind(declaration.kind),
         visibility: Visibility::Public,
         parent: None,
-        semantic_type: Some(semantic_type.erase()),
+        semantic_type: semantic_type.map(|semantic_type| semantic_type.erase()),
         members: &[],
         docs: &[],
         attributes: &[],

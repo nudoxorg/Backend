@@ -8,13 +8,13 @@
 use core::mem::{align_of, size_of};
 
 use compiler_ir::{
-    CanonicalDataError, DataCanonicalization, DataCountLane, DataFacts, DataOutput, DataOutputLane,
-    DataResource, DataResourceBudget, DataScratch, DataScratchLane, canonicalize_data_with_budget,
-};
-use compiler_ir::{
     AtomId, ExternalCoordinate, ExternalFragmentId, ListSpan, ProductChildRole, ProductChildren,
     ProductConstructorFault, ProductConstructorTag, ProductId, ProductListId, ProductRef,
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+};
+use compiler_ir::{
+    CanonicalDataError, DataCanonicalization, DataCountLane, DataFacts, DataOutput, DataOutputLane,
+    DataResource, DataResourceBudget, DataScratch, DataScratchLane, canonicalize_data_with_budget,
 };
 use thiserror::Error;
 

@@ -2,15 +2,15 @@
 //! Every structural class of the embedded canonical graph rejects with its
 //! exact typed fault and operands before a borrowed view exists.
 use compiler_ir::{
+    AtomId, ListSpan, ProductChildRole, ProductChildren, ProductConstructorFault,
+    ProductConstructorTag, ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct,
+    SemanticProductChild, SemanticProductConstructor,
+};
+use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment,
     PrimitiveType, SemanticDataFault, SourceIdentity, TypeNode, WriteError,
     canonicalize_data_with_budget,
-};
-use compiler_ir::{
-    AtomId, ListSpan, ProductChildRole, ProductChildren, ProductConstructorFault,
-    ProductConstructorTag, ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct,
-    SemanticProductChild, SemanticProductConstructor,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use core::mem::size_of;

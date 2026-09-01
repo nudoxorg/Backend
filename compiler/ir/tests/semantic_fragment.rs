@@ -4,13 +4,13 @@
 use core::num::TryFromIntError;
 
 use compiler_ir::{
+    AtomId, ListSpan, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
+    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+};
+use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataScratch, EntityKind, EntityRecord,
     FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
     TypeNode, WriteError, canonicalize_data_with_budget,
-};
-use compiler_ir::{
-    AtomId, ListSpan, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
-    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};

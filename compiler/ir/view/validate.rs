@@ -1,9 +1,7 @@
 //! Defines view validate behavior for `compiler-ir`, whose purpose is to encode, validate, map, and borrow canonical compiler IR fragments.
 //! This module owns the view validate invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use crate::{
-    AtomId, EntityId, ProductChildRole, SemanticProductConstructor, TypeId,
-};
+use crate::{AtomId, EntityId, ProductChildRole, SemanticProductConstructor, TypeId};
 use heart_identity::{ContentId, HASH_BYTES, IrFragmentDomain};
 
 use crate::{

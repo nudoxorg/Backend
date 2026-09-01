@@ -2,14 +2,14 @@
 //! This module owns the lower invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_ir::{
-    AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
-    EntityKind, EntityRecord, PrepareError, PreparedFragment, PrimitiveType, RecipeFact,
-    SourceIdentity, TypeNode, WriteError, canonicalize_data_with_budget,
+    AtomId, ListSpan, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
+    ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild,
+    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeId,
 };
 use compiler_ir::{
-    AtomId, ListSpan, ProductChildRole, ProductChildren, ProductConstructorFault, ProductId,
-    ProductListId, ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild,
-    SemanticProductConstructor, TypeId,
+    AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
+    EntityKind, EntityRecord, PrepareError, PreparedFragment, PrimitiveType, RecipeFact,
+    SourceIdentity, TypeFactInput, TypeNode, WriteError, canonicalize_data_with_budget,
 };
 use compiler_vocabulary::Language;
 
@@ -24,29 +24,35 @@ mod rust;
 mod scanner;
 mod typescript;
 
-pub(super) struct Declaration<'source> {
-    pub(super) name: &'source [u8],
-    pub(super) kind: EntityKind,
-    pub(super) semantic_type: PrimitiveType,
-}
-
 pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
     scanner::java_top_level_type_name(source)
 }
 
+/// One declaration projected into the current rich-IR compatibility path.
+pub(super) struct Declaration<'source> {
+    pub(super) name: &'source [u8],
+    pub(super) kind: EntityKind,
+    pub(super) semantic_type: Option<PrimitiveType>,
+}
+
+/// Projects the first fully proven declaration without weakening the richer
+/// compact fact collector used by durable publication.
 pub(super) fn declaration<'source>(
     language: Language,
     source: &'source [u8],
 ) -> Result<Declaration<'source>, LoweringUnsupported> {
-    match language {
-        Language::Rust => rust::declaration(source),
-        Language::Python => python::declaration(source),
-        Language::Clang => clang::declaration(source),
-        Language::TypeScript => typescript::declaration(source),
-        Language::CSharp => csharp::declaration(source),
-        Language::Go => go::declaration(source),
-        Language::Java => java::declaration(source),
-    }
+    let mut facts = FactSet::new();
+    let mut unsupported = UnsupportedLane::new();
+    emit(language, source, &mut facts, &mut unsupported)?;
+    let semantic_type = match facts.fact_types[0] {
+        FactType::Primitive(primitive) => Some(primitive),
+        FactType::Opaque => None,
+    };
+    Ok(Declaration {
+        name: facts.names[0],
+        kind: facts.kinds[0],
+        semantic_type,
+    })
 }
 
 /// Dense bound of the multi-declaration semantic emission lane.
@@ -58,6 +64,64 @@ pub(super) fn declaration<'source>(
 pub(super) const MAX_EMISSION_FACTS: usize = 128;
 /// Dense bound of one fact's ordered product children.
 pub(super) const MAX_FACT_CHILDREN: usize = 8;
+
+/// Exact reason a recognized declaration form stayed outside this slice's
+/// provable emission set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UnsupportedReason {
+    /// The declaration's value type is proven but outside the closed
+    /// primitive recipe, so the compact fact would guess.
+    ClosedValueType,
+    /// The declaration form needs the real language frontend's binding
+    /// authority before any compact fact would be honest.
+    NeedsFrontend,
+}
+
+/// One recognized declaration that this slice provably cannot lower,
+/// retaining its exact source name and the exact reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct UnsupportedDeclaration<'source> {
+    pub(super) name: &'source [u8],
+    pub(super) reason: UnsupportedReason,
+}
+
+/// Caller-owned bounded lane of unsupported declarations.
+pub(super) struct UnsupportedLane<'source> {
+    len: usize,
+    names: [&'source [u8]; MAX_EMISSION_FACTS],
+    reasons: [UnsupportedReason; MAX_EMISSION_FACTS],
+}
+
+impl<'source> UnsupportedLane<'source> {
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "the initializer literals fill every fixed lane element exactly; no dynamic index exists at construction"
+    )]
+    pub(super) const fn new() -> Self {
+        Self {
+            len: 0,
+            names: [&[]; MAX_EMISSION_FACTS],
+            reasons: [UnsupportedReason::NeedsFrontend; MAX_EMISSION_FACTS],
+        }
+    }
+
+    /// Records one unsupported declaration. A full lane keeps the first
+    /// [`MAX_EMISSION_FACTS`] records; overflow is impossible before the fact
+    /// lane rejects the same source.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "the record ordinal is admitted below MAX_EMISSION_FACTS before the fixed slot writes"
+    )]
+    pub(super) fn record(&mut self, declaration: UnsupportedDeclaration<'source>) {
+        let ordinal = self.len;
+        if ordinal == MAX_EMISSION_FACTS {
+            return;
+        }
+        self.names[ordinal] = declaration.name;
+        self.reasons[ordinal] = declaration.reason;
+        self.len = ordinal + 1;
+    }
+}
 
 /// Closed declared-type fact for one emission lane row.
 ///
@@ -127,7 +191,7 @@ impl<'source> SemanticFact<'source> {
         not(test),
         allow(
             dead_code,
-            reason = "the typed child input shape ships with the lane; per-language facts consume it in the next emission card"
+            reason = "the recursive child input ships as the lane's tested contract; structural collectors prove zero-child products until native frontends lend member arenas"
         )
     )]
     #[expect(
@@ -215,13 +279,6 @@ impl<'source> FactSet<'source> {
     }
 
     /// Number of admitted facts.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the admitted-count observation ships with the lane; its consumer grows with the per-language emission card"
-        )
-    )]
     pub(super) const fn len(&self) -> usize {
         self.len
     }
@@ -363,6 +420,27 @@ const EMISSION_LANE_VISIT_RESERVATION: u64 = 4 * EMISSION_PRODUCTS + EMISSION_CH
 const PRIMITIVE_NODE_CAPACITY: usize = 3;
 /// One optional opaque-type sentinel plus one node per distinct primitive.
 const MAX_TYPE_NODES: usize = 1 + PRIMITIVE_NODE_CAPACITY;
+
+/// Leaf product constructor of every named value declaration: a bare named
+/// product with no proven children.
+pub(super) const LEAF_PRODUCT: SemanticProductConstructor = SemanticProductConstructor::generic(0);
+
+/// Admits one collector-emitted fact into the lane.
+///
+/// Collectors construct facts whose identifiers are parsed source words,
+/// whose constructors are closed constants matched to their constructed
+/// child counts, and whose targets are already-pushed ordinals; the single
+/// reachable rejection class is the bounded lane capacity. A source beyond
+/// the lane's compact-recipe capacity keeps the exact closed terminal.
+pub(super) fn push_fact<'source>(
+    facts: &mut FactSet<'source>,
+    fact: SemanticFact<'source>,
+) -> Result<usize, LoweringUnsupported> {
+    match facts.push(fact) {
+        Ok(ordinal) => Ok(ordinal),
+        Err(_) => Err(LoweringUnsupported::NoSupportedDeclaration),
+    }
+}
 
 /// Admits the ordered fact set into one prepared fragment.
 ///
@@ -532,13 +610,58 @@ pub(super) fn admit<'source, 'output>(
     )
     .map_err(AdmissionFault::Canonical)?;
 
-    let prepared = PreparedFragment::prepare_with_data(
+    let mut type_facts = [TypeFactInput {
+        owner: compiler_ir::EntityId::new(0),
+        record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
+    }; MAX_EMISSION_FACTS];
+    for ordinal in 0..fact_count {
+        let record = match facts.fact_types[ordinal] {
+            FactType::Opaque => SemanticTypeRecord {
+                tag: SemanticTypeTag::Unknown,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: None,
+                children: ListSpan::new(0, 0),
+            },
+            FactType::Primitive(primitive) => SemanticTypeRecord {
+                tag: SemanticTypeTag::Primitive,
+                payload0: match primitive {
+                    PrimitiveType::Bool => u32::from(PrimitiveShape::Bool),
+                    PrimitiveType::I32 => u32::from(PrimitiveShape::Integer),
+                    PrimitiveType::String => u32::from(PrimitiveShape::Str),
+                },
+                payload1: if primitive == PrimitiveType::I32 {
+                    32 << 1
+                } else {
+                    0
+                },
+                text: None,
+                text2: None,
+                nominal: None,
+                children: ListSpan::new(0, 0),
+            },
+        };
+        type_facts[ordinal] = TypeFactInput {
+            owner: compiler_ir::EntityId::new(ordinal as u32),
+            record,
+        };
+    }
+    let type_fact_lane = compiler_ir::TypeFactLane {
+        inputs: &type_facts[..fact_count],
+        children: &[],
+    };
+
+    let prepared = PreparedFragment::prepare_with_type_facts(
         source,
         recipe,
         &entities[..fact_count],
         node_prefix,
         &atoms[..fact_count],
-        &semantic,
+        Some(&semantic),
+        None,
+        &type_fact_lane,
     );
     write_prepared(prepared, output)
 }
@@ -551,32 +674,31 @@ fn write_prepared<'output>(
     prepared.write_into(output).map_err(AdmissionFault::Write)
 }
 
-/// Lowers one source through the per-language declaration path into the
-/// multi-declaration emission lane.
+/// Lowers one source into the multi-declaration emission lane through the
+/// per-language structural collectors.
 ///
-/// The single-declaration language paths remain the compat producers: each
-/// emits at most one provable fact as a zero-child language-owned product,
-/// and every unsupported form keeps its exact closed terminal.
+/// Each collector emits every provable declaration fact and records every
+/// recognized form it provably cannot lower. A source with no provable facts
+/// keeps the exact closed no-declaration terminal.
 pub(super) fn emit<'source>(
     language: Language,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
+    unsupported: &mut UnsupportedLane<'source>,
 ) -> Result<(), LoweringUnsupported> {
-    let declaration = declaration(language, source)?;
-    let fact = SemanticFact::new(
-        declaration.kind,
-        declaration.name,
-        FactType::Primitive(declaration.semantic_type),
-        SemanticProductConstructor::PRODUCT,
-    );
-    match facts.push(fact) {
-        Ok(_) => Ok(()),
-        // The compat path pushes exactly one parsed, nonempty identifier as a
-        // zero-child product fact, so every rejection class is unreachable by
-        // construction; the closed no-declaration terminal preserves the
-        // public compile boundary without new surface.
-        Err(_) => Err(LoweringUnsupported::NoSupportedDeclaration),
+    match language {
+        Language::Rust => rust::collect(source, facts, unsupported)?,
+        Language::Python => python::collect(source, facts, unsupported)?,
+        Language::Clang => clang::collect(source, facts, unsupported)?,
+        Language::TypeScript => typescript::collect(source, facts, unsupported)?,
+        Language::CSharp => csharp::collect(source, facts, unsupported)?,
+        Language::Go => go::collect(source, facts, unsupported)?,
+        Language::Java => java::collect(source, facts, unsupported)?,
     }
+    if facts.len() == 0 {
+        return Err(LoweringUnsupported::NoSupportedDeclaration);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

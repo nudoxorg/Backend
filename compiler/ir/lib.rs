@@ -25,42 +25,43 @@ mod range;
 mod render;
 mod semantic;
 mod semantic_extension_section;
-mod vcs;
 mod semantic_facts;
 mod type_facts;
+mod vcs;
 mod view;
 mod wire;
 
+pub use canonical_data::{
+    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
+    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
+    canonicalize_data_with_budget,
+};
+pub use compiler_ir_vocabulary::{
+    AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
+    DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
+    ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin, ListSpan,
+    NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageFault, PooledListError,
+    PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
+    ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
+    ProductId, ProductList, ProductListId, ProductRef, ReferenceKind, ReferenceKindCodeError,
+    RelSpan, RelSpanFault, Resolution, SemanticAtom, SemanticProduct, SemanticProductChild,
+    SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
+    SemanticTypeTag, SemanticTypeTagError, StableRef, TypeCell, TypeChildTarget, TypeChildren,
+    TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,
+};
+pub use compiler_ir_vocabulary::{
+    MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
+};
 pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
-pub use compiler_ir_vocabulary::{
-    AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
-    DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef,
-    ExternalFragmentId, ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault,
-    ForeignOrigin, ListSpan, NominalRef, Occurrence, OccurrenceTarget, PackageLineage,
-    PackageLineageFault, PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError,
-    Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren,
-    ProductConstructorFault, ProductConstructorTag, ProductId, ProductList, ProductListId,
-    ProductRef, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution,
-    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
-    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
-    SemanticTypeTagError, StableRef, TypeCell, TypeChildTarget, TypeChildren, TypeFactId,
-    TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,
-};
-pub use compiler_ir_vocabulary::{MappedModifier as LatticeMappedModifier, Variance as LatticeVariance};
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
     ListInterner, ListTable, ListTableView,
-};
-pub use canonical_data::{
-    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
-    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
-    canonicalize_data_with_budget,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{
@@ -106,14 +107,14 @@ pub use semantic_extension_section::{
     encode_language_extension_section, language_extension_section_len,
     reopen_language_extension_section,
 };
-pub use vcs::{
-    Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
-    LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
-};
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use type_facts::{DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane};
+pub use vcs::{
+    Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
+    LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
+};
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,

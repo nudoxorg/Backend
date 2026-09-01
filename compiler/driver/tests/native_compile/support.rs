@@ -134,6 +134,14 @@ pub(super) enum TestFailure {
         actual: Option<EntityKind>,
     },
     #[error(
+        "the adapter emitted {actual_count} entities, not the expected {expected_count}; the first differing entity row is {ordinal}"
+    )]
+    EntitySequence {
+        ordinal: usize,
+        expected_count: usize,
+        actual_count: usize,
+    },
+    #[error(
         "the locally reproducible {tool:?} adapter primitive type fact was {actual:?}, not {expected:?}"
     )]
     PrimitiveType {
@@ -371,6 +379,46 @@ pub(super) fn source_length(source: &[u8]) -> Result<u32, TestFailure> {
         actual: source.len(),
         cause,
     })
+}
+
+/// Asserts the fragment's entity sequence is exactly `expected`: each row's
+/// entity kind and resolved name atom must match positionally, and no extra
+/// entity may exist.
+#[allow(
+    clippy::as_conversions,
+    reason = "FragmentView validation proved every atom coordinate fits the test address space before this usize projection"
+)]
+pub(super) fn assert_facts(
+    fragment: &compiler_ir::FragmentView<'_>,
+    expected: &[(&'static [u8], EntityKind)],
+) -> Result<(), TestFailure> {
+    let atoms: Vec<&[u8]> = fragment.atoms().map(|atom| atom.bytes).collect();
+    let entities: Vec<(usize, EntityKind)> = fragment
+        .entities()
+        .map(|entity| (entity.name.raw as usize, entity.kind))
+        .collect();
+    let ordinal =
+        entities
+            .iter()
+            .zip(expected)
+            .position(|((name, kind), (expected_name, expected_kind))| {
+                atoms[*name] != *expected_name || kind != expected_kind
+            });
+    if entities.len() != expected.len() {
+        return Err(TestFailure::EntitySequence {
+            ordinal: ordinal.unwrap_or(expected.len()),
+            expected_count: expected.len(),
+            actual_count: entities.len(),
+        });
+    }
+    if let Some(ordinal) = ordinal {
+        return Err(TestFailure::EntitySequence {
+            ordinal,
+            expected_count: expected.len(),
+            actual_count: entities.len(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal {

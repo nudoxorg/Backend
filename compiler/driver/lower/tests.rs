@@ -5,9 +5,7 @@
 use compiler_ir::{
     EntityKind, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
 };
-use compiler_ir::{
-    ProductChildRole, ProductConstructorFault, SemanticProductConstructor,
-};
+use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;

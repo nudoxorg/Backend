@@ -17,29 +17,42 @@ use super::support::*;
 
 #[test]
 fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Result<(), TestFailure> {
-    let cases = [
+    #[allow(
+        clippy::type_complexity,
+        reason = "one homogeneous case table drives every closed language fact row"
+    )]
+    let cases: [(
+        Language,
+        NativeTool,
+        &'static [u8],
+        &'static [(&'static [u8], EntityKind)],
+        PrimitiveType,
+    ); 4] = [
         (
             Language::TypeScript,
             NativeTool::TypeScriptCompiler,
             b"export function TYPESCRIPT_FUNCTION(): boolean { return true; }".as_slice(),
-            b"TYPESCRIPT_FUNCTION".as_slice(),
-            EntityKind::Function,
+            &[(b"TYPESCRIPT_FUNCTION", EntityKind::Function)],
             PrimitiveType::Bool,
         ),
         (
             Language::CSharp,
             NativeTool::CSharpCompiler,
             b"public class Probe { public static int CSHARP_FUNCTION() { return 1; } }".as_slice(),
-            b"CSHARP_FUNCTION".as_slice(),
-            EntityKind::Function,
+            &[
+                (b"Probe", EntityKind::Record),
+                (b"CSHARP_FUNCTION", EntityKind::Function),
+            ],
             PrimitiveType::I32,
         ),
         (
             Language::Go,
             NativeTool::GoCompiler,
             b"package fixture\nfunc GO_FUNCTION() bool { return true }\n".as_slice(),
-            b"GO_FUNCTION".as_slice(),
-            EntityKind::Function,
+            &[
+                (b"fixture", EntityKind::Module),
+                (b"GO_FUNCTION", EntityKind::Function),
+            ],
             PrimitiveType::Bool,
         ),
         (
@@ -47,12 +60,14 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             NativeTool::JavaCompiler,
             b"public final class JavaFunction { public static int JAVA_FUNCTION() { return 1; } }"
                 .as_slice(),
-            b"JAVA_FUNCTION".as_slice(),
-            EntityKind::Function,
+            &[
+                (b"JavaFunction", EntityKind::Record),
+                (b"JAVA_FUNCTION", EntityKind::Function),
+            ],
             PrimitiveType::I32,
         ),
     ];
-    for (language, tool, source, expected_atom, expected_kind, expected_type) in cases {
+    for (language, tool, source, expected_facts, expected_type) in cases {
         let executable = executable(tool)?;
         let toolchain = resolved(tool, &executable)?;
         let native_work = TemporaryWork::create()?;
@@ -80,39 +95,22 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             expected: CompileExpectation::CompactFact,
             observed: compile_terminal(&failure),
         })?;
-        let actual_kind = compiled
-            .fragment
-            .entities()
-            .next()
-            .map(|entity| entity.kind);
-        if actual_kind != Some(expected_kind) {
-            return Err(TestFailure::EntityKind {
-                tool,
-                expected: expected_kind,
-                actual: actual_kind,
-            });
-        }
-        let atom = compiled.fragment.atoms().next().map(|atom| atom.bytes);
-        if atom != Some(expected_atom) {
-            return Err(TestFailure::AtomLength {
-                tool,
-                expected: expected_atom.len(),
-                actual: atom.map(<[u8]>::len),
-            });
-        }
-        let primitive_type = compiled
+        assert_facts(&compiled.fragment, expected_facts)?;
+        // Every container fact stays type-opaque; the only committed
+        // primitive is the member's spelled closed type.
+        let primitive_types: Vec<PrimitiveType> = compiled
             .fragment
             .type_nodes()
-            .next()
-            .and_then(|node| match node {
+            .filter_map(|node| match node {
                 TypeNode::Primitive(primitive_type) => Some(primitive_type),
                 _ => None,
-            });
-        if primitive_type != Some(expected_type) {
+            })
+            .collect();
+        if primitive_types.as_slice() != [expected_type] {
             return Err(TestFailure::PrimitiveType {
                 tool,
                 expected: expected_type,
-                actual: primitive_type,
+                actual: primitive_types.first().copied(),
             });
         }
         native_work.assert_empty()?;
@@ -146,14 +144,14 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
         },
     ) {
         Err(CompileFailure::LoweringUnsupported {
-            cause: LoweringUnsupported::RustConstantType,
+            cause: LoweringUnsupported::NoSupportedDeclaration,
             ..
         }) => {}
         Err(failure) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
                 expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::RustConstantType,
+                    LoweringUnsupported::NoSupportedDeclaration,
                 ),
                 observed: compile_terminal(&failure),
             });
@@ -162,7 +160,7 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
                 expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::RustConstantType,
+                    LoweringUnsupported::NoSupportedDeclaration,
                 ),
                 observed: CompileTerminal::Compiled,
             });
