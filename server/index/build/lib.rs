@@ -14,20 +14,16 @@
 
 mod construct;
 mod error;
-mod facet;
 mod fact;
 mod graph;
 mod initialized;
+mod vector;
 
 pub use construct::{
     IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, build,
     preflight,
 };
 pub use error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion};
-pub use facet::{
-    FacetCell, FacetExactStanding, FacetJoinError, FacetLexicalStanding, FacetTable, FacetTerminal,
-    join_facets,
-};
 pub use fact::{
     ENTITY_VALUE_BYTES, EXACT_ENTITY_KEY_BYTES, EntityFact, EntityFactView, EntityProjection,
     ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView,
@@ -36,4 +32,9 @@ pub use graph::{
     GraphProjection, GraphProjectionCapacity, GraphProjectionError, GraphProjectionScratch,
     MAX_GRAPH_EDGES_PER_ROW, NodeKind, NodeWorkspace, OwnerCount, ReferenceTarget,
     SEMANTIC_TYPE_REFERENCE_PROJECTION, Slots, build_graph_projection, graph_reference_edge_count,
+};
+pub use vector::{
+    CoordinateLane, EntityEmbedder, MAX_VECTOR_FACTS_PER_FRAGMENT, MAX_VECTOR_POINTS_PER_SEGMENT,
+    MAX_VECTOR_SEGMENTS, VectorProjection, VectorProjectionCapacity, VectorProjectionError,
+    VectorProjectionScratch, build_vector_projection,
 };
