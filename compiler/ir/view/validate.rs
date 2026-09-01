@@ -65,6 +65,10 @@ impl<'fragment> FragmentView<'fragment> {
         self.type_fact_lane
             .map(crate::type_facts::TypeFactCursor::new)
     }
+
+    pub fn type_fact_payload(&self) -> Option<&'fragment [u8]> {
+        self.type_fact_lane
+    }
 }
 
 pub(crate) fn validate_fragment_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
