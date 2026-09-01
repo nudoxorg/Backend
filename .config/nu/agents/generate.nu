@@ -159,17 +159,6 @@ def render-role-skill [role: record, catalog: table, contract_digest: string]: n
         | str join "\n"
     )
     let allowed_tools = $commands | get tool | to json
-    let model_id = $role.model? | default ""
-    let model_registry = control-plane | get models
-    let model = if ($model_id | is-empty) { null } else {
-        $model_registry | get $model_id
-    }
-    let model_metadata = if $model == null { "" } else { $"  model: ($model_id | to json)\n" }
-    let model_section = if $model == null {
-        ""
-    } else {
-        $"## Model binding\n\nRun as the `($model_id)` agent from provider `($model.provider)`. Model custody is declared once in control.nix; substituting or relabeling the model inside a run is an orchestration failure, never a product finding.\n\n"
-    }
     let description = $"Use when acting as ($role.title) for ($role.purpose | str downcase)"
     let budget_lines = (
         control-plane
@@ -185,7 +174,7 @@ description: ($description | to json)
 allowed-tools: ($allowed_tools)
 metadata:
   role: ($role.id | to json)
-($model_metadata)  contract-digest: ($contract_digest | to json)
+  contract-digest: ($contract_digest | to json)
 ---
 
 # ($role.title)
@@ -195,7 +184,7 @@ Contract digest: `($contract_digest)`.
 
 ($role.purpose)
 
-($model_section)## Entry conditions
+## Entry conditions
 
 ($entry)
 
@@ -255,36 +244,6 @@ Verdict-specific field constraints use `identity` for a nonempty stable string a
 '
 }
 
-# Validates the closed model registry and every declared role model binding.
-def validate-model-bindings [roles: table]: nothing -> nothing {
-    let models = control-plane | get models
-    if ($models | describe) !~ '^record' {
-        tooling-fail "missing-model-registry" "control plane must declare the closed model registry"
-    }
-    for row in ($models | transpose id declaration) {
-        for field in ["provider" "model"] {
-            if $field not-in ($row.declaration | columns) {
-                tooling-fail "invalid-model-declaration" $"model ($row.id) lacks required field ($field)"
-            }
-            let value = $row.declaration | get $field
-            if (($value | describe) !~ '^string') or ($value | str trim | is-empty) {
-                tooling-fail "invalid-model-declaration" $"model ($row.id) field ($field) must be a nonempty string"
-            }
-        }
-    }
-    for role in $roles {
-        let binding = $role.model? | default ""
-        if not ($binding | is-empty) {
-            if ($binding | describe) !~ '^string' {
-                tooling-fail "invalid-role-model" $"role ($role.id) model binding must be a string"
-            }
-            if $binding not-in ($models | columns) {
-                tooling-fail "unknown-role-model" $"role ($role.id) binds undeclared model ($binding)"
-            }
-        }
-    }
-}
-
 # Proves role capabilities are real and privileged operations remain separated.
 def validate-role-contracts [roles: table, catalog: table]: nothing -> nothing {
     let command_ids = $catalog | get id
@@ -293,7 +252,6 @@ def validate-role-contracts [roles: table, catalog: table]: nothing -> nothing {
     if not ($unknown_classes | is-empty) {
         tooling-fail "unknown-capability-class" $"live commands use undeclared capability classes: ($unknown_classes | str join ', ')"
     }
-    validate-model-bindings $roles
     for role in $roles {
         let commands = (role-commands $role $catalog)
         if ($commands | is-empty) {

@@ -605,8 +605,15 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                     }
                     seen_documents[emitted_documents] = Some(row.document);
                     emitted_documents += 1;
-                    let Some(score) = row.score() else {
+                    let Some(stored) = row.score() else {
                         continue;
+                    };
+                    let Some(score) = operation.relevance(stored, row.term.len()) else {
+                        return Err(LexicalQueryError::ScoreDiscount {
+                            stored,
+                            prefix_bytes: operation.term.len(),
+                            term_bytes: row.term.len(),
+                        });
                     };
                     let candidate =
                         LexicalSnapshotHit::new(segment.id, row.term, row.document, score);
@@ -689,6 +696,15 @@ pub enum LexicalQueryError {
     },
     /// Caller output could not retain the complete requested ranking.
     OutputCapacity(LexicalOutputError),
+    /// The name-relevance recipe could not discount a stored score.
+    ScoreDiscount {
+        /// Complete stored score of the rejected row.
+        stored: LexicalScore,
+        /// Query prefix byte length.
+        prefix_bytes: usize,
+        /// Matched term byte length.
+        term_bytes: usize,
+    },
 }
 
 /// The one snapshot-pinned terminal for a manifest-wide lexical ranking.

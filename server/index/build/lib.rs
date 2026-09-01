@@ -9,12 +9,15 @@
 //! This crate owns only the transformation from a reopened compiler publication to
 //! `server-index-core` rows and proofs. It does not invent another segment identity grammar: exact
 //! retrieval, Tantivy, and snapshot publication consume the same `ExactSegment` and
-//! `LexicalSegment` returned here.
+//! `LexicalSegment` returned here, and the graph projection feeds the existing graph admission
+//! and query adapters unchanged.
 
 mod construct;
 mod error;
 mod fact;
+mod graph;
 mod initialized;
+mod vector;
 
 pub use construct::{
     IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, build,
@@ -24,4 +27,14 @@ pub use error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegi
 pub use fact::{
     ENTITY_VALUE_BYTES, EXACT_ENTITY_KEY_BYTES, EntityFact, EntityFactView, EntityProjection,
     ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView,
+};
+pub use graph::{
+    GraphProjection, GraphProjectionCapacity, GraphProjectionError, GraphProjectionScratch,
+    MAX_GRAPH_EDGES_PER_ROW, NodeKind, NodeWorkspace, OwnerCount, ReferenceTarget,
+    SEMANTIC_TYPE_REFERENCE_PROJECTION, Slots, build_graph_projection, graph_reference_edge_count,
+};
+pub use vector::{
+    CoordinateLane, EntityEmbedder, MAX_VECTOR_FACTS_PER_FRAGMENT, MAX_VECTOR_POINTS_PER_SEGMENT,
+    MAX_VECTOR_SEGMENTS, VectorProjection, VectorProjectionCapacity, VectorProjectionError,
+    VectorProjectionScratch, build_vector_projection,
 };

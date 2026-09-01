@@ -189,3 +189,87 @@ fn insufficient_output_reports_exact_capacity_and_remains_unchanged() {
     );
     assert_eq!(output, before);
 }
+
+#[test]
+fn prefix_lookup_selects_the_sorted_contiguous_range_and_borrows_rows() {
+    let rows = [
+        row(b"alpha", 3, 4),
+        row(b"alphabet", 1, 2),
+        row(b"alter", 2, 4),
+        row(b"beta", 5, 9),
+    ];
+    let Some(segment) = LexicalSegment::new(&rows).ok() else {
+        return;
+    };
+
+    let found = segment.lookup(LexicalOperation::prefix(b"al"));
+    assert!(matches!(
+        found,
+        Some(found)
+            if found.len() == 3
+                && core::ptr::eq(found.as_ptr(), rows.as_ptr())
+                && found[0].term == b"alpha"
+                && found[2].term == b"alter"
+    ));
+
+    let miss = segment.lookup(LexicalOperation::prefix(b"gam"));
+    assert!(miss.is_none());
+}
+
+#[test]
+fn prefix_relevance_discounts_longer_terms_and_keeps_the_exact_match_full() {
+    let rows = [
+        row(b"alpha", 3, 4),
+        row(b"alphabet", 1, 2),
+        row(b"alter", 2, 4),
+    ];
+    let segment = LexicalSegment::new(&rows);
+    let top_k = LexicalTopK::new(3);
+    let (Some(segment), Some(top_k)) = (segment.ok(), top_k.ok()) else {
+        return;
+    };
+
+    // alpha: 4 * 2 / 5 = 1; alphabet: 2 * 2 / 8 = 0; alter: 4 * 2 / 5 = 1.
+    let mut output = [hit(b"placeholder", 99, 0); 3];
+    assert_eq!(
+        segment.rank(LexicalOperation::prefix(b"al"), top_k, &mut output),
+        Ok(3)
+    );
+    assert_eq!(
+        output,
+        [
+            hit(b"alter", 2, 1),
+            hit(b"alpha", 3, 1),
+            hit(b"alphabet", 1, 0),
+        ]
+    );
+
+    // The query term equal to a prefix keeps its full stored score; any longer
+    // term starting with the same bytes is discounted (alphabet: 2 * 5 / 8 = 1).
+    let mut exact_output = [hit(b"placeholder", 99, 0); 2];
+    assert_eq!(
+        segment.rank(LexicalOperation::prefix(b"alpha"), top_k, &mut exact_output),
+        Ok(2)
+    );
+    assert_eq!(exact_output, [hit(b"alpha", 3, 4), hit(b"alphabet", 1, 1)],);
+}
+
+#[test]
+fn empty_prefix_selects_every_term_deterministically() {
+    let rows = [row(b"beta", 7, 1), row(b"alpha", 2, 1)];
+    let segment = LexicalSegment::new(&rows);
+    let top_k = LexicalTopK::new(2);
+    let (Some(segment), Some(top_k)) = (segment.ok(), top_k.ok()) else {
+        return;
+    };
+
+    let found = segment.lookup(LexicalOperation::prefix(b""));
+    assert!(matches!(found, Some(found) if found.len() == 2));
+
+    let mut output = [hit(b"placeholder", 99, 0); 2];
+    assert_eq!(
+        segment.rank(LexicalOperation::prefix(b""), top_k, &mut output),
+        Ok(2)
+    );
+    assert_eq!(output, [hit(b"alpha", 2, 0), hit(b"beta", 7, 0)],);
+}
