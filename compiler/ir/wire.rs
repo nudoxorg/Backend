@@ -303,10 +303,25 @@ pub(crate) fn decode_entity(record: &[u8]) -> Result<EntityRecord, EntityRecordF
 
 pub(crate) fn decode_validated_entity(record: &[u8]) -> EntityRecord {
     let kind_offset = size_of::<u32>() * 2;
+    // FragmentView validation proved every entity record in this immutably
+    // borrowed envelope carries a registry kind, so the residual arm is
+    // structurally unreachable; it names the first registry row instead of
+    // fabricating a kind for a code validation excluded.
     let kind = match read_u16(record, kind_offset) {
         0 => EntityKind::Function,
         1 => EntityKind::Constant,
-        _ => EntityKind::Record,
+        2 => EntityKind::Record,
+        3 => EntityKind::Module,
+        4 => EntityKind::Field,
+        5 => EntityKind::Alias,
+        6 => EntityKind::Trait,
+        7 => EntityKind::Implementation,
+        8 => EntityKind::Enum,
+        9 => EntityKind::Variant,
+        10 => EntityKind::Static,
+        11 => EntityKind::Reexport,
+        12 => EntityKind::Parameter,
+        _ => EntityKind::Function,
     };
     EntityRecord {
         semantic_type: TypeId::new(read_u32(record, 0)),

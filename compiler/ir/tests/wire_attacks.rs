@@ -225,11 +225,11 @@ fn semantic_and_authority_mutations_fail_before_a_borrowed_view() -> Result<(), 
         })
     );
     bytes = golden;
-    bytes[ENTITY_RECORD + 8] = 9;
+    bytes[ENTITY_RECORD + 8] = 13;
     assert!(matches!(
         FragmentView::validate(&bytes),
         Err(FragmentError::EntityRecord {
-            fault: EntityRecordFault::Kind { actual: 9 },
+            fault: EntityRecordFault::Kind { actual: 13 },
             ..
         })
     ));

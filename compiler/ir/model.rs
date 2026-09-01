@@ -83,12 +83,44 @@ pub enum AtomFault {
 }
 
 /// Closed declaration shape retained in the semantic entity lane.
+///
+/// The discriminant set is exactly the declaration-kind rows named by the
+/// compiler parity matrix; codes 0..=2 predate the full set and never move.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntityKind {
     Function = 0,
     Constant = 1,
     Record = 2,
+    Module = 3,
+    Field = 4,
+    Alias = 5,
+    Trait = 6,
+    Implementation = 7,
+    Enum = 8,
+    Variant = 9,
+    Static = 10,
+    Reexport = 11,
+    Parameter = 12,
+}
+
+impl EntityKind {
+    /// Canonical declaration-kind order used by registry reports and tests.
+    pub const ALL: [Self; 13] = [
+        Self::Function,
+        Self::Constant,
+        Self::Record,
+        Self::Module,
+        Self::Field,
+        Self::Alias,
+        Self::Trait,
+        Self::Implementation,
+        Self::Enum,
+        Self::Variant,
+        Self::Static,
+        Self::Reexport,
+        Self::Parameter,
+    ];
 }
 
 impl From<EntityKind> for u16 {
@@ -97,6 +129,16 @@ impl From<EntityKind> for u16 {
             EntityKind::Function => 0,
             EntityKind::Constant => 1,
             EntityKind::Record => 2,
+            EntityKind::Module => 3,
+            EntityKind::Field => 4,
+            EntityKind::Alias => 5,
+            EntityKind::Trait => 6,
+            EntityKind::Implementation => 7,
+            EntityKind::Enum => 8,
+            EntityKind::Variant => 9,
+            EntityKind::Static => 10,
+            EntityKind::Reexport => 11,
+            EntityKind::Parameter => 12,
         }
     }
 }
@@ -109,6 +151,16 @@ impl TryFrom<u16> for EntityKind {
             0 => Ok(Self::Function),
             1 => Ok(Self::Constant),
             2 => Ok(Self::Record),
+            3 => Ok(Self::Module),
+            4 => Ok(Self::Field),
+            5 => Ok(Self::Alias),
+            6 => Ok(Self::Trait),
+            7 => Ok(Self::Implementation),
+            8 => Ok(Self::Enum),
+            9 => Ok(Self::Variant),
+            10 => Ok(Self::Static),
+            11 => Ok(Self::Reexport),
+            12 => Ok(Self::Parameter),
             actual => Err(actual),
         }
     }
