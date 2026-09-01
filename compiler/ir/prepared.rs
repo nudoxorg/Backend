@@ -562,32 +562,39 @@ fn semantic_data_lane(
     };
     let mut payload = SEMANTIC_DATA_HEADER_BYTES;
     for (ordinal, atom) in (0..u32::MAX).zip(data.atoms()) {
-        let _ =
-            u32::try_from(atom.bytes.len()).map_err(|source| PrepareError::SemanticAtomLength {
-                ordinal: AtomId::new(ordinal),
-                actual: atom.bytes.len(),
-                source,
-            })?;
+        u32::try_from(atom.bytes.len()).map_err(|source| PrepareError::SemanticAtomLength {
+            ordinal: AtomId::new(ordinal),
+            actual: atom.bytes.len(),
+            source,
+        })?;
         payload = payload
             .checked_add(size_of::<u32>())
             .and_then(|payload| payload.checked_add(atom.bytes.len()))
             .ok_or_else(overflow)?;
     }
-    let product_bytes = usize::try_from(metrics.canonical_product_count)
-        .ok()
-        .and_then(|count| count.checked_mul(SEMANTIC_PRODUCT_BYTES))
+    let Ok(product_count) = usize::try_from(metrics.canonical_product_count) else {
+        return Err(overflow());
+    };
+    let product_bytes = product_count
+        .checked_mul(SEMANTIC_PRODUCT_BYTES)
         .ok_or_else(overflow)?;
-    let constructor_bytes = usize::try_from(metrics.canonical_constructor_count)
-        .ok()
-        .and_then(|count| count.checked_mul(SEMANTIC_CONSTRUCTOR_BYTES))
+    let Ok(constructor_count) = usize::try_from(metrics.canonical_constructor_count) else {
+        return Err(overflow());
+    };
+    let constructor_bytes = constructor_count
+        .checked_mul(SEMANTIC_CONSTRUCTOR_BYTES)
         .ok_or_else(overflow)?;
-    let list_bytes = usize::try_from(metrics.canonical_list_count)
-        .ok()
-        .and_then(|count| count.checked_mul(SEMANTIC_LIST_BYTES))
+    let Ok(list_count) = usize::try_from(metrics.canonical_list_count) else {
+        return Err(overflow());
+    };
+    let list_bytes = list_count
+        .checked_mul(SEMANTIC_LIST_BYTES)
         .ok_or_else(overflow)?;
-    let child_bytes = usize::try_from(metrics.canonical_child_count)
-        .ok()
-        .and_then(|count| count.checked_mul(SEMANTIC_CHILD_BYTES))
+    let Ok(child_count) = usize::try_from(metrics.canonical_child_count) else {
+        return Err(overflow());
+    };
+    let child_bytes = child_count
+        .checked_mul(SEMANTIC_CHILD_BYTES)
         .ok_or_else(overflow)?;
     payload = payload
         .checked_add(product_bytes)
@@ -597,7 +604,9 @@ fn semantic_data_lane(
         .ok_or_else(overflow)?;
     // One payload cell per byte, matching the fixed-width byte-lane grammar:
     // the directory proves `count * 1 == byte_length`.
-    let count = ItemCount::try_from(payload).map_err(|_| overflow())?;
+    let Ok(count) = ItemCount::try_from(payload) else {
+        return Err(overflow());
+    };
     cursor.lane(LayoutStep::SemanticData, count, 1)
 }
 

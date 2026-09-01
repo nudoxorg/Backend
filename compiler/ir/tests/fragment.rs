@@ -3,9 +3,9 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_ir::{
-    AtomInput, EntityKind, EntityRecord, EntityRecordFault, EntityType, FragmentError,
-    FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity, TypeNode,
-    TypeNodeFault, WriteError,
+    AtomInput, EntityKind, EntityKindCodeError, EntityRecord, EntityRecordFault, EntityType,
+    FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
+    TypeNode, TypeNodeFault, WriteError,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
@@ -234,7 +234,7 @@ fn every_declaration_kind_round_trips_through_the_closed_registry() -> Result<()
             byte_len: 13,
         };
         let recipe = CompileRecipeFact::derive(
-            Language::Rust,
+            LanguageProfile::Rust(RustEdition::Rust2024),
             Stage::LowerIr,
             NativeTool::Rustc,
             source.identity,
@@ -279,7 +279,10 @@ fn kind_payload(kind: EntityKind) -> &'static [u8] {
 #[test]
 fn declaration_kinds_beyond_the_registry_reject_with_the_observed_code() {
     for code in 13..=15 {
-        assert_eq!(EntityKind::try_from(code), Err(code));
+        assert_eq!(
+            EntityKind::try_from(code),
+            Err(EntityKindCodeError { actual: code })
+        );
     }
     assert_eq!(
         EntityKind::try_from(u16::from(EntityKind::Parameter)),

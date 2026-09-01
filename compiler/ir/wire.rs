@@ -292,8 +292,11 @@ pub(crate) fn decode_entity(record: &[u8]) -> Result<EntityRecord, EntityRecordF
     if reserved != 0 {
         return Err(EntityRecordFault::Reserved { actual: reserved });
     }
-    let kind = EntityKind::try_from(read_u16(record, kind_offset))
-        .map_err(|actual| EntityRecordFault::Kind { actual })?;
+    let kind = EntityKind::try_from(read_u16(record, kind_offset)).map_err(|error| {
+        EntityRecordFault::Kind {
+            actual: error.actual,
+        }
+    })?;
     Ok(EntityRecord {
         semantic_type: TypeId::new(read_u32(record, 0)),
         name: AtomId::new(read_u32(record, size_of::<u32>())),
@@ -453,3 +456,8 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
         _ => TypeNode::Reference(TypeId::new(operand)),
     }
 }
+
+/// The fragment envelope magic: `"NXIR"` in every schema-1 fragment.
+pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
+/// The fragment envelope schema version.
+pub const FRAGMENT_SCHEMA: u16 = 1;

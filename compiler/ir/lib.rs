@@ -25,7 +25,6 @@ mod range;
 mod render;
 mod semantic;
 mod semantic_extension_section;
-mod semantic_product;
 mod vcs;
 mod view;
 mod wire;
@@ -34,6 +33,21 @@ pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
+pub use compiler_ir_vocabulary::{
+    AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
+    DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef,
+    ExternalFragmentId, ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault,
+    ForeignOrigin, ListSpan, NominalRef, Occurrence, OccurrenceTarget, PackageLineage,
+    PackageLineageFault, PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError,
+    Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren,
+    ProductConstructorFault, ProductConstructorTag, ProductId, ProductList, ProductListId,
+    ProductRef, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution,
+    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
+    SemanticTypeTagError, StableRef, TypeCell, TypeChildTarget, TypeChildren, TypeFactId,
+    TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,
+};
+pub use compiler_ir_vocabulary::{MappedModifier as LatticeMappedModifier, Variance as LatticeVariance};
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
@@ -52,9 +66,9 @@ pub use mapping::{
     open_fragment_mmap,
 };
 pub use model::{
-    AtomFault, AtomInput, EntityFault, EntityKind, EntityNameFault, EntityRecord,
-    EntityRecordFault, EntityType, PrimitiveType, RecipeFact, RecipeFactFault, SourceIdentity,
-    SourceIdentityFault, TypeNode, TypeNodeFault,
+    AtomFault, AtomInput, EntityFault, EntityKind, EntityKindCodeError, EntityNameFault,
+    EntityRecord, EntityRecordFault, EntityType, PrimitiveType, RecipeFact, RecipeFactFault,
+    SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
 };
 pub use prepared::{LayoutStep, PrepareError, PreparedFragment, WriteError};
 pub use range::{
@@ -90,13 +104,6 @@ pub use semantic_extension_section::{
     encode_language_extension_section, language_extension_section_len,
     reopen_language_extension_section,
 };
-pub use semantic_product::{
-    ExternalCoordinate, ExternalEntityRef, ExternalFragmentId, ExternalProductRef,
-    ExternalTypeRef, ListSpan, PooledListError, Product, ProductChildRole,
-    ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
-    ProductId, ProductList, ProductListId, ProductRef, SemanticAtom, SemanticProduct,
-    SemanticProductChild, SemanticProductConstructor,
-};
 pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
     LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
@@ -106,5 +113,4 @@ pub use view::{
     SemanticDataFault, TypeNodeCursor, WireField,
 };
 
-pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
-pub const FRAGMENT_SCHEMA: u16 = 1;
+pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};

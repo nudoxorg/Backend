@@ -130,7 +130,7 @@ impl<'source> SemanticFact<'source> {
             reason = "the typed child input shape ships with the lane; per-language facts consume it in the next emission card"
         )
     )]
-    #[allow(
+    #[expect(
         clippy::indexing_slicing,
         reason = "the child ordinal is admitted below MAX_FACT_CHILDREN before the single fixed-capacity slot write"
     )]
@@ -196,7 +196,7 @@ pub(super) struct FactSet<'source> {
 }
 
 impl<'source> FactSet<'source> {
-    #[allow(
+    #[expect(
         clippy::indexing_slicing,
         reason = "the initializer literals fill every fixed lane element exactly; no dynamic index exists at construction"
     )]
@@ -232,7 +232,7 @@ impl<'source> FactSet<'source> {
     ///
     /// A rejected fact leaves every lane byte-for-byte unchanged and retains
     /// the offending ordinal, exact name bytes, and typed cause.
-    #[allow(
+    #[expect(
         clippy::indexing_slicing,
         reason = "the fact ordinal is admitted below MAX_EMISSION_FACTS and the pooled child range is admitted to the fixed lane length before any lane write"
     )]
@@ -260,7 +260,7 @@ impl<'source> FactSet<'source> {
             .validate(child_count)
             .map_err(|fault| rejected(FactFault::Constructor(fault)))?;
         for (position, child) in fact.children.iter().enumerate().take(child_count as usize) {
-            #[allow(
+            #[expect(
                 clippy::as_conversions,
                 reason = "positions are bounded by MAX_FACT_CHILDREN (8) and always fit the u32 role coordinate"
             )]
@@ -272,7 +272,7 @@ impl<'source> FactSet<'source> {
                     actual: child.role,
                 }));
             }
-            #[allow(
+            #[expect(
                 clippy::as_conversions,
                 reason = "u32 child targets widen totally to the native fact-count width on every supported target"
             )]
@@ -324,7 +324,7 @@ pub(super) enum AdmissionFault {
 /// worst-case reservation formula of compiler-ir `reserve_budget`, so the
 /// maximal lane is always admitted and any measured overrun remains a typed
 /// `BudgetExceeded` rather than a mid-run capacity surprise.
-#[allow(
+#[expect(
     clippy::as_conversions,
     reason = "the lane bounds 128 and 1024 widen totally to u32/u64 reservation counters"
 )]
@@ -370,7 +370,7 @@ const MAX_TYPE_NODES: usize = 1 + PRIMITIVE_NODE_CAPACITY;
 /// section. A populated set canonicalizes the facts' products, commits the
 /// entities, type nodes, name atoms, and the optional semantic section, and
 /// writes everything into the caller-owned output.
-#[allow(
+#[expect(
     clippy::indexing_slicing,
     reason = "every lane position is bounded by MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, and the closed primitive set; the exact node prefix is admitted before the single trusted subslice projection"
 )]
@@ -403,7 +403,7 @@ pub(super) fn admit<'source, 'output>(
         fact_type_nodes[ordinal] = match *fact_type {
             FactType::Opaque => 0,
             FactType::Primitive(primitive) => {
-                #[allow(
+                #[expect(
                     clippy::as_conversions,
                     reason = "primitive codes 0..=2 widen totally to the native sentinel-table width"
                 )]
@@ -426,7 +426,7 @@ pub(super) fn admit<'source, 'output>(
     }; MAX_EMISSION_FACTS];
     let mut atoms = [AtomInput { bytes: b"" }; MAX_EMISSION_FACTS];
     for ordinal in 0..fact_count {
-        #[allow(
+        #[expect(
             clippy::as_conversions,
             reason = "node positions, fact ordinals, and pooled cursors are bounded by the fixed emission lane and widen totally to u32 coordinates"
         )]
@@ -453,7 +453,7 @@ pub(super) fn admit<'source, 'output>(
     let mut pooled_cursor = 0_usize;
     for ordinal in 0..fact_count {
         let child_count = usize::from(facts.child_counts[ordinal]);
-        #[allow(
+        #[expect(
             clippy::as_conversions,
             reason = "fact ordinals and pooled cursors are bounded by the fixed emission lane and widen totally to u32 coordinates"
         )]

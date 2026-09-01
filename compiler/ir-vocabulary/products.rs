@@ -1,74 +1,11 @@
-//! Recursive semantic products and their typed local or external references.
-//! Products retain constructor roles independently of source-language spellings.
-//! The compact fragment wire uses these values without creating a second ID system.
+//! Recursive semantic products, their closed constructor grammar, and their role-bearing
+//! ordered children. Constructor payloads are validated against exact child counts, and every
+//! ordered position carries its constructor-owned semantic role.
 
-use core::marker::PhantomData;
-
-use heart_identity::{ContentId, IrFragmentDomain};
-
-use crate::{AtomId, DenseId, Entity, Type};
-
-/// Marker for a recursive semantic-product coordinate in one fragment.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum Product {}
-
-/// Marker for a pooled list of semantic-product children.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ProductChildren {}
-
-/// Dense coordinate of a recursive semantic product inside one IR fragment.
-pub type ProductId = DenseId<Product>;
-/// Dense coordinate of one product's pooled child-list row.
-pub type ProductListId = DenseId<ProductChildren>;
-
-/// A borrowed semantic atom. The caller retains the bytes until canonical
-/// emission copies the selected value into its output region.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SemanticAtom<'bytes> {
-    /// Exact atom bytes retained by the caller.
-    pub bytes: &'bytes [u8],
-}
-
-impl AsRef<[u8]> for SemanticAtom<'_> {
-    /// Borrows the exact atom bytes without a copy.
-    fn as_ref(&self) -> &[u8] {
-        self.bytes
-    }
-}
-
-/// The central typed authority that gives an external product ordinal meaning.
-pub type ExternalFragmentId = ContentId<IrFragmentDomain>;
-
-/// A kind-owned coordinate inside one external fragment authority.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ExternalCoordinate<ExpectedKind> {
-    /// Typed fragment authority that owns `ordinal`.
-    pub fragment: ExternalFragmentId,
-    /// Dense position inside the external fragment's kind-owned space.
-    pub ordinal: u32,
-    expected_kind: PhantomData<fn() -> ExpectedKind>,
-}
-
-impl<ExpectedKind> ExternalCoordinate<ExpectedKind> {
-    /// Binds one external ordinal to its fragment authority and expected kind.
-    #[must_use]
-    pub const fn bind(fragment: ExternalFragmentId, ordinal: u32) -> Self {
-        Self {
-            fragment,
-            ordinal,
-            expected_kind: PhantomData,
-        }
-    }
-}
-
-/// External authority for an entity coordinate.
-pub type ExternalEntityRef = ExternalCoordinate<Entity>;
-/// External authority for a semantic-type coordinate.
-pub type ExternalTypeRef = ExternalCoordinate<Type>;
-/// External authority for a recursive semantic-product coordinate.
-pub type ExternalProductRef = ExternalCoordinate<Product>;
+use crate::coordinates::{
+    AtomId, ExternalProductRef, ListSpan, PooledListError, ProductChildren, ProductId,
+    ProductListId,
+};
 
 /// One recursive product child. Foreign ordinals remain inseparable from
 /// their typed fragment authority.
@@ -117,95 +54,6 @@ pub struct SemanticProductChild {
     pub target: ProductRef,
     /// Semantic role independent of source spelling and position.
     pub role: ProductChildRole,
-}
-
-/// A product-kind-owned range in a caller-owned pooled child lane.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ListSpan<Owner> {
-    /// First pooled position owned by this list.
-    pub start: u32,
-    /// Pooled position count owned by this list.
-    pub length: u32,
-    owner: PhantomData<fn() -> Owner>,
-}
-
-impl<Owner> ListSpan<Owner> {
-    /// Creates a span from a caller-proved pooled range.
-    #[must_use]
-    pub const fn new(start: u32, length: u32) -> Self {
-        Self {
-            start,
-            length,
-            owner: PhantomData,
-        }
-    }
-}
-
-/// Exact pooled-list rejection retaining every operand.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PooledListError {
-    /// The requested span is outside the caller's pooled lane.
-    OutOfBounds {
-        /// Requested first position.
-        start: u32,
-        /// Requested length.
-        length: u32,
-        /// Complete pool length.
-        pool_length: usize,
-    },
-}
-
-/// Validated zero-allocation projection of one product-child list.
-pub struct ProductList<'pool> {
-    elements: &'pool [SemanticProductChild],
-}
-
-impl<'pool> ProductList<'pool> {
-    /// Validates one pooled span against its caller-owned child pool.
-    pub fn try_from_parts(
-        pool: &'pool [SemanticProductChild],
-        span: ListSpan<ProductChildren>,
-    ) -> Result<Self, PooledListError> {
-        let start = usize::try_from(span.start).map_err(|_| PooledListError::OutOfBounds {
-            start: span.start,
-            length: span.length,
-            pool_length: pool.len(),
-        })?;
-        let length = usize::try_from(span.length).map_err(|_| PooledListError::OutOfBounds {
-            start: span.start,
-            length: span.length,
-            pool_length: pool.len(),
-        })?;
-        let Some(end) = start.checked_add(length) else {
-            return Err(PooledListError::OutOfBounds {
-                start: span.start,
-                length: span.length,
-                pool_length: pool.len(),
-            });
-        };
-        let Some(elements) = pool.get(start..end) else {
-            return Err(PooledListError::OutOfBounds {
-                start: span.start,
-                length: span.length,
-                pool_length: pool.len(),
-            });
-        };
-        Ok(Self { elements })
-    }
-
-    /// Borrows the validated child range without a copy.
-    #[must_use]
-    pub const fn as_slice(&self) -> &'pool [SemanticProductChild] {
-        self.elements
-    }
-}
-
-impl AsRef<[SemanticProductChild]> for ProductList<'_> {
-    /// Borrows the validated child range for generic slice consumers.
-    fn as_ref(&self) -> &[SemanticProductChild] {
-        self.elements
-    }
 }
 
 /// One recursive semantic product with a pooled child-list coordinate.
@@ -504,4 +352,67 @@ pub enum ProductConstructorFault {
         /// Observed child count.
         actual: u32,
     },
+}
+
+/// Validated zero-allocation projection of one product-child list.
+pub struct ProductList<'pool> {
+    elements: &'pool [SemanticProductChild],
+}
+
+impl<'pool> ProductList<'pool> {
+    /// Validates one pooled span against its caller-owned child pool.
+    ///
+    /// `u32` positions widen to `usize` losslessly on every supported
+    /// pointer width, so the only failure class is the span exceeding the
+    /// pool.
+    pub fn try_from_parts(
+        pool: &'pool [SemanticProductChild],
+        span: ListSpan<ProductChildren>,
+    ) -> Result<Self, PooledListError> {
+        // The `u32` positions widen to `usize` losslessly on every
+        // supported pointer width; the fault already retains the exact
+        // span and pool operands, which is everything diagnostic.
+        let Ok(start) = usize::try_from(span.start) else {
+            return Err(PooledListError::OutOfBounds {
+                start: span.start,
+                length: span.length,
+                pool_length: pool.len(),
+            });
+        };
+        let Ok(length) = usize::try_from(span.length) else {
+            return Err(PooledListError::OutOfBounds {
+                start: span.start,
+                length: span.length,
+                pool_length: pool.len(),
+            });
+        };
+        let Some(end) = start.checked_add(length) else {
+            return Err(PooledListError::OutOfBounds {
+                start: span.start,
+                length: span.length,
+                pool_length: pool.len(),
+            });
+        };
+        let Some(elements) = pool.get(start..end) else {
+            return Err(PooledListError::OutOfBounds {
+                start: span.start,
+                length: span.length,
+                pool_length: pool.len(),
+            });
+        };
+        Ok(Self { elements })
+    }
+
+    /// Borrows the validated child range without a copy.
+    #[must_use]
+    pub const fn as_slice(&self) -> &'pool [SemanticProductChild] {
+        self.elements
+    }
+}
+
+impl AsRef<[SemanticProductChild]> for ProductList<'_> {
+    /// Borrows the validated child range for generic slice consumers.
+    fn as_ref(&self) -> &[SemanticProductChild] {
+        self.elements
+    }
 }

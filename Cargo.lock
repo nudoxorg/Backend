@@ -1301,9 +1301,18 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "blake3",
+ "compiler-ir-vocabulary",
  "compiler-vocabulary",
  "heart-identity",
  "memmap2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "compiler-ir-vocabulary"
+version = "0.1.0"
+dependencies = [
+ "heart-identity",
  "thiserror 2.0.20",
 ]
 
