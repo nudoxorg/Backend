@@ -17,6 +17,7 @@ mod error;
 mod fact;
 mod graph;
 mod initialized;
+mod vector;
 
 pub use construct::{
     IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, build,
@@ -31,4 +32,9 @@ pub use graph::{
     GraphProjection, GraphProjectionCapacity, GraphProjectionError, GraphProjectionScratch,
     MAX_GRAPH_EDGES_PER_ROW, NodeKind, NodeWorkspace, OwnerCount, ReferenceTarget,
     SEMANTIC_TYPE_REFERENCE_PROJECTION, Slots, build_graph_projection, graph_reference_edge_count,
+};
+pub use vector::{
+    CoordinateLane, EntityEmbedder, MAX_VECTOR_FACTS_PER_FRAGMENT, MAX_VECTOR_POINTS_PER_SEGMENT,
+    MAX_VECTOR_SEGMENTS, VectorProjection, VectorProjectionCapacity, VectorProjectionError,
+    VectorProjectionScratch, build_vector_projection,
 };
