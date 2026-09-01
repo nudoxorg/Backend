@@ -7,8 +7,8 @@ use crate::{AtomId, EntityId, ProductRef, TypeId};
 use thiserror::Error;
 
 use crate::{
-    AtomInput, EntityRecord, EntityRecordFault, RecipeFact, SourceIdentity, TypeNode,
-    TypeNodeFault,
+    AtomInput, CanonicalDataError, EntityRecord, EntityRecordFault, RecipeFact, SourceIdentity,
+    TypeNode, TypeNodeFault,
     canonical_data::CanonicalDataGraph,
     wire::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
@@ -92,6 +92,14 @@ pub enum PrepareError {
         actual: usize,
         #[source]
         source: TryFromIntError,
+    },
+    /// Canonical semantic-data preparation failed before the fragment layout
+    /// could be derived. The exact admission, validation, budget, or capacity
+    /// rejection is retained as the source.
+    #[error("semantic data canonicalization failed")]
+    SemanticData {
+        #[source]
+        cause: CanonicalDataError,
     },
 }
 
