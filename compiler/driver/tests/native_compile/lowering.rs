@@ -180,7 +180,7 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
 fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<(), TestFailure> {
     let mut source = String::new();
     for ordinal in 0..=128 {
-        source.push_str(&format!("pub const CAPACITY_{ordinal}: bool = true;\n"));
+        source.push_str(&format!("pub static CAPACITY_{ordinal}: bool = true;\n"));
     }
     let executable = executable(NativeTool::Rustc)?;
     let toolchain = resolved(NativeTool::Rustc, &executable)?;

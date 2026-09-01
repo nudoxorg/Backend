@@ -1,6 +1,11 @@
 //! Defines lower behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the lower invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
+//!
+//! Occurrence admission is deliberately deferred to the integration phase and
+//! remains owned by `compiler/ir/semantic_facts.rs`. These interim scanner
+//! collectors emit declaration facts and type facts only; real frontends will
+//! supply occurrence facts when the scanner retirement gate is closed.
 use compiler_ir::{
     AtomId, ListSpan, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
     ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild,

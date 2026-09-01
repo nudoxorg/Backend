@@ -8,10 +8,11 @@ use compiler_ir::{
     TypeFactLane, TypeNode, WriteError,
 };
 use compiler_ir_vocabulary::{
-    AtomId, EntityId, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag, TypeRef,
+    AtomId, EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag,
+    TypeChildTarget, TypeRef,
 };
 use compiler_vocabulary::{Language, NativeTool, Stage};
-use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+use heart_identity::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -372,6 +373,152 @@ fn out_of_range_child_reopen_retains_the_true_record_ordinal() -> Result<(), Tes
                 target: 99,
                 record_count: 2
             }
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn forward_child_reopen_retains_the_true_record_ordinal() -> Result<(), TestFailure> {
+    let inputs = [
+        TypeFactInput {
+            owner: EntityId::new(0),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+        },
+        TypeFactInput {
+            owner: EntityId::new(0),
+            record: SemanticTypeRecord {
+                tag: SemanticTypeTag::Tuple,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: None,
+                children: ListSpan::new(0, 1),
+            },
+        },
+    ];
+    let children = [compiler_ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        name: None,
+        flags: 0,
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &children,
+    };
+    let bytes = write(&lane)?;
+    let payload =
+        FragmentView::validate(&bytes)?
+            .type_fact_payload()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    let mut mutated = bytes;
+    mutated[offset + 57..offset + 61].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&mutated),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::ForwardReference {
+                ordinal: 1,
+                position: 0,
+                target: 1
+            }
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
+    let inputs = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::Tuple,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 1),
+        },
+    }];
+    let children = [compiler_ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(8))),
+        name: None,
+        flags: 0,
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &children,
+    };
+    let entities = [EntityRecord {
+        semantic_type: compiler_ir_vocabulary::TypeId::new(0),
+        name: AtomId::new(0),
+        kind: EntityKind::Function,
+    }];
+    let types = [TypeNode::Primitive(PrimitiveType::Bool)];
+    let atoms = [AtomInput { bytes: b"entity" }];
+    let result = PreparedFragment::prepare_with_type_facts(
+        source(),
+        recipe(),
+        &entities,
+        &types,
+        &atoms,
+        None,
+        None,
+        &lane,
+    );
+    assert!(matches!(
+        result,
+        Err(PrepareError::TypeFacts {
+            fault: TypeFactFault::ChildTargetOutOfRange {
+                ordinal: 0,
+                position: 0,
+                target: 8,
+                record_count: 1
+            }
+        })
+    ));
+}
+
+#[test]
+fn corrupted_external_nominal_authority_is_rejected_with_an_authority_fault()
+-> Result<(), TestFailure> {
+    let inputs = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::Nominal,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: Some(NominalRef::External(ExternalEntityRef::bind(
+                ContentId::<IrFragmentDomain>::from_canonical_bytes(b"foreign"),
+                7,
+            ))),
+            children: ListSpan::new(0, 0),
+        },
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &[],
+    };
+    let bytes = write(&lane)?;
+    let payload =
+        FragmentView::validate(&bytes)?
+            .type_fact_payload()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    let mut mutated = bytes;
+    mutated[offset + 4 + 16] ^= 1;
+    assert!(matches!(
+        FragmentView::validate(&mutated),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::Authority { ordinal: 0, .. }
         })
     ));
     Ok(())
