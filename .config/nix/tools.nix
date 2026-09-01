@@ -3,6 +3,26 @@
 # Supplies one source of truth to shells, commands, and checks.
 { pkgs, toolchains }:
 let
+  cargoDylint = pkgs.rustPlatform.buildRustPackage rec {
+    pname = "cargo-dylint";
+    version = "6.0.4";
+    src = pkgs.fetchFromGitHub {
+      owner = "trailofbits";
+      repo = "dylint";
+      rev = "v${version}";
+      hash = "sha256-CROuPpPzUobUcH3Xl2fpEOVxEBBppmFBaJSRXsEuaXg=";
+    };
+    cargoHash = "sha256-9YAYtVoqMfyeG5sy8Jtt8a894k9AzyhIDEFzyqdzyeI=";
+    cargoBuildFlags = [
+      "--package"
+      "cargo-dylint"
+      "--no-default-features"
+      "--features"
+      "cargo-cli"
+    ];
+    cargoInstallFlags = cargoBuildFlags;
+    doCheck = false;
+  };
   nativeCompilers = [
     pkgs.clang
     pkgs.dotnet-sdk_8
@@ -29,6 +49,7 @@ let
   ];
   verifierTools = [
     pkgs.cargo-bloat
+    cargoDylint
     pkgs.cargo-llvm-cov
     pkgs.hyperfine
     pkgs.samply
