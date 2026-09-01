@@ -1,0 +1,10 @@
+error: exported function returns a static reference; return an owned or capability-bound value
+  --> $DIR/lifetime_escape.rs:8:20
+   |
+LL | pub fn leaked() -> &'static str {
+   |                    ^^^^^^^^^^^^
+   |
+   = note: `#[deny(lifetime_escape)]` on by default
+
+error: aborting due to 1 previous error
+

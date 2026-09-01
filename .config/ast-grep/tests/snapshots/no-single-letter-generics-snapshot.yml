@@ -1,8 +1,0 @@
-id: no-single-letter-generics
-snapshots:
-  'pub struct Store<K, W> { key: K, work: W }':
-    labels:
-    - source: K
-      style: primary
-      start: 17
-      end: 18

@@ -13,10 +13,6 @@ let
     CLIPPY_CONF_DIR = "$PWD/.config";
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     BACKEND_RUSTFMT = toolchains.rustfmt;
-    COMPILER_CSHARP_COMPILER = "${pkgs.dotnet-sdk_8}/bin/dotnet";
-    COMPILER_GO_COMPILER = "${pkgs.go}/bin/go";
-    COMPILER_JAVA_COMPILER = "${pkgs.jdk}/bin/javac";
-    COMPILER_TYPESCRIPT_COMPILER = "${pkgs.typescript}/bin/tsc";
     LIBRARY_PATH = pkgs.lib.makeLibraryPath [
       pkgs.libiconv
       pkgs.zlib
@@ -31,13 +27,49 @@ let
   verification = pkgs.mkShell (
     common
     // {
-      packages = tools.development ++ tools.verification ++ [ commands.backendVerifier ];
-      BACKEND_AGENT_ROLE = "terra-reviewer";
+      packages = tools.verification ++ [ commands.backendVerifier ];
+      BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
+    }
+  );
+  compiler = pkgs.mkShell (
+    common
+    // {
+      packages = tools.compiler ++ [ commands.backend ];
+      COMPILER_CSHARP_COMPILER = "${pkgs.dotnet-sdk_8}/bin/dotnet";
+      COMPILER_GO_COMPILER = "${pkgs.go}/bin/go";
+      COMPILER_JAVA_COMPILER = "${pkgs.jdk}/bin/javac";
+      COMPILER_TYPESCRIPT_COMPILER = "${pkgs.typescript}/bin/tsc";
+    }
+  );
+  services = pkgs.mkShell (
+    common
+    // {
+      packages = tools.services ++ [ commands.backend ];
+    }
+  );
+  observability = pkgs.mkShell (
+    common
+    // {
+      packages = tools.observability ++ [ commands.backendVerifier ];
+      BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
+    }
+  );
+  complete = pkgs.mkShell (
+    common
+    // {
+      packages = tools.complete ++ [ commands.backendVerifier ];
       BACKEND_NIGHTLY_CARGO = toolchains.nightlyCargo;
     }
   );
 in
 {
   default = development;
-  inherit development verification;
+  inherit
+    compiler
+    complete
+    development
+    observability
+    services
+    verification
+    ;
 }

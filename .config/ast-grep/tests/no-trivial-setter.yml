@@ -1,8 +1,0 @@
-# Contrasts a checked semantic transition with direct ceremonial field mutation.
-# Proves error-bearing normalization remains admissible to the structural rule.
-# Freezes the simplest setter mutant without overreaching into real transitions.
-id: no-trivial-setter
-valid:
-  - "impl Budget { pub fn reserve(&mut self, value: Count) -> Result<(), Error> { self.remaining = self.remaining.checked_sub(value)?; Ok(()) } }"
-invalid:
-  - "impl Budget { pub fn set_remaining(&mut self, value: Count) { self.remaining = value; } }"

@@ -1,9 +1,0 @@
-# Contrasts validated access and standard borrowed conversion with a trivial getter.
-# Proves behavior-bearing methods and trait idioms remain outside the diagnostic.
-# Freezes the direct-field accessor mutant the project repeatedly produced.
-id: no-trivial-getter
-valid:
-  - "impl Bytes { pub fn validated(&self) -> Result<&[u8], Error> { validate(&self.bytes)?; Ok(&self.bytes) } }"
-  - "impl AsRef<[u8]> for Bytes { fn as_ref(&self) -> &[u8] { &self.bytes } }"
-invalid:
-  - "impl Bytes { pub fn bytes(&self) -> &[u8] { self.bytes } }"

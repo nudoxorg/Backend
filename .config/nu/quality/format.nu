@@ -3,30 +3,60 @@
 # Refuses to turn a narrow edit into an unbounded workspace rewrite.
 
 # Formats changed Rust packages and changed Nix or Nushell configuration files.
+# @class repository-write
 def "main format changed" [--base: string, --check]: nothing -> record {
-  let root = (repository-root)
-  let packages = (changed-packages --base $base)
-  let rustfmt_arguments = if $check {
-    ["fmt" "--check" "--manifest-path" ($root | path join "Cargo.toml")]
-  } else {
-    ["fmt" "--manifest-path" ($root | path join "Cargo.toml")]
-  }
-  for package in $packages {
-    process-require $env.BACKEND_STABLE_CARGO ($rustfmt_arguments | append ["--package" $package.name "--" "--config-path" ($root | path join ".config/rustfmt.toml")]) | ignore
-  }
-  let configuration_paths = (changed-paths --base $base | where {|path| ($path | path exists) and (($path | str ends-with ".nix") or ($path | str ends-with ".nu") or ($path | str ends-with ".toml")) })
-  for relative in $configuration_paths {
-    let path = ($root | path join $relative)
-    if ($relative | str ends-with ".nix") {
-      let arguments = if $check { ["--check" $path] } else { [$path] }
-      process-require "nixfmt" $arguments | ignore
-    } else if ($relative | str ends-with ".nu") {
-      let arguments = if $check { ["--check" $path] } else { [$path] }
-      process-require "nufmt" $arguments | ignore
+    require-command "format-changed"
+    let root = (repository-root)
+    let packages = (changed-packages --base $base)
+    let rustfmt_arguments = if $check {
+        [
+            "fmt"
+            "--check"
+            "--manifest-path"
+            ($root | path join "Cargo.toml")
+        ]
     } else {
-      let arguments = if $check { ["format" "--check" $path] } else { ["format" $path] }
-      process-require "taplo" $arguments | ignore
+        [
+            "fmt"
+            "--manifest-path"
+            ($root | path join "Cargo.toml")
+        ]
     }
-  }
-  { packages: ($packages | get name), configuration: $configuration_paths, mode: (if $check { "check" } else { "write" }) }
+    for package in $packages {
+        process-require $env.BACKEND_STABLE_CARGO (
+            $rustfmt_arguments
+            | append [
+                "--package" $package.name
+                "--"
+                "--config-path"
+                ($root | path join ".config/rustfmt.toml")
+            ]
+        ) | ignore
+    }
+    let extensions = (
+        control-plane
+        | get formatting
+        | values
+        | get extensions
+        | flatten
+        | uniq
+    )
+    let configuration_paths = (changed-paths --base $base | where {|path|
+    ($path | path exists) and (($path | path parse | get extension) in $extensions) and not ($path | str ends-with ".rs")
+  })
+    let formatter_paths = $configuration_paths | each {|path| $root | path join $path }
+    if not ($formatter_paths | is-empty) {
+        let mode = if $check { ["--fail-on-change"] } else { [] }
+        process-require $env.BACKEND_TREEFMT (
+            ["--working-dir" (configuration-root)]
+            | append $mode
+            | append "--no-cache"
+            | append $formatter_paths
+        ) | ignore
+    }
+    {
+        packages: ($packages | get name)
+        configuration: $configuration_paths
+        mode: (if $check { "check" } else { "write" })
+    }
 }

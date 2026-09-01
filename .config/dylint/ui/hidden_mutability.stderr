@@ -1,0 +1,10 @@
+error: exported field hides coordination in `Mutex`; expose a proved protocol instead
+  --> $DIR/hidden_mutability.rs:11:5
+   |
+LL |     pub value: Mutex<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(hidden_mutability)]` on by default
+
+error: aborting due to 1 previous error
+

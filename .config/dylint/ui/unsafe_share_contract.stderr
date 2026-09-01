@@ -1,0 +1,16 @@
+error: manual unsafe `Send` or `Sync` implementation needs a separate proved concurrency boundary
+  --> $DIR/unsafe_share_contract.rs:6:1
+   |
+LL | unsafe impl Send for PointerCarrier {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(unsafe_share_contract)]` on by default
+
+error: manual unsafe `Send` or `Sync` implementation needs a separate proved concurrency boundary
+  --> $DIR/unsafe_share_contract.rs:7:1
+   |
+LL | unsafe impl Sync for PointerCarrier {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
+

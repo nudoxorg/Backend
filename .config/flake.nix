@@ -14,6 +14,10 @@
       url = "github:xav-ie/nuenv/ba517a66dc4e8322855617262c3972892190908b";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs: import ./nix { inherit inputs; };

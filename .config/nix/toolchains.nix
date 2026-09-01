@@ -21,13 +21,19 @@ let
       ];
   nightly = inputs.fenix.packages.${system}.latest.withComponents [
     "cargo"
+    "clippy"
+    "llvm-tools"
+    "rust-src"
     "rustc"
+    "rustc-dev"
+    "rustfmt"
   ];
 in
 {
   inherit stable nightly;
   stableCargo = "${stable}/bin/cargo";
   nightlyCargo = "${nightly}/bin/cargo";
+  dylintToolchain = "nightly-${system}";
   rustfmt = "${stable}/bin/rustfmt";
   clang = pkgs.clang;
 }

@@ -1,8 +1,0 @@
-# Registers Rust structural policies and their native snapshot test corpus.
-# Keeps rule discovery relative to this configuration directory.
-# Makes normal lint runs immutable while explicit review updates snapshots.
-ruleDirs:
-  - rules
-testConfigs:
-  - testDir: tests
-    snapshotDir: snapshots

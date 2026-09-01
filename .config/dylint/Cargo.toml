@@ -1,0 +1,30 @@
+# Defines the isolated semantic-lint dynamic library.
+# Pins the Dylint API that loads it into rustc.
+# Keeps rustc-private dependencies outside product workspaces.
+[package]
+name = "backend-semantic-lints"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dylint_linting = "=6.0.4"
+
+[dev-dependencies]
+dylint_testing = "=6.0.4"
+
+[features]
+rlib = ["dylint_linting/constituent"]
+
+[lints.rust.unexpected_cfgs]
+level = "deny"
+check-cfg = ["cfg(dylint_lib, values(any()))"]
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]

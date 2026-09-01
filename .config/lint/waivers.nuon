@@ -1,4 +1,0 @@
-# Stores narrowly scoped, expiring lint exceptions joined to inline explanations.
-# Rejects broad paths, undocumented reasons, and comment-only suppressions.
-# Begins empty because redesign is the default response to a policy finding.
-[]
