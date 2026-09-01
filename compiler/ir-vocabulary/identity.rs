@@ -346,9 +346,12 @@ pub enum ForeignOrigin<'bytes> {
 }
 
 impl<'bytes> ForeignOrigin<'bytes> {
-    const PACKAGE_TAG: u8 = 0;
-    const NAMESPACE_TAG: u8 = 1;
-    const UNIVERSE_TAG: u8 = 2;
+    /// Stable wire tag of the [`ForeignOrigin::Package`] family.
+    pub const PACKAGE_TAG: u8 = 0;
+    /// Stable wire tag of the [`ForeignOrigin::Namespace`] family.
+    pub const NAMESPACE_TAG: u8 = 1;
+    /// Stable wire tag of the [`ForeignOrigin::Universe`] family.
+    pub const UNIVERSE_TAG: u8 = 2;
 
     /// The stable preimage tag of this origin.
     #[must_use]

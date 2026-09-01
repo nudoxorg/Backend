@@ -7,7 +7,7 @@ mod error;
 mod validate;
 
 pub use cursor::{Atom, AtomCursor, EntityCursor, TypeNodeCursor};
-pub use error::{DirectoryFault, FragmentError, SemanticDataFault, WireField};
+pub use error::{DirectoryFault, FragmentError, OccurrenceFault, SemanticDataFault, WireField};
 
 pub(crate) use validate::validate_fragment_layout;
 
@@ -19,6 +19,7 @@ pub struct FragmentView<'fragment> {
     pub(super) type_nodes: &'fragment [u8],
     pub(super) atoms: &'fragment [u8],
     pub(super) atom_bytes: &'fragment [u8],
+    pub(super) occurrence_lane: Option<&'fragment [u8]>,
     /// Typed source fact validated from the fragment's required identity lane.
     pub source: crate::SourceIdentity,
     /// Typed recipe facts validated from the fragment's required recipe lane.

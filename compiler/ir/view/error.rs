@@ -4,7 +4,7 @@
 use core::num::TryFromIntError;
 
 use crate::{EntityId, ProductChildRole, ProductConstructorFault, TypeId};
-use heart_identity::HASH_BYTES;
+use heart_identity::{DomainCode, HASH_BYTES};
 use thiserror::Error;
 
 use crate::{
@@ -198,4 +198,54 @@ pub enum FragmentError {
         #[source]
         fault: SemanticDataFault,
     },
+    #[error("occurrence plane is invalid: {fault}")]
+    Occurrences {
+        #[source]
+        fault: OccurrenceFault,
+    },
+}
+
+/// Exact occurrence-plane section rejection retaining every Copy wire
+/// operand. Authority failures retain the expected domain code or the
+/// complete observed width; richer admission faults stay in
+/// `semantic_facts::OccurrenceFault`.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum OccurrenceFault {
+    #[error(
+        "occurrence {ordinal} names entity {owner} outside the fragment entity lane of {entity_count}"
+    )]
+    Owner {
+        ordinal: u32,
+        owner: u32,
+        entity_count: u32,
+    },
+    #[error("occurrence {ordinal} carries an unknown target tag {actual}")]
+    TargetTag { ordinal: u32, actual: u8 },
+    #[error("occurrence {ordinal} carries an unknown foreign origin tag {actual}")]
+    OriginTag { ordinal: u32, actual: u8 },
+    #[error("occurrence {ordinal} carries an unknown reference kind {actual}")]
+    ReferenceKind { ordinal: u32, actual: u8 },
+    #[error("occurrence {ordinal} carries an unknown confidence {actual}")]
+    Confidence { ordinal: u32, actual: u8 },
+    #[error("occurrence {ordinal} carries an inverted relative span {start}..{end}")]
+    Span { ordinal: u32, start: u32, end: u32 },
+    #[error("occurrence {ordinal} carries an unknown foreign kind cell {actual}")]
+    KindCell { ordinal: u32, actual: u16 },
+    #[error("occurrence {ordinal} foreign key has an empty path")]
+    EmptyPath { ordinal: u32 },
+    #[error("occurrence record {ordinal} payload ended before {needed} bytes")]
+    Truncated { ordinal: u32, needed: usize },
+    #[error("occurrence section declares {declared} records but carries trailing bytes")]
+    TrailingBytes { declared: u32 },
+    #[error(
+        "occurrence {ordinal} identity authority cell must encode domain {expected:?} but observes code {observed}"
+    )]
+    AuthorityDomain {
+        ordinal: u32,
+        expected: DomainCode,
+        observed: u8,
+        raw: [u8; heart_identity::HASH_BYTES],
+    },
+    #[error("occurrence {ordinal} identity cell carries {actual} bytes instead of 32")]
+    AuthorityWidth { ordinal: u32, actual: usize },
 }

@@ -15,10 +15,9 @@ use crate::{
         FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, RECIPE_FACT_BYTES,
         SEMANTIC_CHILD_BYTES, SEMANTIC_CONSTRUCTOR_BYTES, SEMANTIC_DATA_HEADER_BYTES,
         SEMANTIC_EXTERNAL_TAG, SEMANTIC_LIST_BYTES, SEMANTIC_LOCAL_TAG, SEMANTIC_PRODUCT_BYTES,
-        SEMANTIC_SECTION_COUNT, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind,
-        SectionRequirement, TYPE_NODE_BYTES, WRITTEN_SECTION_COUNT, entity_fault,
-        entity_name_fault, type_node_fault, write_atom_record, write_entity, write_recipe_fact,
-        write_source_identity, write_type_node, write_u16, write_u32,
+        SOURCE_IDENTITY_BYTES, SectionCount, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
+        entity_fault, entity_name_fault, type_node_fault, write_atom_record, write_entity,
+        write_recipe_fact, write_source_identity, write_type_node, write_u16, write_u32,
     },
 };
 
@@ -32,9 +31,10 @@ pub enum LayoutStep {
     SourceIdentityLane,
     RecipeFactLane,
     SemanticData,
+    Occurrences,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PrepareError {
     #[error("{lane:?} count {actual} exceeds the fragment count width")]
     Count {
@@ -101,6 +101,12 @@ pub enum PrepareError {
         #[source]
         cause: CanonicalDataError,
     },
+    #[error("occurrence lane admission rejected a reference fact: {fault}")]
+    OccurrenceLane {
+        ordinal: u32,
+        #[source]
+        fault: crate::view::OccurrenceFault,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -132,6 +138,7 @@ pub struct PreparedFragment<'facts> {
     type_nodes: &'facts [TypeNode],
     atoms: &'facts [AtomInput<'facts>],
     semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
+    occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
     layout: FragmentLayout,
 }
 
@@ -143,7 +150,7 @@ impl<'facts> PreparedFragment<'facts> {
         type_nodes: &'facts [TypeNode],
         atoms: &'facts [AtomInput<'facts>],
     ) -> Result<Self, PrepareError> {
-        Self::prepare_inner(source, recipe, entities, type_nodes, atoms, None)
+        Self::prepare_inner(source, recipe, entities, type_nodes, atoms, None, None)
     }
 
     /// Prepare one fragment whose envelope embeds one canonical semantic-data
@@ -168,6 +175,30 @@ impl<'facts> PreparedFragment<'facts> {
             type_nodes,
             atoms,
             Some(semantic_data),
+            None,
+        )
+    }
+
+    /// Prepare one fragment that additionally embeds the occurrence fact
+    /// plane: admitted reference facts owned by the entity lane, written in
+    /// lane order, and revalidated identically on reopen.
+    pub fn prepare_with_occurrences(
+        source: SourceIdentity,
+        recipe: RecipeFact,
+        entities: &'facts [EntityRecord],
+        type_nodes: &'facts [TypeNode],
+        atoms: &'facts [AtomInput<'facts>],
+        semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
+        occurrences: &'facts crate::semantic_facts::OccurrenceLane<'facts>,
+    ) -> Result<Self, PrepareError> {
+        Self::prepare_inner(
+            source,
+            recipe,
+            entities,
+            type_nodes,
+            atoms,
+            semantic_data,
+            Some(occurrences),
         )
     }
 
@@ -178,11 +209,19 @@ impl<'facts> PreparedFragment<'facts> {
         type_nodes: &'facts [TypeNode],
         atoms: &'facts [AtomInput<'facts>],
         semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
+        occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
     ) -> Result<Self, PrepareError> {
         let entity_count = count(LayoutStep::EntityLane, entities.len())?;
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
         let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
         let atom_byte_count = atom_byte_count(atoms)?;
+        if let Some(lane) = occurrences {
+            lane.admit(u32::from(entity_count))
+                .map_err(|fault| PrepareError::OccurrenceLane {
+                    ordinal: 0,
+                    fault: crate::semantic_facts::occurrence_view_fault(fault),
+                })?;
+        }
         let layout = layout(
             source,
             recipe,
@@ -191,6 +230,7 @@ impl<'facts> PreparedFragment<'facts> {
             atom_count,
             atom_byte_count,
             semantic_data,
+            occurrences,
         )?;
 
         for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
@@ -223,6 +263,7 @@ impl<'facts> PreparedFragment<'facts> {
             type_nodes,
             atoms,
             semantic_data,
+            occurrences,
             layout,
         })
     }
@@ -249,11 +290,11 @@ impl<'facts> PreparedFragment<'facts> {
         write_u16(
             written,
             HEADER_LAYOUT.section_count,
-            u16::from(if self.semantic_data.is_some() {
-                SEMANTIC_SECTION_COUNT
-            } else {
-                WRITTEN_SECTION_COUNT
-            }),
+            u16::from(SectionCount::from(
+                6_u16
+                    + u16::from(self.semantic_data.is_some())
+                    + u16::from(self.occurrences.is_some()),
+            )),
         );
         write_u32(
             written,
@@ -271,11 +312,22 @@ impl<'facts> PreparedFragment<'facts> {
             self.layout.source_identity,
         );
         write_directory_entry(written, 5, SectionKind::RecipeFact, self.layout.recipe_fact);
+        let mut ordinal: usize = 6;
         if let (Some(semantic_data), Some(data_layout)) =
             (self.semantic_data, self.layout.semantic_data)
         {
-            write_directory_entry(written, 6, SectionKind::SemanticData, data_layout);
+            write_directory_entry(written, ordinal, SectionKind::SemanticData, data_layout);
             write_semantic_data(written, data_layout, semantic_data)?;
+            ordinal += 1;
+        }
+        if let (Some(lane), Some(occurrence_layout)) = (self.occurrences, self.layout.occurrences) {
+            write_directory_entry(
+                written,
+                ordinal,
+                SectionKind::Occurrences,
+                occurrence_layout,
+            );
+            write_occurrence_payload(written, occurrence_layout, lane);
         }
 
         let mut entity_cursor = self.layout.entities.start_index;
@@ -332,12 +384,11 @@ fn layout(
     atom_count: ItemCount,
     atom_byte_count: ItemCount,
     semantic_data: Option<&CanonicalDataGraph<'_, '_>>,
+    occurrences: Option<&crate::semantic_facts::OccurrenceLane<'_>>,
 ) -> Result<FragmentLayout, PrepareError> {
-    let section_count = if semantic_data.is_some() {
-        SEMANTIC_SECTION_COUNT
-    } else {
-        WRITTEN_SECTION_COUNT
-    };
+    let section_count = SectionCount::from(
+        6_u16 + u16::from(semantic_data.is_some()) + u16::from(occurrences.is_some()),
+    );
     let mut cursor = LayoutCursor::new(entity_count, type_node_count, section_count)?;
     let entities = cursor.lane(LayoutStep::EntityLane, entity_count, ENTITY_BYTES)?;
     let type_nodes = cursor.lane(LayoutStep::TypeNodeLane, type_node_count, TYPE_NODE_BYTES)?;
@@ -356,6 +407,9 @@ fn layout(
     let semantic_lane = semantic_data
         .map(|data| semantic_data_lane(&mut cursor, data))
         .transpose()?;
+    let occurrence_lane = occurrences
+        .map(|lane| occurrence_lane(&mut cursor, lane))
+        .transpose()?;
     cursor.finish(
         FragmentFacts { source, recipe },
         FragmentLanes {
@@ -366,6 +420,7 @@ fn layout(
             source_identity,
             recipe_fact,
             semantic_data: semantic_lane,
+            occurrences: occurrence_lane,
         },
     )
 }
@@ -385,6 +440,7 @@ struct FragmentLanes {
     source_identity: LaneLayout,
     recipe_fact: LaneLayout,
     semantic_data: Option<LaneLayout>,
+    occurrences: Option<LaneLayout>,
 }
 
 struct LayoutCursor {
@@ -471,6 +527,7 @@ impl LayoutCursor {
             source_identity: lanes.source_identity,
             recipe_fact: lanes.recipe_fact,
             semantic_data: lanes.semantic_data,
+            occurrences: lanes.occurrences,
             source: facts.source,
             recipe: facts.recipe,
             output_len: self.next_index,
@@ -548,6 +605,33 @@ fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, l
         start + DIRECTORY_ENTRY_LAYOUT.byte_length,
         u32::from(lane.length),
     );
+}
+
+fn occurrence_lane(
+    cursor: &mut LayoutCursor,
+    lane: &crate::semantic_facts::OccurrenceLane<'_>,
+) -> Result<LaneLayout, PrepareError> {
+    // One payload cell per byte, matching the fixed-width byte-lane grammar:
+    // the directory proves `count * 1 == byte_length` and the payload header
+    // declares the record count.
+    let payload = lane.payload_len();
+    let Ok(count) = ItemCount::try_from(payload) else {
+        return Err(PrepareError::LayoutOverflow {
+            step: LayoutStep::Occurrences,
+            entity_count: 0,
+            type_node_count: 0,
+        });
+    };
+    cursor.lane(LayoutStep::Occurrences, count, 1)
+}
+
+fn write_occurrence_payload(
+    output: &mut [u8],
+    lane: LaneLayout,
+    facts: &crate::semantic_facts::OccurrenceLane<'_>,
+) {
+    let section = &mut output[lane.range()];
+    facts.write_payload(section);
 }
 
 fn semantic_data_lane(

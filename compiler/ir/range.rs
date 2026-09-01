@@ -193,8 +193,9 @@ impl FragmentRangeManifest {
             SectionKind::SourceIdentity => 4,
             SectionKind::RecipeFact => 5,
             // The range manifest commits required semantic lanes only; the
-            // optional semantic-data section has no manifest row.
-            SectionKind::SemanticData => {
+            // optional semantic-data and occurrence sections have no
+            // manifest row.
+            SectionKind::SemanticData | SectionKind::Occurrences => {
                 return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
             }
         };

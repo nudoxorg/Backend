@@ -72,9 +72,8 @@ pub(crate) const TYPE_NODE_BYTES: usize = TYPE_NODE_LAYOUT.encoded_len;
 pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
 pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
-pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 6 };
+
 /// Section count for fragments that embed one canonical semantic-data graph.
-pub(crate) const SEMANTIC_SECTION_COUNT: SectionCount = SectionCount { wire: 7 };
 
 /// Semantic-data header: atom, product, constructor, list, and child counts.
 pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 5;
@@ -133,6 +132,7 @@ wire_enum_u16! {
         SourceIdentity = 5,
         RecipeFact = 6,
         SemanticData = 7,
+        Occurrences = 8,
     }
 }
 
@@ -234,6 +234,8 @@ pub(crate) struct FragmentLayout {
     pub(crate) recipe_fact: LaneLayout,
     /// Optional canonical semantic-data payload lane.
     pub(crate) semantic_data: Option<LaneLayout>,
+    /// Optional occurrence fact-plane payload lane.
+    pub(crate) occurrences: Option<LaneLayout>,
     pub(crate) source: SourceIdentity,
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,

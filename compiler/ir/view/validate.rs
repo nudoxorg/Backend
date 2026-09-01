@@ -31,16 +31,32 @@ impl<'fragment> FragmentView<'fragment> {
     pub(crate) fn from_validated_layout(envelope: &'fragment [u8], layout: FragmentLayout) -> Self {
         let entity_lane = &envelope[layout.entities.range()];
         let atom_lane = &envelope[layout.atoms.range()];
+        let occurrence_lane = layout.occurrences.map(|lane| &envelope[lane.range()]);
         Self {
             envelope,
             entities: entity_lane,
             type_nodes: &envelope[layout.type_nodes.range()],
             atoms: atom_lane,
             atom_bytes: &envelope[layout.atom_bytes.range()],
+            occurrence_lane,
             source: layout.source,
             recipe: layout.recipe,
             layout,
         }
+    }
+
+    /// Lazily decodes the validated occurrence fact plane, or `None` when
+    /// the fragment commits no occurrence section.
+    pub fn occurrences(&self) -> Option<crate::semantic_facts::OccurrenceCursor<'fragment>> {
+        self.occurrence_lane
+            .map(crate::semantic_facts::OccurrenceCursor::new)
+    }
+
+    /// The raw validated occurrence section payload, or `None` when the
+    /// fragment commits no occurrence section. Hostile-mutation tests use
+    /// the slice to address individual wire cells.
+    pub fn occurrence_payload(&self) -> Option<&'fragment [u8]> {
+        self.occurrence_lane
     }
 }
 
@@ -182,6 +198,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut atom_bytes = None;
     let mut recipe_fact = None;
     let mut semantic_data = None;
+    let mut occurrences = None;
     for _ in 0..u16::from(section_count) {
         let (next_state, entry) = state.parse(envelope)?;
         match SectionKind::try_from(entry.kind) {
@@ -240,6 +257,24 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 require_known(&entry)?;
                 validate_semantic_data(&envelope[entry.lane.range()])?;
                 semantic_data = Some(entry.lane);
+            }
+            Ok(SectionKind::Occurrences) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                let entity_count = u32::from(
+                    entities
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::EntityTypes,
+                        })?
+                        .count,
+                );
+                let payload = &envelope[entry.lane.range()];
+                crate::semantic_facts::validate_occurrence_payload(payload, entity_count).map_err(
+                    |fault| FragmentError::Occurrences {
+                        fault: crate::semantic_facts::occurrence_view_fault(fault),
+                    },
+                )?;
+                occurrences = Some(entry.lane);
             }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
                 return Err(directory_fault(
@@ -302,6 +337,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         source_identity,
         recipe_fact,
         semantic_data,
+        occurrences,
         source,
         recipe,
         output_len: envelope.len(),

@@ -26,6 +26,7 @@ mod render;
 mod semantic;
 mod semantic_extension_section;
 mod vcs;
+mod semantic_facts;
 mod view;
 mod wire;
 
@@ -108,6 +109,10 @@ pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
     LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
+pub use semantic_facts::{
+    DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
+};
+pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,
     SemanticDataFault, TypeNodeCursor, WireField,
