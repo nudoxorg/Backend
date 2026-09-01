@@ -66,13 +66,18 @@ fn function<'source>(
     facts: &mut FactSet<'source>,
     unsupported: &mut UnsupportedLane<'source>,
 ) -> Result<(), LoweringUnsupported> {
-    // An optional receiver precedes a method name.
-    if matches!(next_top_level(scanner), Some(SyntaxToken::Symbol(b'('))) {
-        if !scanner.skip_balanced_parens() {
-            return Ok(());
-        }
+    // Read the first token exactly once. A receiver is parenthesized; a
+    // receiverless function starts directly with its name. The old probe
+    // consumed the name of receiverless functions before it could be used.
+    let first = next_top_level(scanner);
+    if matches!(first, Some(SyntaxToken::Symbol(b'('))) && !scanner.skip_balanced_parens() {
+        return Ok(());
     }
-    let Some(name) = word(next_top_level(scanner)) else {
+    let Some(name) = (if matches!(first, Some(SyntaxToken::Symbol(b'('))) {
+        word(next_top_level(scanner))
+    } else {
+        word(first)
+    }) else {
         // No provable name: nothing is recorded and nothing is guessed.
         return Ok(());
     };

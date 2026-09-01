@@ -73,7 +73,7 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 512];
+        let mut output = [0xa5; 4096];
         let compiled = compile(
             request(
                 language,
@@ -96,6 +96,7 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             observed: compile_terminal(&failure),
         })?;
         assert_facts(&compiled.fragment, expected_facts)?;
+        assert_type_facts(&compiled.fragment, tool)?;
         // Every container fact stays type-opaque; the only committed
         // primitive is the member's spelled closed type.
         let primitive_types: Vec<PrimitiveType> = compiled
@@ -126,7 +127,7 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0; 4_096];
-    let mut output = [0xa5; 512];
+    let mut output = [0xa5; 4096];
     match compile(
         request(
             Language::Rust,
@@ -174,6 +175,62 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
     }
     Ok(())
 }
+
+#[test]
+fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<(), TestFailure> {
+    let mut source = String::new();
+    for ordinal in 0..=128 {
+        source.push_str(&format!("pub const CAPACITY_{ordinal}: bool = true;\n"));
+    }
+    let executable = executable(NativeTool::Rustc)?;
+    let toolchain = resolved(NativeTool::Rustc, &executable)?;
+    let native_work = TemporaryWork::create()?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 4_096];
+    let mut output = [0xa5; 4_096];
+    match compile(
+        request(
+            Language::Rust,
+            source.as_bytes(),
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(10),
+        ),
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: native_work.path(),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    ) {
+        Err(CompileFailure::LoweringUnsupported {
+            cause: LoweringUnsupported::NoSupportedDeclaration,
+            ..
+        }) => {}
+        Err(failure) => {
+            return Err(TestFailure::CompileTerminal {
+                tool: NativeTool::Rustc,
+                expected: CompileExpectation::LoweringUnsupported(
+                    LoweringUnsupported::NoSupportedDeclaration,
+                ),
+                observed: compile_terminal(&failure),
+            });
+        }
+        Ok(_) => {
+            return Err(TestFailure::CompileTerminal {
+                tool: NativeTool::Rustc,
+                expected: CompileExpectation::LoweringUnsupported(
+                    LoweringUnsupported::NoSupportedDeclaration,
+                ),
+                observed: CompileTerminal::Compiled,
+            });
+        }
+    }
+    native_work.assert_empty()?;
+    assert!(output.iter().all(|byte| *byte == 0xa5));
+    Ok(())
+}
 #[test]
 fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
 -> Result<(), TestFailure> {
@@ -185,8 +242,8 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
     let cancelled = AtomicBool::new(false);
     let mut alpha_diagnostic = [0; 4_096];
     let mut bravo_diagnostic = [0; 4_096];
-    let mut alpha_output = [0; 512];
-    let mut bravo_output = [0; 512];
+    let mut alpha_output = [0; 4096];
+    let mut bravo_output = [0; 4096];
     let alpha = compile(
         request(
             Language::Rust,

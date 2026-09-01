@@ -141,6 +141,10 @@ pub(super) enum TestFailure {
         expected_count: usize,
         actual_count: usize,
     },
+    #[error("the {tool:?} adapter emitted no decodable type-fact section")]
+    TypeFactsMissing { tool: NativeTool },
+    #[error("the {tool:?} adapter type-fact section failed to decode")]
+    TypeFactsUndecodable { tool: NativeTool },
     #[error(
         "the locally reproducible {tool:?} adapter primitive type fact was {actual:?}, not {expected:?}"
     )]
@@ -419,6 +423,21 @@ pub(super) fn assert_facts(
         });
     }
     Ok(())
+}
+
+/// The interim driver seam must commit at least one type fact for every
+/// successful language lowering; this catches deletion of the emission block.
+pub(super) fn assert_type_facts(
+    fragment: &compiler_ir::FragmentView<'_>,
+    tool: NativeTool,
+) -> Result<(), TestFailure> {
+    let mut facts = fragment
+        .type_facts()
+        .ok_or(TestFailure::TypeFactsMissing { tool })?;
+    match facts.next() {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(_)) | None => Err(TestFailure::TypeFactsUndecodable { tool }),
+    }
 }
 
 pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal {

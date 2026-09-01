@@ -88,6 +88,7 @@ pub(super) struct UnsupportedDeclaration<'source> {
 /// Caller-owned bounded lane of unsupported declarations.
 pub(super) struct UnsupportedLane<'source> {
     len: usize,
+    overflowed: bool,
     names: [&'source [u8]; MAX_EMISSION_FACTS],
     reasons: [UnsupportedReason; MAX_EMISSION_FACTS],
 }
@@ -100,6 +101,7 @@ impl<'source> UnsupportedLane<'source> {
     pub(super) const fn new() -> Self {
         Self {
             len: 0,
+            overflowed: false,
             names: [&[]; MAX_EMISSION_FACTS],
             reasons: [UnsupportedReason::NeedsFrontend; MAX_EMISSION_FACTS],
         }
@@ -115,6 +117,7 @@ impl<'source> UnsupportedLane<'source> {
     pub(super) fn record(&mut self, declaration: UnsupportedDeclaration<'source>) {
         let ordinal = self.len;
         if ordinal == MAX_EMISSION_FACTS {
+            self.overflowed = true;
             return;
         }
         self.names[ordinal] = declaration.name;
@@ -249,6 +252,7 @@ pub(super) struct RejectedFact<'source> {
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
 pub(super) struct FactSet<'source> {
     len: usize,
+    overflowed: bool,
     total_children: usize,
     kinds: [EntityKind; MAX_EMISSION_FACTS],
     names: [&'source [u8]; MAX_EMISSION_FACTS],
@@ -267,6 +271,7 @@ impl<'source> FactSet<'source> {
     pub(super) const fn new() -> Self {
         Self {
             len: 0,
+            overflowed: false,
             total_children: 0,
             kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
             names: [&[]; MAX_EMISSION_FACTS],
@@ -281,6 +286,10 @@ impl<'source> FactSet<'source> {
     /// Number of admitted facts.
     pub(super) const fn len(&self) -> usize {
         self.len
+    }
+
+    pub(super) const fn overflowed(&self) -> bool {
+        self.overflowed
     }
 
     /// Admits one fact after proving its name, its constructor payload against
@@ -438,7 +447,10 @@ pub(super) fn push_fact<'source>(
 ) -> Result<usize, LoweringUnsupported> {
     match facts.push(fact) {
         Ok(ordinal) => Ok(ordinal),
-        Err(_) => Err(LoweringUnsupported::NoSupportedDeclaration),
+        Err(_) => {
+            facts.overflowed = true;
+            Err(LoweringUnsupported::NoSupportedDeclaration)
+        }
     }
 }
 
@@ -694,6 +706,9 @@ pub(super) fn emit<'source>(
         Language::CSharp => csharp::collect(source, facts, unsupported)?,
         Language::Go => go::collect(source, facts, unsupported)?,
         Language::Java => java::collect(source, facts, unsupported)?,
+    }
+    if facts.overflowed() || unsupported.overflowed {
+        return Err(LoweringUnsupported::NoSupportedDeclaration);
     }
     if facts.len() == 0 {
         return Err(LoweringUnsupported::NoSupportedDeclaration);

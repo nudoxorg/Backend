@@ -94,7 +94,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0xa5; 4_096];
-        let mut output = [0xa5; 512];
+        let mut output = [0xa5; 4096];
         let output_pointer = output.as_ptr();
         let fragment_len = match compile(
             request(
@@ -145,6 +145,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                     return Err(TestFailure::FragmentBorrow { tool });
                 }
                 assert_facts(&compiled.fragment, expected_facts)?;
+                assert_type_facts(&compiled.fragment, tool)?;
                 // The only committed primitive is the spelled closed type;
                 // every container fact stays type-opaque.
                 let primitive_types: Vec<PrimitiveType> = compiled

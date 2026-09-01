@@ -72,7 +72,7 @@ fn native_subset_lowering_ignores_comments_literals_and_nested_declarations()
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 512];
+        let mut output = [0xa5; 4096];
         let fragment_len = match expected {
             Expectation::Terminal(expected_cause) => {
                 match compile(
@@ -135,6 +135,7 @@ fn native_subset_lowering_ignores_comments_literals_and_nested_declarations()
                     observed: compile_terminal(&failure),
                 })?;
                 assert_facts(&compiled.fragment, expected_facts)?;
+                assert_type_facts(&compiled.fragment, tool)?;
                 compiled.fragment.as_ref().len()
             }
         };
@@ -172,7 +173,7 @@ fn go_java_lowering_ignores_comments_literals_and_nested_declarations() -> Resul
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 512];
+        let mut output = [0xa5; 4096];
         let compiled = compile(
             request(
                 language,
@@ -195,6 +196,7 @@ fn go_java_lowering_ignores_comments_literals_and_nested_declarations() -> Resul
             observed: compile_terminal(&failure),
         })?;
         assert_facts(&compiled.fragment, expected)?;
+        assert_type_facts(&compiled.fragment, tool)?;
         // The literal-only source bytes never became an inner declaration:
         // every committed primitive is still bounded by the spelled types.
         let primitives: Vec<PrimitiveType> = compiled
@@ -281,7 +283,7 @@ fn existing_lowering_ignores_comments_literals_and_nested_declarations() -> Resu
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 512];
+        let mut output = [0xa5; 4096];
         let fragment_len = match expected {
             Expectation::Terminal(expected_cause) => {
                 match compile(
@@ -344,6 +346,7 @@ fn existing_lowering_ignores_comments_literals_and_nested_declarations() -> Resu
                     observed: compile_terminal(&failure),
                 })?;
                 assert_facts(&compiled.fragment, expected_facts)?;
+                assert_type_facts(&compiled.fragment, tool)?;
                 compiled.fragment.as_ref().len()
             }
         };
