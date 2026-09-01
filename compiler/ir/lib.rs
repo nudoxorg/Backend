@@ -13,6 +13,7 @@ extern crate std;
 #[cfg(target_pointer_width = "16")]
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
+mod canonical_data;
 mod columnar;
 mod coordinate;
 mod interner;
@@ -24,6 +25,7 @@ mod range;
 mod render;
 mod semantic;
 mod semantic_extension_section;
+mod semantic_product;
 mod vcs;
 mod view;
 mod wire;
@@ -38,6 +40,11 @@ pub use coordinate::{
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
     ListInterner, ListTable, ListTableView,
+};
+pub use canonical_data::{
+    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
+    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
+    canonicalize_data_with_budget,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{
@@ -83,13 +90,20 @@ pub use semantic_extension_section::{
     encode_language_extension_section, language_extension_section_len,
     reopen_language_extension_section,
 };
+pub use semantic_product::{
+    ExternalCoordinate, ExternalEntityRef, ExternalFragmentId, ExternalProductRef,
+    ExternalTypeRef, ListSpan, PooledListError, Product, ProductChildRole,
+    ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
+    ProductId, ProductList, ProductListId, ProductRef, SemanticAtom, SemanticProduct,
+    SemanticProductChild, SemanticProductConstructor,
+};
 pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
     LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,
-    TypeNodeCursor, WireField,
+    SemanticDataFault, TypeNodeCursor, WireField,
 };
 
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";

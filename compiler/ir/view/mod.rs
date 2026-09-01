@@ -7,7 +7,7 @@ mod error;
 mod validate;
 
 pub use cursor::{Atom, AtomCursor, EntityCursor, TypeNodeCursor};
-pub use error::{DirectoryFault, FragmentError, WireField};
+pub use error::{DirectoryFault, FragmentError, SemanticDataFault, WireField};
 
 pub(crate) use validate::validate_fragment_layout;
 

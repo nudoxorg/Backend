@@ -3,7 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use crate::{EntityId, TypeId};
+use crate::{EntityId, ProductChildRole, ProductConstructorFault, TypeId};
+use heart_identity::HASH_BYTES;
 use thiserror::Error;
 
 use crate::{
@@ -51,6 +52,85 @@ pub enum DirectoryFault {
     CountWidthOverflow { kind: u16, count: u32, width: usize },
     #[error("section {kind} range {start}+{length} overflows")]
     RangeOverflow { kind: u16, start: u32, length: u32 },
+}
+
+/// Exact semantic-data section rejection retaining every wire operand.
+///
+/// Ordinals stay raw `u32` wire values because a rejected section may claim
+/// counts that never form valid typed coordinates.
+#[derive(Debug, Eq, Error, PartialEq)]
+pub enum SemanticDataFault {
+    #[error("semantic data header needs {required} bytes but only {actual} are present")]
+    Header { required: usize, actual: usize },
+    #[error("semantic atom {ordinal} declares {length} bytes but only {available} remain")]
+    AtomLength {
+        ordinal: u32,
+        length: u32,
+        available: usize,
+    },
+    #[error("semantic product {product} head {target} is outside atom count {atom_count}")]
+    ProductHead {
+        product: u32,
+        target: u32,
+        atom_count: u32,
+    },
+    #[error("semantic product {product} list {target} is outside list count {list_count}")]
+    ProductList {
+        product: u32,
+        target: u32,
+        list_count: u32,
+    },
+    #[error(
+        "semantic constructor count {constructor_count} does not equal product count {product_count}"
+    )]
+    ConstructorCount {
+        product_count: u32,
+        constructor_count: u32,
+    },
+    #[error("semantic product {product} constructor is invalid: {fault:?}")]
+    Constructor {
+        product: u32,
+        fault: ProductConstructorFault,
+    },
+    #[error("semantic list {list} span {start}+{length} is outside child count {child_count}")]
+    ListExtent {
+        list: u32,
+        start: u32,
+        length: u32,
+        child_count: u32,
+    },
+    #[error("semantic child {child} has unknown role byte {actual}")]
+    ChildRoleCode { child: u32, actual: u8 },
+    #[error(
+        "semantic child {child} carries role {actual:?} but its constructor position requires {expected:?}"
+    )]
+    ChildRole {
+        child: u32,
+        expected: ProductChildRole,
+        actual: ProductChildRole,
+    },
+    #[error("semantic child {child} has unknown tag {actual}")]
+    ChildTag { child: u32, actual: u8 },
+    #[error("semantic local child {child} targets product {target} outside count {product_count}")]
+    LocalChild {
+        child: u32,
+        target: u32,
+        product_count: u32,
+    },
+    #[error("semantic local child {child} has nonzero external bytes {actual:?}")]
+    LocalReserved {
+        child: u32,
+        actual: [u8; HASH_BYTES],
+    },
+    #[error("semantic external child {child} authority is {observed}, expected {expected}")]
+    ExternalAuthority {
+        child: u32,
+        expected: u8,
+        observed: u8,
+        raw: [u8; HASH_BYTES],
+    },
+    #[error("semantic data has {actual} trailing bytes after its declared lanes")]
+    Trailing { actual: usize },
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -112,5 +192,10 @@ pub enum FragmentError {
     RecipeFact {
         #[source]
         fault: RecipeFactFault,
+    },
+    #[error("semantic data is invalid: {fault}")]
+    SemanticData {
+        #[source]
+        fault: SemanticDataFault,
     },
 }

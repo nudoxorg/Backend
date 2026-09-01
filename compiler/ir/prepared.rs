@@ -3,19 +3,22 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use crate::{AtomId, EntityId, TypeId};
+use crate::{AtomId, EntityId, ProductRef, TypeId};
 use thiserror::Error;
 
 use crate::{
     AtomInput, EntityRecord, EntityRecordFault, RecipeFact, SourceIdentity, TypeNode,
     TypeNodeFault,
+    canonical_data::CanonicalDataGraph,
     wire::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
         FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, RECIPE_FACT_BYTES,
-        SOURCE_IDENTITY_BYTES, SectionKind, SectionRequirement, TYPE_NODE_BYTES,
-        WRITTEN_SECTION_COUNT, entity_fault, entity_name_fault, type_node_fault, write_atom_record,
-        write_entity, write_recipe_fact, write_source_identity, write_type_node, write_u16,
-        write_u32,
+        SEMANTIC_CHILD_BYTES, SEMANTIC_CONSTRUCTOR_BYTES, SEMANTIC_DATA_HEADER_BYTES,
+        SEMANTIC_EXTERNAL_TAG, SEMANTIC_LIST_BYTES, SEMANTIC_LOCAL_TAG, SEMANTIC_PRODUCT_BYTES,
+        SEMANTIC_SECTION_COUNT, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind,
+        SectionRequirement, TYPE_NODE_BYTES, WRITTEN_SECTION_COUNT, entity_fault,
+        entity_name_fault, type_node_fault, write_atom_record, write_entity, write_recipe_fact,
+        write_source_identity, write_type_node, write_u16, write_u32,
     },
 };
 
@@ -28,6 +31,7 @@ pub enum LayoutStep {
     AtomByteLane,
     SourceIdentityLane,
     RecipeFactLane,
+    SemanticData,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -74,6 +78,21 @@ pub enum PrepareError {
         #[source]
         fault: TypeNodeFault,
     },
+    #[error(
+        "semantic graph with {atoms} atoms, {products} products, and {children} children overflows the semantic payload layout"
+    )]
+    SemanticDataOverflow {
+        atoms: u32,
+        products: u32,
+        children: u32,
+    },
+    #[error("semantic atom {ordinal:?} has {actual} bytes, exceeding the wire length width")]
+    SemanticAtomLength {
+        ordinal: AtomId,
+        actual: usize,
+        #[source]
+        source: TryFromIntError,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -89,6 +108,13 @@ pub enum WriteError {
     },
     #[error("prepared atom {ordinal:?} no longer fits its prepared byte region")]
     AtomExtent { ordinal: AtomId },
+    #[error("semantic atom {ordinal:?} no longer fits the semantic wire length width")]
+    SemanticAtomLength {
+        ordinal: AtomId,
+        actual: usize,
+        #[source]
+        source: TryFromIntError,
+    },
 }
 
 pub struct PreparedFragment<'facts> {
@@ -97,6 +123,7 @@ pub struct PreparedFragment<'facts> {
     entities: &'facts [EntityRecord],
     type_nodes: &'facts [TypeNode],
     atoms: &'facts [AtomInput<'facts>],
+    semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
     layout: FragmentLayout,
 }
 
@@ -107,6 +134,42 @@ impl<'facts> PreparedFragment<'facts> {
         entities: &'facts [EntityRecord],
         type_nodes: &'facts [TypeNode],
         atoms: &'facts [AtomInput<'facts>],
+    ) -> Result<Self, PrepareError> {
+        Self::prepare_inner(source, recipe, entities, type_nodes, atoms, None)
+    }
+
+    /// Prepare one fragment whose envelope embeds one canonical semantic-data
+    /// graph beside the entity, type, atom, source, and recipe lanes.
+    ///
+    /// The graph borrows caller-owned canonicalization output; no separate
+    /// data artifact or copied semantic owner is retained by the prepared
+    /// value. The fragment therefore commits the complete semantic structure
+    /// under the same wire identity.
+    pub fn prepare_with_data(
+        source: SourceIdentity,
+        recipe: RecipeFact,
+        entities: &'facts [EntityRecord],
+        type_nodes: &'facts [TypeNode],
+        atoms: &'facts [AtomInput<'facts>],
+        semantic_data: &'facts CanonicalDataGraph<'facts, 'facts>,
+    ) -> Result<Self, PrepareError> {
+        Self::prepare_inner(
+            source,
+            recipe,
+            entities,
+            type_nodes,
+            atoms,
+            Some(semantic_data),
+        )
+    }
+
+    fn prepare_inner(
+        source: SourceIdentity,
+        recipe: RecipeFact,
+        entities: &'facts [EntityRecord],
+        type_nodes: &'facts [TypeNode],
+        atoms: &'facts [AtomInput<'facts>],
+        semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
     ) -> Result<Self, PrepareError> {
         let entity_count = count(LayoutStep::EntityLane, entities.len())?;
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
@@ -119,6 +182,7 @@ impl<'facts> PreparedFragment<'facts> {
             type_node_count,
             atom_count,
             atom_byte_count,
+            semantic_data,
         )?;
 
         for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
@@ -150,6 +214,7 @@ impl<'facts> PreparedFragment<'facts> {
             entities,
             type_nodes,
             atoms,
+            semantic_data,
             layout,
         })
     }
@@ -176,7 +241,11 @@ impl<'facts> PreparedFragment<'facts> {
         write_u16(
             written,
             HEADER_LAYOUT.section_count,
-            u16::from(WRITTEN_SECTION_COUNT),
+            u16::from(if self.semantic_data.is_some() {
+                SEMANTIC_SECTION_COUNT
+            } else {
+                WRITTEN_SECTION_COUNT
+            }),
         );
         write_u32(
             written,
@@ -194,6 +263,12 @@ impl<'facts> PreparedFragment<'facts> {
             self.layout.source_identity,
         );
         write_directory_entry(written, 5, SectionKind::RecipeFact, self.layout.recipe_fact);
+        if let (Some(semantic_data), Some(data_layout)) =
+            (self.semantic_data, self.layout.semantic_data)
+        {
+            write_directory_entry(written, 6, SectionKind::SemanticData, data_layout);
+            write_semantic_data(written, data_layout, semantic_data)?;
+        }
 
         let mut entity_cursor = self.layout.entities.start_index;
         for entity in self.entities {
@@ -248,8 +323,14 @@ fn layout(
     type_node_count: ItemCount,
     atom_count: ItemCount,
     atom_byte_count: ItemCount,
+    semantic_data: Option<&CanonicalDataGraph<'_, '_>>,
 ) -> Result<FragmentLayout, PrepareError> {
-    let mut cursor = LayoutCursor::new(entity_count, type_node_count)?;
+    let section_count = if semantic_data.is_some() {
+        SEMANTIC_SECTION_COUNT
+    } else {
+        WRITTEN_SECTION_COUNT
+    };
+    let mut cursor = LayoutCursor::new(entity_count, type_node_count, section_count)?;
     let entities = cursor.lane(LayoutStep::EntityLane, entity_count, ENTITY_BYTES)?;
     let type_nodes = cursor.lane(LayoutStep::TypeNodeLane, type_node_count, TYPE_NODE_BYTES)?;
     let atoms = cursor.lane(LayoutStep::AtomRecordLane, atom_count, ATOM_RECORD_BYTES)?;
@@ -264,6 +345,9 @@ fn layout(
         ItemCount::from(1),
         RECIPE_FACT_BYTES,
     )?;
+    let semantic_lane = semantic_data
+        .map(|data| semantic_data_lane(&mut cursor, data))
+        .transpose()?;
     cursor.finish(
         FragmentFacts { source, recipe },
         FragmentLanes {
@@ -273,6 +357,7 @@ fn layout(
             atom_bytes,
             source_identity,
             recipe_fact,
+            semantic_data: semantic_lane,
         },
     )
 }
@@ -291,6 +376,7 @@ struct FragmentLanes {
     atom_bytes: LaneLayout,
     source_identity: LaneLayout,
     recipe_fact: LaneLayout,
+    semantic_data: Option<LaneLayout>,
 }
 
 struct LayoutCursor {
@@ -300,13 +386,17 @@ struct LayoutCursor {
 }
 
 impl LayoutCursor {
-    fn new(entity_count: ItemCount, type_node_count: ItemCount) -> Result<Self, PrepareError> {
+    fn new(
+        entity_count: ItemCount,
+        type_node_count: ItemCount,
+        section_count: SectionCount,
+    ) -> Result<Self, PrepareError> {
         let mut cursor = Self {
             next_index: HEADER_LAYOUT.encoded_len,
             entity_count,
             type_node_count,
         };
-        let directory_bytes = usize::from(WRITTEN_SECTION_COUNT)
+        let directory_bytes = usize::from(section_count)
             .checked_mul(DIRECTORY_ENTRY_LAYOUT.encoded_len)
             .ok_or_else(|| cursor.overflow(LayoutStep::Directory))?;
         cursor.advance(LayoutStep::Directory, directory_bytes)?;
@@ -372,6 +462,7 @@ impl LayoutCursor {
             atom_bytes: lanes.atom_bytes,
             source_identity: lanes.source_identity,
             recipe_fact: lanes.recipe_fact,
+            semantic_data: lanes.semantic_data,
             source: facts.source,
             recipe: facts.recipe,
             output_len: self.next_index,
@@ -449,4 +540,124 @@ fn write_directory_entry(output: &mut [u8], ordinal: usize, kind: SectionKind, l
         start + DIRECTORY_ENTRY_LAYOUT.byte_length,
         u32::from(lane.length),
     );
+}
+
+fn semantic_data_lane(
+    cursor: &mut LayoutCursor,
+    data: &CanonicalDataGraph<'_, '_>,
+) -> Result<LaneLayout, PrepareError> {
+    let metrics = data.metrics();
+    let overflow = || PrepareError::SemanticDataOverflow {
+        atoms: metrics.canonical_atom_count,
+        products: metrics.canonical_product_count,
+        children: metrics.canonical_child_count,
+    };
+    let mut payload = SEMANTIC_DATA_HEADER_BYTES;
+    for (ordinal, atom) in (0..u32::MAX).zip(data.atoms()) {
+        let _ =
+            u32::try_from(atom.bytes.len()).map_err(|source| PrepareError::SemanticAtomLength {
+                ordinal: AtomId::new(ordinal),
+                actual: atom.bytes.len(),
+                source,
+            })?;
+        payload = payload
+            .checked_add(size_of::<u32>())
+            .and_then(|payload| payload.checked_add(atom.bytes.len()))
+            .ok_or_else(overflow)?;
+    }
+    let product_bytes = usize::try_from(metrics.canonical_product_count)
+        .ok()
+        .and_then(|count| count.checked_mul(SEMANTIC_PRODUCT_BYTES))
+        .ok_or_else(overflow)?;
+    let constructor_bytes = usize::try_from(metrics.canonical_constructor_count)
+        .ok()
+        .and_then(|count| count.checked_mul(SEMANTIC_CONSTRUCTOR_BYTES))
+        .ok_or_else(overflow)?;
+    let list_bytes = usize::try_from(metrics.canonical_list_count)
+        .ok()
+        .and_then(|count| count.checked_mul(SEMANTIC_LIST_BYTES))
+        .ok_or_else(overflow)?;
+    let child_bytes = usize::try_from(metrics.canonical_child_count)
+        .ok()
+        .and_then(|count| count.checked_mul(SEMANTIC_CHILD_BYTES))
+        .ok_or_else(overflow)?;
+    payload = payload
+        .checked_add(product_bytes)
+        .and_then(|payload| payload.checked_add(constructor_bytes))
+        .and_then(|payload| payload.checked_add(list_bytes))
+        .and_then(|payload| payload.checked_add(child_bytes))
+        .ok_or_else(overflow)?;
+    // One payload cell per byte, matching the fixed-width byte-lane grammar:
+    // the directory proves `count * 1 == byte_length`.
+    let count = ItemCount::try_from(payload).map_err(|_| overflow())?;
+    cursor.lane(LayoutStep::SemanticData, count, 1)
+}
+
+fn write_semantic_data(
+    output: &mut [u8],
+    lane: LaneLayout,
+    data: &CanonicalDataGraph<'_, '_>,
+) -> Result<(), WriteError> {
+    let section = &mut output[lane.range()];
+    let metrics = data.metrics();
+    write_u32(section, 0, metrics.canonical_atom_count);
+    write_u32(section, size_of::<u32>(), metrics.canonical_product_count);
+    write_u32(
+        section,
+        size_of::<u32>() * 2,
+        metrics.canonical_constructor_count,
+    );
+    write_u32(section, size_of::<u32>() * 3, metrics.canonical_list_count);
+    write_u32(section, size_of::<u32>() * 4, metrics.canonical_child_count);
+
+    let mut cursor = SEMANTIC_DATA_HEADER_BYTES;
+    for (ordinal, atom) in (0..u32::MAX).zip(data.atoms()) {
+        let length =
+            u32::try_from(atom.bytes.len()).map_err(|source| WriteError::SemanticAtomLength {
+                ordinal: AtomId::new(ordinal),
+                actual: atom.bytes.len(),
+                source,
+            })?;
+        write_u32(section, cursor, length);
+        cursor += size_of::<u32>();
+        section[cursor..cursor + atom.bytes.len()].copy_from_slice(atom.bytes);
+        cursor += atom.bytes.len();
+    }
+    for product in data.products() {
+        write_u32(section, cursor, product.head.raw);
+        write_u32(section, cursor + size_of::<u32>(), product.children.raw);
+        cursor += SEMANTIC_PRODUCT_BYTES;
+    }
+    for constructor in data.constructors() {
+        write_u32(section, cursor, u32::from(constructor.tag));
+        write_u32(section, cursor + size_of::<u32>(), constructor.payload0);
+        write_u32(section, cursor + size_of::<u32>() * 2, constructor.payload1);
+        cursor += SEMANTIC_CONSTRUCTOR_BYTES;
+    }
+    for span in data.lists() {
+        write_u32(section, cursor, span.start);
+        write_u32(section, cursor + size_of::<u32>(), span.length);
+        cursor += SEMANTIC_LIST_BYTES;
+    }
+    for child in data.children() {
+        section[cursor] = u8::from(child.role);
+        match child.target {
+            ProductRef::Local(target) => {
+                section[cursor + size_of::<u8>()] = SEMANTIC_LOCAL_TAG;
+                write_u32(section, cursor + size_of::<u8>() * 2, target.raw);
+                section[cursor + size_of::<u8>() * 2 + size_of::<u32>()
+                    ..cursor + SEMANTIC_CHILD_BYTES]
+                    .fill(0);
+            }
+            ProductRef::External(target) => {
+                section[cursor + size_of::<u8>()] = SEMANTIC_EXTERNAL_TAG;
+                write_u32(section, cursor + size_of::<u8>() * 2, target.ordinal);
+                section[cursor + size_of::<u8>() * 2 + size_of::<u32>()
+                    ..cursor + SEMANTIC_CHILD_BYTES]
+                    .copy_from_slice(target.fragment.as_ref());
+            }
+        }
+        cursor += SEMANTIC_CHILD_BYTES;
+    }
+    Ok(())
 }

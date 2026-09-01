@@ -73,6 +73,24 @@ pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
 pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
 pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 6 };
+/// Section count for fragments that embed one canonical semantic-data graph.
+pub(crate) const SEMANTIC_SECTION_COUNT: SectionCount = SectionCount { wire: 7 };
+
+/// Semantic-data header: atom, product, constructor, list, and child counts.
+pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 5;
+/// Semantic product record: head atom and pooled child-list coordinates.
+pub(crate) const SEMANTIC_PRODUCT_BYTES: usize = size_of::<u32>() * 2;
+/// Semantic constructor record: closed tag plus two payload cells.
+pub(crate) const SEMANTIC_CONSTRUCTOR_BYTES: usize = size_of::<u32>() * 3;
+/// Semantic list record: pooled start and length.
+pub(crate) const SEMANTIC_LIST_BYTES: usize = size_of::<u32>() * 2;
+/// Semantic child record: role byte, local/external tag, ordinal, authority.
+pub(crate) const SEMANTIC_CHILD_BYTES: usize = size_of::<u8>() * 2 + size_of::<u32>() + HASH_BYTES;
+
+/// Child tag for a local product target.
+pub(crate) const SEMANTIC_LOCAL_TAG: u8 = 0;
+/// Child tag for an external authority-bearing product target.
+pub(crate) const SEMANTIC_EXTERNAL_TAG: u8 = 1;
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
@@ -114,6 +132,7 @@ wire_enum_u16! {
         AtomBytes = 4,
         SourceIdentity = 5,
         RecipeFact = 6,
+        SemanticData = 7,
     }
 }
 
@@ -213,6 +232,8 @@ pub(crate) struct FragmentLayout {
     pub(crate) atom_bytes: LaneLayout,
     pub(crate) source_identity: LaneLayout,
     pub(crate) recipe_fact: LaneLayout,
+    /// Optional canonical semantic-data payload lane.
+    pub(crate) semantic_data: Option<LaneLayout>,
     pub(crate) source: SourceIdentity,
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,
