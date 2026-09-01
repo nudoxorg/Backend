@@ -187,11 +187,10 @@ impl<'slots> NodeWorkspace<'slots> {
         Ok(())
     }
 
-    fn reset_owners(&mut self) -> Result<(), GraphProjectionError> {
+    fn reset_owners(&mut self) {
         for owner in self.owners.iter_mut() {
             owner.entities = 0;
         }
-        Ok(())
     }
 
     fn classify(
@@ -496,7 +495,7 @@ fn count_references(
     view: &FragmentView<'_>,
     nodes: &mut NodeWorkspace<'_>,
 ) -> Result<usize, GraphProjectionError> {
-    nodes.reset_owners()?;
+    nodes.reset_owners();
     for entity in view.entities() {
         let index = node_index(entity.semantic_type)?;
         nodes.bump(index)?;
