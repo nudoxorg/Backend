@@ -198,6 +198,9 @@ impl FragmentRangeManifest {
             SectionKind::SemanticData | SectionKind::Occurrences => {
                 return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
             }
+            SectionKind::TypeFacts => {
+                return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
+            }
         };
         Ok(self.ranges[index])
     }

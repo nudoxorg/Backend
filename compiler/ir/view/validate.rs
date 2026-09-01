@@ -32,6 +32,7 @@ impl<'fragment> FragmentView<'fragment> {
         let entity_lane = &envelope[layout.entities.range()];
         let atom_lane = &envelope[layout.atoms.range()];
         let occurrence_lane = layout.occurrences.map(|lane| &envelope[lane.range()]);
+        let type_fact_lane = layout.type_facts.map(|lane| &envelope[lane.range()]);
         Self {
             envelope,
             entities: entity_lane,
@@ -39,6 +40,7 @@ impl<'fragment> FragmentView<'fragment> {
             atoms: atom_lane,
             atom_bytes: &envelope[layout.atom_bytes.range()],
             occurrence_lane,
+            type_fact_lane,
             source: layout.source,
             recipe: layout.recipe,
             layout,
@@ -57,6 +59,11 @@ impl<'fragment> FragmentView<'fragment> {
     /// the slice to address individual wire cells.
     pub fn occurrence_payload(&self) -> Option<&'fragment [u8]> {
         self.occurrence_lane
+    }
+
+    pub fn type_facts(&self) -> Option<crate::type_facts::TypeFactCursor<'fragment>> {
+        self.type_fact_lane
+            .map(crate::type_facts::TypeFactCursor::new)
     }
 }
 
@@ -199,6 +206,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut recipe_fact = None;
     let mut semantic_data = None;
     let mut occurrences = None;
+    let mut type_facts = None;
     for _ in 0..u16::from(section_count) {
         let (next_state, entry) = state.parse(envelope)?;
         match SectionKind::try_from(entry.kind) {
@@ -276,6 +284,20 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 )?;
                 occurrences = Some(entry.lane);
             }
+            Ok(SectionKind::TypeFacts) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                let entity_count = u32::from(
+                    entities
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::EntityTypes,
+                        })?
+                        .count,
+                );
+                crate::type_facts::validate_payload(&envelope[entry.lane.range()], entity_count)
+                    .map_err(|fault| FragmentError::TypeFacts { fault })?;
+                type_facts = Some(entry.lane);
+            }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
                 return Err(directory_fault(
                     entry.ordinal,
@@ -338,6 +360,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         recipe_fact,
         semantic_data,
         occurrences,
+        type_facts,
         source,
         recipe,
         output_len: envelope.len(),

@@ -133,6 +133,7 @@ wire_enum_u16! {
         RecipeFact = 6,
         SemanticData = 7,
         Occurrences = 8,
+        TypeFacts = 9,
     }
 }
 
@@ -236,6 +237,7 @@ pub(crate) struct FragmentLayout {
     pub(crate) semantic_data: Option<LaneLayout>,
     /// Optional occurrence fact-plane payload lane.
     pub(crate) occurrences: Option<LaneLayout>,
+    pub(crate) type_facts: Option<LaneLayout>,
     pub(crate) source: SourceIdentity,
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,

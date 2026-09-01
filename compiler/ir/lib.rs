@@ -27,6 +27,7 @@ mod semantic;
 mod semantic_extension_section;
 mod vcs;
 mod semantic_facts;
+mod type_facts;
 mod view;
 mod wire;
 
@@ -112,6 +113,7 @@ pub use vcs::{
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
+pub use type_facts::{DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane};
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,

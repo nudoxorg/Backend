@@ -203,6 +203,11 @@ pub enum FragmentError {
         #[source]
         fault: OccurrenceFault,
     },
+    #[error("type-fact plane is invalid: {fault}")]
+    TypeFacts {
+        #[source]
+        fault: crate::TypeFactFault,
+    },
 }
 
 /// Exact occurrence-plane section rejection retaining every Copy wire
