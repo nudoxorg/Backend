@@ -18,6 +18,7 @@ mod facet;
 mod fact;
 mod graph;
 mod initialized;
+mod partition;
 mod vector;
 
 pub use construct::{

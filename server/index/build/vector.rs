@@ -1,6 +1,7 @@
-//! Defines caller-embedded vector projection for `server-index-build`.
-//! This module owns ingest-time vector derivation and bounded family admission.
-//! Vectors retain caller coordinates and the immutable authority supplied at ingest.
+//! Defines vector projection behavior for `server-index-build`, whose purpose is to project reopened compiler IR into immutable exact and lexical segments.
+//! This module owns the vector-projection invariants and typed state transitions.
+//! Its narrow surface prevents representation and policy details from leaking outward.
+//! Caller-embedded vectors retain caller coordinates and immutable ingest authority.
 use core::mem::MaybeUninit;
 
 use server_index_graph_vector::{
@@ -9,8 +10,11 @@ use server_index_graph_vector::{
 };
 use thiserror::Error;
 
-use crate::initialized::{InitializationError, try_initialize};
-use crate::{EntityFactView, PreparedIndex};
+use crate::{
+    EntityFactView, PreparedIndex,
+    initialized::{InitializationError, try_initialize},
+    partition::{partition_at, partition_range_fits},
+};
 
 /// Maximum vector points in one immutable segment.
 pub const MAX_VECTOR_POINTS_PER_SEGMENT: usize = 16;
@@ -81,15 +85,13 @@ pub enum VectorProjectionError {
         /// Embedder-declared dimension.
         observed: usize,
     },
-    /// The fragment exceeded the bounded family capacity.
-    #[error(
-        "vector family needs {required_chunks} chunks but only {available_chunks} are available"
-    )]
-    FamilyCapacity {
-        /// Complete chunks required by the fragment.
-        required_chunks: usize,
-        /// Maximum chunks admitted by one family.
-        available_chunks: usize,
+    /// The derived partition count exceeded vector admission.
+    #[error("vector projection requires {observed} partitions, limit is {maximum}")]
+    PartitionLimit {
+        /// Maximum admitted partitions.
+        maximum: usize,
+        /// Complete derived partition count.
+        observed: usize,
     },
     /// Caller segment output was too short.
     #[error("vector segment output needs {required} slots but has {available}")]
@@ -126,12 +128,14 @@ pub enum VectorProjectionError {
         dimension: usize,
     },
     /// The family partition range exceeded `u16` coordinates.
-    #[error("vector partitions from {base:?} require {required_chunks} chunks and overflow")]
+    #[error(
+        "vector projection partitions from {base:?} require {required_partitions} partitions and overflow the partition space"
+    )]
     PartitionSpace {
         /// First partition coordinate.
         base: PartitionId,
-        /// Required chunk count.
-        required_chunks: usize,
+        /// Complete required partition count.
+        required_partitions: usize,
     },
     /// Sealing one derived chunk rejected its exact source facts.
     #[error("vector segment admission rejected derived chunk: {cause:?}")]
@@ -172,21 +176,15 @@ pub fn build_vector_projection<'facts, 'slots, Embedder: EntityEmbedder>(
     let entity_count = prepared.entities.len();
     let required_chunks = entity_count.div_ceil(MAX_VECTOR_POINTS_PER_SEGMENT);
     if required_chunks > MAX_VECTOR_SEGMENTS {
-        return Err(VectorProjectionError::FamilyCapacity {
-            required_chunks,
-            available_chunks: MAX_VECTOR_SEGMENTS,
+        return Err(VectorProjectionError::PartitionLimit {
+            maximum: MAX_VECTOR_SEGMENTS,
+            observed: required_chunks,
         });
     }
-    let Some(partition_end) = usize::from(base_partition.raw).checked_add(required_chunks) else {
+    if !partition_range_fits(base_partition, required_chunks) {
         return Err(VectorProjectionError::PartitionSpace {
             base: base_partition,
-            required_chunks,
-        });
-    };
-    if partition_end > usize::from(u16::MAX) + 1 {
-        return Err(VectorProjectionError::PartitionSpace {
-            base: base_partition,
-            required_chunks,
+            required_partitions: required_chunks,
         });
     }
     let Some(required_coordinates) = entity_count.checked_mul(dimension) else {
@@ -266,19 +264,12 @@ pub fn build_vector_projection<'facts, 'slots, Embedder: EntityEmbedder>(
             .chunks(MAX_VECTOR_POINTS_PER_SEGMENT)
             .zip(0..required_chunks),
         |(chunk, ordinal)| {
-            let offset = match ordinal {
-                0 => 0,
-                1 => 1,
-                2 => 2,
-                3 => 3,
-                _ => {
-                    return Err(VectorProjectionError::PartitionSpace {
-                        base: base_partition,
-                        required_chunks,
-                    });
-                }
+            let Some(partition) = partition_at(base_partition, ordinal) else {
+                return Err(VectorProjectionError::PartitionSpace {
+                    base: base_partition,
+                    required_partitions: required_chunks,
+                });
             };
-            let partition = PartitionId::new(base_partition.raw + offset);
             ValidatedVectorSegment::try_new(authority, partition, chunk)
                 .map_err(|cause| VectorProjectionError::SegmentAdmission { cause })
         },

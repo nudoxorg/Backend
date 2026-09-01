@@ -326,13 +326,13 @@ fn derived_rows_chunk_to_the_row_bound_and_guard_the_partition_space() -> Result
     match rejected {
         Err(GraphProjectionError::PartitionSpace {
             base,
-            required_rows,
+            required_partitions,
         }) => {
             let expected = GraphProjectionError::PartitionSpace {
                 base: PartitionId::new(65535),
-                required_rows: 2,
+                required_partitions: 2,
             };
-            if base != PartitionId::new(65535) || required_rows != 2 {
+            if base != PartitionId::new(65535) || required_partitions != 2 {
                 return Err(GraphProof::Rejection {
                     expected,
                     observed: expected,

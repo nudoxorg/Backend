@@ -236,7 +236,7 @@ fn partition_space_rejects_base_overflow_before_embedding() -> Result<(), Vector
             result,
             Err(VectorProjectionError::PartitionSpace {
                 base: PartitionId::new(u16::MAX),
-                required_chunks: 2
+                required_partitions: 2
             })
         );
         assert!(coordinates.iter().all(|cell| *cell == 0));
@@ -337,7 +337,7 @@ fn wide_dimension_embedder_rejects_without_writing() -> Result<(), VectorTestErr
 }
 
 #[test]
-fn family_capacity_rejects_65_entities_before_embedding() -> Result<(), VectorTestError> {
+fn partition_limit_rejects_65_entities_before_embedding() -> Result<(), VectorTestError> {
     let entities: [EntityRecord; 65] = core::array::from_fn(|_| EntityRecord {
         semantic_type: TypeId::new(0),
         name: AtomId::new(0),
@@ -350,9 +350,9 @@ fn family_capacity_rejects_65_entities_before_embedding() -> Result<(), VectorTe
         let result = derive(prepared, &mut segments, &mut points, &mut coordinates);
         assert_eq!(
             result,
-            Err(VectorProjectionError::FamilyCapacity {
-                required_chunks: 5,
-                available_chunks: 4,
+            Err(VectorProjectionError::PartitionLimit {
+                maximum: 4,
+                observed: 5,
             })
         );
         assert!(coordinates.iter().all(|cell| *cell == 0));

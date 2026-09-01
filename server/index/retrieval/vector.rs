@@ -1,6 +1,7 @@
-//! Local exact-scan vector retrieval over a sealed boundary.
-//! This module derives pinned partitions and classifies local query terminals.
-//! It retains caller-owned output and typed vector provenance without allocation.
+//! Defines vector behavior for `server-index-retrieval`, whose purpose is to compose exact, lexical, graph, and vector retrieval under one snapshot authority.
+//! This module owns the vector-route invariants and typed terminal transitions.
+//! Its narrow surface prevents representation and policy details from leaking outward.
+//! Local exact-scan retrieval retains caller-owned output and typed vector provenance.
 
 use server_index_graph_vector::{
     MAX_PARTITIONS, PartitionId, ValidatedVectorSegment, VectorHit, VectorQueryOutcome,

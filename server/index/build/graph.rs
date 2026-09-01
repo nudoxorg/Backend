@@ -18,7 +18,10 @@ use server_index_graph_vector::{
 };
 use thiserror::Error;
 
-use crate::initialized::{InitializationError, try_initialize};
+use crate::{
+    initialized::{InitializationError, try_initialize},
+    partition::{partition_at, partition_range_fits},
+};
 
 /// Immutable graph recipe identity of the semantic-type reference projection derived here.
 pub const SEMANTIC_TYPE_REFERENCE_PROJECTION: ProjectionId = ProjectionId::new(1);
@@ -297,23 +300,23 @@ pub enum GraphProjectionError {
         /// Supplied workspace slots.
         available: usize,
     },
-    /// The derived row count exceeded the graph admission row limit.
-    #[error("graph projection derived {observed} rows, limit is {maximum}")]
-    RowLimit {
-        /// Maximum admitted rows.
+    /// The derived partition count exceeded graph admission.
+    #[error("graph projection requires {observed} partitions, limit is {maximum}")]
+    PartitionLimit {
+        /// Maximum admitted partitions.
         maximum: usize,
-        /// Complete derived row count.
+        /// Complete derived partition count.
         observed: usize,
     },
     /// The partition range required by the derived rows left the `u16` partition space.
     #[error(
-        "graph projection partitions from {base:?} require {required_rows} rows and overflow the partition space"
+        "graph projection partitions from {base:?} require {required_partitions} partitions and overflow the partition space"
     )]
     PartitionSpace {
         /// First required partition coordinate.
         base: PartitionId,
-        /// Complete derived row count.
-        required_rows: usize,
+        /// Complete required partition count.
+        required_partitions: usize,
     },
     /// A validated node coordinate could not address host storage.
     #[error("validated type-node coordinate {node:?} cannot address host storage")]
@@ -369,15 +372,15 @@ pub fn build_graph_projection<'fragment: 'scratch, 'scratch>(
         });
     }
     if row_total > MAX_PARTITIONS {
-        return Err(GraphProjectionError::RowLimit {
+        return Err(GraphProjectionError::PartitionLimit {
             maximum: MAX_PARTITIONS,
             observed: row_total,
         });
     }
-    if usize::from(base_partition.raw) + row_total > usize::from(u16::MAX) + 1 {
+    if !partition_range_fits(base_partition, row_total) {
         return Err(GraphProjectionError::PartitionSpace {
             base: base_partition,
-            required_rows: row_total,
+            required_partitions: row_total,
         });
     }
 
@@ -394,10 +397,10 @@ pub fn build_graph_projection<'fragment: 'scratch, 'scratch>(
         |(source, target)| {
             let row = ordinal / MAX_GRAPH_EDGES_PER_ROW;
             ordinal += 1;
-            let Some(partition) = row_partition(base_partition, row) else {
+            let Some(partition) = partition_at(base_partition, row) else {
                 return Err(GraphProjectionError::PartitionSpace {
                     base: base_partition,
-                    required_rows: row_total,
+                    required_partitions: row_total,
                 });
             };
             Ok(GraphEdge::new(authority, partition, source, target))
@@ -418,10 +421,10 @@ pub fn build_graph_projection<'fragment: 'scratch, 'scratch>(
             .chunks(MAX_GRAPH_EDGES_PER_ROW)
             .zip(0..row_total),
         |(chunk, row_index)| {
-            let Some(partition) = row_partition(base_partition, row_index) else {
+            let Some(partition) = partition_at(base_partition, row_index) else {
                 return Err(GraphProjectionError::PartitionSpace {
                     base: base_partition,
-                    required_rows: row_total,
+                    required_partitions: row_total,
                 });
             };
             Ok(GraphRow {
@@ -565,14 +568,6 @@ const fn row_initialization_error(
 /// Row count for a derived edge count: every full chunk plus a partial tail.
 const fn rows_for_edges(edges: usize) -> usize {
     edges.div_ceil(MAX_GRAPH_EDGES_PER_ROW)
-}
-
-/// Partition coordinate for a derived row ordinal, already proven in range.
-fn row_partition(base: PartitionId, ordinal: usize) -> Option<PartitionId> {
-    match u16::try_from(usize::from(base.raw) + ordinal) {
-        Ok(raw) => Some(PartitionId::new(raw)),
-        Err(_) => None,
-    }
 }
 
 /// Converts a validated node coordinate into a workspace index.
