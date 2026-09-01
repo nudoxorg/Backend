@@ -284,3 +284,95 @@ fn section_header_and_trailing_bytes_are_rejected() -> Result<(), TestFailure> {
     ));
     Ok(())
 }
+
+#[test]
+fn owner_and_child_span_mutations_retain_their_coordinates() -> Result<(), TestFailure> {
+    let inputs = records();
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &[],
+    };
+    let bytes = write(&lane)?;
+    let payload =
+        FragmentView::validate(&bytes)?
+            .type_fact_payload()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    let mut owner = bytes.clone();
+    owner[offset + 4..offset + 8].copy_from_slice(&9_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&owner),
+        Err(FragmentError::TypeFacts { fault: TypeFactFault::Owner { ordinal: 0, owner, entity_count: 1 } }) if owner.raw == 9
+    ));
+    let mut span = bytes;
+    span[offset + 52..offset + 56].copy_from_slice(&9_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&span),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::ChildSpan {
+                ordinal: 1,
+                start: 0,
+                length: 9,
+                child_count: 0
+            }
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn out_of_range_child_reopen_retains_the_true_record_ordinal() -> Result<(), TestFailure> {
+    let inputs = [
+        TypeFactInput {
+            owner: EntityId::new(0),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+        },
+        TypeFactInput {
+            owner: EntityId::new(0),
+            record: SemanticTypeRecord {
+                tag: SemanticTypeTag::Tuple,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: None,
+                children: ListSpan::new(0, 1),
+            },
+        },
+    ];
+    let children = [compiler_ir_vocabulary::SemanticTypeChild {
+        target: compiler_ir_vocabulary::TypeChildTarget::Type(TypeRef::Local(
+            compiler_ir_vocabulary::TypeId::new(0),
+        )),
+        name: None,
+        flags: 0,
+    }];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &children,
+    };
+    let bytes = write(&lane)?;
+    let payload =
+        FragmentView::validate(&bytes)?
+            .type_fact_payload()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    let mut mutated = bytes;
+    mutated[offset + 57..offset + 61].copy_from_slice(&99_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&mutated),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::ChildTargetOutOfRange {
+                ordinal: 1,
+                position: 0,
+                target: 99,
+                record_count: 2
+            }
+        })
+    ));
+    Ok(())
+}

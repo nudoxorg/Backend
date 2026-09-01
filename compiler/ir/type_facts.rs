@@ -8,7 +8,7 @@
 
 use compiler_ir_vocabulary::{
     EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, TypeChildTarget, TypeChildren, TypeId,
+    SemanticTypeRecord, SemanticTypeTag, TypeChildTarget, TypeId,
 };
 use heart_identity::{ContentId, ContentIdDecodeError, HASH_BYTES, IrFragmentDomain};
 use thiserror::Error;
@@ -59,6 +59,15 @@ pub enum TypeFactFault {
         ordinal: u32,
         position: u32,
         target: u32,
+    },
+    #[error(
+        "type fact {ordinal} child {position} target {target} is outside {record_count} records"
+    )]
+    ChildTargetOutOfRange {
+        ordinal: u32,
+        position: u32,
+        target: u32,
+        record_count: u32,
     },
     #[error("type fact {ordinal} nominal target {target} is not strictly backward")]
     NominalForward { ordinal: u32, target: u32 },
@@ -128,6 +137,14 @@ impl<'bytes> TypeFactLane<'bytes> {
                     .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
                 if let TypeChildTarget::Type(reference) = child.target {
                     if let compiler_ir_vocabulary::TypeRef::Local(target) = reference {
+                        if target.raw >= count {
+                            return Err(TypeFactFault::ChildTargetOutOfRange {
+                                ordinal,
+                                position,
+                                target: target.raw,
+                                record_count: count,
+                            });
+                        }
                         if target.raw >= ordinal {
                             return Err(TypeFactFault::ForwardReference {
                                 ordinal,
@@ -289,8 +306,6 @@ pub fn validate_payload(payload: &[u8], entity_count: u32) -> Result<(), TypeFac
         ordinal: 0,
     };
     let count = reader.u32()?;
-    let mut spans = [ListSpan::<TypeChildren>::new(0, 0); 0];
-    let _ = &mut spans;
     for ordinal in 0..count {
         reader.ordinal = ordinal;
         let owner = reader.u32()?;
@@ -302,17 +317,17 @@ pub fn validate_payload(payload: &[u8], entity_count: u32) -> Result<(), TypeFac
             });
         }
         let tag = reader.u8()?;
-        let tag = SemanticTypeTag::try_from(tag).map_err(|error| TypeFactFault::Tag {
+        let _tag = SemanticTypeTag::try_from(tag).map_err(|error| TypeFactFault::Tag {
             ordinal,
             field: "record",
             actual: error.actual,
         })?;
-        let payload0 = reader.u32()?;
-        let payload1 = reader.u32()?;
-        let text = read_cell(&mut reader)?;
-        let text2 = read_cell(&mut reader)?;
+        let _payload0 = reader.u32()?;
+        let _payload1 = reader.u32()?;
+        let _text = read_cell(&mut reader)?;
+        let _text2 = read_cell(&mut reader)?;
         let nominal_tag = reader.u8()?;
-        let nominal = match nominal_tag {
+        let _nominal = match nominal_tag {
             NOMINAL_NONE => None,
             NOMINAL_LOCAL => {
                 let target = reader.u32()?;
@@ -331,35 +346,16 @@ pub fn validate_payload(payload: &[u8], entity_count: u32) -> Result<(), TypeFac
                 });
             }
         };
-        let start = reader.u32()?;
-        let length = reader.u32()?;
-        let record = SemanticTypeRecord {
-            tag,
-            payload0,
-            payload1,
-            text,
-            text2,
-            nominal,
-            children: ListSpan::new(start, length),
-        };
-        record
-            .validate(length)
-            .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
+        reader.u32()?;
+        reader.u32()?;
     }
     let child_section = reader.at;
     let child_count = reader.u32()?;
-    for position in 0..child_count {
+    for _position in 0..child_count {
         let target = reader.u8()?;
         match target {
             CHILD_LOCAL => {
-                let target = reader.u32()?;
-                if target >= count {
-                    return Err(TypeFactFault::ForwardReference {
-                        ordinal: 0,
-                        position,
-                        target,
-                    });
-                }
+                reader.u32()?;
             }
             CHILD_EXTERNAL => {
                 reader.identity()?;
@@ -424,6 +420,14 @@ pub fn validate_payload(payload: &[u8], entity_count: u32) -> Result<(), TypeFac
             if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                 child.target
             {
+                if target.raw >= count {
+                    return Err(TypeFactFault::ChildTargetOutOfRange {
+                        ordinal,
+                        position,
+                        target: target.raw,
+                        record_count: count,
+                    });
+                }
                 if target.raw >= ordinal {
                     return Err(TypeFactFault::ForwardReference {
                         ordinal,
