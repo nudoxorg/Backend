@@ -200,7 +200,7 @@ fn seal_graph_journey(directory: &std::path::Path) -> Result<(), SealGraphError>
         &PublicationPaths::in_directory(&directory.join("durable")),
         limits,
     )?;
-    let journey = reopen_derive_and_query(&directory, &reopened, &selected);
+    let journey = reopen_derive_and_query(directory, &reopened, &selected);
     let shutdown = reopened.shutdown();
     match (journey, shutdown) {
         (Ok(()), Ok(())) => Ok(()),
@@ -313,7 +313,10 @@ fn reopen_derive_and_query(
     if sealed.snapshot.generation != selected.publication.generation.pinned_root {
         return Err(SealGraphError::GraphFacts);
     }
-    let _snapshot_identity: IndexSnapshotId = sealed.snapshot.id;
+    assert_ne!(
+        sealed.snapshot.id,
+        IndexSnapshotId::from_canonical_bytes(b"graph-seal-unrelated")
+    );
     Ok(())
 }
 
