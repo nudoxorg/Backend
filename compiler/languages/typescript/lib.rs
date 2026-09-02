@@ -8,5 +8,5 @@ mod coordinate;
 mod error;
 
 pub use authority::{OxcModule, analyze};
-pub use coordinate::{CoordinateError, Utf8Span, Utf16Span};
+pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::AuthorityError;

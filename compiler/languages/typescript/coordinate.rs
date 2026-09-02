@@ -38,6 +38,22 @@ pub enum CoordinateError {
     /// A UTF-16 coordinate splits the two units of one non-BMP scalar.
     #[error("UTF-16 coordinate splits a surrogate pair")]
     SurrogateBoundary,
+    /// A cursor was asked to revisit source text it had already passed.
+    #[error("monotonic coordinate cursor cannot move backward")]
+    NonMonotonic,
+}
+
+/// A no-allocation forward converter for source positions already in byte order.
+///
+/// Each byte between the initial cursor position and the furthest admitted
+/// endpoint is decoded at most once. It is the lowering-path converter for
+/// source-order spans; [`Utf8Span::to_utf16`] remains the simpler cold lookup.
+pub struct Utf8ToUtf16Cursor<'source> {
+    source: &'source str,
+    byte: usize,
+    code_unit: u32,
+    #[cfg(test)]
+    bytes_walked: usize,
 }
 
 impl TryFrom<Range<u32>> for Utf8Span {
@@ -81,22 +97,69 @@ impl From<Utf16Span> for Range<u32> {
     }
 }
 
+impl<'source> Utf8ToUtf16Cursor<'source> {
+    /// Starts a forward conversion at the beginning of `source`.
+    #[must_use]
+    pub const fn new(source: &'source str) -> Self {
+        Self {
+            source,
+            byte: 0,
+            code_unit: 0,
+            #[cfg(test)]
+            bytes_walked: 0,
+        }
+    }
+
+    /// Converts one non-overlapping, source-ordered byte span without rescanning a prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `span` precedes the cursor, lies outside `source`,
+    /// or splits a UTF-8 scalar encoding.
+    pub fn to_utf16(&mut self, span: Utf8Span) -> Result<Utf16Span, CoordinateError> {
+        let start = self.advance_to(span.start)?;
+        let end = self.advance_to(span.end)?;
+        Utf16Span::try_from(start..end)
+    }
+
+    fn advance_to(&mut self, byte: u32) -> Result<u32, CoordinateError> {
+        let byte = source_byte(byte, self.source)?;
+        if byte < self.byte {
+            return Err(CoordinateError::NonMonotonic);
+        }
+
+        let segment = &self.source[self.byte..byte];
+        let width = segment.chars().try_fold(0_u32, |units, scalar| {
+            let width =
+                u32::try_from(scalar.len_utf16()).map_err(|_| CoordinateError::OutOfBounds)?;
+            units.checked_add(width).ok_or(CoordinateError::OutOfBounds)
+        })?;
+        self.code_unit = self
+            .code_unit
+            .checked_add(width)
+            .ok_or(CoordinateError::OutOfBounds)?;
+        #[cfg(test)]
+        {
+            self.bytes_walked = self
+                .bytes_walked
+                .checked_add(segment.len())
+                .ok_or(CoordinateError::OutOfBounds)?;
+        }
+        self.byte = byte;
+        Ok(self.code_unit)
+    }
+}
+
 impl Utf8Span {
     /// Converts this exact byte range into the equivalent UTF-16 range for `source`.
     ///
     /// # Errors
     ///
     /// Returns an error when either byte endpoint lies outside `source` or
-    /// splits a UTF-8 scalar encoding.
+    /// splits a UTF-8 scalar encoding. For source-order bulk conversion, use
+    /// [`Utf8ToUtf16Cursor`] to avoid repeatedly scanning the same prefix.
     pub fn to_utf16(self, source: &str) -> Result<Utf16Span, CoordinateError> {
-        let start = source_byte(self.start, source)?;
-        let end = source_byte(self.end, source)?;
-        let start = source[..start].encode_utf16().count();
-        let end = source[..end].encode_utf16().count();
-        Utf16Span::try_from(
-            u32::try_from(start).map_err(|_| CoordinateError::OutOfBounds)?
-                ..u32::try_from(end).map_err(|_| CoordinateError::OutOfBounds)?,
-        )
+        Utf8ToUtf16Cursor::new(source).to_utf16(self)
     }
 }
 
@@ -164,4 +227,44 @@ fn source_byte(offset: u32, source: &str) -> Result<usize, CoordinateError> {
                 .then_some(offset)
                 .ok_or(CoordinateError::Utf8Boundary)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor};
+
+    #[derive(Debug, thiserror::Error)]
+    enum CursorTestError {
+        #[error(transparent)]
+        Coordinate(#[from] CoordinateError),
+        #[error("cursor walked {actual} bytes, expected {expected}")]
+        WorkBound { actual: usize, expected: usize },
+    }
+
+    #[test]
+    fn source_order_cursor_walks_each_byte_once_across_many_spans() -> Result<(), CursorTestError> {
+        const REPEATS: usize = 1_024;
+        const CHUNK_BYTES: usize = 5;
+        let source = "x🚀".repeat(REPEATS);
+        let mut cursor = Utf8ToUtf16Cursor::new(&source);
+
+        for chunk in 0..REPEATS {
+            let start = chunk
+                .checked_mul(CHUNK_BYTES)
+                .and_then(|offset| offset.checked_add(1))
+                .ok_or(CoordinateError::OutOfBounds)?;
+            let end = start.checked_add(4).ok_or(CoordinateError::OutOfBounds)?;
+            cursor.to_utf16(Utf8Span::try_from(
+                u32::try_from(start).map_err(|_| CoordinateError::OutOfBounds)?
+                    ..u32::try_from(end).map_err(|_| CoordinateError::OutOfBounds)?,
+            )?)?;
+        }
+
+        (cursor.bytes_walked == source.len())
+            .then_some(())
+            .ok_or(CursorTestError::WorkBound {
+                actual: cursor.bytes_walked,
+                expected: source.len(),
+            })
+    }
 }
