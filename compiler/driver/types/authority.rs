@@ -230,6 +230,35 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_java::ImageError,
     },
+    /// The source-bound javac authority envelope failed before yielding facts.
+    #[error("Java source-bound authority image failed")]
+    JavaBoundImage {
+        /// Bounded source diagnostic retained by the javac authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact outer-envelope or embedded image failure.
+        #[source]
+        cause: compiler_languages_java::BoundImageError,
+    },
+    /// A source-bound javac image was generated for a different Java release.
+    #[error("Java authority image release differs from the requested profile")]
+    JavaRelease {
+        /// Bounded source diagnostic retained by the javac authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Java release selected by the compiler request.
+        requested: compiler_vocabulary::JavaRelease,
+        /// Java release retained by the attributed javac image.
+        observed: compiler_languages_java::JavaRelease,
+    },
+    /// A source-bound javac image was generated for source bytes other than this request.
+    #[error("Java authority image source binding differs from the compile request")]
+    JavaSourceBinding {
+        /// Bounded source diagnostic retained by the javac authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// SHA-256 digest of exact compile request bytes.
+        expected: [u8; 32],
+        /// SHA-256 digest retained by the source-bound javac image.
+        observed: [u8; 32],
+    },
 }
 
 /// Bounded application projection derived from one exact authority failure.
@@ -317,6 +346,18 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: java_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::JavaBoundImage { diagnostic, cause } => AuthorityFailureProjection {
+                phase: java_bound_phase(cause),
+                class: java_bound_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::JavaRelease { diagnostic, .. } | Self::JavaSourceBinding { diagnostic, .. } => {
+                AuthorityFailureProjection {
+                    phase: AuthorityPhase::Project,
+                    class: AuthorityDiagnosticClass::Projection,
+                    diagnostic: *diagnostic,
+                }
+            }
         }
     }
 
@@ -357,7 +398,13 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                         | Self::CSharpSpan { .. },
                     LanguageProfile::CSharp(_)
                 )
-                | (Self::Java { .. }, LanguageProfile::Java(_))
+                | (
+                    Self::Java { .. }
+                        | Self::JavaBoundImage { .. }
+                        | Self::JavaRelease { .. }
+                        | Self::JavaSourceBinding { .. },
+                    LanguageProfile::Java(_)
+                )
         );
         if accepted {
             Ok(self)
@@ -583,6 +630,24 @@ fn java_phase(cause: &compiler_languages_java::ImageError) -> AuthorityPhase {
 
 fn java_class(cause: &compiler_languages_java::ImageError) -> AuthorityDiagnosticClass {
     match java_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
+}
+
+fn java_bound_phase(cause: &compiler_languages_java::BoundImageError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_java::BoundImageError::Header(_)
+        | compiler_languages_java::BoundImageError::Digest => AuthorityPhase::Parse,
+        compiler_languages_java::BoundImageError::Image(cause) => java_phase(cause),
+    }
+}
+
+fn java_bound_class(cause: &compiler_languages_java::BoundImageError) -> AuthorityDiagnosticClass {
+    match java_bound_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
         AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {

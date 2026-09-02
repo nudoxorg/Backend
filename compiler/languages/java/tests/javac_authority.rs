@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_languages_java::{JavaImage, TypeKind};
+use compiler_languages_java::{BoundImageError, JavaAuthorityImage, JavaImage, TypeKind};
 
 static TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,6 +45,8 @@ enum JavacTestError {
     },
     #[error(transparent)]
     Image(#[from] compiler_languages_java::ImageError),
+    #[error(transparent)]
+    BoundImage(#[from] BoundImageError),
     #[error("expected image fact `{fact}`")]
     Missing { fact: &'static str },
     #[error("expected `{expected}`, found `{actual}`")]
@@ -103,7 +105,7 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
 
         let first = run_producer(&jdk, &classes, &temporary.path, "Cafe.java")?;
         let first_bytes = read_image(&first)?;
-        let first_image = JavaImage::open(&first_bytes)?;
+        let first_image = JavaAuthorityImage::open(&first_bytes)?.image;
         let first_target = call_target(first_image)?;
         assert_atom(first_target.owner, "demo.Helper")?;
         assert_atom(first_target.name, "render")?;
@@ -123,7 +125,7 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
 
         let second = run_producer(&jdk, &classes, &temporary.path, "CafeChanged.java")?;
         let second_bytes = read_image(&second)?;
-        let second_image = JavaImage::open(&second_bytes)?;
+        let second_image = JavaAuthorityImage::open(&second_bytes)?.image;
         let second_target = call_target(second_image)?;
         assert_parameter(second_image, second_target.parameters, "java.lang.String")?;
 
@@ -137,6 +139,8 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
             .arg("nudox.oracle.CompilerExtractor")
             .args(["--release", "21", "--outfile"])
             .arg(temporary.path.join("rejected.image"))
+            .args(["--source-binding"])
+            .arg(&broken)
             .arg(broken)
             .output()
             .map_err(|source| JavacTestError::Directory {
@@ -195,6 +199,8 @@ fn run_producer(
             .arg("nudox.oracle.CompilerExtractor")
             .args(["--release", "21", "--outfile"])
             .arg(&output)
+            .arg("--source-binding")
+            .arg(fixture(&format!("src/demo/{cafe}")))
             .arg(fixture("src/module-info.java"))
             .arg(fixture("src/demo/Helper.java"))
             .arg(fixture(&format!("src/demo/{cafe}"))),

@@ -4,8 +4,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod bound;
 mod image;
 
+pub use bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};
 pub use image::{
     Atom, AtomError, AtomIter, Declaration, DeclarationIter, DeclarationKind, DocFlavor,
     HeaderError, ImageError, ImagePlane, JavaImage, JavaRelease, Modifiers, Origin, Reference,

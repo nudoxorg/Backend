@@ -30,6 +30,11 @@ pub enum SemanticAuthorityInput<'source> {
         /// Borrowed fixed-width authority bytes emitted by the configured Roslyn helper.
         image: &'source [u8],
     },
+    /// Source-bound validated javac authority image for the exact request source.
+    Java {
+        /// Borrowed fixed-envelope bytes emitted by the configured javac producer.
+        image: &'source [u8],
+    },
 }
 
 /// Deadline and cancellation facts borrowed by one bounded native invocation.

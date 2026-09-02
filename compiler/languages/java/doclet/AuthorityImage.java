@@ -56,9 +56,12 @@ import com.sun.source.util.Trees;
 final class AuthorityImage {
 	private static final byte[] MAGIC = { 'N', 'J', 'A', 'I' };
 	private static final byte[] DOMAIN = "nudox.java.authority.image.sha256.v1\0".getBytes(StandardCharsets.US_ASCII);
+	private static final byte[] BOUND_MAGIC = { 'N', 'J', 'A', 'B' };
+	private static final byte[] BOUND_DOMAIN = "nudox.java.bound.authority.image.sha256.v1\0".getBytes(StandardCharsets.US_ASCII);
 	private static final int VERSION = 1;
 	private static final int SECTION_COUNT = 8;
 	private static final int HEADER_BYTES = 48 + SECTION_COUNT * 16;
+	private static final int BOUND_HEADER_BYTES = 80;
 	private static final int ABSENT = -1;
 	private static final int PUBLIC = 1 << 0;
 	private static final int PROTECTED = 1 << 1;
@@ -92,11 +95,11 @@ private final Trees trees;
 		elements = task.getElements();
 	}
 
-	static void write(JavacTask task, Iterable<? extends CompilationUnitTree> units, int release, Path output)
+	static void write(JavacTask task, Iterable<? extends CompilationUnitTree> units, int release, Path sourceBinding, Path output)
 		throws IOException {
 		AuthorityImage image = new AuthorityImage(task);
 		image.collect(units);
-		image.write(release, output);
+		image.write(release, sourceBinding, output);
 	}
 
 	private void collect(Iterable<? extends CompilationUnitTree> units) {
@@ -261,7 +264,7 @@ private final Trees trees;
 		}
 	}
 
-	private void write(int release, Path output) throws IOException {
+	private void write(int release, Path sourceBinding, Path output) throws IOException {
 		byte[][] sections = { atoms.directory(), atoms.bytes(), types.rows(), types.edges(), symbols.rows(), symbols.parameters(), declarations(), references() };
 		int[] records = { 8, 1, 16, 4, 16, 4, 32, 20 };
 		int[] counts = { atoms.count(), atoms.byteCount(), types.count(), types.edgeCount(), symbols.count(), symbols.parameterCount(), declarations.size(), references.size() };
@@ -270,9 +273,37 @@ private final Trees trees;
 		byte[] header = header(release, bodyBytes, records, counts, sections);
 		byte[] digest = digest(header, sections);
 		System.arraycopy(digest, 0, header, 16, digest.length);
+		int innerBytes = header.length;
+		for (byte[] section : sections) innerBytes = Math.addExact(innerBytes, section.length);
+		byte[] inner = new byte[innerBytes];
+		int innerOffset = 0;
+		System.arraycopy(header, 0, inner, innerOffset, header.length);
+		innerOffset += header.length;
+		for (byte[] section : sections) {
+			System.arraycopy(section, 0, inner, innerOffset, section.length);
+			innerOffset += section.length;
+		}
+		byte[] source = Files.readAllBytes(sourceBinding);
+		byte[] bound = bound(source, inner);
 		try (OutputStream stream = Files.newOutputStream(output)) {
-			stream.write(header);
-			for (byte[] section : sections) stream.write(section);
+			stream.write(bound);
+		}
+	}
+
+	private static byte[] bound(byte[] source, byte[] inner) throws IOException {
+		byte[] header = ByteBuffer.allocate(BOUND_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+			.put(BOUND_MAGIC).putShort((short) VERSION).putShort((short) BOUND_HEADER_BYTES).putInt(inner.length).array();
+		try {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			System.arraycopy(digest.digest(source), 0, header, 12, 32);
+			digest.update(BOUND_DOMAIN); digest.update(header, 0, 44); digest.update(header, 76, BOUND_HEADER_BYTES - 76); digest.update(inner);
+			System.arraycopy(digest.digest(), 0, header, 44, 32);
+			byte[] image = new byte[Math.addExact(header.length, inner.length)];
+			System.arraycopy(header, 0, image, 0, header.length);
+			System.arraycopy(inner, 0, image, header.length, inner.length);
+			return image;
+		} catch (NoSuchAlgorithmException error) {
+			throw new IOException("the JDK does not provide SHA-256", error);
 		}
 	}
 

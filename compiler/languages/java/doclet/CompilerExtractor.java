@@ -46,7 +46,7 @@ public final class CompilerExtractor {
 			task.analyze();
 
 			throwIfCompilationFailed(diagnostics.getDiagnostics());
-			AuthorityImage.write(task, units, invocation.release, invocation.output);
+			AuthorityImage.write(task, units, invocation.release, invocation.sourceBinding, invocation.output);
 		}
 	}
 
@@ -80,27 +80,30 @@ public final class CompilerExtractor {
 	private static final class Invocation {
 		private final Path output;
 		private final int release;
+		private final Path sourceBinding;
 		private final List<String> sources;
 
-		private Invocation(Path output, int release, List<String> sources) {
+		private Invocation(Path output, int release, Path sourceBinding, List<String> sources) {
 			this.output = output;
 			this.release = release;
+			this.sourceBinding = sourceBinding;
 			this.sources = sources;
 		}
 
 		private static Invocation parse(String[] arguments) {
-			if (arguments.length < 5
+			if (arguments.length < 7
 				|| !arguments[0].equals("--release")
-				|| !arguments[2].equals("--outfile")) {
+				|| !arguments[2].equals("--outfile")
+				|| !arguments[4].equals("--source-binding")) {
 				throw new IllegalArgumentException(
-					"usage: CompilerExtractor --release <release> --outfile <path> <source>..."
+					"usage: CompilerExtractor --release <release> --outfile <path> --source-binding <source> <source>..."
 				);
 			}
 			List<String> sources = new ArrayList<>();
-			for (int index = 4; index < arguments.length; index++) {
+			for (int index = 6; index < arguments.length; index++) {
 				sources.add(arguments[index]);
 			}
-			return new Invocation(Path.of(arguments[3]), release(arguments[1]), List.copyOf(sources));
+			return new Invocation(Path.of(arguments[3]), release(arguments[1]), Path.of(arguments[5]), List.copyOf(sources));
 		}
 
 		private static int release(String argument) {

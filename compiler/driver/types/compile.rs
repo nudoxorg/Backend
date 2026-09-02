@@ -165,6 +165,9 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         (SemanticAuthorityInput::CSharp { .. }, profile) => {
             !matches!(profile, LanguageProfile::CSharp(_))
         }
+        (SemanticAuthorityInput::Java { .. }, profile) => {
+            !matches!(profile, LanguageProfile::Java(_))
+        }
         (SemanticAuthorityInput::None, _) => false,
     };
     if authority_profile_mismatch {
@@ -188,6 +191,7 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         SemanticAuthorityInput::Rust { .. }
             | SemanticAuthorityInput::Go { .. }
             | SemanticAuthorityInput::CSharp { .. }
+            | SemanticAuthorityInput::Java { .. }
     );
     if !direct_authority {
         parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
@@ -310,11 +314,25 @@ fn emit_facts<'source, 'diagnostic>(
             }
             Ok(())
         }
-        LanguageProfile::Java(_) => Err(CompileFailure::LoweringUnsupported {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::JavaDeclarationForm,
-        }),
+        LanguageProfile::Java(profile) => {
+            let SemanticAuthorityInput::Java { image } = authority else {
+                return Err(CompileFailure::AuthorityInputRequired {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    profile: LanguageProfile::Java(profile),
+                });
+            };
+            lower::java::collect(profile, source, image, facts)
+                .map_err(|cause| java_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
         LanguageProfile::CSharp(profile) => {
             let SemanticAuthorityInput::CSharp { image } = authority else {
                 return Err(CompileFailure::AuthorityInputRequired {
@@ -458,6 +476,51 @@ fn csharp_terminal<'diagnostic>(
             },
         },
         lower::csharp::CSharpCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
+    }
+}
+
+fn java_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::java::JavaCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::java::JavaCollectError::Image(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::JavaBoundImage {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::java::JavaCollectError::Release {
+            requested,
+            observed,
+        } => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::JavaRelease {
+                diagnostic: AuthorityDiagnostic::absent(),
+                requested,
+                observed,
+            },
+        },
+        lower::java::JavaCollectError::SourceBinding { expected, observed } => {
+            CompileFailure::Authority {
+                source_identity,
+                recipe,
+                failure: AuthorityFailure::JavaSourceBinding {
+                    diagnostic: AuthorityDiagnostic::absent(),
+                    expected,
+                    observed,
+                },
+            }
+        }
+        lower::java::JavaCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
             cause,
