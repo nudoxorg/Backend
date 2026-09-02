@@ -4,7 +4,7 @@
 //! Deterministic actual-GPUI entity tests.
 
 #[cfg(feature = "real-gpui")]
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 #[cfg(feature = "real-gpui")]
 use gpui::{
     AppContext, Bounds, Context, EntityInputHandler, IntoElement, Render, ScrollStrategy,
@@ -314,7 +314,7 @@ fn entity_projects_unavailable_compiler_output_without_claiming_artifact(cx: &mu
     let input = ApplicationInput::Generate(GenerateRequest {
         target: GenerateTarget {
             correlation: CorrelationId(111),
-            language: Language::Rust,
+            profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
         },
         source,

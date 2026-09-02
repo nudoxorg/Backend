@@ -3,6 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, process::Command};
 
+use compiler_vocabulary::TypeScriptSource;
+
 use crate::{
     native::{
         frontend::NativeFrontend,
@@ -11,38 +13,46 @@ use crate::{
     types::{NativeArtifactRole, NativeWorkError, ResolvedToolchain},
 };
 
-const SOURCE_FILE: &str = "compiler-probe.ts";
+const TYPESCRIPT_SOURCE_FILE: &str = "compiler-probe.ts";
+const TSX_SOURCE_FILE: &str = "compiler-probe.tsx";
 const WORK_DIRECTORY: &str = "typescript";
 
 /// Native `tsc` syntax and type-check admission over one owned source file.
 pub(super) struct TypeScriptFrontend;
 
 impl NativeFrontend for TypeScriptFrontend {
-    fn prepare(native_work: &Path, source: &[u8]) -> Result<(), NativeWorkError> {
+    type Profile = TypeScriptSource;
+
+    fn prepare(
+        profile: Self::Profile,
+        native_work: &Path,
+        source: &[u8],
+    ) -> Result<(), NativeWorkError> {
         let work = native_work.join(WORK_DIRECTORY);
         create_artifact_directory(&work, NativeArtifactRole::TypeScriptWork)?;
         write_artifact(
-            &work.join(SOURCE_FILE),
+            &work.join(source_file(profile)),
             source,
             NativeArtifactRole::TypeScriptSource,
         )
     }
 
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
         command
             .args([
-                "--noEmit",
-                "--pretty",
-                "false",
-                "--target",
-                "ES2022",
-                "--module",
-                "ESNext",
-                SOURCE_FILE,
+                "--noEmit", "--pretty", "false", "--target", "ES2022", "--module", "ESNext",
             ])
+            .arg(source_file(profile))
             .current_dir(native_work.join(WORK_DIRECTORY))
             .env_clear();
+        if profile == TypeScriptSource::Tsx {
+            command.args(["--jsx", "preserve"]);
+        }
         command
     }
 
@@ -55,5 +65,12 @@ impl NativeFrontend for TypeScriptFrontend {
             native_work.join(WORK_DIRECTORY),
             NativeArtifactRole::TypeScriptWork,
         )
+    }
+}
+
+const fn source_file(profile: TypeScriptSource) -> &'static str {
+    match profile {
+        TypeScriptSource::TypeScript => TYPESCRIPT_SOURCE_FILE,
+        TypeScriptSource::Tsx => TSX_SOURCE_FILE,
     }
 }

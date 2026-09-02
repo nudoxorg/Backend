@@ -3,7 +3,10 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::io::{self, Cursor};
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{
+    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
+    RustEdition, Stage, TypeScriptSource,
+};
 use heart_identity::ContentIdDecodeError;
 use interface_core::{
     ApplicationInput, CapabilityDomain, ContentId, GenerationId, InconsistentRecovery,
@@ -122,7 +125,7 @@ enum GenerateAction {
 struct MissingGenerateArguments<'source> {
     action: GenerateAction,
     correlation: u64,
-    language: &'source str,
+    profile: &'source str,
     stage: &'source str,
 }
 
@@ -130,7 +133,7 @@ struct MissingGenerateArguments<'source> {
 struct GenerateArguments<'source> {
     action: GenerateAction,
     correlation: u64,
-    language: &'source str,
+    profile: &'source str,
     stage: &'source str,
     source: &'source str,
 }
@@ -231,7 +234,7 @@ fn mcp_policy_request_with_id(generation: &str, id: JsonRpcRequestId) -> io::Res
 
 fn mcp_generate_request(
     id: JsonRpcRequestId,
-    language: &str,
+    profile: &str,
     stage: &str,
     source: &str,
 ) -> io::Result<String> {
@@ -240,7 +243,7 @@ fn mcp_generate_request(
         GenerateArguments {
             action: GenerateAction::Generate,
             correlation: 71,
-            language,
+            profile,
             stage,
             source,
         },
@@ -320,20 +323,31 @@ fn parser_errors_preserve_primitive_and_json_causes() -> Result<(), TestError> {
 #[test]
 fn cli_and_mcp_admit_every_closed_compiler_target_without_stringly_core_vocabulary()
 -> Result<(), TestError> {
-    let languages = [
-        ("rust", Language::Rust),
-        ("typescript", Language::TypeScript),
-        ("python", Language::Python),
-        ("go", Language::Go),
-        ("java", Language::Java),
-        ("csharp", Language::CSharp),
-        ("clang", Language::Clang),
+    let profiles = [
+        ("rust-2024", LanguageProfile::Rust(RustEdition::Rust2024)),
+        (
+            "typescript",
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        ),
+        ("tsx", LanguageProfile::TypeScript(TypeScriptSource::Tsx)),
+        (
+            "python-3.14",
+            LanguageProfile::Python(PythonVersion::Python314),
+        ),
+        ("go-1.25", LanguageProfile::Go(GoVersion::Go125)),
+        ("java-21", LanguageProfile::Java(JavaRelease::Java21)),
+        (
+            "csharp-14",
+            LanguageProfile::CSharp(CSharpVersion::CSharp14),
+        ),
+        ("c-23", LanguageProfile::C(CStandard::C23)),
+        ("cxx-23", LanguageProfile::Cxx(CxxStandard::Cxx23)),
     ];
-    for (language_text, language) in languages {
+    for (profile_text, profile) in profiles {
         let cli = decode_cli(&[
             "generate".to_owned(),
             "71".to_owned(),
-            language_text.to_owned(),
+            profile_text.to_owned(),
             "lower-ir".to_owned(),
             "fn all_languages() {}".to_owned(),
         ])
@@ -341,12 +355,12 @@ fn cli_and_mcp_admit_every_closed_compiler_target_without_stringly_core_vocabula
         let ApplicationInput::Generate(cli_request) = cli else {
             return Err(io::Error::other("CLI compiler command was not generate").into());
         };
-        assert_eq!(cli_request.target.language, language);
+        assert_eq!(cli_request.target.profile, profile);
         assert_eq!(cli_request.target.stage, Stage::LowerIr);
 
         let body = mcp_generate_request(
-            JsonRpcRequestId::Text(language_text.to_owned()),
-            language_text,
+            JsonRpcRequestId::Text(profile_text.to_owned()),
+            profile_text,
             "lower-ir",
             "fn all_languages() {}",
         )?;
@@ -370,7 +384,7 @@ fn source_budget_is_preserved_for_cli_and_mcp_at_exact_and_plus_one_boundaries()
     let exact = decode_cli(&[
         "generate".to_owned(),
         "72".to_owned(),
-        "rust".to_owned(),
+        "rust-2024".to_owned(),
         "lower-ir".to_owned(),
         exact_source,
     ])
@@ -385,7 +399,7 @@ fn source_budget_is_preserved_for_cli_and_mcp_at_exact_and_plus_one_boundaries()
     plus_one_source.push('x');
     let body = mcp_generate_request(
         JsonRpcRequestId::Number(72),
-        "rust",
+        "rust-2024",
         "lower-ir",
         &plus_one_source,
     )?;
@@ -455,7 +469,7 @@ fn mcp_missing_required_generate_field_rejects_before_dispatch_with_id() -> Resu
         MissingGenerateArguments {
             action: GenerateAction::Generate,
             correlation: 401,
-            language: "rust",
+            profile: "rust-2024",
             stage: "parse",
         },
     )?;

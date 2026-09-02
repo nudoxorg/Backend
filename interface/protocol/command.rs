@@ -3,9 +3,9 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed raw application commands shared by positional and JSON-RPC adapters.
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, Stage};
 use interface_core::InputText;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 
 /// A bounded numeric transport value accepted in either native JSON or CLI text form.
 #[derive(Debug, Deserialize)]
@@ -17,61 +17,12 @@ pub(crate) enum RawNumber {
     Text(String),
 }
 
-/// Closed language token at the one adapter boundary that interprets transport text.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) enum RawLanguage {
-    /// Rust source.
-    #[serde(rename = "rust")]
-    Rust,
-    /// TypeScript source.
-    #[serde(rename = "typescript")]
-    TypeScript,
-    /// Python source.
-    #[serde(rename = "python")]
-    Python,
-    /// Go source.
-    #[serde(rename = "go")]
-    Go,
-    /// Java source.
-    #[serde(rename = "java")]
-    Java,
-    /// C-sharp source.
-    #[serde(rename = "csharp")]
-    CSharp,
-    /// C-family source compiled through Clang.
-    #[serde(rename = "clang")]
-    Clang,
-}
-
-impl TryFrom<InputText> for RawLanguage {
-    type Error = InputText;
-
-    fn try_from(value: InputText) -> Result<Self, Self::Error> {
-        match &*value {
-            "rust" => Ok(Self::Rust),
-            "typescript" => Ok(Self::TypeScript),
-            "python" => Ok(Self::Python),
-            "go" => Ok(Self::Go),
-            "java" => Ok(Self::Java),
-            "csharp" => Ok(Self::CSharp),
-            "clang" => Ok(Self::Clang),
-            _ => Err(value),
-        }
-    }
-}
-
-impl From<RawLanguage> for Language {
-    fn from(value: RawLanguage) -> Self {
-        match value {
-            RawLanguage::Rust => Self::Rust,
-            RawLanguage::TypeScript => Self::TypeScript,
-            RawLanguage::Python => Self::Python,
-            RawLanguage::Go => Self::Go,
-            RawLanguage::Java => Self::Java,
-            RawLanguage::CSharp => Self::CSharp,
-            RawLanguage::Clang => Self::Clang,
-        }
-    }
+fn deserialize_profile<'de, Decoder>(decoder: Decoder) -> Result<LanguageProfile, Decoder::Error>
+where
+    Decoder: Deserializer<'de>,
+{
+    let value = String::deserialize(decoder)?;
+    LanguageProfile::try_from(value.as_str()).map_err(Decoder::Error::custom)
 }
 
 /// Closed compiler stage token at the one adapter boundary that interprets transport text.
@@ -112,8 +63,9 @@ impl From<RawStage> for Stage {
 pub(crate) struct RawGenerate {
     /// Request correlation.
     pub(crate) correlation: u64,
-    /// Compiler language token.
-    pub(crate) language: RawLanguage,
+    /// Compiler source-profile token.
+    #[serde(deserialize_with = "deserialize_profile")]
+    pub(crate) profile: LanguageProfile,
     /// Compiler stage token.
     pub(crate) stage: RawStage,
     /// Source text.

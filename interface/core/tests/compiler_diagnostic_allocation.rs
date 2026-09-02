@@ -6,15 +6,15 @@
 use std::mem::size_of;
 
 use allocation_counter::{AllocationInfo, measure};
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
     CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, InputText,
     MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
 
-const EXPECTED_APPLICATION_REPLY_BYTES: usize = 280;
-const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 272;
+const EXPECTED_APPLICATION_REPLY_BYTES: usize = 272;
+const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 264;
 
 #[derive(Debug, Eq, PartialEq)]
 enum DiagnosticAllocationTestError {
@@ -129,7 +129,7 @@ fn unavailable_compiler_is_allocation_free() -> Result<(), DiagnosticAllocationT
     let unavailable_allocations = measure(|| {
         unavailable_terminal = unavailable
             .generate(CompilerRequest {
-                language: Language::Rust,
+                profile: LanguageProfile::Rust(RustEdition::Rust2024),
                 stage: Stage::LowerIr,
                 source: "pub const READY: i32 = 1;",
             })

@@ -4,7 +4,7 @@
 use core::{num::TryFromIntError, ops::Range};
 
 use crate::{AtomId, TypeId};
-use compiler_vocabulary::{Language, NativeTool, Stage};
+use compiler_vocabulary::{LanguageProfile, NativeTool, Stage};
 use heart_identity::{
     CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,
 };
@@ -361,23 +361,19 @@ pub(crate) fn decode_source_identity(record: &[u8]) -> Result<SourceIdentity, So
 }
 
 pub(crate) fn write_recipe_fact(output: &mut [u8], recipe: RecipeFact) {
-    output[0] = u8::from(recipe.language);
-    output[1] = u8::from(recipe.stage);
-    output[2] = u8::from(recipe.tool);
-    output[3] = 0;
+    output[..2].copy_from_slice(&<[u8; 2]>::from(recipe.profile));
+    output[2] = u8::from(recipe.stage);
+    output[3] = u8::from(recipe.tool);
     output[4..4 + HASH_BYTES].copy_from_slice(recipe.identity.as_ref());
     output[4 + HASH_BYTES..RECIPE_FACT_BYTES].copy_from_slice(recipe.toolchain.as_ref());
 }
 
 pub(crate) fn decode_recipe_fact(record: &[u8]) -> Result<RecipeFact, RecipeFactFault> {
-    if record[3] != 0 {
-        return Err(RecipeFactFault::Reserved { actual: record[3] });
-    }
-    let language =
-        Language::try_from(record[0]).map_err(|actual| RecipeFactFault::Language { actual })?;
-    let stage = Stage::try_from(record[1]).map_err(|actual| RecipeFactFault::Stage { actual })?;
+    let profile = LanguageProfile::try_from([record[0], record[1]])
+        .map_err(|error| RecipeFactFault::Profile { actual: error.code })?;
+    let stage = Stage::try_from(record[2]).map_err(|actual| RecipeFactFault::Stage { actual })?;
     let tool =
-        NativeTool::try_from(record[2]).map_err(|actual| RecipeFactFault::Tool { actual })?;
+        NativeTool::try_from(record[3]).map_err(|actual| RecipeFactFault::Tool { actual })?;
     let mut recipe_raw = [0; HASH_BYTES];
     recipe_raw.copy_from_slice(&record[4..4 + HASH_BYTES]);
     let identity = ContentId::<CompileRecipeDomain>::try_from(recipe_raw)
@@ -388,7 +384,7 @@ pub(crate) fn decode_recipe_fact(record: &[u8]) -> Result<RecipeFact, RecipeFact
         .map_err(RecipeFactFault::Toolchain)?;
     Ok(RecipeFact {
         identity,
-        language,
+        profile,
         stage,
         tool,
         toolchain,

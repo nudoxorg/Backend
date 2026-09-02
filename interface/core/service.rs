@@ -175,9 +175,10 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
 
     fn generate(&mut self, request: &GenerateRequest) -> ApplicationReply {
         let target = request.target;
-        match FullRegistry.route(target.language, target.stage) {
+        let language = target.profile.language();
+        match FullRegistry.route(language, target.stage) {
             Ok(_route) => match self.compiler.generate(CompilerRequest {
-                language: target.language,
+                profile: target.profile,
                 stage: target.stage,
                 source: &request.source,
             }) {

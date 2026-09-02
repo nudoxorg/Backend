@@ -15,7 +15,7 @@ use compiler_application::{
     LocalToolchainSetError,
 };
 use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainSelection};
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 use interface_core::{
     CorrelationId, GenerateRequest, GenerateTarget, RejectedSourceText, SourceText,
@@ -52,7 +52,10 @@ pub(super) enum LocalCompilerTestError {
         observed: Box<interface_core::ApplicationOutcome>,
     },
     #[error("generated recipe did not retain the requested Rust LowerIr authority")]
-    GeneratedRecipe { language: Language, stage: Stage },
+    GeneratedRecipe {
+        profile: LanguageProfile,
+        stage: Stage,
+    },
     #[error("generated source authority had an unexpected byte length")]
     GeneratedSourceLength { observed: u32 },
     #[error("distinct compiler sources produced the same typed source identity")]
@@ -164,7 +167,7 @@ pub(super) fn open_local_compiler<'path, 'scratch, 'cancel>(
 }
 
 pub(super) fn generate(
-    language: Language,
+    profile: LanguageProfile,
     stage: Stage,
     source: &str,
 ) -> Result<interface_core::ApplicationInput, LocalCompilerTestError> {
@@ -172,7 +175,7 @@ pub(super) fn generate(
         GenerateRequest {
             target: GenerateTarget {
                 correlation: CorrelationId(1),
-                language,
+                profile,
                 stage,
             },
             source: SourceText::try_from(source.to_owned())?,

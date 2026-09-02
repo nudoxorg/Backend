@@ -15,7 +15,10 @@ use compiler_driver::{
     ToolchainSelection,
 };
 use compiler_ir::{EntityKind, PrimitiveType};
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{
+    CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
+    RustEdition, Stage, TypeScriptSource,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -451,7 +454,7 @@ pub(super) fn request<'source, 'path, 'cancel>(
     deadline: Instant,
 ) -> CompileRequest<'source, 'path, 'cancel> {
     CompileRequest {
-        language,
+        profile: fixture_profile(language),
         stage: Stage::LowerIr,
         source,
         toolchain,
@@ -459,5 +462,17 @@ pub(super) fn request<'source, 'path, 'cancel>(
             deadline,
             cancelled,
         },
+    }
+}
+
+const fn fixture_profile(language: Language) -> LanguageProfile {
+    match language {
+        Language::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
+        Language::TypeScript => LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        Language::Python => LanguageProfile::Python(PythonVersion::Python314),
+        Language::Go => LanguageProfile::Go(GoVersion::Go125),
+        Language::Java => LanguageProfile::Java(JavaRelease::Java21),
+        Language::CSharp => LanguageProfile::CSharp(CSharpVersion::CSharp12),
+        Language::Clang => LanguageProfile::C(CStandard::C23),
     }
 }

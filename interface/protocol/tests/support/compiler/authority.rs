@@ -23,10 +23,95 @@ pub(crate) struct GoldenSourceAuthority {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct GoldenCompileRecipe {
     pub identity: String,
-    pub language: GoldenLanguage,
+    pub profile: GoldenLanguageProfile,
     pub stage: GoldenStage,
     pub tool: GoldenNativeTool,
     pub toolchain: String,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenLanguageProfile {
+    Rust(GoldenRustEdition),
+    TypeScript(GoldenTypeScriptSource),
+    Python(GoldenPythonVersion),
+    Go(GoldenGoVersion),
+    Java(GoldenJavaRelease),
+    CSharp(GoldenCSharpVersion),
+    C(GoldenCStandard),
+    Cxx(GoldenCxxStandard),
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenRustEdition {
+    Rust2015,
+    Rust2018,
+    Rust2021,
+    Rust2024,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenTypeScriptSource {
+    TypeScript,
+    Tsx,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPythonVersion {
+    Python310,
+    Python311,
+    Python312,
+    Python313,
+    Python314,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenGoVersion {
+    Go122,
+    Go123,
+    Go124,
+    Go125,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenJavaRelease {
+    Java8,
+    Java11,
+    Java17,
+    Java21,
+    Java25,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenCSharpVersion {
+    CSharp10,
+    CSharp11,
+    CSharp12,
+    CSharp13,
+    CSharp14,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenCStandard {
+    C11,
+    C17,
+    C23,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenCxxStandard {
+    Cxx17,
+    Cxx20,
+    Cxx23,
+    Cxx26,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -98,10 +183,68 @@ impl From<compiler_vocabulary::CompileRecipeFact> for GoldenCompileRecipe {
     fn from(recipe: compiler_vocabulary::CompileRecipeFact) -> Self {
         Self {
             identity: recipe.identity.to_string(),
-            language: recipe.language.into(),
+            profile: recipe.profile.into(),
             stage: recipe.stage.into(),
             tool: recipe.tool.into(),
             toolchain: recipe.toolchain.to_string(),
+        }
+    }
+}
+
+impl From<compiler_vocabulary::LanguageProfile> for GoldenLanguageProfile {
+    fn from(profile: compiler_vocabulary::LanguageProfile) -> Self {
+        use compiler_vocabulary::LanguageProfile;
+        match profile {
+            LanguageProfile::Rust(value) => Self::Rust(match value {
+                compiler_vocabulary::RustEdition::Rust2015 => GoldenRustEdition::Rust2015,
+                compiler_vocabulary::RustEdition::Rust2018 => GoldenRustEdition::Rust2018,
+                compiler_vocabulary::RustEdition::Rust2021 => GoldenRustEdition::Rust2021,
+                compiler_vocabulary::RustEdition::Rust2024 => GoldenRustEdition::Rust2024,
+            }),
+            LanguageProfile::TypeScript(value) => Self::TypeScript(match value {
+                compiler_vocabulary::TypeScriptSource::TypeScript => {
+                    GoldenTypeScriptSource::TypeScript
+                }
+                compiler_vocabulary::TypeScriptSource::Tsx => GoldenTypeScriptSource::Tsx,
+            }),
+            LanguageProfile::Python(value) => Self::Python(match value {
+                compiler_vocabulary::PythonVersion::Python310 => GoldenPythonVersion::Python310,
+                compiler_vocabulary::PythonVersion::Python311 => GoldenPythonVersion::Python311,
+                compiler_vocabulary::PythonVersion::Python312 => GoldenPythonVersion::Python312,
+                compiler_vocabulary::PythonVersion::Python313 => GoldenPythonVersion::Python313,
+                compiler_vocabulary::PythonVersion::Python314 => GoldenPythonVersion::Python314,
+            }),
+            LanguageProfile::Go(value) => Self::Go(match value {
+                compiler_vocabulary::GoVersion::Go122 => GoldenGoVersion::Go122,
+                compiler_vocabulary::GoVersion::Go123 => GoldenGoVersion::Go123,
+                compiler_vocabulary::GoVersion::Go124 => GoldenGoVersion::Go124,
+                compiler_vocabulary::GoVersion::Go125 => GoldenGoVersion::Go125,
+            }),
+            LanguageProfile::Java(value) => Self::Java(match value {
+                compiler_vocabulary::JavaRelease::Java8 => GoldenJavaRelease::Java8,
+                compiler_vocabulary::JavaRelease::Java11 => GoldenJavaRelease::Java11,
+                compiler_vocabulary::JavaRelease::Java17 => GoldenJavaRelease::Java17,
+                compiler_vocabulary::JavaRelease::Java21 => GoldenJavaRelease::Java21,
+                compiler_vocabulary::JavaRelease::Java25 => GoldenJavaRelease::Java25,
+            }),
+            LanguageProfile::CSharp(value) => Self::CSharp(match value {
+                compiler_vocabulary::CSharpVersion::CSharp10 => GoldenCSharpVersion::CSharp10,
+                compiler_vocabulary::CSharpVersion::CSharp11 => GoldenCSharpVersion::CSharp11,
+                compiler_vocabulary::CSharpVersion::CSharp12 => GoldenCSharpVersion::CSharp12,
+                compiler_vocabulary::CSharpVersion::CSharp13 => GoldenCSharpVersion::CSharp13,
+                compiler_vocabulary::CSharpVersion::CSharp14 => GoldenCSharpVersion::CSharp14,
+            }),
+            LanguageProfile::C(value) => Self::C(match value {
+                compiler_vocabulary::CStandard::C11 => GoldenCStandard::C11,
+                compiler_vocabulary::CStandard::C17 => GoldenCStandard::C17,
+                compiler_vocabulary::CStandard::C23 => GoldenCStandard::C23,
+            }),
+            LanguageProfile::Cxx(value) => Self::Cxx(match value {
+                compiler_vocabulary::CxxStandard::Cxx17 => GoldenCxxStandard::Cxx17,
+                compiler_vocabulary::CxxStandard::Cxx20 => GoldenCxxStandard::Cxx20,
+                compiler_vocabulary::CxxStandard::Cxx23 => GoldenCxxStandard::Cxx23,
+                compiler_vocabulary::CxxStandard::Cxx26 => GoldenCxxStandard::Cxx26,
+            }),
         }
     }
 }

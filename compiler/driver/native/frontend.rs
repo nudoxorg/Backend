@@ -3,6 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{ffi::OsString, path::Path, process::Command};
 
+use compiler_vocabulary::{CStandard, CxxStandard, PythonVersion, RustEdition};
+
 use crate::types::{
     CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeArtifactRole,
     NativeRecipe, NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain,
@@ -20,12 +22,22 @@ use super::{
 const RUST_METADATA_FILE: &str = "compiler-probe.rmeta";
 
 pub(super) trait NativeFrontend {
+    type Profile: Copy;
+
     /// Materializes only this adapter's exact owned input/configuration artifacts.
-    fn prepare(_native_work: &Path, _source: &[u8]) -> Result<(), NativeWorkError> {
+    fn prepare(
+        _profile: Self::Profile,
+        _native_work: &Path,
+        _source: &[u8],
+    ) -> Result<(), NativeWorkError> {
         Ok(())
     }
 
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command;
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command;
 
     /// Whether exact request source must be sent through the child input lease.
     fn source_via_stdin() -> bool {
@@ -43,15 +55,19 @@ pub(super) struct ClangFrontend;
 pub(super) struct PythonFrontend;
 
 impl NativeFrontend for RustFrontend {
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    type Profile = RustEdition;
+
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
         let mut metadata = OsString::from("--emit=metadata=");
         metadata.push(native_work.join(RUST_METADATA_FILE));
-        command.args([
-            "--crate-type=lib",
-            "--edition=2024",
-            "--crate-name=compiler_probe",
-        ]);
+        command
+            .args(["--crate-type=lib", "--edition", rust_edition(profile)])
+            .arg("--crate-name=compiler_probe");
         command.arg(metadata).arg("-").current_dir(native_work);
         command
     }
@@ -65,24 +81,91 @@ impl NativeFrontend for RustFrontend {
 }
 
 impl NativeFrontend for ClangFrontend {
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    type Profile = ClangProfile;
+
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
         command
-            .args(["-x", "c", "-fsyntax-only", "-w", "-"])
+            .args([
+                "-x",
+                profile.language(),
+                profile.standard(),
+                "-fsyntax-only",
+                "-w",
+                "-",
+            ])
             .current_dir(native_work);
         command
     }
 }
 
 impl NativeFrontend for PythonFrontend {
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    type Profile = PythonVersion;
+
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
-        command.args([
-            "-c",
-            "import sys; compile(sys.stdin.read(), '<heart>', 'exec')",
-        ]);
+        command
+            .args([
+                "-c",
+                "import ast,sys; ast.parse(sys.stdin.read(), '<heart>', 'exec', feature_version=(3,int(sys.argv[1])))",
+            ])
+            .arg(python_minor(profile));
         command.current_dir(native_work);
         command
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ClangProfile {
+    C(CStandard),
+    Cxx(CxxStandard),
+}
+
+impl ClangProfile {
+    const fn language(self) -> &'static str {
+        match self {
+            Self::C(_) => "c",
+            Self::Cxx(_) => "c++",
+        }
+    }
+
+    const fn standard(self) -> &'static str {
+        match self {
+            Self::C(CStandard::C11) => "-std=c11",
+            Self::C(CStandard::C17) => "-std=c17",
+            Self::C(CStandard::C23) => "-std=c23",
+            Self::Cxx(CxxStandard::Cxx17) => "-std=c++17",
+            Self::Cxx(CxxStandard::Cxx20) => "-std=c++20",
+            Self::Cxx(CxxStandard::Cxx23) => "-std=c++23",
+            Self::Cxx(CxxStandard::Cxx26) => "-std=c++26",
+        }
+    }
+}
+
+const fn rust_edition(profile: RustEdition) -> &'static str {
+    match profile {
+        RustEdition::Rust2015 => "2015",
+        RustEdition::Rust2018 => "2018",
+        RustEdition::Rust2021 => "2021",
+        RustEdition::Rust2024 => "2024",
+    }
+}
+
+const fn python_minor(profile: PythonVersion) -> &'static str {
+    match profile {
+        PythonVersion::Python310 => "10",
+        PythonVersion::Python311 => "11",
+        PythonVersion::Python312 => "12",
+        PythonVersion::Python313 => "13",
+        PythonVersion::Python314 => "14",
     }
 }
 
@@ -94,6 +177,7 @@ pub(super) fn drive<
     'work,
     ConcreteFrontend: NativeFrontend,
 >(
+    profile: ConcreteFrontend::Profile,
     recipe: NativeRecipe<'source, 'toolchain>,
     source: SourceIdentity,
     recipe_fact: CompileRecipeFact,
@@ -106,7 +190,7 @@ pub(super) fn drive<
         phase: NativeWorkPhase::Prepare,
         cause,
     })?;
-    if let Err(cause) = ConcreteFrontend::prepare(scratch.native_work, recipe.source) {
+    if let Err(cause) = ConcreteFrontend::prepare(profile, scratch.native_work, recipe.source) {
         return match cleanup_native_work::<ConcreteFrontend>(scratch.native_work) {
             Ok(()) => Err(CompileFailure::NativeWork {
                 source_identity: source,
@@ -127,6 +211,7 @@ pub(super) fn drive<
         native_work,
     } = scratch;
     let result = drive_child::<ConcreteFrontend>(
+        profile,
         recipe,
         source,
         recipe_fact,

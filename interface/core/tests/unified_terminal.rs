@@ -1,7 +1,7 @@
 //! Exercises the `interface-core` tests unified-terminal contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_vocabulary::{FrontendError, Language, Stage};
+use compiler_vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationDisposition, ApplicationEvent, ApplicationInput, ApplicationObservation,
     ApplicationOutcome, ApplicationReply, ApplicationService, Capability, CapabilityHealth,
@@ -11,14 +11,14 @@ use interface_core::{
 
 fn generate(
     correlation: u64,
-    language: Language,
+    profile: LanguageProfile,
     stage: Stage,
     source: &str,
 ) -> Result<ApplicationInput, RejectedSourceText> {
     Ok(ApplicationInput::Generate(GenerateRequest {
         target: GenerateTarget {
             correlation: CorrelationId(correlation),
-            language,
+            profile,
             stage,
         },
         source: SourceText::try_from(source.to_owned())?,
@@ -32,7 +32,7 @@ fn unavailable_compiler_specialization_is_never_generated_truth() -> Result<(), 
 
     let input = generate(
         1,
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         "pub fn alpha() -> u8 { 7 }",
     )?;
@@ -66,7 +66,12 @@ fn unavailable_compiler_specialization_is_never_generated_truth() -> Result<(), 
 #[test]
 fn compiler_rejection_preserves_the_exact_typed_cause() -> Result<(), RejectedSourceText> {
     let mut service = ApplicationService::new();
-    let input = generate(3, Language::Rust, Stage::Parse, "export const broken = 7;")?;
+    let input = generate(
+        3,
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        Stage::Parse,
+        "export const broken = 7;",
+    )?;
     let rejected = service.execute(&input);
 
     assert!(matches!(

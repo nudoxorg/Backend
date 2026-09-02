@@ -14,8 +14,8 @@ use interface_core::{
 };
 
 use crate::command::{
-    RawApplicationCommand, RawGenerate, RawHealth, RawInconsistentPolicy, RawLanguage, RawNumber,
-    RawOperation, RawPolicy, RawRetrieval, RawSearch, RawSnapshot, RawStage,
+    RawApplicationCommand, RawGenerate, RawHealth, RawInconsistentPolicy, RawNumber, RawOperation,
+    RawPolicy, RawRetrieval, RawSearch, RawSnapshot, RawStage,
 };
 use crate::field::AdapterField;
 use crate::source::{CliCommand, SourceEncodingError, SourceIngressRole, SourceIoFact};
@@ -528,7 +528,7 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
     match action {
         "generate" => Ok(RawApplicationCommand::Generate(RawGenerate {
             correlation,
-            language: raw_language(arguments, 2)?,
+            profile: raw_profile(arguments, 2)?,
             stage: raw_stage(arguments, 3)?,
             source: owned(arguments, 4, AdapterField::Source)?,
         })),
@@ -680,7 +680,7 @@ impl TryFrom<RawApplicationCommand> for ApplicationInput {
 
 fn generate_input(raw: RawGenerate) -> Result<ApplicationInput, AdapterError> {
     source_input(
-        generate_target(raw.correlation, raw.language, raw.stage),
+        generate_target(raw.correlation, raw.profile, raw.stage),
         raw.source,
     )
 }
@@ -721,23 +721,31 @@ fn generate_standard_input_command(arguments: &[String]) -> Result<CliCommand, A
 fn cli_generate_target(arguments: &[String]) -> Result<GenerateTarget, AdapterError> {
     Ok(generate_target(
         cli_number(arguments, 1, AdapterField::Correlation)?,
-        raw_language(arguments, 2)?,
+        raw_profile(arguments, 2)?,
         raw_stage(arguments, 3)?,
     ))
 }
 
-fn generate_target(correlation: u64, language: RawLanguage, stage: RawStage) -> GenerateTarget {
+fn generate_target(
+    correlation: u64,
+    profile: compiler_vocabulary::LanguageProfile,
+    stage: RawStage,
+) -> GenerateTarget {
     GenerateTarget {
         correlation: CorrelationId(correlation),
-        language: language.into(),
+        profile,
         stage: stage.into(),
     }
 }
 
-fn raw_language(arguments: &[String], index: usize) -> Result<RawLanguage, AdapterError> {
+fn raw_profile(
+    arguments: &[String],
+    index: usize,
+) -> Result<compiler_vocabulary::LanguageProfile, AdapterError> {
     let value = InputText::try_from_str(field(arguments, index, AdapterField::Language)?)
         .map_err(|source| AdapterError::field_too_long(AdapterField::Language, source))?;
-    RawLanguage::try_from(value).map_err(AdapterError::unknown_language)
+    compiler_vocabulary::LanguageProfile::try_from(&*value)
+        .map_err(|_| AdapterError::unknown_language(value))
 }
 
 fn raw_stage(arguments: &[String], index: usize) -> Result<RawStage, AdapterError> {

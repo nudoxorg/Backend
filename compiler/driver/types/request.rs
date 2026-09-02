@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, Stage};
 
 use super::{ResolvedToolchain, ToolchainSelection};
 
@@ -19,8 +19,8 @@ pub struct CompileControl<'cancel> {
 /// Immutable compile request borrowing recipe and cancellation authority from its caller.
 #[derive(Clone, Copy, Debug)]
 pub struct CompileRequest<'source, 'toolchain, 'cancel> {
-    /// Closed language family selected at the static registry boundary.
-    pub language: Language,
+    /// Closed language profile selected at the static registry boundary.
+    pub profile: LanguageProfile,
     /// Requested semantic terminal; only `LowerIr` can produce a compact IR fragment.
     pub stage: Stage,
     /// Exact UTF-8-or-binary source bytes whose identity is persisted only on native lowering.
@@ -34,7 +34,7 @@ pub struct CompileRequest<'source, 'toolchain, 'cancel> {
 /// Internal recipe after the closed registry has admitted a resolved native toolchain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NativeRecipe<'source, 'toolchain> {
-    pub(crate) language: Language,
+    pub(crate) profile: LanguageProfile,
     pub(crate) stage: Stage,
     pub(crate) source: &'source [u8],
     pub(crate) toolchain: ResolvedToolchain<'toolchain>,

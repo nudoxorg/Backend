@@ -3,7 +3,9 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{
+    Language, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
+};
 use heart_identity::{ContentId, SourceFactDomain};
 use interface_core::{
     ApplicationDisposition, ApplicationOutcome, ApplicationReply, ApplicationService,
@@ -26,12 +28,12 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     let mut service = ApplicationService::with_compiler(compiler);
 
     let first = assert_generated(service.execute(&generate(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         "pub const READY: i32 = 1;",
     )?))?;
     let second = assert_generated(service.execute(&generate(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         "pub const READY: i32 = 2;",
     )?))?;
@@ -42,17 +44,17 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
         });
     }
     assert_missing_native_toolchain(service.execute(&generate(
-        Language::Python,
+        LanguageProfile::Python(PythonVersion::Python314),
         Stage::LowerIr,
         "ready = 1",
     )?))?;
     assert_explicitly_unavailable_tool(service.execute(&generate(
-        Language::TypeScript,
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         Stage::LowerIr,
         "export const READY = 1;",
     )?))?;
     assert_unsupported_stage(service.execute(&generate(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::Parse,
         "pub const READY: i32 = 1;",
     )?))?;
@@ -60,7 +62,7 @@ fn configured_rust_compiler_lowers_publishes_and_preserves_exact_terminals()
     cancelled.store(true, Ordering::Release);
     assert_cancelled(
         service.execute(&generate(
-            Language::Rust,
+            LanguageProfile::Rust(RustEdition::Rust2024),
             Stage::LowerIr,
             "pub const STOP: i32 = 1;",
         )?),
@@ -88,9 +90,11 @@ fn assert_generated(
             });
         }
     };
-    if facts.recipe.language != Language::Rust || facts.recipe.stage != Stage::LowerIr {
+    if facts.recipe.profile != LanguageProfile::Rust(RustEdition::Rust2024)
+        || facts.recipe.stage != Stage::LowerIr
+    {
         return Err(LocalCompilerTestError::GeneratedRecipe {
-            language: facts.recipe.language,
+            profile: facts.recipe.profile,
             stage: facts.recipe.stage,
         });
     }

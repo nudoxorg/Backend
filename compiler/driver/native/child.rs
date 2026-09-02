@@ -52,6 +52,7 @@ pub(super) fn drive_child<
     'diagnostic,
     ConcreteFrontend: NativeFrontend,
 >(
+    profile: ConcreteFrontend::Profile,
     recipe: NativeRecipe<'source, 'toolchain>,
     source: SourceIdentity,
     recipe_fact: CompileRecipeFact,
@@ -83,7 +84,7 @@ pub(super) fn drive_child<
             },
         });
     }
-    let mut command = ConcreteFrontend::command(recipe.toolchain, native_work);
+    let mut command = ConcreteFrontend::command(profile, recipe.toolchain, native_work);
     command
         .stdin(Stdio::piped())
         // Some native CLIs report compiler diagnostics on stdout while others use stderr. Both

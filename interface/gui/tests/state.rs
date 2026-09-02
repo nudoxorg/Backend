@@ -7,7 +7,7 @@
 #[path = "../../protocol/tests/support/golden_corpus.rs"]
 mod golden_corpus;
 
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
@@ -99,7 +99,7 @@ fn generated_artifact() -> GeneratedArtifact {
             byte_len: 11,
         },
         recipe: CompileRecipeFact::derive(
-            Language::Rust,
+            LanguageProfile::Rust(RustEdition::Rust2024),
             Stage::LowerIr,
             NativeTool::Rustc,
             source_identity,
@@ -327,7 +327,7 @@ fn typed_generate_form_requires_each_field_and_constructs_only_application_input
         Some(FormError::MissingText(FormField::Language))
     );
 
-    state.replace_form_text(FormField::Language, text("rust")?)?;
+    state.replace_form_text(FormField::Language, text("rust-2024")?)?;
     state.replace_form_text(FormField::Stage, text("parse")?)?;
     state.replace_form_text(FormField::Source, text("fn main() {}")?)?;
     let submitted = state.submit_form(CorrelationId(61))?;
@@ -337,7 +337,10 @@ fn typed_generate_form_requires_each_field_and_constructs_only_application_input
         ));
     };
     assert_eq!(request.target.correlation, CorrelationId(61));
-    assert_eq!(request.target.language, Language::Rust);
+    assert_eq!(
+        request.target.profile,
+        LanguageProfile::Rust(RustEdition::Rust2024)
+    );
     assert_eq!(request.target.stage, Stage::Parse);
     assert_eq!(&*request.source, "fn main() {}");
     Ok(())
@@ -428,7 +431,7 @@ fn unavailable_compiler_output_is_projected_without_an_echo_artifact() -> Result
     let reply = service.execute(&ApplicationInput::Generate(GenerateRequest {
         target: GenerateTarget {
             correlation: CorrelationId(11),
-            language: Language::Rust,
+            profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
         },
         source,

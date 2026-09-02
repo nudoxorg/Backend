@@ -32,10 +32,9 @@ pub(super) const RANGE_BYTES: usize = 44;
 pub(super) const SOURCE_IDENTITY_OFFSET: usize = 0;
 pub(super) const SOURCE_LENGTH_OFFSET: usize = 32;
 pub(super) const RECIPE_IDENTITY_OFFSET: usize = 36;
-pub(super) const RECIPE_LANGUAGE_OFFSET: usize = 68;
-pub(super) const RECIPE_STAGE_OFFSET: usize = 69;
-pub(super) const RECIPE_TOOL_OFFSET: usize = 70;
-pub(super) const RECIPE_RESERVED_OFFSET: usize = 71;
+pub(super) const RECIPE_PROFILE_OFFSET: usize = 68;
+pub(super) const RECIPE_STAGE_OFFSET: usize = 70;
+pub(super) const RECIPE_TOOL_OFFSET: usize = 71;
 pub(super) const RECIPE_TOOLCHAIN_OFFSET: usize = 72;
 pub(super) const FRAGMENT_IDENTITY_OFFSET: usize = 104;
 pub(super) const FRAGMENT_LENGTH_OFFSET: usize = 136;
@@ -68,7 +67,7 @@ impl<'view, 'fragment> PublicationFragment<'view, 'fragment> {
         let manifest = FragmentRangeManifest::from_view(view)
             .map_err(PublicationFragmentError::RangeManifest)?;
         let expected = CompileRecipeFact::derive(
-            manifest.recipe.language,
+            manifest.recipe.profile,
             manifest.recipe.stage,
             manifest.recipe.tool,
             manifest.source.identity,

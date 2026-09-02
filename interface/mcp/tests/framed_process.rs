@@ -80,9 +80,9 @@ enum ToolName {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum SourceLanguage {
-    Rust,
+enum SourceProfile {
+    #[serde(rename = "rust-2024")]
+    Rust2024,
 }
 
 #[derive(Serialize)]
@@ -155,7 +155,7 @@ struct ApplicationArguments<Arguments> {
 
 #[derive(Serialize)]
 struct GenerateArguments<'source> {
-    language: SourceLanguage,
+    profile: SourceProfile,
     stage: SourceStage,
     source: &'source str,
 }
@@ -272,7 +272,7 @@ fn generate(
         id,
         ApplicationAction::Generate,
         GenerateArguments {
-            language: SourceLanguage::Rust,
+            profile: SourceProfile::Rust2024,
             stage: SourceStage::LowerIr,
             source,
         },
@@ -515,7 +515,7 @@ fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> R
         90,
         ApplicationAction::Generate,
         GenerateArguments {
-            language: SourceLanguage::Rust,
+            profile: SourceProfile::Rust2024,
             stage: SourceStage::LowerIr,
             source: "fn notification() {}",
         },
@@ -540,7 +540,7 @@ fn framed_mcp_preserves_number_string_null_ids_and_silences_notifications() -> R
         92,
         ApplicationAction::Generate,
         GenerateArguments {
-            language: SourceLanguage::Rust,
+            profile: SourceProfile::Rust2024,
             stage: SourceStage::LowerIr,
             source: "fn null_id() {}",
         },

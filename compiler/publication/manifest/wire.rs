@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_driver::CompiledFragment;
 use compiler_ir::{FragmentRange, FragmentRangeManifest, RecipeFact, SectionKind, SourceIdentity};
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use heart_identity::{
     ArtifactId, CompileRecipeDomain, ContentId, IrFragmentDomain, IrFragmentEncoding,
     IrFragmentRangeEncoding, SourceFactDomain, ToolchainDomain,
@@ -13,9 +13,8 @@ use super::{
     CompilationManifestError, StoredFragmentFacts,
     build::{
         FRAGMENT_IDENTITY_OFFSET, FRAGMENT_LENGTH_OFFSET, RANGE_BYTES, RANGE_COUNT, RANGE_OFFSET,
-        RECIPE_IDENTITY_OFFSET, RECIPE_LANGUAGE_OFFSET, RECIPE_RESERVED_OFFSET,
-        RECIPE_STAGE_OFFSET, RECIPE_TOOL_OFFSET, RECIPE_TOOLCHAIN_OFFSET, SECTION_ORDER,
-        SOURCE_IDENTITY_OFFSET, SOURCE_LENGTH_OFFSET,
+        RECIPE_IDENTITY_OFFSET, RECIPE_PROFILE_OFFSET, RECIPE_STAGE_OFFSET, RECIPE_TOOL_OFFSET,
+        RECIPE_TOOLCHAIN_OFFSET, SECTION_ORDER, SOURCE_IDENTITY_OFFSET, SOURCE_LENGTH_OFFSET,
     },
 };
 
@@ -26,10 +25,10 @@ pub(super) fn write_entry(output: &mut [u8], manifest: &FragmentRangeManifest) {
         .copy_from_slice(&manifest.source.byte_len.to_le_bytes());
     output[RECIPE_IDENTITY_OFFSET..RECIPE_IDENTITY_OFFSET + 32]
         .copy_from_slice(manifest.recipe.identity.as_ref());
-    output[RECIPE_LANGUAGE_OFFSET] = u8::from(manifest.recipe.language);
+    output[RECIPE_PROFILE_OFFSET..RECIPE_PROFILE_OFFSET + 2]
+        .copy_from_slice(&<[u8; 2]>::from(manifest.recipe.profile));
     output[RECIPE_STAGE_OFFSET] = u8::from(manifest.recipe.stage);
     output[RECIPE_TOOL_OFFSET] = u8::from(manifest.recipe.tool);
-    output[RECIPE_RESERVED_OFFSET] = 0;
     output[RECIPE_TOOLCHAIN_OFFSET..RECIPE_TOOLCHAIN_OFFSET + 32]
         .copy_from_slice(manifest.recipe.toolchain.as_ref());
     output[FRAGMENT_IDENTITY_OFFSET..FRAGMENT_IDENTITY_OFFSET + 32]
@@ -69,24 +68,24 @@ pub(super) fn decode_entry(
         .map_err(|source| CompilationManifestError::SourceIdentity { ordinal, source })?,
         byte_len: u32::from_le_bytes(fixed::<4>(bytes, SOURCE_LENGTH_OFFSET)),
     };
-    let language = Language::try_from(bytes[RECIPE_LANGUAGE_OFFSET])
-        .map_err(|observed| CompilationManifestError::Language { ordinal, observed })?;
+    let profile = LanguageProfile::try_from([
+        bytes[RECIPE_PROFILE_OFFSET],
+        bytes[RECIPE_PROFILE_OFFSET + 1],
+    ])
+    .map_err(|error| CompilationManifestError::Profile {
+        ordinal,
+        observed: error.code,
+    })?;
     let stage = Stage::try_from(bytes[RECIPE_STAGE_OFFSET])
         .map_err(|observed| CompilationManifestError::Stage { ordinal, observed })?;
     let tool = NativeTool::try_from(bytes[RECIPE_TOOL_OFFSET])
         .map_err(|observed| CompilationManifestError::Tool { ordinal, observed })?;
-    if bytes[RECIPE_RESERVED_OFFSET] != 0 {
-        return Err(CompilationManifestError::RecipeReserved {
-            ordinal,
-            observed: bytes[RECIPE_RESERVED_OFFSET],
-        });
-    }
     let recipe = RecipeFact {
         identity: ContentId::<CompileRecipeDomain>::try_from(
             &bytes[RECIPE_IDENTITY_OFFSET..RECIPE_IDENTITY_OFFSET + 32],
         )
         .map_err(|source| CompilationManifestError::RecipeIdentityAuthority { ordinal, source })?,
-        language,
+        profile,
         stage,
         tool,
         toolchain: ContentId::<ToolchainDomain>::try_from(
@@ -95,7 +94,7 @@ pub(super) fn decode_entry(
         .map_err(|source| CompilationManifestError::ToolchainAuthority { ordinal, source })?,
     };
     let expected_recipe =
-        CompileRecipeFact::derive(language, stage, tool, source.identity, recipe.toolchain);
+        CompileRecipeFact::derive(profile, stage, tool, source.identity, recipe.toolchain);
     if recipe != expected_recipe {
         return Err(CompilationManifestError::RecipeIdentity {
             ordinal,

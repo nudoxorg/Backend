@@ -171,7 +171,7 @@ fn source_io(
 mod tests {
     use std::io::{self, Cursor, Read};
 
-    use compiler_vocabulary::{Language, Stage};
+    use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
     use interface_core::{ApplicationInput, CorrelationId, GenerateTarget, RejectedSourceText};
     use interface_protocol::AdapterErrorCause;
 
@@ -205,7 +205,7 @@ mod tests {
     fn target() -> GenerateTarget {
         GenerateTarget {
             correlation: CorrelationId(41),
-            language: Language::Rust,
+            profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
         }
     }

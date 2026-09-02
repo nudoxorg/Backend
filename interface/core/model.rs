@@ -4,7 +4,7 @@
 //! Closed application vocabulary and bounded reply storage.
 
 use crate::{InputText, SourceText};
-use compiler_vocabulary::{FrontendError, Language, Stage};
+use compiler_vocabulary::{FrontendError, LanguageProfile, Stage};
 use heart_adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
     RecoveryCause, ResourceBudget, RetryBudget,
@@ -45,8 +45,8 @@ pub struct InconsistentRecovery {
 pub struct GenerateTarget {
     /// Request correlation.
     pub correlation: CorrelationId,
-    /// Canonical compiler language selected at the adapter boundary.
-    pub language: Language,
+    /// Canonical compiler profile selected at the adapter boundary.
+    pub profile: LanguageProfile,
     /// Canonical compiler stage selected at the adapter boundary.
     pub stage: Stage,
 }

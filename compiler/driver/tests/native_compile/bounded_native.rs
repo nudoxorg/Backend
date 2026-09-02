@@ -15,7 +15,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     NativeWorkError, NativeWorkPrimary, ResolvedToolchain, ToolchainSelection, compile,
 };
-use compiler_vocabulary::{FrontendError, Language, Stage};
+use compiler_vocabulary::{FrontendError, Language, LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
 use super::support::{CompileTerminal, TemporaryWork, TestFailure, compile_terminal};
@@ -100,7 +100,7 @@ fn request<'source, 'path, 'cancel>(
     deadline: Instant,
 ) -> CompileRequest<'source, 'path, 'cancel> {
     CompileRequest {
-        language: Language::Rust,
+        profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source,
         toolchain,
@@ -274,7 +274,7 @@ fn parse_stage_is_a_pre_spawn_typed_terminal_and_never_lends_ir() -> Result<(), 
     let mut output = [0xa5; 512];
     match compile(
         CompileRequest {
-            language: Language::Rust,
+            profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::Parse,
             source: b"pub const alpha: bool = true;",
             toolchain: ToolchainSelection::ResolvedNative(toolchain),

@@ -247,18 +247,15 @@ pub enum CompilationManifestError {
         #[source]
         source: ContentIdDecodeError,
     },
-    /// One recipe used an unknown closed language tag.
-    #[error("manifest fragment {ordinal} has unknown language tag {observed}")]
-    Language { ordinal: usize, observed: u8 },
+    /// One recipe used an unknown or incompatible closed language profile.
+    #[error("manifest fragment {ordinal} has unknown language profile {observed:?}")]
+    Profile { ordinal: usize, observed: [u8; 2] },
     /// One recipe used an unknown closed stage tag.
     #[error("manifest fragment {ordinal} has unknown stage tag {observed}")]
     Stage { ordinal: usize, observed: u8 },
     /// One recipe used an unknown closed tool tag.
     #[error("manifest fragment {ordinal} has unknown tool tag {observed}")]
     Tool { ordinal: usize, observed: u8 },
-    /// One recipe record carried nonzero reserved bits.
-    #[error("manifest fragment {ordinal} recipe reserved byte is nonzero: {observed}")]
-    RecipeReserved { ordinal: usize, observed: u8 },
     /// Recipe fields did not derive their recorded identity.
     #[error("manifest fragment {ordinal} recipe identity disagrees with source/toolchain facts")]
     RecipeIdentity {

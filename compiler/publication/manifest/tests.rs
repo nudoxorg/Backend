@@ -16,7 +16,7 @@ use super::{
     CanonicalCompilation, CompilationManifestError, CompilationManifestView,
     CompilationPrepareError, CompilationWriteError,
 };
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -200,7 +200,7 @@ fn fragment(source_bytes: &[u8], name: &[u8]) -> Result<([u8; 256], usize), Test
         byte_len: 12,
     };
     let recipe = CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source.identity,

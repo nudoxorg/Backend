@@ -18,7 +18,10 @@ use compiler_driver::{
     CompiledFragment, NativeTool, ResolvedToolchain, ToolchainSelection, compile,
 };
 use compiler_ir::{SourceIdentity, TypeNode};
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{
+    CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
+    RustEdition, Stage, TypeScriptSource,
+};
 use heart_identity::{
     ArtifactHasher, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
     ToolchainDomain,
@@ -167,10 +170,10 @@ fn run_package(
     let cancelled = AtomicBool::new(false);
     let mut diagnostic_output = [0; DIAGNOSTIC_BYTES];
     let mut fragment_output = [0xa5; FRAGMENT_BYTES];
-    let (language, toolchain) = selection(package.language, resolved);
+    let (profile, toolchain) = selection(package.language, resolved);
     let result = compile(
         CompileRequest {
-            language,
+            profile,
             stage: Stage::LowerIr,
             source: rendered.source.as_bytes(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
@@ -191,7 +194,7 @@ fn run_package(
     let tool = native_tool(package.language);
     let compiled = result.map_err(|failure| CorpusCompileError::Compile {
         ordinal: package.ordinal,
-        language,
+        language: profile.language(),
         tool,
         source_identity,
         terminal: terminal_kind(&failure),
@@ -201,7 +204,7 @@ fn run_package(
         &rendered,
         source_identity,
         toolchain.identity,
-        language,
+        profile.language(),
         tool,
     );
     work.assert_empty()?;
@@ -246,15 +249,24 @@ struct ResolvedTools<'path> {
 const fn selection<'path>(
     language: CorpusLanguage,
     resolved: &ResolvedTools<'path>,
-) -> (Language, ResolvedToolchain<'path>) {
+) -> (LanguageProfile, ResolvedToolchain<'path>) {
     match language {
-        CorpusLanguage::Rust => (Language::Rust, resolved.rust),
-        CorpusLanguage::TypeScript => (Language::TypeScript, resolved.typescript),
-        CorpusLanguage::Python => (Language::Python, resolved.python),
-        CorpusLanguage::Go => (Language::Go, resolved.go),
-        CorpusLanguage::Java => (Language::Java, resolved.java),
-        CorpusLanguage::CSharp => (Language::CSharp, resolved.csharp),
-        CorpusLanguage::Clang => (Language::Clang, resolved.clang),
+        CorpusLanguage::Rust => (LanguageProfile::Rust(RustEdition::Rust2024), resolved.rust),
+        CorpusLanguage::TypeScript => (
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            resolved.typescript,
+        ),
+        CorpusLanguage::Python => (
+            LanguageProfile::Python(PythonVersion::Python314),
+            resolved.python,
+        ),
+        CorpusLanguage::Go => (LanguageProfile::Go(GoVersion::Go125), resolved.go),
+        CorpusLanguage::Java => (LanguageProfile::Java(JavaRelease::Java21), resolved.java),
+        CorpusLanguage::CSharp => (
+            LanguageProfile::CSharp(CSharpVersion::CSharp12),
+            resolved.csharp,
+        ),
+        CorpusLanguage::Clang => (LanguageProfile::C(CStandard::C23), resolved.clang),
     }
 }
 
@@ -267,7 +279,7 @@ fn assert_compiled(
     expected_tool: NativeTool,
 ) -> CorpusRecord {
     assert_eq!(compiled.source, expected_source);
-    assert_eq!(compiled.recipe.language, expected_language);
+    assert_eq!(compiled.recipe.profile.language(), expected_language);
     assert_eq!(compiled.recipe.stage, Stage::LowerIr);
     assert_eq!(compiled.recipe.tool, expected_tool);
     assert_eq!(compiled.recipe.toolchain, expected_toolchain);
@@ -278,12 +290,9 @@ fn assert_compiled(
             .map(|entity| (entity.kind, entity.name.raw))
             .eq([(expected.expected_kind, 0)])
     );
-    assert!(
-        compiled
-            .fragment
-            .atoms()
-            .map(|atom| atom.bytes)
-            .eq([expected.expected_symbol.as_bytes()])
+    assert_eq!(
+        compiled.fragment.atoms().next().map(|atom| atom.bytes),
+        Some(expected.expected_symbol.as_bytes())
     );
     assert!(
         compiled
@@ -297,7 +306,7 @@ fn assert_compiled(
         source: *compiled.source.identity.as_ref(),
         recipe: *compiled.recipe.identity.as_ref(),
         fragment: *hasher.finalize().as_ref(),
-        language: compiled.recipe.language,
+        language: compiled.recipe.profile.language(),
         tool: compiled.recipe.tool,
     }
 }

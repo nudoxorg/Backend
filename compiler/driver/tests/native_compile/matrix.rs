@@ -92,11 +92,11 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
             },
         ) {
             Ok(compiled) => {
-                if compiled.recipe.language != language {
+                if Language::from(compiled.recipe.profile) != language {
                     return Err(TestFailure::RecipeLanguage {
                         tool,
                         expected: language,
-                        actual: compiled.recipe.language,
+                        actual: Language::from(compiled.recipe.profile),
                     });
                 }
                 if compiled.recipe.stage != Stage::LowerIr {

@@ -23,7 +23,7 @@ use compiler_publication::{
     OpenPublicationScratch, OpenedCompilation, OpenedFragment, OpenedFragmentCursor,
     PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use server_index_build::{
     BuildAdmissionError, BuildDerivationError, BuildError, EntityFact, EntityProjection,
@@ -466,7 +466,7 @@ pub(crate) fn write_fragment<const BYTES: usize>(
         byte_len: u32::try_from(source_bytes.len())?,
     };
     let recipe = CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source.identity,

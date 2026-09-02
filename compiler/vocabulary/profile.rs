@@ -138,6 +138,22 @@ pub enum LanguageProfile {
     Cxx(CxxStandard),
 }
 
+impl LanguageProfile {
+    /// Returns the language family proved by this closed profile.
+    #[must_use]
+    pub const fn language(self) -> Language {
+        match self {
+            Self::Rust(_) => Language::Rust,
+            Self::TypeScript(_) => Language::TypeScript,
+            Self::Python(_) => Language::Python,
+            Self::Go(_) => Language::Go,
+            Self::Java(_) => Language::Java,
+            Self::CSharp(_) => Language::CSharp,
+            Self::C(_) | Self::Cxx(_) => Language::Clang,
+        }
+    }
+}
+
 /// Unknown or incompatible canonical language-profile bytes.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("unknown language profile code {code:?}")]
@@ -149,22 +165,14 @@ pub struct UnknownLanguageProfile {
 impl From<LanguageProfile> for Language {
     /// Projects the language family proven by a closed profile variant.
     fn from(profile: LanguageProfile) -> Self {
-        match profile {
-            LanguageProfile::Rust(_) => Self::Rust,
-            LanguageProfile::TypeScript(_) => Self::TypeScript,
-            LanguageProfile::Python(_) => Self::Python,
-            LanguageProfile::Go(_) => Self::Go,
-            LanguageProfile::Java(_) => Self::Java,
-            LanguageProfile::CSharp(_) => Self::CSharp,
-            LanguageProfile::C(_) | LanguageProfile::Cxx(_) => Self::Clang,
-        }
+        profile.language()
     }
 }
 
 impl From<LanguageProfile> for [u8; 2] {
     /// Encodes a language profile as its stable recipe discriminants.
     fn from(profile: LanguageProfile) -> Self {
-        let language = u8::from(Language::from(profile));
+        let language = u8::from(profile.language());
         let profile = match profile {
             LanguageProfile::Rust(value) => value as u8,
             LanguageProfile::TypeScript(value) => value as u8,
@@ -198,6 +206,49 @@ impl TryFrom<[u8; 2]> for LanguageProfile {
             Err(_) => None,
         };
         profile.ok_or(UnknownLanguageProfile { code })
+    }
+}
+
+impl<'profile> TryFrom<&'profile str> for LanguageProfile {
+    type Error = &'profile str;
+
+    /// Parses the canonical transport spelling of one exact source profile.
+    fn try_from(value: &'profile str) -> Result<Self, Self::Error> {
+        match value {
+            "rust-2015" => Ok(Self::Rust(RustEdition::Rust2015)),
+            "rust-2018" => Ok(Self::Rust(RustEdition::Rust2018)),
+            "rust-2021" => Ok(Self::Rust(RustEdition::Rust2021)),
+            "rust-2024" => Ok(Self::Rust(RustEdition::Rust2024)),
+            "typescript" => Ok(Self::TypeScript(TypeScriptSource::TypeScript)),
+            "tsx" => Ok(Self::TypeScript(TypeScriptSource::Tsx)),
+            "python-3.10" => Ok(Self::Python(PythonVersion::Python310)),
+            "python-3.11" => Ok(Self::Python(PythonVersion::Python311)),
+            "python-3.12" => Ok(Self::Python(PythonVersion::Python312)),
+            "python-3.13" => Ok(Self::Python(PythonVersion::Python313)),
+            "python-3.14" => Ok(Self::Python(PythonVersion::Python314)),
+            "go-1.22" => Ok(Self::Go(GoVersion::Go122)),
+            "go-1.23" => Ok(Self::Go(GoVersion::Go123)),
+            "go-1.24" => Ok(Self::Go(GoVersion::Go124)),
+            "go-1.25" => Ok(Self::Go(GoVersion::Go125)),
+            "java-8" => Ok(Self::Java(JavaRelease::Java8)),
+            "java-11" => Ok(Self::Java(JavaRelease::Java11)),
+            "java-17" => Ok(Self::Java(JavaRelease::Java17)),
+            "java-21" => Ok(Self::Java(JavaRelease::Java21)),
+            "java-25" => Ok(Self::Java(JavaRelease::Java25)),
+            "csharp-10" => Ok(Self::CSharp(CSharpVersion::CSharp10)),
+            "csharp-11" => Ok(Self::CSharp(CSharpVersion::CSharp11)),
+            "csharp-12" => Ok(Self::CSharp(CSharpVersion::CSharp12)),
+            "csharp-13" => Ok(Self::CSharp(CSharpVersion::CSharp13)),
+            "csharp-14" => Ok(Self::CSharp(CSharpVersion::CSharp14)),
+            "c-11" => Ok(Self::C(CStandard::C11)),
+            "c-17" => Ok(Self::C(CStandard::C17)),
+            "c-23" => Ok(Self::C(CStandard::C23)),
+            "cxx-17" => Ok(Self::Cxx(CxxStandard::Cxx17)),
+            "cxx-20" => Ok(Self::Cxx(CxxStandard::Cxx20)),
+            "cxx-23" => Ok(Self::Cxx(CxxStandard::Cxx23)),
+            "cxx-26" => Ok(Self::Cxx(CxxStandard::Cxx26)),
+            _ => Err(value),
+        }
     }
 }
 
@@ -286,6 +337,8 @@ const fn decode_cxx(value: u8) -> Option<CxxStandard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CompileRecipeFact, NativeTool, Stage};
+    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
     const PROFILES: [LanguageProfile; 32] = [
         LanguageProfile::Rust(RustEdition::Rust2015),
@@ -340,5 +393,28 @@ mod tests {
                 Err(UnknownLanguageProfile { code })
             );
         }
+    }
+
+    #[test]
+    fn profile_semantics_are_part_of_recipe_identity() {
+        let source = ContentId::<SourceFactDomain>::from_canonical_bytes(b"profile-source");
+        let toolchain =
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"profile-toolchain");
+        let rust_2021 = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2021),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source,
+            toolchain,
+        );
+        let rust_2024 = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source,
+            toolchain,
+        );
+
+        assert_ne!(rust_2021.identity, rust_2024.identity);
     }
 }

@@ -7,7 +7,7 @@ use compiler_ir::{
     FragmentRangeVerifyError, FragmentView, PreparedFragment, PrimitiveType, SectionKind,
     SourceIdentity, TypeNode,
 };
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -58,7 +58,7 @@ fn fragment() -> Result<([u8; 256], usize), TestFailure> {
 
 fn recipe_fact(source: ContentId<SourceFactDomain>) -> CompileRecipeFact {
     CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source,

@@ -24,7 +24,7 @@ use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_hydration::{PlanScratch, Projection, demand, plan};
 use heart_identity::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, ObjectDomain, SourceFactDomain,
@@ -85,7 +85,7 @@ pub(crate) fn with_sealed_fixture(exercise: impl for<'fixture> FnOnce(&SealedFix
         byte_len: 24,
     };
     let recipe = CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source.identity,

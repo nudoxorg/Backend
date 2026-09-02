@@ -6,8 +6,8 @@
 use std::{io::ErrorKind, ops::Deref, time::Duration};
 
 use compiler_vocabulary::{
-    CompileRecipeFact, Language, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool,
-    Stage,
+    CompileRecipeFact, Language, LanguageProfile, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
+    NativeTool, Stage,
 };
 pub use compiler_vocabulary::{
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase,
@@ -73,8 +73,8 @@ pub struct PublicationAuthority {
 /// Borrowed semantic source-compilation request passed through the monomorphized local capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompilerRequest<'input> {
-    /// Closed compiler language admitted by the application vocabulary.
-    pub language: Language,
+    /// Closed source-language profile admitted by the application vocabulary.
+    pub profile: LanguageProfile,
     /// Closed compiler stage admitted by the application vocabulary.
     pub stage: Stage,
     /// Exact application-admitted source bytes to parse and lower.
@@ -125,7 +125,7 @@ impl CompilerCapability for UnavailableCompiler {
         request: CompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
         Err(CompilerTerminal::Unavailable {
-            language: request.language,
+            language: request.profile.language(),
             stage: request.stage,
         })
     }

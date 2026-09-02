@@ -7,7 +7,9 @@ use compiler_ir::{
     RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
 use compiler_ir::{AtomId, EntityId, TypeId};
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{
+    CompileRecipeFact, Language, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -47,7 +49,7 @@ fn source_identity() -> SourceIdentity {
 
 fn recipe_fact() -> CompileRecipeFact {
     CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source_identity().identity,

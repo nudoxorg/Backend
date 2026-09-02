@@ -16,7 +16,7 @@ use compiler_ir::{
     FragmentView, MappedFragment, MappedFragmentError, MappedFragmentIoPhase, PreparedFragment,
     PrimitiveType, SourceIdentity, TypeNode, open_fragment_mmap,
 };
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -86,7 +86,7 @@ fn fragment() -> Result<([u8; 256], usize, FragmentRangeManifest), TestFailure> 
         })?,
     };
     let recipe = CompileRecipeFact::derive(
-        Language::Rust,
+        LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
         NativeTool::Rustc,
         source.identity,

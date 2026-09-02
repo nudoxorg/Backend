@@ -7,7 +7,7 @@ use compiler_ir::{
     ItemKind, PayloadHash, PreparedFragment, StableEntityId, TreeItemInput, TypeNode, Visibility,
 };
 use compiler_registry::{AdapterRoute, FullRegistry};
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{Language, LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 
 use crate::{lower::declaration, native::parse_with_native_tool};
@@ -131,11 +131,12 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<Lowered<'source>, CompileFailure<'diagnostic>> {
     let source = source_identity(request.source)?;
+    let language = Language::from(request.profile);
     let route = FullRegistry
-        .route(request.language, request.stage)
+        .route(language, request.stage)
         .map_err(|cause| CompileFailure::UnsupportedStage {
             source_identity: source,
-            language: request.language,
+            language,
             stage: request.stage,
             cause,
         })?;
@@ -146,7 +147,7 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             {
                 return Err(CompileFailure::ToolchainSelectionMismatch {
                     source_identity: source,
-                    language: request.language,
+                    language,
                     stage: request.stage,
                     selected: tool,
                     provided: request.toolchain.fact(),
@@ -154,7 +155,7 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             }
             return Err(CompileFailure::ToolingUnavailable {
                 source_identity: source,
-                language: request.language,
+                language,
                 stage: request.stage,
                 tool,
             });
@@ -165,7 +166,7 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         ToolchainSelection::ExplicitlyUnavailable { .. } => {
             return Err(CompileFailure::ToolchainSelectionMismatch {
                 source_identity: source,
-                language: request.language,
+                language,
                 stage: request.stage,
                 selected,
                 provided: request.toolchain.fact(),
@@ -175,21 +176,21 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     if selected != resolved.tool {
         return Err(CompileFailure::ToolchainMismatch {
             source_identity: source,
-            language: request.language,
+            language,
             stage: request.stage,
             selected,
             resolved: resolved.tool,
         });
     }
-    let recipe = recipe_fact(request.language, request.stage, resolved, source);
+    let recipe = recipe_fact(request.profile, request.stage, resolved, source);
     let native_recipe = NativeRecipe {
-        language: request.language,
+        profile: request.profile,
         stage: request.stage,
         source: request.source,
         toolchain: resolved,
     };
     parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
-    let declaration = declaration(request.language, request.source).map_err(|cause| {
+    let declaration = declaration(language, request.source).map_err(|cause| {
         CompileFailure::LoweringUnsupported {
             source_identity: source,
             recipe,
@@ -234,13 +235,13 @@ fn source_identity<'diagnostic>(
 }
 
 fn recipe_fact(
-    language: Language,
+    profile: LanguageProfile,
     stage: Stage,
     toolchain: ResolvedToolchain<'_>,
     source: SourceIdentity,
 ) -> CompileRecipeFact {
     CompileRecipeFact::derive(
-        language,
+        profile,
         stage,
         toolchain.tool,
         source.identity,

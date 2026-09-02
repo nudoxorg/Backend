@@ -9,7 +9,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     ToolchainSelection, compile,
 };
-use compiler_vocabulary::{Language, Stage as CompileStage};
+use compiler_vocabulary::{LanguageProfile, RustEdition, Stage as CompileStage};
 
 use crate::{
     BenchmarkError,
@@ -40,7 +40,7 @@ pub(crate) fn compile_corpus(
             })?;
         let compiled = compile(
             CompileRequest {
-                language: Language::Rust,
+                profile: LanguageProfile::Rust(RustEdition::Rust2024),
                 stage: CompileStage::LowerIr,
                 source: corpus.source(index)?,
                 toolchain: ToolchainSelection::ResolvedNative(*toolchain),

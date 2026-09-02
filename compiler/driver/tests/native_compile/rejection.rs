@@ -77,11 +77,11 @@ fn native_rejection_retains_recipe_source_and_bounded_diagnostic() -> Result<(),
                 diagnostic,
                 ..
             }) => {
-                if recipe.language != language {
+                if Language::from(recipe.profile) != language {
                     return Err(TestFailure::RecipeLanguage {
                         tool,
                         expected: language,
-                        actual: recipe.language,
+                        actual: Language::from(recipe.profile),
                     });
                 }
                 if recipe.stage != Stage::LowerIr {

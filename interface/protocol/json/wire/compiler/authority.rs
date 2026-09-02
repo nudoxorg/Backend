@@ -11,7 +11,7 @@ use interface_core::{GenerationAuthority, PublicationAuthority, SourceAuthority}
 use serde::Serialize;
 
 use super::super::scalar::{
-    LanguageWire, NativeToolWire, StageWire, serialize_artifact, serialize_content,
+    LanguageProfileWire, NativeToolWire, StageWire, serialize_artifact, serialize_content,
 };
 
 /// Remote serde definition for the source authority retained by generated results and terminals.
@@ -29,8 +29,8 @@ pub(crate) struct SourceAuthorityWire {
 pub(crate) struct CompileRecipeWire {
     #[serde(serialize_with = "serialize_content")]
     identity: heart_identity::ContentId<CompileRecipeDomain>,
-    #[serde(with = "LanguageWire")]
-    language: compiler_vocabulary::Language,
+    #[serde(with = "LanguageProfileWire")]
+    profile: compiler_vocabulary::LanguageProfile,
     #[serde(with = "StageWire")]
     stage: compiler_vocabulary::Stage,
     #[serde(with = "NativeToolWire")]

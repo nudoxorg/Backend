@@ -287,7 +287,7 @@ const fn python_template(ordinal: usize) -> SourceTemplate {
 const fn go_template(ordinal: usize) -> SourceTemplate {
     let variant = variant(ordinal);
     SourceTemplate {
-        lead: b"package fixture\n",
+        lead: b"package fixture\nconst ",
         outer_prefix: b"",
         symbol_prefix: b"package_",
         value_prefix: match variant {

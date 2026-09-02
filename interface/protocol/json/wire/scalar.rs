@@ -22,6 +22,103 @@ pub(super) enum LanguageWire {
 }
 
 #[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::LanguageProfile",
+    rename_all = "snake_case"
+)]
+pub(super) enum LanguageProfileWire {
+    Rust(#[serde(with = "RustEditionWire")] compiler_vocabulary::RustEdition),
+    TypeScript(#[serde(with = "TypeScriptSourceWire")] compiler_vocabulary::TypeScriptSource),
+    Python(#[serde(with = "PythonVersionWire")] compiler_vocabulary::PythonVersion),
+    Go(#[serde(with = "GoVersionWire")] compiler_vocabulary::GoVersion),
+    Java(#[serde(with = "JavaReleaseWire")] compiler_vocabulary::JavaRelease),
+    CSharp(#[serde(with = "CSharpVersionWire")] compiler_vocabulary::CSharpVersion),
+    C(#[serde(with = "CStandardWire")] compiler_vocabulary::CStandard),
+    Cxx(#[serde(with = "CxxStandardWire")] compiler_vocabulary::CxxStandard),
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::RustEdition", rename_all = "snake_case")]
+pub(super) enum RustEditionWire {
+    Rust2015,
+    Rust2018,
+    Rust2021,
+    Rust2024,
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::TypeScriptSource",
+    rename_all = "snake_case"
+)]
+pub(super) enum TypeScriptSourceWire {
+    TypeScript,
+    Tsx,
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::PythonVersion",
+    rename_all = "snake_case"
+)]
+pub(super) enum PythonVersionWire {
+    Python310,
+    Python311,
+    Python312,
+    Python313,
+    Python314,
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::GoVersion", rename_all = "snake_case")]
+pub(super) enum GoVersionWire {
+    Go122,
+    Go123,
+    Go124,
+    Go125,
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::JavaRelease", rename_all = "snake_case")]
+pub(super) enum JavaReleaseWire {
+    Java8,
+    Java11,
+    Java17,
+    Java21,
+    Java25,
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::CSharpVersion",
+    rename_all = "snake_case"
+)]
+pub(super) enum CSharpVersionWire {
+    CSharp10,
+    CSharp11,
+    CSharp12,
+    CSharp13,
+    CSharp14,
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::CStandard", rename_all = "snake_case")]
+pub(super) enum CStandardWire {
+    C11,
+    C17,
+    C23,
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::CxxStandard", rename_all = "snake_case")]
+pub(super) enum CxxStandardWire {
+    Cxx17,
+    Cxx20,
+    Cxx23,
+    Cxx26,
+}
+
+#[derive(Serialize)]
 #[serde(remote = "compiler_vocabulary::Stage")]
 pub(super) enum StageWire {
     #[serde(rename = "parse")]

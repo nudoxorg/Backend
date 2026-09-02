@@ -24,7 +24,7 @@ use compiler_publication::{
     PublishControl, PublishedCompilation, binding::COMPILATION_BINDING_BYTES, open_published,
     publish_compiled,
 };
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use server_journal::{
     DurablePublisher, PublicationLimitError, PublicationLimits, PublicationOpenError,
     PublicationPaths, ShutdownError,
@@ -222,7 +222,7 @@ fn request<'source, 'toolchain, 'cancel>(
     cancelled: &'cancel AtomicBool,
 ) -> CompileRequest<'source, 'toolchain, 'cancel> {
     CompileRequest {
-        language: Language::Rust,
+        profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source,
         toolchain: ToolchainSelection::ResolvedNative(toolchain),

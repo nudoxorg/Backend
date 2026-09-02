@@ -3,6 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, process::Command};
 
+use compiler_vocabulary::CSharpVersion;
+
 use crate::{
     native::{
         frontend::NativeFrontend,
@@ -39,7 +41,13 @@ const NO_FEED_NUGET_CONFIG: &[u8] = br#"<?xml version="1.0" encoding="utf-8"?>
 pub(super) struct CSharpFrontend;
 
 impl NativeFrontend for CSharpFrontend {
-    fn prepare(native_work: &Path, source: &[u8]) -> Result<(), NativeWorkError> {
+    type Profile = CSharpVersion;
+
+    fn prepare(
+        _profile: Self::Profile,
+        native_work: &Path,
+        source: &[u8],
+    ) -> Result<(), NativeWorkError> {
         let work = native_work.join(WORK_DIRECTORY);
         create_artifact_directory(&work, NativeArtifactRole::CSharpWork)?;
         write_artifact(
@@ -59,7 +67,11 @@ impl NativeFrontend for CSharpFrontend {
         )
     }
 
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
         command
             .args([
@@ -72,6 +84,7 @@ impl NativeFrontend for CSharpFrontend {
                 "--artifacts-path",
                 BUILD_DIRECTORY,
             ])
+            .arg(format!("-p:LangVersion={}", language_version(profile)))
             .current_dir(native_work.join(WORK_DIRECTORY))
             .env_clear()
             .env(
@@ -98,5 +111,15 @@ impl NativeFrontend for CSharpFrontend {
             native_work.join(WORK_DIRECTORY),
             NativeArtifactRole::CSharpWork,
         )
+    }
+}
+
+const fn language_version(profile: CSharpVersion) -> &'static str {
+    match profile {
+        CSharpVersion::CSharp10 => "10.0",
+        CSharpVersion::CSharp11 => "11.0",
+        CSharpVersion::CSharp12 => "12.0",
+        CSharpVersion::CSharp13 => "13.0",
+        CSharpVersion::CSharp14 => "14.0",
     }
 }

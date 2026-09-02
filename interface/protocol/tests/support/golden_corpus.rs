@@ -8,7 +8,7 @@
 //! service reply, a CLI line, and an MCP `structuredContent` value all have to agree on the same
 //! closed vocabulary.
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use interface_core::{
     ApplicationDisposition, ApplicationInput, ApplicationOutcome, ApplicationReply,
     ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain, CapabilityHealth,
@@ -225,7 +225,7 @@ pub(crate) fn command_arguments() -> [Vec<String>; 4] {
     let snapshot_text = snapshot.to_string();
     let bundle_text = bundle.to_string();
     [
-        ["generate", "101", "rust", "lower-ir", "fn corpus() {}"]
+        ["generate", "101", "rust-2024", "lower-ir", "fn corpus() {}"]
             .into_iter()
             .map(str::to_owned)
             .collect(),
@@ -263,7 +263,12 @@ pub(crate) fn inputs() -> Result<GoldenInputs, GoldenError> {
         snapshot,
     };
     Ok(GoldenInputs {
-        generate: generate(101, Language::Rust, Stage::LowerIr, "fn corpus() {}")?,
+        generate: generate(
+            101,
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            "fn corpus() {}",
+        )?,
         health: ApplicationInput::Health {
             correlation: CorrelationId(102),
         },
@@ -356,14 +361,14 @@ fn text(value: &str) -> Result<InputText, InputTextError> {
 
 fn generate(
     correlation: u64,
-    language: Language,
+    profile: LanguageProfile,
     stage: Stage,
     source: &str,
 ) -> Result<ApplicationInput, RejectedSourceText> {
     Ok(ApplicationInput::Generate(GenerateRequest {
         target: GenerateTarget {
             correlation: CorrelationId(correlation),
-            language,
+            profile,
             stage,
         },
         source: SourceText::try_from(source.to_owned())?,

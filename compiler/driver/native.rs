@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Caller-authorized native parsing, owned work artifacts, and bounded child terminals.
 
-use compiler_vocabulary::NativeTool;
+use compiler_vocabulary::LanguageProfile;
 
 use crate::types::{
     CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeRecipe, SourceIdentity,
@@ -26,39 +26,70 @@ pub(crate) fn parse_with_native_tool<'source, 'toolchain, 'cancel, 'diagnostic, 
     scratch: CompileScratch<'diagnostic, 'work>,
     control: CompileControl<'cancel>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
-    match recipe.toolchain.tool {
-        NativeTool::Rustc => {
-            frontend::drive::<frontend::RustFrontend>(recipe, source, recipe_fact, scratch, control)
-        }
-        NativeTool::Clang => frontend::drive::<frontend::ClangFrontend>(
+    match recipe.profile {
+        LanguageProfile::Rust(profile) => frontend::drive::<frontend::RustFrontend>(
+            profile,
             recipe,
             source,
             recipe_fact,
             scratch,
             control,
         ),
-        NativeTool::Python => frontend::drive::<frontend::PythonFrontend>(
+        LanguageProfile::C(profile) => frontend::drive::<frontend::ClangFrontend>(
+            frontend::ClangProfile::C(profile),
             recipe,
             source,
             recipe_fact,
             scratch,
             control,
         ),
-        NativeTool::TypeScriptCompiler => frontend::drive::<typescript::TypeScriptFrontend>(
+        LanguageProfile::Cxx(profile) => frontend::drive::<frontend::ClangFrontend>(
+            frontend::ClangProfile::Cxx(profile),
             recipe,
             source,
             recipe_fact,
             scratch,
             control,
         ),
-        NativeTool::CSharpCompiler => {
-            frontend::drive::<csharp::CSharpFrontend>(recipe, source, recipe_fact, scratch, control)
-        }
-        NativeTool::GoCompiler => {
-            frontend::drive::<go::GoFrontend>(recipe, source, recipe_fact, scratch, control)
-        }
-        NativeTool::JavaCompiler => {
-            frontend::drive::<java::JavaFrontend>(recipe, source, recipe_fact, scratch, control)
-        }
+        LanguageProfile::Python(profile) => frontend::drive::<frontend::PythonFrontend>(
+            profile,
+            recipe,
+            source,
+            recipe_fact,
+            scratch,
+            control,
+        ),
+        LanguageProfile::TypeScript(profile) => frontend::drive::<typescript::TypeScriptFrontend>(
+            profile,
+            recipe,
+            source,
+            recipe_fact,
+            scratch,
+            control,
+        ),
+        LanguageProfile::CSharp(profile) => frontend::drive::<csharp::CSharpFrontend>(
+            profile,
+            recipe,
+            source,
+            recipe_fact,
+            scratch,
+            control,
+        ),
+        LanguageProfile::Go(profile) => frontend::drive::<go::GoFrontend>(
+            profile,
+            recipe,
+            source,
+            recipe_fact,
+            scratch,
+            control,
+        ),
+        LanguageProfile::Java(profile) => frontend::drive::<java::JavaFrontend>(
+            profile,
+            recipe,
+            source,
+            recipe_fact,
+            scratch,
+            control,
+        ),
     }
 }

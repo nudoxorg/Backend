@@ -268,7 +268,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let recipe = decode_recipe_fact(&envelope[recipe_fact.range()])
         .map_err(|fault| FragmentError::RecipeFact { fault })?;
     let expected_recipe = compiler_vocabulary::CompileRecipeFact::derive(
-        recipe.language,
+        recipe.profile,
         recipe.stage,
         recipe.tool,
         source.identity,

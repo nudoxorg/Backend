@@ -23,10 +23,8 @@ pub enum SourceIdentityFault {
 
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum RecipeFactFault {
-    #[error("recipe reserved byte is nonzero: {actual}")]
-    Reserved { actual: u8 },
-    #[error("recipe language tag {actual} is unknown")]
-    Language { actual: u8 },
+    #[error("recipe language profile {actual:?} is unknown")]
+    Profile { actual: [u8; 2] },
     #[error("recipe stage tag {actual} is unknown")]
     Stage { actual: u8 },
     #[error("recipe tool tag {actual} is unknown")]

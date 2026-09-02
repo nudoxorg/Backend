@@ -102,14 +102,14 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let deadline = self.config.control.deadline().map_err(|timeout| {
             CompilerTerminal::DeadlineConstruction {
                 source,
-                language: request.language,
+                language: request.profile.language(),
                 stage: request.stage,
                 timeout: *timeout,
             }
         })?;
         compile_ir(
             CompileRequest {
-                language: request.language,
+                profile: request.profile,
                 stage: request.stage,
                 source: request.source.as_bytes(),
                 toolchain,
@@ -141,14 +141,14 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         let deadline = self.config.control.deadline().map_err(|timeout| {
             CompilerTerminal::DeadlineConstruction {
                 source,
-                language: request.language,
+                language: request.profile.language(),
                 stage: request.stage,
                 timeout: *timeout,
             }
         })?;
         let compiled = compile(
             CompileRequest {
-                language: request.language,
+                profile: request.profile,
                 stage: request.stage,
                 source: request.source.as_bytes(),
                 toolchain,
@@ -193,7 +193,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<ToolchainSelection<'path>, ToolchainRouteError> {
         let route = FullRegistry
-            .route(request.language, request.stage)
+            .route(request.profile.language(), request.stage)
             .map_err(|_| ToolchainRouteError::UnsupportedStage)?;
         select_toolchain(self.config.toolchains, route)
     }
@@ -287,19 +287,19 @@ const fn toolchain_terminal(
     match cause {
         ToolchainRouteError::UnsupportedStage => CompilerTerminal::UnsupportedStage {
             source,
-            language: request.language,
+            language: request.profile.language(),
             stage: request.stage,
         },
         ToolchainRouteError::Missing { selected } => CompilerTerminal::Toolchain {
             source,
-            language: request.language,
+            language: request.profile.language(),
             stage: request.stage,
             selected,
             configured: None,
         },
         ToolchainRouteError::ToolingUnavailable { tool } => CompilerTerminal::ToolingUnavailable {
             source,
-            language: request.language,
+            language: request.profile.language(),
             stage: request.stage,
             tool,
         },

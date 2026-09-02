@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
+use compiler_vocabulary::{
+    CompileRecipeFact, Language, LanguageProfile, NativeTool, RustEdition, Stage,
+};
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
     DependencySetDomain, IrFragmentDomain, IrFragmentEncoding, IrManifestDomain,
@@ -60,7 +62,7 @@ fn generated_artifact() -> GeneratedArtifact {
             byte_len: 11,
         },
         recipe: CompileRecipeFact::derive(
-            Language::Rust,
+            LanguageProfile::Rust(RustEdition::Rust2024),
             Stage::LowerIr,
             NativeTool::Rustc,
             source_identity,
@@ -154,9 +156,9 @@ fn generated_reply_is_byte_for_byte_the_same_cli_body_and_mcp_structured_content
         });
     }
     expect_projection(
-        "generated recipe language",
-        &cli["body"]["artifact"]["recipe"]["language"],
-        Value::from("rust"),
+        "generated recipe profile",
+        &cli["body"]["artifact"]["recipe"]["profile"],
+        serde_json::json!({ "rust": "rust2024" }),
     )?;
     expect_projection(
         "generated recipe stage",

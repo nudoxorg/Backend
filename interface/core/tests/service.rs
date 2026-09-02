@@ -12,7 +12,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use heart_observe::{DropNewest, FlightRecorder, Probe};
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
@@ -30,14 +30,14 @@ fn text(value: &str) -> Result<InputText, InputTextError> {
 
 fn generate(
     correlation: u64,
-    language: Language,
+    profile: LanguageProfile,
     stage: Stage,
     source: &str,
 ) -> Result<ApplicationInput, RejectedSourceText> {
     Ok(ApplicationInput::Generate(GenerateRequest {
         target: GenerateTarget {
             correlation: CorrelationId(correlation),
-            language,
+            profile,
             stage,
         },
         source: SourceText::try_from(source.to_owned())?,
@@ -178,7 +178,12 @@ fn acquire_and_complete(
 fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_rejections()
 -> Result<(), ServiceTestError> {
     let mut service = ApplicationService::new();
-    let accepted_input = generate(11, Language::Rust, Stage::LowerIr, "fn first() {}")?;
+    let accepted_input = generate(
+        11,
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        Stage::LowerIr,
+        "fn first() {}",
+    )?;
     let accepted = service.execute(&accepted_input);
     assert_eq!(
         accepted.outcome,
@@ -187,7 +192,12 @@ fn unavailable_compiler_specialization_never_claims_generated_output_and_keeps_r
         })
     );
 
-    let rejected_input = generate(12, Language::Rust, Stage::Parse, "const second = true;")?;
+    let rejected_input = generate(
+        12,
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        Stage::Parse,
+        "const second = true;",
+    )?;
     let rejected = service.execute(&rejected_input);
     assert!(matches!(
         rejected.outcome,

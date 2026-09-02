@@ -324,8 +324,8 @@ pub enum LoweringUnsupported {
 pub struct CompileRecipeFact {
     /// Central typed identity over language, stage, source fact, and resolved toolchain fact.
     pub identity: ContentId<CompileRecipeDomain>,
-    /// Closed language family bound into `identity`.
-    pub language: Language,
+    /// Closed source-language profile bound into `identity`.
+    pub profile: LanguageProfile,
     /// Closed semantic stage bound into `identity`.
     pub stage: Stage,
     /// Concrete tool family bound into `identity`.
@@ -338,21 +338,21 @@ impl CompileRecipeFact {
     /// Derives the only canonical recipe identity from all semantic recipe authorities.
     #[must_use]
     pub fn derive(
-        language: Language,
+        profile: LanguageProfile,
         stage: Stage,
         tool: NativeTool,
         source: ContentId<SourceFactDomain>,
         toolchain: ContentId<ToolchainDomain>,
     ) -> Self {
-        let mut canonical = [0; 67];
-        canonical[0] = u8::from(language);
-        canonical[1] = u8::from(stage);
-        canonical[2] = u8::from(tool);
-        canonical[3..35].copy_from_slice(source.as_ref());
-        canonical[35..67].copy_from_slice(toolchain.as_ref());
+        let mut canonical = [0; 68];
+        canonical[..2].copy_from_slice(&<[u8; 2]>::from(profile));
+        canonical[2] = u8::from(stage);
+        canonical[3] = u8::from(tool);
+        canonical[4..36].copy_from_slice(source.as_ref());
+        canonical[36..68].copy_from_slice(toolchain.as_ref());
         Self {
             identity: ContentId::<CompileRecipeDomain>::from_canonical_bytes(&canonical),
-            language,
+            profile,
             stage,
             tool,
             toolchain,

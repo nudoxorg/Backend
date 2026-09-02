@@ -3,6 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{path::Path, process::Command};
 
+use compiler_vocabulary::JavaRelease;
+
 use crate::{
     lower::java_top_level_type_name,
     native::{
@@ -20,7 +22,13 @@ const WORK_DIRECTORY: &str = "java";
 pub(super) struct JavaFrontend;
 
 impl NativeFrontend for JavaFrontend {
-    fn prepare(native_work: &Path, source: &[u8]) -> Result<(), NativeWorkError> {
+    type Profile = JavaRelease;
+
+    fn prepare(
+        _profile: Self::Profile,
+        native_work: &Path,
+        source: &[u8],
+    ) -> Result<(), NativeWorkError> {
         let work = native_work.join(WORK_DIRECTORY);
         create_artifact_directory(&work, NativeArtifactRole::JavaWork)?;
         let source_file = source_file(source)?;
@@ -40,10 +48,20 @@ impl NativeFrontend for JavaFrontend {
         )
     }
 
-    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+    fn command(
+        profile: Self::Profile,
+        toolchain: ResolvedToolchain<'_>,
+        native_work: &Path,
+    ) -> Command {
         let mut command = Command::new(toolchain.executable());
         command
-            .args(["-proc:none", "-Xprint", "@compiler-probe.javac.args"])
+            .args([
+                "-proc:none",
+                "--release",
+                java_release(profile),
+                "-Xprint",
+                "@compiler-probe.javac.args",
+            ])
             .current_dir(native_work.join(WORK_DIRECTORY))
             // javac honors CLASSPATH/JAVA_TOOL_OPTIONS when inherited.  The caller-resolved
             // executable and the explicit no-processor mode are the complete authority here.
@@ -60,6 +78,16 @@ impl NativeFrontend for JavaFrontend {
             native_work.join(WORK_DIRECTORY),
             NativeArtifactRole::JavaWork,
         )
+    }
+}
+
+const fn java_release(profile: JavaRelease) -> &'static str {
+    match profile {
+        JavaRelease::Java8 => "8",
+        JavaRelease::Java11 => "11",
+        JavaRelease::Java17 => "17",
+        JavaRelease::Java21 => "21",
+        JavaRelease::Java25 => "25",
     }
 }
 

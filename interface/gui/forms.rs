@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed, bounded GPUI form state that constructs only typed application inputs.
 
-use compiler_vocabulary::{Language, Stage};
+use compiler_vocabulary::{LanguageProfile, Stage};
 use interface_core::{
     ApplicationInput, ContentId, CorrelationId, GenerateRequest, GenerateTarget,
     InconsistentRecovery, InputText, InputTextJoinError, OperationKey, Pin, ResourceBudget,
@@ -536,7 +536,7 @@ fn submit_generate(
     let source = source.ok_or(FormError::MissingText(FormField::Source))?;
     let target = GenerateTarget {
         correlation,
-        language: form_language(language)?,
+        profile: form_profile(language)?,
         stage: form_stage(stage)?,
     };
     let source = SourceText::try_from(String::from(&*source)).map_err(|rejected| {
@@ -551,17 +551,8 @@ fn submit_generate(
     }))
 }
 
-fn form_language(value: InputText) -> Result<Language, FormError> {
-    match &*value {
-        "rust" => Ok(Language::Rust),
-        "typescript" => Ok(Language::TypeScript),
-        "python" => Ok(Language::Python),
-        "go" => Ok(Language::Go),
-        "java" => Ok(Language::Java),
-        "csharp" => Ok(Language::CSharp),
-        "clang" => Ok(Language::Clang),
-        _ => Err(FormError::UnknownLanguage(value)),
-    }
+fn form_profile(value: InputText) -> Result<LanguageProfile, FormError> {
+    LanguageProfile::try_from(&*value).map_err(|_| FormError::UnknownLanguage(value))
 }
 
 fn form_stage(value: InputText) -> Result<Stage, FormError> {
