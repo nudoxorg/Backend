@@ -1,6 +1,3 @@
-//! Exercises the direct Clang frontend's semantic fact admission through its observable boundary.
-//! The cases prove declaration, type-use, reference, and documentation facts against real sources.
-//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::fs;
 
 use super::common::{Fixture, TestError, real_clang, require_linked_library, run_analysis};

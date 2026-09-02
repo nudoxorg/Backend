@@ -1,3 +1,6 @@
+//! Defines interning behavior for compiler-ir canonical data, whose purpose is to deduplicate products structurally.
+//! This module owns the open-addressed product interning.
+//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Open-addressed product interning.
 
 use core::cmp::Ordering;

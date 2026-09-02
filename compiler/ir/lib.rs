@@ -11,6 +11,7 @@ extern crate std;
 #[cfg(target_pointer_width = "16")]
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
+#[path = "canonical_data/canonicalize.rs"]
 mod canonical_data;
 #[cfg(feature = "mmap")]
 mod mapping;

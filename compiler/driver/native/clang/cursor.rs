@@ -9,8 +9,8 @@ use super::{
     error::ClangError,
     ffi,
     protocol::{
-        ClangReferenceKind, ClangSourceSpan, ClangTypeRecipe, ClangTypeUseKind,
-        ClangTypeUseResolution, FactId, FactRole, SemanticKind,
+        ClangReferenceKind, ClangSourceSpan, ClangTypeUseKind, ClangTypeUseResolution, FactId,
+        FactRole, SemanticKind,
     },
     traversal::{VisitIssue, VisitState},
 };
@@ -56,8 +56,7 @@ pub(crate) fn visit_one<'source, 'path, 'scratch, 'cancel>(
             let Some(name) = name_span(cursor) else {
                 return Ok(());
             };
-            let owner = owner_for(state, cursor)?
-                .unwrap_or_else(|| extent_span(state.source, cursor).unwrap_or(name));
+            let owner = owner_for(state, cursor)?.unwrap_or(name);
             emit_entity(
                 state,
                 cursor,
@@ -71,8 +70,7 @@ pub(crate) fn visit_one<'source, 'path, 'scratch, 'cancel>(
             let Some(name) = name_span(cursor) else {
                 return Ok(());
             };
-            let owner = owner_for(state, cursor)?
-                .unwrap_or_else(|| extent_span(state.source, cursor).unwrap_or(name));
+            let owner = owner_for(state, cursor)?.unwrap_or(name);
             emit_entity(
                 state,
                 cursor,
@@ -86,8 +84,7 @@ pub(crate) fn visit_one<'source, 'path, 'scratch, 'cancel>(
             let Some(name) = name_span(cursor) else {
                 return Ok(());
             };
-            let owner = owner_for(state, cursor)?
-                .unwrap_or_else(|| extent_span(state.source, cursor).unwrap_or(name));
+            let owner = owner_for(state, cursor)?.unwrap_or(name);
             let semantic_kind = if is_const_qualified(cursor) {
                 SemanticKind::Constant
             } else {
@@ -113,8 +110,7 @@ pub(crate) fn visit_one<'source, 'path, 'scratch, 'cancel>(
             let Some(name) = name_span(cursor) else {
                 return Ok(());
             };
-            let owner = owner_for(state, cursor)?
-                .unwrap_or_else(|| extent_span(state.source, cursor).unwrap_or(name));
+            let owner = owner_for(state, cursor)?.unwrap_or(name);
             emit_entity(state, cursor, SemanticKind::Variant, name, owner, None)?;
         }
         ffi::CX_CURSOR_TYPEDEF_DECL => {
@@ -269,7 +265,6 @@ fn emit_type_ref<'source, 'path, 'scratch, 'cancel>(
             target: target_span,
             identity,
         },
-        recipe: ClangTypeRecipe::None,
         span,
         owner,
     })
@@ -290,6 +285,10 @@ fn emit_builtin_type<'source, 'path, 'scratch, 'cancel>(
     };
     // SAFETY: the type belongs to the live translation unit.
     let canonical = unsafe { ffi::clang_get_canonical_type(type_) };
+    let canonical_kind = canonical.kind;
+    if !is_builtin(canonical_kind) {
+        return Ok(());
+    }
     // SAFETY: the type belongs to the live translation unit; the string is disposed on
     // every path below exactly once.
     let spelling = unsafe { ffi::clang_get_type_spelling(canonical) };
@@ -327,66 +326,9 @@ fn emit_builtin_type<'source, 'path, 'scratch, 'cancel>(
         name,
         kind,
         resolution: ClangTypeUseResolution::Builtin,
-        recipe: closed_type_recipe(canonical),
         span,
         owner,
     })
-}
-
-/// Classifies the exact canonical type into the closed declared-type recipe.
-/// Pointer-to-`char` objects carry the compact string recipe; plain `int`
-/// and `_Bool` objects carry the integer and boolean recipes; every other
-/// canonical type, including pointers to non-`char` targets, stays outside
-/// the compact recipe.
-fn closed_type_recipe(canonical: ffi::CxType) -> ClangTypeRecipe {
-    if let Some(pointee) = pointee_of(canonical) {
-        // SAFETY: the type belongs to the live translation unit; the string
-        // is disposed on every path below exactly once.
-        let spelling = unsafe { ffi::clang_get_type_spelling(pointee) };
-        let recipe = {
-            // SAFETY: the string is live for this borrow.
-            let pointer = unsafe { ffi::clang_get_c_string(spelling) };
-            let bytes = if pointer.is_null() {
-                &[][..]
-            } else {
-                // SAFETY: libclang returns a NUL-terminated string for a live handle.
-                unsafe { CStr::from_ptr(pointer) }.to_bytes()
-            };
-            let core = bytes.trim_ascii();
-            let core = core.strip_prefix(b"const ").unwrap_or(core);
-            match core.trim_ascii() {
-                b"char" => ClangTypeRecipe::String,
-                _ => ClangTypeRecipe::None,
-            }
-        };
-        // SAFETY: the string is live and is disposed exactly once here.
-        unsafe { ffi::clang_dispose_string(spelling) };
-        return recipe;
-    }
-    if !is_builtin(canonical.kind) {
-        return ClangTypeRecipe::None;
-    }
-    // SAFETY: the type belongs to the live translation unit; the string is
-    // disposed on every path below exactly once.
-    let spelling = unsafe { ffi::clang_get_type_spelling(canonical) };
-    let recipe = {
-        // SAFETY: the string is live for this borrow.
-        let pointer = unsafe { ffi::clang_get_c_string(spelling) };
-        let bytes = if pointer.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: libclang returns a NUL-terminated string for a live handle.
-            unsafe { CStr::from_ptr(pointer) }.to_bytes()
-        };
-        match bytes {
-            b"int" => ClangTypeRecipe::Integer,
-            b"_Bool" | b"bool" => ClangTypeRecipe::Bool,
-            _ => ClangTypeRecipe::None,
-        }
-    };
-    // SAFETY: the string is live and is disposed exactly once here.
-    unsafe { ffi::clang_dispose_string(spelling) };
-    recipe
 }
 
 /// Emits one reference fact resolved through the cursor authority.
@@ -492,31 +434,12 @@ fn type_use_context_kind(cursor: ffi::CxCursor) -> Option<ClangTypeUseKind> {
     }
 }
 
-/// Reports whether a cursor's assigned type is const-qualified. For pointer
-/// objects, the pointee's qualification decides: a `const char *` object is
-/// a constant string object, while the pointer itself stays mutable.
+/// Reports whether a cursor's assigned type is const-qualified.
 fn is_const_qualified(cursor: ffi::CxCursor) -> bool {
     // SAFETY: the cursor belongs to the live translation unit.
     let type_ = unsafe { ffi::clang_get_cursor_type(cursor) };
     // SAFETY: the type belongs to the live translation unit.
-    if unsafe { ffi::clang_is_const_qualified_type(type_) } != 0 {
-        return true;
-    }
-    match pointee_of(type_) {
-        Some(pointee) => {
-            // SAFETY: the type belongs to the live translation unit.
-            unsafe { ffi::clang_is_const_qualified_type(pointee) != 0 }
-        }
-        None => false,
-    }
-}
-
-/// The pointee of one type, or `None` when the type is not a pointer. The
-/// query answers through type sugar, so no canonicalization is required.
-fn pointee_of(type_: ffi::CxType) -> Option<ffi::CxType> {
-    // SAFETY: the type belongs to the live translation unit.
-    let pointee = unsafe { ffi::clang_get_pointee_type(type_) };
-    (pointee.kind != ffi::CX_TYPE_INVALID).then_some(pointee)
+    unsafe { ffi::clang_is_const_qualified_type(type_) != 0 }
 }
 
 /// Reports whether the canonical type kind is a builtin primitive.

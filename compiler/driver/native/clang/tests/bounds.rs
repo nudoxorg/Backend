@@ -1,6 +1,3 @@
-//! Exercises the direct Clang frontend's bounded-scratch contracts through its observable boundary.
-//! The cases target identity, token, and traversal capacity behavior.
-//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use super::common::{Fixture, TestError, real_clang, require_linked_library, run_analysis};
 use super::{ClangError, ClangSourceLanguage, MAX_ANALYSIS_SCRATCH_BYTES, SemanticKind};
 

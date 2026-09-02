@@ -135,23 +135,23 @@ impl<'bytes> TypeFactLane<'bytes> {
                     .record
                     .validate_child(position, child)
                     .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
-                if let TypeChildTarget::Type(reference) = child.target {
-                    if let compiler_ir_vocabulary::TypeRef::Local(target) = reference {
-                        if target.raw >= count {
-                            return Err(TypeFactFault::ChildTargetOutOfRange {
-                                ordinal,
-                                position,
-                                target: target.raw,
-                                record_count: count,
-                            });
-                        }
-                        if target.raw >= ordinal {
-                            return Err(TypeFactFault::ForwardReference {
-                                ordinal,
-                                position,
-                                target: target.raw,
-                            });
-                        }
+                if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
+                    child.target
+                {
+                    if target.raw >= count {
+                        return Err(TypeFactFault::ChildTargetOutOfRange {
+                            ordinal,
+                            position,
+                            target: target.raw,
+                            record_count: count,
+                        });
+                    }
+                    if target.raw >= ordinal {
+                        return Err(TypeFactFault::ForwardReference {
+                            ordinal,
+                            position,
+                            target: target.raw,
+                        });
                     }
                 }
             }
@@ -585,6 +585,10 @@ impl<'fragment> TypeFactCursor<'fragment> {
             remaining,
         }
     }
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the cursor API mirrors Iterator::next without claiming the Iterator surface; fragments lend one cursor per section"
+    )]
     pub fn next(&mut self) -> Option<Result<DecodedTypeFact<'fragment>, TypeFactFault>> {
         if self.remaining == 0 {
             return None;

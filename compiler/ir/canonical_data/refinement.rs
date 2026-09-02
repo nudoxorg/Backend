@@ -1,3 +1,6 @@
+//! Defines refinement behavior for compiler-ir canonical data, whose purpose is to prove structural product equality.
+//! This module owns the coinductive product refinement and structural key comparison.
+//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Coinductive product refinement and structural key comparison.
 
 use core::cmp::Ordering;

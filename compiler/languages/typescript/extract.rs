@@ -1,6 +1,3 @@
-//! Defines extract behavior for the TypeScript frontend, whose purpose is to lower parsed programs into owned facts.
-//! This module owns the OXC program lowering into declaration, signature, and semantic facts.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Lower the parsed OXC program into owned TypeScript facts.
 
 use crate::facts::{

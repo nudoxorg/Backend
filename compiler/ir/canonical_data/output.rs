@@ -1,3 +1,6 @@
+//! Defines output behavior for compiler-ir canonical data, whose purpose is to write canonical lanes exactly once.
+//! This module owns the canonical output extent calculation and lane writes.
+//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Canonical output extent calculation and lane writes.
 
 use super::{

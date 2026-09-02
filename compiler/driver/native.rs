@@ -5,12 +5,8 @@
 
 use compiler_vocabulary::NativeTool;
 
-use crate::{
-    lower,
-    types::{
-        CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeRecipe,
-        SourceIdentity,
-    },
+use crate::types::{
+    CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeRecipe, SourceIdentity,
 };
 
 mod child;
@@ -24,7 +20,7 @@ pub use clang::{
         reason = "unlinked builds keep the analysis surface compilable for its typed-unavailable terminal and proofs; the linked drive arm is its production caller"
     )
 )]
-pub(crate) mod clang;
+mod clang;
 mod csharp;
 mod diagnostic;
 mod frontend;
@@ -40,14 +36,13 @@ pub(crate) fn parse_with_native_tool<'source, 'toolchain, 'cancel, 'diagnostic, 
     recipe_fact: CompileRecipeFact,
     scratch: CompileScratch<'diagnostic, 'work>,
     control: CompileControl<'cancel>,
-    authority: &mut lower::Authority<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
     match recipe.toolchain.tool {
         NativeTool::Rustc => {
             frontend::drive::<frontend::RustFrontend>(recipe, source, recipe_fact, scratch, control)
         }
         NativeTool::Clang => {
-            frontend::ClangFrontend::drive(recipe, source, recipe_fact, scratch, control, authority)
+            frontend::ClangFrontend::drive(recipe, source, recipe_fact, scratch, control)
         }
         NativeTool::Python => frontend::drive::<frontend::PythonFrontend>(
             recipe,

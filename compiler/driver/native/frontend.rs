@@ -53,15 +53,14 @@ impl ClangFrontend {
     /// No process is launched: the declared executable stays a caller identity, the exact
     /// link-time libclang authority is the only semantic engine, and the caller-owned work
     /// directory is the only include root, so no ambient search path is consulted. The
-    /// typed facts the analysis produces stream into the caller's authority lanes and
-    /// become the multi-declaration emission seam's production input.
+    /// typed facts the analysis produces flow to the multi-declaration emission seam at
+    /// integration; until that seam lands, this terminal proves real semantic admission.
     pub(super) fn drive<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         recipe: NativeRecipe<'source, 'toolchain>,
         source: SourceIdentity,
         recipe_fact: CompileRecipeFact,
         scratch: CompileScratch<'diagnostic, 'work>,
         control: CompileControl<'cancel>,
-        authority: &mut crate::lower::Authority<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
         #[cfg(not(clang_native))]
         #[allow(
@@ -120,7 +119,7 @@ impl ClangFrontend {
                     identity: &mut identity_scratch,
                     facts: &mut fact_scratch,
                 },
-                |fact| authority.record(fact),
+                |_| {},
             )
             .map(|_report| ())
             .map_err(|error| match ClangFailure::from(error) {

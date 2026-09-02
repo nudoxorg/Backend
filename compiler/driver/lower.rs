@@ -8,14 +8,13 @@
 //! supply occurrence facts when the scanner retirement gate is closed.
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
-    EntityKind, EntityRecord, OccurrenceInput, PrepareError, PreparedFragment, PrimitiveType,
-    RecipeFact, SourceIdentity, TypeFactInput, TypeNode, WriteError, canonicalize_data_with_budget,
+    EntityKind, EntityRecord, PrepareError, PreparedFragment, PrimitiveType, RecipeFact,
+    SourceIdentity, TypeFactInput, TypeNode, WriteError, canonicalize_data_with_budget,
 };
 use compiler_ir_vocabulary::{
-    AtomId, Confidence, EntityId, ForeignKey, ForeignOrigin, ListSpan, Occurrence,
-    OccurrenceTarget, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
-    ProductId, ProductListId, ProductRef, ReferenceKind, SemanticAtom, SemanticProduct,
-    SemanticProductChild, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeId,
+    AtomId, ListSpan, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
+    ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild,
+    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeId,
 };
 use compiler_vocabulary::Language;
 
@@ -30,8 +29,6 @@ mod rust;
 mod scanner;
 mod typescript;
 
-pub(crate) use clang::{Authority, AuthoritySealFault};
-
 pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
     scanner::java_top_level_type_name(source)
 }
@@ -45,11 +42,6 @@ pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
 pub(super) const MAX_EMISSION_FACTS: usize = 128;
 /// Dense bound of one fact's ordered product children.
 pub(super) const MAX_FACT_CHILDREN: usize = 8;
-/// Dense bound of the authority occurrence lane.
-///
-/// One fragment admits at most this many reference facts; a source with
-/// more references is a typed lane rejection, never a truncated emission.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 512;
 
 /// Exact reason a recognized declaration form stayed outside this slice's
 /// provable emission set.
@@ -132,67 +124,6 @@ pub(super) enum FactType {
 pub(super) struct FactChild {
     role: ProductChildRole,
     target: u32,
-}
-
-/// One admitted reference fact of the authority occurrence lane.
-///
-/// `owner` is the owning entity's lane ordinal; the relative span is measured
-/// from that entity's declaration-extent start. The target is always a
-/// foreign key: the fragment's own identity does not exist before the write,
-/// so same-source targets carry their canonical authority coordinate until a
-/// loaded index resolves them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct EmissionOccurrence<'source> {
-    owner: u32,
-    key: ForeignKey<'source>,
-    kind: ReferenceKind,
-    confidence: Confidence,
-    span_start: u32,
-    span_end: u32,
-}
-
-impl EmissionOccurrence<'static> {
-    /// The zero-relative-span default lane cell.
-    const DEFAULT: Self = Self {
-        owner: 0,
-        key: ForeignKey {
-            origin: ForeignOrigin::Universe { ecosystem: "" },
-            path: "",
-            display: "",
-            kind: None,
-        },
-        kind: ReferenceKind::VariableUse,
-        confidence: Confidence::Syntactic,
-        span_start: 0,
-        span_end: 0,
-    };
-}
-
-/// One reference fact offered to the occurrence lane before admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct OccurrenceSlot<'source> {
-    pub(super) owner: u32,
-    pub(super) ecosystem: &'source str,
-    pub(super) path: &'source str,
-    pub(super) display: &'source str,
-    pub(super) target_kind: Option<EntityKind>,
-    pub(super) kind: ReferenceKind,
-    pub(super) confidence: Confidence,
-    pub(super) span_start: u32,
-    pub(super) span_end: u32,
-}
-
-/// Exact occurrence-lane rejection retaining the offending operands.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum OccurrenceFault {
-    /// The bounded occurrence lane already holds [`MAX_EMISSION_OCCURRENCES`] facts.
-    Capacity { limit: usize, observed: usize },
-    /// The owning entity ordinal names a row outside the already-pushed facts.
-    Owner { owner: u32, fact_count: usize },
-    /// The relative span is inverted.
-    Span { start: u32, end: u32 },
-    /// The foreign key rejected its canonical path.
-    Key(compiler_ir_vocabulary::ForeignKeyFault),
 }
 
 /// One provable declaration fact of the multi-declaration emission lane.
@@ -308,8 +239,6 @@ pub(super) struct FactSet<'source> {
     child_roles: [ProductChildRole; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
     child_targets: [u32; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
     child_counts: [u8; MAX_EMISSION_FACTS],
-    occurrence_len: usize,
-    occurrences: [EmissionOccurrence<'source>; MAX_EMISSION_OCCURRENCES],
 }
 
 impl<'source> FactSet<'source> {
@@ -329,8 +258,6 @@ impl<'source> FactSet<'source> {
             child_roles: [ProductChildRole::ProductMember; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
             child_targets: [0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
             child_counts: [0; MAX_EMISSION_FACTS],
-            occurrence_len: 0,
-            occurrences: [EmissionOccurrence::DEFAULT; MAX_EMISSION_OCCURRENCES],
         }
     }
 
@@ -422,64 +349,6 @@ impl<'source> FactSet<'source> {
         self.total_children = pooled_start + child_count as usize;
         self.len = fact_ordinal + 1;
         Ok(fact_ordinal)
-    }
-
-    /// Admits one reference fact after proving its owner ordinal against the
-    /// already-pushed entity prefix and its foreign key against the canonical
-    /// path law.
-    ///
-    /// A rejected occurrence leaves every lane byte-for-byte unchanged and
-    /// retains the exact typed cause.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the occurrence ordinal is admitted below MAX_EMISSION_OCCURRENCES before the single fixed-capacity slot write"
-    )]
-    pub(super) fn push_occurrence(
-        &mut self,
-        slot: OccurrenceSlot<'source>,
-    ) -> Result<usize, OccurrenceFault> {
-        if self.occurrence_len == MAX_EMISSION_OCCURRENCES {
-            return Err(OccurrenceFault::Capacity {
-                limit: MAX_EMISSION_OCCURRENCES,
-                observed: self.occurrence_len + 1,
-            });
-        }
-        #[expect(
-            clippy::as_conversions,
-            reason = "the entity ordinal is bounded by MAX_EMISSION_FACTS and widens totally to the native usize width"
-        )]
-        if slot.owner as usize >= self.len {
-            return Err(OccurrenceFault::Owner {
-                owner: slot.owner,
-                fact_count: self.len,
-            });
-        }
-        if slot.span_start > slot.span_end {
-            return Err(OccurrenceFault::Span {
-                start: slot.span_start,
-                end: slot.span_end,
-            });
-        }
-        let key = ForeignKey::new(
-            ForeignOrigin::Universe {
-                ecosystem: slot.ecosystem,
-            },
-            slot.path,
-            slot.display,
-            slot.target_kind,
-        )
-        .map_err(OccurrenceFault::Key)?;
-        let ordinal = self.occurrence_len;
-        self.occurrences[ordinal] = EmissionOccurrence {
-            owner: slot.owner,
-            key,
-            kind: slot.kind,
-            confidence: slot.confidence,
-            span_start: slot.span_start,
-            span_end: slot.span_end,
-        };
-        self.occurrence_len = ordinal + 1;
-        Ok(ordinal)
     }
 }
 
@@ -774,40 +643,6 @@ pub(super) fn admit<'source, 'output>(
         children: &[],
     };
 
-    // Occurrence lane: admitted reference facts whose owners name the
-    // entity prefix. Every slot was proven by push_occurrence (canonical
-    // key path, ordered relative span), so the trusted span constructor
-    // carries no new rejection class here.
-    let mut occurrence_inputs = [OccurrenceInput {
-        owner: EntityId::new(0),
-        occurrence: Occurrence {
-            target: OccurrenceTarget::Foreign(ForeignKey {
-                origin: ForeignOrigin::Universe { ecosystem: "" },
-                path: "",
-                display: "",
-                kind: None,
-            }),
-            kind: ReferenceKind::VariableUse,
-            confidence: Confidence::Syntactic,
-            span: compiler_ir_vocabulary::RelSpan::new_trusted(0, 0),
-        },
-    }; MAX_EMISSION_OCCURRENCES];
-    for (ordinal, slot) in facts.occurrences[..facts.occurrence_len].iter().enumerate() {
-        occurrence_inputs[ordinal] = OccurrenceInput {
-            owner: EntityId::new(slot.owner),
-            occurrence: Occurrence {
-                target: OccurrenceTarget::Foreign(slot.key),
-                kind: slot.kind,
-                confidence: slot.confidence,
-                span: compiler_ir_vocabulary::RelSpan::new_trusted(slot.span_start, slot.span_end),
-            },
-        };
-    }
-    let occurrence_lane = compiler_ir::OccurrenceLane {
-        inputs: &occurrence_inputs[..facts.occurrence_len],
-    };
-    let occurrences = (facts.occurrence_len > 0).then_some(&occurrence_lane);
-
     let prepared = PreparedFragment::prepare_with_type_facts(
         source,
         recipe,
@@ -815,7 +650,7 @@ pub(super) fn admit<'source, 'output>(
         node_prefix,
         &atoms[..fact_count],
         Some(&semantic),
-        occurrences,
+        None,
         &type_fact_lane,
     );
     write_prepared(prepared, output)

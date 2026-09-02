@@ -157,44 +157,6 @@ pub(crate) enum ClangTypeUseKind {
     Variable,
 }
 
-/// Closed declared-type recipe derived by the libclang authority from the
-/// exact canonical type spelling. The authority, never a source scanner,
-/// proves which declared types fall inside the compact primitive recipe.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ClangTypeRecipe {
-    /// The declared type stays outside the closed primitive recipe.
-    None,
-    /// Pointer-to-`char` object: the compact string recipe.
-    String,
-    /// `_Bool` object: the compact boolean recipe.
-    Bool,
-    /// `int` object: the compact integer recipe.
-    Integer,
-}
-
-impl ClangTypeRecipe {
-    /// Stable one-byte journal code.
-    pub(crate) fn code(self) -> u8 {
-        match self {
-            Self::None => 0,
-            Self::String => 1,
-            Self::Bool => 2,
-            Self::Integer => 3,
-        }
-    }
-
-    /// Decodes a journal recipe code.
-    pub(crate) fn from_code(code: u8) -> Option<Self> {
-        match code {
-            0 => Some(Self::None),
-            1 => Some(Self::String),
-            2 => Some(Self::Bool),
-            3 => Some(Self::Integer),
-            _ => None,
-        }
-    }
-}
-
 /// Closed resolution shape of one type use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClangTypeUseResolution {
@@ -227,7 +189,7 @@ pub(crate) enum ClangReferenceKind {
 /// Oracle confidence carried by references resolved by libclang.
 #[allow(
     dead_code,
-    reason = "the closed confidence vocabulary stays a protocol constant; the emission seam maps tiers inline today"
+    reason = "the occurrence emission seam consumes this closed confidence after journal commit"
 )]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Confidence {
@@ -236,6 +198,10 @@ pub(crate) enum Confidence {
 }
 
 /// Half-open byte span relative to an owning declaration's span start.
+#[allow(
+    dead_code,
+    reason = "the occurrence emission seam consumes relative spans after journal commit"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RelSpan {
     /// Relative first byte.
@@ -246,6 +212,10 @@ pub struct RelSpan {
 
 impl ClangSourceSpan {
     /// Converts an absolute source span to an owner-relative span without saturation.
+    #[allow(
+        dead_code,
+        reason = "the occurrence emission seam consumes relative spans after journal commit"
+    )]
     pub(crate) fn relative_to(self, owner: Self) -> Option<RelSpan> {
         (owner.start <= self.start && self.start <= self.end && self.end <= owner.end).then(|| {
             RelSpan {
@@ -369,9 +339,6 @@ pub(crate) struct TypeUseFact<'source> {
     pub(crate) kind: ClangTypeUseKind,
     /// Closed resolution shape carrying the resolved type's identity when declared.
     pub(crate) resolution: ClangTypeUseResolution,
-    /// Closed declared-type recipe the authority derived from the canonical
-    /// type spelling, when the declared type falls inside the compact recipe.
-    pub(crate) recipe: ClangTypeRecipe,
     /// Exact byte-unit use span.
     pub(crate) span: ClangSourceSpan,
     /// Exact byte-unit extent of the enclosing owner declaration.
@@ -399,7 +366,7 @@ impl<'source> ReferenceFact<'source> {
     /// Returns the oracle confidence of this libclang-resolved reference.
     #[allow(
         dead_code,
-        reason = "the closed confidence accessor stays a protocol surface; the emission seam maps tiers inline today"
+        reason = "the occurrence emission seam consumes confidence after journal commit"
     )]
     pub(crate) const fn confidence(self) -> Confidence {
         Confidence::Oracle
@@ -408,7 +375,7 @@ impl<'source> ReferenceFact<'source> {
     /// Returns the use-site extent relative to the owning declaration.
     #[allow(
         dead_code,
-        reason = "the relative-span accessor stays a protocol surface; the emission seam measures spans against the owning entity's extent"
+        reason = "the occurrence emission seam consumes relative spans after journal commit"
     )]
     pub(crate) fn relative_span(self) -> Option<RelSpan> {
         self.use_span.relative_to(self.owner)

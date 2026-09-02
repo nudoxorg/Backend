@@ -1,3 +1,6 @@
+//! Defines lane behavior for compiler-ir canonical data, whose purpose is to carry caller-owned semantic facts.
+//! This module owns the caller-owned semantic lanes and canonicalization resource facts.
+//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Caller-owned semantic lanes and canonicalization resource facts.
 
 use compiler_ir_vocabulary::{
