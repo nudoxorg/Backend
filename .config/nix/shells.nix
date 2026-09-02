@@ -9,14 +9,16 @@
 }:
 let
   common = {
-    CARGO_TARGET_DIR = "$PWD/.local/target";
-    CLIPPY_CONF_DIR = "$PWD/.config";
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     BACKEND_RUSTFMT = toolchains.rustfmt;
     LIBRARY_PATH = pkgs.lib.makeLibraryPath [
       pkgs.libiconv
       pkgs.zlib
     ];
+    shellHook = ''
+      export CARGO_TARGET_DIR="$PWD/.local/target"
+      export CLIPPY_CONF_DIR="$PWD/.config"
+    '';
   };
   development = pkgs.mkShell (
     common

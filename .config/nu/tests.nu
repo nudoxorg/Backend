@@ -156,6 +156,12 @@ assert ($direnv_entrypoint | str contains "direnv_layout_dir()") "direnv must ov
 assert ($direnv_entrypoint | str contains '$PWD/.local/direnv') "direnv state must live beneath .local"
 assert (not ($direnv_entrypoint | str contains '$PWD/.direnv')) "direnv must never recreate a top-level cache"
 
+let shell_declaration = open --raw ($config | path join "nix/shells.nix")
+assert (not ($shell_declaration | str contains 'CARGO_TARGET_DIR = "$PWD')) "Nix attributes must not freeze a literal $PWD into Cargo paths"
+assert (not ($shell_declaration | str contains 'CLIPPY_CONF_DIR = "$PWD')) "Nix attributes must not freeze a literal $PWD into Clippy paths"
+assert ($shell_declaration | str contains 'export CARGO_TARGET_DIR="$PWD/.local/target"') "the shell hook must resolve Cargo state against the entered repository"
+assert ($shell_declaration | str contains 'export CLIPPY_CONF_DIR="$PWD/.config"') "the shell hook must resolve Clippy configuration against the entered repository"
+
 let nextest = $control.testing.nextest
 let groups = $nextest.test-groups | columns
 assert equal ($groups | sort) (
