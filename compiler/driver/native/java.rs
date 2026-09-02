@@ -6,16 +6,15 @@ use std::{path::Path, process::Command};
 use compiler_vocabulary::JavaRelease;
 
 use crate::{
-    lower::java_top_level_type_name,
     native::{
         frontend::NativeFrontend,
         work::{create_artifact_directory, remove_directory_if_present, write_artifact},
     },
-    types::{InvalidUtf8Fact, NativeArtifactRole, NativeWorkError, ResolvedToolchain},
+    types::{NativeArtifactRole, NativeWorkError, ResolvedToolchain},
 };
 
 const ARGUMENTS_FILE: &str = "compiler-probe.javac.args";
-const FALLBACK_SOURCE_STEM: &str = "CompilerProbe";
+const SOURCE_FILE: &str = "CompilerProbe.java";
 const WORK_DIRECTORY: &str = "java";
 
 /// Native Java compiler admission over one caller-owned source path.
@@ -31,10 +30,10 @@ impl NativeFrontend for JavaFrontend {
     ) -> Result<(), NativeWorkError> {
         let work = native_work.join(WORK_DIRECTORY);
         create_artifact_directory(&work, NativeArtifactRole::JavaWork)?;
-        let source_file = source_file(source)?;
+        let source_file = source_file();
         // javac has no source-stdin mode. The argument file keeps the selected public type's
         // exact source filename out of the command shell.
-        let mut argument_bytes = source_file.clone();
+        let mut argument_bytes = String::from(source_file);
         argument_bytes.push('\n');
         write_artifact(
             &work.join(ARGUMENTS_FILE),
@@ -91,24 +90,10 @@ const fn java_release(profile: JavaRelease) -> &'static str {
     }
 }
 
-/// Finds the first top-level Java type name so public classes can retain javac's filename rule.
-/// The shared lowerer scanner ignores comments, literals, and nested braces; malformed source
-/// still reaches javac and returns its bounded native diagnostic.
-fn source_file(source: &[u8]) -> Result<String, NativeWorkError> {
-    let stem = match java_top_level_type_name(source) {
-        Some(name) => {
-            core::str::from_utf8(name).map_err(|cause| NativeWorkError::ArtifactText {
-                artifact: NativeArtifactRole::JavaSource,
-                fact: InvalidUtf8Fact {
-                    valid_up_to: cause.valid_up_to(),
-                    error_len: cause.error_len(),
-                },
-            })?
-        }
-        None => FALLBACK_SOURCE_STEM,
-    };
-    let mut source_file = String::with_capacity(stem.len() + ".java".len());
-    source_file.push_str(stem);
-    source_file.push_str(".java");
-    Ok(source_file)
+/// Returns the fixed filename for single-buffer Java parser admission.
+///
+/// Semantic Java admission requires a caller-selected project/image authority;
+/// this parser input must not derive a public type name from source text.
+fn source_file() -> &'static str {
+    SOURCE_FILE
 }

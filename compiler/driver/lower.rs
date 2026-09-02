@@ -3,9 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //!
 //! Occurrence admission is deliberately deferred to the integration phase and
-//! remains owned by `compiler/ir/semantic_facts.rs`. These interim scanner
-//! collectors emit declaration facts and type facts only; real frontends will
-//! supply occurrence facts when the scanner retirement gate is closed.
+//! remains owned by compiler/ir/semantic_facts.rs. Direct authorities emit
+//! declaration facts into this one canonical lane; unsupported authorities
+//! return typed terminals instead of inspecting source text here.
+use crate::types::LoweringUnsupported;
 use compiler_ir::{
     AtomId, BuiltinType, ConcreteType, EntityVersion, Ir, IrBuilder, ItemKind, ListSpan,
     PayloadHash, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
@@ -18,22 +19,11 @@ use compiler_ir::{
     EntityKind, EntityRecord, PrepareError, PreparedFragment, PrimitiveType, RecipeFact,
     SourceIdentity, TypeFactInput, TypeNode, WriteError, canonicalize_data_with_budget,
 };
-use compiler_vocabulary::Language;
-
-use crate::types::LoweringUnsupported;
 
 pub(crate) mod clang;
-mod csharp;
-mod go;
-mod java;
 pub(crate) mod python;
 pub(crate) mod rust;
-mod scanner;
 pub(crate) mod typescript;
-
-pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
-    scanner::java_top_level_type_name(source)
-}
 
 /// Dense bound of the multi-declaration semantic emission lane.
 ///
@@ -45,67 +35,6 @@ pub(super) const MAX_EMISSION_FACTS: usize = 128;
 /// Dense bound of one fact's ordered product children.
 pub(super) const MAX_FACT_CHILDREN: usize = 8;
 
-/// Exact reason a recognized declaration form stayed outside this slice's
-/// provable emission set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum UnsupportedReason {
-    /// The declaration's value type is proven but outside the closed
-    /// primitive recipe, so the compact fact would guess.
-    ClosedValueType,
-    /// The declaration form needs the real language frontend's binding
-    /// authority before any compact fact would be honest.
-    NeedsFrontend,
-}
-
-/// One recognized declaration that this slice provably cannot lower,
-/// retaining its exact source name and the exact reason.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct UnsupportedDeclaration<'source> {
-    pub(super) name: &'source [u8],
-    pub(super) reason: UnsupportedReason,
-}
-
-/// Caller-owned bounded lane of unsupported declarations.
-pub(super) struct UnsupportedLane<'source> {
-    len: usize,
-    overflowed: bool,
-    names: [&'source [u8]; MAX_EMISSION_FACTS],
-    reasons: [UnsupportedReason; MAX_EMISSION_FACTS],
-}
-
-impl<'source> UnsupportedLane<'source> {
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "the initializer literals fill every fixed lane element exactly; no dynamic index exists at construction"
-    )]
-    pub(super) const fn new() -> Self {
-        Self {
-            len: 0,
-            overflowed: false,
-            names: [&[]; MAX_EMISSION_FACTS],
-            reasons: [UnsupportedReason::NeedsFrontend; MAX_EMISSION_FACTS],
-        }
-    }
-
-    /// Records one unsupported declaration. A full lane keeps the first
-    /// [`MAX_EMISSION_FACTS`] records; overflow is impossible before the fact
-    /// lane rejects the same source.
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "the record ordinal is admitted below MAX_EMISSION_FACTS before the fixed slot writes"
-    )]
-    pub(super) fn record(&mut self, declaration: UnsupportedDeclaration<'source>) {
-        let ordinal = self.len;
-        if ordinal == MAX_EMISSION_FACTS {
-            self.overflowed = true;
-            return;
-        }
-        self.names[ordinal] = declaration.name;
-        self.reasons[ordinal] = declaration.reason;
-        self.len = ordinal + 1;
-    }
-}
-
 /// Closed declared-type fact for one emission lane row.
 ///
 /// `Primitive` commits the exact closed primitive spelled at the declaration.
@@ -116,6 +45,10 @@ impl<'source> UnsupportedLane<'source> {
 /// primitive the source did not spell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FactType {
+    #[allow(
+        dead_code,
+        reason = "the canonical primitive encoder remains covered by lower-owned admission tests while authority extensions are wired"
+    )]
     Primitive(PrimitiveType),
     Opaque,
 }
@@ -232,7 +165,6 @@ pub(super) struct RejectedFact<'source> {
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
 pub(super) struct FactSet<'source> {
     len: usize,
-    overflowed: bool,
     total_children: usize,
     kinds: [EntityKind; MAX_EMISSION_FACTS],
     names: [&'source [u8]; MAX_EMISSION_FACTS],
@@ -247,7 +179,6 @@ impl<'source> FactSet<'source> {
     pub(super) const fn new() -> Self {
         Self {
             len: 0,
-            overflowed: false,
             total_children: 0,
             kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
             names: [&[]; MAX_EMISSION_FACTS],
@@ -262,10 +193,6 @@ impl<'source> FactSet<'source> {
     /// Number of admitted facts.
     pub(super) const fn len(&self) -> usize {
         self.len
-    }
-
-    pub(super) const fn overflowed(&self) -> bool {
-        self.overflowed
     }
 
     /// Returns one authority-admitted declaration kind by its validated lane ordinal.
@@ -545,10 +472,7 @@ pub(super) fn push_fact<'source>(
 ) -> Result<usize, LoweringUnsupported> {
     match facts.push(fact) {
         Ok(ordinal) => Ok(ordinal),
-        Err(_) => {
-            facts.overflowed = true;
-            Err(LoweringUnsupported::NoSupportedDeclaration)
-        }
+        Err(_) => Err(LoweringUnsupported::NoSupportedDeclaration),
     }
 }
 
@@ -784,44 +708,6 @@ fn write_prepared<'output>(
 ) -> Result<&'output [u8], AdmissionFault> {
     let prepared = prepared.map_err(AdmissionFault::Prepare)?;
     prepared.write_into(output).map_err(AdmissionFault::Write)
-}
-
-/// Lowers one source into the multi-declaration emission lane through the
-/// per-language structural collectors.
-///
-/// Each collector emits every provable declaration fact and records every
-/// recognized form it provably cannot lower. A source with no provable facts
-/// keeps the exact closed no-declaration terminal.
-pub(super) fn emit<'source>(
-    language: Language,
-    source: &'source [u8],
-    facts: &mut FactSet<'source>,
-    unsupported: &mut UnsupportedLane<'source>,
-) -> Result<(), LoweringUnsupported> {
-    match language {
-        // Rust requires a caller-selected Cargo graph for rust-analyzer HIR;
-        // callers use the direct Rust collector before this erased route.
-        Language::Rust => return Err(LoweringUnsupported::RustFunction),
-        // Python requires its exact versioned Ruff AST authority; callers use
-        // `python::collect` before this profile-erasing route.
-        Language::Python => return Err(LoweringUnsupported::PythonAssignmentName),
-        // C and C++ require their exact closed profile and direct libclang
-        // authority; callers use `clang::collect` before this erased route.
-        Language::Clang => return Err(LoweringUnsupported::ClangDeclarationForm),
-        // TypeScript requires its exact closed source profile for grammar selection;
-        // callers use `typescript::collect` directly rather than profile-erasing dispatch.
-        Language::TypeScript => return Err(LoweringUnsupported::TypeScriptDeclarationForm),
-        Language::CSharp => csharp::collect(source, facts, unsupported)?,
-        Language::Go => go::collect(source, facts, unsupported)?,
-        Language::Java => java::collect(source, facts, unsupported)?,
-    }
-    if facts.overflowed() || unsupported.overflowed {
-        return Err(LoweringUnsupported::NoSupportedDeclaration);
-    }
-    if facts.len() == 0 {
-        return Err(LoweringUnsupported::NoSupportedDeclaration);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

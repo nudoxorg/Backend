@@ -12,7 +12,5 @@ mod lowering;
 mod matrix;
 #[path = "native_compile/rejection.rs"]
 mod rejection;
-#[path = "native_compile/scanner.rs"]
-mod scanner;
 #[path = "native_compile/support.rs"]
 mod support;
