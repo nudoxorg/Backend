@@ -12,17 +12,11 @@ mod native;
 mod types;
 
 pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
-pub use native::typescript::coords::{
-    AuthorityOrigin, SourceSpan, SourceSpanError, Utf8Span, Utf16Offset, utf16_span_to_utf8,
-};
-pub use native::{
-    ClangDiagnostic, ClangDiagnosticSeverity, ClangFailure, ClangPhase, ClangSourceSpan,
-};
 pub use types::{
     CompileControl, CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest,
-    CompileScratch, CompiledFragment, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
+    CompileScratch, CompiledFragment, CompiledIr, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
     NativeDiagnostic, NativeTool, NativeWorkError, NativeWorkPrimary, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, ResolvedToolchain,
     ResolvedToolchainView, SourceIdentity, ToolchainResolutionError, ToolchainSelection,
-    ToolchainSelectionFact, compile,
+    ToolchainSelectionFact, compile, compile_ir,
 };

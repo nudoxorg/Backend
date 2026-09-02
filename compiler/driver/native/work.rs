@@ -132,10 +132,10 @@ pub(super) fn compound_native_work_cleanup<'diagnostic>(
         | CompileFailure::NativeWorkCleanup { .. }
         | CompileFailure::ToolingUnavailable { .. }
         | CompileFailure::LoweringUnsupported { .. }
+        | CompileFailure::Build { .. }
         | CompileFailure::Prepare { .. }
         | CompileFailure::Write { .. }
-        | CompileFailure::Validate { .. }
-        | CompileFailure::ClangFrontend { .. } => return primary,
+        | CompileFailure::Validate { .. } => return primary,
     };
     CompileFailure::NativeWorkCleanup {
         source_identity: source,

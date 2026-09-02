@@ -14,7 +14,6 @@ compiler-publication = { path = "../../../compiler/publication" }
 heart-identity = { path = "../../../heart/identity" }
 server-index-core = { path = "../core" }
 compiler-ir = { path = "../../../compiler/ir" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 thiserror.workspace = true
 zerocopy.workspace = true
 

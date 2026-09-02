@@ -5,28 +5,34 @@
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 #[cfg(feature = "mmap")]
 extern crate std;
 
 #[cfg(target_pointer_width = "16")]
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
-#[path = "canonical_data/canonicalize.rs"]
-mod canonical_data;
+mod columnar;
+mod coordinate;
+mod interner;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
 mod prepared;
 mod range;
-mod semantic_facts;
-mod type_facts;
+mod render;
+mod semantic;
+mod vcs;
 mod view;
 mod wire;
 
-pub use canonical_data::{
-    CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
-    DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
-    canonicalize_data_with_budget,
+pub use coordinate::{
+    AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
+};
+pub use interner::{
+    ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
+    ListInterner, ListTable, ListTableView,
 };
 #[cfg(feature = "mmap")]
 pub use mapping::{
@@ -34,9 +40,9 @@ pub use mapping::{
     open_fragment_mmap,
 };
 pub use model::{
-    AtomFault, AtomInput, EntityFault, EntityKind, EntityKindCodeError, EntityNameFault,
-    EntityRecord, EntityRecordFault, EntityType, PrimitiveType, RecipeFact, RecipeFactFault,
-    SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
+    AtomFault, AtomInput, EntityFault, EntityKind, EntityNameFault, EntityRecord,
+    EntityRecordFault, EntityType, PrimitiveType, RecipeFact, RecipeFactFault, SourceIdentity,
+    SourceIdentityFault, TypeNode, TypeNodeFault,
 };
 pub use prepared::{LayoutStep, PrepareError, PreparedFragment, WriteError};
 pub use range::{
@@ -44,14 +50,29 @@ pub use range::{
     FragmentRangeRequest, FragmentRangeVerifyError, VerifiedFragmentRange,
     VerifiedFragmentRangeView,
 };
-pub use semantic_facts::{
-    DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
+pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
+pub use semantic::{
+    AtomListId, BorrowedTree, BuildError, BuiltinType, ComputedState, ComputedType, ComputedTypeId,
+    ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId, DocInput,
+    EntityColumns, EntityListId, EntityRange, EntityVersion, External, ExternalId, ExternalTarget,
+    FrontendTree, GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter, ItemKind, ItemView,
+    Link, LinkId, LinkIter, LinkKind, LinkSpace, LinkTarget, LiteralType, MappedModifier,
+    Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash, PropertyKey,
+    SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StableEntityId, StorageColumns,
+    TemplatePart, TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput,
+    TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns,
+    TypeExpr, TypeHeader, TypeListId, TypePairPayload, TypeParameter, TypeParameterListId,
+    TypeQuadPayload, TypeQuery, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload,
+    TypedTypeId, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
 };
-pub use type_facts::{DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane};
-pub use view::OccurrenceFault as OccurrenceViewFault;
+pub use vcs::{
+    Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
+    LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
+};
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,
-    SemanticDataFault, TypeNodeCursor, WireField,
+    TypeNodeCursor, WireField,
 };
 
-pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};
+pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
+pub const FRAGMENT_SCHEMA: u16 = 1;

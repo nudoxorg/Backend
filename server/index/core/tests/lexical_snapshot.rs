@@ -1,7 +1,7 @@
 //! Exercises the `server-index-core` tests lexical-snapshot contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation, LexicalOutputError,

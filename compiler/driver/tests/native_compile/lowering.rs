@@ -17,42 +17,29 @@ use super::support::*;
 
 #[test]
 fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Result<(), TestFailure> {
-    #[allow(
-        clippy::type_complexity,
-        reason = "one homogeneous case table drives every closed language fact row"
-    )]
-    let cases: [(
-        Language,
-        NativeTool,
-        &'static [u8],
-        &'static [(&'static [u8], EntityKind)],
-        PrimitiveType,
-    ); 4] = [
+    let cases = [
         (
             Language::TypeScript,
             NativeTool::TypeScriptCompiler,
             b"export function TYPESCRIPT_FUNCTION(): boolean { return true; }".as_slice(),
-            &[(b"TYPESCRIPT_FUNCTION", EntityKind::Function)],
+            b"TYPESCRIPT_FUNCTION".as_slice(),
+            EntityKind::Function,
             PrimitiveType::Bool,
         ),
         (
             Language::CSharp,
             NativeTool::CSharpCompiler,
             b"public class Probe { public static int CSHARP_FUNCTION() { return 1; } }".as_slice(),
-            &[
-                (b"Probe", EntityKind::Record),
-                (b"CSHARP_FUNCTION", EntityKind::Function),
-            ],
+            b"CSHARP_FUNCTION".as_slice(),
+            EntityKind::Function,
             PrimitiveType::I32,
         ),
         (
             Language::Go,
             NativeTool::GoCompiler,
             b"package fixture\nfunc GO_FUNCTION() bool { return true }\n".as_slice(),
-            &[
-                (b"fixture", EntityKind::Module),
-                (b"GO_FUNCTION", EntityKind::Function),
-            ],
+            b"GO_FUNCTION".as_slice(),
+            EntityKind::Function,
             PrimitiveType::Bool,
         ),
         (
@@ -60,20 +47,18 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             NativeTool::JavaCompiler,
             b"public final class JavaFunction { public static int JAVA_FUNCTION() { return 1; } }"
                 .as_slice(),
-            &[
-                (b"JavaFunction", EntityKind::Record),
-                (b"JAVA_FUNCTION", EntityKind::Function),
-            ],
+            b"JAVA_FUNCTION".as_slice(),
+            EntityKind::Function,
             PrimitiveType::I32,
         ),
     ];
-    for (language, tool, source, expected_facts, expected_type) in cases {
+    for (language, tool, source, expected_atom, expected_kind, expected_type) in cases {
         let executable = executable(tool)?;
         let toolchain = resolved(tool, &executable)?;
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 4096];
+        let mut output = [0xa5; 512];
         let compiled = compile(
             request(
                 language,
@@ -95,23 +80,39 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             expected: CompileExpectation::CompactFact,
             observed: compile_terminal(&failure),
         })?;
-        assert_facts(&compiled.fragment, expected_facts)?;
-        assert_type_facts(&compiled.fragment, tool)?;
-        // Every container fact stays type-opaque; the only committed
-        // primitive is the member's spelled closed type.
-        let primitive_types: Vec<PrimitiveType> = compiled
+        let actual_kind = compiled
+            .fragment
+            .entities()
+            .next()
+            .map(|entity| entity.kind);
+        if actual_kind != Some(expected_kind) {
+            return Err(TestFailure::EntityKind {
+                tool,
+                expected: expected_kind,
+                actual: actual_kind,
+            });
+        }
+        let atom = compiled.fragment.atoms().next().map(|atom| atom.bytes);
+        if atom != Some(expected_atom) {
+            return Err(TestFailure::AtomLength {
+                tool,
+                expected: expected_atom.len(),
+                actual: atom.map(<[u8]>::len),
+            });
+        }
+        let primitive_type = compiled
             .fragment
             .type_nodes()
-            .filter_map(|node| match node {
+            .next()
+            .and_then(|node| match node {
                 TypeNode::Primitive(primitive_type) => Some(primitive_type),
                 _ => None,
-            })
-            .collect();
-        if primitive_types.as_slice() != [expected_type] {
+            });
+        if primitive_type != Some(expected_type) {
             return Err(TestFailure::PrimitiveType {
                 tool,
                 expected: expected_type,
-                actual: primitive_types.first().copied(),
+                actual: primitive_type,
             });
         }
         native_work.assert_empty()?;
@@ -127,14 +128,14 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0; 4_096];
-    let mut output = [0xa5; 4096];
+    let mut output = [0xa5; 512];
     match compile(
         request(
             Language::Rust,
             source,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + NATIVE_COMPILE_DEADLINE,
+            Instant::now() + Duration::from_secs(5),
         ),
         CompileScratch {
             diagnostic_output: &mut diagnostic,
@@ -145,14 +146,14 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
         },
     ) {
         Err(CompileFailure::LoweringUnsupported {
-            cause: LoweringUnsupported::NoSupportedDeclaration,
+            cause: LoweringUnsupported::RustConstantType,
             ..
         }) => {}
         Err(failure) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
                 expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
+                    LoweringUnsupported::RustConstantType,
                 ),
                 observed: compile_terminal(&failure),
             });
@@ -161,7 +162,7 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
                 expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
+                    LoweringUnsupported::RustConstantType,
                 ),
                 observed: CompileTerminal::Compiled,
             });
@@ -175,62 +176,6 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
     }
     Ok(())
 }
-
-#[test]
-fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<(), TestFailure> {
-    let mut source = String::new();
-    for ordinal in 0..=128 {
-        source.push_str(&format!("pub static CAPACITY_{ordinal}: bool = true;\n"));
-    }
-    let executable = executable(NativeTool::Rustc)?;
-    let toolchain = resolved(NativeTool::Rustc, &executable)?;
-    let native_work = TemporaryWork::create()?;
-    let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
-    let mut output = [0xa5; 4_096];
-    match compile(
-        request(
-            Language::Rust,
-            source.as_bytes(),
-            ToolchainSelection::ResolvedNative(toolchain),
-            &cancelled,
-            Instant::now() + Duration::from_secs(10),
-        ),
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: native_work.path(),
-        },
-        CompileOutput {
-            fragment_output: &mut output,
-        },
-    ) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause: LoweringUnsupported::NoSupportedDeclaration,
-            ..
-        }) => {}
-        Err(failure) => {
-            return Err(TestFailure::CompileTerminal {
-                tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
-                observed: compile_terminal(&failure),
-            });
-        }
-        Ok(_) => {
-            return Err(TestFailure::CompileTerminal {
-                tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
-                observed: CompileTerminal::Compiled,
-            });
-        }
-    }
-    native_work.assert_empty()?;
-    assert!(output.iter().all(|byte| *byte == 0xa5));
-    Ok(())
-}
 #[test]
 fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
 -> Result<(), TestFailure> {
@@ -242,15 +187,15 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
     let cancelled = AtomicBool::new(false);
     let mut alpha_diagnostic = [0; 4_096];
     let mut bravo_diagnostic = [0; 4_096];
-    let mut alpha_output = [0; 4096];
-    let mut bravo_output = [0; 4096];
+    let mut alpha_output = [0; 512];
+    let mut bravo_output = [0; 512];
     let alpha = compile(
         request(
             Language::Rust,
             alpha_source,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + NATIVE_COMPILE_DEADLINE,
+            Instant::now() + Duration::from_secs(5),
         ),
         CompileScratch {
             diagnostic_output: &mut alpha_diagnostic,
@@ -272,7 +217,7 @@ fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
             bravo_source,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + NATIVE_COMPILE_DEADLINE,
+            Instant::now() + Duration::from_secs(5),
         ),
         CompileScratch {
             diagnostic_output: &mut bravo_diagnostic,

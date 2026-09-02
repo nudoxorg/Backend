@@ -8,11 +8,11 @@ mod request;
 mod terminal;
 mod toolchain;
 
-pub use compile::compile;
+pub use compile::{compile, compile_ir};
 pub(crate) use request::NativeRecipe;
 pub use request::{CompileControl, CompileRequest, CompileScratch};
 pub use terminal::{
-    CompileFailure, CompileOutput, CompiledFragment, NativeDiagnostic, NativeWorkError,
+    CompileFailure, CompileOutput, CompiledFragment, CompiledIr, NativeDiagnostic, NativeWorkError,
     NativeWorkPrimary,
 };
 pub use toolchain::{

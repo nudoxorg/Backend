@@ -1,7 +1,7 @@
 //! Defines view cursor behavior for `compiler-ir`, whose purpose is to encode, validate, map, and borrow canonical compiler IR fragments.
 //! This module owns the view cursor invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_ir_vocabulary::{AtomId, EntityId};
+use crate::{AtomId, EntityId};
 
 use crate::{
     EntityType, TypeNode,

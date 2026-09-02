@@ -23,6 +23,10 @@ pub(crate) enum CacheMode {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Stage {
     NativeCompileLowerIr,
+    SemanticIrBuild,
+    SemanticIrRender,
+    IrVcsDiff,
+    TrustfallIrQuery,
     DurableCompilerPublication,
     DeterministicIndexBuild,
     ExactCoreQuery,
@@ -30,6 +34,7 @@ pub(crate) enum Stage {
     TantivyLexicalQuery,
     VectorIngress,
     VectorExactQuery,
+    IrVectorExactQuery,
 }
 
 impl Stage {
@@ -38,6 +43,10 @@ impl Stage {
     pub(crate) const fn selector(self) -> &'static str {
         match self {
             Self::NativeCompileLowerIr => "native-compile-lower-ir",
+            Self::SemanticIrBuild => "semantic-ir-build",
+            Self::SemanticIrRender => "semantic-ir-render",
+            Self::IrVcsDiff => "ir-vcs-diff",
+            Self::TrustfallIrQuery => "trustfall-ir-query",
             Self::DeterministicIndexBuild => "deterministic-index-build",
             Self::DurableCompilerPublication => "durable-compiler-publication",
             Self::ExactCoreQuery => "exact-core-query",
@@ -45,6 +54,7 @@ impl Stage {
             Self::TantivyLexicalQuery => "tantivy-lexical-query",
             Self::VectorIngress => "vector-ingress",
             Self::VectorExactQuery => "vector-exact-query",
+            Self::IrVectorExactQuery => "ir-vector-exact-query",
         }
     }
 
@@ -53,13 +63,18 @@ impl Stage {
     pub(crate) const fn position(self) -> u8 {
         match self {
             Self::NativeCompileLowerIr => 0,
-            Self::DurableCompilerPublication => 1,
-            Self::DeterministicIndexBuild => 2,
-            Self::ExactCoreQuery => 3,
-            Self::TantivyLexicalBuild => 4,
-            Self::TantivyLexicalQuery => 5,
-            Self::VectorIngress => 6,
-            Self::VectorExactQuery => 7,
+            Self::SemanticIrBuild => 1,
+            Self::SemanticIrRender => 2,
+            Self::IrVcsDiff => 3,
+            Self::TrustfallIrQuery => 4,
+            Self::DurableCompilerPublication => 5,
+            Self::DeterministicIndexBuild => 6,
+            Self::ExactCoreQuery => 7,
+            Self::TantivyLexicalBuild => 8,
+            Self::TantivyLexicalQuery => 9,
+            Self::VectorIngress => 10,
+            Self::VectorExactQuery => 11,
+            Self::IrVectorExactQuery => 12,
         }
     }
 
@@ -67,6 +82,10 @@ impl Stage {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         [
             Self::NativeCompileLowerIr,
+            Self::SemanticIrBuild,
+            Self::SemanticIrRender,
+            Self::IrVcsDiff,
+            Self::TrustfallIrQuery,
             Self::DurableCompilerPublication,
             Self::DeterministicIndexBuild,
             Self::ExactCoreQuery,
@@ -74,6 +93,7 @@ impl Stage {
             Self::TantivyLexicalQuery,
             Self::VectorIngress,
             Self::VectorExactQuery,
+            Self::IrVectorExactQuery,
         ]
         .into_iter()
         .find(|stage| stage.selector() == value)
@@ -81,9 +101,13 @@ impl Stage {
 
     /// Enumerates every current local public-API stage.
     #[must_use]
-    pub(crate) const fn all() -> [Self; 8] {
+    pub(crate) const fn all() -> [Self; 13] {
         [
             Self::NativeCompileLowerIr,
+            Self::SemanticIrBuild,
+            Self::SemanticIrRender,
+            Self::IrVcsDiff,
+            Self::TrustfallIrQuery,
             Self::DurableCompilerPublication,
             Self::DeterministicIndexBuild,
             Self::ExactCoreQuery,
@@ -91,6 +115,7 @@ impl Stage {
             Self::TantivyLexicalQuery,
             Self::VectorIngress,
             Self::VectorExactQuery,
+            Self::IrVectorExactQuery,
         ]
     }
 }

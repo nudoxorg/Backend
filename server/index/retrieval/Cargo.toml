@@ -11,6 +11,7 @@ publish.workspace = true
 
 
 [dependencies]
+compiler-ir = { path = "../../../compiler/ir" }
 server-index-core = { path = "../core" }
 server-index-graph-vector = { path = "../graph-vector" }
 server-index-publish = { path = "../publish" }
@@ -18,7 +19,6 @@ server-index-qdrant = { path = "../qdrant" }
 server-index-tantivy = { path = "../tantivy" }
 server-index-trustfall = { path = "../trustfall" }
 server-index-vocabulary = { path = "../vocabulary" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -27,7 +27,6 @@ compiler-vocabulary = { path = "../../../compiler/vocabulary" }
 server-journal = { path = "../../journal" }
 heart-hydration = { path = "../../../heart/hydration" }
 heart-identity = { path = "../../../heart/identity" }
-compiler-ir = { path = "../../../compiler/ir" }
 heart-object = { path = "../../../heart/object" }
 heart-root = { path = "../../../heart/root" }
 heart-schema = { path = "../../../heart/schema" }

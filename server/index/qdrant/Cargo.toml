@@ -11,16 +11,17 @@ publish.workspace = true
 
 
 [dependencies]
+compiler-ir = { path = "../../../compiler/ir" }
 arrayvec = { workspace = true, features = ["serde"] }
 server-index-graph-vector = { path = "../graph-vector" }
 server-index-vocabulary = { path = "../vocabulary" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 flate2.workspace = true
 
 [lib]

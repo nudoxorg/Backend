@@ -58,12 +58,12 @@ in
       {
         name = "compiler-ir";
         description = "Semantic IR, archives, and publication";
-        patterns = [ "^/compiler/(ir|publication)/" ];
+        patterns = [ "^/compiler/(ir|ir-vocabulary|publication)/" ];
       }
       {
         name = "compiler-frontend";
         description = "Language frontends and native compiler authorities";
-        patterns = [ "^/compiler/(frontends|languages|native)/" ];
+        patterns = [ "^/compiler/(frontends|languages|native|driver|vocabulary|registry|application)/" ];
       }
       {
         name = "heart-memory";
@@ -103,7 +103,11 @@ in
       {
         name = "tooling-nix";
         description = "Nix flake, environments, and generated configuration";
-        patterns = [ "^/\\.config/(flake|nix|direnv)/" ];
+        patterns = [
+          "^/\\.config/(flake|nix|direnv)/"
+          "^/\\.config/nu/(core|scope|create|quality)/"
+          "^/\\.config/nu/(main|tests)\\.nu$"
+        ];
       }
       {
         name = "tooling-lint";
@@ -504,6 +508,7 @@ in
     terra-academic = {
       title = "Terra Academic Orchestrator";
       purpose = "Resolve architecture ahead of implementors and turn research into executable decisions.";
+      model = "glm-5.3-flash";
       firstTool = "inspect";
       terminalCommands = [
         "format-changed"
@@ -581,6 +586,7 @@ in
     terra-reviewer = {
       title = "Terra Reviewer and Verifier";
       purpose = "Independently reconstruct, falsify, simplify, and measure a concrete candidate.";
+      model = "glm-5.3-flash";
       firstTool = "inspect";
       terminalCommands = [
         "lint-semantic"
@@ -721,6 +727,16 @@ in
         "INTEGRATED"
         "RED"
       ];
+    };
+  };
+
+  # Declares the closed registry of model agents that may hold role custody.
+  # A role binds one registry entry; unbound roles stay human- or runner-driven.
+  models = {
+    "glm-5.3-flash" = {
+      provider = "zai";
+      model = "glm-5.3-flash";
+      purpose = "Fast GLM 5.3 agent for Terra orchestration and review custody.";
     };
   };
 

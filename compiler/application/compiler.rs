@@ -4,7 +4,8 @@
 //! One single-request local compiler specialization over explicit local ownership.
 
 use compiler_driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, ToolchainSelection, compile,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledIr, ToolchainSelection,
+    compile, compile_ir,
 };
 use compiler_publication::{
     PublicationScratch, PublishControl, PublishedCompilation, publish_compiled,
@@ -73,6 +74,56 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     /// Returns [`ShutdownError`] when the durable publisher cannot finish its owned shutdown.
     pub fn shutdown(self) -> Result<(), ShutdownError> {
         self.publisher.shutdown()
+    }
+
+    /// Compiles directly into the canonical in-memory IR used by renderers,
+    /// graph queries, index projections, and IR-VCS.
+    ///
+    /// Unlike [`CompilerCapability::generate`], this path does not create a
+    /// fragment byte stream or publish an artifact. The returned owner may be
+    /// borrowed by every downstream stage for its complete lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same closed application terminal as durable compilation
+    /// when routing, deadlines, native parsing, or semantic IR construction fail.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the application terminal deliberately retains exact native failure evidence"
+    )]
+    pub fn compile_semantic(
+        &mut self,
+        request: ApplicationCompilerRequest<'_>,
+    ) -> Result<CompiledIr, CompilerTerminal> {
+        let source = request_source(request).map_err(source_terminal)?;
+        let toolchain = self
+            .toolchain(request)
+            .map_err(|cause| toolchain_terminal(source, request, cause))?;
+        let deadline = self.config.control.deadline().map_err(|timeout| {
+            CompilerTerminal::DeadlineConstruction {
+                source,
+                language: request.language,
+                stage: request.stage,
+                timeout: *timeout,
+            }
+        })?;
+        compile_ir(
+            CompileRequest {
+                language: request.language,
+                stage: request.stage,
+                source: request.source.as_bytes(),
+                toolchain,
+                control: CompileControl {
+                    deadline,
+                    cancelled: self.config.control.cancelled,
+                },
+            },
+            CompileScratch {
+                diagnostic_output: &mut self.scratch.diagnostic_output,
+                native_work: self.config.native_work_directory,
+            },
+        )
+        .map_err(compile_terminal)
     }
 
     #[allow(

@@ -8,18 +8,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-build = "build.rs"
 
 [dependencies]
 compiler-vocabulary = { path = "../vocabulary" }
 compiler-registry = { path = "../registry" }
 compiler-ir = { path = "../ir" }
-compiler-ir-vocabulary = { path = "../ir-vocabulary" }
 heart-identity = { path = "../../heart/identity" }
 thiserror.workspace = true
-
-[dev-dependencies]
-trybuild.workspace = true
 
 [lib]
 path = "lib.rs"

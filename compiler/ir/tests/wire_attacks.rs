@@ -6,7 +6,7 @@ use compiler_ir::{
     EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType,
     RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
@@ -223,11 +223,11 @@ fn semantic_and_authority_mutations_fail_before_a_borrowed_view() -> Result<(), 
         })
     );
     bytes = golden;
-    bytes[ENTITY_RECORD + 8] = 13;
+    bytes[ENTITY_RECORD + 8] = 9;
     assert!(matches!(
         FragmentView::validate(&bytes),
         Err(FragmentError::EntityRecord {
-            fault: EntityRecordFault::Kind { actual: 13 },
+            fault: EntityRecordFault::Kind { actual: 9 },
             ..
         })
     ));

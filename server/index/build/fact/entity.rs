@@ -4,8 +4,8 @@
 use core::ops::Deref;
 
 use super::{ExactEntityKey, ExactEntityValue};
+use compiler_ir::EntityId;
 use compiler_ir::{EntityKind, TypeNode};
-use compiler_ir_vocabulary::EntityId;
 use server_index_core::EntityDocumentId;
 
 /// A nonforgeable semantic entity fact selected from one reopened compiler fragment.

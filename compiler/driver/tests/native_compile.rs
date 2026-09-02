@@ -6,8 +6,6 @@ mod authority;
 #[cfg(unix)]
 #[path = "native_compile/bounded_native.rs"]
 mod bounded_native;
-#[path = "native_compile/clang_direct.rs"]
-mod clang_direct;
 #[path = "native_compile/lowering.rs"]
 mod lowering;
 #[path = "native_compile/matrix.rs"]

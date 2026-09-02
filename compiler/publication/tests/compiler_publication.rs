@@ -9,11 +9,11 @@ use std::{
 };
 
 use compiler_driver::CompiledFragment;
+use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PreparedFragment,
     PrimitiveType, SourceIdentity, TypeNode,
 };
-use compiler_ir_vocabulary::{AtomId, TypeId};
 use compiler_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use compiler_publication::{
     OpenPublicationScratch, OpenedFragment, OpenedFragmentCursor, OpenedFragmentError,

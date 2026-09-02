@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use compiler_driver::{
@@ -130,18 +130,6 @@ pub(super) enum TestFailure {
         actual: Option<EntityKind>,
     },
     #[error(
-        "the adapter emitted {actual_count} entities, not the expected {expected_count}; the first differing entity row is {ordinal}"
-    )]
-    EntitySequence {
-        ordinal: usize,
-        expected_count: usize,
-        actual_count: usize,
-    },
-    #[error("the {tool:?} adapter emitted no decodable type-fact section")]
-    TypeFactsMissing { tool: NativeTool },
-    #[error("the {tool:?} adapter type-fact section failed to decode")]
-    TypeFactsUndecodable { tool: NativeTool },
-    #[error(
         "the locally reproducible {tool:?} adapter primitive type fact was {actual:?}, not {expected:?}"
     )]
     PrimitiveType {
@@ -173,16 +161,6 @@ pub(super) enum TestFailure {
     ResolutionUnexpectedlySucceeded,
     #[error("the rebound toolchain view was not exactly the caller-proven TypeScript authority")]
     ReboundToolchainMismatch,
-    #[error("the {tool:?} frontend compiled without its declared semantic authority")]
-    CompiledWithoutAuthority { tool: NativeTool },
-    /// The direct Clang rejection journeys run only on linked builds.
-    #[cfg(clang_native)]
-    #[error("the direct {tool:?} authority rejected the source with an unexpected severity")]
-    ClangRejectionSeverity { tool: NativeTool },
-    /// The direct Clang rejection journeys run only on linked builds.
-    #[cfg(clang_native)]
-    #[error("the direct {tool:?} authority rejected the source at an unexpected coordinate")]
-    ClangRejectionCoordinate { tool: NativeTool },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,8 +205,8 @@ pub(super) enum CompileTerminal {
     DeadlineExceeded,
     DiagnosticLimit,
     NativeRejected,
-    ClangFrontend,
     LoweringUnsupported(LoweringUnsupported),
+    Build,
     Prepare,
     Write,
     Validate,
@@ -259,11 +237,6 @@ pub(super) enum NativeWorkPrimaryTerminal {
 static WORK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub(super) const STABLE_TOOLCHAIN_ENV: &str = "COMPILER_STABLE_TOOLCHAIN";
 pub(super) const TYPESCRIPT_COMPILER_ENV: &str = "COMPILER_TYPESCRIPT_COMPILER";
-
-/// Bounded native-compile deadline for one isolated admission build. A cold,
-/// no-build-servers .NET SDK project build measures ~6 s on the reference
-/// host; the bound still catches runaway toolchains well below test timeouts.
-pub(super) const NATIVE_COMPILE_DEADLINE: Duration = Duration::from_secs(30);
 pub(super) const CSHARP_COMPILER_ENV: &str = "COMPILER_CSHARP_COMPILER";
 pub(super) const GO_COMPILER_ENV: &str = "COMPILER_GO_COMPILER";
 pub(super) const JAVA_COMPILER_ENV: &str = "COMPILER_JAVA_COMPILER";
@@ -391,61 +364,6 @@ pub(super) fn source_length(source: &[u8]) -> Result<u32, TestFailure> {
     })
 }
 
-/// Asserts the fragment's entity sequence is exactly `expected`: each row's
-/// entity kind and resolved name atom must match positionally, and no extra
-/// entity may exist.
-#[allow(
-    clippy::as_conversions,
-    reason = "FragmentView validation proved every atom coordinate fits the test address space before this usize projection"
-)]
-pub(super) fn assert_facts(
-    fragment: &compiler_ir::FragmentView<'_>,
-    expected: &[(&'static [u8], EntityKind)],
-) -> Result<(), TestFailure> {
-    let atoms: Vec<&[u8]> = fragment.atoms().map(|atom| atom.bytes).collect();
-    let entities: Vec<(usize, EntityKind)> = fragment
-        .entities()
-        .map(|entity| (entity.name.raw as usize, entity.kind))
-        .collect();
-    let ordinal =
-        entities
-            .iter()
-            .zip(expected)
-            .position(|((name, kind), (expected_name, expected_kind))| {
-                atoms[*name] != *expected_name || kind != expected_kind
-            });
-    if entities.len() != expected.len() {
-        return Err(TestFailure::EntitySequence {
-            ordinal: ordinal.unwrap_or(expected.len()),
-            expected_count: expected.len(),
-            actual_count: entities.len(),
-        });
-    }
-    if let Some(ordinal) = ordinal {
-        return Err(TestFailure::EntitySequence {
-            ordinal,
-            expected_count: expected.len(),
-            actual_count: entities.len(),
-        });
-    }
-    Ok(())
-}
-
-/// The interim driver seam must commit at least one type fact for every
-/// successful language lowering; this catches deletion of the emission block.
-pub(super) fn assert_type_facts(
-    fragment: &compiler_ir::FragmentView<'_>,
-    tool: NativeTool,
-) -> Result<(), TestFailure> {
-    let mut facts = fragment
-        .type_facts()
-        .ok_or(TestFailure::TypeFactsMissing { tool })?;
-    match facts.next() {
-        Some(Ok(_)) => Ok(()),
-        Some(Err(_)) | None => Err(TestFailure::TypeFactsUndecodable { tool }),
-    }
-}
-
 pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal {
     match failure {
         CompileFailure::SourceLength { .. } => CompileTerminal::SourceLength,
@@ -480,10 +398,10 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::DeadlineExceeded { .. } => CompileTerminal::DeadlineExceeded,
         CompileFailure::DiagnosticLimit { .. } => CompileTerminal::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminal::NativeRejected,
-        CompileFailure::ClangFrontend { .. } => CompileTerminal::ClangFrontend,
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
+        CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,
         CompileFailure::Validate { .. } => CompileTerminal::Validate,

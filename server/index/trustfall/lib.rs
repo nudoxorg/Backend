@@ -9,7 +9,8 @@ mod graph;
 mod schema;
 
 pub use graph::{
-    TrustfallArgumentDiagnostic, TrustfallGraph, TrustfallGraphError, TrustfallHit,
-    TrustfallOutputCause, TrustfallOutputField, TrustfallOutputNumber, TrustfallQueryDiagnostic,
-    TrustfallSchemaDiagnostic, TrustfallTerminal, TrustfallUpstreamDiagnostic,
+    IrTrustfallGraph, IrTrustfallHit, TrustfallArgumentDiagnostic, TrustfallGraph,
+    TrustfallGraphError, TrustfallHit, TrustfallOutputCause, TrustfallOutputField,
+    TrustfallOutputNumber, TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
+    TrustfallUpstreamDiagnostic,
 };

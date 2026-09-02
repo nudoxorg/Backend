@@ -2,11 +2,7 @@
 //! This module owns the native frontend invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::{ffi::OsString, path::Path, process::Command};
-#[cfg(clang_native)]
-use std::{sync::atomic::Ordering, time::Instant};
 
-#[cfg(clang_native)]
-use crate::types::NativeDiagnostic;
 use crate::types::{
     CompileControl, CompileFailure, CompileRecipeFact, CompileScratch, NativeArtifactRole,
     NativeRecipe, NativeWorkError, NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain,
@@ -15,7 +11,6 @@ use crate::types::{
 
 use super::{
     child::drive_child,
-    clang::ClangFailure,
     work::{
         cleanup_native_work, compound_native_work_cleanup, prepare_native_work,
         remove_file_if_present,
@@ -47,102 +42,6 @@ pub(super) struct RustFrontend;
 pub(super) struct ClangFrontend;
 pub(super) struct PythonFrontend;
 
-impl ClangFrontend {
-    /// Drives the direct libclang semantic authority over the exact caller source.
-    ///
-    /// No process is launched: the declared executable stays a caller identity, the exact
-    /// link-time libclang authority is the only semantic engine, and the caller-owned work
-    /// directory is the only include root, so no ambient search path is consulted. The
-    /// typed facts the analysis produces flow to the multi-declaration emission seam at
-    /// integration; until that seam lands, this terminal proves real semantic admission.
-    pub(super) fn drive<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
-        recipe: NativeRecipe<'source, 'toolchain>,
-        source: SourceIdentity,
-        recipe_fact: CompileRecipeFact,
-        scratch: CompileScratch<'diagnostic, 'work>,
-        control: CompileControl<'cancel>,
-    ) -> Result<(), CompileFailure<'diagnostic>> {
-        #[cfg(not(clang_native))]
-        #[allow(
-            unused_variables,
-            reason = "the unavailable terminal is selected before any analysis inputs can be consumed"
-        )]
-        {
-            // The link-time authority is a build fact, not a race with caller control
-            // state: an authority that cannot exist fails before observing cancellation.
-            Err(CompileFailure::ClangFrontend {
-                source_identity: source,
-                recipe: recipe_fact,
-                cause: ClangFailure::LibclangUnavailable,
-            })
-        }
-        #[cfg(clang_native)]
-        {
-            use super::clang::{
-                AnalysisInput, AnalysisScratch, ClangSourceLanguage, MAX_ANALYSIS_SCRATCH_BYTES,
-            };
-
-            let diagnostic = NativeDiagnostic {
-                bytes: &[],
-                observed: 0,
-                truncated: false,
-            };
-            if control.cancelled.load(Ordering::Acquire) {
-                return Err(CompileFailure::Cancelled {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    diagnostic,
-                });
-            }
-            if Instant::now() >= control.deadline {
-                return Err(CompileFailure::DeadlineExceeded {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    diagnostic,
-                });
-            }
-            // Exact-bound scratch for one analysis (the frozen interim resource ledger);
-            // becomes caller-provided when the emission seam lands.
-            let mut identity_scratch = vec![0_u8; MAX_ANALYSIS_SCRATCH_BYTES];
-            let mut fact_scratch = vec![0_u8; MAX_ANALYSIS_SCRATCH_BYTES];
-            super::clang::analyze(
-                AnalysisInput {
-                    include_root: scratch.native_work,
-                    source_name: Path::new("source.c"),
-                    source_language: ClangSourceLanguage::C,
-                    source: recipe.source,
-                },
-                None,
-                Some(control.cancelled),
-                Some(control.deadline),
-                AnalysisScratch {
-                    identity: &mut identity_scratch,
-                    facts: &mut fact_scratch,
-                },
-                |_| {},
-            )
-            .map(|_report| ())
-            .map_err(|error| match ClangFailure::from(error) {
-                ClangFailure::Cancelled { .. } => CompileFailure::Cancelled {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    diagnostic,
-                },
-                ClangFailure::DeadlineExceeded { .. } => CompileFailure::DeadlineExceeded {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    diagnostic,
-                },
-                cause => CompileFailure::ClangFrontend {
-                    source_identity: source,
-                    recipe: recipe_fact,
-                    cause,
-                },
-            })
-        }
-    }
-}
-
 impl NativeFrontend for RustFrontend {
     fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
         let mut command = Command::new(toolchain.executable());
@@ -162,6 +61,16 @@ impl NativeFrontend for RustFrontend {
             native_work.join(RUST_METADATA_FILE),
             NativeArtifactRole::RustMetadata,
         )
+    }
+}
+
+impl NativeFrontend for ClangFrontend {
+    fn command(toolchain: ResolvedToolchain<'_>, native_work: &Path) -> Command {
+        let mut command = Command::new(toolchain.executable());
+        command
+            .args(["-x", "c", "-fsyntax-only", "-w", "-"])
+            .current_dir(native_work);
+        command
     }
 }
 

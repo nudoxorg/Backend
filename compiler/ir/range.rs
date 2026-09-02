@@ -105,7 +105,7 @@ impl FragmentRangeManifest {
                 observed: request.fragment_length,
             });
         }
-        let expected = self.range(request.section)?;
+        let expected = self.range(request.section);
         if request.offset != expected.offset {
             return Err(FragmentRangeVerifyError::Offset {
                 section: request.section,
@@ -184,25 +184,15 @@ impl FragmentRangeManifest {
         validate_fragment_layout(fragment).map_err(FragmentRangeVerifyError::Fragment)
     }
 
-    fn range(&self, section: SectionKind) -> Result<FragmentRange, FragmentRangeVerifyError> {
-        let index = match section {
-            SectionKind::EntityTypes => 0,
-            SectionKind::TypeNodes => 1,
-            SectionKind::AtomRecords => 2,
-            SectionKind::AtomBytes => 3,
-            SectionKind::SourceIdentity => 4,
-            SectionKind::RecipeFact => 5,
-            // The range manifest commits required semantic lanes only; the
-            // optional semantic-data and occurrence sections have no
-            // manifest row.
-            SectionKind::SemanticData | SectionKind::Occurrences => {
-                return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
-            }
-            SectionKind::TypeFacts => {
-                return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
-            }
-        };
-        Ok(self.ranges[index])
+    fn range(&self, section: SectionKind) -> FragmentRange {
+        match section {
+            SectionKind::EntityTypes => self.ranges[0],
+            SectionKind::TypeNodes => self.ranges[1],
+            SectionKind::AtomRecords => self.ranges[2],
+            SectionKind::AtomBytes => self.ranges[3],
+            SectionKind::SourceIdentity => self.ranges[4],
+            SectionKind::RecipeFact => self.ranges[5],
+        }
     }
 }
 
@@ -305,12 +295,6 @@ pub enum FragmentRangeVerifyError {
     /// Complete bytes satisfy the artifact commitment but violate the IR grammar.
     #[error("committed fragment grammar is invalid")]
     Fragment(#[source] FragmentError),
-    /// The request names an optional section that this manifest does not commit.
-    #[error("range manifest does not commit optional section {section:?}")]
-    SectionNotCommitted {
-        /// Requested section without a manifest commitment.
-        section: SectionKind,
-    },
     /// Response offset differs from its section commitment.
     #[error("range response section {section:?} starts at {observed}, expected {expected}")]
     Offset {
@@ -383,7 +367,7 @@ fn range_identity(
 
 #[cfg(test)]
 mod tests {
-    use compiler_ir_vocabulary::{AtomId, TypeId};
+    use crate::{AtomId, TypeId};
     use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;

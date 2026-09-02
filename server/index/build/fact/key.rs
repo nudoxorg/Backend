@@ -41,7 +41,7 @@ impl Deref for ExactEntityKey {
 #[cfg(test)]
 mod tests {
     use super::ExactEntityKey;
-    use compiler_ir_vocabulary::EntityId;
+    use compiler_ir::EntityId;
     use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
     use server_index_core::{EntityDocumentId, MAX_EXACT_ROWS};
     use thiserror::Error;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Object Hydration Scope"
+  short_description: "Root, storage, locality, and hydration scope"
+  default_prompt: "Use $build-object-hydration with the shared reviewed Rust skill for this object-plane slice."
