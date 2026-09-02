@@ -20,6 +20,11 @@ pub enum SemanticAuthorityInput<'source> {
         /// Exact root-source byte budget checked before Cargo graph loading.
         maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
     },
+    /// Validated `go/packages` authority image bound to the exact request source.
+    Go {
+        /// Borrowed fixed-width authority bytes emitted by the configured Go producer.
+        image: &'source [u8],
+    },
 }
 
 /// Deadline and cancellation facts borrowed by one bounded native invocation.

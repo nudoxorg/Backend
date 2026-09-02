@@ -164,6 +164,25 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_go::OracleError,
     },
+    /// The fixed Go authority image failed before lending semantic facts.
+    #[error("Go authority image failed")]
+    GoImage {
+        /// Bounded source diagnostic retained by the Go authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact binary-image validation failure.
+        #[source]
+        cause: compiler_languages_go::ImageError,
+    },
+    /// A Go image was produced for a source other than the compile request.
+    #[error("Go authority image source binding differs from the compile request")]
+    GoSourceBinding {
+        /// Bounded source diagnostic retained by the Go authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// SHA-256 digest of the exact compile request source bytes.
+        expected: [u8; 32],
+        /// SHA-256 digest retained by the Go authority image.
+        observed: [u8; 32],
+    },
     /// The Roslyn authority boundary did not yield complete facts.
     #[error("C# semantic authority failed")]
     CSharp {
@@ -237,6 +256,16 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: go_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::GoImage { diagnostic, cause } => AuthorityFailureProjection {
+                phase: go_image_phase(cause),
+                class: go_image_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::GoSourceBinding { diagnostic, .. } => AuthorityFailureProjection {
+                phase: AuthorityPhase::Project,
+                class: AuthorityDiagnosticClass::Projection,
+                diagnostic: *diagnostic,
+            },
             Self::CSharp { diagnostic, cause } => AuthorityFailureProjection {
                 phase: csharp_phase(cause),
                 class: csharp_class(cause),
@@ -276,7 +305,10 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                     Self::Python { .. } | Self::PythonSpan { .. },
                     LanguageProfile::Python(_)
                 )
-                | (Self::Go { .. }, LanguageProfile::Go(_))
+                | (
+                    Self::Go { .. } | Self::GoImage { .. } | Self::GoSourceBinding { .. },
+                    LanguageProfile::Go(_)
+                )
                 | (Self::CSharp { .. }, LanguageProfile::CSharp(_))
                 | (Self::Java { .. }, LanguageProfile::Java(_))
         );
@@ -426,6 +458,28 @@ fn go_phase(cause: &compiler_languages_go::OracleError) -> AuthorityPhase {
 
 fn go_class(cause: &compiler_languages_go::OracleError) -> AuthorityDiagnosticClass {
     match go_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
+}
+
+fn go_image_phase(cause: &compiler_languages_go::ImageError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_go::ImageError::Header(_)
+        | compiler_languages_go::ImageError::Digest => AuthorityPhase::Parse,
+        compiler_languages_go::ImageError::DeclarationKind { .. }
+        | compiler_languages_go::ImageError::ExportedFlag { .. }
+        | compiler_languages_go::ImageError::DeclarationReserved { .. }
+        | compiler_languages_go::ImageError::NameRange { .. }
+        | compiler_languages_go::ImageError::NameUtf8 { .. } => AuthorityPhase::Project,
+    }
+}
+
+fn go_image_class(cause: &compiler_languages_go::ImageError) -> AuthorityDiagnosticClass {
+    match go_image_phase(cause) {
         AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
         AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
         AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {

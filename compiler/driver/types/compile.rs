@@ -157,9 +157,14 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         });
     }
     let recipe = recipe_fact(request.profile, request.stage, resolved, source);
-    if matches!(request.authority, SemanticAuthorityInput::Rust { .. })
-        && !matches!(request.profile, LanguageProfile::Rust(_))
-    {
+    let authority_profile_mismatch = match (request.authority, request.profile) {
+        (SemanticAuthorityInput::Rust { .. }, profile) => {
+            !matches!(profile, LanguageProfile::Rust(_))
+        }
+        (SemanticAuthorityInput::Go { .. }, profile) => !matches!(profile, LanguageProfile::Go(_)),
+        (SemanticAuthorityInput::None, _) => false,
+    };
+    if authority_profile_mismatch {
         return Err(CompileFailure::AuthorityInputProfileMismatch {
             source_identity: source,
             recipe,
@@ -175,7 +180,10 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     let direct_authority = matches!(
         request.profile,
         LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Python(_)
-    ) || matches!(request.authority, SemanticAuthorityInput::Rust { .. });
+    ) || matches!(
+        request.authority,
+        SemanticAuthorityInput::Rust { .. } | SemanticAuthorityInput::Go { .. }
+    );
     if !direct_authority {
         parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
     }
@@ -278,11 +286,25 @@ fn emit_facts<'source, 'diagnostic>(
             }
             Ok(())
         }
-        LanguageProfile::Go(_) => Err(CompileFailure::LoweringUnsupported {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::GoDeclarationForm,
-        }),
+        LanguageProfile::Go(profile) => {
+            let SemanticAuthorityInput::Go { image } = authority else {
+                return Err(CompileFailure::AuthorityInputRequired {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    profile: LanguageProfile::Go(profile),
+                });
+            };
+            lower::go::collect(source, image, facts)
+                .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
         LanguageProfile::Java(_) => Err(CompileFailure::LoweringUnsupported {
             source_identity: prepared.source,
             recipe: prepared.recipe,
@@ -342,6 +364,39 @@ fn rust_terminal<'diagnostic>(
             },
         },
         lower::rust::RustCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
+    }
+}
+
+fn go_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::go::GoCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::go::GoCollectError::Image(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::GoImage {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::go::GoCollectError::SourceBinding { expected, observed } => {
+            CompileFailure::Authority {
+                source_identity,
+                recipe,
+                failure: AuthorityFailure::GoSourceBinding {
+                    diagnostic: AuthorityDiagnostic::absent(),
+                    expected,
+                    observed,
+                },
+            }
+        }
+        lower::go::GoCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
             cause,

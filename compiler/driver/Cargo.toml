@@ -21,6 +21,7 @@ compiler-languages-python = { path = "../languages/python" }
 compiler-languages-rust = { path = "../languages/rust" }
 compiler-languages-typescript = { path = "../languages/typescript" }
 heart-identity = { path = "../../heart/identity" }
+sha2 = "=0.10.9"
 thiserror.workspace = true
 
 [dev-dependencies]

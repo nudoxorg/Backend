@@ -21,6 +21,7 @@ use compiler_ir::{
 };
 
 pub(crate) mod clang;
+pub(crate) mod go;
 pub(crate) mod python;
 pub(crate) mod rust;
 pub(crate) mod typescript;

@@ -142,6 +142,18 @@ type BuildDecl struct {
 }
 
 func main() {
+	if len(os.Args) == 4 && os.Args[1] == "--authority-image" {
+		out, err := extract(os.Args[3])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeAuthorityImage(os.Stdout, os.Args[2], out); err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	dir := "."
 	if len(os.Args) > 1 {
 		dir = os.Args[1]

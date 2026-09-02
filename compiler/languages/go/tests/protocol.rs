@@ -157,6 +157,7 @@ mod bounded_child {
         // the same mutex, so no concurrent child observes a torn configuration.
         unsafe { std::env::set_var("NUDOX_GO_ORACLE_BIN", &path) };
         let result = oracle.run(&root).expect_err("script must fail");
+        // SAFETY: the mutex above remains held until this environment cleanup completes.
         unsafe { std::env::remove_var("NUDOX_GO_ORACLE_BIN") };
         std::fs::remove_dir_all(root).map_err(|_| "cleanup")?;
         Ok(result)
@@ -215,6 +216,7 @@ mod bounded_child {
         let error = GoOracle::default()
             .run(std::path::Path::new("missing"))
             .expect_err("missing oracle must not fall back");
+        // SAFETY: this test still exclusively holds the shared environment mutex.
         unsafe { std::env::remove_var("NUDOX_GO_ORACLE_BIN") };
         assert!(matches!(
             error,
