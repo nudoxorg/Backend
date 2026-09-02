@@ -5,6 +5,7 @@
 resolver = "3"
 members = [
     "compiler/*",
+    "compiler/languages/*",
     "heart/*",
     "interface/*",
     "server/journal",

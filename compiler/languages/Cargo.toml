@@ -1,0 +1,17 @@
+# Groups the per-language semantic frontend crates one level under `compiler`.
+# The directory itself is a workspace member so the `compiler/*` member glob
+# always matches a valid manifest; the language crates are matched by the
+# `compiler/languages/*` member glob.
+[package]
+name = "compiler-languages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[lints]
+workspace = true

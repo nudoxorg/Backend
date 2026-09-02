@@ -1,0 +1,18 @@
+# Standalone Go oracle adapter with a bounded subprocess boundary.
+# The vendored producer remains unchanged under `oracle/`.
+# It depends only on the workspace protocol and error codecs.
+[package]
+name = "compiler-languages-go"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lib]
+path = "lib.rs"

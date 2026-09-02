@@ -1,0 +1,29 @@
+# Defines the `compiler-languages-typescript` package: the in-process OXC
+# TypeScript semantic frontend that produces typed declaration, signature, and
+# semantic facts as standalone records shaped for canonical-data admission.
+# The crate owns no driver dependency and performs no network work; OXC parses
+# one caller-supplied source text per arena; returned facts own their data.
+# Workspace policy supplies shared versions, lints, and release behavior.
+[package]
+name = "compiler-languages-typescript"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+# OXC 0.139.0 — lockstep-pinned with `=` (git tags track applications not lib
+# versions). Pins are copied exactly from the retired
+# `workspace/compiler/languages` TypeScript section.
+oxc_allocator = "=0.139.0"
+oxc_ast = "=0.139.0"
+oxc_parser = "=0.139.0"
+oxc_span = "=0.139.0"
+
+[lib]
+path = "lib.rs"
+
+[lints]
+workspace = true
