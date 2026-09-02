@@ -175,6 +175,9 @@ pub(crate) enum ClangError<'input> {
 
 /// Owned, lifetime-free mirror of every [`ClangError`] cause, carried by the driver terminal.
 ///
+/// The mirror adds the authority emission-seal causes: those are produced after
+/// the analysis commits, when the typed fact lanes admit the authoritative facts.
+///
 /// Borrowed path and version facts are retained as exact lengths or owned paths; no cause is
 /// dropped. The conversion is only reachable on failure paths, so the allocation is cold.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -337,6 +340,55 @@ pub enum ClangFailure {
         /// Exact ordinal of the rejected journal record.
         ordinal: usize,
     },
+    /// The authority emission lane rejected one more fact than its dense bound admits.
+    #[error("clang authority emission lane {lane:?} holds {limit} entries, observed {observed}")]
+    EmissionLaneCapacity {
+        /// Exact rejected lane.
+        lane: ClangEmissionLane,
+        /// Exact admitted lane bound.
+        limit: usize,
+        /// Exact observed entry count including the rejected one.
+        observed: usize,
+    },
+    /// An authority fact names an owner extent with no admitted owning declaration.
+    #[error(
+        "an authority fact spanning {start}..{end} names an owner extent with no admitted owning declaration"
+    )]
+    EmissionOwnerUnresolved {
+        /// Exact byte-unit start of the rejected fact.
+        start: u32,
+        /// Exact byte-unit end of the rejected fact.
+        end: u32,
+    },
+    /// An authority fact's target spelling cannot carry a canonical foreign-key path.
+    #[error("an authority fact target spanning {start}..{end} has no canonical key path")]
+    EmissionTargetPath {
+        /// Exact byte-unit start of the rejected fact.
+        start: u32,
+        /// Exact byte-unit end of the rejected fact.
+        end: u32,
+    },
+    /// An authority declaration fact was rejected by the canonical entity lane.
+    #[error(
+        "an authority declaration spanning {start}..{end} was rejected by the canonical entity lane"
+    )]
+    EmissionEntityInvalid {
+        /// Exact byte-unit name span of the rejected declaration.
+        start: u32,
+        /// Exact byte-unit end of the rejected declaration.
+        end: u32,
+    },
+}
+
+/// Closed dense lane of the authority emission seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClangEmissionLane {
+    /// The declared-entity lane.
+    Entity,
+    /// The type-use occurrence lane.
+    TypeUse,
+    /// The reference occurrence lane.
+    Reference,
 }
 
 impl From<ClangError<'_>> for ClangFailure {

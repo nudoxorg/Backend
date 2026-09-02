@@ -1,6 +1,3 @@
-//! Defines atom behavior for compiler-ir canonical data, whose purpose is to canonicalize name atoms deterministically.
-//! This module owns atom ordering, deduplication, and output writing.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Atom ordering, deduplication, and output writing.
 
 use core::cell::Cell;

@@ -1,3 +1,6 @@
+//! Exercises the direct Clang frontend's cancellation and deadline terminals through its observable boundary.
+//! The cases prove typed rejection before any semantic result becomes visible.
+//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},

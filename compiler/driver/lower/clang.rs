@@ -1,22 +1,463 @@
 //! Defines lower clang behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the lower clang invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
+//!
+//! Two collectors coexist during the scanner retirement window:
+//!
+//! - [`Authority`] admits the direct libclang authority's typed facts —
+//!   declarations, type uses with their closed declared-type recipes,
+//!   resolved references, and documentation — into the emission lanes.
+//!   This is the production path for `Language::Clang`.
+//! - The interim keyword scanner below remains the documented red-gate
+//!   retirement target only; no production lowering reads it anymore.
 #![allow(
     clippy::indexing_slicing,
     reason = "statement and field word runs are split from proven separator positions before indexing, and every run slot is admitted before it is read"
 )]
 
-use compiler_ir::{EntityKind, PrimitiveType};
-use compiler_ir_vocabulary::SemanticProductConstructor;
+use compiler_ir::PrimitiveType;
+use compiler_ir_vocabulary::{Confidence, EntityKind, ReferenceKind, SemanticProductConstructor};
 
 use crate::{
     lower::{
-        FactSet, FactType, LEAF_PRODUCT, SemanticFact, UnsupportedDeclaration, UnsupportedLane,
-        UnsupportedReason, push_fact,
+        FactSet, FactType, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES,
+        OccurrenceSlot, SemanticFact, UnsupportedDeclaration, UnsupportedLane, UnsupportedReason,
+        push_fact,
         scanner::{DeclarationScanner, SyntaxToken},
+    },
+    native::clang::{
+        ClangEmissionLane, ClangFact, ClangFailure, ClangReferenceKind, ClangSourceSpan,
+        ClangTypeRecipe, ClangTypeUseResolution, SemanticKind,
     },
     types::LoweringUnsupported,
 };
+
+/// Dense staging cell of one authoritative declaration fact.
+struct EntityStage<'source> {
+    name: &'source str,
+    kind: SemanticKind,
+    span: ClangSourceSpan,
+    owner: ClangSourceSpan,
+}
+
+impl EntityStage<'static> {
+    const DEFAULT: Self = Self {
+        name: "",
+        kind: SemanticKind::Function,
+        span: ClangSourceSpan { start: 0, end: 0 },
+        owner: ClangSourceSpan { start: 0, end: 0 },
+    };
+}
+
+/// Dense staging cell of one authoritative type-use fact.
+struct UseStage<'source> {
+    spelling: &'source str,
+    resolved: bool,
+    recipe: ClangTypeRecipe,
+    span: ClangSourceSpan,
+    owner: ClangSourceSpan,
+}
+
+impl UseStage<'static> {
+    const DEFAULT: Self = Self {
+        spelling: "",
+        resolved: false,
+        recipe: ClangTypeRecipe::None,
+        span: ClangSourceSpan { start: 0, end: 0 },
+        owner: ClangSourceSpan { start: 0, end: 0 },
+    };
+}
+
+/// Dense staging cell of one authoritative reference fact.
+struct RefStage<'source> {
+    target: &'source str,
+    kind: ClangReferenceKind,
+    use_span: ClangSourceSpan,
+}
+
+impl RefStage<'static> {
+    const DEFAULT: Self = Self {
+        target: "",
+        kind: ClangReferenceKind::VariableUse,
+        use_span: ClangSourceSpan { start: 0, end: 0 },
+    };
+}
+
+/// Caller-owned bounded staging lanes for one authority analysis.
+///
+/// Facts stream in traversal order while the analysis runs; [`Authority::seal`]
+/// resolves owner extents against the completed entity set and admits the
+/// ordered declaration and occurrence facts into the emission lanes.
+pub(crate) struct Authority<'source> {
+    entities: [EntityStage<'source>; MAX_EMISSION_FACTS],
+    entity_len: usize,
+    uses: [UseStage<'source>; MAX_EMISSION_OCCURRENCES],
+    use_len: usize,
+    refs: [RefStage<'source>; MAX_EMISSION_OCCURRENCES],
+    ref_len: usize,
+    rejected: Option<ClangFailure>,
+    documentation: usize,
+}
+
+impl Default for Authority<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'source> Authority<'source> {
+    pub(crate) fn new() -> Self {
+        Self {
+            entities: [EntityStage::DEFAULT; MAX_EMISSION_FACTS],
+            entity_len: 0,
+            uses: [UseStage::DEFAULT; MAX_EMISSION_OCCURRENCES],
+            use_len: 0,
+            refs: [RefStage::DEFAULT; MAX_EMISSION_OCCURRENCES],
+            ref_len: 0,
+            rejected: None,
+            documentation: 0,
+        }
+    }
+
+    /// Receives one typed fact from the direct libclang analysis.
+    ///
+    /// Lane overflow is retained as the exact typed rejection instead of
+    /// truncating a proven fact; [`Authority::seal`] surfaces it.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each lane ordinal is admitted below its dense bound before the single fixed-capacity slot write"
+    )]
+    pub(crate) fn record(&mut self, fact: ClangFact<'source>) {
+        if self.rejected.is_some() {
+            return;
+        }
+        match fact {
+            ClangFact::Entity(entity) => {
+                if self.entity_len == MAX_EMISSION_FACTS {
+                    self.rejected = Some(ClangFailure::EmissionLaneCapacity {
+                        lane: ClangEmissionLane::Entity,
+                        limit: MAX_EMISSION_FACTS,
+                        observed: self.entity_len + 1,
+                    });
+                    return;
+                }
+                self.entities[self.entity_len] = EntityStage {
+                    name: entity.name,
+                    kind: entity.kind,
+                    span: entity.span,
+                    owner: entity.owner,
+                };
+                self.entity_len += 1;
+            }
+            ClangFact::TypeUse(use_fact) => {
+                if self.use_len == MAX_EMISSION_OCCURRENCES {
+                    self.rejected = Some(ClangFailure::EmissionLaneCapacity {
+                        lane: ClangEmissionLane::TypeUse,
+                        limit: MAX_EMISSION_OCCURRENCES,
+                        observed: self.use_len + 1,
+                    });
+                    return;
+                }
+                self.uses[self.use_len] = UseStage {
+                    spelling: use_fact.name,
+                    resolved: matches!(
+                        use_fact.resolution,
+                        ClangTypeUseResolution::Declaration { .. }
+                    ),
+                    recipe: use_fact.recipe,
+                    span: use_fact.span,
+                    owner: use_fact.owner,
+                };
+                self.use_len += 1;
+            }
+            ClangFact::Reference(reference) => {
+                if self.ref_len == MAX_EMISSION_OCCURRENCES {
+                    self.rejected = Some(ClangFailure::EmissionLaneCapacity {
+                        lane: ClangEmissionLane::Reference,
+                        limit: MAX_EMISSION_OCCURRENCES,
+                        observed: self.ref_len + 1,
+                    });
+                    return;
+                }
+                self.refs[self.ref_len] = RefStage {
+                    target: reference.target,
+                    kind: reference.kind,
+                    use_span: reference.use_span,
+                };
+                self.ref_len += 1;
+            }
+            ClangFact::Documentation(_) => self.documentation += 1,
+            ClangFact::Diagnostic(_) => {}
+        }
+    }
+
+    /// Admits the staged authority facts into the emission lanes.
+    ///
+    /// Declarations are pushed in traversal order; every staged type use and
+    /// reference becomes one owned occurrence whose relative span is measured
+    /// from the innermost containing declaration's extent start. The closed
+    /// declared-type recipe of each entity's own type use becomes the
+    /// entity's declared-type fact.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every lane position is admitted below its dense bound before it is read or written"
+    )]
+    pub(crate) fn seal(&self, facts: &mut FactSet<'source>) -> Result<(), AuthoritySealFault> {
+        if let Some(rejection) = &self.rejected {
+            return Err(AuthoritySealFault::Clang(rejection.clone()));
+        }
+        for ordinal in 0..self.entity_len {
+            let entity = &self.entities[ordinal];
+            if entity.name.is_empty() {
+                // An authority declaration without a provable name is
+                // skipped, never guessed, matching the closed emission law.
+                continue;
+            }
+            let fact_type = self.declared_type(ordinal);
+            let pushed = facts.push(SemanticFact::new(
+                entity_kind(entity.kind),
+                entity.name.as_bytes(),
+                fact_type,
+                entity_constructor(entity.kind),
+            ));
+            if pushed.is_err() {
+                return Err(AuthoritySealFault::Clang(
+                    ClangFailure::EmissionEntityInvalid {
+                        start: entity.span.start,
+                        end: entity.span.end,
+                    },
+                ));
+            }
+        }
+        for ordinal in 0..self.use_len {
+            let use_stage = &self.uses[ordinal];
+            let Some(owner) = self.owner_ordinal(use_stage.span) else {
+                return Err(AuthoritySealFault::Clang(
+                    ClangFailure::EmissionOwnerUnresolved {
+                        start: use_stage.span.start,
+                        end: use_stage.span.end,
+                    },
+                ));
+            };
+            let Some(span) = use_stage.span.relative_to(self.entities[owner].owner) else {
+                return Err(AuthoritySealFault::Clang(
+                    ClangFailure::EmissionOwnerUnresolved {
+                        start: use_stage.span.start,
+                        end: use_stage.span.end,
+                    },
+                ));
+            };
+            let pushed = facts.push_occurrence(OccurrenceSlot {
+                owner: ordinal_to_owner(owner),
+                ecosystem: "c",
+                path: use_stage.spelling,
+                display: use_stage.spelling,
+                target_kind: None,
+                kind: ReferenceKind::TypeReference,
+                confidence: if use_stage.resolved {
+                    Confidence::Oracle
+                } else {
+                    Confidence::Syntactic
+                },
+                span_start: span.start,
+                span_end: span.end,
+            });
+            if let Err(fault) = pushed {
+                return Err(AuthoritySealFault::occurrence_fault(
+                    ClangEmissionLane::TypeUse,
+                    use_stage.span,
+                    fault,
+                ));
+            }
+        }
+        for ordinal in 0..self.ref_len {
+            let ref_stage = &self.refs[ordinal];
+            let Some(owner) = self.owner_ordinal(ref_stage.use_span) else {
+                return Err(AuthoritySealFault::Clang(
+                    ClangFailure::EmissionOwnerUnresolved {
+                        start: ref_stage.use_span.start,
+                        end: ref_stage.use_span.end,
+                    },
+                ));
+            };
+            let Some(span) = ref_stage.use_span.relative_to(self.entities[owner].owner) else {
+                return Err(AuthoritySealFault::Clang(
+                    ClangFailure::EmissionOwnerUnresolved {
+                        start: ref_stage.use_span.start,
+                        end: ref_stage.use_span.end,
+                    },
+                ));
+            };
+            let pushed = facts.push_occurrence(OccurrenceSlot {
+                owner: ordinal_to_owner(owner),
+                ecosystem: "c",
+                path: ref_stage.target,
+                display: ref_stage.target,
+                target_kind: reference_target_kind(ref_stage.kind),
+                kind: reference_kind(ref_stage.kind),
+                confidence: Confidence::Oracle,
+                span_start: span.start,
+                span_end: span.end,
+            });
+            if let Err(fault) = pushed {
+                return Err(AuthoritySealFault::occurrence_fault(
+                    ClangEmissionLane::Reference,
+                    ref_stage.use_span,
+                    fault,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The closed declared-type recipe of the entity's own type use: the
+    /// latest type use that shares the entity's owner extent and precedes
+    /// the entity's name.
+    fn declared_type(&self, ordinal: usize) -> FactType {
+        let entity = &self.entities[ordinal];
+        let mut best: Option<&UseStage<'source>> = None;
+        for use_stage in &self.uses[..self.use_len] {
+            if use_stage.owner != entity.owner || use_stage.span.end > entity.span.start {
+                continue;
+            }
+            best = match best {
+                Some(current) if current.span.end > use_stage.span.end => Some(current),
+                _ => Some(use_stage),
+            };
+        }
+        match best.map(|use_stage| use_stage.recipe) {
+            Some(ClangTypeRecipe::String) => FactType::Primitive(PrimitiveType::String),
+            Some(ClangTypeRecipe::Bool) => FactType::Primitive(PrimitiveType::Bool),
+            Some(ClangTypeRecipe::Integer) => FactType::Primitive(PrimitiveType::I32),
+            Some(ClangTypeRecipe::None) | None => FactType::Opaque,
+        }
+    }
+
+    /// The innermost declaration whose extent contains the fact's use span;
+    /// ties resolve to the earliest declared ordinal.
+    fn owner_ordinal(&self, span: ClangSourceSpan) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        let mut best_extent = 0_u32;
+        for ordinal in 0..self.entity_len {
+            let entity = &self.entities[ordinal];
+            if entity.owner.start > span.start || span.end > entity.owner.end {
+                continue;
+            }
+            let extent = entity.owner.end - entity.owner.start;
+            let wins = match best {
+                None => true,
+                Some(_) => extent < best_extent,
+            };
+            if wins {
+                best = Some(ordinal);
+                best_extent = extent;
+            }
+        }
+        best
+    }
+}
+
+/// Exact failure of one authority seal, retaining the typed cause.
+#[derive(Debug)]
+pub(crate) enum AuthoritySealFault {
+    /// The analysis authority rejected or could not hold a proven fact.
+    Clang(ClangFailure),
+}
+
+impl AuthoritySealFault {
+    fn occurrence_fault(
+        lane: ClangEmissionLane,
+        span: ClangSourceSpan,
+        fault: crate::lower::OccurrenceFault,
+    ) -> Self {
+        match fault {
+            crate::lower::OccurrenceFault::Capacity { limit, observed } => {
+                Self::Clang(ClangFailure::EmissionLaneCapacity {
+                    lane,
+                    limit,
+                    observed,
+                })
+            }
+            crate::lower::OccurrenceFault::Owner { .. }
+            | crate::lower::OccurrenceFault::Span { .. } => {
+                Self::Clang(ClangFailure::EmissionOwnerUnresolved {
+                    start: span.start,
+                    end: span.end,
+                })
+            }
+            crate::lower::OccurrenceFault::Key(_) => {
+                Self::Clang(ClangFailure::EmissionTargetPath {
+                    start: span.start,
+                    end: span.end,
+                })
+            }
+        }
+    }
+}
+
+/// Maps the closed authority kind registry onto the canonical entity kinds.
+/// The registries share one discriminant set by construction.
+const fn entity_kind(kind: SemanticKind) -> EntityKind {
+    match kind {
+        SemanticKind::Function => EntityKind::Function,
+        SemanticKind::Constant => EntityKind::Constant,
+        SemanticKind::Record => EntityKind::Record,
+        SemanticKind::Module => EntityKind::Module,
+        SemanticKind::Field => EntityKind::Field,
+        SemanticKind::Alias => EntityKind::Alias,
+        SemanticKind::Trait => EntityKind::Trait,
+        SemanticKind::Implementation => EntityKind::Implementation,
+        SemanticKind::Enum => EntityKind::Enum,
+        SemanticKind::Variant => EntityKind::Variant,
+        SemanticKind::Static => EntityKind::Static,
+        SemanticKind::Reexport => EntityKind::Reexport,
+        SemanticKind::Parameter => EntityKind::Parameter,
+    }
+}
+
+/// The closed structural constructor of one canonical declaration kind.
+const fn entity_constructor(kind: SemanticKind) -> SemanticProductConstructor {
+    match kind {
+        SemanticKind::Function => SemanticProductConstructor::function(0, 0),
+        SemanticKind::Record => SemanticProductConstructor::PRODUCT,
+        SemanticKind::Enum => SemanticProductConstructor::UNION,
+        SemanticKind::Trait => SemanticProductConstructor::INTERSECTION,
+        _ => LEAF_PRODUCT,
+    }
+}
+
+/// The closed occurrence category of one authoritative reference.
+const fn reference_kind(kind: ClangReferenceKind) -> ReferenceKind {
+    match kind {
+        ClangReferenceKind::FunctionCall => ReferenceKind::FunctionCall,
+        ClangReferenceKind::MethodCall => ReferenceKind::MethodCall,
+        ClangReferenceKind::VariableUse => ReferenceKind::VariableUse,
+        ClangReferenceKind::FieldAccess => ReferenceKind::FieldAccess,
+        ClangReferenceKind::MacroInvocation => ReferenceKind::MacroInvocation,
+    }
+}
+
+/// The expected declaration kind of one authoritative reference target,
+/// when the reference role proves one.
+const fn reference_target_kind(kind: ClangReferenceKind) -> Option<EntityKind> {
+    match kind {
+        ClangReferenceKind::FunctionCall | ClangReferenceKind::MethodCall => {
+            Some(EntityKind::Function)
+        }
+        ClangReferenceKind::FieldAccess => Some(EntityKind::Field),
+        ClangReferenceKind::VariableUse => Some(EntityKind::Static),
+        ClangReferenceKind::MacroInvocation => None,
+    }
+}
+
+/// Converts an admitted entity ordinal into its owner coordinate.
+#[expect(
+    clippy::as_conversions,
+    reason = "the entity ordinal is bounded by MAX_EMISSION_FACTS and widens totally to the owner coordinate width"
+)]
+const fn ordinal_to_owner(ordinal: usize) -> u32 {
+    ordinal as u32
+}
 
 /// Word-run marker for one pointer declarator or parameter-list opener.
 const STAR: &[u8] = b"*";

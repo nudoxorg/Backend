@@ -1,6 +1,3 @@
-//! Defines accounting behavior for compiler-ir canonical data, whose purpose is to bound canonicalization resources exactly.
-//! This module owns the measured operation counters and budget checks.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Measured operation counters and budget checks.
 
 use core::cell::Cell;

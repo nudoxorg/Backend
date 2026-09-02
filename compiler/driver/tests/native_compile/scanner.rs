@@ -246,17 +246,22 @@ fn existing_lowering_ignores_comments_literals_and_nested_declarations() -> Resu
             b"// const char *COMMENT_ONLY = \"yes\";\n".as_slice(),
             Expectation::Terminal(LoweringUnsupported::NoSupportedDeclaration),
         ),
+        // The libclang authority emits the pointer-to-char object with its
+        // closed string recipe; the literal's contents never become facts.
         (
             Language::Clang,
             NativeTool::Clang,
             b"char *text = \"const char *LITERAL_ONLY = \\\"yes\\\";\";\n".as_slice(),
-            Expectation::Terminal(LoweringUnsupported::NoSupportedDeclaration),
+            Expectation::Facts(&[(b"text", EntityKind::Static)]),
         ),
         (
             Language::Clang,
             NativeTool::Clang,
             b"void outer(void) { const char *NESTED_ONLY = \"yes\"; }\n".as_slice(),
-            Expectation::Facts(&[(b"outer", EntityKind::Function)]),
+            Expectation::Facts(&[
+                (b"outer", EntityKind::Function),
+                (b"NESTED_ONLY", EntityKind::Constant),
+            ]),
         ),
         (
             Language::Python,

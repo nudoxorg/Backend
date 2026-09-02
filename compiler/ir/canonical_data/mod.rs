@@ -1,7 +1,3 @@
-//! Defines canonicalization behavior for compiler-ir, whose purpose is to canonicalize semantic data allocation-free.
-//! This module owns the coinductive product quotient, atom deduplication, and deterministic output lanes.
-//! Its narrow surface prevents representation and policy details from leaking outward.
-
 //! Allocation-free semantic-data canonicalization.
 //!
 //! Local recursive products use a coinductive (bisimulation) quotient: two

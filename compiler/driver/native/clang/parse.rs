@@ -22,8 +22,8 @@ use super::{
     },
     protocol::{
         ClangDiagnostic, ClangDiagnosticSeverity, ClangFact, ClangPhase, ClangReferenceKind,
-        ClangSourceLanguage, ClangSourceSpan, ClangTypeUseKind, ClangTypeUseResolution, FactRole,
-        SemanticKind,
+        ClangSourceLanguage, ClangSourceSpan, ClangTypeRecipe, ClangTypeUseKind,
+        ClangTypeUseResolution, FactRole, SemanticKind,
     },
     source::diagnostic_span,
     traversal::{
@@ -64,6 +64,8 @@ const RECORD_SPAN_B: usize = 16;
 const RECORD_SPAN_C: usize = 24;
 /// Journal byte offset of the diagnostic column.
 const RECORD_DIAGNOSTIC_COLUMN: usize = 28;
+/// Journal byte offset of the closed declared-type recipe cell.
+const RECORD_RECIPE: usize = 29;
 
 /// Typed analysis context assembled by the entry point.
 pub(crate) struct AnalysisContext<'input, 'source> {
@@ -168,6 +170,7 @@ impl<'scratch> FactJournal<'scratch> {
                         1
                     }
                 };
+                record[RECORD_RECIPE] = item.recipe.code();
                 write_span(record, RECORD_SPAN_A, item.span);
                 write_span(record, RECORD_SPAN_B, item.owner);
                 if let ClangTypeUseResolution::Declaration { target, .. } = item.resolution {
@@ -575,12 +578,14 @@ fn decode_record<'source>(
                 },
                 _ => return Err(invalid()),
             };
+            let recipe = ClangTypeRecipe::from_code(record[RECORD_RECIPE]).ok_or_else(invalid)?;
             let span = borrowed_span(RECORD_SPAN_A)?;
             let name = borrowed(span)?;
             Ok(ClangFact::TypeUse(super::protocol::TypeUseFact {
                 name,
                 kind,
                 resolution,
+                recipe,
                 span,
                 owner: borrowed_span(RECORD_SPAN_B)?,
             }))

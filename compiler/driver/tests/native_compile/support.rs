@@ -141,6 +141,22 @@ pub(super) enum TestFailure {
     TypeFactsMissing { tool: NativeTool },
     #[error("the {tool:?} adapter type-fact section failed to decode")]
     TypeFactsUndecodable { tool: NativeTool },
+    #[error("the {tool:?} adapter emitted no occurrence section")]
+    OccurrencePlaneMissing { tool: NativeTool },
+    #[error("the {tool:?} adapter occurrence section failed to decode: {cause}")]
+    OccurrenceUndecodable {
+        tool: NativeTool,
+        #[source]
+        cause: compiler_ir::OccurrenceFault,
+    },
+    #[error("the {tool:?} adapter emitted an empty occurrence section")]
+    OccurrencePlaneEmpty { tool: NativeTool },
+    #[error("the {tool:?} adapter emitted an unexpected occurrence mix")]
+    OccurrenceMix { tool: NativeTool },
+    #[error("the {tool:?} adapter emitted an unexpected occurrence confidence tier")]
+    OccurrenceConfidence { tool: NativeTool },
+    #[error("the {tool:?} adapter emitted an occurrence at an unexpected relative span")]
+    OccurrenceSpan { tool: NativeTool },
     #[error(
         "the locally reproducible {tool:?} adapter primitive type fact was {actual:?}, not {expected:?}"
     )]

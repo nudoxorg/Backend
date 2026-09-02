@@ -1,6 +1,3 @@
-//! Defines graph behavior for compiler-ir canonical data, whose purpose is to lend borrowed canonical views.
-//! This module owns the borrowed canonical graph views and source-coordinate mapping.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Borrowed canonical graph views and source-coordinate mapping.
 
 use super::{

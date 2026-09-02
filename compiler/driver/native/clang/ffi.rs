@@ -253,6 +253,8 @@ pub(crate) const CX_TYPE_FLOAT: c_int = 21;
 pub(crate) const CX_TYPE_DOUBLE: c_int = 22;
 /// `CXType_LongDouble`.
 pub(crate) const CX_TYPE_LONG_DOUBLE: c_int = 23;
+/// libclang `CXType_Invalid`: returned by pointee queries on non-pointer types.
+pub(crate) const CX_TYPE_INVALID: c_int = 0;
 
 /// Creates a libclang index.
 ///
@@ -540,6 +542,14 @@ pub(crate) unsafe fn clang_is_const_qualified_type(type_: CxType) -> c_uint {
     unsafe { clang_isConstQualifiedType(type_) }
 }
 
+/// Returns a pointer type's pointee.
+///
+/// # Safety
+/// The type must belong to a live translation unit.
+pub(crate) unsafe fn clang_get_pointee_type(type_: CxType) -> CxType {
+    unsafe { clang_getPointeeType(type_) }
+}
+
 /// Returns a type's spelling.
 ///
 /// # Safety
@@ -761,6 +771,7 @@ unsafe extern "C" {
     fn clang_getCursorResultType(cursor: CxCursor) -> CxType;
     fn clang_getCanonicalType(type_: CxType) -> CxType;
     fn clang_isConstQualifiedType(type_: CxType) -> c_uint;
+    fn clang_getPointeeType(type_: CxType) -> CxType;
     fn clang_getTypeSpelling(type_: CxType) -> CxString;
     fn clang_getCursorExtent(cursor: CxCursor) -> CxSourceRange;
     fn clang_getRangeStart(range: CxSourceRange) -> CxSourceLocation;

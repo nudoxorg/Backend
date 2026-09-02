@@ -10,6 +10,7 @@ use crate::{
     lower::{self, AdmissionFault},
     native::parse_with_native_tool,
 };
+use compiler_vocabulary::LoweringUnsupported;
 
 use super::{
     CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest, CompileScratch,
@@ -80,20 +81,49 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
         source: request.source,
         toolchain: resolved,
     };
-    parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
+    // The direct authority lanes receive the frontend's typed facts during
+    // native admission; the keyword scanner stays only as the documented
+    // red-gate retirement path for languages whose authority wiring has not
+    // landed yet.
+    let mut authority = lower::Authority::new();
+    parse_with_native_tool(
+        native_recipe,
+        source,
+        recipe,
+        scratch,
+        request.control,
+        &mut authority,
+    )?;
     let mut facts = lower::FactSet::new();
     let mut unsupported = lower::UnsupportedLane::new();
-    lower::emit(
-        request.language,
-        request.source,
-        &mut facts,
-        &mut unsupported,
-    )
-    .map_err(|cause| CompileFailure::LoweringUnsupported {
-        source_identity: source,
-        recipe,
-        cause,
-    })?;
+    if request.language == Language::Clang {
+        authority.seal(&mut facts).map_err(|fault| match fault {
+            lower::AuthoritySealFault::Clang(cause) => CompileFailure::ClangFrontend {
+                source_identity: source,
+                recipe,
+                cause,
+            },
+        })?;
+        if facts.len() == 0 {
+            return Err(CompileFailure::LoweringUnsupported {
+                source_identity: source,
+                recipe,
+                cause: LoweringUnsupported::NoSupportedDeclaration,
+            });
+        }
+    } else {
+        lower::emit(
+            request.language,
+            request.source,
+            &mut facts,
+            &mut unsupported,
+        )
+        .map_err(|cause| CompileFailure::LoweringUnsupported {
+            source_identity: source,
+            recipe,
+            cause,
+        })?;
+    }
     let bytes =
         lower::admit(&facts, source, recipe, output.fragment_output).map_err(
             |fault| match fault {

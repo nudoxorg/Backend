@@ -1,3 +1,6 @@
+//! Defines the Python semantic frontend, whose purpose is to project typed facts from the caller's source bytes.
+//! This module owns source-preserving declaration, annotation, and occurrence extraction over Ruff's typed AST.
+//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Source-preserving Python facts projected from Ruff's typed AST.
 
 use ruff_python_ast::{

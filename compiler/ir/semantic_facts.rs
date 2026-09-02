@@ -449,10 +449,6 @@ impl<'fragment> OccurrenceCursor<'fragment> {
     }
 
     /// Decodes the next occurrence, or `None` after the declared count.
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "the cursor API mirrors Iterator::next without claiming the Iterator surface; fragments lend one cursor per section"
-    )]
     pub fn next(&mut self) -> Option<Result<DecodedOccurrence<'fragment>, OccurrenceFault>> {
         if self.remaining == 0 {
             return None;

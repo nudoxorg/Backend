@@ -29,15 +29,19 @@ mod traversal;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use error::ClangEmissionLane;
 use error::ClangError;
 pub use error::ClangFailure;
 pub use protocol::{ClangDiagnostic, ClangDiagnosticSeverity, ClangPhase, ClangSourceSpan};
-pub(crate) use protocol::{ClangFact, ClangSourceLanguage};
+pub(crate) use protocol::{
+    ClangFact, ClangReferenceKind, ClangSourceLanguage, ClangTypeRecipe, ClangTypeUseResolution,
+    SemanticKind,
+};
 
 // The remaining fact and kind surface is exercised by this module's proofs and stays
 // crate-internal; public fact admission consumes it through the canonical lowering seam.
 #[cfg(test)]
-pub(crate) use protocol::{ClangReferenceKind, ClangTypeUseResolution, EntityFact, SemanticKind};
+pub(crate) use protocol::EntityFact;
 
 /// Exact caller scratch the driver seam reserves for one analysis.
 pub(crate) const MAX_ANALYSIS_SCRATCH_BYTES: usize = 256 * 1024;

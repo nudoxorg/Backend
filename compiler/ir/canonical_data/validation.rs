@@ -1,6 +1,3 @@
-//! Defines validation behavior for compiler-ir canonical data, whose purpose is to prove lane geometry before canonicalization.
-//! This module owns the input and output geometry validation.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Input and output geometry validation.
 
 use super::{

@@ -1,6 +1,3 @@
-//! Defines error behavior for compiler-ir canonical data, whose purpose is to retain exact typed canonicalization failures.
-//! This module owns the typed admission, validation, and lookup failures.
-//! Its narrow surface prevents representation and policy details from leaking outward.
 //! Typed admission, validation, and lookup failures.
 
 use core::num::TryFromIntError;

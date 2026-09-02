@@ -213,10 +213,6 @@ impl<'facts> PreparedFragment<'facts> {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the wire surface names every borrowed plane explicitly; a builder would hide the fragment's shape"
-    )]
     pub fn prepare_with_type_facts(
         source: SourceIdentity,
         recipe: RecipeFact,
@@ -239,10 +235,6 @@ impl<'facts> PreparedFragment<'facts> {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the wire surface names every borrowed plane explicitly; a builder would hide the fragment's shape"
-    )]
     fn prepare_inner(
         source: SourceIdentity,
         recipe: RecipeFact,
@@ -377,7 +369,6 @@ impl<'facts> PreparedFragment<'facts> {
                 occurrence_layout,
             );
             write_occurrence_payload(written, occurrence_layout, lane);
-            ordinal += 1;
         }
         if let (Some(lane), Some(type_layout)) = (self.type_facts, self.layout.type_facts) {
             write_directory_entry(written, ordinal, SectionKind::TypeFacts, type_layout);
@@ -430,10 +421,6 @@ fn atom_byte_count(atoms: &[AtomInput<'_>]) -> Result<ItemCount, PrepareError> {
     count(LayoutStep::AtomByteLane, total)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the layout cursor consumes every lane's count in wire order; each argument is one closed plane"
-)]
 fn layout(
     source: SourceIdentity,
     recipe: RecipeFact,
