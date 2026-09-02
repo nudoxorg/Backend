@@ -61,7 +61,7 @@ impl FrontendTree for SemanticCorpus<'_> {
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         })
     }
 

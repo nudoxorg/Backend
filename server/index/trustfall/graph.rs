@@ -730,7 +730,7 @@ mod tests {
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         });
         let links = [TreeLinkInput {
             from: TreeEntityId::new(0),

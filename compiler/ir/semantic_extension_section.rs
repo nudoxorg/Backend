@@ -3,6 +3,13 @@
 //! This intentionally is not an `Ir` image format. A future full semantic-image
 //! owner may place this validated, profile-bound section beside the common
 //! columns it references.
+#![deny(
+    clippy::as_conversions,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    unsafe_code
+)]
 
 use core::{fmt, marker::PhantomData, ops::Deref};
 
@@ -11,6 +18,7 @@ use crate::{LanguageExtensionsView, SemanticImageAuthority};
 const MAGIC: [u8; 4] = *b"NXLE";
 const SCHEMA: u16 = 1;
 const PLANES: usize = 7;
+const PLANES_WIRE: u8 = 7;
 const HEADER: usize = 16;
 const DIRECTORY: usize = 20;
 const NONE: u32 = u32::MAX;
@@ -50,6 +58,28 @@ impl LanguageExtensionDirectoryKind {
             Self::Clang => 24,
         }
     }
+
+    const fn fact_bytes_wire(self) -> u32 {
+        match self {
+            Self::TypeScript | Self::Python => 12,
+            Self::CSharp => 36,
+            Self::Go => 28,
+            Self::Rust | Self::Java => 16,
+            Self::Clang => 24,
+        }
+    }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::TypeScript => 1,
+            Self::CSharp => 2,
+            Self::Go => 3,
+            Self::Rust => 4,
+            Self::Python => 5,
+            Self::Java => 6,
+            Self::Clang => 7,
+        }
+    }
 }
 
 /// Exact capacities of already validated common semantic columns.
@@ -87,8 +117,19 @@ impl ValidatedLanguageExtensionCommonBounds {
 /// Typed failure while writing the caller-owned extension-section buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LanguageExtensionEncodeError {
-    OutputTooShort { required: usize, actual: usize },
-    RowCountMismatch { expected: usize, observed: usize },
+    OutputTooShort {
+        required: usize,
+        actual: usize,
+    },
+    OutputRange {
+        offset: usize,
+        width: usize,
+        actual: usize,
+    },
+    RowCountMismatch {
+        expected: usize,
+        observed: usize,
+    },
     LengthOverflow,
 }
 
@@ -119,6 +160,20 @@ pub enum LanguageExtensionReopenError {
         expected: SemanticImageAuthority,
         observed: [u8; 3],
     },
+    AuthorityTag {
+        observed: u8,
+    },
+    Profile {
+        source: compiler_vocabulary::UnknownLanguageProfile,
+    },
+    PlaneCount {
+        expected: u8,
+        observed: u8,
+    },
+    Reserved {
+        offset: usize,
+        observed: u8,
+    },
     ProfilePlane {
         authority: SemanticImageAuthority,
         kind: LanguageExtensionDirectoryKind,
@@ -132,6 +187,14 @@ pub enum LanguageExtensionReopenError {
         kind: LanguageExtensionDirectoryKind,
         expected: u32,
         observed: u32,
+    },
+    DirectoryLength {
+        kind: LanguageExtensionDirectoryKind,
+        expected: u32,
+        observed: u32,
+    },
+    StructuralOverflow {
+        offset: usize,
     },
     EntityRows {
         expected: u32,
@@ -158,6 +221,13 @@ pub enum LanguageExtensionReopenError {
         fact: u32,
         word: u8,
         observed: u32,
+    },
+    SourceSpanEncoding {
+        kind: LanguageExtensionDirectoryKind,
+        fact: u32,
+        file: u32,
+        start: u32,
+        end: u32,
     },
     DecodedFact {
         row: u32,
@@ -222,21 +292,40 @@ impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'w
         if entity.raw >= self.layout.rows || self.layout.facts == 0 {
             return Ok(None);
         }
-        let ordinal = read_word(self.bytes, self.layout.offset + entity.index() * 4)
-            .ok_or(LanguageExtensionReopenError::Truncated)?;
+        let row = entity.index();
+        let ordinal_offset = row
+            .checked_mul(4)
+            .and_then(|width| self.layout.offset.checked_add(width))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            })?;
+        let ordinal =
+            read_word(self.bytes, ordinal_offset).ok_or(LanguageExtensionReopenError::Truncated)?;
         if ordinal == NONE {
             return Ok(None);
         }
+        let ordinal = usize::try_from(ordinal).map_err(|_| {
+            LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            }
+        })?;
         let offset = self
             .layout
             .offset
             .checked_add(self.layout.ordinal_bytes)
-            .and_then(|offset| offset.checked_add(ordinal as usize * Facts::WIDTH))
-            .ok_or(LanguageExtensionReopenError::Truncated)?;
+            .and_then(|offset| {
+                ordinal
+                    .checked_mul(Facts::WIDTH)
+                    .and_then(|width| offset.checked_add(width))
+            })
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            })?;
         Facts::decode(self.bytes, offset).map(Some).ok_or(
             LanguageExtensionReopenError::DecodedFact {
                 row: entity.raw,
-                fact: ordinal,
+                fact: u32::try_from(ordinal)
+                    .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset })?,
             },
         )
     }
@@ -311,71 +400,93 @@ pub fn encode_language_extension_section(
     output: &mut [u8],
 ) -> Result<usize, LanguageExtensionEncodeError> {
     let required = language_extension_section_len(extensions)?;
+    let required_wire =
+        u32::try_from(required).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+    let rows = u32::try_from(extensions.typescript.ids.row_count())
+        .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+    let rows_usize =
+        usize::try_from(rows).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
     if output.len() < required {
         return Err(LanguageExtensionEncodeError::OutputTooShort {
             required,
             actual: output.len(),
         });
     }
-    output[..required].fill(0);
-    output[..4].copy_from_slice(&MAGIC);
-    put_u16(output, 4, SCHEMA);
-    output[6] = PLANES as u8;
-    write_authority(output, 7, extensions.authority);
-    put_u32(
-        output,
-        12,
-        u32::try_from(required).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
-    );
-    let rows = u32::try_from(extensions.typescript.ids.row_count())
-        .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+    fill_bytes(output, 0, required, 0)?;
+    write_bytes(output, 0, &MAGIC)?;
+    put_u16(output, 4, SCHEMA)?;
+    put_u8(output, 6, PLANES_WIRE)?;
+    write_authority(output, 7, extensions.authority)?;
+    put_u32(output, 12, required_wire)?;
     let mut payload = HEADER + DIRECTORY * PLANES;
     macro_rules! plane {
         ($index:expr, $kind:expr, $view:expr, $encode:ident) => {{
             let view = $view;
-            let directory = HEADER + DIRECTORY * $index;
-            output[directory] = $kind as u8;
-            put_u32(output, directory + 4, rows);
+            let directory = DIRECTORY
+                .checked_mul($index)
+                .and_then(|offset| HEADER.checked_add(offset))
+                .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+            put_u8(output, directory, $kind.code())?;
+            put_u32(output, directory + 4, rows)?;
             put_u32(
                 output,
                 directory + 8,
                 u32::try_from(view.facts.len())
                     .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
-            );
+            )?;
             put_u32(
                 output,
                 directory + 12,
                 u32::try_from(payload).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
-            );
+            )?;
             let ordinal_bytes = if view.facts.is_empty() {
                 0
             } else {
-                usize::try_from(rows).unwrap_or(usize::MAX) * 4
+                rows_usize
+                    .checked_mul(4)
+                    .ok_or(LanguageExtensionEncodeError::LengthOverflow)?
             };
-            let length = ordinal_bytes + view.facts.len() * $kind.fact_bytes();
+            let fact_bytes = view
+                .facts
+                .len()
+                .checked_mul($kind.fact_bytes())
+                .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+            let length = ordinal_bytes
+                .checked_add(fact_bytes)
+                .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
             put_u32(
                 output,
                 directory + 16,
                 u32::try_from(length).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
-            );
+            )?;
             for raw in 0..rows {
                 if !view.facts.is_empty() {
                     let id = view
                         .ids
                         .get(crate::EntityId::new(raw))
                         .map_or(NONE, |id| id.raw);
-                    put_u32(
-                        output,
-                        payload + usize::try_from(raw).unwrap_or(usize::MAX) * 4,
-                        id,
-                    );
+                    let raw = usize::try_from(raw)
+                        .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+                    let offset = raw
+                        .checked_mul(4)
+                        .and_then(|offset| payload.checked_add(offset))
+                        .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+                    put_u32(output, offset, id)?;
                 }
             }
-            let facts = payload + ordinal_bytes;
+            let facts = payload
+                .checked_add(ordinal_bytes)
+                .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
             for (index, fact) in view.facts.iter().copied().enumerate() {
-                $encode(output, facts + index * $kind.fact_bytes(), fact);
+                let offset = index
+                    .checked_mul($kind.fact_bytes())
+                    .and_then(|offset| facts.checked_add(offset))
+                    .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+                $encode(output, offset, fact)?;
             }
-            payload += length;
+            payload = payload
+                .checked_add(length)
+                .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
         }};
     }
     plane!(
@@ -434,13 +545,14 @@ pub fn reopen_language_extension_section(
     if bytes.len() < HEADER {
         return Err(LanguageExtensionReopenError::Truncated);
     }
-    let observed = [bytes[0], bytes[1], bytes[2], bytes[3]];
+    let observed = read_array::<4>(bytes, 0)?;
     if observed != MAGIC {
         return Err(LanguageExtensionReopenError::Magic { observed });
     }
-    if get_u16(bytes, 4)? != SCHEMA {
+    let observed_schema = get_u16(bytes, 4)?;
+    if observed_schema != SCHEMA {
         return Err(LanguageExtensionReopenError::Schema {
-            observed: get_u16(bytes, 4)?,
+            observed: observed_schema,
         });
     }
     let claimed = get_u32(bytes, 12)?;
@@ -450,10 +562,23 @@ pub fn reopen_language_extension_section(
             actual: bytes.len(),
         });
     }
-    if bytes[6] != PLANES as u8 || read_authority(bytes, 7)? != authority {
+    let observed_planes = get_u8(bytes, 6)?;
+    if observed_planes != PLANES_WIRE {
+        return Err(LanguageExtensionReopenError::PlaneCount {
+            expected: PLANES_WIRE,
+            observed: observed_planes,
+        });
+    }
+    for offset in 10..12 {
+        let observed = get_u8(bytes, offset)?;
+        if observed != 0 {
+            return Err(LanguageExtensionReopenError::Reserved { offset, observed });
+        }
+    }
+    if read_authority(bytes, 7)? != authority {
         return Err(LanguageExtensionReopenError::Authority {
             expected: authority,
-            observed: [bytes[7], bytes[8], bytes[9]],
+            observed: read_array::<3>(bytes, 7)?,
         });
     }
     let empty = PlaneLayout {
@@ -463,22 +588,37 @@ pub fn reopen_language_extension_section(
         ordinal_bytes: 0,
     };
     let mut layouts = [empty; PLANES];
-    let mut expected = u32::try_from(HEADER + DIRECTORY * PLANES)
-        .map_err(|_| LanguageExtensionReopenError::Truncated)?;
+    let directory_bytes = DIRECTORY
+        .checked_mul(PLANES)
+        .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: HEADER })?;
+    let payload_start = HEADER
+        .checked_add(directory_bytes)
+        .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: HEADER })?;
+    let mut expected = u32::try_from(payload_start).map_err(|_| {
+        LanguageExtensionReopenError::StructuralOverflow {
+            offset: payload_start,
+        }
+    })?;
     for (index, kind) in LanguageExtensionDirectoryKind::ALL
         .iter()
         .copied()
         .enumerate()
     {
-        let directory = HEADER + DIRECTORY * index;
-        if *bytes
-            .get(directory)
-            .ok_or(LanguageExtensionReopenError::Truncated)?
-            != kind as u8
-        {
+        let directory = DIRECTORY
+            .checked_mul(index)
+            .and_then(|offset| HEADER.checked_add(offset))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: index })?;
+        for offset in directory + 1..directory + 4 {
+            let observed = get_u8(bytes, offset)?;
+            if observed != 0 {
+                return Err(LanguageExtensionReopenError::Reserved { offset, observed });
+            }
+        }
+        let observed_kind = get_u8(bytes, directory)?;
+        if observed_kind != kind.code() {
             return Err(LanguageExtensionReopenError::DirectoryKind {
                 expected: kind,
-                observed: bytes[directory],
+                observed: observed_kind,
             });
         }
         let rows = get_u32(bytes, directory + 4)?;
@@ -509,18 +649,22 @@ pub fn reopen_language_extension_section(
             0
         } else {
             rows.checked_mul(4)
-                .ok_or(LanguageExtensionReopenError::Truncated)?
+                .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?
         };
         let exact = facts
-            .checked_mul(kind.fact_bytes() as u32)
+            .checked_mul(kind.fact_bytes_wire())
             .and_then(|f| ordinal_bytes.checked_add(f))
-            .ok_or(LanguageExtensionReopenError::Truncated)?;
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
         if length != exact {
-            return Err(LanguageExtensionReopenError::Truncated);
+            return Err(LanguageExtensionReopenError::DirectoryLength {
+                kind,
+                expected: exact,
+                observed: length,
+            });
         }
         let end = offset
             .checked_add(length)
-            .ok_or(LanguageExtensionReopenError::Truncated)?;
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
         if usize::try_from(end)
             .ok()
             .filter(|end| *end <= bytes.len())
@@ -528,66 +672,91 @@ pub fn reopen_language_extension_section(
         {
             return Err(LanguageExtensionReopenError::Truncated);
         }
+        let offset_usize = usize::try_from(offset)
+            .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
+        let ordinal_bytes_usize = usize::try_from(ordinal_bytes)
+            .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
+        let mut next_expected = 0;
         for row in 0..rows {
-            if facts != 0 {
-                let raw = get_u32(
-                    bytes,
-                    usize::try_from(offset).unwrap_or(usize::MAX)
-                        + usize::try_from(row).unwrap_or(usize::MAX) * 4,
-                )?;
-                if raw != NONE && raw >= facts {
-                    return Err(LanguageExtensionReopenError::Ordinal {
-                        kind,
-                        row,
-                        raw,
-                        facts,
-                    });
-                }
+            if facts == 0 {
+                break;
             }
+            let ordinal = get_u32(bytes, row_offset(offset_usize, row, directory)?)?;
+            if ordinal == NONE {
+                continue;
+            }
+            if ordinal >= facts {
+                return Err(LanguageExtensionReopenError::Ordinal {
+                    kind,
+                    row,
+                    raw: ordinal,
+                    facts,
+                });
+            }
+            if ordinal > next_expected {
+                return Err(LanguageExtensionReopenError::CanonicalFact {
+                    kind,
+                    fact: next_expected,
+                });
+            }
+            if ordinal == next_expected {
+                next_expected = next_expected.checked_add(1).ok_or(
+                    LanguageExtensionReopenError::StructuralOverflow { offset: directory },
+                )?;
+            }
+        }
+        if next_expected != facts {
+            return Err(LanguageExtensionReopenError::CanonicalFact {
+                kind,
+                fact: next_expected,
+            });
         }
         for fact in 0..facts {
-            let mut referenced = false;
-            for row in 0..rows {
-                let ordinal = get_u32(
-                    bytes,
-                    usize::try_from(offset).unwrap_or(usize::MAX)
-                        + usize::try_from(row).unwrap_or(usize::MAX) * 4,
-                )?;
-                referenced |= ordinal == fact;
-            }
-            if !referenced {
-                return Err(LanguageExtensionReopenError::CanonicalFact { kind, fact });
-            }
+            let fact = usize::try_from(fact).map_err(|_| {
+                LanguageExtensionReopenError::StructuralOverflow { offset: directory }
+            })?;
+            let base = fact
+                .checked_mul(kind.fact_bytes())
+                .and_then(|fact_offset| ordinal_bytes_usize.checked_add(fact_offset))
+                .and_then(|fact_offset| offset_usize.checked_add(fact_offset))
+                .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
+            validate_fact(
+                bytes,
+                base,
+                kind,
+                u32::try_from(fact).map_err(|_| {
+                    LanguageExtensionReopenError::StructuralOverflow { offset: directory }
+                })?,
+                *bounds,
+            )?;
         }
-        for fact in 0..facts {
-            let base = usize::try_from(offset).unwrap_or(usize::MAX)
-                + usize::try_from(ordinal_bytes).unwrap_or(usize::MAX)
-                + usize::try_from(fact).unwrap_or(usize::MAX) * kind.fact_bytes();
-            validate_fact(bytes, base, kind, fact, *bounds)?;
-        }
-        layouts[index] = PlaneLayout {
-            offset: usize::try_from(offset).map_err(|_| LanguageExtensionReopenError::Truncated)?,
+        let layout = PlaneLayout {
+            offset: offset_usize,
             rows,
             facts,
-            ordinal_bytes: usize::try_from(ordinal_bytes)
-                .map_err(|_| LanguageExtensionReopenError::Truncated)?,
+            ordinal_bytes: ordinal_bytes_usize,
         };
+        let slot = layouts
+            .get_mut(index)
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: index })?;
+        *slot = layout;
         expected = end;
     }
     if usize::try_from(expected).ok() != Some(bytes.len()) {
         return Err(LanguageExtensionReopenError::Truncated);
     }
+    let [typescript, csharp, go, rust, python, java, clang] = layouts;
     Ok(ReopenedLanguageExtensionSection {
         bytes,
         authority,
         entity_rows: bounds.entities,
-        typescript: reopened_column(bytes, layouts[0]),
-        csharp: reopened_column(bytes, layouts[1]),
-        go: reopened_column(bytes, layouts[2]),
-        rust: reopened_column(bytes, layouts[3]),
-        python: reopened_column(bytes, layouts[4]),
-        java: reopened_column(bytes, layouts[5]),
-        clang: reopened_column(bytes, layouts[6]),
+        typescript: reopened_column(bytes, typescript),
+        csharp: reopened_column(bytes, csharp),
+        go: reopened_column(bytes, go),
+        rust: reopened_column(bytes, rust),
+        python: reopened_column(bytes, python),
+        java: reopened_column(bytes, java),
+        clang: reopened_column(bytes, clang),
     })
 }
 
@@ -802,39 +971,129 @@ fn optional_u32(raw: u32) -> Option<u32> {
     (raw != NONE).then_some(raw)
 }
 
-fn put_u16(output: &mut [u8], at: usize, value: u16) {
-    output[at..at + 2].copy_from_slice(&value.to_le_bytes());
-}
-fn put_u32(output: &mut [u8], at: usize, value: u32) {
-    output[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
-fn get_u16(input: &[u8], at: usize) -> Result<u16, LanguageExtensionReopenError> {
-    Ok(u16::from_le_bytes(
-        input
-            .get(at..at + 2)
-            .ok_or(LanguageExtensionReopenError::Truncated)?
-            .try_into()
-            .map_err(|_| LanguageExtensionReopenError::Truncated)?,
-    ))
-}
-fn get_u32(input: &[u8], at: usize) -> Result<u32, LanguageExtensionReopenError> {
-    Ok(u32::from_le_bytes(
-        input
-            .get(at..at + 4)
-            .ok_or(LanguageExtensionReopenError::Truncated)?
-            .try_into()
-            .map_err(|_| LanguageExtensionReopenError::Truncated)?,
-    ))
+fn output_range(
+    output: &mut [u8],
+    at: usize,
+    width: usize,
+) -> Result<&mut [u8], LanguageExtensionEncodeError> {
+    let actual = output.len();
+    let end = at
+        .checked_add(width)
+        .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+    output
+        .get_mut(at..end)
+        .ok_or(LanguageExtensionEncodeError::OutputRange {
+            offset: at,
+            width,
+            actual,
+        })
 }
 
-fn write_authority(output: &mut [u8], at: usize, authority: SemanticImageAuthority) {
+fn write_bytes(
+    output: &mut [u8],
+    at: usize,
+    value: &[u8],
+) -> Result<(), LanguageExtensionEncodeError> {
+    output_range(output, at, value.len())?.copy_from_slice(value);
+    Ok(())
+}
+
+fn fill_bytes(
+    output: &mut [u8],
+    at: usize,
+    width: usize,
+    value: u8,
+) -> Result<(), LanguageExtensionEncodeError> {
+    output_range(output, at, width)?.fill(value);
+    Ok(())
+}
+
+fn put_u8(output: &mut [u8], at: usize, value: u8) -> Result<(), LanguageExtensionEncodeError> {
+    let actual = output.len();
+    let byte = output_range(output, at, 1)?;
+    let slot = byte
+        .first_mut()
+        .ok_or(LanguageExtensionEncodeError::OutputRange {
+            offset: at,
+            width: 1,
+            actual,
+        })?;
+    *slot = value;
+    Ok(())
+}
+
+fn put_u16(output: &mut [u8], at: usize, value: u16) -> Result<(), LanguageExtensionEncodeError> {
+    write_bytes(output, at, &value.to_le_bytes())
+}
+
+fn put_u32(output: &mut [u8], at: usize, value: u32) -> Result<(), LanguageExtensionEncodeError> {
+    write_bytes(output, at, &value.to_le_bytes())
+}
+
+fn read_range(
+    input: &[u8],
+    at: usize,
+    width: usize,
+) -> Result<&[u8], LanguageExtensionReopenError> {
+    let end = at
+        .checked_add(width)
+        .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: at })?;
+    input
+        .get(at..end)
+        .ok_or(LanguageExtensionReopenError::Truncated)
+}
+
+fn read_array<const WIDTH: usize>(
+    input: &[u8],
+    at: usize,
+) -> Result<[u8; WIDTH], LanguageExtensionReopenError> {
+    read_range(input, at, WIDTH)?
+        .try_into()
+        .map_err(|_| LanguageExtensionReopenError::Truncated)
+}
+
+fn get_u8(input: &[u8], at: usize) -> Result<u8, LanguageExtensionReopenError> {
+    input
+        .get(at)
+        .copied()
+        .ok_or(LanguageExtensionReopenError::Truncated)
+}
+
+fn get_u16(input: &[u8], at: usize) -> Result<u16, LanguageExtensionReopenError> {
+    read_array(input, at).map(u16::from_le_bytes)
+}
+fn get_u32(input: &[u8], at: usize) -> Result<u32, LanguageExtensionReopenError> {
+    read_array(input, at).map(u32::from_le_bytes)
+}
+
+fn row_offset(
+    base: usize,
+    row: u32,
+    context: usize,
+) -> Result<usize, LanguageExtensionReopenError> {
+    let row = usize::try_from(row)
+        .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset: context })?;
+    row.checked_mul(4)
+        .and_then(|width| base.checked_add(width))
+        .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: context })
+}
+
+fn write_authority(
+    output: &mut [u8],
+    at: usize,
+    authority: SemanticImageAuthority,
+) -> Result<(), LanguageExtensionEncodeError> {
     match authority {
-        SemanticImageAuthority::Shared => output[at] = 0,
+        SemanticImageAuthority::Shared => fill_bytes(output, at, 3, 0),
         SemanticImageAuthority::Language(profile) => {
-            output[at] = 1;
+            put_u8(output, at, 1)?;
             let code: [u8; 2] = profile.into();
-            output[at + 1] = code[0];
-            output[at + 2] = code[1];
+            write_bytes(
+                output,
+                at.checked_add(1)
+                    .ok_or(LanguageExtensionEncodeError::LengthOverflow)?,
+                &code,
+            )
         }
     }
 }
@@ -842,22 +1101,17 @@ fn read_authority(
     input: &[u8],
     at: usize,
 ) -> Result<SemanticImageAuthority, LanguageExtensionReopenError> {
-    match *input
-        .get(at)
-        .ok_or(LanguageExtensionReopenError::Truncated)?
-    {
-        0 => Ok(SemanticImageAuthority::Shared),
-        1 => compiler_vocabulary::LanguageProfile::try_from([
-            *input
-                .get(at + 1)
-                .ok_or(LanguageExtensionReopenError::Truncated)?,
-            *input
-                .get(at + 2)
-                .ok_or(LanguageExtensionReopenError::Truncated)?,
-        ])
-        .map(SemanticImageAuthority::Language)
-        .map_err(|_| LanguageExtensionReopenError::Truncated),
-        _ => Err(LanguageExtensionReopenError::Truncated),
+    let observed @ [tag, first, second] = read_array::<3>(input, at)?;
+    match tag {
+        0 if first == 0 && second == 0 => Ok(SemanticImageAuthority::Shared),
+        0 => Err(LanguageExtensionReopenError::Authority {
+            expected: SemanticImageAuthority::Shared,
+            observed,
+        }),
+        1 => compiler_vocabulary::LanguageProfile::try_from([first, second])
+            .map(SemanticImageAuthority::Language)
+            .map_err(|source| LanguageExtensionReopenError::Profile { source }),
+        observed => Err(LanguageExtensionReopenError::AuthorityTag { observed }),
     }
 }
 fn authority_admits(
@@ -894,75 +1148,204 @@ fn authority_admits(
     }
 }
 
-fn word(output: &mut [u8], base: usize, index: usize, value: u32) {
-    put_u32(output, base + index * 4, value);
+fn word(
+    output: &mut [u8],
+    base: usize,
+    index: usize,
+    value: u32,
+) -> Result<(), LanguageExtensionEncodeError> {
+    let offset = index
+        .checked_mul(4)
+        .and_then(|width| base.checked_add(width))
+        .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
+    put_u32(output, offset, value)
 }
 fn option(id: Option<crate::TypeId>) -> u32 {
     id.map_or(NONE, |id| id.raw)
 }
-fn encode_typescript(o: &mut [u8], b: usize, f: crate::TypeScriptFacts) {
-    word(o, b, 0, f.type_parameters.raw);
-    word(o, b, 1, option(f.declared));
-    word(o, b, 2, f.computed.map_or(NONE, |id| id.erase().raw));
-}
-fn encode_csharp(o: &mut [u8], b: usize, f: crate::CSharpFacts) {
-    word(o, b, 0, f.nullability as u32);
-    word(o, b, 1, f.reference_kind as u32);
+fn encode_typescript(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::TypeScriptFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(output, base, 0, facts.type_parameters.raw)?;
+    word(output, base, 1, option(facts.declared))?;
     word(
-        o,
-        b,
+        output,
+        base,
         2,
-        u32::from(f.effects.is_async)
-            | u32::from(f.effects.is_iterator) << 1
-            | u32::from(f.effects.is_extension) << 2,
-    );
-    word(o, b, 3, f.partial as u32);
-    word(o, b, 4, f.constraints.raw);
-    word(o, b, 5, f.attributes.raw);
-    word(o, b, 6, f.xml_provenance.map_or(NONE, |s| s.file().raw));
-    word(o, b, 7, f.xml_provenance.map_or(0, |s| s.start()));
-    word(o, b, 8, f.xml_provenance.map_or(0, |s| s.end()));
+        facts.computed.map_or(NONE, |id| id.erase().raw),
+    )
 }
-fn encode_go(o: &mut [u8], b: usize, f: crate::GoFacts) {
-    word(o, b, 0, f.signature.parameters.raw);
-    word(o, b, 1, f.signature.results.raw);
-    word(o, b, 2, u32::from(f.signature.variadic));
-    word(o, b, 3, f.type_parameters.raw);
-    word(o, b, 4, f.fields.raw);
-    word(o, b, 5, f.method_set.raw);
-    word(o, b, 6, f.build_constraints.raw);
-}
-fn encode_rust(o: &mut [u8], b: usize, f: crate::RustFacts) {
-    word(o, b, 0, f.ownership as u32);
-    word(o, b, 1, f.lifetimes.raw);
-    word(o, b, 2, f.where_clauses.raw);
-    word(o, b, 3, f.macros.raw);
-}
-fn encode_python(o: &mut [u8], b: usize, f: crate::PythonFacts) {
-    word(o, b, 0, f.decorators.raw);
-    word(o, b, 1, f.parameter_kind as u32);
-    word(o, b, 2, f.dynamic_confidence as u32);
-}
-fn encode_java(o: &mut [u8], b: usize, f: crate::JavaFacts) {
-    word(o, b, 0, f.throws.raw);
-    word(o, b, 1, f.annotations.raw);
-    word(o, b, 2, f.overloads.raw);
-    word(o, b, 3, f.record_components.raw);
-}
-fn encode_clang(o: &mut [u8], b: usize, f: crate::ClangFacts) {
+fn encode_csharp(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::CSharpFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
     word(
-        o,
-        b,
+        output,
+        base,
         0,
-        u32::from(f.qualifiers.is_const)
-            | u32::from(f.qualifiers.is_volatile) << 1
-            | u32::from(f.qualifiers.is_restrict) << 2,
-    );
-    word(o, b, 1, f.storage as u32);
-    word(o, b, 2, f.layout.size_bits.unwrap_or(NONE));
-    word(o, b, 3, f.layout.align_bits.unwrap_or(NONE));
-    word(o, b, 4, f.templates.raw);
-    word(o, b, 5, f.includes.raw);
+        match facts.nullability {
+            crate::CSharpNullability::Oblivious => 0,
+            crate::CSharpNullability::NonNullable => 1,
+            crate::CSharpNullability::Nullable => 2,
+        },
+    )?;
+    word(
+        output,
+        base,
+        1,
+        match facts.reference_kind {
+            crate::CSharpReferenceKind::Value => 0,
+            crate::CSharpReferenceKind::In => 1,
+            crate::CSharpReferenceKind::Ref => 2,
+            crate::CSharpReferenceKind::Out => 3,
+        },
+    )?;
+    word(
+        output,
+        base,
+        2,
+        u32::from(facts.effects.is_async)
+            | u32::from(facts.effects.is_iterator) << 1
+            | u32::from(facts.effects.is_extension) << 2,
+    )?;
+    word(
+        output,
+        base,
+        3,
+        match facts.partial {
+            crate::CSharpPartialRole::None => 0,
+            crate::CSharpPartialRole::Definition => 1,
+            crate::CSharpPartialRole::Implementation => 2,
+        },
+    )?;
+    word(output, base, 4, facts.constraints.raw)?;
+    word(output, base, 5, facts.attributes.raw)?;
+    word(
+        output,
+        base,
+        6,
+        facts.xml_provenance.map_or(NONE, |span| span.file().raw),
+    )?;
+    word(
+        output,
+        base,
+        7,
+        facts.xml_provenance.map_or(0, crate::SourceSpan::start),
+    )?;
+    word(
+        output,
+        base,
+        8,
+        facts.xml_provenance.map_or(0, crate::SourceSpan::end),
+    )
+}
+fn encode_go(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::GoFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(output, base, 0, facts.signature.parameters.raw)?;
+    word(output, base, 1, facts.signature.results.raw)?;
+    word(output, base, 2, u32::from(facts.signature.variadic))?;
+    word(output, base, 3, facts.type_parameters.raw)?;
+    word(output, base, 4, facts.fields.raw)?;
+    word(output, base, 5, facts.method_set.raw)?;
+    word(output, base, 6, facts.build_constraints.raw)
+}
+fn encode_rust(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::RustFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(
+        output,
+        base,
+        0,
+        match facts.ownership {
+            crate::RustOwnership::Value => 0,
+            crate::RustOwnership::SharedBorrow => 1,
+            crate::RustOwnership::MutableBorrow => 2,
+            crate::RustOwnership::Moved => 3,
+        },
+    )?;
+    word(output, base, 1, facts.lifetimes.raw)?;
+    word(output, base, 2, facts.where_clauses.raw)?;
+    word(output, base, 3, facts.macros.raw)
+}
+fn encode_python(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::PythonFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(output, base, 0, facts.decorators.raw)?;
+    word(
+        output,
+        base,
+        1,
+        match facts.parameter_kind {
+            crate::PythonParameterKind::PositionalOnly => 0,
+            crate::PythonParameterKind::PositionalOrKeyword => 1,
+            crate::PythonParameterKind::VariadicPositional => 2,
+            crate::PythonParameterKind::KeywordOnly => 3,
+            crate::PythonParameterKind::VariadicKeyword => 4,
+        },
+    )?;
+    word(
+        output,
+        base,
+        2,
+        match facts.dynamic_confidence {
+            crate::Confidence::Syntactic => 0,
+            crate::Confidence::Heuristic => 1,
+            crate::Confidence::Indexed => 2,
+            crate::Confidence::Imported => 3,
+            crate::Confidence::Compiler => 4,
+        },
+    )
+}
+fn encode_java(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::JavaFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(output, base, 0, facts.throws.raw)?;
+    word(output, base, 1, facts.annotations.raw)?;
+    word(output, base, 2, facts.overloads.raw)?;
+    word(output, base, 3, facts.record_components.raw)
+}
+fn encode_clang(
+    output: &mut [u8],
+    base: usize,
+    facts: crate::ClangFacts,
+) -> Result<(), LanguageExtensionEncodeError> {
+    word(
+        output,
+        base,
+        0,
+        u32::from(facts.qualifiers.is_const)
+            | u32::from(facts.qualifiers.is_volatile) << 1
+            | u32::from(facts.qualifiers.is_restrict) << 2,
+    )?;
+    word(
+        output,
+        base,
+        1,
+        match facts.storage {
+            crate::ClangStorageClass::None => 0,
+            crate::ClangStorageClass::Auto => 1,
+            crate::ClangStorageClass::Static => 2,
+            crate::ClangStorageClass::Extern => 3,
+            crate::ClangStorageClass::Register => 4,
+            crate::ClangStorageClass::ThreadLocal => 5,
+        },
+    )?;
+    word(output, base, 2, facts.layout.size_bits.unwrap_or(NONE))?;
+    word(output, base, 3, facts.layout.align_bits.unwrap_or(NONE))?;
+    word(output, base, 4, facts.templates.raw)?;
+    word(output, base, 5, facts.includes.raw)
 }
 
 fn validate_fact(
@@ -972,7 +1355,14 @@ fn validate_fact(
     f: u32,
     n: LanguageExtensionCommonBounds,
 ) -> Result<(), LanguageExtensionReopenError> {
-    let w = |x: usize| get_u32(i, b + x * 4);
+    let w = |x: usize| {
+        let offset = x
+            .checked_mul(4)
+            .and_then(|width| b.checked_add(width))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: b })?;
+        get_u32(i, offset)
+    };
+    validate_fact_encoding(k, f, &w)?;
     let check = |raw, limit| {
         if raw < limit {
             Ok(())
@@ -1046,6 +1436,91 @@ fn validate_fact(
             word: 0,
             observed: w(0)?,
         });
+    }
+    Ok(())
+}
+
+fn validate_fact_encoding(
+    kind: LanguageExtensionDirectoryKind,
+    fact: u32,
+    word: &impl Fn(usize) -> Result<u32, LanguageExtensionReopenError>,
+) -> Result<(), LanguageExtensionReopenError> {
+    let reject = |word_index: u8, observed: u32| {
+        Err(LanguageExtensionReopenError::FactEncoding {
+            kind,
+            fact,
+            word: word_index,
+            observed,
+        })
+    };
+    match kind {
+        LanguageExtensionDirectoryKind::TypeScript | LanguageExtensionDirectoryKind::Java => {}
+        LanguageExtensionDirectoryKind::CSharp => {
+            let nullability = word(0)?;
+            if nullability > 2 {
+                return reject(0, nullability);
+            }
+            let reference_kind = word(1)?;
+            if reference_kind > 3 {
+                return reject(1, reference_kind);
+            }
+            let effects = word(2)?;
+            if effects & !7 != 0 {
+                return reject(2, effects);
+            }
+            let partial = word(3)?;
+            if partial > 2 {
+                return reject(3, partial);
+            }
+            let file = word(6)?;
+            let start = word(7)?;
+            let end = word(8)?;
+            if (file == NONE && (start != 0 || end != 0)) || (file != NONE && start > end) {
+                return Err(LanguageExtensionReopenError::SourceSpanEncoding {
+                    kind,
+                    fact,
+                    file,
+                    start,
+                    end,
+                });
+            }
+        }
+        LanguageExtensionDirectoryKind::Go => {
+            let variadic = word(2)?;
+            if variadic > 1 {
+                return reject(2, variadic);
+            }
+        }
+        LanguageExtensionDirectoryKind::Rust => {
+            let ownership = word(0)?;
+            if ownership > 3 {
+                return reject(0, ownership);
+            }
+        }
+        LanguageExtensionDirectoryKind::Python => {
+            let parameter_kind = word(1)?;
+            if parameter_kind > 4 {
+                return reject(1, parameter_kind);
+            }
+            let confidence = word(2)?;
+            if confidence > 4 {
+                return reject(2, confidence);
+            }
+        }
+        LanguageExtensionDirectoryKind::Clang => {
+            let qualifiers = word(0)?;
+            if qualifiers & !7 != 0 {
+                return reject(0, qualifiers);
+            }
+            let storage = word(1)?;
+            if storage > 5 {
+                return reject(1, storage);
+            }
+            let alignment = word(3)?;
+            if alignment == 0 {
+                return reject(3, alignment);
+            }
+        }
     }
     Ok(())
 }

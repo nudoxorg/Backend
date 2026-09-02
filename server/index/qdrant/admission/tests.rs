@@ -42,7 +42,7 @@ fn canonical_ir_column_enters_qdrant_without_point_or_segment_projection()
         docs: &[],
         attributes: &[],
         source: None,
-        typescript: None,
+        extension: None,
     }];
     builder.add_borrowed_tree(BorrowedTree {
         versions: &versions,

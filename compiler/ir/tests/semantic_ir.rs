@@ -213,7 +213,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     let versions = [version(2, 1), version(1, 1)];
     builder.set_language_profile(compiler_vocabulary::LanguageProfile::TypeScript(
         compiler_vocabulary::TypeScriptSource::TypeScript,
-    ));
+    ))?;
     let mut tree = builder.reserve_tree(&versions)?;
     let entities = tree.entities();
     let string = tree.intern_concrete(ConcreteType::Builtin(compiler_ir::BuiltinType::String))?;

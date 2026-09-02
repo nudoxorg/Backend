@@ -104,7 +104,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         docs: &[],
         attributes: &[],
         source: None,
-        typescript: None,
+        extension: None,
     }];
     tree.commit(&items, &[])
         .map_err(|cause| CompileFailure::Build {

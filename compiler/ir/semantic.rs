@@ -2452,6 +2452,10 @@ pub enum BuildError {
         authority: SemanticImageAuthority,
         extension: Language,
     },
+    LanguageProfileRebind {
+        existing: SemanticImageAuthority,
+        requested: LanguageProfile,
+    },
 }
 
 impl From<CapacityError> for BuildError {
@@ -2501,6 +2505,13 @@ impl fmt::Display for BuildError {
                 formatter,
                 "{extension:?} extension conflicts with image authority {authority:?}"
             ),
+            Self::LanguageProfileRebind {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "language profile {requested:?} cannot replace {existing:?}"
+            ),
         }
     }
 }
@@ -2541,8 +2552,16 @@ impl IrBuilder {
         Self::default()
     }
     /// Binds this image to one language before language-specific facts arrive.
-    pub fn set_language_profile(&mut self, profile: LanguageProfile) {
-        self.authority = SemanticImageAuthority::Language(profile);
+    pub fn set_language_profile(&mut self, profile: LanguageProfile) -> Result<(), BuildError> {
+        let requested = SemanticImageAuthority::Language(profile);
+        if self.authority != SemanticImageAuthority::Shared && self.authority != requested {
+            return Err(BuildError::LanguageProfileRebind {
+                existing: self.authority,
+                requested: profile,
+            });
+        }
+        self.authority = requested;
+        Ok(())
     }
     pub fn intern_atom(&mut self, bytes: &[u8]) -> Result<AtomId, BuildError> {
         self.atoms.intern(bytes).map_err(Into::into)

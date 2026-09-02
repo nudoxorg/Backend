@@ -30,7 +30,7 @@ mod wire;
 
 pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
-    PythonVersion, RustEdition, TypeScriptSource,
+    PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,

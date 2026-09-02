@@ -32,7 +32,7 @@ fn aligned_ir_vectors_need_no_point_projection() -> Result<(), compiler_ir::Buil
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         });
     builder.add_borrowed_tree(BorrowedTree {
         versions: &versions,
