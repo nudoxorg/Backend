@@ -146,11 +146,6 @@ impl Drop for Slab {
     }
 }
 
-// The slab owns plain initialized values and never hands out references beyond
-// `&self`/`&mut self`; moving the owner does not move its allocation.
-unsafe impl Send for Slab {}
-unsafe impl Sync for Slab {}
-
 /// Typed initialized prefix inside a [`Slab`].
 pub(crate) struct RawColumn<T: Copy> {
     pointer: NonNull<T>,
@@ -158,9 +153,6 @@ pub(crate) struct RawColumn<T: Copy> {
     capacity: usize,
     element: PhantomData<T>,
 }
-
-unsafe impl<T: Copy + Send> Send for RawColumn<T> {}
-unsafe impl<T: Copy + Sync> Sync for RawColumn<T> {}
 
 impl<T: Copy> RawColumn<T> {
     pub(crate) fn push(&mut self, value: T) {
