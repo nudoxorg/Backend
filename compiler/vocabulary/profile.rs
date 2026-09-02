@@ -398,8 +398,7 @@ mod tests {
     #[test]
     fn profile_semantics_are_part_of_recipe_identity() {
         let source = ContentId::<SourceFactDomain>::from_canonical_bytes(b"profile-source");
-        let toolchain =
-            ContentId::<ToolchainDomain>::from_canonical_bytes(b"profile-toolchain");
+        let toolchain = ContentId::<ToolchainDomain>::from_canonical_bytes(b"profile-toolchain");
         let rust_2021 = CompileRecipeFact::derive(
             LanguageProfile::Rust(RustEdition::Rust2021),
             Stage::LowerIr,
