@@ -23,8 +23,6 @@ enum ProbeError {
     ReadDependencyEntry(#[source] io::Error),
     #[error("no compatible compiler IR rlib was found")]
     MissingCompatibleArtifacts,
-    #[error("more than one compatible compiler IR rlib was found")]
-    MultipleCompatibleArtifacts,
     #[error("cannot spawn the consumer compiler")]
     SpawnCompiler(#[source] io::Error),
     #[error("the consumer compiler did not expose its standard input")]
@@ -33,6 +31,15 @@ enum ProbeError {
     WriteCompilerInput(#[source] io::Error),
     #[error("cannot collect the consumer compiler result")]
     WaitForCompiler(#[source] io::Error),
+    #[error("a consumer expected to be rejected compiled successfully")]
+    UnexpectedCompileSuccess,
+    #[error("the rejected consumer diagnostic omitted {expected}: {stderr}")]
+    MissingDiagnostic {
+        expected: &'static str,
+        stderr: String,
+    },
+    #[error("the legal consumer was rejected: {stderr}")]
+    LegalConsumerRejected { stderr: String },
 }
 
 struct RejectedProbe {
@@ -48,9 +55,9 @@ fn is_rlib(path: &Path, crate_name: &str) -> bool {
         .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".rlib"))
 }
 
-fn compatible_artifact(directory: &Path) -> Result<PathBuf, ProbeError> {
+fn compatible_artifacts(directory: &Path) -> Result<Vec<PathBuf>, ProbeError> {
     let formats = fs::read_dir(directory).map_err(ProbeError::ReadDependencyDirectory)?;
-    let mut compatible = None;
+    let mut compatible = Vec::new();
     for format_entry in formats {
         let format_path = format_entry
             .map_err(ProbeError::ReadDependencyEntry)?
@@ -66,12 +73,13 @@ fn compatible_artifact(directory: &Path) -> Result<PathBuf, ProbeError> {
         if !probe.status.success() {
             continue;
         }
-        if compatible.is_some() {
-            return Err(ProbeError::MultipleCompatibleArtifacts);
-        }
-        compatible = Some(format_path);
+        compatible.push(format_path);
     }
-    compatible.ok_or(ProbeError::MissingCompatibleArtifacts)
+    if compatible.is_empty() {
+        Err(ProbeError::MissingCompatibleArtifacts)
+    } else {
+        Ok(compatible)
+    }
 }
 
 fn compile(
@@ -113,13 +121,24 @@ fn compile(
         .map_err(ProbeError::WaitForCompiler)
 }
 
-fn assert_rejected(output: &Output, code: &str, symbols: &[&str]) {
+fn require_rejected(
+    output: &Output,
+    code: &'static str,
+    symbols: &'static [&'static str],
+) -> Result<(), ProbeError> {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "unexpected compile success");
-    assert!(stderr.contains(code), "missing {code}: {stderr}");
-    for symbol in symbols {
-        assert!(stderr.contains(symbol), "missing {symbol}: {stderr}");
+    if output.status.success() {
+        return Err(ProbeError::UnexpectedCompileSuccess);
     }
+    for expected in core::iter::once(code).chain(symbols.iter().copied()) {
+        if !stderr.contains(expected) {
+            return Err(ProbeError::MissingDiagnostic {
+                expected,
+                stderr: stderr.into_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -128,7 +147,7 @@ fn exported_rlib_keeps_views_private_typed_and_caller_borrowing() -> Result<(), 
     let dependencies = executable
         .parent()
         .ok_or(ProbeError::MissingDependencyDirectory)?;
-    let format_artifact = compatible_artifact(dependencies)?;
+    let format_artifacts = compatible_artifacts(dependencies)?;
 
     let rejected = [
         RejectedProbe {
@@ -167,20 +186,22 @@ fn exported_rlib_keeps_views_private_typed_and_caller_borrowing() -> Result<(), 
             symbols: &["bytes"],
         },
     ];
-    for probe in rejected {
-        let output = compile(probe.source, dependencies, &format_artifact)?;
-        assert_rejected(&output, probe.code, probe.symbols);
-    }
+    for format_artifact in format_artifacts {
+        for probe in &rejected {
+            let output = compile(probe.source, dependencies, &format_artifact)?;
+            require_rejected(&output, probe.code, probe.symbols)?;
+        }
 
-    let legal = compile(
-        b"use compiler_ir::{AtomId, EntityId, TypeId}; fn legal() -> u32 { AtomId::new(1).raw + EntityId::new(2).raw + TypeId::new(3).raw }",
-        dependencies,
-        &format_artifact,
-    )?;
-    assert!(
-        legal.status.success(),
-        "legal consumer rejected: {}",
-        String::from_utf8_lossy(&legal.stderr)
-    );
+        let legal = compile(
+            b"use compiler_ir::{AtomId, EntityId, TypeId}; fn legal() -> u32 { AtomId::new(1).raw + EntityId::new(2).raw + TypeId::new(3).raw }",
+            dependencies,
+            &format_artifact,
+        )?;
+        if !legal.status.success() {
+            return Err(ProbeError::LegalConsumerRejected {
+                stderr: String::from_utf8_lossy(&legal.stderr).into_owned(),
+            });
+        }
+    }
     Ok(())
 }
