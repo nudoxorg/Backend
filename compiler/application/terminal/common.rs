@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Allocation-free facts shared by native and durable terminal projection.
 
-use compiler_driver::NativeDiagnostic;
+use compiler_driver::{AuthorityDiagnostic, NativeDiagnostic};
 use interface_core::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerTerminal, NativeIoFact,
 };
@@ -48,6 +48,17 @@ pub(crate) const fn source_authority(
 
 pub(super) fn compiler_diagnostic(diagnostic: NativeDiagnostic<'_>) -> Option<CompilerDiagnostic> {
     CompilerDiagnostic::from_native(diagnostic.bytes, diagnostic.observed, diagnostic.truncated)
+}
+
+/// Copies a bounded authority diagnostic before its caller-owned scratch lease ends.
+pub(super) fn authority_diagnostic(
+    diagnostic: AuthorityDiagnostic<'_>,
+) -> Option<CompilerDiagnostic> {
+    CompilerDiagnostic::from_native(
+        diagnostic.primary,
+        diagnostic.observed,
+        diagnostic.truncated,
+    )
 }
 
 pub(super) fn io_fact(error: &std::io::Error) -> NativeIoFact {

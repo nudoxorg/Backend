@@ -1289,6 +1289,13 @@ name = "compiler-driver"
 version = "0.1.0"
 dependencies = [
  "compiler-ir",
+ "compiler-languages-clang",
+ "compiler-languages-csharp",
+ "compiler-languages-go",
+ "compiler-languages-java",
+ "compiler-languages-python",
+ "compiler-languages-rust",
+ "compiler-languages-typescript",
  "compiler-registry",
  "compiler-vocabulary",
  "heart-identity",

@@ -131,6 +131,7 @@ pub(super) fn compound_native_work_cleanup<'diagnostic>(
         }
         | CompileFailure::NativeWorkCleanup { .. }
         | CompileFailure::ToolingUnavailable { .. }
+        | CompileFailure::Authority { .. }
         | CompileFailure::LoweringUnsupported { .. }
         | CompileFailure::Build { .. }
         | CompileFailure::Prepare { .. }

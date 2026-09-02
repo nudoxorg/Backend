@@ -13,6 +13,13 @@ publish.workspace = true
 compiler-vocabulary = { path = "../vocabulary" }
 compiler-registry = { path = "../registry" }
 compiler-ir = { path = "../ir" }
+compiler-languages-clang = { path = "../languages/clang" }
+compiler-languages-csharp = { path = "../languages/csharp" }
+compiler-languages-go = { path = "../languages/go" }
+compiler-languages-java = { path = "../languages/java" }
+compiler-languages-python = { path = "../languages/python" }
+compiler-languages-rust = { path = "../languages/rust" }
+compiler-languages-typescript = { path = "../languages/typescript" }
 heart-identity = { path = "../../heart/identity" }
 thiserror.workspace = true
 

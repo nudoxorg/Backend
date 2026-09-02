@@ -3,14 +3,14 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::time::Duration;
 
-use compiler_vocabulary::{Language, LoweringUnsupported, NativeTool, Stage};
+use compiler_vocabulary::{AuthorityPhase, Language, LoweringUnsupported, NativeTool, Stage};
 use interface_core::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, FragmentCause, PublicationCause,
     SourceAuthority,
 };
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
-use super::super::scalar::{LanguageWire, NativeToolWire, StageWire};
+use super::super::scalar::{AuthorityPhaseWire, LanguageWire, NativeToolWire, StageWire};
 use super::authority::{CompilerAttemptWire, SourceAuthorityWire};
 use super::native::{NativeIoFactRef, NativeIoPhaseRef, NativeWorkCauseWire};
 use super::publication::serialize_publication_cause;
@@ -172,13 +172,29 @@ impl Serialize for FragmentCauseRef<'_> {
     }
 }
 
+pub(crate) struct AuthorityPhaseRef<'value>(pub(crate) &'value AuthorityPhase);
+
+impl Serialize for AuthorityPhaseRef<'_> {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        AuthorityPhaseWire::serialize(self.0, serializer)
+    }
+}
+
 /// Projects the named wire shape for compiler causes whose core enum contains tuple variants.
 pub(crate) fn serialize_compiler_cause<Output: Serializer>(
     cause: &CompilerCause,
     serializer: Output,
 ) -> Result<Output::Ok, Output::Error> {
-    let mut state = serializer.serialize_struct("CompilerCause", 2)?;
+    let mut state = serializer.serialize_struct("CompilerCause", 3)?;
     match cause {
+        CompilerCause::Authority { phase, diagnostic } => {
+            state.serialize_field("kind", "authority")?;
+            state.serialize_field("phase", &AuthorityPhaseRef(phase))?;
+            state.serialize_field("diagnostic", &DiagnosticRef(diagnostic))?;
+        }
         CompilerCause::NativeWork(cause) => {
             state.serialize_field("kind", "native_work")?;
             state.serialize_field("cause", &NativeWorkCauseWire(cause))?;

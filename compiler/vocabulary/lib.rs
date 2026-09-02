@@ -78,6 +78,25 @@ impl Language {
     ];
 }
 
+/// Closed phase of one language semantic-authority transaction.
+///
+/// This vocabulary is shared by the concrete compiler error, durable
+/// application terminal, CLI, MCP, and GPUI projections.  It names the phase
+/// only; the driver retains the frontend's concrete source error separately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityPhase {
+    /// Opening a caller-selected project, native library, or authority image failed.
+    Open,
+    /// Source or authority-image parsing failed.
+    Parse,
+    /// Cross-file, symbol, or import resolution failed.
+    Resolve,
+    /// Type checking or recursive type extraction failed.
+    TypeCheck,
+    /// Projecting valid authority facts into canonical IR failed.
+    Project,
+}
+
 /// Semantic compiler phase requested by an application operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {

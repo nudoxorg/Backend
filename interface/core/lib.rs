@@ -23,7 +23,7 @@ pub use compiler::{
     NativeWorkerPanicMessage, PublicationAuthority, PublicationCause, PublicationPhase,
     SourceAuthority, UnavailableCompiler,
 };
-pub use compiler_vocabulary::{LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES};
+pub use compiler_vocabulary::{AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES};
 pub use heart_adaptive::{
     BatteryState, ByteCount, CapabilityDomain, CapabilityKind, ContentId, GenerationId,
     IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,

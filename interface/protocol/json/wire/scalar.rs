@@ -23,6 +23,19 @@ pub(super) enum LanguageWire {
 
 #[derive(Serialize)]
 #[serde(
+    remote = "compiler_vocabulary::AuthorityPhase",
+    rename_all = "snake_case"
+)]
+pub(super) enum AuthorityPhaseWire {
+    Open,
+    Parse,
+    Resolve,
+    TypeCheck,
+    Project,
+}
+
+#[derive(Serialize)]
+#[serde(
     remote = "compiler_vocabulary::LanguageProfile",
     rename_all = "snake_case"
 )]

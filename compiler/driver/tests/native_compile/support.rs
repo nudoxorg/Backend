@@ -210,6 +210,7 @@ pub(super) enum CompileTerminal {
     DeadlineExceeded,
     DiagnosticLimit,
     NativeRejected,
+    Authority,
     LoweringUnsupported(LoweringUnsupported),
     Build,
     Prepare,
@@ -458,6 +459,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::DeadlineExceeded { .. } => CompileTerminal::DeadlineExceeded,
         CompileFailure::DiagnosticLimit { .. } => CompileTerminal::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminal::NativeRejected,
+        CompileFailure::Authority { .. } => CompileTerminal::Authority,
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }

@@ -6,8 +6,8 @@
 use std::{io::ErrorKind, ops::Deref, time::Duration};
 
 use compiler_vocabulary::{
-    CompileRecipeFact, Language, LanguageProfile, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
-    NativeTool, Stage,
+    AuthorityPhase, CompileRecipeFact, Language, LanguageProfile, LoweringUnsupported,
+    MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool, Stage,
 };
 pub use compiler_vocabulary::{
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase,
@@ -216,6 +216,13 @@ pub enum CompilerTerminal {
 /// Typed non-publication failure class compact enough to cross every application adapter.
 #[derive(Debug, Eq, PartialEq)]
 pub enum CompilerCause {
+    /// A language semantic authority failed before a canonical IR fragment existed.
+    Authority {
+        /// Exact authority transaction phase that failed.
+        phase: AuthorityPhase,
+        /// Bounded authority diagnostic projection, when the authority exposed bytes.
+        diagnostic: Option<CompilerDiagnostic>,
+    },
     /// A caller-owned native-work directory rejected preparation or cleanup.
     NativeWork(NativeWorkCause),
     /// The native child lifecycle failed in a named I/O phase.

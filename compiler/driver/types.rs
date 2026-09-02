@@ -3,11 +3,16 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Public caller authority plus closed compile terminals and compact output facts.
 
+mod authority;
 mod compile;
 mod request;
 mod terminal;
 mod toolchain;
 
+pub use authority::{
+    AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityPhase, AuthorityProfileMismatch,
+    FrontendAuthorityError,
+};
 pub use compile::{compile, compile_ir};
 pub(crate) use request::NativeRecipe;
 pub use request::{CompileControl, CompileRequest, CompileScratch};

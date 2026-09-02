@@ -10,7 +10,10 @@ use compiler_vocabulary::{
 };
 use thiserror::Error;
 
-use super::{SourceIdentity, ToolchainSelectionFact};
+use super::{
+    AuthorityDiagnostic, AuthorityPhase, FrontendAuthorityError, SourceIdentity,
+    ToolchainSelectionFact,
+};
 
 /// Validation or I/O failure for the bounded caller-owned native work directory.
 #[derive(Debug, Error)]
@@ -351,6 +354,24 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         status: std::process::ExitStatus,
         diagnostic: NativeDiagnostic<'diagnostic>,
+    },
+    /// An exact language authority failed before canonical fact admission.
+    ///
+    /// The source error remains concrete and the companion diagnostic is a
+    /// bounded typed transport projection, never a rendered replacement.
+    #[error("{recipe:?} authority failed during {phase:?}")]
+    Authority {
+        /// Exact source and binding identity selected by the request.
+        source_identity: SourceIdentity,
+        /// Exact recipe that selected this frontend authority.
+        recipe: CompileRecipeFact,
+        /// Closed authority transaction phase that failed.
+        phase: AuthorityPhase,
+        /// Bounded diagnostic bytes suitable for application/transport projection.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Original frontend error retained without conversion to prose.
+        #[source]
+        cause: FrontendAuthorityError,
     },
     /// Native syntax passed but its declaration lacks a closed compact semantic recipe.
     #[error("{recipe:?} has an unsupported LowerIr declaration recipe")]
