@@ -475,10 +475,12 @@ fn unknown_declared(spelling: &[u8]) -> ProjectedType<'_> {
 
 /// Projects one image type coordinate into the lane's lattice.
 fn project<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     reference: TypeRef,
     depth: usize,
+    anchor: u32,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
     if depth == 0 {
         return Err(ProjectionFault::Depth);
@@ -492,17 +494,33 @@ fn project<'image>(
             record.text = Some(VOID_SPELLING);
             Ok(ProjectedType::leaf(record, None).with_void())
         }
-        TypeKind::Declared => declared(image, names, &row),
-        TypeKind::Array => array(image, names, reference, depth),
+        TypeKind::Declared => declared(facts, image, names, &row, depth, anchor),
+        TypeKind::Array => array(facts, image, names, reference, depth, anchor),
         TypeKind::Variable => {
             let spelling = required_spelling(&row)?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
             record.text = Some(spelling);
             Ok(ProjectedType::leaf(record, Some(spelling)))
         }
-        TypeKind::Wildcard => wildcard(image, names, &row, depth),
-        TypeKind::Intersection => members(image, names, &row, SemanticTypeTag::Intersection),
-        TypeKind::Union => members(image, names, &row, SemanticTypeTag::Union),
+        TypeKind::Wildcard => wildcard(facts, image, names, &row, depth, anchor),
+        TypeKind::Intersection => members(
+            facts,
+            image,
+            names,
+            &row,
+            SemanticTypeTag::Intersection,
+            depth,
+            anchor,
+        ),
+        TypeKind::Union => members(
+            facts,
+            image,
+            names,
+            &row,
+            SemanticTypeTag::Union,
+            depth,
+            anchor,
+        ),
         TypeKind::Error => {
             let spelling = required_spelling(&row)?;
             Ok(ProjectedType::leaf(
@@ -565,9 +583,12 @@ fn primitive_cells(spelling: &[u8]) -> Result<(u32, u32), ProjectionFault<'_>> {
 /// row, and a generic application commits only when the base and every
 /// argument resolve to in-image nominal rows.
 fn declared<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
+    depth: usize,
+    anchor: u32,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
     let spelling = required_spelling(row)?;
     let total = row.children.len();
@@ -585,42 +606,34 @@ fn declared<'image>(
         // the enclosing row when it resolves to an in-image declaration.
         if argument_count == 0 {
             let enclosing = children.nth(total - 1);
-            let ordinal = match enclosing.map(|reference| pure_nominal(image, names, reference)) {
-                Some(Ok(Some(ordinal))) => Some(ordinal),
-                Some(Err(fault)) => return Err(fault),
-                Some(Ok(None)) | None => None,
-            };
-            if let Some(projected) = ordinal.and_then(|ordinal| {
-                ProjectedType::leaf(qualified_record(spelling), Some(spelling)).child(ordinal)
-            }) {
+            let enclosing = enclosing.ok_or(ProjectionFault::Malformed { kind: row.kind })?;
+            let target = child_target(facts, image, names, enclosing, anchor, depth - 1)?;
+            if let Some(projected) =
+                ProjectedType::leaf(qualified_record(spelling), Some(spelling)).child(target)
+            {
                 return Ok(projected);
             }
         }
         return Ok(unknown_declared(spelling));
     }
-    // Generic application: children are [base, arguments…] and every argument
-    // must resolve to an in-image nominal row.
-    let Some(base) = names.lookup(spelling) else {
-        return Ok(unknown_declared(spelling));
-    };
     if argument_count + 1 > MAX_TYPE_CHILDREN {
         return Ok(unknown_declared(spelling));
     }
-    let Some(mut projected) = ProjectedType::leaf(
+    let base = children
+        .next()
+        .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
+    let base = child_target(facts, image, names, base, anchor, depth - 1)?;
+    let mut projected = ProjectedType::leaf(
         SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
         Some(spelling),
     )
-    .child(base) else {
-        return Ok(unknown_declared(spelling));
-    };
-    for argument in children.take(argument_count) {
-        match pure_nominal(image, names, argument)? {
-            Some(ordinal) => match projected.child(ordinal) {
-                Some(next) => projected = next,
-                None => return Ok(unknown_declared(spelling)),
-            },
-            None => return Ok(unknown_declared(spelling)),
-        }
+    .child(base)
+    .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
+    for argument in children.take(argument_count - 1) {
+        let target = child_target(facts, image, names, argument, anchor, depth - 1)?;
+        projected = projected
+            .child(target)
+            .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
     }
     Ok(projected)
 }
@@ -629,10 +642,12 @@ fn declared<'image>(
 /// into one row whose text carries the derived arity spelling and whose single
 /// child targets the ultimate component's nominal row.
 fn array<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     reference: TypeRef,
     depth: usize,
+    anchor: u32,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
     let mut arity = 0usize;
     let mut cursor = reference;
@@ -650,7 +665,7 @@ fn array<'image>(
             .next()
             .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
     }
-    let component = project(image, names, cursor, depth - 1)?;
+    let component = project(facts, image, names, cursor, depth - 1, anchor)?;
     let nominal = match component.record.nominal {
         Some(NominalRef::Local(target)) => Some(target.raw),
         _ => None,
@@ -664,19 +679,61 @@ fn array<'image>(
     if let Some(projected) = committed {
         return Ok(projected);
     }
-    Ok(ProjectedType::leaf(
-        unknown_projection(component.spelling),
-        component.spelling,
-    ))
+    let spelling = ARITY_SPELLINGS
+        .get(arity - 1)
+        .copied()
+        .or_else(|| {
+            image
+                .type_fact(reference)
+                .ok()?
+                .spelling
+                .map(|atom| atom.bytes)
+        })
+        .ok_or(ProjectionFault::Malformed {
+            kind: TypeKind::Array,
+        })?;
+    let target = if component.record.tag == SemanticTypeTag::Unknown {
+        let row = image.type_fact(cursor).map_err(ProjectionFault::Image)?;
+        if row.kind == TypeKind::Declared && row.children.len() == 0 {
+            let spelling = required_spelling(&row)?;
+            intern_row(
+                facts,
+                anchor,
+                ProjectedType::leaf(qualified_record(spelling), Some(spelling))
+                    .child(anchor)
+                    .ok_or(ProjectionFault::Malformed { kind: row.kind })?,
+            )?
+        } else {
+            intern_row(facts, anchor, component)?
+        }
+    } else if component.record.tag == SemanticTypeTag::Nominal {
+        match component.record.nominal {
+            Some(NominalRef::Local(target)) => target.raw,
+            _ => {
+                return Err(ProjectionFault::Malformed {
+                    kind: TypeKind::Array,
+                });
+            }
+        }
+    } else {
+        intern_row(facts, anchor, component)?
+    };
+    ProjectedType::leaf(array_record(spelling), Some(spelling))
+        .child(target)
+        .ok_or(ProjectionFault::Malformed {
+            kind: TypeKind::Array,
+        })
 }
 
 /// Projects one wildcard row: an in-image bound commits the variance cell with
 /// its bound row; every other wildcard folds to a typed unknown.
 fn wildcard<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
     depth: usize,
+    anchor: u32,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
     let variance = if row.flags & WILDCARD_EXTENDS_FLAG != 0 {
         VARIANCE_COVARIANT
@@ -692,12 +749,11 @@ fn wildcard<'image>(
             None,
         ));
     };
-    if let Some(ordinal) = pure_nominal(image, names, bound)? {
-        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Wildcard);
-        record.payload0 = variance;
-        if let Some(projected) = ProjectedType::leaf(record, None).child(ordinal) {
-            return Ok(projected);
-        }
+    let target = child_target(facts, image, names, bound, anchor, depth - 1)?;
+    let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Wildcard);
+    record.payload0 = variance;
+    if let Some(projected) = ProjectedType::leaf(record, None).child(target) {
+        return Ok(projected);
     }
     let spelling = nearest_spelling(image, bound, depth - 1)?;
     Ok(ProjectedType::leaf(unknown_projection(spelling), spelling))
@@ -707,10 +763,13 @@ fn wildcard<'image>(
 /// in-image nominal row, otherwise the whole row folds to a typed unknown that
 /// retains the first member's spelling.
 fn members<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
     tag: SemanticTypeTag,
+    depth: usize,
+    anchor: u32,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
     let total = row.children.len();
     if total == 0 || total > MAX_TYPE_CHILDREN {
@@ -729,13 +788,10 @@ fn members<'image>(
     let mut projected = ProjectedType::leaf(SemanticTypeRecord::leaf(tag), first_spelling);
     let mut reference = first;
     loop {
-        match pure_nominal(image, names, reference)? {
-            Some(ordinal) => match projected.child(ordinal) {
-                Some(next) => projected = next,
-                None => return Ok(unknown_fold(first_spelling)),
-            },
-            None => return Ok(unknown_fold(first_spelling)),
-        }
+        let target = child_target(facts, image, names, reference, anchor, depth - 1)?;
+        projected = projected
+            .child(target)
+            .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
         let Some(next) = children.next() else {
             break;
         };
@@ -758,6 +814,56 @@ fn pure_nominal<'image>(
     }
     let spelling = required_spelling(&row)?;
     Ok(names.lookup(spelling))
+}
+
+/// Returns the backward coordinate usable by a compound parent. Bare local
+/// nominals retain the existing fast path; every other expressible shape is
+/// interned immediately, with the enclosing type fact as its owner.
+fn child_target<'image>(
+    facts: &mut FactSet<'image>,
+    image: JavaImage<'image>,
+    names: &NameIndex<'image>,
+    reference: TypeRef,
+    anchor: u32,
+    depth: usize,
+) -> Result<u32, ProjectionFault<'image>> {
+    if let Some(ordinal) = pure_nominal(image, names, reference)? {
+        return Ok(ordinal);
+    }
+    let row = image.type_fact(reference).map_err(ProjectionFault::Image)?;
+    let projected = if row.kind == TypeKind::Declared && row.children.len() == 0 {
+        let spelling = required_spelling(&row)?;
+        ProjectedType::leaf(qualified_record(spelling), Some(spelling))
+            .child(anchor)
+            .ok_or(ProjectionFault::Malformed { kind: row.kind })?
+    } else {
+        project(facts, image, names, reference, depth, anchor)?
+    };
+    intern_row(facts, anchor, projected)
+}
+
+/// Interns one anonymous record only after all of its child coordinates have
+/// been produced. The anchor is the enclosing already-pushed type fact for all
+/// declaration/member carriers in this lane.
+fn intern_row<'image>(
+    facts: &mut FactSet<'image>,
+    anchor: u32,
+    projected: ProjectedType<'image>,
+) -> Result<u32, ProjectionFault<'image>> {
+    let count = u32::try_from(projected.child_count).map_err(|_| ProjectionFault::IndexCapacity)?;
+    projected
+        .record
+        .validate(count)
+        .map_err(|_| ProjectionFault::IndexCapacity)?;
+    let row = facts
+        .intern_anonymous_type_row(anchor, projected.record)
+        .map_err(|_| ProjectionFault::IndexCapacity)?;
+    for target in projected.children.iter().take(projected.child_count) {
+        facts
+            .anonymous_type_child(*target, None, 0)
+            .map_err(|_| ProjectionFault::IndexCapacity)?;
+    }
+    Ok(row)
 }
 
 /// Walks one type subtree to the nearest image atom spelling, following the
@@ -975,8 +1081,18 @@ fn push_member<'source>(
     declared: &Declaration<'source>,
 ) -> Result<(), JavaCollectError> {
     let kind = entity_kind(declared.kind);
+    let anchor = declared
+        .owner
+        .and_then(|owner| names.lookup(owner.bytes))
+        .ok_or_else(|| {
+            terminal(ProjectionFault::Malformed {
+                kind: TypeKind::None,
+            })
+        })?;
     let projected = match declared.semantic_type {
-        Some(reference) => project(image, names, reference, DEPTH_LIMIT).map_err(terminal)?,
+        Some(reference) => {
+            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(terminal)?
+        }
         None => ProjectedType::leaf(unknown_record(TypeReason::Unannotated, None), None),
     };
     let fact = projected.attach(SemanticFact::new(
@@ -1008,6 +1124,14 @@ fn push_executable<'source>(
         .symbol(symbol_reference)
         .map_err(|cause| terminal(ProjectionFault::Image(cause)))?;
     let is_constructor = declared.kind == DeclarationKind::Constructor;
+    let anchor = declared
+        .owner
+        .and_then(|owner| names.lookup(owner.bytes))
+        .ok_or_else(|| {
+            terminal(ProjectionFault::OrphanOwner {
+                owner: symbol_reference,
+            })
+        })?;
 
     // Parameter carriers first so every executable target stays backward.
     let mut parameter_ordinals = [0_u32; MAX_FACT_CHILDREN];
@@ -1015,7 +1139,8 @@ fn push_executable<'source>(
     let mut parameter_count = 0usize;
     let mut signature_count = 0usize;
     for parameter in symbol.parameters {
-        let projected = project(image, names, parameter, DEPTH_LIMIT).map_err(terminal)?;
+        let projected =
+            project(facts, image, names, parameter, DEPTH_LIMIT, anchor).map_err(terminal)?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 kind: TypeKind::None,
@@ -1037,7 +1162,8 @@ fn push_executable<'source>(
     // Result carrier for non-void methods; constructors carry none.
     let mut result_ordinal = None;
     if !is_constructor && let Some(return_type) = declared.semantic_type {
-        let projected = project(image, names, return_type, DEPTH_LIMIT).map_err(terminal)?;
+        let projected =
+            project(facts, image, names, return_type, DEPTH_LIMIT, anchor).map_err(terminal)?;
         if !projected.void {
             let name = projected.spelling.ok_or_else(|| {
                 terminal(ProjectionFault::Malformed {
