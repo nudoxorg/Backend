@@ -6,6 +6,13 @@
 use heart_identity::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
+mod profile;
+
+pub use profile::{
+    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, LanguageProfile, PythonVersion,
+    RustEdition, TypeScriptSource, UnknownLanguageProfile,
+};
+
 /// Source-language family understood by the compiler plane.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Language {
