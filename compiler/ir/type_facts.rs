@@ -4,7 +4,10 @@
 //! length and bytes.  Nominal targets use tag 0 for none, tag 1 plus a local
 //! ordinal, and tag 2 plus a typed fragment identity and ordinal.  All local
 //! type coordinates point strictly backward: this is the DAG proof, so no
-//! cycle detector is needed.
+//! cycle detector is needed. A nominal target may additionally equal its own
+//! row ordinal — a declaration naming its own declared type, the terminal
+//! case every recursive nominal type closes on. No other forward coordinate
+//! is expressible.
 
 use compiler_ir_vocabulary::{
     EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeChild, SemanticTypeFault,
@@ -69,7 +72,7 @@ pub enum TypeFactFault {
         target: u32,
         record_count: u32,
     },
-    #[error("type fact {ordinal} nominal target {target} is not strictly backward")]
+    #[error("type fact {ordinal} nominal target {target} points forward at another row")]
     NominalForward { ordinal: u32, target: u32 },
     #[error("type fact {ordinal} nominal target {target} is outside the type lane")]
     NominalOutOfRange { ordinal: u32, target: u32 },
@@ -162,7 +165,9 @@ impl<'bytes> TypeFactLane<'bytes> {
                         target: target.raw,
                     });
                 }
-                if target.raw >= ordinal {
+                // The diagonal self-nominal is the terminal recursive case; a
+                // nominal at another row must still point strictly backward.
+                if target.raw > ordinal {
                     return Err(TypeFactFault::NominalForward {
                         ordinal,
                         target: target.raw,
@@ -448,7 +453,9 @@ fn check_nominal(ordinal: u32, target: u32, count: u32) -> Result<(), TypeFactFa
     if target >= count {
         return Err(TypeFactFault::NominalOutOfRange { ordinal, target });
     }
-    if target >= ordinal {
+    // The diagonal self-nominal is the terminal recursive case; a nominal at
+    // another row must still point strictly backward.
+    if target > ordinal {
         return Err(TypeFactFault::NominalForward { ordinal, target });
     }
     Ok(())

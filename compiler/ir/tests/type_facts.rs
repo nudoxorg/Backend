@@ -233,6 +233,45 @@ fn forward_child_is_rejected_at_admission() {
 
 #[test]
 fn forward_nominal_is_rejected_at_admission() {
+    let inputs = [
+        TypeFactInput {
+            owner: EntityId::new(0),
+            record: SemanticTypeRecord {
+                tag: SemanticTypeTag::Nominal,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: Some(NominalRef::Local(EntityId::new(2))),
+                children: ListSpan::new(0, 0),
+            },
+        },
+        TypeFactInput {
+            owner: EntityId::new(1),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+        },
+        TypeFactInput {
+            owner: EntityId::new(2),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+        },
+    ];
+    let lane = TypeFactLane {
+        inputs: &inputs,
+        children: &[],
+    };
+    assert!(matches!(
+        lane.admit(3, &[]),
+        Err(TypeFactFault::NominalForward {
+            ordinal: 0,
+            target: 2
+        })
+    ));
+}
+
+#[test]
+fn self_nominal_admits_and_round_trips_as_the_recursive_terminal() -> Result<(), TestFailure> {
+    // A declaration naming its own declared type is the one closed forward
+    // case: the diagonal self-nominal every recursive type closes on.
     let inputs = [TypeFactInput {
         owner: EntityId::new(0),
         record: SemanticTypeRecord {
@@ -249,13 +288,26 @@ fn forward_nominal_is_rejected_at_admission() {
         inputs: &inputs,
         children: &[],
     };
-    assert!(matches!(
-        lane.admit(1, &[]),
-        Err(TypeFactFault::NominalForward {
-            ordinal: 0,
-            target: 0
-        })
-    ));
+    assert!(lane.admit(1, &[]).is_ok());
+    let bytes = write(&lane)?;
+    let view = FragmentView::validate(&bytes)?;
+    let mut cursor =
+        view.type_facts()
+            .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+                declared: 0,
+            }))?;
+    let decoded = cursor
+        .next()
+        .transpose()
+        .map_err(TestFailure::Admission)?
+        .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes {
+            declared: 0,
+        }))?;
+    assert_eq!(
+        decoded.record.nominal,
+        Some(NominalRef::Local(EntityId::new(0)))
+    );
+    Ok(())
 }
 
 #[test]

@@ -295,6 +295,83 @@ fn admission_rejects_owners_outside_the_entity_lane() -> Result<(), TestFailure>
 }
 
 /// Foreign occurrences round-trip through the self-describing key: path,
+/// A same-fragment target round-trips, and an out-of-lane local ordinal is
+/// rejected at admission and at reopen with the exact operands.
+#[test]
+fn local_targets_round_trip_and_reject_out_of_lane_ordinals() -> Result<(), TestFailure> {
+    let identity = source();
+    let inputs = [
+        OccurrenceInput {
+            owner: EntityId::new(0),
+            occurrence: Occurrence {
+                target: OccurrenceTarget::Local(EntityId::new(1)),
+                kind: ReferenceKind::MethodCall,
+                confidence: Confidence::Oracle,
+                span: RelSpan { start: 3, end: 8 },
+            },
+        },
+        OccurrenceInput {
+            owner: EntityId::new(1),
+            occurrence: Occurrence {
+                target: OccurrenceTarget::Local(EntityId::new(0)),
+                kind: ReferenceKind::TypeReference,
+                confidence: Confidence::Oracle,
+                span: RelSpan { start: 0, end: 4 },
+            },
+        },
+    ];
+    let lane = OccurrenceLane { inputs: &inputs };
+    lane.admit(2)?;
+
+    let prepared = PreparedFragment::prepare_with_occurrences(
+        identity,
+        recipe(identity.identity),
+        &ENTITIES,
+        &[TypeNode::Primitive(PrimitiveType::Bool)],
+        &ATOMS,
+        None,
+        &lane,
+    )?;
+    let mut output = vec![0_u8; prepared.required_capacity()];
+    let written = prepared.write_into(&mut output)?;
+    let view = FragmentView::validate(written)?;
+    let mut cursor = view.occurrences().expect("admitted lane is present");
+    let first = cursor.next().expect("declared two records")?;
+    assert_eq!(
+        first.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(1))
+    );
+    let second = cursor.next().expect("declared two records")?;
+    assert_eq!(
+        second.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(0))
+    );
+    assert!(cursor.next().is_none());
+
+    // An owner-lane violation at admission retains the exact ordinal.
+    let out_of_range = [OccurrenceInput {
+        owner: EntityId::new(0),
+        occurrence: Occurrence {
+            target: OccurrenceTarget::Local(EntityId::new(2)),
+            kind: ReferenceKind::VariableUse,
+            confidence: Confidence::Syntactic,
+            span: RelSpan { start: 0, end: 1 },
+        },
+    }];
+    let rejected = OccurrenceLane {
+        inputs: &out_of_range,
+    };
+    assert!(matches!(
+        rejected.admit(2),
+        Err(OccurrenceFault::LocalTarget {
+            ordinal: 0,
+            target: 2,
+            entity_count: 2
+        })
+    ));
+    Ok(())
+}
+
 /// display, origin, and the optional kind all survive the reopen.
 #[test]
 fn foreign_occurrences_survive_the_reopen_with_their_key_cells() -> Result<(), TestFailure> {
@@ -331,7 +408,9 @@ fn foreign_occurrences_survive_the_reopen_with_their_key_cells() -> Result<(), T
                 })
             ));
         }
-        OccurrenceTarget::Stable(_) => panic!("first admitted fact is foreign"),
+        OccurrenceTarget::Stable(_) | OccurrenceTarget::Local(_) => {
+            panic!("first admitted fact is foreign")
+        }
     }
     Ok(())
 }

@@ -17,6 +17,7 @@
 
 use heart_identity::{ContentId, SourceFactDomain};
 
+use crate::coordinates::EntityId;
 use crate::entity::EntityKind;
 
 /// Purpose tag naming the declaration-key preimage inside the shared source
@@ -511,6 +512,14 @@ pub enum OccurrenceTarget<'bytes> {
     Stable(StableRef),
     /// The producer could not resolve the target; the key travels instead.
     Foreign(ForeignKey<'bytes>),
+    /// A declaration inside the same fragment as the reference.
+    ///
+    /// Same-fragment references never embed their own artifact identity: a
+    /// fragment's content identity is derived from its written bytes, so a
+    /// [`StableRef`](StableRef) naming the carrying fragment cannot appear
+    /// inside those bytes. The local ordinal is proven against the entity
+    /// lane by whichever lane admits the occurrence.
+    Local(EntityId),
 }
 
 /// One reference fact: the owning declaration (implied by the containing

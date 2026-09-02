@@ -17,6 +17,8 @@ use thiserror::Error;
 pub(crate) const STABLE_TARGET_TAG: u8 = 0;
 /// Wire tag of a foreign occurrence target.
 pub(crate) const FOREIGN_TARGET_TAG: u8 = 1;
+/// Wire tag of a same-fragment occurrence target.
+pub(crate) const LOCAL_TARGET_TAG: u8 = 2;
 
 /// Byte width of one serialized 32-byte identity cell.
 const IDENTITY_BYTES: usize = 32;
@@ -48,6 +50,14 @@ pub enum OccurrenceFault {
     Owner {
         ordinal: u32,
         owner: EntityId,
+        entity_count: u32,
+    },
+    #[error(
+        "occurrence {ordinal} names local target {target} outside the fragment entity lane of {entity_count}"
+    )]
+    LocalTarget {
+        ordinal: u32,
+        target: u32,
         entity_count: u32,
     },
     #[error("occurrence {ordinal} carries an unknown target tag {actual}")]
@@ -89,6 +99,15 @@ impl<'bytes> OccurrenceLane<'bytes> {
             }
             match input.occurrence.target {
                 OccurrenceTarget::Stable(_) => {}
+                OccurrenceTarget::Local(target) => {
+                    if target.raw >= entity_count {
+                        return Err(OccurrenceFault::LocalTarget {
+                            ordinal,
+                            target: target.raw,
+                            entity_count,
+                        });
+                    }
+                }
                 OccurrenceTarget::Foreign(foreign) => {
                     if foreign.path.is_empty() {
                         return Err(OccurrenceFault::EmptyPath { ordinal });
@@ -126,6 +145,7 @@ impl<'bytes> OccurrenceLane<'bytes> {
             length += 4 + 1 + 1 + 1 + 4 + 4;
             match input.occurrence.target {
                 OccurrenceTarget::Stable(_) => length += IDENTITY_BYTES * 2,
+                OccurrenceTarget::Local(_) => length += 4,
                 OccurrenceTarget::Foreign(foreign) => {
                     length += 1 + 2;
                     length += cell_len(foreign.path.as_bytes());
@@ -198,6 +218,12 @@ impl<'bytes> OccurrenceLane<'bytes> {
                             cursor = write_payload_cell(payload, cursor, ecosystem.as_bytes());
                         }
                     }
+                }
+                OccurrenceTarget::Local(target) => {
+                    payload[cursor] = LOCAL_TARGET_TAG;
+                    cursor += 1;
+                    payload[cursor..cursor + 4].copy_from_slice(&target.raw.to_le_bytes());
+                    cursor += 4;
                 }
             }
             payload[cursor] = u8::from(input.occurrence.kind);
@@ -298,6 +324,15 @@ pub(crate) fn occurrence_view_fault(fault: OccurrenceFault) -> crate::view::Occu
             entity_count,
         },
         OccurrenceFault::TargetTag { ordinal, actual } => View::TargetTag { ordinal, actual },
+        OccurrenceFault::LocalTarget {
+            ordinal,
+            target,
+            entity_count,
+        } => View::LocalTarget {
+            ordinal,
+            target,
+            entity_count,
+        },
         OccurrenceFault::OriginTag { ordinal, actual } => View::OriginTag { ordinal, actual },
         OccurrenceFault::ReferenceKind { ordinal, actual } => {
             View::ReferenceKind { ordinal, actual }
@@ -400,6 +435,16 @@ pub(crate) fn validate_occurrence_payload(
                     }
                 }
             }
+            LOCAL_TARGET_TAG => {
+                let target = reader.read_u32()?;
+                if target >= entity_count {
+                    return Err(OccurrenceFault::LocalTarget {
+                        ordinal,
+                        target,
+                        entity_count,
+                    });
+                }
+            }
             actual => return Err(OccurrenceFault::TargetTag { ordinal, actual }),
         }
         let kind = reader.read_u8()?;
@@ -479,6 +524,7 @@ fn decode_one<'payload>(
             let entity = ContentId::<SourceFactDomain>::try_from(reader.take(IDENTITY_BYTES)?)?;
             OccurrenceTarget::Stable(StableRef { fragment, entity })
         }
+        LOCAL_TARGET_TAG => OccurrenceTarget::Local(EntityId::new(reader.read_u32()?)),
         FOREIGN_TARGET_TAG => {
             let origin_tag = reader.read_u8()?;
             let kind_cell = reader.read_u16()?;

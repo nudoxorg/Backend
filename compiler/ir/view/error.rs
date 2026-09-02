@@ -224,6 +224,14 @@ pub enum OccurrenceFault {
         owner: u32,
         entity_count: u32,
     },
+    #[error(
+        "occurrence {ordinal} names local target {target} outside the fragment entity lane of {entity_count}"
+    )]
+    LocalTarget {
+        ordinal: u32,
+        target: u32,
+        entity_count: u32,
+    },
     #[error("occurrence {ordinal} carries an unknown target tag {actual}")]
     TargetTag { ordinal: u32, actual: u8 },
     #[error("occurrence {ordinal} carries an unknown foreign origin tag {actual}")]
