@@ -248,6 +248,88 @@ pub fn extract(source: &[u8], profile: PythonVersion) -> Result<ModuleFacts, Ext
     Ok(facts)
 }
 
+/// A declaration class proven directly by Ruff's typed module AST.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuffDeclarationKind {
+    /// A Python class declaration.
+    Class,
+    /// A Python function or async-function declaration.
+    Function,
+    /// A top-level assignment binding whose finality Ruff does not prove.
+    Static,
+}
+
+/// One source-backed declaration borrowed from an in-process Ruff parse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuffDeclaration {
+    /// Exact source span of the declared identifier.
+    pub name: Span,
+    /// Closed AST declaration kind.
+    pub kind: RuffDeclarationKind,
+}
+
+/// A non-escaping, source-backed Ruff module authority.
+pub struct RuffModule<'source> {
+    module: &'source ast::ModModule,
+}
+
+impl RuffModule<'_> {
+    /// Streams top-level declarations directly from Ruff AST nodes.
+    pub fn declarations(&self) -> impl Iterator<Item = RuffDeclaration> + '_ {
+        self.module.body.iter().filter_map(ruff_declaration)
+    }
+}
+
+/// Runs one non-escaping Ruff parse under the exact selected Python grammar.
+///
+/// The closure receives only borrowed AST facts. It must lower them before
+/// the parser owner is dropped, so no owned syntax DTO crosses this boundary.
+///
+/// # Errors
+///
+/// Returns Ruff's complete typed parse terminal without replacing it with a
+/// scanner result.
+pub fn with_module<Output>(
+    source: &[u8],
+    profile: PythonVersion,
+    consume: impl for<'module> FnOnce(RuffModule<'module>) -> Output,
+) -> Result<Output, ExtractionError> {
+    let (text, _) = source_text(source)?;
+    let parsed = parse_module(text, profile)?;
+    match parsed.syntax() {
+        ast::Mod::Module(module) => Ok(consume(RuffModule { module })),
+        ast::Mod::Expression(_) => Err(ExtractionError::NonModuleParse {
+            rejection: RejectedSyntax { profile, parsed },
+        }),
+    }
+}
+
+fn ruff_declaration(statement: &ast::Stmt) -> Option<RuffDeclaration> {
+    match statement {
+        ast::Stmt::FunctionDef(function) => Some(RuffDeclaration {
+            name: span(function.name.range()),
+            kind: RuffDeclarationKind::Function,
+        }),
+        ast::Stmt::ClassDef(class) => Some(RuffDeclaration {
+            name: span(class.name.range()),
+            kind: RuffDeclarationKind::Class,
+        }),
+        ast::Stmt::Assign(assign) => assignment_declaration(assign.targets.first()),
+        ast::Stmt::AnnAssign(assign) => assignment_declaration(Some(assign.target.as_ref())),
+        _ => None,
+    }
+}
+
+fn assignment_declaration(target: Option<&ast::Expr>) -> Option<RuffDeclaration> {
+    let ast::Expr::Name(name) = target? else {
+        return None;
+    };
+    Some(RuffDeclaration {
+        name: span(name.range()),
+        kind: RuffDeclarationKind::Static,
+    })
+}
+
 /// Validates source representation and derives its full byte span once.
 fn source_text(source: &[u8]) -> Result<(&str, Span), ExtractionError> {
     let module_span = source_span(source, 0, source.len())?;
@@ -1072,12 +1154,22 @@ impl Projection<'_> {
 mod tests {
     use ruff_text_size::{TextRange, TextSize};
 
-    use super::{ExtractionError, ModuleFacts, Projection, Span};
+    use compiler_vocabulary::PythonVersion;
+
+    use super::{ExtractionError, ModuleFacts, Projection, RuffDeclarationKind, Span, with_module};
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
         #[error("expected an invalid AST source range")]
         ExpectedInvalidRange,
+        #[error("Ruff authority rejected the valid direct-declaration fixture: {0:?}")]
+        Authority(ExtractionError),
+        #[error("Ruff direct declaration count differed: expected {expected}, observed {observed}")]
+        DeclarationCount { expected: usize, observed: usize },
+        #[error("Ruff direct declaration at index {index} had unexpected kind")]
+        DeclarationKind { index: usize },
+        #[error("Ruff direct declaration at index {index} had unexpected name span")]
+        DeclarationSpan { index: usize },
     }
 
     #[test]
@@ -1111,5 +1203,44 @@ mod tests {
             }) => Ok(()),
             _ => Err(TestError::ExpectedInvalidRange),
         }
+    }
+
+    #[test]
+    fn direct_declarations_exclude_docs_and_nested_bindings_with_exact_spans()
+    -> Result<(), TestError> {
+        let source = b"\"module docs\"\nvalue = 1\ntyped: int = 2\nasync def fetch() -> int:\n    return typed\nclass Shell:\n    def nested(self) -> None:\n        pass\n";
+        let declarations = with_module(source, PythonVersion::Python313, |module| {
+            module.declarations().collect::<Vec<_>>()
+        })
+        .map_err(TestError::Authority)?;
+        let expected = [
+            (RuffDeclarationKind::Static, b"value".as_slice()),
+            (RuffDeclarationKind::Static, b"typed".as_slice()),
+            (RuffDeclarationKind::Function, b"fetch".as_slice()),
+            (RuffDeclarationKind::Class, b"Shell".as_slice()),
+        ];
+        if declarations.len() != expected.len() {
+            return Err(TestError::DeclarationCount {
+                expected: expected.len(),
+                observed: declarations.len(),
+            });
+        }
+        for (index, (declaration, (kind, name))) in declarations.iter().zip(expected).enumerate() {
+            if declaration.kind != kind {
+                return Err(TestError::DeclarationKind { index });
+            }
+            let start = match usize::try_from(declaration.name.start) {
+                Ok(start) => start,
+                Err(_) => return Err(TestError::DeclarationSpan { index }),
+            };
+            let end = match usize::try_from(declaration.name.end) {
+                Ok(end) => end,
+                Err(_) => return Err(TestError::DeclarationSpan { index }),
+            };
+            if source.get(start..end) != Some(name) {
+                return Err(TestError::DeclarationSpan { index });
+            }
+        }
+        Ok(())
     }
 }

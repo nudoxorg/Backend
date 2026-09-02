@@ -26,7 +26,7 @@ pub(crate) mod clang;
 mod csharp;
 mod go;
 mod java;
-mod python;
+pub(crate) mod python;
 mod rust;
 mod scanner;
 pub(crate) mod typescript;
@@ -800,7 +800,9 @@ pub(super) fn emit<'source>(
 ) -> Result<(), LoweringUnsupported> {
     match language {
         Language::Rust => rust::collect(source, facts, unsupported)?,
-        Language::Python => python::collect(source, facts, unsupported)?,
+        // Python requires its exact versioned Ruff AST authority; callers use
+        // `python::collect` before this profile-erasing route.
+        Language::Python => return Err(LoweringUnsupported::PythonAssignmentName),
         // C and C++ require their exact closed profile and direct libclang
         // authority; callers use `clang::collect` before this erased route.
         Language::Clang => return Err(LoweringUnsupported::ClangDeclarationForm),

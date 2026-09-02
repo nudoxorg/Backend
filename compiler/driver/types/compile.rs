@@ -168,7 +168,7 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     };
     if !matches!(
         request.profile,
-        LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+        LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Python(_)
     ) {
         parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
     }
@@ -240,8 +240,19 @@ fn emit_facts<'source, 'diagnostic>(
             }
             Ok(())
         }
+        LanguageProfile::Python(profile) => {
+            lower::python::collect(profile, source, facts)
+                .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
         LanguageProfile::Rust(_)
-        | LanguageProfile::Python(_)
         | LanguageProfile::Go(_)
         | LanguageProfile::Java(_)
         | LanguageProfile::CSharp(_) => lower::emit(prepared.language, source, facts, unsupported)
@@ -250,6 +261,37 @@ fn emit_facts<'source, 'diagnostic>(
                 recipe: prepared.recipe,
                 cause,
             }),
+    }
+}
+
+fn python_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::python::PythonCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::python::PythonCollectError::Authority(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::Python {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::python::PythonCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
+        lower::python::PythonCollectError::Span { start, end } => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::PythonSpan {
+                diagnostic: AuthorityDiagnostic::absent(),
+                start,
+                end,
+            },
+        },
     }
 }
 

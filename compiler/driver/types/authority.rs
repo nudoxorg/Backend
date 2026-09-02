@@ -145,6 +145,16 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_python::ExtractionError,
     },
+    /// Ruff returned a declaration span outside the exact Python source authority.
+    #[error("Python authority returned an invalid source span")]
+    PythonSpan {
+        /// Bounded source diagnostic retained by the Python authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Inclusive Ruff source-byte start retained without a lossy message.
+        start: u32,
+        /// Exclusive Ruff source-byte end retained without a lossy message.
+        end: u32,
+    },
     /// The real Go package/type authority boundary did not yield complete facts.
     #[error("Go semantic authority failed")]
     Go {
@@ -217,6 +227,11 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: python_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::PythonSpan { diagnostic, .. } => AuthorityFailureProjection {
+                phase: AuthorityPhase::Project,
+                class: AuthorityDiagnosticClass::Projection,
+                diagnostic: *diagnostic,
+            },
             Self::Go { diagnostic, cause } => AuthorityFailureProjection {
                 phase: go_phase(cause),
                 class: go_class(cause),
@@ -257,7 +272,10 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                         | Self::TypeScriptSpan { .. },
                     LanguageProfile::TypeScript(_)
                 )
-                | (Self::Python { .. }, LanguageProfile::Python(_))
+                | (
+                    Self::Python { .. } | Self::PythonSpan { .. },
+                    LanguageProfile::Python(_)
+                )
                 | (Self::Go { .. }, LanguageProfile::Go(_))
                 | (Self::CSharp { .. }, LanguageProfile::CSharp(_))
                 | (Self::Java { .. }, LanguageProfile::Java(_))
