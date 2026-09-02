@@ -7,6 +7,7 @@
 //! declaration facts into this one canonical lane; unsupported authorities
 //! return typed terminals instead of inspecting source text here.
 use crate::types::LoweringUnsupported;
+use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AtomId, BuiltinType, ConcreteType, EntityVersion, Ir, IrBuilder, ItemKind, ListSpan,
     NominalRef, PayloadHash, PrimitiveShape, ProductChildRole, ProductChildren,
@@ -19,12 +20,10 @@ use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     DocFactInput, DocFragmentInput, EntityKind, EntityRecord, ExtensionPoolsLane, ExtensionRefList,
     ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter, Occurrence,
-    OccurrenceInput, OccurrenceLane, PrepareError, PreparedFragment, RecipeFact,
-    SourceIdentity, TypeFactInput, TypeFactLane, TypeNode, WriteError,
-    canonicalize_data_with_budget, encode_fragment_extension_section,
-    fragment_extension_section_len,
+    OccurrenceInput, OccurrenceLane, PrepareError, PreparedFragment, RecipeFact, SourceIdentity,
+    TypeFactInput, TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
+    encode_fragment_extension_section, fragment_extension_section_len,
 };
-use compiler_ir::{DocumentationLane};
 
 pub(crate) mod clang;
 pub(crate) mod csharp;
@@ -59,6 +58,12 @@ pub(super) const MAX_REF_LISTS: usize = 128;
 pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
+/// Dense bound of anonymous type rows interned beside the fact rows.
+pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 256;
+/// Total type-row budget: one record per fact plus the anonymous pool.
+pub(super) const MAX_TYPE_ROWS: usize = MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS;
+/// First pool-local ordinal of an anonymous type row.
+const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
 /// Sentinel marking an absent row in an extension plane's row table.
 const SECTION_NONE: u32 = u32::MAX;
 
@@ -173,10 +178,19 @@ impl<'source> SemanticFact<'source> {
     /// fact ordinal. Overflowing the bounded child lane sets the typed
     /// truncation flag so admission rejects the whole fact.
     #[must_use]
-    pub(super) fn type_child(mut self, target: u32, name: Option<&'source [u8]>, flags: u8) -> Self {
+    pub(super) fn type_child(
+        mut self,
+        target: u32,
+        name: Option<&'source [u8]>,
+        flags: u8,
+    ) -> Self {
         let ordinal = usize::from(self.type_child_count);
         if ordinal < MAX_TYPE_CHILDREN {
-            self.type_children[ordinal] = FactTypeChild { target, name, flags };
+            self.type_children[ordinal] = FactTypeChild {
+                target,
+                name,
+                flags,
+            };
             self.type_child_count += 1;
         } else {
             self.type_truncated = true;
@@ -188,6 +202,23 @@ impl<'source> SemanticFact<'source> {
     #[must_use]
     pub(super) const fn with_extension(mut self, extension: EmissionExtension) -> Self {
         self.extension = Some(extension);
+        self
+    }
+
+    /// Appends one literal text child (template-literal parts).
+    #[must_use]
+    pub(super) fn type_text_child(mut self, text: &'source [u8]) -> Self {
+        let ordinal = usize::from(self.type_child_count);
+        if ordinal < MAX_TYPE_CHILDREN {
+            self.type_children[ordinal] = FactTypeChild {
+                target: u32::MAX,
+                name: Some(text),
+                flags: 0,
+            };
+            self.type_child_count += 1;
+        } else {
+            self.type_truncated = true;
+        }
         self
     }
 
@@ -257,6 +288,8 @@ pub(super) enum FactFault {
     },
     /// The type-record child lane overflowed [`MAX_TYPE_CHILDREN`].
     TypeChildCapacity,
+    /// The anonymous type-row pool overflowed [`MAX_ANONYMOUS_TYPE_ROWS`].
+    TypeRowCapacity,
     /// An occurrence names an owner outside the pushed prefix.
     OccurrenceOwner { owner: u32, fact_count: usize },
     /// The bounded occurrence lane is full.
@@ -299,7 +332,7 @@ pub(super) struct FactSet<'source> {
     names: [&'source [u8]; MAX_EMISSION_FACTS],
     type_records: [SemanticTypeRecord<'source>; MAX_EMISSION_FACTS],
     type_child_targets: [u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
-    type_child_names: [Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    type_child_names: Box<[Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
     type_child_flags: [u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
     type_child_counts: [u8; MAX_EMISSION_FACTS],
     total_type_children: usize,
@@ -309,10 +342,10 @@ pub(super) struct FactSet<'source> {
     child_counts: [u8; MAX_EMISSION_FACTS],
     extensions: [Option<EmissionExtension>; MAX_EMISSION_FACTS],
     key_digests: [u64; MAX_EMISSION_FACTS],
-    occurrence_owners: [u32; MAX_EMISSION_OCCURRENCES],
-    occurrences: [Occurrence<'source>; MAX_EMISSION_OCCURRENCES],
+    occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
+    occurrences: Box<[Occurrence<'source>; MAX_EMISSION_OCCURRENCES]>,
     occurrence_len: usize,
-    doc_facts: [DocFactInput<'source>; MAX_EMISSION_DOC_FRAGMENTS],
+    doc_facts: Box<[DocFactInput<'source>; MAX_EMISSION_DOC_FRAGMENTS]>,
     doc_len: usize,
     extension_atoms: [&'source [u8]; MAX_EXTENSION_ATOMS],
     extension_atom_len: usize,
@@ -327,10 +360,20 @@ pub(super) struct FactSet<'source> {
     entity_lists: [[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
     entity_list_lengths: [u8; MAX_REF_LISTS],
     entity_list_len: usize,
+    anonymous_records: Box<[SemanticTypeRecord<'source>; MAX_ANONYMOUS_TYPE_ROWS]>,
+    anonymous_owners: [u32; MAX_ANONYMOUS_TYPE_ROWS],
+    anonymous_child_starts: [u32; MAX_ANONYMOUS_TYPE_ROWS],
+    anonymous_child_counts: [u8; MAX_ANONYMOUS_TYPE_ROWS],
+    anonymous_child_targets: [u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    anonymous_child_names: Box<[Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
+    anonymous_child_flags: [u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    anonymous_rows: usize,
+    anonymous_children_total: usize,
+    anonymous_child_pending: u32,
 }
 
 impl<'source> FactSet<'source> {
-    pub(super) const fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             len: 0,
             total_children: 0,
@@ -338,7 +381,7 @@ impl<'source> FactSet<'source> {
             names: [&[]; MAX_EMISSION_FACTS],
             type_records: [opaque_record(); MAX_EMISSION_FACTS],
             type_child_targets: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
-            type_child_names: [None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            type_child_names: Box::new([None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
             type_child_flags: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
             type_child_counts: [0; MAX_EMISSION_FACTS],
             total_type_children: 0,
@@ -348,30 +391,23 @@ impl<'source> FactSet<'source> {
             child_counts: [0; MAX_EMISSION_FACTS],
             extensions: [None; MAX_EMISSION_FACTS],
             key_digests: [0; MAX_EMISSION_FACTS],
-            occurrence_owners: [0; MAX_EMISSION_OCCURRENCES],
-            occurrences: [Occurrence {
-                target: compiler_ir::OccurrenceTarget::Foreign(
-                    compiler_ir::ForeignKey {
-                        origin: compiler_ir::ForeignOrigin::Universe {
-                            ecosystem: "",
-                        },
-                        path: "",
-                        display: "",
-                        kind: None,
-                    },
-                ),
+            occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
+            occurrences: Box::new([Occurrence {
+                target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
+                    origin: compiler_ir::ForeignOrigin::Universe { ecosystem: "" },
+                    path: "",
+                    display: "",
+                    kind: None,
+                }),
                 kind: compiler_ir::ReferenceKind::FunctionCall,
                 confidence: compiler_ir::OccurrenceConfidence::Syntactic,
-                span: compiler_ir::RelSpan {
-                    start: 0,
-                    end: 0,
-                },
-            }; MAX_EMISSION_OCCURRENCES],
+                span: compiler_ir::RelSpan { start: 0, end: 0 },
+            }; MAX_EMISSION_OCCURRENCES]),
             occurrence_len: 0,
-            doc_facts: [DocFactInput {
+            doc_facts: Box::new([DocFactInput {
                 owner: compiler_ir::EntityId::new(0),
                 fragment: DocFragmentInput::SoftBreak,
-            }; MAX_EMISSION_DOC_FRAGMENTS],
+            }; MAX_EMISSION_DOC_FRAGMENTS]),
             doc_len: 0,
             extension_atoms: [&[]; MAX_EXTENSION_ATOMS],
             extension_atom_len: 0,
@@ -390,6 +426,16 @@ impl<'source> FactSet<'source> {
             entity_lists: [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
             entity_list_lengths: [0; MAX_REF_LISTS],
             entity_list_len: 0,
+            anonymous_records: Box::new([opaque_record(); MAX_ANONYMOUS_TYPE_ROWS]),
+            anonymous_owners: [0; MAX_ANONYMOUS_TYPE_ROWS],
+            anonymous_child_starts: [0; MAX_ANONYMOUS_TYPE_ROWS],
+            anonymous_child_counts: [0; MAX_ANONYMOUS_TYPE_ROWS],
+            anonymous_child_targets: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            anonymous_child_names: Box::new([None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
+            anonymous_child_flags: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            anonymous_rows: 0,
+            anonymous_children_total: 0,
+            anonymous_child_pending: 0,
         }
     }
 
@@ -408,13 +454,123 @@ impl<'source> FactSet<'source> {
             .count() as u32
     }
 
+    /// Interns one anonymous type row owned by an already-pushed fact: the
+    /// home of every compound type (applications, arrays, pointers,
+    /// builtins) that is not itself a declaration. Children of the new row
+    /// are appended with [`FactSet::anonymous_type_child`] before the next
+    /// row is interned, keeping the pooled lane topologically backward.
+    /// The returned coordinate is the row's type-lane ordinal; fact rows
+    /// occupy `0..len`, anonymous rows follow.
+    pub(super) fn intern_anonymous_type_row(
+        &mut self,
+        owner: u32,
+        record: SemanticTypeRecord<'source>,
+    ) -> Result<u32, FactFault> {
+        if owner >= self.len as u32 {
+            return Err(FactFault::RefTarget {
+                lane: "type_rows",
+                raw: owner,
+                fact_count: self.len,
+            });
+        }
+        if self.anonymous_rows == MAX_ANONYMOUS_TYPE_ROWS {
+            return Err(FactFault::TypeRowCapacity);
+        }
+        let child_count = self.anonymous_child_pending;
+        record
+            .validate(child_count)
+            .map_err(FactFault::TypeRecord)?;
+        let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
+        let index = self.anonymous_rows;
+        self.anonymous_records[index] = record;
+        self.anonymous_owners[index] = owner;
+        self.anonymous_child_starts[index] = self.anonymous_children_total as u32;
+        self.anonymous_child_counts[index] = child_count as u8;
+        self.anonymous_rows += 1;
+        self.anonymous_child_pending = 0;
+        Ok(row)
+    }
+
+    /// Appends one ordered child to the anonymous row currently being built.
+    /// The target must name an already-interned anonymous row or an
+    /// already-pushed fact; the lane rejects forward coordinates.
+    pub(super) fn anonymous_type_child(
+        &mut self,
+        target: u32,
+        name: Option<&'source [u8]>,
+        flags: u8,
+    ) -> Result<(), FactFault> {
+        let anonymous = target >= ANONYMOUS_ROW_BASE;
+        let valid = if anonymous {
+            target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
+        } else {
+            target < self.len as u32
+        };
+        if !valid {
+            return Err(FactFault::TypeChildTarget {
+                position: self.anonymous_child_pending as usize,
+                target,
+                fact_count: self.len,
+            });
+        }
+        if self.anonymous_child_pending == MAX_TYPE_CHILDREN as u32
+            || self.anonymous_children_total == MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN
+        {
+            return Err(FactFault::TypeChildCapacity);
+        }
+        let pooled = self.anonymous_children_total;
+        self.anonymous_child_targets[pooled] = target;
+        self.anonymous_child_names[pooled] = name;
+        self.anonymous_child_flags[pooled] = flags;
+        self.anonymous_children_total += 1;
+        self.anonymous_child_pending += 1;
+        Ok(())
+    }
+
+    /// Attaches one language extension to an already-pushed fact whose
+    /// extension references members that only exist after the two-pass
+    /// declaration order (record components, method sets).
+    pub(super) fn attach_extension(
+        &mut self,
+        ordinal: usize,
+        extension: EmissionExtension,
+    ) -> Result<(), FactFault> {
+        if ordinal >= self.len {
+            return Err(FactFault::RefTarget {
+                lane: "extensions",
+                raw: ordinal as u32,
+                fact_count: self.len,
+            });
+        }
+        self.extensions[ordinal] = Some(extension);
+        Ok(())
+    }
+
+    /// First pooled position of one fact's type-record children.
+    pub(super) fn type_children_base(&self, ordinal: usize) -> usize {
+        self.type_child_counts[..ordinal]
+            .iter()
+            .map(|count| usize::from(*count))
+            .sum()
+    }
+
+    /// One pooled type-record child of a fact row by absolute position.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the borrowed child triple is the pooled lane's own representation"
+    )]
+    pub(super) fn type_child_flat(&self, pooled: usize) -> (u32, Option<&'source [u8]>, u8) {
+        (
+            self.type_child_targets[pooled],
+            self.type_child_names[pooled],
+            self.type_child_flags[pooled],
+        )
+    }
+
     /// Interns one extension atom spelling, returning its provisional
     /// coordinate. Identical spellings share one atom so committed bytes
     /// stay canonical.
-    pub(super) fn intern_atom(
-        &mut self,
-        bytes: &'source [u8],
-    ) -> Result<u32, FactFault> {
+    pub(super) fn intern_atom(&mut self, bytes: &'source [u8]) -> Result<u32, FactFault> {
         if let Some(index) = self.extension_atoms[..self.extension_atom_len]
             .iter()
             .position(|known| *known == bytes)
@@ -456,20 +612,20 @@ impl<'source> FactSet<'source> {
             .map(compiler_ir::EntityListId::new)
     }
 
-    fn intern_ref_list(
-        &mut self,
-        lane: &'static str,
-        elements: &[u32],
-    ) -> Result<u32, FactFault> {
+    fn intern_ref_list(&mut self, lane: &'static str, elements: &[u32]) -> Result<u32, FactFault> {
         if elements.len() > MAX_REF_LIST_ELEMENTS {
             return Err(FactFault::RefListElements);
         }
         for raw in elements {
-            if *raw >= self.len as u32 {
+            let limit = match lane {
+                "atom_lists" => self.extension_atom_len,
+                _ => self.len,
+            };
+            if *raw >= limit as u32 {
                 return Err(FactFault::RefTarget {
                     lane,
                     raw: *raw,
-                    fact_count: self.len,
+                    fact_count: limit,
                 });
             }
         }
@@ -643,8 +799,10 @@ impl<'source> FactSet<'source> {
         let mut semantic_types = [None; MAX_EMISSION_FACTS];
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
             if let Some(builtin) = builtin_type(self.type_records[ordinal]) {
-                *semantic_type =
-                    Some(tree.intern_concrete(ConcreteType::Builtin(builtin))?.erase());
+                *semantic_type = Some(
+                    tree.intern_concrete(ConcreteType::Builtin(builtin))?
+                        .erase(),
+                );
             }
         }
         let empty_item = TreeItemInput {
@@ -720,31 +878,46 @@ impl<'source> FactSet<'source> {
             .take(usize::from(fact.type_child_count))
             .enumerate()
         {
-            let wire_child = SemanticTypeChild {
-                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+            let target = if child.target == u32::MAX {
+                TypeChildTarget::Text
+            } else {
+                TypeChildTarget::Type(compiler_ir::TypeRef::Local(
                     compiler_ir::TypeId::new(child.target),
-                )),
+                ))
+            };
+            let wire_child = SemanticTypeChild {
+                target,
                 name: child.name,
                 flags: child.flags,
             };
             fact.type_record
                 .validate_child(position as u32, &wire_child)
                 .map_err(|fault| rejected(FactFault::TypeChild { position, fault }))?;
-            if child.target >= fact_ordinal as u32 {
-                return Err(rejected(FactFault::TypeChildTarget {
-                    position,
-                    target: child.target,
-                    fact_count: fact_ordinal,
-                }));
+            if child.target != u32::MAX {
+                let anonymous = child.target >= ANONYMOUS_ROW_BASE;
+                let valid = if anonymous {
+                    child.target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
+                } else {
+                    child.target < fact_ordinal as u32
+                };
+                if !valid {
+                    return Err(rejected(FactFault::TypeChildTarget {
+                        position,
+                        target: child.target,
+                        fact_count: fact_ordinal,
+                    }));
+                }
             }
         }
         if let Some(NominalRef::Local(target)) = fact.type_record.nominal {
             if target.raw > fact_ordinal as u32 {
-                return Err(rejected(FactFault::TypeRecord(SemanticTypeFault::ReservedCell {
-                    tag: fact.type_record.tag,
-                    cell: compiler_ir::TypeCell::Nominal,
-                    actual: target.raw,
-                })));
+                return Err(rejected(FactFault::TypeRecord(
+                    SemanticTypeFault::ReservedCell {
+                        tag: fact.type_record.tag,
+                        cell: compiler_ir::TypeCell::Nominal,
+                        actual: target.raw,
+                    },
+                )));
             }
         }
         let child_count = u32::from(fact.child_count);
@@ -841,17 +1014,13 @@ fn fact_key_digest(fact: &SemanticFact<'_>) -> u64 {
     let mut preimage = [0u8; 64];
     preimage[0] = fact.kind as u8;
     preimage[1] = u32::from(fact.constructor.tag) as u8;
-    preimage[..8].copy_from_slice(&fact.constructor.payload0.to_le_bytes());
-    let mut cursor = 8;
-    preimage[cursor..cursor + 4].copy_from_slice(&fact.constructor.payload1.to_le_bytes());
+    preimage[2..6].copy_from_slice(&fact.constructor.payload0.to_le_bytes());
+    preimage[6..10].copy_from_slice(&fact.constructor.payload1.to_le_bytes());
+    let mut cursor = 10;
+    preimage[cursor] = u8::from(fact.type_record.tag);
+    cursor += 1;
+    preimage[cursor..cursor + 4].copy_from_slice(&fact.type_record.payload0.to_le_bytes());
     cursor += 4;
-    if cursor + 8 <= preimage.len() {
-        let tag_cell = u8::from(fact.type_record.tag);
-        preimage[cursor] = tag_cell;
-        preimage[cursor + 4..cursor + 8]
-            .copy_from_slice(&fact.type_record.payload0.to_le_bytes());
-        cursor += 8;
-    }
     for child in fact.children.iter().take(usize::from(fact.child_count)) {
         if cursor + 8 <= preimage.len() {
             preimage[cursor] = u8::from(child.role);
@@ -1112,7 +1281,8 @@ pub(super) fn admit<'source, 'output>(
 
     // Type-node lane: the opaque sentinel (when any fact needs it) followed by
     // one node per distinct proven primitive in first-use order.
-    let any_opaque = (0..fact_count).any(|ordinal| builtin_type(facts.type_records[ordinal]).is_none());
+    let any_opaque =
+        (0..fact_count).any(|ordinal| builtin_type(facts.type_records[ordinal]).is_none());
     let mut nodes = [TypeNode::Reference(TypeId::new(0)); MAX_TYPE_NODES];
     let mut node_count = 0;
     let mut primitive_nodes = [0_usize; PRIMITIVE_NODE_CAPACITY];
@@ -1165,7 +1335,10 @@ pub(super) fn admit<'source, 'output>(
             bytes: facts.names[ordinal],
         };
     }
-    for (index, bytes) in facts.extension_atoms[..extension_atom_count].iter().enumerate() {
+    for (index, bytes) in facts.extension_atoms[..extension_atom_count]
+        .iter()
+        .enumerate()
+    {
         atoms[fact_count + index] = AtomInput { bytes };
     }
 
@@ -1260,16 +1433,49 @@ pub(super) fn admit<'source, 'output>(
     )
     .map_err(AdmissionFault::Canonical)?;
 
-    let mut type_facts = [TypeFactInput {
+    let mut type_facts = Box::new([TypeFactInput {
         owner: compiler_ir::EntityId::new(0),
         record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
-    }; MAX_EMISSION_FACTS];
-    let mut type_children = [SemanticTypeChild {
+    }; MAX_TYPE_ROWS]);
+    let mut type_children = Box::new([SemanticTypeChild {
         target: TypeChildTarget::Text,
         name: None,
         flags: 0,
-    }; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN];
+    }; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]);
+    let anonymous_rows = facts.anonymous_rows;
+    // Lane order: anonymous rows first (topological by construction), then
+    // fact rows — every fact-row child and anonymous child points backward.
+    let mut remap = |target: u32| -> u32 {
+        if target >= ANONYMOUS_ROW_BASE {
+            target - ANONYMOUS_ROW_BASE
+        } else {
+            target + anonymous_rows as u32
+        }
+    };
     let mut type_pooled_cursor = 0_usize;
+    for (index, record) in facts.anonymous_records[..anonymous_rows].iter().enumerate() {
+        let child_count = usize::from(facts.anonymous_child_counts[index]);
+        let record = SemanticTypeRecord {
+            children: ListSpan::new(type_pooled_cursor as u32, child_count as u32),
+            ..*record
+        };
+        let base = facts.anonymous_child_starts[index] as usize;
+        for offset in 0..child_count {
+            let pooled = type_pooled_cursor + offset;
+            type_children[pooled] = SemanticTypeChild {
+                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                    compiler_ir::TypeId::new(remap(facts.anonymous_child_targets[base + offset])),
+                )),
+                name: facts.anonymous_child_names[base + offset],
+                flags: facts.anonymous_child_flags[base + offset],
+            };
+        }
+        type_pooled_cursor += child_count;
+        type_facts[index] = TypeFactInput {
+            owner: compiler_ir::EntityId::new(facts.anonymous_owners[index]),
+            record,
+        };
+    }
     for ordinal in 0..fact_count {
         let child_count = usize::from(facts.type_child_counts[ordinal]);
         let record = SemanticTypeRecord {
@@ -1278,22 +1484,24 @@ pub(super) fn admit<'source, 'output>(
         };
         for offset in 0..child_count {
             let pooled = type_pooled_cursor + offset;
+            let source = facts.type_child_flat(facts.type_children_base(ordinal) + offset);
             type_children[pooled] = SemanticTypeChild {
                 target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                    compiler_ir::TypeId::new(facts.type_child_targets[pooled]),
+                    compiler_ir::TypeId::new(remap(source.0)),
                 )),
-                name: facts.type_child_names[pooled],
-                flags: facts.type_child_flags[pooled],
+                name: source.1,
+                flags: source.2,
             };
         }
         type_pooled_cursor += child_count;
-        type_facts[ordinal] = TypeFactInput {
+        type_facts[anonymous_rows + ordinal] = TypeFactInput {
             owner: compiler_ir::EntityId::new(ordinal as u32),
             record,
         };
     }
+    let type_row_count = anonymous_rows + fact_count;
     let type_fact_lane = TypeFactLane {
-        inputs: &type_facts[..fact_count],
+        inputs: &type_facts[..type_row_count],
         children: &type_children[..type_pooled_cursor],
     };
 
@@ -1381,17 +1589,15 @@ pub(super) fn admit<'source, 'output>(
 
     // Occurrence lane: every admitted reference fact, owner-relative, in
     // admission order.
-    let mut occurrence_inputs = [OccurrenceInput {
+    let mut occurrence_inputs = Box::new([OccurrenceInput {
         owner: compiler_ir::EntityId::new(0),
         occurrence: Occurrence {
-            target: compiler_ir::OccurrenceTarget::Local(
-                compiler_ir::EntityId::new(0),
-            ),
+            target: compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(0)),
             kind: compiler_ir::ReferenceKind::FunctionCall,
             confidence: compiler_ir::OccurrenceConfidence::Syntactic,
             span: compiler_ir::RelSpan { start: 0, end: 0 },
         },
-    }; MAX_EMISSION_OCCURRENCES];
+    }; MAX_EMISSION_OCCURRENCES]);
     for (index, owner) in facts.occurrence_owners[..facts.occurrence_len]
         .iter()
         .enumerate()
@@ -1413,7 +1619,10 @@ pub(super) fn admit<'source, 'output>(
     // Extension pooled lanes: provisional atom coordinates become final atom
     // lane positions; type and entity coordinates were already final.
     let mut atom_list_elements = [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS];
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len].iter().enumerate() {
+    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
+        .iter()
+        .enumerate()
+    {
         for (offset, provisional) in facts.atom_lists[index][..usize::from(*length)]
             .iter()
             .enumerate()
@@ -1428,25 +1637,25 @@ pub(super) fn admit<'source, 'output>(
             atom_list_elements[index][offset] = (fact_count + *provisional as usize) as u32;
         }
     }
-    let mut pooled_atom_lists = [ExtensionRefList {
-        elements: &[],
-    }; MAX_REF_LISTS];
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len].iter().enumerate() {
+    let mut pooled_atom_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
+    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
+        .iter()
+        .enumerate()
+    {
         pooled_atom_lists[index] = ExtensionRefList {
             elements: &atom_list_elements[index][..usize::from(*length)],
         };
     }
-    let mut pooled_type_lists = [ExtensionRefList {
-        elements: &[],
-    }; MAX_REF_LISTS];
-    for (index, length) in facts.type_list_lengths[..facts.type_list_len].iter().enumerate() {
+    let mut pooled_type_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
+    for (index, length) in facts.type_list_lengths[..facts.type_list_len]
+        .iter()
+        .enumerate()
+    {
         pooled_type_lists[index] = ExtensionRefList {
             elements: &facts.type_lists[index][..usize::from(*length)],
         };
     }
-    let mut pooled_entity_lists = [ExtensionRefList {
-        elements: &[],
-    }; MAX_REF_LISTS];
+    let mut pooled_entity_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
     for (index, length) in facts.entity_list_lengths[..facts.entity_list_len]
         .iter()
         .enumerate()

@@ -62,11 +62,8 @@ pub(crate) fn collect<'source>(
             });
         }
         let kind = entity_kind(declaration.kind);
-        push_fact(
-            facts,
-            SemanticFact::new(kind, name, constructor(kind)),
-        )
-        .map_err(CSharpCollectError::Lowering)?;
+        push_fact(facts, SemanticFact::new(kind, name, constructor(kind)))
+            .map_err(CSharpCollectError::Lowering)?;
     }
     Ok(())
 }

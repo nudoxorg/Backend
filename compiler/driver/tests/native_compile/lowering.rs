@@ -151,6 +151,8 @@ fn direct_oxc_bindings_fill_the_compact_fragment_without_a_tsc_spawn() -> Result
         &compiled.fragment,
         &[
             (b"Shape", EntityKind::Trait),
+            (b"area", EntityKind::Function),
+            (b"number", EntityKind::Alias),
             (b"value", EntityKind::Constant),
         ],
     )?;

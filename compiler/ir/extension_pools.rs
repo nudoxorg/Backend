@@ -126,7 +126,9 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
     pub fn payload_len(&self) -> usize {
         let mut length = 4;
         for parameter in self.type_parameters {
-            length += 5 + parameter.name.len() + 10;
+            length += 5 + parameter.name.len();
+            length += optional_len(parameter.constraint);
+            length += optional_len(parameter.default);
         }
         for lane in [self.atom_lists, self.type_lists, self.entity_lists] {
             length += 4;
@@ -407,6 +409,14 @@ fn read_optional(bytes: &[u8], at: &mut usize) -> Result<Option<u32>, ExtensionP
 fn write_u32(payload: &mut [u8], at: usize, value: u32) -> usize {
     payload[at..at + 4].copy_from_slice(&value.to_le_bytes());
     at + 4
+}
+
+/// Exact serialized width of one optional type-reference cell.
+const fn optional_len(value: Option<u32>) -> usize {
+    match value {
+        None => 1,
+        Some(_) => 5,
+    }
 }
 
 fn write_cell(payload: &mut [u8], cursor: usize, bytes: &[u8]) -> usize {

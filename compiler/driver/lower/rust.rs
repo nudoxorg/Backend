@@ -52,7 +52,7 @@ pub(crate) fn collect<'source>(
                         facts,
                         SemanticFact::new(
                             entity_kind(declaration.kind)?,
-                            name, 
+                            name,
                             constructor(declaration.kind)?,
                         ),
                     )

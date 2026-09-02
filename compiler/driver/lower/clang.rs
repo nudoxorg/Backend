@@ -73,11 +73,8 @@ pub(crate) fn collect<'source>(
                 LoweringUnsupported::ClangDeclarationForm,
             ));
         };
-        push_fact(
-            facts,
-            SemanticFact::new(kind, name, constructor(kind)),
-        )
-        .map_err(ClangCollectError::Lowering)?;
+        push_fact(facts, SemanticFact::new(kind, name, constructor(kind)))
+            .map_err(ClangCollectError::Lowering)?;
     }
     Ok(())
 }

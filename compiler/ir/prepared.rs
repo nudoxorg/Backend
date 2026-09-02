@@ -463,6 +463,7 @@ impl<'facts> PreparedFragment<'facts> {
                 occurrence_layout,
             );
             write_occurrence_payload(written, occurrence_layout, lane);
+            ordinal += 1;
         }
         if let (Some(lane), Some(type_layout)) = (self.type_facts, self.layout.type_facts) {
             write_directory_entry(written, ordinal, SectionKind::TypeFacts, type_layout);

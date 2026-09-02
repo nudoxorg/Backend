@@ -443,6 +443,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
+        CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,

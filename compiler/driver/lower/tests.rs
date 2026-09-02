@@ -9,8 +9,8 @@ use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 use super::{
-    AdmissionFault, FactFault, FactSet, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
-    RejectedFact, SemanticFact,
+    AdmissionFault, FactFault, FactSet, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, RejectedFact,
+    SemanticFact,
 };
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
@@ -92,7 +92,7 @@ fn base_facts() -> [SemanticFact<'static>; 2] {
         ),
         SemanticFact::new(
             EntityKind::Function,
-            b"beta", 
+            b"beta",
             SemanticProductConstructor::function(0, 1),
         )
         .child(ProductChildRole::FunctionResult, 0),
@@ -121,7 +121,7 @@ fn constructor_role_and_name_mutations_change_committed_fragment_bytes() -> Resu
     let mut role_mutation = base_facts();
     role_mutation[1] = SemanticFact::new(
         EntityKind::Function,
-        b"beta", 
+        b"beta",
         SemanticProductConstructor::function(1, 0),
     )
     .child(ProductChildRole::FunctionParameter, 0);
@@ -172,7 +172,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
 
     match set.push(SemanticFact::new(
         EntityKind::Constant,
-        b"target", 
+        b"target",
         SemanticProductConstructor::PRODUCT,
     )) {
         Ok(0) => {}
@@ -183,7 +183,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Constant,
-            b"child", 
+            b"child",
             SemanticProductConstructor::PRODUCT,
         )
         .child(ProductChildRole::ProductMember, 5),
@@ -207,7 +207,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Function,
-            b"arity", 
+            b"arity",
             SemanticProductConstructor::function(2, 0),
         )
         .child(ProductChildRole::FunctionParameter, 0),
@@ -229,7 +229,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Function,
-            b"role", 
+            b"role",
             SemanticProductConstructor::function(0, 1),
         )
         .child(ProductChildRole::ProductMember, 0),
@@ -274,7 +274,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     for (ordinal, name) in names.iter().enumerate() {
         match full.push(SemanticFact::new(
             EntityKind::Record,
-            name.as_slice(), 
+            name.as_slice(),
             SemanticProductConstructor::PRODUCT,
         )) {
             Ok(pushed) if pushed == ordinal => {}
@@ -284,7 +284,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     }
     match full.push(SemanticFact::new(
         EntityKind::Record,
-        b"row", 
+        b"row",
         SemanticProductConstructor::PRODUCT,
     )) {
         Err(RejectedFact {
@@ -303,7 +303,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     let mut maximal = FactSet::new();
     let mut overflowing_child = SemanticFact::new(
         EntityKind::Record,
-        b"row", 
+        b"row",
         SemanticProductConstructor::PRODUCT,
     );
     for _ in 0..=MAX_FACT_CHILDREN {
@@ -321,7 +321,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     for (ordinal, name) in names.iter().enumerate() {
         let mut fact = SemanticFact::new(
             EntityKind::Record,
-            name.as_slice(), 
+            name.as_slice(),
             SemanticProductConstructor::PRODUCT,
         );
         if ordinal > 0 {
@@ -335,9 +335,15 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     // The maximal lane writes one complete validated fragment within the
     // conservation reservation, with its exact entity count committed.
     let mut output = vec![0xa5_u8; 65_536];
-    let length = super::admit(&maximal, identity()?, recipe(), recipe().profile, &mut output)
-        .map_err(TestError::Admission)?
-        .len();
+    let length = super::admit(
+        &maximal,
+        identity()?,
+        recipe(),
+        recipe().profile,
+        &mut output,
+    )
+    .map_err(TestError::Admission)?
+    .len();
     if !output[length..].iter().all(|byte| *byte == 0xa5) {
         return Err(TestError::Tail);
     }
