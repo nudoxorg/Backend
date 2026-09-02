@@ -23,10 +23,15 @@ mod prepared;
 mod range;
 mod render;
 mod semantic;
+mod semantic_extension_section;
 mod vcs;
 mod view;
 mod wire;
 
+pub use compiler_vocabulary::{
+    CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
+    PythonVersion, RustEdition, TypeScriptSource,
+};
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
@@ -52,18 +57,31 @@ pub use range::{
 };
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
-    AtomListId, BorrowedTree, BuildError, BuiltinType, ComputedState, ComputedType, ComputedTypeId,
-    ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId, DocInput,
-    EntityColumns, EntityListId, EntityRange, EntityVersion, External, ExternalId, ExternalTarget,
-    FrontendTree, GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter, ItemKind, ItemView,
-    Link, LinkId, LinkIter, LinkKind, LinkSpace, LinkTarget, LiteralType, MappedModifier,
-    Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash, PropertyKey,
-    SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StableEntityId, StorageColumns,
-    TemplatePart, TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput,
-    TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns,
-    TypeExpr, TypeHeader, TypeListId, TypePairPayload, TypeParameter, TypeParameterListId,
-    TypeQuadPayload, TypeQuery, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload,
-    TypedTypeId, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+    AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
+    CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
+    ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
+    ComputedTypeId, ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId,
+    DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion, External, ExternalId,
+    ExternalTarget, FrontendTree, GoExtension, GoFacts, GoSignature, GraphColumns, GuardedType, Ir,
+    IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension, JavaFacts,
+    LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
+    LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkSpace, LinkTarget, LiteralType,
+    MappedModifier, Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash,
+    PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, RustExtension, RustFacts,
+    RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
+    SparseColumnView, StableEntityId, StorageColumns, TemplatePart, TemplatePartListId,
+    TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+    TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
+    TypeListId, TypePairPayload, TypeParameter, TypeParameterListId, TypeQuadPayload, TypeQuery,
+    TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
+    UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+};
+pub use semantic_extension_section::{
+    LanguageExtensionCommonBounds, LanguageExtensionDirectoryKind, LanguageExtensionEncodeError,
+    LanguageExtensionReopenError, LanguageExtensionWireFact, ReopenedLanguageExtensionColumn,
+    ReopenedLanguageExtensionSection, ValidatedLanguageExtensionCommonBounds,
+    encode_language_extension_section, language_extension_section_len,
+    reopen_language_extension_section,
 };
 pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,

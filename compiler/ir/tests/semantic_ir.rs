@@ -4,10 +4,10 @@ use allocation_counter::{AllocationInfo, measure};
 use compiler_ir::{
     BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
     DocInput, EntityChangeKind, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
-    LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot, StableEntityId, TreeEntityId,
-    TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr, TypeHeader, TypePairPayload,
-    TypeParameter, TypeQuadPayload, TypeScriptFacts, TypeTriplePayload, UnknownState, UnknownType,
-    Variance, Visibility,
+    LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot,
+    StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
+    TypeHeader, TypePairPayload, TypeParameter, TypeQuadPayload, TypeScriptFacts,
+    TypeTriplePayload, UnknownState, UnknownType, Variance, Visibility,
 };
 use core::mem::{size_of, size_of_val};
 use core::{fmt, hint::black_box};
@@ -68,7 +68,7 @@ impl FrontendTree for NativeTree<'_> {
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         })
     }
 
@@ -211,6 +211,9 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     assert_eq!(raw, builder.intern_atom(&[0xff, b'N'])?);
 
     let versions = [version(2, 1), version(1, 1)];
+    builder.set_language_profile(compiler_vocabulary::LanguageProfile::TypeScript(
+        compiler_vocabulary::TypeScriptSource::TypeScript,
+    ));
     let mut tree = builder.reserve_tree(&versions)?;
     let entities = tree.entities();
     let string = tree.intern_concrete(ConcreteType::Builtin(compiler_ir::BuiltinType::String))?;
@@ -239,6 +242,11 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
         },
     ];
+    let typescript = TypeScriptFacts {
+        type_parameters: parameters,
+        declared: Some(string.erase()),
+        computed: Some(mapped),
+    };
     let items = [
         TreeItemInput {
             name: &[0xff, b'N'],
@@ -250,11 +258,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
             docs: &docs,
             attributes: &[],
             source: None,
-            typescript: Some(TypeScriptFacts {
-                type_parameters: parameters,
-                declared: Some(string.erase()),
-                computed: Some(mapped),
-            }),
+            extension: Some(LanguageExtensionInput::TypeScript(&typescript)),
         },
         TreeItemInput {
             name: b"field",
@@ -266,7 +270,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         },
     ];
     let links = [TreeLinkInput {
@@ -292,7 +296,10 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
         })
     );
     assert_eq!(
-        ir.item(entities.start()).and_then(|item| item.typescript()),
+        ir.language_extensions()
+            .typescript
+            .get(entities.start())
+            .copied(),
         Some(TypeScriptFacts {
             type_parameters: parameters,
             declared: Some(string.erase()),
@@ -346,7 +353,7 @@ fn logical_links_are_unique_and_confidence_only_upgrades() -> Result<(), compile
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         },
         TreeItemInput {
             name: b"target",
@@ -358,7 +365,7 @@ fn logical_links_are_unique_and_confidence_only_upgrades() -> Result<(), compile
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         },
     ];
     let links = [
@@ -449,7 +456,7 @@ fn simple_ir(
         docs: &[],
         attributes: &[],
         source: None,
-        typescript: None,
+        extension: None,
     });
     for (index, parent) in child_parents.iter().enumerate() {
         items.push(TreeItemInput {
@@ -462,7 +469,7 @@ fn simple_ir(
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         });
     }
     let links = [TreeLinkInput {
@@ -497,7 +504,7 @@ fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), compiler_ir::
             docs: &[],
             attributes: &[],
             source: None,
-            typescript: None,
+            extension: None,
         }],
         links: &[],
     })?;
@@ -539,7 +546,7 @@ fn every_hot_borrowed_view_is_allocation_free() -> Result<(), compiler_ir::Build
         black_box(ir.graph_columns());
         black_box(ir.vcs_columns());
         black_box(ir.storage_columns());
-        black_box(ir.typescript_column());
+        black_box(ir.language_extensions().typescript);
         black_box(ir.embedding_text(
             compiler_ir::EntityId::new(0),
             compiler_ir::EmbeddingProfile::CONTEXTUAL,
@@ -607,8 +614,17 @@ fn every_hot_borrowed_view_is_allocation_free() -> Result<(), compiler_ir::Build
     let columns = ir.entity_columns();
     assert_eq!(columns.names.len(), ir.entity_count());
     assert_eq!(columns.parents.len(), ir.entity_count());
-    assert_eq!(ir.typescript_column().row_count(), ir.entity_count());
-    assert!(ir.typescript_column().ordinals().is_empty());
+    assert_eq!(
+        ir.language_extensions().typescript.ids.row_count(),
+        ir.entity_count()
+    );
+    assert!(
+        ir.language_extensions()
+            .typescript
+            .ids
+            .ordinals()
+            .is_empty()
+    );
     assert_eq!(ir.source_columns().row_count(), ir.entity_count());
     assert!(ir.source_columns().files.is_empty());
     assert_eq!(

@@ -6,6 +6,7 @@
 //! in an entity, type, document, or link owns a box or string.
 
 use alloc::vec::Vec;
+use compiler_vocabulary::{Language, LanguageProfile};
 use core::{fmt, hash::Hash, marker::PhantomData};
 
 use crate::{
@@ -281,6 +282,10 @@ impl<State> TypedTypeId<State> {
     pub const fn erase(self) -> TypeId {
         self.erased
     }
+}
+
+pub(crate) const fn reopened_computed_type(id: TypeId) -> ComputedTypeId {
+    TypedTypeId::proven(id)
 }
 
 impl<State> Copy for TypedTypeId<State> {}
@@ -1202,6 +1207,229 @@ pub struct TypeScriptFacts {
     pub computed: Option<ComputedTypeId>,
 }
 
+/// Marker for TypeScript-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TypeScriptExtension {}
+/// Marker for C#-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CSharpExtension {}
+/// Marker for Go-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum GoExtension {}
+/// Marker for Rust-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RustExtension {}
+/// Marker for Python-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PythonExtension {}
+/// Marker for Java-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum JavaExtension {}
+/// Marker for Clang-only extension facts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ClangExtension {}
+
+/// C# nullable-reference interpretation retained independently of type spelling.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CSharpNullability {
+    Oblivious,
+    NonNullable,
+    Nullable,
+}
+
+/// C# parameter and return reference convention.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CSharpReferenceKind {
+    Value,
+    In,
+    Ref,
+    Out,
+}
+
+/// Independent C# member effects; the three flags may occur together.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CSharpMemberEffects {
+    pub is_async: bool,
+    pub is_iterator: bool,
+    pub is_extension: bool,
+}
+
+/// Whether a C# declaration is one half of a partial declaration.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CSharpPartialRole {
+    None,
+    Definition,
+    Implementation,
+}
+
+/// C# facts not shared by the language-neutral declaration row.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CSharpFacts {
+    pub nullability: CSharpNullability,
+    pub reference_kind: CSharpReferenceKind,
+    pub constraints: TypeParameterListId,
+    pub effects: CSharpMemberEffects,
+    pub attributes: AtomListId,
+    pub partial: CSharpPartialRole,
+    pub xml_provenance: Option<SourceSpan>,
+}
+
+/// Signature lists carried by a Go declaration. Both lists are shared type arenas.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GoSignature {
+    pub parameters: TypeListId,
+    pub results: TypeListId,
+    pub variadic: bool,
+}
+
+/// Go facts that cannot be inferred from generic declarations and links.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GoFacts {
+    pub signature: GoSignature,
+    pub type_parameters: TypeParameterListId,
+    pub fields: EntityListId,
+    pub method_set: EntityListId,
+    pub build_constraints: AtomListId,
+}
+
+/// Rust ownership fact attached to one declaration or parameter.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RustOwnership {
+    Value,
+    SharedBorrow,
+    MutableBorrow,
+    Moved,
+}
+
+/// Rust-only declaration facts; text is interned in the shared atom arena.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RustFacts {
+    pub ownership: RustOwnership,
+    pub lifetimes: AtomListId,
+    pub where_clauses: TypeParameterListId,
+    pub macros: AtomListId,
+}
+
+/// Python parameter convention, retained instead of erasing it into an atom.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PythonParameterKind {
+    PositionalOnly,
+    PositionalOrKeyword,
+    VariadicPositional,
+    KeywordOnly,
+    VariadicKeyword,
+}
+
+/// Python-only source facts. Dynamic confidence is the existing quality lattice.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PythonFacts {
+    pub decorators: AtomListId,
+    pub parameter_kind: PythonParameterKind,
+    pub dynamic_confidence: Confidence,
+}
+
+/// Java-specific declaration facts for checked exceptions and record structure.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct JavaFacts {
+    pub throws: TypeListId,
+    pub annotations: AtomListId,
+    pub overloads: EntityListId,
+    pub record_components: EntityListId,
+}
+
+/// Clang type qualifier bits kept separate from the generic type graph.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ClangQualifiers {
+    pub is_const: bool,
+    pub is_volatile: bool,
+    pub is_restrict: bool,
+}
+
+/// Clang storage-class fact.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ClangStorageClass {
+    None,
+    Auto,
+    Static,
+    Extern,
+    Register,
+    ThreadLocal,
+}
+
+/// Optional layout facts measured in bits; `None` means the frontend did not own a layout.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ClangLayout {
+    pub size_bits: Option<u32>,
+    pub align_bits: Option<u32>,
+}
+
+/// Clang-only semantic facts. Include spelling is held in the shared atom arena.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ClangFacts {
+    pub qualifiers: ClangQualifiers,
+    pub storage: ClangStorageClass,
+    pub layout: ClangLayout,
+    pub templates: TypeParameterListId,
+    pub includes: AtomListId,
+}
+
+/// Authority bound into one semantic image before language facts are admitted.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum SemanticImageAuthority {
+    /// A common-only image; language extensions are explicitly rejected.
+    #[default]
+    Shared,
+    /// A closed canonical source profile, which proves its language family.
+    Language(LanguageProfile),
+}
+
+impl SemanticImageAuthority {
+    fn language(self) -> Option<Language> {
+        match self {
+            Self::Shared => None,
+            Self::Language(profile) => Some(Language::from(profile)),
+        }
+    }
+}
+
+/// Exactly one language-specific extension submitted for one entity row.
+///
+/// This tagged input exists only during ingestion. The condensed IR routes it
+/// into seven named sparse planes, so scans and reopened views never carry an
+/// erased union or the union's maximum payload width.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LanguageExtensionInput<'facts> {
+    TypeScript(&'facts TypeScriptFacts),
+    CSharp(&'facts CSharpFacts),
+    Go(&'facts GoFacts),
+    Rust(&'facts RustFacts),
+    Python(&'facts PythonFacts),
+    Java(&'facts JavaFacts),
+    Clang(&'facts ClangFacts),
+}
+
+impl LanguageExtensionInput<'_> {
+    /// Closed source-language authority for this extension input.
+    #[must_use]
+    pub const fn language(self) -> Language {
+        match self {
+            Self::TypeScript(_) => Language::TypeScript,
+            Self::CSharp(_) => Language::CSharp,
+            Self::Go(_) => Language::Go,
+            Self::Rust(_) => Language::Rust,
+            Self::Python(_) => Language::Python,
+            Self::Java(_) => Language::Java,
+            Self::Clang(_) => Language::Clang,
+        }
+    }
+}
+
 /// A graph target, local or self-describing across a package boundary.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LinkTarget {
@@ -1557,6 +1785,330 @@ impl<'ir, T> SparseColumnView<'ir, T> {
     }
 }
 
+/// One language's compact extension plane: entity rows point to a deduplicated
+/// typed fact pool rather than carrying language-width facts in the hot row.
+struct LanguageExtensionPlane<Facts, Space> {
+    ids: SparseColumn<DenseId<Space>>,
+    facts: Interner<Facts, Space>,
+}
+
+impl<Facts, Space> Default for LanguageExtensionPlane<Facts, Space> {
+    fn default() -> Self {
+        Self {
+            ids: SparseColumn::default(),
+            facts: Interner::default(),
+        }
+    }
+}
+
+impl<Facts: Eq + Hash, Space> LanguageExtensionPlane<Facts, Space> {
+    fn reserve(&mut self, rows: usize, values: usize) {
+        self.ids.reserve(rows, values);
+        self.facts.reserve(values);
+    }
+
+    fn push(&mut self, facts: Option<Facts>) -> Result<(), CapacityError> {
+        let id = facts.map(|facts| self.facts.intern(facts)).transpose()?;
+        self.ids.push(id)
+    }
+
+    fn get(&self, entity: EntityId) -> Option<&Facts> {
+        self.ids
+            .get(entity)
+            .and_then(|id| self.facts.get(DenseId::new(id.raw)))
+    }
+
+    fn view(&self) -> LanguageExtensionColumnView<'_, Facts, Space> {
+        LanguageExtensionColumnView {
+            ids: self.ids.view(),
+            facts: self.facts.as_slice(),
+        }
+    }
+}
+
+/// Borrowed per-language plane: aligned IDs and the matching typed fact pool.
+#[derive(Debug)]
+pub struct LanguageExtensionColumnView<'ir, Facts, Space> {
+    /// Entity-aligned compact IDs; universal absence retains an empty lane.
+    pub ids: SparseColumnView<'ir, DenseId<Space>>,
+    /// Canonical dense fact pool addressed only by [`Self::ids`].
+    pub facts: &'ir [Facts],
+}
+
+impl<Facts, Space> Copy for LanguageExtensionColumnView<'_, Facts, Space> {}
+
+impl<Facts, Space> Clone for LanguageExtensionColumnView<'_, Facts, Space> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'ir, Facts, Space> LanguageExtensionColumnView<'ir, Facts, Space> {
+    /// Resolves one entity's typed language fact without allocating or scanning.
+    #[must_use]
+    pub fn get(self, entity: EntityId) -> Option<&'ir Facts> {
+        self.ids
+            .get(entity)
+            .and_then(|id| self.facts.get(DenseId::<Space>::new(id.raw).index()))
+    }
+}
+
+/// All closed language-extension planes owned by one semantic IR.
+///
+/// There is deliberately no erased extension map or tag/payload union. Every
+/// language has a distinct sparse directory kind and a fact pool with its own
+/// coordinate type, making cross-language substitution unrepresentable in the
+/// in-memory model.
+#[derive(Default)]
+struct LanguageExtensions {
+    typescript: LanguageExtensionPlane<TypeScriptFacts, TypeScriptExtension>,
+    csharp: LanguageExtensionPlane<CSharpFacts, CSharpExtension>,
+    go: LanguageExtensionPlane<GoFacts, GoExtension>,
+    rust: LanguageExtensionPlane<RustFacts, RustExtension>,
+    python: LanguageExtensionPlane<PythonFacts, PythonExtension>,
+    java: LanguageExtensionPlane<JavaFacts, JavaExtension>,
+    clang: LanguageExtensionPlane<ClangFacts, ClangExtension>,
+}
+
+impl LanguageExtensions {
+    fn reserve(&mut self, rows: usize, values: LanguageExtensionCounts) {
+        self.typescript.reserve(rows, values.typescript);
+        self.csharp.reserve(rows, values.csharp);
+        self.go.reserve(rows, values.go);
+        self.rust.reserve(rows, values.rust);
+        self.python.reserve(rows, values.python);
+        self.java.reserve(rows, values.java);
+        self.clang.reserve(rows, values.clang);
+    }
+
+    fn push(&mut self, input: Option<LanguageExtensionInput<'_>>) -> Result<(), CapacityError> {
+        match input {
+            Some(LanguageExtensionInput::TypeScript(facts)) => {
+                self.typescript.push(Some(*facts))?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::CSharp(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(Some(*facts))?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::Go(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(Some(*facts))?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::Rust(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(Some(*facts))?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::Python(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(Some(*facts))?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::Java(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(Some(*facts))?;
+                self.clang.push(None)
+            }
+            Some(LanguageExtensionInput::Clang(facts)) => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(Some(*facts))
+            }
+            None => {
+                self.typescript.push(None)?;
+                self.csharp.push(None)?;
+                self.go.push(None)?;
+                self.rust.push(None)?;
+                self.python.push(None)?;
+                self.java.push(None)?;
+                self.clang.push(None)
+            }
+        }
+    }
+
+    fn view(&self, authority: SemanticImageAuthority) -> LanguageExtensionsView<'_> {
+        LanguageExtensionsView {
+            authority,
+            typescript: self.typescript.view(),
+            csharp: self.csharp.view(),
+            go: self.go.view(),
+            rust: self.rust.view(),
+            python: self.python.view(),
+            java: self.java.view(),
+            clang: self.clang.view(),
+        }
+    }
+
+    fn validate_entity(&self, builder: &IrBuilder, entity: EntityId) -> Result<(), BuildError> {
+        if let Some(facts) = self.typescript.get(entity).copied() {
+            validate_type_parameters(builder, facts.type_parameters)?;
+            optional_id(facts.declared, builder.types.len(), SemanticSpace::Type)?;
+            optional_id(
+                facts.computed.map(TypedTypeId::erase),
+                builder.types.len(),
+                SemanticSpace::Type,
+            )?;
+            if facts.computed.is_some_and(|id| {
+                !matches!(builder.types.get(id.erase()), Some(TypeExpr::Computed(_)))
+            }) {
+                return Err(BuildError::LanguageExtension {
+                    language: Language::TypeScript,
+                    entity,
+                    violation: LanguageExtensionViolation::ComputedType,
+                });
+            }
+        }
+        if let Some(facts) = self.csharp.get(entity).copied() {
+            validate_type_parameters(builder, facts.constraints)?;
+            validate_atom_list(builder, facts.attributes)?;
+            if let Some(span) = facts.xml_provenance {
+                atom(builder, span.file())?;
+            }
+        }
+        if let Some(facts) = self.go.get(entity).copied() {
+            validate_type_list(builder, facts.signature.parameters)?;
+            validate_type_list(builder, facts.signature.results)?;
+            validate_type_parameters(builder, facts.type_parameters)?;
+            validate_entity_list(builder, facts.fields)?;
+            validate_entity_list(builder, facts.method_set)?;
+            validate_atom_list(builder, facts.build_constraints)?;
+        }
+        if let Some(facts) = self.rust.get(entity).copied() {
+            validate_atom_list(builder, facts.lifetimes)?;
+            validate_type_parameters(builder, facts.where_clauses)?;
+            validate_atom_list(builder, facts.macros)?;
+        }
+        if let Some(facts) = self.python.get(entity).copied() {
+            validate_atom_list(builder, facts.decorators)?;
+        }
+        if let Some(facts) = self.java.get(entity).copied() {
+            validate_type_list(builder, facts.throws)?;
+            validate_atom_list(builder, facts.annotations)?;
+            validate_entity_list(builder, facts.overloads)?;
+            validate_entity_list(builder, facts.record_components)?;
+        }
+        if let Some(facts) = self.clang.get(entity).copied() {
+            if facts.layout.align_bits == Some(0) {
+                return Err(BuildError::LanguageExtension {
+                    language: Language::Clang,
+                    entity,
+                    violation: LanguageExtensionViolation::ZeroLayoutAlignment,
+                });
+            }
+            validate_type_parameters(builder, facts.templates)?;
+            validate_atom_list(builder, facts.includes)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_type_parameters(
+    builder: &IrBuilder,
+    parameters: TypeParameterListId,
+) -> Result<(), BuildError> {
+    for parameter in list_or_dangling(
+        &builder.type_parameters,
+        parameters,
+        SemanticSpace::TypeParameters,
+    )? {
+        atom(builder, parameter.name)?;
+        optional_id(
+            parameter.constraint,
+            builder.types.len(),
+            SemanticSpace::Type,
+        )?;
+        optional_id(parameter.default, builder.types.len(), SemanticSpace::Type)?;
+    }
+    Ok(())
+}
+
+fn validate_atom_list(builder: &IrBuilder, atoms: AtomListId) -> Result<(), BuildError> {
+    for atom_id in list_or_dangling(&builder.atom_lists, atoms, SemanticSpace::AtomList)? {
+        atom(builder, *atom_id)?;
+    }
+    Ok(())
+}
+
+fn validate_entity_list(builder: &IrBuilder, entities: EntityListId) -> Result<(), BuildError> {
+    for entity_id in list_or_dangling(&builder.entity_lists, entities, SemanticSpace::EntityList)? {
+        id(*entity_id, builder.items.len(), SemanticSpace::Entity)?;
+    }
+    Ok(())
+}
+
+/// Borrowed complete language-extension directory from an [`Ir`].
+#[derive(Clone, Copy, Debug)]
+pub struct LanguageExtensionsView<'ir> {
+    /// The profile authority that selected every nonempty plane.
+    pub authority: SemanticImageAuthority,
+    pub typescript: LanguageExtensionColumnView<'ir, TypeScriptFacts, TypeScriptExtension>,
+    pub csharp: LanguageExtensionColumnView<'ir, CSharpFacts, CSharpExtension>,
+    pub go: LanguageExtensionColumnView<'ir, GoFacts, GoExtension>,
+    pub rust: LanguageExtensionColumnView<'ir, RustFacts, RustExtension>,
+    pub python: LanguageExtensionColumnView<'ir, PythonFacts, PythonExtension>,
+    pub java: LanguageExtensionColumnView<'ir, JavaFacts, JavaExtension>,
+    pub clang: LanguageExtensionColumnView<'ir, ClangFacts, ClangExtension>,
+}
+
+/// Present-value counts measured before a borrowed frontend stream is lowered.
+#[derive(Clone, Copy, Default)]
+struct LanguageExtensionCounts {
+    typescript: usize,
+    csharp: usize,
+    go: usize,
+    rust: usize,
+    python: usize,
+    java: usize,
+    clang: usize,
+}
+
+impl LanguageExtensionCounts {
+    fn observe(&mut self, input: Option<LanguageExtensionInput<'_>>) {
+        match input {
+            Some(LanguageExtensionInput::TypeScript(_)) => self.typescript += 1,
+            Some(LanguageExtensionInput::CSharp(_)) => self.csharp += 1,
+            Some(LanguageExtensionInput::Go(_)) => self.go += 1,
+            Some(LanguageExtensionInput::Rust(_)) => self.rust += 1,
+            Some(LanguageExtensionInput::Python(_)) => self.python += 1,
+            Some(LanguageExtensionInput::Java(_)) => self.java += 1,
+            Some(LanguageExtensionInput::Clang(_)) => self.clang += 1,
+            None => {}
+        }
+    }
+}
+
 /// Hot entity columns. Scans touch only the lanes required by a query.
 struct ItemColumns {
     _slab: Slab,
@@ -1749,7 +2301,7 @@ pub struct TreeItemInput<'source> {
     pub docs: &'source [DocInput<'source>],
     pub attributes: &'source [&'source [u8]],
     pub source: Option<SourceSpan>,
-    pub typescript: Option<TypeScriptFacts>,
+    pub extension: Option<LanguageExtensionInput<'source>>,
 }
 
 /// Slice-backed local link input.
@@ -1809,7 +2361,7 @@ impl FrontendTree for BorrowedTree<'_> {
             docs: item.docs,
             attributes: item.attributes,
             source: item.source,
-            typescript: item.typescript,
+            extension: item.extension,
         })
     }
 
@@ -1863,14 +2415,43 @@ pub enum SemanticSpace {
     TypeParameters,
 }
 
+/// Closed semantic fault in a language-owned extension row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LanguageExtensionViolation {
+    /// A TypeScript computed ID did not point to a computed type state.
+    ComputedType,
+    /// A Clang layout alignment claimed an impossible zero-bit alignment.
+    ZeroLayoutAlignment,
+}
+
 /// Failure while condensing or validating frontend IR.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildError {
     Capacity(CapacityError),
-    InvalidTreeEntity { raw: u32, count: u32 },
-    Dangling { space: SemanticSpace, raw: u32 },
-    DuplicateStableEntity { stable: StableEntityId },
-    TreeVersionCount { versions: usize, items: usize },
+    InvalidTreeEntity {
+        raw: u32,
+        count: u32,
+    },
+    Dangling {
+        space: SemanticSpace,
+        raw: u32,
+    },
+    DuplicateStableEntity {
+        stable: StableEntityId,
+    },
+    TreeVersionCount {
+        versions: usize,
+        items: usize,
+    },
+    LanguageExtension {
+        language: Language,
+        entity: EntityId,
+        violation: LanguageExtensionViolation,
+    },
+    LanguageProfileMismatch {
+        authority: SemanticImageAuthority,
+        extension: Language,
+    },
 }
 
 impl From<CapacityError> for BuildError {
@@ -1902,6 +2483,24 @@ impl fmt::Display for BuildError {
                     "borrowed tree has {versions} versions for {items} items"
                 )
             }
+            Self::LanguageExtension {
+                language,
+                entity,
+                violation,
+            } => {
+                write!(
+                    formatter,
+                    "{language:?} extension for entity {} violates {violation:?}",
+                    entity.raw
+                )
+            }
+            Self::LanguageProfileMismatch {
+                authority,
+                extension,
+            } => write!(
+                formatter,
+                "{extension:?} extension conflicts with image authority {authority:?}"
+            ),
         }
     }
 }
@@ -1914,6 +2513,7 @@ impl core::error::Error for BuildError {}
 /// existing slice-backed tree without manufacturing owned nodes or strings.
 #[derive(Default)]
 pub struct IrBuilder {
+    authority: SemanticImageAuthority,
     atoms: AtomInterner,
     types: TypeInterner,
     externals: Interner<ExternalTarget, External>,
@@ -1927,7 +2527,7 @@ pub struct IrBuilder {
     type_parameters: ListInterner<TypeParameter>,
     items: ItemColumns,
     sources: SourceColumns,
-    typescript: SparseColumn<TypeScriptFacts>,
+    extensions: LanguageExtensions,
     link_index: HashIndex,
     links: PackedLinks,
     entity_scratch: Vec<EntityId>,
@@ -1939,6 +2539,10 @@ impl IrBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Binds this image to one language before language-specific facts arrive.
+    pub fn set_language_profile(&mut self, profile: LanguageProfile) {
+        self.authority = SemanticImageAuthority::Language(profile);
     }
     pub fn intern_atom(&mut self, bytes: &[u8]) -> Result<AtomId, BuildError> {
         self.atoms.intern(bytes).map_err(Into::into)
@@ -2013,8 +2617,16 @@ impl IrBuilder {
         &mut self,
         version: EntityVersion,
         item: Item,
-        typescript: Option<TypeScriptFacts>,
+        extension: Option<LanguageExtensionInput<'_>>,
     ) -> Result<EntityId, BuildError> {
+        if let Some(extension) = extension
+            && self.authority.language() != Some(extension.language())
+        {
+            return Err(BuildError::LanguageProfileMismatch {
+                authority: self.authority,
+                extension: extension.language(),
+            });
+        }
         let id = EntityId::try_from_index(self.items.len()).map_err(|_| CapacityError {
             space: crate::CapacitySpace::Value,
             actual: self.items.len(),
@@ -2022,7 +2634,7 @@ impl IrBuilder {
         self.items.reserve_one();
         self.sources.push(item.source);
         self.items.push(version, item);
-        self.typescript.push(typescript)?;
+        self.extensions.push(extension)?;
         Ok(id)
     }
     pub fn add_link(&mut self, link: Link) -> Result<LinkId, BuildError> {
@@ -2163,7 +2775,7 @@ impl IrBuilder {
                     attributes,
                     source: input.source,
                 },
-                input.typescript,
+                input.extension,
             )?;
         }
 
@@ -2189,8 +2801,7 @@ impl IrBuilder {
         let link_count = tree.links().len();
         self.items.reserve_exact(item_count);
         self.sources.reserve(item_count, capacity.source_values);
-        self.typescript
-            .reserve(item_count, capacity.typescript_values);
+        self.extensions.reserve(item_count, capacity.extensions);
         let link_source_values = tree.links().filter(|link| link.source.is_some()).count();
         self.links.reserve_exact(link_count, link_source_values);
         self.link_index.reserve(link_count);
@@ -2218,6 +2829,7 @@ impl IrBuilder {
             self.externals.as_slice(),
         )?;
         Ok(Ir {
+            authority: self.authority,
             atoms: self.atoms.freeze(),
             types: self.types.freeze(),
             externals: self.externals.into_values(),
@@ -2231,7 +2843,7 @@ impl IrBuilder {
             type_parameters: self.type_parameters.freeze(),
             items: self.items,
             sources: self.sources,
-            typescript: self.typescript,
+            extensions: self.extensions,
             indices,
             kind_offsets,
             links,
@@ -2270,31 +2882,8 @@ impl IrBuilder {
             if let Some(source) = self.sources.get(index) {
                 atom(self, source.file())?;
             }
-            if let Some(facts) = self.typescript.get(EntityId::new(index as u32)).copied() {
-                for parameter in list_or_dangling(
-                    &self.type_parameters,
-                    facts.type_parameters,
-                    SemanticSpace::TypeParameters,
-                )? {
-                    atom(self, parameter.name)?;
-                    optional_id(parameter.constraint, self.types.len(), SemanticSpace::Type)?;
-                    optional_id(parameter.default, self.types.len(), SemanticSpace::Type)?;
-                }
-                optional_id(facts.declared, self.types.len(), SemanticSpace::Type)?;
-                optional_id(
-                    facts.computed.map(TypedTypeId::erase),
-                    self.types.len(),
-                    SemanticSpace::Type,
-                )?;
-                if facts.computed.is_some_and(|id| {
-                    !matches!(self.types.get(id.erase()), Some(TypeExpr::Computed(_)))
-                }) {
-                    return Err(BuildError::Dangling {
-                        space: SemanticSpace::Type,
-                        raw: facts.computed.map_or(0, |id| id.erase().raw),
-                    });
-                }
-            }
+            self.extensions
+                .validate_entity(self, EntityId::new(index as u32))?;
             for member in list_or_dangling(
                 &self.entity_lists,
                 self.items.members[index],
@@ -2342,7 +2931,7 @@ struct BorrowedTreeCapacity {
     attribute_values: usize,
     doc_lists: usize,
     doc_values: usize,
-    typescript_values: usize,
+    extensions: LanguageExtensionCounts,
     source_values: usize,
     max_members: usize,
     max_attributes: usize,
@@ -2373,9 +2962,7 @@ impl BorrowedTreeCapacity {
             capacity.doc_lists = capacity
                 .doc_lists
                 .saturating_add(usize::from(!item.docs.is_empty()));
-            capacity.typescript_values = capacity
-                .typescript_values
-                .saturating_add(usize::from(item.typescript.is_some()));
+            capacity.extensions.observe(item.extension);
             capacity.source_values = capacity
                 .source_values
                 .saturating_add(usize::from(item.source.is_some()));
@@ -3148,6 +3735,7 @@ pub struct VcsColumns<'ir> {
 /// or scatter/gather these exact slices without serializing semantic rows.
 #[derive(Clone, Copy, Debug)]
 pub struct StorageColumns<'ir> {
+    pub authority: SemanticImageAuthority,
     pub atoms: AtomTableView<'ir>,
     pub types: TypeColumns<'ir>,
     pub externals: &'ir [ExternalTarget],
@@ -3161,7 +3749,7 @@ pub struct StorageColumns<'ir> {
     pub type_parameters: ListTableView<'ir, TypeParameter>,
     pub entities: EntityColumns<'ir>,
     pub sources: SourceColumnsView<'ir>,
-    pub typescript: SparseColumnView<'ir, TypeScriptFacts>,
+    pub language_extensions: LanguageExtensionsView<'ir>,
     pub graph: GraphColumns<'ir>,
     pub vcs: VcsColumns<'ir>,
     pub kind_entities: &'ir [EntityId],
@@ -3217,8 +3805,27 @@ impl StorageColumns<'_> {
         add!(self.sources.files);
         add!(self.sources.starts);
         add!(self.sources.ends);
-        add!(self.typescript.ordinals());
-        add!(self.typescript.values());
+        add!(self.language_extensions.typescript.ids.ordinals());
+        add!(self.language_extensions.typescript.ids.values());
+        add!(self.language_extensions.typescript.facts);
+        add!(self.language_extensions.csharp.ids.ordinals());
+        add!(self.language_extensions.csharp.ids.values());
+        add!(self.language_extensions.csharp.facts);
+        add!(self.language_extensions.go.ids.ordinals());
+        add!(self.language_extensions.go.ids.values());
+        add!(self.language_extensions.go.facts);
+        add!(self.language_extensions.rust.ids.ordinals());
+        add!(self.language_extensions.rust.ids.values());
+        add!(self.language_extensions.rust.facts);
+        add!(self.language_extensions.python.ids.ordinals());
+        add!(self.language_extensions.python.ids.values());
+        add!(self.language_extensions.python.facts);
+        add!(self.language_extensions.java.ids.ordinals());
+        add!(self.language_extensions.java.ids.values());
+        add!(self.language_extensions.java.facts);
+        add!(self.language_extensions.clang.ids.ordinals());
+        add!(self.language_extensions.clang.ids.values());
+        add!(self.language_extensions.clang.facts);
         add!(self.graph.from);
         add!(self.graph.targets);
         add!(self.graph.kinds);
@@ -3241,6 +3848,7 @@ impl StorageColumns<'_> {
 
 /// Immutable condensed semantic IR.
 pub struct Ir {
+    authority: SemanticImageAuthority,
     atoms: AtomTable,
     types: PackedTypes,
     externals: Vec<ExternalTarget>,
@@ -3254,7 +3862,7 @@ pub struct Ir {
     type_parameters: ListTable<TypeParameter>,
     items: ItemColumns,
     sources: SourceColumns,
-    typescript: SparseColumn<TypeScriptFacts>,
+    extensions: LanguageExtensions,
     indices: IrIndices,
     kind_offsets: [u32; 17],
     links: PackedLinks,
@@ -3272,6 +3880,7 @@ impl Ir {
     #[must_use]
     pub fn storage_columns(&self) -> StorageColumns<'_> {
         StorageColumns {
+            authority: self.authority,
             atoms: self.atoms.view(),
             types: self.types.columns(),
             externals: &self.externals,
@@ -3285,7 +3894,7 @@ impl Ir {
             type_parameters: self.type_parameters.view(),
             entities: self.entity_columns(),
             sources: self.source_columns(),
-            typescript: self.typescript_column(),
+            language_extensions: self.language_extensions(),
             graph: self.graph_columns(),
             vcs: self.vcs_columns(),
             kind_entities: &self.indices.kind,
@@ -3437,15 +4046,31 @@ impl Ir {
     pub fn item(&self, id: EntityId) -> Option<ItemView<'_>> {
         (id.index() < self.items.len()).then_some(ItemView { ir: self, id })
     }
-    /// Returns cold, language-specific TypeScript facts without widening every hot entity row.
+    /// Borrows all typed language-extension planes without widening hot entity rows.
     #[must_use]
-    pub fn typescript(&self, id: EntityId) -> Option<TypeScriptFacts> {
-        self.typescript.get(id).copied()
+    pub fn language_extensions(&self) -> LanguageExtensionsView<'_> {
+        self.extensions.view(self.authority)
     }
-    /// Returns the raw aligned TypeScript extension column for zero-copy joins.
+
+    /// Produces bounds proved by this validated IR's shared semantic columns.
     #[must_use]
-    pub fn typescript_column(&self) -> SparseColumnView<'_, TypeScriptFacts> {
-        self.typescript.view()
+    pub fn language_extension_common_bounds(
+        &self,
+    ) -> Option<crate::ValidatedLanguageExtensionCommonBounds> {
+        let columns = self.storage_columns();
+        Some(
+            crate::ValidatedLanguageExtensionCommonBounds::from_validated(
+                crate::LanguageExtensionCommonBounds {
+                    atoms: u32::try_from(columns.atoms.ranges.len()).ok()?,
+                    types: u32::try_from(columns.types.headers.len()).ok()?,
+                    entities: u32::try_from(columns.entities.names.len()).ok()?,
+                    type_lists: u32::try_from(columns.type_lists.ranges.len()).ok()?,
+                    entity_lists: u32::try_from(columns.entity_lists.ranges.len()).ok()?,
+                    atom_lists: u32::try_from(columns.atom_lists.ranges.len()).ok()?,
+                    type_parameters: u32::try_from(columns.type_parameters.ranges.len()).ok()?,
+                },
+            ),
+        )
     }
     #[must_use]
     pub fn items(&self) -> impl ExactSizeIterator<Item = ItemView<'_>> {
@@ -3548,11 +4173,6 @@ impl<'ir> ItemView<'ir> {
             .atom_lists
             .get(self.ir.items.attributes[self.id.index()])
             .unwrap_or(&[])
-    }
-    /// Returns the separate declared/computed TypeScript lanes for this entity.
-    #[must_use]
-    pub fn typescript(self) -> Option<TypeScriptFacts> {
-        self.ir.typescript(self.id)
     }
     #[must_use]
     pub fn links_from(self) -> LinkIter<'ir> {
