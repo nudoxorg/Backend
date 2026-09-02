@@ -2,6 +2,7 @@
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{
+    num::NonZeroUsize,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
@@ -11,9 +12,44 @@ use compiler_driver::{
     ToolchainSelection, compile,
 };
 use compiler_ir::{EntityKind, PrimitiveType, TypeNode};
+use compiler_publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
 use compiler_vocabulary::Language;
+use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use thiserror::Error;
 
 use super::support::*;
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the integration proof retains each exact durable publication and reopen terminal without erasing it behind a test-only box"
+)]
+#[derive(Debug, Error)]
+enum TypeScriptPublicationError {
+    #[error(transparent)]
+    Compile(#[from] TestFailure),
+    #[error("TypeScript publication fixture could not create an artifact directory")]
+    ArtifactDirectory(#[source] std::io::Error),
+    #[error("TypeScript publication fixture could not create a journal directory")]
+    JournalDirectory(#[source] std::io::Error),
+    #[error("TypeScript publication limit was rejected")]
+    Limits(#[source] server_journal::PublicationLimitError),
+    #[error("TypeScript publication owner could not open")]
+    Publisher(#[source] server_journal::PublicationOpenError),
+    #[error("TypeScript compact fragment could not publish")]
+    Publish(#[source] compiler_publication::PublishCompiledError),
+    #[error("TypeScript compact publication could not reopen")]
+    Open(#[source] compiler_publication::OpenPublishedError),
+    #[error("TypeScript publication reopen returned no durable compilation")]
+    MissingPublication,
+    #[error("TypeScript publication reopen returned no fragment")]
+    MissingFragment,
+    #[error("TypeScript publication reopen returned an invalid fragment")]
+    Fragment(#[source] compiler_publication::OpenedFragmentError),
+    #[error("TypeScript publication owner could not shut down")]
+    Shutdown(#[source] server_journal::ShutdownError),
+}
 
 #[test]
 fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Result<(), TestFailure> {
@@ -26,14 +62,14 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
         NativeTool,
         &'static [u8],
         &'static [(&'static [u8], EntityKind)],
-        PrimitiveType,
+        Option<PrimitiveType>,
     ); 4] = [
         (
             Language::TypeScript,
             NativeTool::TypeScriptCompiler,
             b"export function TYPESCRIPT_FUNCTION(): boolean { return true; }".as_slice(),
             &[(b"TYPESCRIPT_FUNCTION", EntityKind::Function)],
-            PrimitiveType::Bool,
+            None,
         ),
         (
             Language::CSharp,
@@ -43,7 +79,7 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
                 (b"Probe", EntityKind::Record),
                 (b"CSHARP_FUNCTION", EntityKind::Function),
             ],
-            PrimitiveType::I32,
+            Some(PrimitiveType::I32),
         ),
         (
             Language::Go,
@@ -53,7 +89,7 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
                 (b"fixture", EntityKind::Module),
                 (b"GO_FUNCTION", EntityKind::Function),
             ],
-            PrimitiveType::Bool,
+            Some(PrimitiveType::Bool),
         ),
         (
             Language::Java,
@@ -64,7 +100,7 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
                 (b"JavaFunction", EntityKind::Record),
                 (b"JAVA_FUNCTION", EntityKind::Function),
             ],
-            PrimitiveType::I32,
+            Some(PrimitiveType::I32),
         ),
     ];
     for (language, tool, source, expected_facts, expected_type) in cases {
@@ -107,15 +143,187 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
                 _ => None,
             })
             .collect();
-        if primitive_types.as_slice() != [expected_type] {
+        if let Some(expected_type) = expected_type {
+            if primitive_types.as_slice() != [expected_type] {
+                return Err(TestFailure::PrimitiveType {
+                    tool,
+                    expected: expected_type,
+                    actual: primitive_types.first().copied(),
+                });
+            }
+        } else if !primitive_types.is_empty() {
             return Err(TestFailure::PrimitiveType {
                 tool,
-                expected: expected_type,
+                expected: PrimitiveType::Bool,
                 actual: primitive_types.first().copied(),
             });
         }
         native_work.assert_empty()?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn real_tsc_admission_then_oxc_bindings_fill_the_compact_fragment() -> Result<(), TestFailure> {
+    let tool = NativeTool::TypeScriptCompiler;
+    let executable = executable(tool)?;
+    let runner_work = TemporaryWork::create()?;
+    let runner = runner_work.write_typescript_runner(&typescript_node()?, &executable)?;
+    let toolchain = resolved(tool, &runner)?;
+    let native_work = TemporaryWork::create()?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 4_096];
+    let mut output = [0xa5; 4_096];
+    let compiled = compile(
+        request(
+            Language::TypeScript,
+            b"export class Box {} export const value = new Box();",
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(10),
+        ),
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: native_work.path(),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    )
+    .map_err(|failure| TestFailure::CompileTerminal {
+        tool,
+        expected: CompileExpectation::CompactFact,
+        observed: compile_terminal(&failure),
+    })?;
+    assert_facts(
+        &compiled.fragment,
+        &[
+            (b"Box", EntityKind::Record),
+            (b"value", EntityKind::Constant),
+        ],
+    )?;
+    assert_type_facts(&compiled.fragment, tool)?;
+    if compiled
+        .fragment
+        .type_nodes()
+        .any(|node| matches!(node, TypeNode::Primitive(_)))
+    {
+        return Err(TestFailure::PrimitiveType {
+            tool,
+            expected: PrimitiveType::Bool,
+            actual: compiled.fragment.type_nodes().find_map(|node| match node {
+                TypeNode::Primitive(primitive) => Some(primitive),
+                TypeNode::Reference(_) => None,
+            }),
+        });
+    }
+    native_work.assert_empty()?;
+    std::fs::remove_file(runner).map_err(TestFailure::TypeScriptFixtureWrite)?;
+    runner_work.assert_empty()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "the integration proof returns exact durable publication and reopen terminals by value so a failing test preserves their operands"
+)]
+fn real_tsc_and_oxc_compact_fragment_survives_durable_reopen()
+-> Result<(), TypeScriptPublicationError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    let executable = executable(tool)?;
+    let runner_work = TemporaryWork::create()?;
+    let runner = runner_work.write_typescript_runner(&typescript_node()?, &executable)?;
+    let toolchain = resolved(tool, &runner)?;
+    let native_work = TemporaryWork::create()?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 4_096];
+    let mut output = [0xa5; 4_096];
+    let compiled = compile(
+        request(
+            Language::TypeScript,
+            b"export class ReopenedBox {} export const reopened = new ReopenedBox();",
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(10),
+        ),
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: native_work.path(),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    )
+    .map_err(|failure| TestFailure::CompileTerminal {
+        tool,
+        expected: CompileExpectation::CompactFact,
+        observed: compile_terminal(&failure),
+    })?;
+    native_work.assert_empty()?;
+
+    let publication_root = TemporaryWork::create()?;
+    let artifacts = publication_root.path().join("artifacts");
+    let journal = publication_root.path().join("journal");
+    std::fs::create_dir(&artifacts).map_err(TypeScriptPublicationError::ArtifactDirectory)?;
+    std::fs::create_dir(&journal).map_err(TypeScriptPublicationError::JournalDirectory)?;
+    let limits = PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+        .map_err(TypeScriptPublicationError::Limits)?;
+    let publisher = DurablePublisher::create(&PublicationPaths::in_directory(&journal), limits)
+        .map_err(TypeScriptPublicationError::Publisher)?;
+    let mut manifest_output = [0; 4_096];
+    let mut manifest_facts = [None; 1];
+    let mut ordinals = [0; 1];
+    let mut locality_output = [0; 4_096];
+    let mut binding_output = [0; compiler_publication::binding::COMPILATION_BINDING_BYTES];
+    publish_compiled(
+        &publisher,
+        &artifacts,
+        core::slice::from_ref(&compiled),
+        PublishControl::Continue,
+        PublicationScratch {
+            manifest_output: &mut manifest_output,
+            manifest_facts: &mut manifest_facts,
+            ordinals: &mut ordinals,
+            locality_output: &mut locality_output,
+            binding_output: &mut binding_output,
+        },
+    )
+    .map_err(TypeScriptPublicationError::Publish)?;
+    let mut reopened_manifest = [0; 4_096];
+    let mut reopened_facts = [None; 1];
+    let mut reopened_fragments = [0; 4_096];
+    let mut reopened_locality = [0; 4_096];
+    let Some(reopened) = open_published(
+        &publisher,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut reopened_manifest,
+            manifest_facts: &mut reopened_facts,
+            fragment_output: &mut reopened_fragments,
+            locality_output: &mut reopened_locality,
+        },
+    )
+    .map_err(TypeScriptPublicationError::Open)?
+    else {
+        return Err(TypeScriptPublicationError::MissingPublication);
+    };
+    let Some(fragment) = reopened.fragments().next() else {
+        return Err(TypeScriptPublicationError::MissingFragment);
+    };
+    let fragment = fragment.map_err(TypeScriptPublicationError::Fragment)?;
+    let expected = [
+        (b"ReopenedBox".as_slice(), EntityKind::Record),
+        (b"reopened".as_slice(), EntityKind::Constant),
+    ];
+    assert_facts(&fragment.view, &expected)?;
+    publisher
+        .shutdown()
+        .map_err(TypeScriptPublicationError::Shutdown)?;
+    std::fs::remove_file(runner).map_err(TestFailure::TypeScriptFixtureWrite)?;
+    runner_work.assert_empty()?;
     Ok(())
 }
 

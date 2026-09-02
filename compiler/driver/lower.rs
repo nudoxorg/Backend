@@ -27,7 +27,7 @@ mod java;
 mod python;
 mod rust;
 mod scanner;
-mod typescript;
+pub(crate) mod typescript;
 
 pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
     scanner::java_top_level_type_name(source)
@@ -291,6 +291,22 @@ impl<'source> FactSet<'source> {
 
     pub(super) const fn overflowed(&self) -> bool {
         self.overflowed
+    }
+
+    /// Borrows the first authority-admitted declaration name, when present.
+    pub(super) fn first_name(&self) -> Option<&'source [u8]> {
+        self.names
+            .get(..self.len)
+            .and_then(|names| names.first().copied())
+    }
+
+    /// Borrows the first authority-admitted declaration kind, when present.
+    pub(super) fn first_kind(&self) -> Option<EntityKind> {
+        if self.len == 0 {
+            None
+        } else {
+            self.kinds.first().copied()
+        }
     }
 
     /// Admits one fact after proving its name, its constructor payload against
@@ -705,7 +721,9 @@ pub(super) fn emit<'source>(
         Language::Rust => rust::collect(source, facts, unsupported)?,
         Language::Python => python::collect(source, facts, unsupported)?,
         Language::Clang => clang::collect(source, facts, unsupported)?,
-        Language::TypeScript => typescript::collect(source, facts, unsupported)?,
+        // TypeScript requires its exact closed source profile for grammar selection;
+        // callers use `typescript::collect` directly rather than profile-erasing dispatch.
+        Language::TypeScript => return Err(LoweringUnsupported::TypeScriptDeclarationForm),
         Language::CSharp => csharp::collect(source, facts, unsupported)?,
         Language::Go => go::collect(source, facts, unsupported)?,
         Language::Java => java::collect(source, facts, unsupported)?,

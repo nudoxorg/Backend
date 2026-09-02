@@ -10,14 +10,14 @@ use compiler_vocabulary::{Language, LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 
 use crate::{
-    lower::{self, AdmissionFault},
+    lower::{self, AdmissionFault, typescript::TypeScriptCollectError},
     native::parse_with_native_tool,
 };
 
 use super::{
-    CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest, CompileScratch,
-    CompiledFragment, NativeRecipe, ResolvedToolchain, SourceIdentity, ToolchainSelection,
-    ToolchainSelectionFact,
+    AuthorityDiagnostic, AuthorityFailure, CompileFailure, CompileOutput, CompileRecipeFact,
+    CompileRequest, CompileScratch, CompiledFragment, NativeRecipe, ResolvedToolchain,
+    SourceIdentity, ToolchainSelection, ToolchainSelectionFact,
 };
 
 pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
@@ -28,17 +28,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
     let mut unsupported = lower::UnsupportedLane::new();
-    lower::emit(
-        prepared.language,
-        request.source,
-        &mut facts,
-        &mut unsupported,
-    )
-    .map_err(|cause| CompileFailure::LoweringUnsupported {
-        source_identity: prepared.source,
-        recipe: prepared.recipe,
-        cause,
-    })?;
+    emit_facts(&prepared, request.source, &mut facts, &mut unsupported)?;
     let bytes = lower::admit(
         &facts,
         prepared.source,
@@ -80,13 +70,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
     let prepared = prepare(request, scratch)?;
-    let declaration = lower::declaration(prepared.language, request.source).map_err(|cause| {
-        CompileFailure::LoweringUnsupported {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        }
-    })?;
+    let declaration = declaration(&prepared, request.source)?;
     let mut builder = IrBuilder::new();
     builder
         .set_language_profile(request.profile)
@@ -276,4 +260,117 @@ fn recipe_fact(
         source.identity,
         toolchain.identity,
     )
+}
+
+fn emit_facts<'source, 'diagnostic>(
+    prepared: &PreparedCompile,
+    source: &'source [u8],
+    facts: &mut lower::FactSet<'source>,
+    unsupported: &mut lower::UnsupportedLane<'source>,
+) -> Result<(), CompileFailure<'diagnostic>> {
+    match prepared.recipe.profile {
+        LanguageProfile::TypeScript(profile) => {
+            lower::typescript::collect(profile, source, facts)
+                .map_err(|cause| typescript_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
+        LanguageProfile::Rust(_)
+        | LanguageProfile::Python(_)
+        | LanguageProfile::C(_)
+        | LanguageProfile::Cxx(_)
+        | LanguageProfile::Go(_)
+        | LanguageProfile::Java(_)
+        | LanguageProfile::CSharp(_) => lower::emit(prepared.language, source, facts, unsupported)
+            .map_err(|cause| CompileFailure::LoweringUnsupported {
+                source_identity: prepared.source,
+                recipe: prepared.recipe,
+                cause,
+            }),
+    }
+}
+
+fn declaration<'source, 'diagnostic>(
+    prepared: &PreparedCompile,
+    source: &'source [u8],
+) -> Result<lower::Declaration<'source>, CompileFailure<'diagnostic>> {
+    match prepared.recipe.profile {
+        LanguageProfile::TypeScript(profile) => {
+            let mut facts = lower::FactSet::new();
+            lower::typescript::collect(profile, source, &mut facts)
+                .map_err(|cause| typescript_terminal(prepared.source, prepared.recipe, cause))?;
+            let (Some(name), Some(kind)) = (facts.first_name(), facts.first_kind()) else {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            };
+            Ok(lower::Declaration {
+                name,
+                kind,
+                semantic_type: None,
+            })
+        }
+        LanguageProfile::Rust(_)
+        | LanguageProfile::Python(_)
+        | LanguageProfile::C(_)
+        | LanguageProfile::Cxx(_)
+        | LanguageProfile::Go(_)
+        | LanguageProfile::Java(_)
+        | LanguageProfile::CSharp(_) => {
+            lower::declaration(prepared.language, source).map_err(|cause| {
+                CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause,
+                }
+            })
+        }
+    }
+}
+
+fn typescript_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: TypeScriptCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        TypeScriptCollectError::Utf8(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::TypeScriptUtf8 {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        TypeScriptCollectError::Authority(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::TypeScript {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        TypeScriptCollectError::Span { start, end } => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::TypeScriptSpan {
+                diagnostic: AuthorityDiagnostic::absent(),
+                start,
+                end,
+            },
+        },
+        TypeScriptCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
+    }
 }

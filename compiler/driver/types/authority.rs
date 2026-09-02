@@ -117,6 +117,25 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_typescript::AuthorityError,
     },
+    /// TypeScript source bytes could not be lent to OXC as valid UTF-8 text.
+    #[error("TypeScript source is not valid UTF-8")]
+    TypeScriptUtf8 {
+        /// Bounded source diagnostic retained by the TypeScript authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact UTF-8 decoding failure from the caller's source bytes.
+        #[source]
+        cause: std::str::Utf8Error,
+    },
+    /// OXC returned a byte span outside the exact TypeScript source authority.
+    #[error("TypeScript authority returned an invalid source span")]
+    TypeScriptSpan {
+        /// Bounded source diagnostic retained by the TypeScript authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Inclusive OXC source-byte start retained without a lossy message.
+        start: u32,
+        /// Exclusive OXC source-byte end retained without a lossy message.
+        end: u32,
+    },
     /// Ruff/Python semantic authority did not yield source facts.
     #[error("Python semantic authority failed")]
     Python {
@@ -186,6 +205,13 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: typescript_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::TypeScriptUtf8 { diagnostic, .. } | Self::TypeScriptSpan { diagnostic, .. } => {
+                AuthorityFailureProjection {
+                    phase: AuthorityPhase::Parse,
+                    class: AuthorityDiagnosticClass::Syntax,
+                    diagnostic: *diagnostic,
+                }
+            }
             Self::Python { diagnostic, cause } => AuthorityFailureProjection {
                 phase: python_phase(cause),
                 class: python_class(cause),
@@ -225,7 +251,12 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 Self::Clang { .. },
                 LanguageProfile::C(_) | LanguageProfile::Cxx(_)
             ) | (Self::Rust { .. }, LanguageProfile::Rust(_))
-                | (Self::TypeScript { .. }, LanguageProfile::TypeScript(_))
+                | (
+                    Self::TypeScript { .. }
+                        | Self::TypeScriptUtf8 { .. }
+                        | Self::TypeScriptSpan { .. },
+                    LanguageProfile::TypeScript(_)
+                )
                 | (Self::Python { .. }, LanguageProfile::Python(_))
                 | (Self::Go { .. }, LanguageProfile::Go(_))
                 | (Self::CSharp { .. }, LanguageProfile::CSharp(_))

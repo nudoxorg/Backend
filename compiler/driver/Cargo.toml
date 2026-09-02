@@ -23,5 +23,9 @@ compiler-languages-typescript = { path = "../languages/typescript" }
 heart-identity = { path = "../../heart/identity" }
 thiserror.workspace = true
 
+[dev-dependencies]
+compiler-publication = { path = "../publication" }
+server-journal = { path = "../../server/journal" }
+
 [lib]
 path = "lib.rs"

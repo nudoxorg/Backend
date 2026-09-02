@@ -1297,9 +1297,11 @@ dependencies = [
  "compiler-languages-python",
  "compiler-languages-rust",
  "compiler-languages-typescript",
+ "compiler-publication",
  "compiler-registry",
  "compiler-vocabulary",
  "heart-identity",
+ "server-journal",
  "thiserror 2.0.20",
 ]
 

@@ -26,6 +26,14 @@ use thiserror::Error;
 pub(super) enum TestFailure {
     #[error("host does not expose the required {tool:?} executable")]
     MissingHostTool { tool: NativeTool },
+    #[error(
+        "host does not expose the explicit Node.js executable for the TypeScript authority fixture"
+    )]
+    MissingTypeScriptNode,
+    #[error("TypeScript authority fixture path was not valid UTF-8")]
+    TypeScriptFixturePath,
+    #[error("could not materialize the exact TypeScript authority fixture")]
+    TypeScriptFixtureWrite(#[source] std::io::Error),
     #[error("could not canonicalize the required {tool:?} executable")]
     Canonicalize {
         tool: NativeTool,
@@ -271,11 +279,34 @@ impl TemporaryWork {
             None => Ok(()),
         }
     }
+
+    #[cfg(unix)]
+    pub(super) fn write_typescript_runner(
+        &self,
+        node: &Path,
+        compiler: &Path,
+    ) -> Result<PathBuf, TestFailure> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let node = node.to_str().ok_or(TestFailure::TypeScriptFixturePath)?;
+        let compiler = compiler
+            .to_str()
+            .ok_or(TestFailure::TypeScriptFixturePath)?;
+        let runner = self.path.join("typescript-authority-runner");
+        let body = format!("#!/bin/sh\nexec {node} {compiler} \"$@\"\n");
+        fs::write(&runner, body).map_err(TestFailure::TypeScriptFixtureWrite)?;
+        let mut permissions = fs::metadata(&runner)
+            .map_err(TestFailure::TypeScriptFixtureWrite)?
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&runner, permissions).map_err(TestFailure::TypeScriptFixtureWrite)?;
+        Ok(runner)
+    }
 }
 
 impl Drop for TemporaryWork {
     fn drop(&mut self) {
-        let _removed = fs::remove_dir(&self.path);
+        let _removed = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -327,6 +358,13 @@ pub(super) fn configured_executable(tool: NativeTool) -> Option<PathBuf> {
         NativeTool::Rustc | NativeTool::Clang | NativeTool::Python => return None,
     };
     env::var_os(variable).map(PathBuf::from)
+}
+
+pub(super) fn typescript_node() -> Result<PathBuf, TestFailure> {
+    let path = env::var_os("COMPILER_TYPESCRIPT_NODE").ok_or(TestFailure::MissingTypeScriptNode)?;
+    PathBuf::from(path)
+        .canonicalize()
+        .map_err(TestFailure::TypeScriptFixtureWrite)
 }
 
 pub(super) fn resolved<'path>(
