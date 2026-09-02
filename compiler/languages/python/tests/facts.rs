@@ -2,10 +2,25 @@
 //! Each test names one source-preservation or omission law.
 //! Integration tests consume only the public extraction entry point.
 
-use compiler_languages_python::*;
+use compiler_languages_python::{extract as extract_with_profile, *};
+use compiler_vocabulary::PythonVersion;
+
+const PROFILE: PythonVersion = PythonVersion::Python314;
+
+#[derive(Debug, thiserror::Error)]
+enum TestError {
+    #[error(transparent)]
+    Extract(#[from] ExtractionError),
+    #[error("missing declaration `{0}")]
+    MissingDeclaration(&'static str),
+}
+
+fn extract(source: &[u8]) -> Result<ModuleFacts, ExtractionError> {
+    extract_with_profile(source, PROFILE)
+}
 
 #[test]
-fn extracts_typed_core_facts() -> Result<(), ExtractionError> {
+fn extracts_typed_core_facts() -> Result<(), TestError> {
     let facts = extract(
         b"\"module\"\n\ndef f(a: int, /, b=2, *args, c: str = 'x', **kwargs):\n    return f(a)\n",
     )?;
@@ -13,9 +28,11 @@ fn extracts_typed_core_facts() -> Result<(), ExtractionError> {
         facts.docstring.as_ref().map(|d| d.raw.as_str()),
         Some("\"module\"")
     );
-    let function = facts.declarations.iter().find(|d| d.name == "f");
-    assert!(function.is_some());
-    let function = function.unwrap();
+    let function = facts
+        .declarations
+        .iter()
+        .find(|fact| fact.name == "f")
+        .ok_or(TestError::MissingDeclaration("f"))?;
     assert_eq!(function.parameters[0].kind, ParameterKind::PositionalOnly);
     assert_eq!(function.parameters[1].default_source.as_deref(), Some("2"));
     assert_eq!(function.parameters[2].kind, ParameterKind::VarArgs);
@@ -26,14 +43,14 @@ fn extracts_typed_core_facts() -> Result<(), ExtractionError> {
 }
 
 #[test]
-fn dynamic_calls_are_omitted() -> Result<(), ExtractionError> {
+fn dynamic_calls_are_omitted() -> Result<(), TestError> {
     let facts = extract(b"def f():\n    getattr(self, 'f')()\n")?;
     assert!(facts.occurrences.is_empty());
     Ok(())
 }
 
 #[test]
-fn declarations_keep_class_forms_aliases_decorators_and_docs() -> Result<(), ExtractionError> {
+fn declarations_keep_class_forms_aliases_decorators_and_docs() -> Result<(), TestError> {
     let source = b"\"module doc\"\nimport x as y\nfrom pkg import item as local\n\n@dataclass\nclass Data: \n    value: int = 1\n\n@staticmethod\ndef helper():\n    \"helper doc\"\n\nclass Proto(Protocol):\n    pass\nclass Typed(TypedDict):\n    pass\nclass Choice(enum.Enum):\n    A = 1\n";
     let facts = extract(source)?;
     let by_name = |name: &str| facts.declarations.iter().find(|d| d.name == name);
@@ -80,35 +97,39 @@ fn declarations_keep_class_forms_aliases_decorators_and_docs() -> Result<(), Ext
 }
 
 #[test]
-fn written_param_spec_and_type_var_tuple_are_preserved() -> Result<(), ExtractionError> {
+fn written_param_spec_and_type_var_tuple_are_preserved() -> Result<(), TestError> {
     let facts = extract(b"def f(p: ParamSpec, t: TypeVarTuple):\n    pass\n")?;
-    let f = facts.declarations.iter().find(|d| d.name == "f");
-    assert!(f.is_some());
-    let f = f.unwrap();
+    let function = facts
+        .declarations
+        .iter()
+        .find(|fact| fact.name == "f")
+        .ok_or(TestError::MissingDeclaration("f"))?;
     assert_eq!(
-        f.parameters[0].annotation,
+        function.parameters[0].annotation,
         Annotation::Name("ParamSpec".to_owned())
     );
     assert_eq!(
-        f.parameters[1].annotation,
+        function.parameters[1].annotation,
         Annotation::Name("TypeVarTuple".to_owned())
     );
     Ok(())
 }
 
 #[test]
-fn spans_are_utf8_bytes_not_utf16_units() -> Result<(), ExtractionError> {
+fn spans_are_utf8_bytes_not_utf16_units() -> Result<(), TestError> {
     let facts = extract("# CJK 注释\nvalue = \"😀\"\ndef héllo():\n    pass\n".as_bytes())?;
-    let hello = facts.declarations.iter().find(|d| d.name == "héllo");
-    assert!(hello.is_some());
-    let hello = hello.unwrap();
+    let hello = facts
+        .declarations
+        .iter()
+        .find(|fact| fact.name == "héllo")
+        .ok_or(TestError::MissingDeclaration("héllo"))?;
     assert_eq!(hello.span, Span { start: 28, end: 41 });
     assert_ne!(hello.span.end - hello.span.start, 12);
     Ok(())
 }
 
 #[test]
-fn module_assignments_are_constants_with_source_and_annotation() -> Result<(), ExtractionError> {
+fn module_assignments_are_constants_with_source_and_annotation() -> Result<(), TestError> {
     let facts = extract(b"X = 5\nY: int = 6\n")?;
     let x = facts.declarations.iter().find(|d| d.name == "X");
     let y = facts.declarations.iter().find(|d| d.name == "Y");
@@ -128,7 +149,7 @@ fn module_assignments_are_constants_with_source_and_annotation() -> Result<(), E
 }
 
 #[test]
-fn class_decorator_matching_is_exact_and_calls_belong_to_module() -> Result<(), ExtractionError> {
+fn class_decorator_matching_is_exact_and_calls_belong_to_module() -> Result<(), TestError> {
     let json = extract(b"@dataclass_json\nclass Json: pass\n")?;
     assert_eq!(
         json.declarations
@@ -168,7 +189,7 @@ fn class_decorator_matching_is_exact_and_calls_belong_to_module() -> Result<(), 
 }
 
 #[test]
-fn nested_main_named_function_does_not_enable_module_imports() -> Result<(), ExtractionError> {
+fn nested_main_named_function_does_not_enable_module_imports() -> Result<(), TestError> {
     let facts = extract(b"def __main__():\n    import sys\n")?;
     assert!(
         facts
@@ -180,18 +201,13 @@ fn nested_main_named_function_does_not_enable_module_imports() -> Result<(), Ext
 }
 
 #[test]
-fn unannotated_parameter_has_unavailable_authority() -> Result<(), ExtractionError> {
+fn unannotated_parameter_has_unavailable_authority() -> Result<(), TestError> {
     let facts = extract(b"def f(value):\n    pass\n")?;
     let f = facts
         .declarations
         .iter()
         .find(|d| d.name == "f")
-        .ok_or_else(|| ExtractionError::Syntax {
-            source_bytes: Vec::new(),
-            span: Span { start: 0, end: 0 },
-            bytes: Vec::new(),
-            message: "missing f".to_owned(),
-        })?;
+        .ok_or(TestError::MissingDeclaration("f"))?;
     assert!(matches!(
         f.parameters[0].annotation,
         Annotation::Unknown(TypeReason::Unannotated {
@@ -216,7 +232,7 @@ fn truncation_faults_retain_variant_operands() {
         b"@decorator(\n".as_slice(),
     ] {
         assert!(
-            matches!(extract(source), Err(ExtractionError::Syntax { source_bytes, bytes, .. }) if source_bytes == source && !bytes.is_empty())
+            matches!(extract(source), Err(ExtractionError::RejectedSyntax { rejection }) if !rejection.parsed.errors().is_empty())
         );
     }
 }

@@ -1352,6 +1352,7 @@ dependencies = [
 name = "compiler-languages-python"
 version = "0.1.0"
 dependencies = [
+ "compiler-vocabulary",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
