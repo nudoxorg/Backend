@@ -1,0 +1,82 @@
+capability = "java-authority-lifecycle"
+opened = "2026-09-02"
+baseline_commit = "40608fc1c95dd8d41fd1a78a51d7ed92307df60a"
+baseline_tree = "748ff3104076c9e4171ebdc865c5d8bf0cf2b969"
+state = "phase0"
+testing_path = "TESTING.md"
+testing_sha256 = "absent-no-file"
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/java-authority-lifecycle/brief.md" }
+matrix = { path = ".codex/evidence/capabilities/java-authority-lifecycle/proof-matrix.md" }
+research = { path = ".codex/evidence/capabilities/java-authority-lifecycle/research.md" }
+closure = { path = ".codex/evidence/capabilities/java-authority-lifecycle/closure.md" }
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J1-java-compound-anonymous-rows"
+paths = ["compiler/driver/lower/java.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J5-java-render-goldens"
+paths = ["compiler/driver/tests/java_render.rs", "compiler/driver/tests/java_support/"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J6-java-purl-local-repo"
+paths = ["compiler/languages/java/purl.rs", "compiler/languages/java/repo.rs", "compiler/languages/java/lib.rs", "compiler/languages/java/tests/purl.rs", "compiler/languages/java/tests/repo.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J2-java-image-v2-planes-doclet"
+paths = ["compiler/languages/java/image.rs", "compiler/languages/java/bound.rs", "compiler/languages/java/doclet/", "compiler/languages/java/tests/image.rs", "compiler/languages/java/tests/javac_authority.rs", "compiler/driver/tests/java_image.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J4-java-utf16-span-basis"
+paths = ["compiler/driver/lower/java.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J7-java-jar-central"
+paths = ["compiler/languages/java/jar.rs", "compiler/languages/java/central.rs", "compiler/languages/java/Cargo.toml", "compiler/languages/java/tests/jar.rs", "compiler/languages/java/tests/central.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J3-java-planes-lowering"
+paths = ["compiler/driver/lower/java.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J8-java-doclet-harness"
+paths = ["compiler/languages/java/harness.rs", "compiler/languages/java/lib.rs", "compiler/languages/java/tests/harness.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+paths = ["compiler/driver/tests/java_lifecycle.rs", "compiler/driver/tests/java_lifecycle/"]
+state = "planned"
+
+[[reviews]]
+boundary = "phase0"
+role = "nudox_terra_reviewer"
+state = "deferred-noted"
+note = "Phase-0 frozen packet reviewed by manager; independent sidecar reviewer reserved for first end-to-end candidate and closure (tooling here exposes the registered reviewer as a task agent, not a separate codex parent; deviation recorded at first review)"
