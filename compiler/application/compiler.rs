@@ -76,12 +76,10 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         self.publisher.shutdown()
     }
 
-    /// Compiles directly into the canonical in-memory IR used by renderers,
-    /// graph queries, index projections, and IR-VCS.
-    ///
-    /// Unlike [`CompilerCapability::generate`], this path does not create a
-    /// fragment byte stream or publish an artifact. The returned owner may be
-    /// borrowed by every downstream stage for its complete lifetime.
+    /// Compiles into the queryable image derived from the same admitted fact
+    /// lane as durable generation. The returned owner may be borrowed by
+    /// renderers, graph queries, index projections, and IR-VCS for its
+    /// complete lifetime.
     ///
     /// # Errors
     ///

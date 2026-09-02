@@ -215,6 +215,7 @@ impl fmt::Display for DocsDisplay<'_> {
 
 fn write_visibility(output: &mut impl fmt::Write, visibility: Visibility) -> fmt::Result {
     match visibility {
+        Visibility::Unknown => output.write_str("/* visibility unknown */ "),
         Visibility::Private => Ok(()),
         Visibility::Restricted => output.write_str("pub(restricted) "),
         Visibility::Package => output.write_str("pub(crate) "),

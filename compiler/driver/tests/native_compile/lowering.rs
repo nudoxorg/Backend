@@ -9,9 +9,9 @@ use std::{
 
 use compiler_driver::{
     CompileFailure, CompileOutput, CompileScratch, LoweringUnsupported, NativeTool,
-    ToolchainSelection, compile,
+    ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, PrimitiveType, TypeNode};
+use compiler_ir::{EntityKind, ItemKind, PrimitiveType, TypeNode, Visibility};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -219,6 +219,54 @@ fn real_tsc_admission_then_oxc_bindings_fill_the_compact_fragment() -> Result<()
         });
     }
     native_work.assert_empty()?;
+    let semantic_work = TemporaryWork::create()?;
+    let semantic = compile_ir(
+        request(
+            Language::TypeScript,
+            b"export class Box {} export const value = new Box();",
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(10),
+        ),
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: semantic_work.path(),
+        },
+    )
+    .map_err(|failure| TestFailure::CompileTerminal {
+        tool,
+        expected: CompileExpectation::CompactFact,
+        observed: compile_terminal(&failure),
+    })?;
+    if semantic.ir.entity_count() != 2 {
+        return Err(TestFailure::SemanticEntityCount {
+            expected: 2,
+            actual: semantic.ir.entity_count(),
+        });
+    }
+    let record_count = semantic.ir.items_of_kind(ItemKind::Record).len();
+    if record_count != 1 {
+        return Err(TestFailure::SemanticItemKindCount {
+            kind: ItemKind::Record,
+            expected: 1,
+            actual: record_count,
+        });
+    }
+    if let Some(actual) = semantic
+        .ir
+        .storage_columns()
+        .entities
+        .visibility
+        .iter()
+        .copied()
+        .find(|visibility| *visibility != Visibility::Unknown)
+    {
+        return Err(TestFailure::SemanticVisibility {
+            expected: Visibility::Unknown,
+            actual,
+        });
+    }
+    semantic_work.assert_empty()?;
     std::fs::remove_file(runner).map_err(TestFailure::TypeScriptFixtureWrite)?;
     runner_work.assert_empty()?;
     Ok(())

@@ -1,10 +1,7 @@
 //! Defines types compile behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the types compile invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_ir::{
-    BuiltinType, ConcreteType, EntityVersion, FragmentView, IrBuilder, ItemKind, PayloadHash,
-    PrepareError, StableEntityId, TreeItemInput, Visibility,
-};
+use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
@@ -64,65 +61,23 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     })
 }
 
-/// Compiles directly into the one canonical semantic representation.
+/// Materializes a queryable semantic image from the exact admission lane used
+/// to write the durable canonical fragment.
 pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
     let prepared = prepare(request, scratch)?;
-    let declaration = declaration(&prepared, request.source)?;
-    let mut builder = IrBuilder::new();
-    builder
-        .set_language_profile(request.profile)
+    let mut facts = lower::FactSet::new();
+    let mut unsupported = lower::UnsupportedLane::new();
+    emit_facts(&prepared, request.source, &mut facts, &mut unsupported)?;
+    let ir = facts
+        .build_ir(request.profile, prepared.source)
         .map_err(|cause| CompileFailure::Build {
             source_identity: prepared.source,
             recipe: prepared.recipe,
             cause,
         })?;
-    let version = EntityVersion {
-        stable: StableEntityId::from_canonical_bytes(prepared.source.identity.as_ref()),
-        payload: PayloadHash::from_canonical_bytes(request.source),
-    };
-    let versions = [version];
-    let mut tree = builder
-        .reserve_tree(&versions)
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        })?;
-    let semantic_type = declaration
-        .semantic_type
-        .map(|primitive| tree.intern_concrete(ConcreteType::Builtin(builtin_type(primitive))))
-        .transpose()
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        })?;
-    let items = [TreeItemInput {
-        name: declaration.name,
-        kind: item_kind(declaration.kind),
-        visibility: Visibility::Public,
-        parent: None,
-        semantic_type: semantic_type.map(|semantic_type| semantic_type.erase()),
-        members: &[],
-        docs: &[],
-        attributes: &[],
-        source: None,
-        extension: None,
-    }];
-    tree.commit(&items, &[])
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        })?;
-    let ir = builder.finish().map_err(|cause| CompileFailure::Build {
-        source_identity: prepared.source,
-        recipe: prepared.recipe,
-        cause,
-    })?;
     Ok(super::CompiledIr {
         source: prepared.source,
         recipe: prepared.recipe,
@@ -207,32 +162,6 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     })
 }
 
-const fn builtin_type(primitive: compiler_ir::PrimitiveType) -> BuiltinType {
-    match primitive {
-        compiler_ir::PrimitiveType::Bool => BuiltinType::Bool,
-        compiler_ir::PrimitiveType::I32 => BuiltinType::I32,
-        compiler_ir::PrimitiveType::String => BuiltinType::String,
-    }
-}
-
-const fn item_kind(kind: compiler_ir::EntityKind) -> ItemKind {
-    match kind {
-        compiler_ir::EntityKind::Function => ItemKind::Function,
-        compiler_ir::EntityKind::Constant => ItemKind::Constant,
-        compiler_ir::EntityKind::Record => ItemKind::Record,
-        compiler_ir::EntityKind::Module => ItemKind::Module,
-        compiler_ir::EntityKind::Field => ItemKind::Field,
-        compiler_ir::EntityKind::Alias => ItemKind::TypeAlias,
-        compiler_ir::EntityKind::Trait => ItemKind::Trait,
-        compiler_ir::EntityKind::Implementation => ItemKind::Implementation,
-        compiler_ir::EntityKind::Enum => ItemKind::Enum,
-        compiler_ir::EntityKind::Variant => ItemKind::Variant,
-        compiler_ir::EntityKind::Static => ItemKind::Static,
-        compiler_ir::EntityKind::Reexport => ItemKind::Reexport,
-        compiler_ir::EntityKind::Parameter => ItemKind::Parameter,
-    }
-}
-
 fn source_identity<'diagnostic>(
     source_bytes: &[u8],
 ) -> Result<SourceIdentity, CompileFailure<'diagnostic>> {
@@ -293,46 +222,6 @@ fn emit_facts<'source, 'diagnostic>(
                 recipe: prepared.recipe,
                 cause,
             }),
-    }
-}
-
-fn declaration<'source, 'diagnostic>(
-    prepared: &PreparedCompile,
-    source: &'source [u8],
-) -> Result<lower::Declaration<'source>, CompileFailure<'diagnostic>> {
-    match prepared.recipe.profile {
-        LanguageProfile::TypeScript(profile) => {
-            let mut facts = lower::FactSet::new();
-            lower::typescript::collect(profile, source, &mut facts)
-                .map_err(|cause| typescript_terminal(prepared.source, prepared.recipe, cause))?;
-            let (Some(name), Some(kind)) = (facts.first_name(), facts.first_kind()) else {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            };
-            Ok(lower::Declaration {
-                name,
-                kind,
-                semantic_type: None,
-            })
-        }
-        LanguageProfile::Rust(_)
-        | LanguageProfile::Python(_)
-        | LanguageProfile::C(_)
-        | LanguageProfile::Cxx(_)
-        | LanguageProfile::Go(_)
-        | LanguageProfile::Java(_)
-        | LanguageProfile::CSharp(_) => {
-            lower::declaration(prepared.language, source).map_err(|cause| {
-                CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause,
-                }
-            })
-        }
     }
 }
 

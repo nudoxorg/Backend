@@ -74,6 +74,8 @@ pub enum ItemKind {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Visibility {
+    /// The admitting authority did not provide a visibility fact.
+    Unknown,
     Private,
     Restricted,
     Package,

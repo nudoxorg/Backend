@@ -7,9 +7,11 @@
 //! collectors emit declaration facts and type facts only; real frontends will
 //! supply occurrence facts when the scanner retirement gate is closed.
 use compiler_ir::{
-    AtomId, ListSpan, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
+    AtomId, BuiltinType, ConcreteType, EntityVersion, Ir, IrBuilder, ItemKind, ListSpan,
+    PayloadHash, PrimitiveShape, ProductChildRole, ProductChildren, ProductConstructorFault,
     ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild,
-    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeId,
+    SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput,
+    TypeId, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -31,33 +33,6 @@ pub(crate) mod typescript;
 
 pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
     scanner::java_top_level_type_name(source)
-}
-
-/// One declaration projected into the current rich-IR compatibility path.
-pub(super) struct Declaration<'source> {
-    pub(super) name: &'source [u8],
-    pub(super) kind: EntityKind,
-    pub(super) semantic_type: Option<PrimitiveType>,
-}
-
-/// Projects the first fully proven declaration without weakening the richer
-/// compact fact collector used by durable publication.
-pub(super) fn declaration<'source>(
-    language: Language,
-    source: &'source [u8],
-) -> Result<Declaration<'source>, LoweringUnsupported> {
-    let mut facts = FactSet::new();
-    let mut unsupported = UnsupportedLane::new();
-    emit(language, source, &mut facts, &mut unsupported)?;
-    let semantic_type = match facts.fact_types[0] {
-        FactType::Primitive(primitive) => Some(primitive),
-        FactType::Opaque => None,
-    };
-    Ok(Declaration {
-        name: facts.names[0],
-        kind: facts.kinds[0],
-        semantic_type,
-    })
 }
 
 /// Dense bound of the multi-declaration semantic emission lane.
@@ -293,22 +268,6 @@ impl<'source> FactSet<'source> {
         self.overflowed
     }
 
-    /// Borrows the first authority-admitted declaration name, when present.
-    pub(super) fn first_name(&self) -> Option<&'source [u8]> {
-        self.names
-            .get(..self.len)
-            .and_then(|names| names.first().copied())
-    }
-
-    /// Borrows the first authority-admitted declaration kind, when present.
-    pub(super) fn first_kind(&self) -> Option<EntityKind> {
-        if self.len == 0 {
-            None
-        } else {
-            self.kinds.first().copied()
-        }
-    }
-
     /// Returns one authority-admitted declaration kind by its validated lane ordinal.
     #[cfg(test)]
     pub(super) fn kind_at(&self, ordinal: usize) -> Option<EntityKind> {
@@ -317,6 +276,72 @@ impl<'source> FactSet<'source> {
         } else {
             self.kinds.get(ordinal).copied()
         }
+    }
+
+    /// Materializes the rich compatibility view directly from this exact
+    /// admitted lane. The compact fragment and this view therefore cannot
+    /// diverge on declaration names, kinds, or primitive facts.
+    ///
+    /// Facts not supplied by this lane remain explicit `Unknown` visibility
+    /// or absent fields; this view never manufactures visibility, members,
+    /// documentation, source spans, or language extensions.
+    pub(super) fn build_ir(
+        &self,
+        profile: compiler_vocabulary::LanguageProfile,
+        source: compiler_ir::SourceIdentity,
+    ) -> Result<Ir, compiler_ir::BuildError> {
+        let fact_count = self.len;
+        let mut builder = IrBuilder::new();
+        builder.set_language_profile(profile)?;
+
+        let empty_version = EntityVersion {
+            stable: StableEntityId::from_raw([0; 16]),
+            payload: PayloadHash::from_raw([0; 16]),
+        };
+        let mut versions = [empty_version; MAX_EMISSION_FACTS];
+        for (ordinal, version) in versions.iter_mut().take(fact_count).enumerate() {
+            *version = fact_version(source, ordinal, self.names[ordinal]);
+        }
+        let mut tree = builder.reserve_tree(&versions[..fact_count])?;
+        let mut semantic_types = [None; MAX_EMISSION_FACTS];
+        for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
+            *semantic_type = match self.fact_types[ordinal] {
+                FactType::Primitive(primitive) => Some(
+                    tree.intern_concrete(ConcreteType::Builtin(builtin_type(primitive)))?
+                        .erase(),
+                ),
+                FactType::Opaque => None,
+            };
+        }
+        let empty_item = TreeItemInput {
+            name: b"",
+            kind: ItemKind::Function,
+            visibility: Visibility::Unknown,
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        };
+        let mut items = [empty_item; MAX_EMISSION_FACTS];
+        for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
+            *item = TreeItemInput {
+                name: self.names[ordinal],
+                kind: item_kind(self.kinds[ordinal]),
+                visibility: Visibility::Unknown,
+                parent: None,
+                semantic_type: semantic_types[ordinal],
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            };
+        }
+        tree.commit(&items[..fact_count], &[])?;
+        builder.finish()
     }
 
     /// Admits one fact after proving its name, its constructor payload against
@@ -398,6 +423,52 @@ impl<'source> FactSet<'source> {
         self.total_children = pooled_start + child_count as usize;
         self.len = fact_ordinal + 1;
         Ok(fact_ordinal)
+    }
+}
+
+const fn builtin_type(primitive: PrimitiveType) -> BuiltinType {
+    match primitive {
+        PrimitiveType::Bool => BuiltinType::Bool,
+        PrimitiveType::I32 => BuiltinType::I32,
+        PrimitiveType::String => BuiltinType::String,
+    }
+}
+
+const fn item_kind(kind: EntityKind) -> ItemKind {
+    match kind {
+        EntityKind::Function => ItemKind::Function,
+        EntityKind::Constant => ItemKind::Constant,
+        EntityKind::Record => ItemKind::Record,
+        EntityKind::Module => ItemKind::Module,
+        EntityKind::Field => ItemKind::Field,
+        EntityKind::Alias => ItemKind::TypeAlias,
+        EntityKind::Trait => ItemKind::Trait,
+        EntityKind::Implementation => ItemKind::Implementation,
+        EntityKind::Enum => ItemKind::Enum,
+        EntityKind::Variant => ItemKind::Variant,
+        EntityKind::Static => ItemKind::Static,
+        EntityKind::Reexport => ItemKind::Reexport,
+        EntityKind::Parameter => ItemKind::Parameter,
+    }
+}
+
+/// Derives a source-bound disambiguator for one fact-lane ordinal until its
+/// frontend lends a stronger declaration identity. The source identity and
+/// ordinal make same-named overloads distinct without treating a name as an
+/// identity.
+fn fact_version(source: compiler_ir::SourceIdentity, ordinal: usize, name: &[u8]) -> EntityVersion {
+    let mut identity_input = [0; 36];
+    let (source_input, ordinal_input) = identity_input.split_at_mut(32);
+    source_input.copy_from_slice(source.identity.as_ref());
+    #[expect(
+        clippy::as_conversions,
+        reason = "the fixed fact lane caps ordinals at 128, which always fit the canonical u32 disambiguator"
+    )]
+    let ordinal = ordinal as u32;
+    ordinal_input.copy_from_slice(&ordinal.to_le_bytes());
+    EntityVersion {
+        stable: StableEntityId::from_canonical_bytes(&identity_input),
+        payload: PayloadHash::from_canonical_bytes(name),
     }
 }
 

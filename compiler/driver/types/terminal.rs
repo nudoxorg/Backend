@@ -149,8 +149,9 @@ pub struct CompiledFragment<'artifact> {
     pub fragment: FragmentView<'artifact>,
 }
 
-/// Canonical semantic terminal shared directly with renderers, graph queries,
-/// indexers, and IR-VCS. It contains no serialized intermediary.
+/// Queryable semantic image materialized directly from the same admitted fact
+/// lane that writes the durable canonical fragment. It contains no second
+/// frontend lowering or serialized intermediary.
 pub struct CompiledIr {
     pub source: SourceIdentity,
     pub recipe: CompileRecipeFact,

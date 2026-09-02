@@ -174,6 +174,19 @@ pub(super) enum TestFailure {
         expected: LanguageProfile,
         actual: SemanticImageAuthority,
     },
+    #[error("semantic IR retained {actual} declaration rows, not {expected}")]
+    SemanticEntityCount { expected: usize, actual: usize },
+    #[error("semantic IR retained {actual} {kind:?} rows, not {expected}")]
+    SemanticItemKindCount {
+        kind: compiler_ir::ItemKind,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("semantic IR visibility was {actual:?}, not unproven {expected:?}")]
+    SemanticVisibility {
+        expected: compiler_ir::Visibility,
+        actual: compiler_ir::Visibility,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
