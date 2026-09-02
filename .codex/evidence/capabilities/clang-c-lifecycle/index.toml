@@ -1,0 +1,28 @@
+schema = 1
+capability_id = "clang-c-lifecycle"
+state = "phase0"
+baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
+baseline_tree = "working-tree state frozen by per-file digests in brief.md (uncommitted lane work included deliberately)"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = ""
+testing_sha256 = ""
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/clang-c-lifecycle/brief.md", sha256 = "3d24e957cb22cbb1eecd92212cecece98af5b11cd72d65ce9e59feb4ec41d048" }
+matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "1cb622c04e0f5e75ffd0ef31f3578d23a2df37d48aab63507b9e00a70ea5fdf4" }
+research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "c39d4f348436aae61bb06d0ff594be064b61508e808ebec4f1bda1c3da6fe1ec" }
+closure = { path = ".codex/evidence/capabilities/clang-c-lifecycle/closure.md", sha256 = "" }
+
+[[workers]]
+task_id = "pending"
+role = "luna"
+config_path = ".opencode/agents/luna.md"
+model = "openai/gpt-5.6-luna"
+effort = "max"
+sandbox = "workspace-write"
+baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
+checkout = "shared worktree, disjoint owned paths per card"
+card_sha256 = "recorded at dispatch"
+result_commit = ""
+retention = "active"
