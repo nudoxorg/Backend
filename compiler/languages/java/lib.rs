@@ -1,12 +1,14 @@
-//! Java doclet boundary with explicit UTF-16-to-UTF-8 coordinate conversion.
-//! It preserves overload and throws facts from the old helper.
-//! Recorded fixtures provide a runtime-independent proof.
+//! Java compiler authority facts transported as a validated immutable image.
+//! `javac` writes fixed-width semantic planes and this crate only borrows them.
+//! No JSON tree, owned DTO reconstruction, scanner fallback, or semantic string parsing occurs.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod oracle;
+mod image;
 
-pub use oracle::{
-    Constant, DecodeError, JavaOutput, JavaType, ToolingUnavailable, TypeMirror, Utf16Span, decode,
-    probe_javadoc, probe_javadoc_path, utf16_span_to_utf8,
+pub use image::{
+    Atom, AtomError, AtomIter, Declaration, DeclarationIter, DeclarationKind, DocFlavor,
+    HeaderError, ImageError, ImagePlane, JavaImage, JavaRelease, Modifiers, Origin, Reference,
+    ReferenceIter, SectionError, Symbol, SymbolIter, SymbolRef, TypeChildren, TypeFact, TypeIter,
+    TypeKind, TypeRef,
 };
