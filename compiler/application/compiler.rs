@@ -111,6 +111,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 stage: request.stage,
                 source: request.source.as_bytes(),
                 toolchain,
+                authority: compiler_driver::SemanticAuthorityInput::None,
                 control: CompileControl {
                     deadline,
                     cancelled: self.config.control.cancelled,
@@ -150,6 +151,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 stage: request.stage,
                 source: request.source.as_bytes(),
                 toolchain,
+                authority: compiler_driver::SemanticAuthorityInput::None,
                 control: CompileControl {
                     deadline,
                     cancelled: self.config.control.cancelled,

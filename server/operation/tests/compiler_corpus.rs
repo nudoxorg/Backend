@@ -177,6 +177,7 @@ fn run_package(
             stage: Stage::LowerIr,
             source: rendered.source.as_bytes(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
+            authority: compiler_driver::SemanticAuthorityInput::None,
             control: CompileControl {
                 deadline: Instant::now() + DEADLINE,
                 cancelled: &cancelled,

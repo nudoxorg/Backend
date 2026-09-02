@@ -7,6 +7,21 @@ use compiler_vocabulary::{LanguageProfile, Stage};
 
 use super::{ResolvedToolchain, ToolchainSelection};
 
+/// Project-bearing semantic authority required by a profile that cannot infer
+/// its package graph from one source buffer.
+#[derive(Clone, Copy, Debug)]
+pub enum SemanticAuthorityInput<'source> {
+    /// No profile-specific project authority accompanies this request.
+    None,
+    /// Caller-selected Cargo graph for in-process rust-analyzer admission.
+    Rust {
+        /// Exact Cargo root and toolchain context selected by the caller.
+        project: &'source compiler_languages_rust::RustProject,
+        /// Exact root-source byte budget checked before Cargo graph loading.
+        maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
+    },
+}
+
 /// Deadline and cancellation facts borrowed by one bounded native invocation.
 #[derive(Clone, Copy, Debug)]
 pub struct CompileControl<'cancel> {
@@ -27,6 +42,8 @@ pub struct CompileRequest<'source, 'toolchain, 'cancel> {
     pub source: &'source [u8],
     /// Resolved native authority or explicit unavailable tool fact, never an ambient lookup.
     pub toolchain: ToolchainSelection<'toolchain>,
+    /// Typed project authority required by profiles with semantic package context.
+    pub authority: SemanticAuthorityInput<'source>,
     /// Bounded cancellation and deadline control for native work.
     pub control: CompileControl<'cancel>,
 }

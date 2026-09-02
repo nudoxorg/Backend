@@ -14,7 +14,7 @@ use crate::{
 use super::{
     AuthorityDiagnostic, AuthorityFailure, CompileFailure, CompileOutput, CompileRecipeFact,
     CompileRequest, CompileScratch, CompiledFragment, NativeRecipe, ResolvedToolchain,
-    SourceIdentity, ToolchainSelection, ToolchainSelectionFact,
+    SemanticAuthorityInput, SourceIdentity, ToolchainSelection, ToolchainSelectionFact,
 };
 
 pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
@@ -29,6 +29,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
         &prepared,
         request.source,
         request.control.cancelled,
+        request.authority,
         &mut facts,
         &mut unsupported,
     )?;
@@ -80,6 +81,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         &prepared,
         request.source,
         request.control.cancelled,
+        request.authority,
         &mut facts,
         &mut unsupported,
     )?;
@@ -160,16 +162,26 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         });
     }
     let recipe = recipe_fact(request.profile, request.stage, resolved, source);
+    if matches!(request.authority, SemanticAuthorityInput::Rust { .. })
+        && !matches!(request.profile, LanguageProfile::Rust(_))
+    {
+        return Err(CompileFailure::AuthorityInputProfileMismatch {
+            source_identity: source,
+            recipe,
+            profile: request.profile,
+        });
+    }
     let native_recipe = NativeRecipe {
         profile: request.profile,
         stage: request.stage,
         source: request.source,
         toolchain: resolved,
     };
-    if !matches!(
+    let direct_authority = matches!(
         request.profile,
         LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Python(_)
-    ) {
+    ) || matches!(request.authority, SemanticAuthorityInput::Rust { .. });
+    if !direct_authority {
         parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
     }
     Ok(PreparedCompile {
@@ -212,6 +224,7 @@ fn emit_facts<'source, 'diagnostic>(
     prepared: &PreparedCompile,
     source: &'source [u8],
     cancelled: &std::sync::atomic::AtomicBool,
+    authority: SemanticAuthorityInput<'source>,
     facts: &mut lower::FactSet<'source>,
     unsupported: &mut lower::UnsupportedLane<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
@@ -252,15 +265,38 @@ fn emit_facts<'source, 'diagnostic>(
             }
             Ok(())
         }
-        LanguageProfile::Rust(_)
-        | LanguageProfile::Go(_)
-        | LanguageProfile::Java(_)
-        | LanguageProfile::CSharp(_) => lower::emit(prepared.language, source, facts, unsupported)
-            .map_err(|cause| CompileFailure::LoweringUnsupported {
-                source_identity: prepared.source,
-                recipe: prepared.recipe,
-                cause,
-            }),
+        LanguageProfile::Rust(profile) => {
+            let SemanticAuthorityInput::Rust {
+                project,
+                maximum_source_bytes,
+            } = authority
+            else {
+                return Err(CompileFailure::AuthorityInputRequired {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    profile: LanguageProfile::Rust(profile),
+                });
+            };
+            lower::rust::collect(project, maximum_source_bytes, cancelled, source, facts)
+                .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
+        LanguageProfile::Go(_) | LanguageProfile::Java(_) | LanguageProfile::CSharp(_) => {
+            lower::emit(prepared.language, source, facts, unsupported).map_err(|cause| {
+                CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause,
+                }
+            })
+        }
     }
 }
 
@@ -291,6 +327,28 @@ fn python_terminal<'diagnostic>(
                 start,
                 end,
             },
+        },
+    }
+}
+
+fn rust_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::rust::RustCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::rust::RustCollectError::Authority(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::Rust {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::rust::RustCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
         },
     }
 }

@@ -226,6 +226,7 @@ fn request<'source, 'toolchain, 'cancel>(
         stage: Stage::LowerIr,
         source,
         toolchain: ToolchainSelection::ResolvedNative(toolchain),
+        authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {
             deadline: Instant::now() + Duration::from_secs(5),
             cancelled,

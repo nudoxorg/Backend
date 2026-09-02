@@ -345,11 +345,15 @@ fn rust_phase(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityP
             AuthorityPhase::TypeCheck
         }
         compiler_languages_rust::RustAuthorityError::InvalidSpan { .. }
-        | compiler_languages_rust::RustAuthorityError::Coordinate { .. } => AuthorityPhase::Project,
+        | compiler_languages_rust::RustAuthorityError::Coordinate { .. }
+        | compiler_languages_rust::RustAuthorityError::Admission { .. } => AuthorityPhase::Project,
+        compiler_languages_rust::RustAuthorityError::SourceBinding { .. } => AuthorityPhase::Parse,
         compiler_languages_rust::RustAuthorityError::Cancelled
         | compiler_languages_rust::RustAuthorityError::Toolchain(_)
         | compiler_languages_rust::RustAuthorityError::ProjectRoot { .. }
+        | compiler_languages_rust::RustAuthorityError::ProjectSource { .. }
         | compiler_languages_rust::RustAuthorityError::MissingManifest { .. }
+        | compiler_languages_rust::RustAuthorityError::SourceNotFile { .. }
         | compiler_languages_rust::RustAuthorityError::SourceBudget { .. }
         | compiler_languages_rust::RustAuthorityError::SourceRead { .. } => AuthorityPhase::Open,
     }

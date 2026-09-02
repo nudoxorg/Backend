@@ -104,6 +104,7 @@ fn request<'source, 'path, 'cancel>(
         stage: Stage::LowerIr,
         source,
         toolchain,
+        authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {
             deadline,
             cancelled,
@@ -278,6 +279,7 @@ fn parse_stage_is_a_pre_spawn_typed_terminal_and_never_lends_ir() -> Result<(), 
             stage: Stage::Parse,
             source: b"pub const alpha: bool = true;",
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
+            authority: compiler_driver::SemanticAuthorityInput::None,
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(1),
                 cancelled: &cancelled,

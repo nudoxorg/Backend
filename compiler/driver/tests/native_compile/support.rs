@@ -232,6 +232,8 @@ pub(super) enum CompileTerminal {
     DiagnosticLimit,
     NativeRejected,
     Authority,
+    AuthorityInputRequired,
+    AuthorityInputProfileMismatch,
     LoweringUnsupported(LoweringUnsupported),
     Build,
     Prepare,
@@ -511,6 +513,10 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::DiagnosticLimit { .. } => CompileTerminal::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminal::NativeRejected,
         CompileFailure::Authority { .. } => CompileTerminal::Authority,
+        CompileFailure::AuthorityInputRequired { .. } => CompileTerminal::AuthorityInputRequired,
+        CompileFailure::AuthorityInputProfileMismatch { .. } => {
+            CompileTerminal::AuthorityInputProfileMismatch
+        }
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
@@ -568,6 +574,7 @@ pub(super) fn request<'source, 'path, 'cancel>(
         stage: Stage::LowerIr,
         source,
         toolchain,
+        authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {
             deadline,
             cancelled,

@@ -5,8 +5,8 @@ use core::num::TryFromIntError;
 
 use compiler_ir::{BuildError, FragmentError, FragmentView, Ir, PrepareError, WriteError};
 use compiler_vocabulary::{
-    CompileRecipeFact, FrontendError, InvalidUtf8Fact, Language, LoweringUnsupported,
-    NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorkerPanic, Stage,
+    CompileRecipeFact, FrontendError, InvalidUtf8Fact, Language, LanguageProfile,
+    LoweringUnsupported, NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorkerPanic, Stage,
 };
 use thiserror::Error;
 
@@ -365,6 +365,20 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         /// Original frontend error and its only valid diagnostic/phase projection.
         failure: AuthorityFailure<'diagnostic>,
+    },
+    /// A profile requiring a project-bearing semantic authority received none.
+    #[error("{recipe:?} requires explicit semantic authority for {profile:?}")]
+    AuthorityInputRequired {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        profile: LanguageProfile,
+    },
+    /// A supplied project authority belongs to a language other than the selected profile.
+    #[error("{recipe:?} cannot use the supplied semantic authority for {profile:?}")]
+    AuthorityInputProfileMismatch {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        profile: LanguageProfile,
     },
     /// Native syntax passed but its declaration lacks a closed compact semantic recipe.
     #[error("{recipe:?} has an unsupported LowerIr declaration recipe")]

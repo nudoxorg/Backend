@@ -18,6 +18,7 @@ pub use types::{
     CompileRequest, CompileScratch, CompiledFragment, CompiledIr, InvalidUtf8Fact,
     MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
     NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
-    NativeWorkerPanicMessage, ResolvedToolchain, ResolvedToolchainView, SourceIdentity,
-    ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, compile, compile_ir,
+    NativeWorkerPanicMessage, ResolvedToolchain, ResolvedToolchainView, SemanticAuthorityInput,
+    SourceIdentity, ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, compile,
+    compile_ir,
 };

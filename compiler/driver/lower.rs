@@ -27,7 +27,7 @@ mod csharp;
 mod go;
 mod java;
 pub(crate) mod python;
-mod rust;
+pub(crate) mod rust;
 mod scanner;
 pub(crate) mod typescript;
 
@@ -799,7 +799,9 @@ pub(super) fn emit<'source>(
     unsupported: &mut UnsupportedLane<'source>,
 ) -> Result<(), LoweringUnsupported> {
     match language {
-        Language::Rust => rust::collect(source, facts, unsupported)?,
+        // Rust requires a caller-selected Cargo graph for rust-analyzer HIR;
+        // callers use the direct Rust collector before this erased route.
+        Language::Rust => return Err(LoweringUnsupported::RustFunction),
         // Python requires its exact versioned Ruff AST authority; callers use
         // `python::collect` before this profile-erasing route.
         Language::Python => return Err(LoweringUnsupported::PythonAssignmentName),

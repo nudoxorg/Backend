@@ -15,7 +15,7 @@ pub use authority::{
 };
 pub use compile::{compile, compile_ir};
 pub(crate) use request::NativeRecipe;
-pub use request::{CompileControl, CompileRequest, CompileScratch};
+pub use request::{CompileControl, CompileRequest, CompileScratch, SemanticAuthorityInput};
 pub use terminal::{
     CompileFailure, CompileOutput, CompiledFragment, CompiledIr, NativeDiagnostic, NativeWorkError,
     NativeWorkPrimary,

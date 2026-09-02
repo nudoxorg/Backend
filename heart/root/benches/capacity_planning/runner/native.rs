@@ -44,6 +44,7 @@ pub(crate) fn compile_corpus(
                 stage: CompileStage::LowerIr,
                 source: corpus.source(index)?,
                 toolchain: ToolchainSelection::ResolvedNative(*toolchain),
+                authority: compiler_driver::SemanticAuthorityInput::None,
                 control: CompileControl {
                     deadline: std::time::Instant::now() + Duration::from_secs(30),
                     cancelled: &cancelled,

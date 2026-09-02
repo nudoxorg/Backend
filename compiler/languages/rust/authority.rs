@@ -26,6 +26,8 @@ use crate::{LoadError, RustToolchain};
 pub struct RustProject {
     /// Absolute Cargo package root.
     pub root: PathBuf,
+    /// Absolute crate root source selected by the caller.
+    pub source_path: PathBuf,
     /// Exact native toolchain whose sysroot establishes semantic context.
     pub toolchain: RustToolchain,
     /// Closed Rust edition expected by the compile recipe.
@@ -43,6 +45,25 @@ impl RustProject {
         toolchain: &RustToolchain,
         edition: RustEdition,
     ) -> Result<Self, RustAuthorityError> {
+        let source_path = root.as_ref().join("src/lib.rs");
+        Self::open_with_source(root, source_path, toolchain, edition)
+    }
+
+    /// Validates a caller-selected Cargo root and exact crate-root source.
+    ///
+    /// The driver uses this form so the source authority cannot be guessed
+    /// from a package layout or filename.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed authority failure when either caller-selected path is
+    /// unavailable or the Cargo root lacks a package manifest.
+    pub fn open_with_source(
+        root: impl AsRef<Path>,
+        source_path: impl AsRef<Path>,
+        toolchain: &RustToolchain,
+        edition: RustEdition,
+    ) -> Result<Self, RustAuthorityError> {
         let root =
             root.as_ref()
                 .canonicalize()
@@ -54,8 +75,18 @@ impl RustProject {
         if !manifest.is_file() {
             return Err(RustAuthorityError::MissingManifest { path: manifest });
         }
+        let source_path = source_path.as_ref().canonicalize().map_err(|source| {
+            RustAuthorityError::ProjectSource {
+                path: source_path.as_ref().to_path_buf(),
+                source,
+            }
+        })?;
+        if !source_path.is_file() {
+            return Err(RustAuthorityError::SourceNotFile { path: source_path });
+        }
         Ok(Self {
             root,
+            source_path,
             toolchain: toolchain.clone(),
             edition,
         })
@@ -79,8 +110,8 @@ impl RustProject {
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
         control.check()?;
-        let source_path = self.root.join("src/lib.rs");
-        let source_bytes = fs::metadata(&source_path)
+        let source_path = &self.source_path;
+        let source_bytes = fs::metadata(source_path)
             .map_err(|source| RustAuthorityError::SourceRead {
                 path: source_path.clone(),
                 source,
@@ -115,7 +146,7 @@ impl RustProject {
                 },
             )?;
         control.check()?;
-        let source = fs::read(&source_path).map_err(|source| RustAuthorityError::SourceRead {
+        let source = fs::read(source_path).map_err(|source| RustAuthorityError::SourceRead {
             path: source_path.clone(),
             source,
         })?;
@@ -217,6 +248,35 @@ impl<'analysis> RustAuthority<'analysis> {
             .syntax()
             .descendants()
             .filter_map(|syntax| self.declaration(syntax))
+    }
+
+    /// Returns the exact identifier span selected by rust-analyzer syntax for one declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-semantic-fact terminal when the HIR-backed declaration
+    /// has no source identifier (for example, an anonymous implementation), or
+    /// a coordinate failure without falling back to text scanning.
+    pub fn declaration_name(
+        &self,
+        declaration: &RustDeclaration,
+    ) -> Result<ByteSpan, RustAuthorityError> {
+        let name = declaration
+            .syntax
+            .descendants()
+            .find_map(ast::Name::cast)
+            .map(|name| name.syntax().clone())
+            .or_else(|| {
+                declaration
+                    .syntax
+                    .descendants()
+                    .find_map(ast::NameRef::cast)
+                    .map(|name| name.syntax().clone())
+            })
+            .ok_or(RustAuthorityError::MissingSemanticFact {
+                fact: declaration.kind,
+            })?;
+        self.span(&name)
     }
 
     /// Streams method calls with the actual inferred receiver/call type and resolved function.
@@ -536,10 +596,25 @@ pub enum RustAuthorityError {
         #[source]
         source: std::io::Error,
     },
+    /// The caller-selected crate root source could not be canonicalized.
+    #[error("cannot open Rust crate root {path}: {source}")]
+    ProjectSource {
+        /// Caller-selected crate root source path.
+        path: PathBuf,
+        /// Original filesystem failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// The root is not a Cargo package manifest location.
     #[error("Rust project is missing Cargo manifest {path}")]
     MissingManifest {
         /// Expected manifest path.
+        path: PathBuf,
+    },
+    /// The caller-selected crate root is not a regular source file.
+    #[error("Rust crate root is not a regular file: {path}")]
+    SourceNotFile {
+        /// Caller-selected unusable crate root path.
         path: PathBuf,
     },
     /// The selected root source exceeds the caller-owned admission budget.
@@ -582,6 +657,14 @@ pub enum RustAuthorityError {
         /// Exact requested source path.
         path: PathBuf,
     },
+    /// The compiler request source does not equal the selected Cargo crate root.
+    #[error("Rust request source has {expected} bytes, but Cargo crate root has {observed} bytes")]
+    SourceBinding {
+        /// Byte count retained by the compiler request source identity.
+        expected: usize,
+        /// Byte count loaded by rust-analyzer from the selected Cargo root.
+        observed: usize,
+    },
     /// A rust-analyzer byte range exceeded the supplied source buffer.
     #[error("rust-analyzer emitted source range {span:?} outside {source_bytes} bytes")]
     InvalidSpan {
@@ -604,6 +687,13 @@ pub enum RustAuthorityError {
     MissingSemanticFact {
         /// Exact fact category required by the caller's lowering contract.
         fact: SemanticKind,
+    },
+    /// The shared canonical fact lane rejected a complete borrowed HIR declaration.
+    #[error("Rust semantic admission rejected a declaration: {cause}")]
+    Admission {
+        /// Exact canonical admission terminal.
+        #[source]
+        cause: compiler_vocabulary::LoweringUnsupported,
     },
     /// Inference returned an error type where a resolved semantic type was required.
     #[error("rust-analyzer produced an unresolved inferred type")]
