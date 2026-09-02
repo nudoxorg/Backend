@@ -6,9 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_driver::{CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile};
-use compiler_ir::{PrimitiveType, TypeNode};
-use compiler_vocabulary::{Language, Stage};
+use compiler_driver::{
+    CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile, compile_ir,
+};
+use compiler_ir::{PrimitiveType, SemanticImageAuthority, TypeNode};
+use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 
 use super::support::*;
 
@@ -179,4 +181,42 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
         }
     }
     Ok(())
+}
+
+#[test]
+fn semantic_ir_binds_the_exact_source_profile() -> Result<(), TestFailure> {
+    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    let source = b"pub const PROFILE_BOUND: bool = true;";
+    let tool = NativeTool::Rustc;
+    let executable = executable(tool)?;
+    let toolchain = resolved(tool, &executable)?;
+    let native_work = TemporaryWork::create()?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0xa5; 4_096];
+    let compiled = compile_ir(
+        request(
+            Language::Rust,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(5),
+        ),
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: native_work.path(),
+        },
+    )
+    .map_err(|failure| TestFailure::CompileTerminal {
+        tool,
+        expected: CompileExpectation::CompactFact,
+        observed: compile_terminal(&failure),
+    })?;
+    let actual = compiled.ir.storage_columns().authority;
+    if actual != SemanticImageAuthority::Language(profile) {
+        return Err(TestFailure::SemanticAuthority {
+            expected: profile,
+            actual,
+        });
+    }
+    native_work.assert_empty()
 }

@@ -14,6 +14,7 @@ use compiler_driver::{
     NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain, ToolchainResolutionError,
     ToolchainSelection,
 };
+use compiler_ir::SemanticImageAuthority;
 use compiler_ir::{EntityKind, PrimitiveType};
 use compiler_vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
@@ -164,6 +165,11 @@ pub(super) enum TestFailure {
     ResolutionUnexpectedlySucceeded,
     #[error("the rebound toolchain view was not exactly the caller-proven TypeScript authority")]
     ReboundToolchainMismatch,
+    #[error("semantic IR authority was {actual:?}, not exact profile {expected:?}")]
+    SemanticAuthority {
+        expected: LanguageProfile,
+        actual: SemanticImageAuthority,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -73,6 +73,13 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     let recipe = lowered.recipe;
     let declaration = lowered.declaration;
     let mut builder = IrBuilder::new();
+    builder
+        .set_language_profile(request.profile)
+        .map_err(|cause| CompileFailure::Build {
+            source_identity: source,
+            recipe,
+            cause,
+        })?;
     let version = EntityVersion {
         stable: StableEntityId::from_canonical_bytes(source.identity.as_ref()),
         payload: PayloadHash::from_canonical_bytes(request.source),
