@@ -11,8 +11,10 @@ use thiserror::Error;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Utf8Span {
-    start: u32,
-    end: u32,
+    /// Inclusive first UTF-8 byte.
+    pub start: u32,
+    /// Exclusive UTF-8 byte after the span.
+    pub end: u32,
 }
 
 /// A valid half-open range measured in UTF-16 code units.

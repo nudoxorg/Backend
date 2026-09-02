@@ -8,8 +8,45 @@ use oxc_parser::Parser;
 use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::SourceType;
 use oxc_syntax::module_record::ModuleRecord;
+use oxc_syntax::symbol::SymbolFlags;
 
-use crate::AuthorityError;
+use crate::{AuthorityError, Utf8Span};
+
+/// Declaration class proven by OXC's symbol table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OxcDeclarationKind {
+    /// A `const` binding.
+    Constant,
+    /// A mutable `let` or `var` binding.
+    Variable,
+    /// A function declaration or named function expression.
+    Function,
+    /// A class declaration or named class expression.
+    Class,
+    /// A TypeScript type alias.
+    TypeAlias,
+    /// A TypeScript interface.
+    Interface,
+    /// A regular or const enum.
+    Enum,
+    /// One enum member.
+    EnumMember,
+    /// An instantiated or type-only namespace.
+    Namespace,
+    /// A generic type parameter.
+    TypeParameter,
+    /// A value or type import binding.
+    Import,
+}
+
+/// One source-backed declaration emitted directly from OXC binding authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OxcDeclaration {
+    /// Exact bound-name span in the original UTF-8 source.
+    pub name: Utf8Span,
+    /// Closed symbol class reported by OXC.
+    pub kind: OxcDeclarationKind,
+}
 
 /// One parsed and lexically resolved TypeScript or TSX module.
 ///
@@ -25,6 +62,18 @@ pub struct OxcModule<'source> {
     pub module_record: ModuleRecord<'source>,
     /// OXC lexical scopes, symbols, references, syntax nodes, and diagnostics-free bindings.
     pub semantic: Semantic<'source>,
+}
+
+impl OxcModule<'_> {
+    /// Streams every bound symbol with its exact original name span.
+    pub fn declarations(&self) -> impl Iterator<Item = OxcDeclaration> + '_ {
+        let scoping = self.semantic.scoping();
+        scoping.symbol_ids().filter_map(move |symbol| {
+            let kind = declaration_kind(scoping.symbol_flags(symbol))?;
+            let name = Utf8Span::try_from(scoping.symbol_span(symbol)).ok()?;
+            Some(OxcDeclaration { name, kind })
+        })
+    }
 }
 
 /// Parses and lexically resolves `source` under one closed TypeScript profile.
@@ -65,6 +114,48 @@ pub fn analyze<'source>(
         module_record: parsed.module_record,
         semantic: checked.semantic,
     })
+}
+
+/// Runs one non-escaping OXC authority transaction with an internally owned arena.
+///
+/// # Errors
+///
+/// Returns the same complete syntax or binding diagnostics as [`analyze`].
+pub fn with_analysis<Output>(
+    profile: TypeScriptSource,
+    source: &str,
+    consume: impl for<'analysis> FnOnce(OxcModule<'analysis>) -> Output,
+) -> Result<Output, AuthorityError> {
+    let arena = Allocator::default();
+    analyze(profile, source, &arena).map(consume)
+}
+
+fn declaration_kind(flags: SymbolFlags) -> Option<OxcDeclarationKind> {
+    if flags.contains(SymbolFlags::ConstVariable) {
+        Some(OxcDeclarationKind::Constant)
+    } else if flags.contains(SymbolFlags::Function) {
+        Some(OxcDeclarationKind::Function)
+    } else if flags.contains(SymbolFlags::Class) {
+        Some(OxcDeclarationKind::Class)
+    } else if flags.contains(SymbolFlags::TypeAlias) {
+        Some(OxcDeclarationKind::TypeAlias)
+    } else if flags.contains(SymbolFlags::Interface) {
+        Some(OxcDeclarationKind::Interface)
+    } else if flags.intersects(SymbolFlags::Enum) {
+        Some(OxcDeclarationKind::Enum)
+    } else if flags.contains(SymbolFlags::EnumMember) {
+        Some(OxcDeclarationKind::EnumMember)
+    } else if flags.intersects(SymbolFlags::Namespace) {
+        Some(OxcDeclarationKind::Namespace)
+    } else if flags.contains(SymbolFlags::TypeParameter) {
+        Some(OxcDeclarationKind::TypeParameter)
+    } else if flags.intersects(SymbolFlags::Import | SymbolFlags::TypeImport) {
+        Some(OxcDeclarationKind::Import)
+    } else if flags.intersects(SymbolFlags::Variable) {
+        Some(OxcDeclarationKind::Variable)
+    } else {
+        None
+    }
 }
 
 const fn source_type(profile: TypeScriptSource) -> SourceType {

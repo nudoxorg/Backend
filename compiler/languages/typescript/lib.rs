@@ -7,6 +7,6 @@ mod authority;
 mod coordinate;
 mod error;
 
-pub use authority::{OxcModule, analyze};
+pub use authority::{OxcDeclaration, OxcDeclarationKind, OxcModule, analyze, with_analysis};
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::AuthorityError;

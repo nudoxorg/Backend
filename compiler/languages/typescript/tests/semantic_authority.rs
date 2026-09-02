@@ -2,7 +2,9 @@
 //! Falsifies grammar confusion, lossy diagnostics, local-resolution loss, and coordinate drift.
 //! Uses no native compiler, fixture scanner, or canonical-IR serializer.
 
-use compiler_languages_typescript::{AuthorityError, Utf8Span, Utf16Span, analyze};
+use compiler_languages_typescript::{
+    AuthorityError, OxcDeclarationKind, Utf8Span, Utf16Span, analyze,
+};
 use compiler_vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
 
@@ -49,6 +51,36 @@ fn typescript_profile_preserves_local_binding_and_utf16_coordinates()
         },
     )?;
     Ok(())
+}
+
+#[test]
+fn declaration_stream_lends_exact_source_names_and_closed_symbol_kinds()
+-> Result<(), AuthorityTestError> {
+    let source = "interface Vessel {}\nconst rocket = 1;\nfunction launch() {}\n";
+    let arena = Allocator::default();
+    let module = analyze(TypeScriptSource::TypeScript, source, &arena)?;
+    let observed = module
+        .declarations()
+        .filter_map(|declaration| {
+            let name = source.get(
+                usize::try_from(declaration.name.start).ok()?
+                    ..usize::try_from(declaration.name.end).ok()?,
+            )?;
+            Some((name, declaration.kind))
+        })
+        .collect::<Vec<_>>();
+    let required = [
+        ("Vessel", OxcDeclarationKind::Interface),
+        ("rocket", OxcDeclarationKind::Constant),
+        ("launch", OxcDeclarationKind::Function),
+    ];
+    required
+        .iter()
+        .all(|fact| observed.contains(fact))
+        .then_some(())
+        .ok_or(AuthorityTestError::MissingResolvedUse {
+            name: "typed declaration stream",
+        })
 }
 
 #[test]
