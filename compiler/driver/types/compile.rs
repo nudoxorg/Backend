@@ -162,6 +162,9 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             !matches!(profile, LanguageProfile::Rust(_))
         }
         (SemanticAuthorityInput::Go { .. }, profile) => !matches!(profile, LanguageProfile::Go(_)),
+        (SemanticAuthorityInput::CSharp { .. }, profile) => {
+            !matches!(profile, LanguageProfile::CSharp(_))
+        }
         (SemanticAuthorityInput::None, _) => false,
     };
     if authority_profile_mismatch {
@@ -182,7 +185,9 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Python(_)
     ) || matches!(
         request.authority,
-        SemanticAuthorityInput::Rust { .. } | SemanticAuthorityInput::Go { .. }
+        SemanticAuthorityInput::Rust { .. }
+            | SemanticAuthorityInput::Go { .. }
+            | SemanticAuthorityInput::CSharp { .. }
     );
     if !direct_authority {
         parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
@@ -310,11 +315,25 @@ fn emit_facts<'source, 'diagnostic>(
             recipe: prepared.recipe,
             cause: compiler_vocabulary::LoweringUnsupported::JavaDeclarationForm,
         }),
-        LanguageProfile::CSharp(_) => Err(CompileFailure::LoweringUnsupported {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause: compiler_vocabulary::LoweringUnsupported::CSharpDeclarationForm,
-        }),
+        LanguageProfile::CSharp(profile) => {
+            let SemanticAuthorityInput::CSharp { image } = authority else {
+                return Err(CompileFailure::AuthorityInputRequired {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    profile: LanguageProfile::CSharp(profile),
+                });
+            };
+            lower::csharp::collect(source, image, facts)
+                .map_err(|cause| csharp_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -397,6 +416,48 @@ fn go_terminal<'diagnostic>(
             }
         }
         lower::go::GoCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
+    }
+}
+
+fn csharp_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::csharp::CSharpCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::csharp::CSharpCollectError::Image(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::CSharpImage {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::csharp::CSharpCollectError::SourceBinding { expected, observed } => {
+            CompileFailure::Authority {
+                source_identity,
+                recipe,
+                failure: AuthorityFailure::CSharpSourceBinding {
+                    diagnostic: AuthorityDiagnostic::absent(),
+                    expected,
+                    observed,
+                },
+            }
+        }
+        lower::csharp::CSharpCollectError::Span { start, end } => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::CSharpSpan {
+                diagnostic: AuthorityDiagnostic::absent(),
+                start,
+                end,
+            },
+        },
+        lower::csharp::CSharpCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
             cause,

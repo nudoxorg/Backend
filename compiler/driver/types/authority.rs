@@ -192,6 +192,35 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_csharp::DecodeError,
     },
+    /// The fixed Roslyn authority image failed before lending declarations.
+    #[error("C# authority image failed")]
+    CSharpImage {
+        /// Bounded source diagnostic retained by the Roslyn authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact binary authority-image validation cause.
+        #[source]
+        cause: compiler_languages_csharp::ImageError,
+    },
+    /// A Roslyn image was generated for a source other than the compile request.
+    #[error("C# authority image source binding differs from the compile request")]
+    CSharpSourceBinding {
+        /// Bounded source diagnostic retained by the Roslyn authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// SHA-256 digest of exact compile request bytes.
+        expected: [u8; 32],
+        /// SHA-256 digest retained by the binary Roslyn image.
+        observed: [u8; 32],
+    },
+    /// A Roslyn declaration identifier span cannot name the bound source bytes.
+    #[error("C# authority declaration span differs from the compile source")]
+    CSharpSpan {
+        /// Bounded source diagnostic retained by the Roslyn authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Inclusive offending source-byte start coordinate.
+        start: u32,
+        /// Exclusive offending source-byte end coordinate.
+        end: u32,
+    },
     /// The validated javac authority image did not yield complete facts.
     #[error("Java semantic authority failed")]
     Java {
@@ -271,6 +300,18 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: csharp_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::CSharpImage { diagnostic, cause } => AuthorityFailureProjection {
+                phase: csharp_image_phase(cause),
+                class: csharp_image_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::CSharpSourceBinding { diagnostic, .. } | Self::CSharpSpan { diagnostic, .. } => {
+                AuthorityFailureProjection {
+                    phase: AuthorityPhase::Project,
+                    class: AuthorityDiagnosticClass::Projection,
+                    diagnostic: *diagnostic,
+                }
+            }
             Self::Java { diagnostic, cause } => AuthorityFailureProjection {
                 phase: java_phase(cause),
                 class: java_class(cause),
@@ -309,7 +350,13 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                     Self::Go { .. } | Self::GoImage { .. } | Self::GoSourceBinding { .. },
                     LanguageProfile::Go(_)
                 )
-                | (Self::CSharp { .. }, LanguageProfile::CSharp(_))
+                | (
+                    Self::CSharp { .. }
+                        | Self::CSharpImage { .. }
+                        | Self::CSharpSourceBinding { .. }
+                        | Self::CSharpSpan { .. },
+                    LanguageProfile::CSharp(_)
+                )
                 | (Self::Java { .. }, LanguageProfile::Java(_))
         );
         if accepted {
@@ -494,6 +541,28 @@ fn csharp_phase(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityPha
 
 fn csharp_class(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityDiagnosticClass {
     AuthorityDiagnosticClass::Syntax
+}
+
+fn csharp_image_phase(cause: &compiler_languages_csharp::ImageError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_csharp::ImageError::Header(_)
+        | compiler_languages_csharp::ImageError::Digest => AuthorityPhase::Parse,
+        compiler_languages_csharp::ImageError::DeclarationKind { .. }
+        | compiler_languages_csharp::ImageError::DeclarationReserved { .. }
+        | compiler_languages_csharp::ImageError::NameRange { .. }
+        | compiler_languages_csharp::ImageError::NameUtf8 { .. }
+        | compiler_languages_csharp::ImageError::Span { .. } => AuthorityPhase::Project,
+    }
+}
+
+fn csharp_image_class(cause: &compiler_languages_csharp::ImageError) -> AuthorityDiagnosticClass {
+    match csharp_image_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
 }
 
 fn java_phase(cause: &compiler_languages_java::ImageError) -> AuthorityPhase {

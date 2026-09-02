@@ -25,6 +25,11 @@ pub enum SemanticAuthorityInput<'source> {
         /// Borrowed fixed-width authority bytes emitted by the configured Go producer.
         image: &'source [u8],
     },
+    /// Validated Roslyn authority image bound to the exact request source.
+    CSharp {
+        /// Borrowed fixed-width authority bytes emitted by the configured Roslyn helper.
+        image: &'source [u8],
+    },
 }
 
 /// Deadline and cancellation facts borrowed by one bounded native invocation.

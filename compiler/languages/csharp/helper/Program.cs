@@ -74,6 +74,12 @@ internal static class Program
             ? File.Create(path)
             : Console.OpenStandardOutput();
 
+        if (options.AuthorityImage)
+        {
+            AuthorityImage.Write(loaded, options.SourceBinding!, output);
+            return 0;
+        }
+
         var writerOptions = new JsonWriterOptions
         {
             // The document is machine-read by serde_json; indentation would only
@@ -126,6 +132,12 @@ internal sealed record OracleOptions
     /// <summary>Where to write the document; <c>null</c> means stdout.</summary>
     public string? OutputPath { get; init; }
 
+    /// <summary>Whether stdout or <c>--out</c> receives a binary authority image.</summary>
+    public bool AuthorityImage { get; init; }
+
+    /// <summary>Exact C# source file whose raw bytes bind a binary authority image.</summary>
+    public string? SourceBinding { get; init; }
+
     /// <summary>Overrides the assembly name inferred from the roots.</summary>
     public string? AssemblyName { get; init; }
 
@@ -169,6 +181,8 @@ internal sealed record OracleOptions
           --mode MODE           'source' (parse and bind .cs files). Required.
           --root DIR            A directory to collect *.cs from. Repeatable, required.
           --out FILE            Write the JSON document here instead of stdout.
+          --authority-image     Emit the fixed binary authority image, not JSON.
+          --source-binding FILE Bind the authority image to this configured source file.
           --assembly-name NAME  Override the inferred assembly name.
           --ref-dir DIR         Reference assemblies (default: the running runtime's).
           --define SYM          Extra preprocessor symbol. Repeatable.
@@ -191,6 +205,8 @@ internal sealed record OracleOptions
         string? refDir = null;
         var includeNonPublic = true;
         var implicitUsings = true;
+        var authorityImage = false;
+        string? sourceBinding = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -224,6 +240,12 @@ internal sealed record OracleOptions
                 case "--out":
                     outPath = Value("--out");
                     break;
+                case "--authority-image":
+                    authorityImage = true;
+                    break;
+                case "--source-binding":
+                    sourceBinding = Value("--source-binding");
+                    break;
                 case "--assembly-name":
                     assemblyName = Value("--assembly-name");
                     break;
@@ -255,6 +277,11 @@ internal sealed record OracleOptions
             throw new OracleUsageException("--mode is required");
         }
 
+        if (authorityImage && sourceBinding is null)
+        {
+            throw new OracleUsageException("--authority-image requires --source-binding FILE");
+        }
+
         if (mode == OracleMode.Metadata)
         {
             // Reading an already-compiled assembly is a genuinely different
@@ -276,6 +303,8 @@ internal sealed record OracleOptions
             Mode = mode.Value,
             Roots = roots,
             OutputPath = outPath,
+            AuthorityImage = authorityImage,
+            SourceBinding = sourceBinding,
             AssemblyName = assemblyName,
             ReferenceDirectory = refDir,
             DefineSymbols = defines,
