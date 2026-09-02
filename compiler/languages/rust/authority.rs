@@ -12,11 +12,14 @@ use std::{
 use compiler_vocabulary::RustEdition;
 use ra_ap_base_db::EditionedFileId;
 use ra_ap_hir::{
-    Const, EnumVariant, Field, Function, HasSource, Impl, Macro, Module, PathResolution, Semantics,
-    Static, Trait, TypeAlias, TypeInfo,
+    Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
+    Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
 use ra_ap_project_model::{CargoConfig, RustLibSource};
-use ra_ap_syntax::{AstNode, ast};
+use ra_ap_syntax::{
+    AstNode,
+    ast::{self, HasName},
+};
 use ra_ap_vfs::{AbsPathBuf, VfsPath};
 
 use crate::{LoadError, RustToolchain};
@@ -400,6 +403,283 @@ impl<'analysis> RustAuthority<'analysis> {
         }
     }
 
+    /// Projects one syntax node onto this authority's original source bytes,
+    /// mapping through macro-expansion provenance to the real-file token
+    /// range it grew from. `Ok(None)` means the node projects into another
+    /// file, so no byte span of this source can honestly represent it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustAuthorityError`] when a same-file projection produced a
+    /// range this source buffer cannot address.
+    pub fn projected_span(
+        &self,
+        syntax: &ra_ap_syntax::SyntaxNode,
+    ) -> Result<Option<ByteSpan>, RustAuthorityError> {
+        let range = self.semantics.original_range(syntax);
+        if range.file_id != self.source_file {
+            return Ok(None);
+        }
+        let span =
+            ByteSpan::from_text_range(range.range).ok_or(RustAuthorityError::InvalidSpan {
+                span: ByteSpan { start: 1, end: 0 },
+                source_bytes: self.source.len(),
+            })?;
+        bytes_at(self.source, span).map(|_| span).map(Some)
+    }
+
+    /// True when one syntax node lives inside a macro expansion rather than
+    /// the parsed original source tree; its raw text ranges address the
+    /// expansion buffer, never the caller source.
+    #[must_use]
+    pub fn is_macro_expansion(&self, syntax: &ra_ap_syntax::SyntaxNode) -> bool {
+        self.semantics.hir_file_for(syntax).is_macro()
+    }
+
+    /// Streams every written field-access expression with the field
+    /// rust-analyzer resolved it to, when it resolved one.
+    pub fn field_accesses(&self) -> impl Iterator<Item = RustFieldAccess> + '_ {
+        self.root.syntax().descendants().filter_map(|syntax| {
+            let syntax = ast::FieldExpr::cast(syntax)?;
+            let target = self.resolve_field_target(&syntax);
+            Some(RustFieldAccess { syntax, target })
+        })
+    }
+
+    /// Resolves one field access to its named HIR field. Tuple-index
+    /// accesses resolve to no named declaration, so they stay unresolved.
+    #[must_use]
+    pub fn resolve_field_target(&self, access: &ast::FieldExpr) -> Option<Field> {
+        self.semantics
+            .resolve_field(access)
+            .and_then(|resolved| resolved.left())
+    }
+
+    /// Enumerates every HIR-provable declaration of this crate's module tree
+    /// — including declarations that exist only through macro expansion and
+    /// tuple-struct fields the written syntax tree does not cast — paired
+    /// with their projected item span and projected name span. Declarations
+    /// whose HIR origin projects outside this source, or whose name has no
+    /// provable same-source spelling, carry `Foreign` or absent coordinates
+    /// and stay unemitted rather than being guessed.
+    pub fn module_declarations(&self) -> Vec<ModuleDeclaration> {
+        let Some(root) = self.semantics.hir_file_to_module_def(self.source_file) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut modules = vec![root];
+        let mut cursor = 0;
+        while cursor < modules.len() {
+            let module = modules[cursor];
+            cursor += 1;
+            for definition in module.declarations(self.database) {
+                match definition {
+                    ModuleDef::Function(definition) => {
+                        self.record_module_declaration(
+                            &mut out,
+                            RustDefinition::Function(definition),
+                        );
+                    }
+                    ModuleDef::Adt(adt) => match adt {
+                        Adt::Struct(definition) => {
+                            self.record_module_declaration(
+                                &mut out,
+                                RustDefinition::Record(Adt::Struct(definition)),
+                            );
+                            self.record_fields(&mut out, definition.fields(self.database));
+                        }
+                        Adt::Union(definition) => {
+                            self.record_module_declaration(
+                                &mut out,
+                                RustDefinition::Record(Adt::Union(definition)),
+                            );
+                            self.record_fields(&mut out, definition.fields(self.database));
+                        }
+                        Adt::Enum(definition) => {
+                            self.record_module_declaration(
+                                &mut out,
+                                RustDefinition::Enum(Adt::Enum(definition)),
+                            );
+                            for variant in definition.variants(self.database) {
+                                self.record_module_declaration(
+                                    &mut out,
+                                    RustDefinition::Variant(variant),
+                                );
+                            }
+                        }
+                    },
+                    ModuleDef::Const(definition) => self
+                        .record_module_declaration(&mut out, RustDefinition::Constant(definition)),
+                    ModuleDef::Static(definition) => {
+                        self.record_module_declaration(
+                            &mut out,
+                            RustDefinition::Static(definition),
+                        );
+                    }
+                    ModuleDef::Trait(definition) => {
+                        self.record_module_declaration(&mut out, RustDefinition::Trait(definition));
+                    }
+                    ModuleDef::TypeAlias(definition) => self
+                        .record_module_declaration(&mut out, RustDefinition::TypeAlias(definition)),
+                    // Modules are covered by the written syntax walk or live
+                    // in another file; variants are enumerated with their
+                    // enum; builtins and macros carry no lane declaration.
+                    ModuleDef::Module(_)
+                    | ModuleDef::EnumVariant(_)
+                    | ModuleDef::BuiltinType(_)
+                    | ModuleDef::Macro(_) => {}
+                }
+            }
+            for implementation in module.impl_defs(self.database) {
+                self.record_module_declaration(
+                    &mut out,
+                    RustDefinition::Implementation(implementation),
+                );
+                for item in implementation.items(self.database) {
+                    let definition = match item {
+                        AssocItem::Function(definition) => RustDefinition::Function(definition),
+                        AssocItem::Const(definition) => RustDefinition::Constant(definition),
+                        AssocItem::TypeAlias(definition) => RustDefinition::TypeAlias(definition),
+                    };
+                    self.record_module_declaration(&mut out, definition);
+                }
+            }
+            modules.extend(module.children(self.database));
+        }
+        out
+    }
+
+    /// Records one walked declaration with its projected item and name
+    /// coordinates, keeping declarations whose origin projects outside this
+    /// source off the list.
+    fn record_module_declaration(
+        &self,
+        out: &mut Vec<ModuleDeclaration>,
+        definition: RustDefinition,
+    ) {
+        let kind = definition.kind();
+        let Some((name, item_node)) = self.definition_source_nodes(&definition) else {
+            return;
+        };
+        let item = match self.projected_span(&item_node) {
+            Ok(Some(span)) => SourceOrigin::Local(span),
+            Ok(None) | Err(_) => SourceOrigin::Foreign(kind),
+        };
+        if !item.is_local() {
+            return;
+        }
+        let name = name
+            .and_then(|name| self.projected_span(&name).ok())
+            .flatten();
+        out.push(ModuleDeclaration {
+            definition,
+            item,
+            name,
+            syntax: item_node,
+        });
+    }
+
+    /// Records one named field declaration; tuple fields carry no name node
+    /// and rely on their canonical positional name at the projection site.
+    fn record_fields(&self, out: &mut Vec<ModuleDeclaration>, fields: Vec<Field>) {
+        for field in fields {
+            self.record_module_declaration(out, RustDefinition::Field(field));
+        }
+    }
+
+    /// Borrows the projected name node and whole-item node of one walked
+    /// declaration, when rust-analyzer retains its source.
+    fn definition_source_nodes(
+        &self,
+        definition: &RustDefinition,
+    ) -> Option<(Option<ra_ap_syntax::SyntaxNode>, ra_ap_syntax::SyntaxNode)> {
+        let (name, item) = match definition {
+            RustDefinition::Function(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            RustDefinition::Record(adt) | RustDefinition::Enum(adt) => match adt {
+                Adt::Struct(definition) => {
+                    let source = self.semantics.source(*definition)?;
+                    (
+                        source.value.name().map(|name| name.syntax().clone()),
+                        source.value.syntax().clone(),
+                    )
+                }
+                Adt::Union(definition) => {
+                    let source = self.semantics.source(*definition)?;
+                    (
+                        source.value.name().map(|name| name.syntax().clone()),
+                        source.value.syntax().clone(),
+                    )
+                }
+                Adt::Enum(definition) => {
+                    let source = self.semantics.source(*definition)?;
+                    (
+                        source.value.name().map(|name| name.syntax().clone()),
+                        source.value.syntax().clone(),
+                    )
+                }
+            },
+            RustDefinition::Variant(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            RustDefinition::Field(definition) => {
+                let source = self.semantics.source(*definition)?;
+                let name = match &source.value {
+                    FieldSource::Named(field) => field.name().map(|name| name.syntax().clone()),
+                    FieldSource::Pos(_) => None,
+                };
+                (name, source.value.syntax().clone())
+            }
+            RustDefinition::Trait(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            RustDefinition::Implementation(definition) => {
+                let source = self.semantics.source(*definition)?;
+                let name = implementation_name(&source.value).map(|name| name.syntax().clone());
+                (name, source.value.syntax().clone())
+            }
+            RustDefinition::TypeAlias(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            RustDefinition::Constant(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            RustDefinition::Static(definition) => {
+                let source = self.semantics.source(*definition)?;
+                (
+                    source.value.name().map(|name| name.syntax().clone()),
+                    source.value.syntax().clone(),
+                )
+            }
+            // Macro definitions stay out of the declaration lane; walked
+            // modules are covered by the written syntax walk or live in
+            // another file.
+            RustDefinition::Macro(_) | RustDefinition::Module(_) => return None,
+        };
+        Some((name, item))
+    }
+
     /// Converts one source declaration into a borrowed HIR definition.
     fn declaration(&self, syntax: ra_ap_syntax::SyntaxNode) -> Option<RustDeclaration> {
         let definition = if let Some(item) = ast::RecordField::cast(syntax.clone()) {
@@ -539,9 +819,9 @@ pub enum RustDefinition {
     /// Free or associated function.
     Function(Function),
     /// Struct or union definition.
-    Record(ra_ap_hir::Adt),
+    Record(Adt),
     /// Enum definition.
-    Enum(ra_ap_hir::Adt),
+    Enum(Adt),
     /// Type alias definition.
     TypeAlias(TypeAlias),
     /// Constant definition.
@@ -598,6 +878,40 @@ pub struct RustMethodCall<'analysis> {
     pub inferred: Option<TypeInfo<'analysis>>,
     /// Concrete function selected by static method dispatch, when rust-analyzer can resolve one.
     pub target: Option<Function>,
+}
+
+/// One written field-access expression with its resolved named HIR field.
+pub struct RustFieldAccess {
+    /// Original access syntax (`base.field`).
+    pub syntax: ast::FieldExpr,
+    /// Named field selected by the analyzer, when the base type provably
+    /// owns one; tuple-index accesses stay unresolved.
+    pub target: Option<Field>,
+}
+
+/// One HIR-walked declaration with its projected original-source coordinates.
+pub struct ModuleDeclaration {
+    /// Exact typed HIR definition consumed by the IR lowerer.
+    pub definition: RustDefinition,
+    /// Projected whole-item origin: `Local` only when this source owns it.
+    pub item: SourceOrigin,
+    /// Projected name span, when the name has a provable same-source
+    /// spelling. Tuple fields carry none and use their canonical positional
+    /// name at the projection site.
+    pub name: Option<ByteSpan>,
+    /// The declaration's own syntax node, whatever file it was parsed in.
+    pub syntax: ra_ap_syntax::SyntaxNode,
+}
+
+/// Borrows the written self-type leaf name of one implementation, the lane's
+/// implementation naming rule.
+fn implementation_name(implementation: &ast::Impl) -> Option<ast::NameRef> {
+    let self_ty = implementation.self_ty()?;
+    let ast::Type::PathType(path_type) = self_ty else {
+        return None;
+    };
+    let segment = path_type.path()?.segments().last()?;
+    segment.name_ref()
 }
 
 /// Failure to establish or query one rust-analyzer authority transaction.

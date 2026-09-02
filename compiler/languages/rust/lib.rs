@@ -7,8 +7,9 @@ use std::{path::PathBuf, process::Command};
 mod authority;
 
 pub use authority::{
-    ByteSpan, RustAnalysisControl, RustAuthority, RustAuthorityError, RustDeclaration,
-    RustDefinition, RustMethodCall, RustProject, SemanticKind, SourceByteLimit, SourceOrigin,
+    ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
+    RustDeclaration, RustDefinition, RustFieldAccess, RustMethodCall, RustProject, SemanticKind,
+    SourceByteLimit, SourceOrigin,
 };
 
 /// The pinned rust-analyzer HIR facade this authority borrows from.
