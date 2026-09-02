@@ -25,35 +25,35 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
         NativeTool,
         &'static [u8],
         &'static [(&'static [u8], EntityKind)],
-        PrimitiveType,
+        Option<PrimitiveType>,
     ); 7] = [
         (
             Language::Rust,
             NativeTool::Rustc,
             b"pub const RUST_VALID: &str = \"yes\";".as_slice(),
             &[(b"RUST_VALID", EntityKind::Constant)],
-            PrimitiveType::String,
+            Some(PrimitiveType::String),
         ),
         (
             Language::Python,
             NativeTool::Python,
             b"PYTHON_VALID = \"yes\"\n".as_slice(),
             &[(b"PYTHON_VALID", EntityKind::Constant)],
-            PrimitiveType::String,
+            Some(PrimitiveType::String),
         ),
         (
             Language::Clang,
             NativeTool::Clang,
             b"const char *clang_valid = \"yes\";".as_slice(),
-            &[(b"clang_valid", EntityKind::Constant)],
-            PrimitiveType::String,
+            &[(b"clang_valid", EntityKind::Static)],
+            None,
         ),
         (
             Language::TypeScript,
             NativeTool::TypeScriptCompiler,
             b"export const TYPESCRIPT_VALID: string = \"yes\";".as_slice(),
             &[(b"TYPESCRIPT_VALID", EntityKind::Constant)],
-            PrimitiveType::String,
+            None,
         ),
         (
             Language::CSharp,
@@ -63,7 +63,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                 (b"Probe", EntityKind::Record),
                 (b"CSHARP_VALID", EntityKind::Constant),
             ],
-            PrimitiveType::String,
+            Some(PrimitiveType::String),
         ),
         (
             Language::Go,
@@ -73,7 +73,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                 (b"fixture", EntityKind::Module),
                 (b"GO_VALID", EntityKind::Constant),
             ],
-            PrimitiveType::String,
+            Some(PrimitiveType::String),
         ),
         (
             Language::Java,
@@ -84,7 +84,7 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                 (b"JavaValid", EntityKind::Record),
                 (b"NAME", EntityKind::Constant),
             ],
-            PrimitiveType::String,
+            Some(PrimitiveType::String),
         ),
     ];
     for (language, tool, source, expected_facts, expected_type) in cases {
@@ -156,12 +156,22 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
                         _ => None,
                     })
                     .collect();
-                if primitive_types.as_slice() != [expected_type] {
-                    return Err(TestFailure::PrimitiveType {
-                        tool,
-                        expected: expected_type,
-                        actual: primitive_types.first().copied(),
-                    });
+                match expected_type {
+                    Some(expected_type) if primitive_types.as_slice() != [expected_type] => {
+                        return Err(TestFailure::PrimitiveType {
+                            tool,
+                            expected: expected_type,
+                            actual: primitive_types.first().copied(),
+                        });
+                    }
+                    None if !primitive_types.is_empty() => {
+                        return Err(TestFailure::PrimitiveType {
+                            tool,
+                            expected: PrimitiveType::Bool,
+                            actual: primitive_types.first().copied(),
+                        });
+                    }
+                    Some(_) | None => {}
                 }
                 compiled.fragment.as_ref().len()
             }

@@ -25,7 +25,13 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
     let mut unsupported = lower::UnsupportedLane::new();
-    emit_facts(&prepared, request.source, &mut facts, &mut unsupported)?;
+    emit_facts(
+        &prepared,
+        request.source,
+        request.control.cancelled,
+        &mut facts,
+        &mut unsupported,
+    )?;
     let bytes = lower::admit(
         &facts,
         prepared.source,
@@ -70,7 +76,13 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
     let mut unsupported = lower::UnsupportedLane::new();
-    emit_facts(&prepared, request.source, &mut facts, &mut unsupported)?;
+    emit_facts(
+        &prepared,
+        request.source,
+        request.control.cancelled,
+        &mut facts,
+        &mut unsupported,
+    )?;
     let ir = facts
         .build_ir(request.profile, prepared.source)
         .map_err(|cause| CompileFailure::Build {
@@ -154,7 +166,12 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         source: request.source,
         toolchain: resolved,
     };
-    parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
+    if !matches!(
+        request.profile,
+        LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+    ) {
+        parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
+    }
     Ok(PreparedCompile {
         source,
         recipe,
@@ -194,10 +211,23 @@ fn recipe_fact(
 fn emit_facts<'source, 'diagnostic>(
     prepared: &PreparedCompile,
     source: &'source [u8],
+    cancelled: &std::sync::atomic::AtomicBool,
     facts: &mut lower::FactSet<'source>,
     unsupported: &mut lower::UnsupportedLane<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
     match prepared.recipe.profile {
+        LanguageProfile::C(_) | LanguageProfile::Cxx(_) => {
+            lower::clang::collect(prepared.recipe.profile, source, cancelled, facts)
+                .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))?;
+            if facts.len() == 0 {
+                return Err(CompileFailure::LoweringUnsupported {
+                    source_identity: prepared.source,
+                    recipe: prepared.recipe,
+                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+                });
+            }
+            Ok(())
+        }
         LanguageProfile::TypeScript(profile) => {
             lower::typescript::collect(profile, source, facts)
                 .map_err(|cause| typescript_terminal(prepared.source, prepared.recipe, cause))?;
@@ -212,8 +242,6 @@ fn emit_facts<'source, 'diagnostic>(
         }
         LanguageProfile::Rust(_)
         | LanguageProfile::Python(_)
-        | LanguageProfile::C(_)
-        | LanguageProfile::Cxx(_)
         | LanguageProfile::Go(_)
         | LanguageProfile::Java(_)
         | LanguageProfile::CSharp(_) => lower::emit(prepared.language, source, facts, unsupported)
@@ -222,6 +250,28 @@ fn emit_facts<'source, 'diagnostic>(
                 recipe: prepared.recipe,
                 cause,
             }),
+    }
+}
+
+fn clang_terminal<'diagnostic>(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::clang::ClangCollectError,
+) -> CompileFailure<'diagnostic> {
+    match cause {
+        lower::clang::ClangCollectError::Authority(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::Clang {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
+        lower::clang::ClangCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause,
+        },
     }
 }
 

@@ -22,7 +22,7 @@ use compiler_vocabulary::Language;
 
 use crate::types::LoweringUnsupported;
 
-mod clang;
+pub(crate) mod clang;
 mod csharp;
 mod go;
 mod java;
@@ -801,7 +801,9 @@ pub(super) fn emit<'source>(
     match language {
         Language::Rust => rust::collect(source, facts, unsupported)?,
         Language::Python => python::collect(source, facts, unsupported)?,
-        Language::Clang => clang::collect(source, facts, unsupported)?,
+        // C and C++ require their exact closed profile and direct libclang
+        // authority; callers use `clang::collect` before this erased route.
+        Language::Clang => return Err(LoweringUnsupported::ClangDeclarationForm),
         // TypeScript requires its exact closed source profile for grammar selection;
         // callers use `typescript::collect` directly rather than profile-erasing dispatch.
         Language::TypeScript => return Err(LoweringUnsupported::TypeScriptDeclarationForm),
