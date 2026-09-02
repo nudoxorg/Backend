@@ -7,7 +7,7 @@ use compiler_languages_python::{ExtractionError, RuffDeclarationKind, with_modul
 use compiler_vocabulary::PythonVersion;
 
 use crate::{
-    lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact},
+    lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact},
     types::LoweringUnsupported,
 };
 
@@ -40,8 +40,7 @@ pub(crate) fn collect<'source>(
                 facts,
                 SemanticFact::new(
                     entity_kind(declaration.kind),
-                    name,
-                    FactType::Opaque,
+                    name, 
                     constructor(declaration.kind),
                 ),
             )

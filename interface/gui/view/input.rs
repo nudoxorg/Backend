@@ -56,6 +56,9 @@ impl GpuiShellView {
         if self.state.navigation.palette.visible {
             return Some(TextInputTarget::Palette);
         }
+        if self.search_active {
+            return Some(TextInputTarget::DocumentationSearch);
+        }
         match self.state.form.as_ref()? {
             FormState::Generate { focused, .. }
             | FormState::Snapshot { focused, .. }
@@ -66,6 +69,7 @@ impl GpuiShellView {
 
     fn text_for_target(&self, target: TextInputTarget) -> &str {
         match target {
+            TextInputTarget::DocumentationSearch => self.state.documentation.query_text(),
             TextInputTarget::Palette => self
                 .state
                 .navigation
@@ -149,6 +153,9 @@ impl GpuiShellView {
 
     fn replace_target_text(&mut self, target: TextInputTarget, value: InputText) {
         match target {
+            TextInputTarget::DocumentationSearch => {
+                self.state.replace_documentation_query(value);
+            }
             TextInputTarget::Palette => self.state.replace_palette_query(value),
             TextInputTarget::Form(field) => match self.state.replace_form_text(field, value) {
                 Ok(()) => {}
@@ -183,11 +190,11 @@ impl GpuiShellView {
                     suffix,
                 })),
             NativeTextInputError::InputTooLong {
-                target: TextInputTarget::Palette,
+                target: TextInputTarget::Palette | TextInputTarget::DocumentationSearch,
                 ..
             }
             | NativeTextInputError::InputLengthOverflow {
-                target: TextInputTarget::Palette,
+                target: TextInputTarget::Palette | TextInputTarget::DocumentationSearch,
                 ..
             } => {}
         }

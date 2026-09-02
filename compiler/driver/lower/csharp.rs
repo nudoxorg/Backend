@@ -7,7 +7,7 @@ use compiler_languages_csharp::{CSharpImage, DeclarationKind, ImageError};
 use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
 
-use crate::lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact};
+use crate::lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact};
 
 /// Exact rejection while lending source-bound Roslyn declaration rows.
 #[derive(Debug)]
@@ -64,7 +64,7 @@ pub(crate) fn collect<'source>(
         let kind = entity_kind(declaration.kind);
         push_fact(
             facts,
-            SemanticFact::new(kind, name, FactType::Opaque, constructor(kind)),
+            SemanticFact::new(kind, name, constructor(kind)),
         )
         .map_err(CSharpCollectError::Lowering)?;
     }

@@ -9,6 +9,7 @@
 //! and terminal semantics. The fallback projection is useful to headless
 //! callers; the `real-gpui` feature adds the entity-backed [`GpuiShellView`].
 
+mod catalog;
 mod forms;
 mod navigation;
 mod state;
@@ -42,7 +43,13 @@ gpui::actions!(
         /// Moves keyboard focus to the previous active form field.
         PreviousFormField,
         /// Cancels the active form or dismisses the visible palette.
-        DismissForm
+        DismissForm,
+        /// Focuses the persistent package and symbol search field.
+        FocusDocumentationSearch,
+        /// Contracts or expands the package navigation tree.
+        ToggleSidebar,
+        /// Opens package discovery in the indexed search surface.
+        DiscoverPackages
     ]
 );
 
@@ -55,6 +62,12 @@ pub use navigation::{
 pub use forms::{
     FormError, FormField, FormState, OperationAction, RecoveryAction, RecoverySelection,
     ResultLimit, SnapshotAction,
+};
+
+pub use catalog::{
+    DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DocumentFilter, DocumentItem, DocumentKind, DocumentMember,
+    DocumentPackage, DocumentSearchHit, DocumentSearchRow, DocumentSearchScope, DocumentationState,
+    MAX_DOCUMENT_RESULTS, PACKAGE_COUNT,
 };
 
 pub use state::{

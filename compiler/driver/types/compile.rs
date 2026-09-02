@@ -63,6 +63,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
         &facts,
         prepared.source,
         prepared.recipe,
+        request.profile,
         output.fragment_output,
     )
     .map_err(|fault| match fault {
@@ -80,6 +81,17 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
             source_identity: prepared.source,
             recipe: prepared.recipe,
             cause,
+        },
+        AdmissionFault::ExtensionAtom {
+            row,
+            provisional,
+            atom_count,
+        } => CompileFailure::ExtensionAtomUnbound {
+            source_identity: prepared.source,
+            recipe: prepared.recipe,
+            row,
+            provisional,
+            atom_count,
         },
     })?;
     let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {

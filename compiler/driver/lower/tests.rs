@@ -2,16 +2,14 @@
 //! lowered constructor, role, and name must change the committed fragment
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must remain schema-1 compatible.
-use compiler_ir::{
-    EntityKind, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
-};
+use compiler_ir::{EntityKind, FragmentView, PrepareError, PreparedFragment, SourceIdentity};
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 use super::{
-    AdmissionFault, FactFault, FactSet, FactType, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
+    AdmissionFault, FactFault, FactSet, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
     RejectedFact, SemanticFact,
 };
 
@@ -73,7 +71,7 @@ fn rejected(failure: RejectedFact<'_>) -> TestError {
 /// proving the untouched output tail stayed unchanged.
 fn write(facts: &FactSet<'_>) -> Result<Vec<u8>, TestError> {
     let mut output = vec![0xa5_u8; OUTPUT_CAPACITY];
-    let length = super::admit(facts, identity()?, recipe(), &mut output)
+    let length = super::admit(facts, identity()?, recipe(), recipe().profile, &mut output)
         .map_err(TestError::Admission)?
         .len();
     if !output[length..].iter().all(|byte| *byte == 0xa5) {
@@ -90,13 +88,11 @@ fn base_facts() -> [SemanticFact<'static>; 2] {
         SemanticFact::new(
             EntityKind::Constant,
             b"alpha",
-            FactType::Primitive(PrimitiveType::Bool),
             SemanticProductConstructor::PRODUCT,
         ),
         SemanticFact::new(
             EntityKind::Function,
-            b"beta",
-            FactType::Opaque,
+            b"beta", 
             SemanticProductConstructor::function(0, 1),
         )
         .child(ProductChildRole::FunctionResult, 0),
@@ -120,14 +116,12 @@ fn constructor_role_and_name_mutations_change_committed_fragment_bytes() -> Resu
     constructor_mutation[0] = SemanticFact::new(
         EntityKind::Constant,
         b"alpha",
-        FactType::Primitive(PrimitiveType::Bool),
         SemanticProductConstructor::TUPLE,
     );
     let mut role_mutation = base_facts();
     role_mutation[1] = SemanticFact::new(
         EntityKind::Function,
-        b"beta",
-        FactType::Opaque,
+        b"beta", 
         SemanticProductConstructor::function(1, 0),
     )
     .child(ProductChildRole::FunctionParameter, 0);
@@ -135,7 +129,6 @@ fn constructor_role_and_name_mutations_change_committed_fragment_bytes() -> Resu
     name_mutation[0] = SemanticFact::new(
         EntityKind::Constant,
         b"gamma",
-        FactType::Primitive(PrimitiveType::Bool),
         SemanticProductConstructor::PRODUCT,
     );
 
@@ -166,7 +159,6 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(SemanticFact::new(
         EntityKind::Constant,
         b"",
-        FactType::Primitive(PrimitiveType::Bool),
         SemanticProductConstructor::PRODUCT,
     )) {
         Err(RejectedFact {
@@ -180,8 +172,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
 
     match set.push(SemanticFact::new(
         EntityKind::Constant,
-        b"target",
-        FactType::Opaque,
+        b"target", 
         SemanticProductConstructor::PRODUCT,
     )) {
         Ok(0) => {}
@@ -192,8 +183,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Constant,
-            b"child",
-            FactType::Opaque,
+            b"child", 
             SemanticProductConstructor::PRODUCT,
         )
         .child(ProductChildRole::ProductMember, 5),
@@ -217,8 +207,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Function,
-            b"arity",
-            FactType::Opaque,
+            b"arity", 
             SemanticProductConstructor::function(2, 0),
         )
         .child(ProductChildRole::FunctionParameter, 0),
@@ -240,8 +229,7 @@ fn fact_admission_rejection_retains_the_exact_offending_fact_and_cause() -> Resu
     match set.push(
         SemanticFact::new(
             EntityKind::Function,
-            b"role",
-            FactType::Opaque,
+            b"role", 
             SemanticProductConstructor::function(0, 1),
         )
         .child(ProductChildRole::ProductMember, 0),
@@ -286,8 +274,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     for (ordinal, name) in names.iter().enumerate() {
         match full.push(SemanticFact::new(
             EntityKind::Record,
-            name.as_slice(),
-            FactType::Opaque,
+            name.as_slice(), 
             SemanticProductConstructor::PRODUCT,
         )) {
             Ok(pushed) if pushed == ordinal => {}
@@ -297,8 +284,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     }
     match full.push(SemanticFact::new(
         EntityKind::Record,
-        b"row",
-        FactType::Opaque,
+        b"row", 
         SemanticProductConstructor::PRODUCT,
     )) {
         Err(RejectedFact {
@@ -317,8 +303,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     let mut maximal = FactSet::new();
     let mut overflowing_child = SemanticFact::new(
         EntityKind::Record,
-        b"row",
-        FactType::Opaque,
+        b"row", 
         SemanticProductConstructor::PRODUCT,
     );
     for _ in 0..=MAX_FACT_CHILDREN {
@@ -336,8 +321,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     for (ordinal, name) in names.iter().enumerate() {
         let mut fact = SemanticFact::new(
             EntityKind::Record,
-            name.as_slice(),
-            FactType::Opaque,
+            name.as_slice(), 
             SemanticProductConstructor::PRODUCT,
         );
         if ordinal > 0 {
@@ -351,7 +335,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     // The maximal lane writes one complete validated fragment within the
     // conservation reservation, with its exact entity count committed.
     let mut output = vec![0xa5_u8; 65_536];
-    let length = super::admit(&maximal, identity()?, recipe(), &mut output)
+    let length = super::admit(&maximal, identity()?, recipe(), recipe().profile, &mut output)
         .map_err(TestError::Admission)?
         .len();
     if !output[length..].iter().all(|byte| *byte == 0xa5) {
@@ -369,7 +353,7 @@ fn empty_fact_list_writes_the_exact_schema1_fragment_without_semantic_data() -> 
 {
     let empty = FactSet::new();
     let mut output = [0xa5_u8; OUTPUT_CAPACITY];
-    let length = super::admit(&empty, identity()?, recipe(), &mut output)
+    let length = super::admit(&empty, identity()?, recipe(), recipe().profile, &mut output)
         .map_err(TestError::Admission)?
         .len();
 

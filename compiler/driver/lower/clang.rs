@@ -12,7 +12,7 @@ use compiler_languages_clang::{
 };
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
-use crate::lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact};
+use crate::lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact};
 
 /// Exact direct-authority rejection while borrowing libclang declarations.
 #[derive(Debug)]
@@ -75,7 +75,7 @@ pub(crate) fn collect<'source>(
         };
         push_fact(
             facts,
-            SemanticFact::new(kind, name, FactType::Opaque, constructor(kind)),
+            SemanticFact::new(kind, name, constructor(kind)),
         )
         .map_err(ClangCollectError::Lowering)?;
     }

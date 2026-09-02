@@ -9,7 +9,7 @@ use compiler_languages_rust::{
     ByteSpan, RustAnalysisControl, RustAuthorityError, RustProject, SemanticKind, SourceByteLimit,
 };
 
-use crate::lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact};
+use crate::lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact};
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 #[derive(Debug)]
@@ -52,8 +52,7 @@ pub(crate) fn collect<'source>(
                         facts,
                         SemanticFact::new(
                             entity_kind(declaration.kind)?,
-                            name,
-                            FactType::Opaque,
+                            name, 
                             constructor(declaration.kind)?,
                         ),
                     )

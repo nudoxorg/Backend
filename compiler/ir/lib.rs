@@ -54,6 +54,7 @@ pub use compiler_ir_vocabulary::{
 pub use compiler_ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
 };
+pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,

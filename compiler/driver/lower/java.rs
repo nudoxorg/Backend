@@ -7,7 +7,7 @@ use compiler_languages_java::{BoundImageError, DeclarationKind, JavaAuthorityIma
 use compiler_vocabulary::{JavaRelease as ProfileRelease, LoweringUnsupported};
 use sha2::Digest;
 
-use crate::lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact};
+use crate::lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact};
 
 /// Exact rejection while lending source-bound javac declaration facts.
 #[derive(Debug)]
@@ -59,8 +59,7 @@ pub(crate) fn collect<'source>(
             facts,
             SemanticFact::new(
                 kind,
-                declaration.name.bytes,
-                FactType::Opaque,
+                declaration.name.bytes, 
                 constructor(kind),
             ),
         )

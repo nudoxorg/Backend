@@ -388,6 +388,16 @@ pub enum CompileFailure<'diagnostic> {
         #[source]
         cause: LoweringUnsupported,
     },
+    /// A collector bound extension-fact coordinates that the same emission
+    /// lane never admitted; the authority input and the lane disagree.
+    #[error("{recipe:?} extension facts referenced unadmitted atoms at row {row}")]
+    ExtensionAtomUnbound {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        row: usize,
+        provisional: u32,
+        atom_count: usize,
+    },
     /// Rich lowering could not condense the frontend tree into canonical IR.
     #[error("could not build canonical semantic IR for {recipe:?}")]
     Build {

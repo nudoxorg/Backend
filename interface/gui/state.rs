@@ -12,8 +12,9 @@ use interface_core::{
 };
 
 use crate::{
-    CommandId, FormError, FormField, FormState, NavigationState, PaletteDirection,
-    PaletteEditError, ResultLimit, Route, ServiceAction,
+    CommandId, DocumentFilter, DocumentSearchScope, DocumentationState, FormError, FormField,
+    FormState, NavigationState, PaletteDirection, PaletteEditError, ResultLimit, Route,
+    ServiceAction,
 };
 use interface_core::InputText;
 
@@ -285,6 +286,8 @@ pub struct PageSnapshots {
 /// Native text surface currently owning platform composition and selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputTarget {
+    /// Global package and symbol search.
+    DocumentationSearch,
     /// Command-palette query.
     Palette,
     /// Closed typed form field.
@@ -327,6 +330,8 @@ pub struct ShellState {
 pub struct ShellProjection {
     /// Stable product information architecture and visible-only palette state.
     pub navigation: NavigationState,
+    /// Documentation catalog navigation, search, and disclosure state.
+    pub documentation: DocumentationState,
     /// Explicit user motion preference, projected without platform sniffing.
     pub motion: MotionPreference,
     /// Compiler-generation surface state.
@@ -378,6 +383,88 @@ impl ShellState {
     /// Selects a product route without changing application-service facts.
     pub fn select_route(&mut self, route: Route) {
         self.projection.navigation.select_route(route);
+    }
+
+    /// Contracts or expands the package navigation tree.
+    pub fn toggle_sidebar(&mut self) {
+        self.projection.documentation.sidebar_collapsed =
+            !self.projection.documentation.sidebar_collapsed;
+    }
+
+    /// Selects one first-party document and opens the library reader.
+    pub fn select_document(&mut self, item: usize) {
+        self.projection.documentation.select_item(item);
+        self.select_route(Route::Libraries);
+    }
+
+    /// Toggles one package row in the library tree.
+    pub fn toggle_document_package(&mut self, package: usize) {
+        self.projection.documentation.toggle_package(package);
+    }
+
+    /// Replaces the global package and symbol search query.
+    pub fn replace_documentation_query(&mut self, query: InputText) {
+        self.projection.documentation.replace_query(query);
+        self.select_route(Route::Search);
+    }
+
+    /// Clears the documentation search query.
+    pub fn clear_documentation_query(&mut self) {
+        self.projection.documentation.clear_query();
+    }
+
+    /// Selects an exact keyboard row in the unified documentation results.
+    pub fn select_documentation_result(&mut self, index: usize) {
+        self.projection.documentation.selected_result = index.min(
+            self.projection
+                .documentation
+                .search_rows()
+                .len()
+                .saturating_sub(1),
+        );
+    }
+
+    /// Moves the documentation result cursor by one row.
+    pub fn move_documentation_result(&mut self, forward: bool) {
+        self.projection.documentation.move_result_selection(forward);
+    }
+
+    /// Shows or hides the on-page document outline.
+    pub fn set_documentation_outline_visible(&mut self, visible: bool) {
+        self.projection.documentation.outline_visible = visible;
+    }
+
+    /// Expands or collapses the selected document's source section.
+    pub fn toggle_documentation_source(&mut self) {
+        self.projection.documentation.source_expanded =
+            !self.projection.documentation.source_expanded;
+    }
+
+    /// Opens package discovery with an empty query.
+    pub fn discover_packages(&mut self) {
+        self.projection.documentation.clear_query();
+        self.projection
+            .documentation
+            .select_scope(DocumentSearchScope::Packages);
+        self.select_route(Route::Search);
+    }
+
+    /// Selects the global search population.
+    pub fn select_documentation_scope(&mut self, scope: DocumentSearchScope) {
+        self.projection.documentation.select_scope(scope);
+        self.select_route(Route::Search);
+    }
+
+    /// Selects the symbol-kind filter used by documentation search.
+    pub fn select_documentation_filter(&mut self, filter: DocumentFilter) {
+        self.projection.documentation.select_filter(filter);
+    }
+
+    /// Adds or removes one catalog package from the reader's library.
+    pub fn set_document_package_added(&mut self, package: usize, added: bool) {
+        self.projection
+            .documentation
+            .set_package_added(package, added);
     }
 
     /// Focuses a closed visible form and selects its owning route.
@@ -855,6 +942,7 @@ impl Default for ShellState {
         Self {
             projection: ShellProjection {
                 navigation: NavigationState::default(),
+                documentation: DocumentationState::default(),
                 motion: MotionPreference::default(),
                 generation: SurfaceStatus::Checking,
                 generated: None,

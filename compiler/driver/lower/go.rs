@@ -7,7 +7,7 @@ use compiler_languages_go::{DeclarationKind, GoImage, ImageError};
 use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
 
-use crate::lower::{FactSet, FactType, LEAF_PRODUCT, SemanticFact, push_fact};
+use crate::lower::{FactSet, LEAF_PRODUCT, SemanticFact, push_fact};
 
 /// Exact rejection while borrowing one validated Go authority image.
 #[derive(Debug)]
@@ -42,7 +42,7 @@ pub(crate) fn collect<'source>(
         let kind = entity_kind(declaration.kind);
         push_fact(
             facts,
-            SemanticFact::new(kind, declaration.name, FactType::Opaque, constructor(kind)),
+            SemanticFact::new(kind, declaration.name, constructor(kind)),
         )
         .map_err(GoCollectError::Lowering)?;
     }
