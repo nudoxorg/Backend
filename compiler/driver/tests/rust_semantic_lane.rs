@@ -502,6 +502,14 @@ fn recursive_field_closes_on_the_self_nominal_through_option_box() -> Result<(),
     let bytes = compile_fixture(FIXTURE_BODY)?;
     let lane = lane_of(&bytes)?;
     let node = entity_ordinal(&lane, b"Node", EntityKind::Record)?;
+    let node_type_row = lane
+        .types
+        .iter()
+        .position(|fact| {
+            fact.owner.raw as usize == node
+                && matches!(fact.record.nominal, Some(compiler_ir::NominalRef::Local(target)) if target.raw as usize == node)
+        })
+        .ok_or(TestError::Falsified("Node nominal row absent"))?;
     let field = entity_ordinal(&lane, b"next", EntityKind::Field)?;
     let field_row = lane
         .types
@@ -538,7 +546,7 @@ fn recursive_field_closes_on_the_self_nominal_through_option_box() -> Result<(),
         return Err(TestError::Falsified("Box apply lacks base and argument"));
     }
     let node_target = inner_children[1];
-    if node_target as usize != node {
+    if node_target as usize != node_type_row {
         return Err(TestError::Falsified("Box argument is not the Node nominal"));
     }
     Ok(())

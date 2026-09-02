@@ -979,8 +979,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                                 .map_err(|_| admission())?;
                         }
                     }
-                    ast::GenericParam::ConstParam(_)
-                    | ast::GenericParam::LifetimeParam(_) => {}
+                    ast::GenericParam::ConstParam(_) | ast::GenericParam::LifetimeParam(_) => {}
                 }
             }
         }
@@ -1449,6 +1448,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .iter()
                 .filter_map(|argument| argument.as_ref())
                 .cloned()
+                .take(written_type_argument_count(anchor))
                 .collect();
             if typed_arguments.is_empty() {
                 return Ok(Lowered::leaf(self.unresolved_record_with(written)));
@@ -1480,6 +1480,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .iter()
             .filter_map(|argument| argument.as_ref())
             .cloned()
+            .take(written_type_argument_count(anchor))
             .collect();
         if typed_arguments.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
@@ -1908,6 +1909,26 @@ fn child_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type
         ast::Type::TupleType(tuple) => tuple.fields().nth(position),
         _ => None,
     }
+}
+
+/// Counts only written type arguments. HIR also supplies defaulted type
+/// arguments (for example `Box`'s allocator), which are not children of the
+/// written application row.
+fn written_type_argument_count(anchor: Option<&ast::Type>) -> usize {
+    let Some(ast::Type::PathType(path_type)) = anchor else {
+        return 0;
+    };
+    path_type
+        .path()
+        .and_then(|path| path.segment())
+        .and_then(|segment| segment.generic_arg_list())
+        .map(|arguments| {
+            arguments
+                .generic_args()
+                .filter(|argument| matches!(argument, ast::GenericArg::TypeArg(_)))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// Extracts the written anchor of one callable parameter or return position.
