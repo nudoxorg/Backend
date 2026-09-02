@@ -6,6 +6,8 @@
 
 mod bound;
 mod image;
+pub mod purl;
+pub mod repo;
 
 pub use bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};
 pub use image::{
