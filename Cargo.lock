@@ -1364,10 +1364,13 @@ dependencies = [
 name = "compiler-languages-typescript"
 version = "0.1.0"
 dependencies = [
+ "compiler-vocabulary",
  "oxc_allocator",
- "oxc_ast",
+ "oxc_diagnostics",
  "oxc_parser",
+ "oxc_semantic",
  "oxc_span",
+ "oxc_syntax",
  "thiserror 2.0.20",
 ]
 
@@ -5122,6 +5125,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxc_ast_visit"
+version = "0.139.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a863e2696881b3ab85d606069b1b1e83c6f46f5d1c594c26baf7b01a57263af"
+dependencies = [
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_span",
+ "oxc_syntax",
+]
+
+[[package]]
 name = "oxc_data_structures"
 version = "0.139.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5210,6 +5225,29 @@ dependencies = [
  "phf 0.14.0",
  "rustc-hash 2.1.3",
  "unicode-id-start",
+]
+
+[[package]]
+name = "oxc_semantic"
+version = "0.139.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80a647b13867f2b1e927d185ee6a357cc8089557d98203fbb9c431b179c0b942"
+dependencies = [
+ "itertools 0.15.0",
+ "memchr",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_data_structures",
+ "oxc_diagnostics",
+ "oxc_ecmascript",
+ "oxc_index",
+ "oxc_span",
+ "oxc_str",
+ "oxc_syntax",
+ "rustc-hash 2.1.3",
+ "self_cell",
+ "smallvec",
 ]
 
 [[package]]
