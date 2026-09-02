@@ -73,7 +73,7 @@ pub use model::{
     EntityRecord, EntityRecordFault, EntityType, PrimitiveType, RecipeFact, RecipeFactFault,
     SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault,
 };
-pub use prepared::{LayoutStep, PrepareError, PreparedFragment, WriteError};
+pub use prepared::{FragmentSemantics, LayoutStep, PrepareError, PreparedFragment, WriteError};
 pub use range::{
     FragmentRange, FragmentRangeManifest, FragmentRangeManifestError, FragmentRangeManifestView,
     FragmentRangeRequest, FragmentRangeVerifyError, VerifiedFragmentRange,

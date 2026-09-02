@@ -87,23 +87,23 @@ pub(super) fn collect<'source>(
                 // A method: its name is the word before the parameter list
                 // and its return type is the directly preceding word. The
                 // parameter list itself never contributes member facts.
-                if let (Some(name), Some(returned)) = (previous, before_previous) {
-                    if name != b"new" {
-                        let fact_type = if adjacent {
-                            java_type(returned)
-                        } else {
-                            FactType::Opaque
-                        };
-                        let _ = push_fact(
-                            facts,
-                            SemanticFact::new(
-                                EntityKind::Function,
-                                name,
-                                fact_type,
-                                SemanticProductConstructor::function(0, 0),
-                            ),
-                        );
-                    }
+                if let (Some(name), Some(returned)) = (previous, before_previous)
+                    && name != b"new"
+                {
+                    let fact_type = if adjacent {
+                        java_type(returned)
+                    } else {
+                        FactType::Opaque
+                    };
+                    let _ = push_fact(
+                        facts,
+                        SemanticFact::new(
+                            EntityKind::Function,
+                            name,
+                            fact_type,
+                            SemanticProductConstructor::function(0, 0),
+                        ),
+                    );
                 }
                 let _ = scanner.skip_balanced_parens();
                 reset(&mut previous, &mut before_previous, &mut adjacent);

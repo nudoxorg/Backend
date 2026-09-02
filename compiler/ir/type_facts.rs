@@ -135,23 +135,23 @@ impl<'bytes> TypeFactLane<'bytes> {
                     .record
                     .validate_child(position, child)
                     .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
-                if let TypeChildTarget::Type(reference) = child.target {
-                    if let compiler_ir_vocabulary::TypeRef::Local(target) = reference {
-                        if target.raw >= count {
-                            return Err(TypeFactFault::ChildTargetOutOfRange {
-                                ordinal,
-                                position,
-                                target: target.raw,
-                                record_count: count,
-                            });
-                        }
-                        if target.raw >= ordinal {
-                            return Err(TypeFactFault::ForwardReference {
-                                ordinal,
-                                position,
-                                target: target.raw,
-                            });
-                        }
+                if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
+                    child.target
+                {
+                    if target.raw >= count {
+                        return Err(TypeFactFault::ChildTargetOutOfRange {
+                            ordinal,
+                            position,
+                            target: target.raw,
+                            record_count: count,
+                        });
+                    }
+                    if target.raw >= ordinal {
+                        return Err(TypeFactFault::ForwardReference {
+                            ordinal,
+                            position,
+                            target: target.raw,
+                        });
                     }
                 }
             }
@@ -585,7 +585,12 @@ impl<'fragment> TypeFactCursor<'fragment> {
             remaining,
         }
     }
-    pub fn next(&mut self) -> Option<Result<DecodedTypeFact<'fragment>, TypeFactFault>> {
+}
+
+impl<'fragment> Iterator for TypeFactCursor<'fragment> {
+    type Item = Result<DecodedTypeFact<'fragment>, TypeFactFault>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
         }

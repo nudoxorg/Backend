@@ -73,8 +73,6 @@ pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
 pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
 
-/// Section count for fragments that embed one canonical semantic-data graph.
-
 /// Semantic-data header: atom, product, constructor, list, and child counts.
 pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 5;
 /// Semantic product record: head atom and pooled child-list coordinates.

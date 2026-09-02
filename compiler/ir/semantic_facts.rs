@@ -447,9 +447,12 @@ impl<'fragment> OccurrenceCursor<'fragment> {
             },
         }
     }
+}
 
-    /// Decodes the next occurrence, or `None` after the declared count.
-    pub fn next(&mut self) -> Option<Result<DecodedOccurrence<'fragment>, OccurrenceFault>> {
+impl<'fragment> Iterator for OccurrenceCursor<'fragment> {
+    type Item = Result<DecodedOccurrence<'fragment>, OccurrenceFault>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
         }

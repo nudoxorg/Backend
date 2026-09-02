@@ -102,22 +102,6 @@ pub(super) enum TestFailure {
     #[error("the locally reproducible {tool:?} adapter returned a fragment outside caller output")]
     FragmentBorrow { tool: NativeTool },
     #[error(
-        "the locally reproducible {tool:?} adapter produced {actual}, not {expected}, entities"
-    )]
-    EntityCount {
-        tool: NativeTool,
-        expected: usize,
-        actual: usize,
-    },
-    #[error(
-        "the locally reproducible {tool:?} adapter produced {actual}, not {expected}, type nodes"
-    )]
-    TypeNodeCount {
-        tool: NativeTool,
-        expected: usize,
-        actual: usize,
-    },
-    #[error(
         "the locally reproducible {tool:?} adapter atom fact had length {actual:?}, not {expected}"
     )]
     AtomLength {

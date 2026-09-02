@@ -149,6 +149,23 @@ pub struct PreparedFragment<'facts> {
     layout: FragmentLayout,
 }
 
+/// Optional semantic planes committed beside the fragment's required lanes.
+#[derive(Clone, Copy, Default)]
+pub struct FragmentSemantics<'facts> {
+    pub data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
+    pub occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
+    pub type_facts: Option<&'facts crate::type_facts::TypeFactLane<'facts>>,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentInput<'facts> {
+    source: SourceIdentity,
+    recipe: RecipeFact,
+    entities: &'facts [EntityRecord],
+    type_nodes: &'facts [TypeNode],
+    atoms: &'facts [AtomInput<'facts>],
+}
+
 impl<'facts> PreparedFragment<'facts> {
     pub fn prepare(
         source: SourceIdentity,
@@ -158,7 +175,14 @@ impl<'facts> PreparedFragment<'facts> {
         atoms: &'facts [AtomInput<'facts>],
     ) -> Result<Self, PrepareError> {
         Self::prepare_inner(
-            source, recipe, entities, type_nodes, atoms, None, None, None,
+            FragmentInput {
+                source,
+                recipe,
+                entities,
+                type_nodes,
+                atoms,
+            },
+            FragmentSemantics::default(),
         )
     }
 
@@ -177,15 +201,16 @@ impl<'facts> PreparedFragment<'facts> {
         atoms: &'facts [AtomInput<'facts>],
         semantic_data: &'facts CanonicalDataGraph<'facts, 'facts>,
     ) -> Result<Self, PrepareError> {
-        Self::prepare_inner(
+        Self::prepare_with_semantics(
             source,
             recipe,
             entities,
             type_nodes,
             atoms,
-            Some(semantic_data),
-            None,
-            None,
+            FragmentSemantics {
+                data: Some(semantic_data),
+                ..FragmentSemantics::default()
+            },
         )
     }
 
@@ -201,50 +226,58 @@ impl<'facts> PreparedFragment<'facts> {
         semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
         occurrences: &'facts crate::semantic_facts::OccurrenceLane<'facts>,
     ) -> Result<Self, PrepareError> {
-        Self::prepare_inner(
+        Self::prepare_with_semantics(
             source,
             recipe,
             entities,
             type_nodes,
             atoms,
-            semantic_data,
-            Some(occurrences),
-            None,
+            FragmentSemantics {
+                data: semantic_data,
+                occurrences: Some(occurrences),
+                type_facts: None,
+            },
         )
     }
 
-    pub fn prepare_with_type_facts(
+    /// Prepares one fragment from its required lanes and a closed set of
+    /// optional semantic planes.
+    pub fn prepare_with_semantics(
         source: SourceIdentity,
         recipe: RecipeFact,
         entities: &'facts [EntityRecord],
         type_nodes: &'facts [TypeNode],
         atoms: &'facts [AtomInput<'facts>],
-        semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
-        occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
-        type_facts: &'facts crate::type_facts::TypeFactLane<'facts>,
+        semantics: FragmentSemantics<'facts>,
     ) -> Result<Self, PrepareError> {
         Self::prepare_inner(
-            source,
-            recipe,
-            entities,
-            type_nodes,
-            atoms,
-            semantic_data,
-            occurrences,
-            Some(type_facts),
+            FragmentInput {
+                source,
+                recipe,
+                entities,
+                type_nodes,
+                atoms,
+            },
+            semantics,
         )
     }
 
     fn prepare_inner(
-        source: SourceIdentity,
-        recipe: RecipeFact,
-        entities: &'facts [EntityRecord],
-        type_nodes: &'facts [TypeNode],
-        atoms: &'facts [AtomInput<'facts>],
-        semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
-        occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
-        type_facts: Option<&'facts crate::type_facts::TypeFactLane<'facts>>,
+        input: FragmentInput<'facts>,
+        semantics: FragmentSemantics<'facts>,
     ) -> Result<Self, PrepareError> {
+        let FragmentInput {
+            source,
+            recipe,
+            entities,
+            type_nodes,
+            atoms,
+        } = input;
+        let FragmentSemantics {
+            data: semantic_data,
+            occurrences,
+            type_facts,
+        } = semantics;
         let entity_count = count(LayoutStep::EntityLane, entities.len())?;
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
         let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
@@ -261,15 +294,14 @@ impl<'facts> PreparedFragment<'facts> {
                 .map_err(|fault| PrepareError::TypeFacts { fault })?;
         }
         let layout = layout(
-            source,
-            recipe,
-            entity_count,
-            type_node_count,
-            atom_count,
-            atom_byte_count,
-            semantic_data,
-            occurrences,
-            type_facts,
+            FragmentFacts { source, recipe },
+            FragmentCounts {
+                entities: entity_count,
+                type_nodes: type_node_count,
+                atoms: atom_count,
+                atom_bytes: atom_byte_count,
+            },
+            semantics,
         )?;
 
         for (ordinal, entity) in (0..u32::from(entity_count)).zip(entities) {
@@ -422,16 +454,21 @@ fn atom_byte_count(atoms: &[AtomInput<'_>]) -> Result<ItemCount, PrepareError> {
 }
 
 fn layout(
-    source: SourceIdentity,
-    recipe: RecipeFact,
-    entity_count: ItemCount,
-    type_node_count: ItemCount,
-    atom_count: ItemCount,
-    atom_byte_count: ItemCount,
-    semantic_data: Option<&CanonicalDataGraph<'_, '_>>,
-    occurrences: Option<&crate::semantic_facts::OccurrenceLane<'_>>,
-    type_facts: Option<&crate::type_facts::TypeFactLane<'_>>,
+    facts: FragmentFacts,
+    counts: FragmentCounts,
+    semantics: FragmentSemantics<'_>,
 ) -> Result<FragmentLayout, PrepareError> {
+    let FragmentCounts {
+        entities: entity_count,
+        type_nodes: type_node_count,
+        atoms: atom_count,
+        atom_bytes: atom_byte_count,
+    } = counts;
+    let FragmentSemantics {
+        data: semantic_data,
+        occurrences,
+        type_facts,
+    } = semantics;
     let section_count = SectionCount::from(
         6_u16
             + u16::from(semantic_data.is_some())
@@ -463,7 +500,7 @@ fn layout(
         .map(|lane| type_fact_lane(&mut cursor, lane))
         .transpose()?;
     cursor.finish(
-        FragmentFacts { source, recipe },
+        facts,
         FragmentLanes {
             entities,
             type_nodes,
@@ -482,6 +519,14 @@ fn layout(
 struct FragmentFacts {
     source: SourceIdentity,
     recipe: RecipeFact,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentCounts {
+    entities: ItemCount,
+    type_nodes: ItemCount,
+    atoms: ItemCount,
+    atom_bytes: ItemCount,
 }
 
 #[derive(Clone, Copy)]

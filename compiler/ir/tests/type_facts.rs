@@ -3,15 +3,15 @@
 //! admission and again when untrusted bytes are reopened.
 
 use compiler_ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
-    PreparedFragment, PrimitiveType, RecipeFact, SourceIdentity, TypeFactFault, TypeFactInput,
-    TypeFactLane, TypeNode, WriteError,
+    AtomInput, EntityKind, EntityRecord, FragmentError, FragmentSemantics, FragmentView,
+    PrepareError, PreparedFragment, PrimitiveType, RecipeFact, SourceIdentity, TypeFactFault,
+    TypeFactInput, TypeFactLane, TypeNode, WriteError,
 };
 use compiler_ir_vocabulary::{
     AtomId, EntityId, ExternalEntityRef, ListSpan, NominalRef, SemanticTypeRecord, SemanticTypeTag,
     TypeChildTarget, TypeRef,
 };
-use compiler_vocabulary::{Language, NativeTool, Stage};
+use compiler_vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -35,16 +35,17 @@ fn source() -> SourceIdentity {
 }
 
 fn recipe() -> RecipeFact {
+    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
     RecipeFact {
         identity: compiler_vocabulary::CompileRecipeFact::derive(
-            Language::Rust,
+            profile,
             Stage::LowerIr,
             NativeTool::Rustc,
             source().identity,
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"type-facts-toolchain"),
         )
         .identity,
-        language: Language::Rust,
+        profile,
         stage: Stage::LowerIr,
         tool: NativeTool::Rustc,
         toolchain: ContentId::<ToolchainDomain>::from_canonical_bytes(b"type-facts-toolchain"),
@@ -92,15 +93,16 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
     }];
     let types = [TypeNode::Primitive(PrimitiveType::Bool)];
     let atoms = [AtomInput { bytes: b"entity" }];
-    let prepared = PreparedFragment::prepare_with_type_facts(
+    let prepared = PreparedFragment::prepare_with_semantics(
         source(),
         recipe(),
         &entities,
         &types,
         &atoms,
-        None,
-        None,
-        lane,
+        FragmentSemantics {
+            type_facts: Some(lane),
+            ..FragmentSemantics::default()
+        },
     )?;
     let mut bytes = vec![0; prepared.required_capacity()];
     prepared.write_into(&mut bytes)?;
@@ -460,15 +462,16 @@ fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
     }];
     let types = [TypeNode::Primitive(PrimitiveType::Bool)];
     let atoms = [AtomInput { bytes: b"entity" }];
-    let result = PreparedFragment::prepare_with_type_facts(
+    let result = PreparedFragment::prepare_with_semantics(
         source(),
         recipe(),
         &entities,
         &types,
         &atoms,
-        None,
-        None,
-        &lane,
+        FragmentSemantics {
+            type_facts: Some(&lane),
+            ..FragmentSemantics::default()
+        },
     );
     assert!(matches!(
         result,

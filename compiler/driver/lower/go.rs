@@ -186,7 +186,7 @@ fn result_type(scanner: &mut DeclarationScanner<'_>) -> FactType {
                 _ => None,
             };
             let _ = scanner.skip_balanced_parens();
-            fact_type.map_or(FactType::Opaque, |primitive| FactType::Primitive(primitive))
+            fact_type.map_or(FactType::Opaque, FactType::Primitive)
         }
         _ => FactType::Opaque,
     }

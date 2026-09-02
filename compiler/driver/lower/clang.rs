@@ -188,14 +188,14 @@ fn top_statement<'source>(
                     return;
                 };
                 let mut fact_type = FactType::Opaque;
-                if name_end == 2 {
-                    if let Some(ret) = run.first() {
-                        fact_type = match *ret {
-                            b"int" => FactType::Primitive(PrimitiveType::I32),
-                            b"bool" | b"_Bool" => FactType::Primitive(PrimitiveType::Bool),
-                            _ => FactType::Opaque,
-                        };
-                    }
+                if name_end == 2
+                    && let Some(ret) = run.first()
+                {
+                    fact_type = match *ret {
+                        b"int" => FactType::Primitive(PrimitiveType::I32),
+                        b"bool" | b"_Bool" => FactType::Primitive(PrimitiveType::Bool),
+                        _ => FactType::Opaque,
+                    };
                 }
                 let _ = push_fact(
                     facts,

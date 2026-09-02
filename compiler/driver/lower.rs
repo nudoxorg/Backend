@@ -269,10 +269,6 @@ pub(super) struct FactSet<'source> {
 }
 
 impl<'source> FactSet<'source> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the initializer literals fill every fixed lane element exactly; no dynamic index exists at construction"
-    )]
     pub(super) const fn new() -> Self {
         Self {
             len: 0,
@@ -631,7 +627,7 @@ pub(super) fn admit<'source, 'output>(
         owner: compiler_ir::EntityId::new(0),
         record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
     }; MAX_EMISSION_FACTS];
-    for ordinal in 0..fact_count {
+    for (ordinal, type_fact) in type_facts.iter_mut().enumerate().take(fact_count) {
         let record = match facts.fact_types[ordinal] {
             FactType::Opaque => SemanticTypeRecord {
                 tag: SemanticTypeTag::Unknown,
@@ -660,7 +656,7 @@ pub(super) fn admit<'source, 'output>(
                 children: ListSpan::new(0, 0),
             },
         };
-        type_facts[ordinal] = TypeFactInput {
+        *type_fact = TypeFactInput {
             owner: compiler_ir::EntityId::new(ordinal as u32),
             record,
         };
@@ -670,15 +666,17 @@ pub(super) fn admit<'source, 'output>(
         children: &[],
     };
 
-    let prepared = PreparedFragment::prepare_with_type_facts(
+    let prepared = PreparedFragment::prepare_with_semantics(
         source,
         recipe,
         &entities[..fact_count],
         node_prefix,
         &atoms[..fact_count],
-        Some(&semantic),
-        None,
-        &type_fact_lane,
+        compiler_ir::FragmentSemantics {
+            data: Some(&semantic),
+            occurrences: None,
+            type_facts: Some(&type_fact_lane),
+        },
     );
     write_prepared(prepared, output)
 }

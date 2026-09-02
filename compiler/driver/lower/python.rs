@@ -294,9 +294,7 @@ fn leading_identifier(head: &[u8]) -> Option<&[u8]> {
 }
 
 fn is_identifier(name: &[u8]) -> Option<&[u8]> {
-    let Some((first, rest)) = name.split_first() else {
-        return None;
-    };
+    let (first, rest) = name.split_first()?;
     let valid = (*first == b'_' || first.is_ascii_alphabetic())
         && rest
             .iter()
