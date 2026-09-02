@@ -135,6 +135,16 @@ pub enum SemanticDataFault {
 
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum FragmentError {
+    #[error("documentation lane rejected: {fault}")]
+    Documentation {
+        #[source]
+        fault: crate::docs_facts::DocFactFault,
+    },
+    #[error("extension pooled lanes rejected: {fault}")]
+    ExtensionPools {
+        #[source]
+        fault: crate::extension_pools::ExtensionPoolFault,
+    },
     #[error("fragment header needs {required} bytes but only {actual} are present")]
     TruncatedHeader { required: usize, actual: usize },
     #[error("fragment magic {actual:?} is unknown")]

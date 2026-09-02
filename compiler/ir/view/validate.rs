@@ -31,6 +31,11 @@ impl<'fragment> FragmentView<'fragment> {
         let atom_lane = &envelope[layout.atoms.range()];
         let occurrence_lane = layout.occurrences.map(|lane| &envelope[lane.range()]);
         let type_fact_lane = layout.type_facts.map(|lane| &envelope[lane.range()]);
+        let documentation_lane = layout.documentation.map(|lane| &envelope[lane.range()]);
+        let language_extension_lane = layout
+            .language_extensions
+            .map(|lane| &envelope[lane.range()]);
+        let extension_pool_lane = layout.extension_pools.map(|lane| &envelope[lane.range()]);
         Self {
             envelope,
             entities: entity_lane,
@@ -39,6 +44,9 @@ impl<'fragment> FragmentView<'fragment> {
             atom_bytes: &envelope[layout.atom_bytes.range()],
             occurrence_lane,
             type_fact_lane,
+            documentation_lane,
+            language_extension_lane,
+            extension_pool_lane,
             source: layout.source,
             recipe: layout.recipe,
             layout,
@@ -66,6 +74,25 @@ impl<'fragment> FragmentView<'fragment> {
 
     pub fn type_fact_payload(&self) -> Option<&'fragment [u8]> {
         self.type_fact_lane
+    }
+
+    /// Lazily decodes the validated documentation plane, or `None` when the
+    /// fragment commits no documentation section.
+    pub fn docs(&self) -> Option<crate::docs_facts::DocFactCursor<'fragment>> {
+        self.documentation_lane
+            .map(crate::docs_facts::DocFactCursor::new)
+    }
+
+    /// The validated language-extension section payload, or `None` when the
+    /// fragment commits no extension section.
+    pub fn language_extension_payload(&self) -> Option<&'fragment [u8]> {
+        self.language_extension_lane
+    }
+
+    /// The validated extension pooled-lane payload, or `None` when the
+    /// fragment commits no pooled-lane section.
+    pub fn extension_pool_payload(&self) -> Option<&'fragment [u8]> {
+        self.extension_pool_lane
     }
 }
 
@@ -209,6 +236,9 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut semantic_data = None;
     let mut occurrences = None;
     let mut type_facts = None;
+    let mut documentation = None;
+    let mut language_extensions = None;
+    let mut extension_pools = None;
     for _ in 0..u16::from(section_count) {
         let (next_state, entry) = state.parse(envelope)?;
         match SectionKind::try_from(entry.kind) {
@@ -300,6 +330,54 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                     .map_err(|fault| FragmentError::TypeFacts { fault })?;
                 type_facts = Some(entry.lane);
             }
+            Ok(SectionKind::Documentation) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                let entity_count = u32::from(
+                    entities
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::EntityTypes,
+                        })?
+                        .count,
+                );
+                crate::docs_facts::validate_doc_payload(
+                    &envelope[entry.lane.range()],
+                    entity_count,
+                )
+                .map_err(|fault| FragmentError::Documentation { fault })?;
+                documentation = Some(entry.lane);
+            }
+            Ok(SectionKind::LanguageExtensions) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                language_extensions = Some(entry.lane);
+            }
+            Ok(SectionKind::ExtensionPools) => {
+                validate_known_length(&entry, 1)?;
+                require_known(&entry)?;
+                let atoms_lane_count = u32::from(
+                    atoms
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::AtomRecords,
+                        })?
+                        .count,
+                );
+                let entity_count = u32::from(
+                    entities
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::EntityTypes,
+                        })?
+                        .count,
+                );
+                crate::extension_pools::validate_extension_pool_payload(
+                    &envelope[entry.lane.range()],
+                    atoms_lane_count,
+                    extension_type_count(type_facts.is_some(), entity_count),
+                    entity_count,
+                )
+                .map_err(|fault| FragmentError::ExtensionPools { fault })?;
+                extension_pools = Some(entry.lane);
+            }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
                 return Err(directory_fault(
                     entry.ordinal,
@@ -363,11 +441,18 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         semantic_data,
         occurrences,
         type_facts,
+        documentation,
+        language_extensions,
+        extension_pools,
         source,
         recipe,
         output_len: envelope.len(),
         output_wire_len: declared_wire_length,
     })
+}
+
+fn extension_type_count(type_facts_present: bool, entity_count: u32) -> u32 {
+    if type_facts_present { entity_count } else { 0 }
 }
 
 fn require_known(entry: &ParsedDirectoryEntry) -> Result<(), FragmentError> {

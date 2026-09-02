@@ -331,46 +331,180 @@ impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'w
     }
 }
 
-/// Exact byte count needed to encode the seven language planes.
+/// Encode-side plane source: one language's row table and dense fact pool.
+/// Implemented identically by the in-image column view and by the borrowed
+/// [`ExtensionSectionPlane`], so section bytes never depend on the owner.
+pub trait ExtensionSectionSource: Copy {
+    /// The fixed-width wire fact this plane encodes.
+    type Facts: Copy;
+
+    /// Number of entity rows, including universally absent rows.
+    fn row_count(&self) -> usize;
+    /// The dense fact ordinal one row carries, or [`SECTION_NONE`] when the
+    /// row carries no fact of this plane.
+    fn fact_ordinal(&self, row: u32) -> u32;
+    /// The dense fact pool in canonical order.
+    fn fact_slice(&self) -> &[Self::Facts];
+}
+
+/// Sentinel marking a row without a fact in one plane's row table.
+pub const SECTION_NONE: u32 = u32::MAX;
+
+/// One borrowed sparse plane ready for section encoding.
+#[derive(Clone, Copy, Debug)]
+pub struct ExtensionSectionPlane<'a, Facts: Copy> {
+    /// Dense fact pool addressed only by [`Self::row_ordinals`].
+    pub facts: &'a [Facts],
+    /// One ordinal per entity row; [`SECTION_NONE`] marks an absent row.
+    pub row_ordinals: &'a [u32],
+}
+
+impl<'a, Facts: Copy> ExtensionSectionSource for ExtensionSectionPlane<'a, Facts> {
+    type Facts = Facts;
+
+    fn row_count(&self) -> usize {
+        self.row_ordinals.len()
+    }
+
+    fn fact_ordinal(&self, row: u32) -> u32 {
+        self.row_ordinals
+            .get(usize::try_from(row).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(SECTION_NONE)
+    }
+
+    fn fact_slice(&self) -> &[Facts] {
+        self.facts
+    }
+}
+
+impl<Facts: Copy, Space> ExtensionSectionSource
+    for crate::LanguageExtensionColumnView<'_, Facts, Space>
+{
+    type Facts = Facts;
+
+    fn row_count(&self) -> usize {
+        self.ids.row_count()
+    }
+
+    fn fact_ordinal(&self, row: u32) -> u32 {
+        self.ids
+            .get(crate::EntityId::new(row))
+            .map_or(SECTION_NONE, |id| id.raw)
+    }
+
+    fn fact_slice(&self) -> &[Facts] {
+        self.facts
+    }
+}
+
+/// The seven borrowed planes plus the authority that selected them, ready
+/// for fragment-side encoding.
+#[derive(Clone, Copy, Debug)]
+pub struct ExtensionSectionInput<'a> {
+    /// The profile authority that selected every nonempty plane.
+    pub authority: SemanticImageAuthority,
+    /// TypeScript plane.
+    pub typescript: ExtensionSectionPlane<'a, crate::TypeScriptFacts>,
+    /// C# plane.
+    pub csharp: ExtensionSectionPlane<'a, crate::CSharpFacts>,
+    /// Go plane.
+    pub go: ExtensionSectionPlane<'a, crate::GoFacts>,
+    /// Rust plane.
+    pub rust: ExtensionSectionPlane<'a, crate::RustFacts>,
+    /// Python plane.
+    pub python: ExtensionSectionPlane<'a, crate::PythonFacts>,
+    /// Java plane.
+    pub java: ExtensionSectionPlane<'a, crate::JavaFacts>,
+    /// Clang plane.
+    pub clang: ExtensionSectionPlane<'a, crate::ClangFacts>,
+}
+
+/// Exact byte count needed to encode the seven language planes of one
+/// in-image extension view.
 pub fn language_extension_section_len(
     extensions: LanguageExtensionsView<'_>,
 ) -> Result<usize, LanguageExtensionEncodeError> {
-    let rows = extensions.typescript.ids.row_count();
-    let views = [
+    section_len(
+        extensions.typescript,
+        extensions.csharp,
+        extensions.go,
+        extensions.rust,
+        extensions.python,
+        extensions.java,
+        extensions.clang,
+    )
+}
+
+/// Exact byte count needed to encode the seven borrowed planes.
+pub fn fragment_extension_section_len(
+    input: ExtensionSectionInput<'_>,
+) -> Result<usize, LanguageExtensionEncodeError> {
+    section_len(
+        input.typescript,
+        input.csharp,
+        input.go,
+        input.rust,
+        input.python,
+        input.java,
+        input.clang,
+    )
+}
+
+fn section_len<Ts, Cs, Go, Ru, Py, Ja, Cl>(
+    typescript: Ts,
+    csharp: Cs,
+    go: Go,
+    rust: Ru,
+    python: Py,
+    java: Ja,
+    clang: Cl,
+) -> Result<usize, LanguageExtensionEncodeError>
+where
+    Ts: ExtensionSectionSource,
+    Cs: ExtensionSectionSource,
+    Go: ExtensionSectionSource,
+    Ru: ExtensionSectionSource,
+    Py: ExtensionSectionSource,
+    Ja: ExtensionSectionSource,
+    Cl: ExtensionSectionSource,
+{
+    let rows = typescript.row_count();
+    let views: [(LanguageExtensionDirectoryKind, usize, usize); PLANES] = [
         (
             LanguageExtensionDirectoryKind::TypeScript,
-            extensions.typescript.ids.row_count(),
-            extensions.typescript.facts.len(),
+            typescript.row_count(),
+            typescript.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::CSharp,
-            extensions.csharp.ids.row_count(),
-            extensions.csharp.facts.len(),
+            csharp.row_count(),
+            csharp.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::Go,
-            extensions.go.ids.row_count(),
-            extensions.go.facts.len(),
+            go.row_count(),
+            go.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::Rust,
-            extensions.rust.ids.row_count(),
-            extensions.rust.facts.len(),
+            rust.row_count(),
+            rust.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::Python,
-            extensions.python.ids.row_count(),
-            extensions.python.facts.len(),
+            python.row_count(),
+            python.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::Java,
-            extensions.java.ids.row_count(),
-            extensions.java.facts.len(),
+            java.row_count(),
+            java.fact_slice().len(),
         ),
         (
             LanguageExtensionDirectoryKind::Clang,
-            extensions.clang.ids.row_count(),
-            extensions.clang.facts.len(),
+            clang.row_count(),
+            clang.fact_slice().len(),
         ),
     ];
     let mut total = HEADER + DIRECTORY * PLANES;
@@ -394,15 +528,72 @@ pub fn language_extension_section_len(
     Ok(total)
 }
 
-/// Encodes every typed sparse plane in canonical directory order into caller storage.
+/// Encodes every typed sparse plane in canonical directory order into caller
+/// storage, from one in-image extension view.
 pub fn encode_language_extension_section(
     extensions: LanguageExtensionsView<'_>,
     output: &mut [u8],
 ) -> Result<usize, LanguageExtensionEncodeError> {
-    let required = language_extension_section_len(extensions)?;
+    encode_section(
+        extensions.authority,
+        extensions.typescript,
+        extensions.csharp,
+        extensions.go,
+        extensions.rust,
+        extensions.python,
+        extensions.java,
+        extensions.clang,
+        output,
+    )
+}
+
+/// Encodes every typed sparse plane in canonical directory order into caller
+/// storage, from seven borrowed planes.
+pub fn encode_fragment_extension_section(
+    input: ExtensionSectionInput<'_>,
+    output: &mut [u8],
+) -> Result<usize, LanguageExtensionEncodeError> {
+    encode_section(
+        input.authority,
+        input.typescript,
+        input.csharp,
+        input.go,
+        input.rust,
+        input.python,
+        input.java,
+        input.clang,
+        output,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one authority plus one borrowed source per closed plane"
+)]
+fn encode_section<Ts, Cs, Go, Ru, Py, Ja, Cl>(
+    authority: SemanticImageAuthority,
+    typescript: Ts,
+    csharp: Cs,
+    go: Go,
+    rust: Ru,
+    python: Py,
+    java: Ja,
+    clang: Cl,
+    output: &mut [u8],
+) -> Result<usize, LanguageExtensionEncodeError>
+where
+    Ts: ExtensionSectionSource<Facts = crate::TypeScriptFacts>,
+    Cs: ExtensionSectionSource<Facts = crate::CSharpFacts>,
+    Go: ExtensionSectionSource<Facts = crate::GoFacts>,
+    Ru: ExtensionSectionSource<Facts = crate::RustFacts>,
+    Py: ExtensionSectionSource<Facts = crate::PythonFacts>,
+    Ja: ExtensionSectionSource<Facts = crate::JavaFacts>,
+    Cl: ExtensionSectionSource<Facts = crate::ClangFacts>,
+{
+    let required = section_len(typescript, csharp, go, rust, python, java, clang)?;
     let required_wire =
         u32::try_from(required).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
-    let rows = u32::try_from(extensions.typescript.ids.row_count())
+    let rows = u32::try_from(typescript.row_count())
         .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
     let rows_usize =
         usize::try_from(rows).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
@@ -416,7 +607,7 @@ pub fn encode_language_extension_section(
     write_bytes(output, 0, &MAGIC)?;
     put_u16(output, 4, SCHEMA)?;
     put_u8(output, 6, PLANES_WIRE)?;
-    write_authority(output, 7, extensions.authority)?;
+    write_authority(output, 7, authority)?;
     put_u32(output, 12, required_wire)?;
     let mut payload = HEADER + DIRECTORY * PLANES;
     macro_rules! plane {
@@ -431,7 +622,7 @@ pub fn encode_language_extension_section(
             put_u32(
                 output,
                 directory + 8,
-                u32::try_from(view.facts.len())
+                u32::try_from(view.fact_slice().len())
                     .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
             )?;
             put_u32(
@@ -439,15 +630,15 @@ pub fn encode_language_extension_section(
                 directory + 12,
                 u32::try_from(payload).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
             )?;
-            let ordinal_bytes = if view.facts.is_empty() {
+            let facts = view.fact_slice();
+            let ordinal_bytes = if facts.is_empty() {
                 0
             } else {
                 rows_usize
                     .checked_mul(4)
                     .ok_or(LanguageExtensionEncodeError::LengthOverflow)?
             };
-            let fact_bytes = view
-                .facts
+            let fact_bytes = facts
                 .len()
                 .checked_mul($kind.fact_bytes())
                 .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
@@ -460,11 +651,8 @@ pub fn encode_language_extension_section(
                 u32::try_from(length).map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
             )?;
             for raw in 0..rows {
-                if !view.facts.is_empty() {
-                    let id = view
-                        .ids
-                        .get(crate::EntityId::new(raw))
-                        .map_or(NONE, |id| id.raw);
+                if !facts.is_empty() {
+                    let id = view.fact_ordinal(raw);
                     let raw = usize::try_from(raw)
                         .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
                     let offset = raw
@@ -474,13 +662,13 @@ pub fn encode_language_extension_section(
                     put_u32(output, offset, id)?;
                 }
             }
-            let facts = payload
+            let facts_start = payload
                 .checked_add(ordinal_bytes)
                 .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
-            for (index, fact) in view.facts.iter().copied().enumerate() {
+            for (index, fact) in facts.iter().copied().enumerate() {
                 let offset = index
                     .checked_mul($kind.fact_bytes())
-                    .and_then(|offset| facts.checked_add(offset))
+                    .and_then(|offset| facts_start.checked_add(offset))
                     .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
                 $encode(output, offset, fact)?;
             }
@@ -492,43 +680,28 @@ pub fn encode_language_extension_section(
     plane!(
         0,
         LanguageExtensionDirectoryKind::TypeScript,
-        extensions.typescript,
+        typescript,
         encode_typescript
     );
     plane!(
         1,
         LanguageExtensionDirectoryKind::CSharp,
-        extensions.csharp,
+        csharp,
         encode_csharp
     );
-    plane!(
-        2,
-        LanguageExtensionDirectoryKind::Go,
-        extensions.go,
-        encode_go
-    );
-    plane!(
-        3,
-        LanguageExtensionDirectoryKind::Rust,
-        extensions.rust,
-        encode_rust
-    );
+    plane!(2, LanguageExtensionDirectoryKind::Go, go, encode_go);
+    plane!(3, LanguageExtensionDirectoryKind::Rust, rust, encode_rust);
     plane!(
         4,
         LanguageExtensionDirectoryKind::Python,
-        extensions.python,
+        python,
         encode_python
     );
-    plane!(
-        5,
-        LanguageExtensionDirectoryKind::Java,
-        extensions.java,
-        encode_java
-    );
+    plane!(5, LanguageExtensionDirectoryKind::Java, java, encode_java);
     plane!(
         6,
         LanguageExtensionDirectoryKind::Clang,
-        extensions.clang,
+        clang,
         encode_clang
     );
     debug_assert_eq!(payload, required);

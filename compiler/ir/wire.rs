@@ -132,6 +132,9 @@ wire_enum_u16! {
         SemanticData = 7,
         Occurrences = 8,
         TypeFacts = 9,
+        Documentation = 10,
+        LanguageExtensions = 11,
+        ExtensionPools = 12,
     }
 }
 
@@ -236,6 +239,12 @@ pub(crate) struct FragmentLayout {
     /// Optional occurrence fact-plane payload lane.
     pub(crate) occurrences: Option<LaneLayout>,
     pub(crate) type_facts: Option<LaneLayout>,
+    /// Optional documentation fact-plane payload lane.
+    pub(crate) documentation: Option<LaneLayout>,
+    /// Optional language-extension section payload lane.
+    pub(crate) language_extensions: Option<LaneLayout>,
+    /// Optional extension pooled-lane payload lane.
+    pub(crate) extension_pools: Option<LaneLayout>,
     pub(crate) source: SourceIdentity,
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,

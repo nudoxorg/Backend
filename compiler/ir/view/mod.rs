@@ -21,6 +21,9 @@ pub struct FragmentView<'fragment> {
     pub(super) atom_bytes: &'fragment [u8],
     pub(super) occurrence_lane: Option<&'fragment [u8]>,
     pub(super) type_fact_lane: Option<&'fragment [u8]>,
+    pub(super) documentation_lane: Option<&'fragment [u8]>,
+    pub(super) language_extension_lane: Option<&'fragment [u8]>,
+    pub(super) extension_pool_lane: Option<&'fragment [u8]>,
     /// Typed source fact validated from the fragment's required identity lane.
     pub source: crate::SourceIdentity,
     /// Typed recipe facts validated from the fragment's required recipe lane.

@@ -10,6 +10,11 @@ use crate::{
     AtomInput, CanonicalDataError, EntityRecord, EntityRecordFault, RecipeFact, SourceIdentity,
     TypeNode, TypeNodeFault,
     canonical_data::CanonicalDataGraph,
+    docs_facts::DocumentationLane,
+    extension_pools::ExtensionPoolsLane,
+    semantic_extension_section::{
+        ExtensionSectionInput, encode_fragment_extension_section, fragment_extension_section_len,
+    },
     wire::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
         FragmentLayout, HEADER_LAYOUT, ItemCount, LaneLayout, RECIPE_FACT_BYTES,
@@ -33,6 +38,9 @@ pub enum LayoutStep {
     SemanticData,
     Occurrences,
     TypeFacts,
+    Documentation,
+    LanguageExtensions,
+    ExtensionPools,
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -113,12 +121,29 @@ pub enum PrepareError {
         #[source]
         fault: crate::TypeFactFault,
     },
+    #[error("documentation lane admission rejected: {fault}")]
+    Documentation {
+        #[source]
+        fault: crate::DocFactFault,
+    },
+    #[error("extension-pool admission rejected: {fault}")]
+    ExtensionPools {
+        #[source]
+        fault: crate::ExtensionPoolFault,
+    },
+    #[error("the language-extension section and its pooled lanes must be committed together")]
+    ExtensionPoolsMismatch,
 }
 
 #[derive(Debug, Error)]
 pub enum WriteError {
     #[error("fragment output needs {required} bytes but only {available} are available")]
     OutputTooSmall { required: usize, available: usize },
+    #[error("language-extension section encoding failed: {fault}")]
+    ExtensionSection {
+        #[source]
+        fault: crate::semantic_extension_section::LanguageExtensionEncodeError,
+    },
     #[error("prepared atom {ordinal:?} no longer fits the compact byte width")]
     AtomLength {
         ordinal: AtomId,
@@ -146,6 +171,9 @@ pub struct PreparedFragment<'facts> {
     semantic_data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
     occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
     type_facts: Option<&'facts crate::type_facts::TypeFactLane<'facts>>,
+    docs: Option<&'facts DocumentationLane<'facts>>,
+    extensions: Option<&'facts ExtensionSectionInput<'facts>>,
+    pools: Option<&'facts ExtensionPoolsLane<'facts>>,
     layout: FragmentLayout,
 }
 
@@ -155,6 +183,9 @@ pub struct FragmentSemantics<'facts> {
     pub data: Option<&'facts CanonicalDataGraph<'facts, 'facts>>,
     pub occurrences: Option<&'facts crate::semantic_facts::OccurrenceLane<'facts>>,
     pub type_facts: Option<&'facts crate::type_facts::TypeFactLane<'facts>>,
+    pub docs: Option<&'facts DocumentationLane<'facts>>,
+    pub extensions: Option<&'facts ExtensionSectionInput<'facts>>,
+    pub pools: Option<&'facts ExtensionPoolsLane<'facts>>,
 }
 
 #[derive(Clone, Copy)]
@@ -236,6 +267,9 @@ impl<'facts> PreparedFragment<'facts> {
                 data: semantic_data,
                 occurrences: Some(occurrences),
                 type_facts: None,
+                docs: None,
+                extensions: None,
+                pools: None,
             },
         )
     }
@@ -277,7 +311,13 @@ impl<'facts> PreparedFragment<'facts> {
             data: semantic_data,
             occurrences,
             type_facts,
+            docs,
+            extensions,
+            pools,
         } = semantics;
+        if extensions.is_some() != pools.is_some() {
+            return Err(PrepareError::ExtensionPoolsMismatch);
+        }
         let entity_count = count(LayoutStep::EntityLane, entities.len())?;
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
         let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
@@ -292,6 +332,22 @@ impl<'facts> PreparedFragment<'facts> {
         if let Some(lane) = type_facts {
             lane.admit(u32::from(entity_count), lane.children)
                 .map_err(|fault| PrepareError::TypeFacts { fault })?;
+        }
+        if let Some(lane) = docs {
+            lane.admit(u32::from(entity_count))
+                .map_err(|fault| PrepareError::Documentation { fault })?;
+        }
+        if extensions.is_some() && type_facts.is_none() {
+            return Err(PrepareError::ExtensionPoolsMismatch);
+        }
+        if let Some(lane) = pools {
+            let type_count = if type_facts.is_some() {
+                u32::from(entity_count)
+            } else {
+                0
+            };
+            lane.admit(u32::from(atom_count), type_count, u32::from(entity_count))
+                .map_err(|fault| PrepareError::ExtensionPools { fault })?;
         }
         let layout = layout(
             FragmentFacts { source, recipe },
@@ -336,6 +392,9 @@ impl<'facts> PreparedFragment<'facts> {
             semantic_data,
             occurrences,
             type_facts,
+            docs,
+            extensions,
+            pools,
             layout,
         })
     }
@@ -366,7 +425,10 @@ impl<'facts> PreparedFragment<'facts> {
                 6_u16
                     + u16::from(self.semantic_data.is_some())
                     + u16::from(self.occurrences.is_some())
-                    + u16::from(self.type_facts.is_some()),
+                    + u16::from(self.type_facts.is_some())
+                    + u16::from(self.docs.is_some())
+                    + u16::from(self.extensions.is_some())
+                    + u16::from(self.pools.is_some()),
             )),
         );
         write_u32(
@@ -405,6 +467,30 @@ impl<'facts> PreparedFragment<'facts> {
         if let (Some(lane), Some(type_layout)) = (self.type_facts, self.layout.type_facts) {
             write_directory_entry(written, ordinal, SectionKind::TypeFacts, type_layout);
             lane.write_payload(&mut written[type_layout.range()]);
+            ordinal += 1;
+        }
+        if let (Some(lane), Some(doc_layout)) = (self.docs, self.layout.documentation) {
+            write_directory_entry(written, ordinal, SectionKind::Documentation, doc_layout);
+            lane.write_payload(&mut written[doc_layout.range()]);
+            ordinal += 1;
+        }
+        if let (Some(input), Some(extension_layout)) =
+            (self.extensions, self.layout.language_extensions)
+        {
+            write_directory_entry(
+                written,
+                ordinal,
+                SectionKind::LanguageExtensions,
+                extension_layout,
+            );
+            let section = &mut written[extension_layout.range()];
+            encode_fragment_extension_section(*input, section)
+                .map_err(|fault| WriteError::ExtensionSection { fault })?;
+            ordinal += 1;
+        }
+        if let (Some(lane), Some(pool_layout)) = (self.pools, self.layout.extension_pools) {
+            write_directory_entry(written, ordinal, SectionKind::ExtensionPools, pool_layout);
+            lane.write_payload(&mut written[pool_layout.range()]);
         }
 
         let mut entity_cursor = self.layout.entities.start_index;
@@ -468,12 +554,18 @@ fn layout(
         data: semantic_data,
         occurrences,
         type_facts,
+        docs,
+        extensions,
+        pools,
     } = semantics;
     let section_count = SectionCount::from(
         6_u16
             + u16::from(semantic_data.is_some())
             + u16::from(occurrences.is_some())
-            + u16::from(type_facts.is_some()),
+            + u16::from(type_facts.is_some())
+            + u16::from(docs.is_some())
+            + u16::from(extensions.is_some())
+            + u16::from(pools.is_some()),
     );
     let mut cursor = LayoutCursor::new(entity_count, type_node_count, section_count)?;
     let entities = cursor.lane(LayoutStep::EntityLane, entity_count, ENTITY_BYTES)?;
@@ -499,6 +591,27 @@ fn layout(
     let type_fact_lane = type_facts
         .map(|lane| type_fact_lane(&mut cursor, lane))
         .transpose()?;
+    let documentation_lane = docs
+        .map(|lane| byte_lane(&mut cursor, LayoutStep::Documentation, lane.payload_len()))
+        .transpose()?;
+    let language_extension_lane = extensions
+        .map(|input| {
+            byte_lane(
+                &mut cursor,
+                LayoutStep::LanguageExtensions,
+                fragment_extension_section_len(*input).map_err(|_| {
+                    PrepareError::LayoutOverflow {
+                        step: LayoutStep::LanguageExtensions,
+                        entity_count: 0,
+                        type_node_count: 0,
+                    }
+                })?,
+            )
+        })
+        .transpose()?;
+    let extension_pool_lane = pools
+        .map(|lane| byte_lane(&mut cursor, LayoutStep::ExtensionPools, lane.payload_len()))
+        .transpose()?;
     cursor.finish(
         facts,
         FragmentLanes {
@@ -511,8 +624,24 @@ fn layout(
             semantic_data: semantic_lane,
             occurrences: occurrence_lane,
             type_facts: type_fact_lane,
+            documentation: documentation_lane,
+            language_extensions: language_extension_lane,
+            extension_pools: extension_pool_lane,
         },
     )
+}
+
+fn byte_lane(
+    cursor: &mut LayoutCursor,
+    step: LayoutStep,
+    payload: usize,
+) -> Result<LaneLayout, PrepareError> {
+    let count = ItemCount::try_from(payload).map_err(|_| PrepareError::LayoutOverflow {
+        step,
+        entity_count: 0,
+        type_node_count: 0,
+    })?;
+    cursor.lane(step, count, 1)
 }
 
 #[derive(Clone, Copy)]
@@ -540,6 +669,9 @@ struct FragmentLanes {
     semantic_data: Option<LaneLayout>,
     occurrences: Option<LaneLayout>,
     type_facts: Option<LaneLayout>,
+    documentation: Option<LaneLayout>,
+    language_extensions: Option<LaneLayout>,
+    extension_pools: Option<LaneLayout>,
 }
 
 struct LayoutCursor {
@@ -628,6 +760,9 @@ impl LayoutCursor {
             semantic_data: lanes.semantic_data,
             occurrences: lanes.occurrences,
             type_facts: lanes.type_facts,
+            documentation: lanes.documentation,
+            language_extensions: lanes.language_extensions,
+            extension_pools: lanes.extension_pools,
             source: facts.source,
             recipe: facts.recipe,
             output_len: self.next_index,

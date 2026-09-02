@@ -195,10 +195,12 @@ impl FragmentRangeManifest {
             // The range manifest commits required semantic lanes only; the
             // optional semantic-data and occurrence sections have no
             // manifest row.
-            SectionKind::SemanticData | SectionKind::Occurrences => {
-                return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
-            }
-            SectionKind::TypeFacts => {
+            SectionKind::SemanticData
+            | SectionKind::Occurrences
+            | SectionKind::TypeFacts
+            | SectionKind::Documentation
+            | SectionKind::LanguageExtensions
+            | SectionKind::ExtensionPools => {
                 return Err(FragmentRangeVerifyError::SectionNotCommitted { section });
             }
         };

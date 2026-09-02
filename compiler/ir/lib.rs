@@ -16,6 +16,8 @@ compile_error!("compiler-ir requires at least a 32-bit address space");
 mod canonical_data;
 mod columnar;
 mod coordinate;
+mod docs_facts;
+mod extension_pools;
 mod interner;
 #[cfg(feature = "mmap")]
 mod mapping;
@@ -59,6 +61,14 @@ pub use compiler_vocabulary::{
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
+pub use docs_facts::{
+    DecodedDocFact, DocFactCursor, DocFactFault, DocFactInput, DocFragmentInput, DocLinkTarget,
+    DocumentationLane,
+};
+pub use extension_pools::{
+    DecodedRefList, DecodedTypeParameter, ExtensionPoolFault, ExtensionPoolsLane, ExtensionRefList,
+    ExtensionTypeParameter, ReopenedExtensionPools,
+};
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
     ListInterner, ListTable, ListTableView,
@@ -101,10 +111,12 @@ pub use semantic::{
     UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
 };
 pub use semantic_extension_section::{
+    ExtensionSectionInput, ExtensionSectionPlane, ExtensionSectionSource,
     LanguageExtensionCommonBounds, LanguageExtensionDirectoryKind, LanguageExtensionEncodeError,
     LanguageExtensionReopenError, LanguageExtensionWireFact, ReopenedLanguageExtensionColumn,
-    ReopenedLanguageExtensionSection, ValidatedLanguageExtensionCommonBounds,
-    encode_language_extension_section, language_extension_section_len,
+    ReopenedLanguageExtensionSection, SECTION_NONE, ValidatedLanguageExtensionCommonBounds,
+    encode_fragment_extension_section, encode_language_extension_section,
+    fragment_extension_section_len, language_extension_section_len,
     reopen_language_extension_section,
 };
 pub use semantic_facts::{
