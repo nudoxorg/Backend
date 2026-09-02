@@ -49,7 +49,11 @@ gpui::actions!(
         /// Contracts or expands the package navigation tree.
         ToggleSidebar,
         /// Opens package discovery in the indexed search surface.
-        DiscoverPackages
+        DiscoverPackages,
+        /// Navigates to the previous visited document.
+        NavigateDocumentBack,
+        /// Navigates to the next visited document.
+        NavigateDocumentForward
     ]
 );
 
@@ -67,7 +71,7 @@ pub use forms::{
 pub use catalog::{
     DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DocumentFilter, DocumentItem, DocumentKind, DocumentMember,
     DocumentPackage, DocumentSearchHit, DocumentSearchRow, DocumentSearchScope, DocumentationState,
-    MAX_DOCUMENT_RESULTS, PACKAGE_COUNT,
+    MAX_DOCUMENT_QUERY_BYTES, MAX_DOCUMENT_RESULTS, PACKAGE_COUNT,
 };
 
 pub use state::{

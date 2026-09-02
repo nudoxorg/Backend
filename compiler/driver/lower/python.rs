@@ -29,18 +29,25 @@ use compiler_ir::{
     SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, TypeReason, TypeWidth,
 };
 use compiler_languages_python::{
-    Annotation, AnnotationFact, AnnotationPosition, DeclarationFact, DeclarationKind,
-    ExtractionError, ModuleFacts, OccurrenceFact, ParameterKind, Span,
-    TypeReason as ExtractedReason, extract,
+    Annotation, AnnotationFact, AnnotationPosition, CheckerReport, DeclarationFact, DeclarationKind,
+    ExtractionError, InferredType, ModuleFacts, OccurrenceFact, ParameterKind, Pyrefly, Span,
+    SymbolOutcome, TypeReason as ExtractedReason, extract,
 };
 use compiler_vocabulary::PythonVersion;
 
 use crate::{
-    lower::{EmissionExtension, FactSet, LEAF_PRODUCT, SemanticFact, push_fact},
+    lower::{
+        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+    },
     types::LoweringUnsupported,
 };
 
 /// Exact direct-authority rejection while borrowing Ruff declarations.
+///
+/// The variant set is consumed exhaustively by the driver's terminal
+/// mapping, so checker failures intentionally do not widen it: a missing or
+/// failing pyrefly never blocks the proven syntax lane, and the lane's
+/// confidence tiers record the checker's absence honestly.
 #[derive(Debug)]
 pub(crate) enum PythonCollectError {
     /// Ruff rejected the caller's selected Python grammar or source bytes.
@@ -52,18 +59,70 @@ pub(crate) enum PythonCollectError {
 }
 
 /// Streams the complete Python semantic plane into the canonical lane.
+///
+/// Ruff owns spans, declarations, and written annotations. pyrefly runs as
+/// the peer type authority: its typed report fills unannotated constants and
+/// parameters, upgrades resolved call sites to `Import`/`Oracle` evidence,
+/// and lifts dynamic-confidence tiers. When the checker is unavailable or
+/// fails, the lane degrades to its proven syntax tiers — it never invents a
+/// dynamic fact the checker did not supply.
 pub(crate) fn collect<'source>(
     profile: PythonVersion,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), PythonCollectError> {
     let module = extract(source, profile).map_err(PythonCollectError::Authority)?;
-    let mut emitter = Emitter::new(source, &module, facts);
+    let checker = match checked_report(profile, source, &module) {
+        Ok(report) => report,
+        // A missing or failing authority is honest absence, not a lane fault.
+        Err(_) => None,
+    };
+    collect_with_checker(&module, source, facts, checker.as_ref())
+}
+
+/// Streams the syntax-proven plane only, with no type-authority transaction.
+///
+/// Test and deterministic paths pin this entry point so laws hold identically
+/// on machines with and without pyrefly provisioned.
+pub(crate) fn collect_syntax_only<'source>(
+    profile: PythonVersion,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+) -> Result<(), PythonCollectError> {
+    let module = extract(source, profile).map_err(PythonCollectError::Authority)?;
+    collect_with_checker(&module, source, facts, None)
+}
+
+/// Streams the plane with a caller-supplied type-authority report.
+pub(crate) fn collect_with_checker<'a, 'source>(
+    module: &'a ModuleFacts,
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+    checker: Option<&'a CheckerReport>,
+) -> Result<(), PythonCollectError> {
+    let mut emitter = Emitter::new(source, module, facts, checker);
     emitter.emit_classes()?;
     emitter.emit_non_class_declarations()?;
     emitter.emit_occurrences()?;
     emitter.emit_docs()?;
     Ok(())
+}
+
+/// Runs the pyrefly authority transaction, preserving its typed terminal.
+///
+/// `Ok(None)` is the honest unavailable answer: the adapter does not resolve
+/// on this system. `Err` carries the exact [`compiler_languages_python::CheckerError`]
+/// with every operand intact for callers that must observe the failure.
+pub(crate) fn checked_report(
+    profile: PythonVersion,
+    source: &[u8],
+    module: &ModuleFacts,
+) -> Result<Option<CheckerReport>, compiler_languages_python::CheckerError> {
+    let adapter = Pyrefly::from_env();
+    if !adapter.is_available() {
+        return Ok(None);
+    }
+    adapter.analyze(source, profile, module).map(Some)
 }
 
 /// One pushed declaration row with the coordinates every later phase needs.
@@ -86,6 +145,8 @@ struct Emitter<'a, 'source> {
     ordinals: Vec<Option<u32>>,
     /// Pushed declaration rows in lane order, built while emitting.
     pushed: Vec<Pushed<'source>>,
+    /// The pyrefly authority report, when the checker answered.
+    checker: Option<&'a CheckerReport>,
 }
 
 /// The interned name tables annotation lowering resolves against.
@@ -114,6 +175,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         source: &'source [u8],
         module: &'a ModuleFacts,
         facts: &'a mut FactSet<'source>,
+        checker: Option<&'a CheckerReport>,
     ) -> Self {
         let ordinals = vec![None; module.declarations.len()];
         Self {
@@ -122,6 +184,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             facts,
             ordinals,
             pushed: Vec::new(),
+            checker,
         }
     }
 
@@ -170,7 +233,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 nominal: Some(NominalRef::Local(EntityId::new(own_ordinal))),
                 children: ListSpan::new(0, 0),
             };
-            let extension = self.python_extension(&declaration.decorator_spans, None, false)?;
+            let extension = self.python_extension(
+                &declaration.decorator_spans,
+                None,
+                Confidence::Syntactic,
+            )?;
             let fact = SemanticFact::new(
                 EntityKind::Record,
                 name,
@@ -243,15 +310,47 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let name = self.slice(declaration.name_span)?;
         let mut parameter_ordinals = Vec::new();
         let mut any_resolved = false;
+        let mut any_checked = false;
         for parameter in &declaration.parameters {
-            let lowered =
-                self.lower_annotation(&parameter.annotation, parameter.annotation_span, tables)?;
-            any_resolved = any_resolved || lowered.resolved;
+            let unannotated = matches!(
+                parameter.annotation,
+                Annotation::Unknown(ExtractedReason::Unannotated { .. })
+            );
+            let (lowered_record, children, tier) =
+                match self.checker_inference(parameter.name_span, unannotated) {
+                    Some(inferred) => match self.inferred_root(inferred, tables)? {
+                        Some((record, children)) => (record, children, Confidence::Compiler),
+                        // The checker answered; the lane cannot host the
+                        // inferred shape. The honest gap names the oracle.
+                        None => (
+                            unknown_record(TypeReason::OracleGap),
+                            Vec::new(),
+                            Confidence::Compiler,
+                        ),
+                    },
+                    None => {
+                        let lowered = self.lower_annotation(
+                            &parameter.annotation,
+                            parameter.annotation_span,
+                            tables,
+                        )?;
+                        (
+                            lowered.record,
+                            lowered.children,
+                            lowered_tier(lowered.resolved),
+                        )
+                    }
+                };
+            any_resolved = any_resolved || tier == Confidence::Indexed;
+            any_checked = any_checked || tier == Confidence::Compiler;
             let parameter_name = self.slice(parameter.name_span)?;
-            let extension = self.python_extension(&[], Some(parameter.kind), lowered.resolved)?;
-            let fact = SemanticFact::new(EntityKind::Parameter, parameter_name, LEAF_PRODUCT)
-                .typed(lowered.record)
-                .with_extension(EmissionExtension::Python(extension));
+            let extension = self.python_extension(&[], Some(parameter.kind), tier)?;
+            let mut fact = SemanticFact::new(EntityKind::Parameter, parameter_name, LEAF_PRODUCT)
+                .typed(lowered_record);
+            for ordinal in children {
+                fact = fact.type_child(ordinal, None, 0);
+            }
+            let fact = fact.with_extension(EmissionExtension::Python(extension));
             let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
             parameter_ordinals.push(Self::coordinate(parameter.name_span, ordinal)?);
         }
@@ -262,7 +361,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let lowered =
                 self.lower_annotation(&annotation.annotation, Some(annotation.span), tables)?;
             return_resolved = lowered.resolved;
-            let extension = self.python_extension(&[], None, lowered.resolved)?;
+            let extension = self.python_extension(&[], None, lowered_tier(lowered.resolved))?;
             // The result slot belongs to the function's key family: it is a
             // `Parameter` fact named by the function, carrying the return
             // annotation's record.
@@ -307,7 +406,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let extension = self.python_extension(
             &declaration.decorator_spans,
             None,
-            any_resolved || return_resolved,
+            combined_tier(any_checked, any_resolved || return_resolved),
         )?;
         let fact = fact
             .typed(record)
@@ -318,7 +417,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Lowers one annotated or unannotated variable (class field or module
-    /// constant). An unwritten annotation stays exactly `Unknown(Unannotated)`.
+    /// constant). An unwritten annotation is filled from the type authority
+    /// when pyrefly inferred a usable type; when it inferred nothing, the
+    /// position stays exactly `Unknown(Unannotated)`.
     fn emit_variable(
         &mut self,
         index: usize,
@@ -330,15 +431,29 @@ impl<'a, 'source> Emitter<'a, 'source> {
             DeclarationKind::Field => EntityKind::Field,
             _ => EntityKind::Static,
         };
-        let (lowered_record, children, resolved) = match self.field_annotation(declaration) {
+        let (lowered_record, children, tier) = match self.field_annotation(declaration) {
             Some(annotation) => {
                 let lowered =
                     self.lower_annotation(&annotation.annotation, Some(annotation.span), tables)?;
-                (lowered.record, lowered.children, lowered.resolved)
+                (lowered.record, lowered.children, lowered_tier(lowered.resolved))
             }
-            None => (unknown_record(TypeReason::Unannotated), Vec::new(), false),
+            None => match self.checker_inference(declaration.name_span, true) {
+                Some(inferred) => match self.inferred_root(inferred, tables)? {
+                    Some((record, children)) => (record, children, Confidence::Compiler),
+                    None => (
+                        unknown_record(TypeReason::OracleGap),
+                        Vec::new(),
+                        Confidence::Compiler,
+                    ),
+                },
+                None => (
+                    unknown_record(TypeReason::Unannotated),
+                    Vec::new(),
+                    Confidence::Syntactic,
+                ),
+            },
         };
-        let extension = self.python_extension(&[], None, resolved)?;
+        let extension = self.python_extension(&[], None, tier)?;
         let mut fact = SemanticFact::new(kind, name, LEAF_PRODUCT).typed(lowered_record);
         for ordinal in children {
             fact = fact.type_child(ordinal, None, 0);
@@ -349,11 +464,23 @@ impl<'a, 'source> Emitter<'a, 'source> {
         Ok(())
     }
 
+    /// The type authority's inference at one exact site, when the position
+    /// is unannotated and the checker proved something usable. `Any` means
+    /// the checker proved nothing, so the answer is `None`.
+    fn checker_inference(&self, site: Span, unannotated: bool) -> Option<&'a InferredType> {
+        if !unannotated {
+            return None;
+        }
+        self.checker
+            .and_then(|report| report.inference_at(site))
+            .filter(|inferred| **inferred != InferredType::Any)
+    }
+
     /// Lowers one import binding. Its declared type is honestly unwritten.
     fn emit_alias(&mut self, index: usize) -> Result<(), PythonCollectError> {
         let declaration = &self.module.declarations[index];
         let name = self.slice(declaration.name_span)?;
-        let extension = self.python_extension(&[], None, false)?;
+        let extension = self.python_extension(&[], None, Confidence::Syntactic)?;
         let fact = SemanticFact::new(EntityKind::Alias, name, LEAF_PRODUCT)
             .typed(unknown_record(TypeReason::Unannotated))
             .with_extension(EmissionExtension::Python(extension));
@@ -410,7 +537,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         &mut self,
         decorators: &[Span],
         parameter_kind: Option<ParameterKind>,
-        resolved: bool,
+        tier: Confidence,
     ) -> Result<PythonFacts, PythonCollectError> {
         let mut atoms = Vec::new();
         for span in decorators {
@@ -425,7 +552,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 PythonParameterKind::PositionalOrKeyword,
                 parameter_convention,
             ),
-            dynamic_confidence: dynamic_confidence(resolved),
+            dynamic_confidence: tier,
         })
     }
 
@@ -446,13 +573,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// The mapping is the frozen census table: leaf built-ins become
     /// primitive rows, `Any` becomes the honest dynamic reason, module
     /// classes become backward nominal rows, `TypeVar` uses keep their name,
-    /// unions of module classes become union rows over those class rows, and
-    /// every other compound stays `Unknown(NoIrRepresentation)` with its
-    /// exact written spelling, because the lane's type children are strictly
-    /// backward declaration rows and no honest declaration row carries a
-    /// bare container type like `list`.
+    /// and unions become union rows over their member rows. Compound
+    /// applications (`list[int]`, `dict[str, int]`, tuples, `Callable`,
+    /// `Optional`, generic classes) express through the anonymous type-row
+    /// pool the lane now hosts; only a construct the pool cannot host — or a
+    /// pool overflow — keeps `Unknown(NoIrRepresentation)` with its exact
+    /// written spelling, so the backlog stays countable.
     fn lower_annotation(
-        &self,
+        &mut self,
         annotation: &Annotation,
         spelling: Option<Span>,
         tables: &TypeTables<'source>,
@@ -475,6 +603,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 })
             }
             Annotation::Literal(_) => self.unrepresentable(spelling),
+            Annotation::List(_) => {
+                // A bare display outside a `Callable` parameter list has no
+                // lane slot; it keeps its written spelling as unrepresentable.
+                self.unrepresentable(spelling)
+            }
             Annotation::Unknown(unknown) => Ok(match unknown {
                 ExtractedReason::Unannotated { .. } => LoweredType {
                     record: unknown_record(TypeReason::Unannotated),
@@ -498,9 +631,248 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 if is_union_base {
                     return self.lower_union(args, spelling, tables);
                 }
-                self.unrepresentable(spelling)
+                match self.compound_root(annotation, spelling, tables)? {
+                    Some((record, children)) => Ok(LoweredType {
+                        record,
+                        children,
+                        resolved: true,
+                    }),
+                    None => self.unrepresentable(spelling),
+                }
             }
         }
+    }
+
+    /// Lowers one written compound application to its root record and the
+    /// ordered row coordinates of its children. The root record sits
+    /// directly on the owning fact; only nested compounds consume pooled
+    /// anonymous rows.
+    fn compound_root(
+        &mut self,
+        annotation: &Annotation,
+        spelling: Option<Span>,
+        tables: &TypeTables<'source>,
+    ) -> Result<Option<(SemanticTypeRecord<'source>, Vec<u32>)>, PythonCollectError> {
+        let Some(anchor) = self.anchor() else {
+            return Ok(None);
+        };
+        let Annotation::Generic { base, args } = annotation else {
+            return Ok(None);
+        };
+        let base_name = match base.as_ref() {
+            Annotation::Name(name) => Some(name.as_str()),
+            _ => None,
+        };
+        let is_class_base = base_name.is_some_and(|name| {
+            tables
+                .classes
+                .iter()
+                .any(|(known, _)| *known == name.as_bytes())
+        });
+        match base_name {
+            Some("tuple") | Some("typing.Tuple") => {
+                let children = self.row_children(args, tables, anchor)?;
+                let Some(children) = children else {
+                    return Ok(None);
+                };
+                Ok(Some((tuple_record(), children)))
+            }
+            Some("Callable") | Some("typing.Callable") => {
+                let Some(Annotation::List(parameters)) = args.first() else {
+                    return Ok(None);
+                };
+                let mut children = Vec::new();
+                for parameter in parameters {
+                    match self.type_row(parameter, spelling, tables, anchor)? {
+                        Some(row) => children.push(row),
+                        None => return Ok(None),
+                    }
+                }
+                let result_row = match args.get(1) {
+                    Some(result) => match self.type_row(result, spelling, tables, anchor)? {
+                        Some(row) => Some(row),
+                        None => return Ok(None),
+                    },
+                    None => None,
+                };
+                let mut payload1 = 0;
+                if let Some(result) = result_row {
+                    children.push(result);
+                    payload1 = SemanticTypeRecord::RESULT_FLAG;
+                }
+                Ok(Some((function_pointer_record(payload1), children)))
+            }
+            Some("Optional") | Some("typing.Optional") => {
+                let mut members = args.clone();
+                members.push(Annotation::None);
+                let children = self.row_children(&members, tables, anchor)?;
+                Ok(children.map(|children| (union_record(), children)))
+            }
+            Some("list") | Some("set") | Some("frozenset") | Some("dict")
+            | Some("typing.List") | Some("typing.Set") | Some("typing.FrozenSet")
+            | Some("typing.Dict") => {
+                let base_record = match base_name {
+                    Some("list") | Some("typing.List") => builtin_record(b"list"),
+                    Some("set") | Some("typing.Set") => builtin_record(b"set"),
+                    Some("frozenset") | Some("typing.FrozenSet") => builtin_record(b"frozenset"),
+                    _ => builtin_record(b"dict"),
+                };
+                let argument_rows = self.row_children(args, tables, anchor)?;
+                let Some(argument_rows) = argument_rows else {
+                    return Ok(None);
+                };
+                let Some(base_row) = self.leaf_row(base_record, anchor)? else {
+                    return Ok(None);
+                };
+                let mut children = vec![base_row];
+                children.extend(argument_rows);
+                Ok(Some((apply_record(), children)))
+            }
+            _ if is_class_base => {
+                let Some((_, base_ordinal)) = base_name.and_then(|name| {
+                    tables
+                        .classes
+                        .iter()
+                        .find(|(known, _)| *known == name.as_bytes())
+                        .copied()
+                }) else {
+                    return Ok(None);
+                };
+                let argument_rows = self.row_children(args, tables, anchor)?;
+                let Some(argument_rows) = argument_rows else {
+                    return Ok(None);
+                };
+                let mut children = vec![base_ordinal];
+                children.extend(argument_rows);
+                Ok(Some((apply_record(), children)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Lowers every member of one written union to its row coordinate.
+    fn row_children(
+        &mut self,
+        members: &[Annotation],
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<Vec<u32>>, PythonCollectError> {
+        if members.len() > MAX_TYPE_CHILDREN {
+            return Ok(None);
+        }
+        let mut rows = Vec::with_capacity(members.len());
+        for member in members {
+            match self.type_row(member, None, tables, anchor)? {
+                Some(row) => rows.push(row),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(rows))
+    }
+
+    /// Lowers one annotation to a pooled row coordinate: a module class is
+    /// its already-pushed fact ordinal, every leaf or nested compound is an
+    /// interned anonymous row, and an inexpressible member stays `None`.
+    fn type_row(
+        &mut self,
+        annotation: &Annotation,
+        spelling: Option<Span>,
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        match annotation {
+            Annotation::Name(name) => {
+                if let Some((_, ordinal)) = tables
+                    .classes
+                    .iter()
+                    .find(|(known, _)| *known == name.as_bytes())
+                {
+                    return Ok(Some(*ordinal));
+                }
+                if tables.typevars.contains(&name.as_bytes()) {
+                    let text = self.spelling_bytes(spelling)?;
+                    let record = if text.is_empty() {
+                        unknown_record(TypeReason::OracleGap)
+                    } else {
+                        typevar_record(text)
+                    };
+                    return self.leaf_row(record, anchor);
+                }
+                match name.as_str() {
+                    "int" => self.leaf_row(integer_arch_signed_record(), anchor),
+                    "float" => self.leaf_row(float64_record(), anchor),
+                    "str" => self.leaf_row(primitive_record(PrimitiveShape::Str, 0), anchor),
+                    "bool" => self.leaf_row(primitive_record(PrimitiveShape::Bool, 0), anchor),
+                    "bytes" => self.leaf_row(builtin_record(b"bytes"), anchor),
+                    "None" => self.leaf_row(none_record(), anchor),
+                    _ => Ok(None),
+                }
+            }
+            Annotation::None => self.leaf_row(none_record(), anchor),
+            Annotation::List(_) => Ok(None),
+            Annotation::Union(members) => {
+                let children = self.row_children(members, tables, anchor)?;
+                match children {
+                    Some(children) => self.parent_row(union_record(), &children, anchor),
+                    None => Ok(None),
+                }
+            }
+            Annotation::Generic { .. } => match self.compound_root(annotation, spelling, tables)? {
+                Some((record, children)) => {
+                    self.parent_row(record, &children, anchor)
+                }
+                None => Ok(None),
+            },
+            Annotation::Literal(_)
+            | Annotation::StringLiteral(_)
+            | Annotation::Unknown(_) => Ok(None),
+        }
+    }
+
+    /// Appends already-lowered children and interns one parent row.
+    fn parent_row(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        children: &[u32],
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        for child in children {
+            let admitted = self
+                .facts
+                .anonymous_type_child(*child, None, 0)
+                .is_ok();
+            if !admitted {
+                return Ok(None);
+            }
+        }
+        self.intern_row(record, anchor)
+    }
+
+    /// Interns one anonymous leaf row with no children.
+    fn leaf_row(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        self.intern_row(record, anchor)
+    }
+
+    /// Interns one anonymous row owned by the fact about to be pushed.
+    /// A pooled-lane overflow falls back to `None`, never a lane rejection.
+    fn intern_row(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        Ok(self.facts.intern_anonymous_type_row(anchor, record).ok())
+    }
+
+    /// The anchor fact for this declaration's anonymous type rows: the first
+    /// already-pushed declaration, per the established lane convention that
+    /// the pooled row lane only admits already-pushed owners. `None` means
+    /// nothing is pushed yet, so no compound can be hosted for this fact.
+    fn anchor(&self) -> Option<u32> {
+        self.pushed.first().map(|row| row.ordinal)
     }
 
     /// The honest cell for a known compound the lane cannot host: the
@@ -605,36 +977,27 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
-    /// Lowers a union: expressible exactly when every member is a module
-    /// class row, because union children are strictly backward declaration
-    /// rows. Any other member keeps the exact spelling as unrepresentable.
+    /// Lowers a union: expressible exactly when every member lowers to a
+    /// row coordinate (module class rows, leaf rows, or nested compound
+    /// rows), because union children are strictly backward row coordinates.
+    /// Any other member keeps the exact spelling as unrepresentable.
     fn lower_union(
-        &self,
+        &mut self,
         members: &[Annotation],
         spelling: Option<Span>,
         tables: &TypeTables<'source>,
     ) -> Result<LoweredType<'source>, PythonCollectError> {
-        let mut ordinals = Vec::new();
-        for member in members {
-            let lowered = self.lower_annotation(member, spelling, tables)?;
-            match lowered.record.nominal {
-                Some(NominalRef::Local(target)) => ordinals.push(target.raw),
-                _ => return self.unrepresentable(spelling),
-            }
+        let Some(anchor) = self.anchor() else {
+            return self.unrepresentable(spelling);
+        };
+        match self.row_children(members, tables, anchor)? {
+            Some(children) => Ok(LoweredType {
+                record: union_record(),
+                children,
+                resolved: true,
+            }),
+            None => self.unrepresentable(spelling),
         }
-        Ok(LoweredType {
-            record: SemanticTypeRecord {
-                tag: SemanticTypeTag::Union,
-                payload0: 0,
-                payload1: 0,
-                text: None,
-                text2: None,
-                nominal: None,
-                children: ListSpan::new(0, 0),
-            },
-            children: ordinals,
-            resolved: true,
-        })
     }
 
     /// The exact written annotation bytes, or the empty cell when the
@@ -649,6 +1012,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Streams every extractor occurrence row into the lane: the owner is
     /// the innermost already-pushed declaration whose span precedes the
     /// reference, and the target resolves through the module's own names.
+    /// The type authority upgrades the evidence tier: a call site the oracle
+    /// bound to a resolved import becomes `Import`, and a call site the
+    /// oracle bound to a local declaration becomes `Oracle`. Every
+    /// unresolved site keeps its index-tier fact unchanged.
     fn emit_occurrences(&mut self) -> Result<(), PythonCollectError> {
         let rows = self.pushed.clone();
         for occurrence in &self.module.occurrences {
@@ -658,13 +1025,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 // have no honest owner row and are not synthesized one.
                 continue;
             };
-            let Some(target) = self.occurrence_target(&rows, occurrence)? else {
+            let Some((target, confidence)) = self.occurrence_target(&rows, occurrence)? else {
                 continue;
             };
             let lane_occurrence = Occurrence {
                 target,
                 kind: reference_kind(occurrence.kind),
-                confidence: occurrence_confidence(occurrence.confidence),
+                confidence,
                 span: owner_relative_span(owner, occurrence),
             };
             self.facts
@@ -674,14 +1041,20 @@ impl<'a, 'source> Emitter<'a, 'source> {
         Ok(())
     }
 
-    /// Resolves one occurrence target: the earliest pushed row with the
-    /// same name. Import bindings become foreign `pypi` package keys, since
-    /// the referenced declaration lives outside this fragment.
+    /// Resolves one occurrence target with its evidence tier: the earliest
+    /// pushed row with the same name. Import bindings become foreign `pypi`
+    /// package keys, since the referenced declaration lives outside this
+    /// fragment; the checker's resolution decides the tier.
     fn occurrence_target(
         &self,
         rows: &[Pushed<'source>],
         occurrence: &OccurrenceFact,
-    ) -> Result<Option<OccurrenceTarget<'source>>, PythonCollectError> {
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError>
+    {
+        let checked = self
+            .checker
+            .and_then(|report| report.symbol_at(occurrence.span))
+            .map(|symbol| &symbol.outcome);
         let matched = rows
             .iter()
             .find(|row| row.name == occurrence.target.as_bytes());
@@ -689,14 +1062,202 @@ impl<'a, 'source> Emitter<'a, 'source> {
             // The extractor only records targets matched against module
             // names; an unmatched row still carries its written spelling.
             let written = self.slice(occurrence.span)?;
-            return Ok(Some(foreign_universe(written)?));
+            return Ok(Some((foreign_universe(written)?, OccurrenceConfidence::Index)));
         };
         if let Some(imported) = row.imported {
             let module_spelling = self.slice(imported)?;
             let binding = core::str::from_utf8(row.name).unwrap_or("");
-            return Ok(Some(foreign_package(module_spelling, binding)?));
+            let target = foreign_package(module_spelling, binding)?;
+            let confidence = match checked {
+                Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                _ => OccurrenceConfidence::Index,
+            };
+            return Ok(Some((target, confidence)));
         }
-        Ok(Some(OccurrenceTarget::Local(EntityId::new(row.ordinal))))
+        let confidence = match checked {
+            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+            _ => OccurrenceConfidence::Index,
+        };
+        Ok(Some((
+            OccurrenceTarget::Local(EntityId::new(row.ordinal)),
+            confidence,
+        )))
+    }
+
+    /// Lowers one checker-inferred type to its root record and the ordered
+    /// row coordinates of its children. The root record sits directly on
+    /// the owning fact; nested compounds consume pooled anonymous rows.
+    /// A `Named` spelling that resolves to a module class becomes that
+    /// class's nominal row; any other named spelling has no borrowed bytes
+    /// to own, so the honest gap names the oracle.
+    fn inferred_root(
+        &mut self,
+        inferred: &InferredType,
+        tables: &TypeTables<'source>,
+    ) -> Result<Option<(SemanticTypeRecord<'source>, Vec<u32>)>, PythonCollectError> {
+        let Some(anchor) = self.anchor() else {
+            return Ok(None);
+        };
+        match inferred {
+            InferredType::Integer => Ok(Some((integer_arch_signed_record(), Vec::new()))),
+            InferredType::Float => Ok(Some((float64_record(), Vec::new()))),
+            InferredType::Boolean => Ok(Some((primitive_record(PrimitiveShape::Bool, 0), Vec::new()))),
+            InferredType::Str => Ok(Some((primitive_record(PrimitiveShape::Str, 0), Vec::new()))),
+            InferredType::Bytes => Ok(Some((builtin_record(b"bytes"), Vec::new()))),
+            InferredType::Complex => Ok(Some((builtin_record(b"complex"), Vec::new()))),
+            InferredType::NoneType => Ok(Some((none_record(), Vec::new()))),
+            InferredType::List(element) => {
+                let (base, element) = (
+                    builtin_record(b"list"),
+                    element.as_deref(),
+                );
+                self.inferred_apply(base, element, tables, anchor)
+            }
+            InferredType::Set(element) => {
+                let (base, element) = (builtin_record(b"set"), element.as_deref());
+                self.inferred_apply(base, element, tables, anchor)
+            }
+            InferredType::Dict(pair) => {
+                let mut children = Vec::new();
+                let Some(base_row) = self.leaf_row(builtin_record(b"dict"), anchor)? else {
+                    return Ok(None);
+                };
+                children.push(base_row);
+                if let Some((key, value)) = pair.as_ref() {
+                    for member in [key.as_ref(), value.as_ref()] {
+                        match self.inferred_row(member, tables, anchor)? {
+                            Some(row) => children.push(row),
+                            None => return Ok(None),
+                        }
+                    }
+                }
+                Ok(Some((apply_record(), children)))
+            }
+            InferredType::Tuple(elements) => {
+                let mut children = Vec::new();
+                for element in elements.as_ref() {
+                    match self.inferred_row(element, tables, anchor)? {
+                        Some(row) => children.push(row),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some((tuple_record(), children)))
+            }
+            InferredType::Union(members) => {
+                let mut children = Vec::new();
+                for member in members.as_ref() {
+                    match self.inferred_row(member, tables, anchor)? {
+                        Some(row) => children.push(row),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some((union_record(), children)))
+            }
+            InferredType::Callable { params, result } => {
+                let mut children = Vec::new();
+                for parameter in params.as_ref() {
+                    match self.inferred_row(parameter, tables, anchor)? {
+                        Some(row) => children.push(row),
+                        None => return Ok(None),
+                    }
+                }
+                let mut payload1 = 0;
+                if let Some(result) = result.as_deref() {
+                    match self.inferred_row(result, tables, anchor)? {
+                        Some(row) => children.push(row),
+                        None => return Ok(None),
+                    }
+                    payload1 = SemanticTypeRecord::RESULT_FLAG;
+                }
+                Ok(Some((function_pointer_record(payload1), children)))
+            }
+            InferredType::Named(spelling) => {
+                match tables
+                    .classes
+                    .iter()
+                    .find(|(known, _)| *known == spelling.as_bytes())
+                {
+                    // The inferred class is a module declaration: its row is
+                    // the legal nominal target.
+                    Some((_, ordinal)) => Ok(Some((
+                        SemanticTypeRecord {
+                            tag: SemanticTypeTag::Nominal,
+                            payload0: 0,
+                            payload1: 0,
+                            text: None,
+                            text2: None,
+                            nominal: Some(NominalRef::Local(EntityId::new(*ordinal))),
+                            children: ListSpan::new(0, 0),
+                        },
+                        Vec::new(),
+                    ))),
+                    None => Ok(None),
+                }
+            }
+            InferredType::Any => Ok(None),
+        }
+    }
+
+    /// One inferred container application over its optional element type.
+    fn inferred_apply(
+        &mut self,
+        base: SemanticTypeRecord<'static>,
+        element: Option<&InferredType>,
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<(SemanticTypeRecord<'source>, Vec<u32>)>, PythonCollectError> {
+        let Some(base_row) = self.leaf_row(base, anchor)? else {
+            return Ok(None);
+        };
+        let mut children = vec![base_row];
+        if let Some(element) = element {
+            match self.inferred_row(element, tables, anchor)? {
+                Some(row) => children.push(row),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some((apply_record(), children)))
+    }
+
+    /// Lowers one inferred type to a pooled row coordinate: a module class
+    /// is its fact ordinal, every leaf or nested compound is an interned
+    /// anonymous row, and an unhostable member stays `None`.
+    fn inferred_row(
+        &mut self,
+        inferred: &InferredType,
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        match inferred {
+            InferredType::Integer => self.leaf_row(integer_arch_signed_record(), anchor),
+            InferredType::Float => self.leaf_row(float64_record(), anchor),
+            InferredType::Boolean => self.leaf_row(primitive_record(PrimitiveShape::Bool, 0), anchor),
+            InferredType::Str => self.leaf_row(primitive_record(PrimitiveShape::Str, 0), anchor),
+            InferredType::Bytes => self.leaf_row(builtin_record(b"bytes"), anchor),
+            InferredType::Complex => self.leaf_row(builtin_record(b"complex"), anchor),
+            InferredType::NoneType => self.leaf_row(none_record(), anchor),
+            InferredType::Named(spelling) => match tables
+                .classes
+                .iter()
+                .find(|(known, _)| *known == spelling.as_bytes())
+            {
+                Some((_, ordinal)) => Ok(Some(*ordinal)),
+                None => Ok(None),
+            },
+            InferredType::List(_) | InferredType::Set(_) | InferredType::Dict(_) => {
+                match self.inferred_root(inferred, tables)? {
+                    Some((record, children)) => self.parent_row(record, &children, anchor),
+                    None => Ok(None),
+                }
+            }
+            InferredType::Tuple(_)
+            | InferredType::Union(_)
+            | InferredType::Callable { .. } => match self.inferred_root(inferred, tables)? {
+                Some((record, children)) => self.parent_row(record, &children, anchor),
+                None => Ok(None),
+            },
+            InferredType::Any => Ok(None),
+        }
     }
 
     /// Streams every declaration docstring as borrowed doc fragments.
@@ -757,18 +1318,6 @@ fn reference_kind(kind: compiler_languages_python::OccurrenceKind) -> ReferenceK
     }
 }
 
-/// The total, name-preserving confidence mapping. The extractor resolves
-/// names against its own module index, which is exactly the lane's `Index`
-/// tier ("module-scope sibling"); the enums align tier for tier, so no
-/// evidence tier is ever upgraded or collapsed.
-fn occurrence_confidence(
-    confidence: compiler_languages_python::Confidence,
-) -> OccurrenceConfidence {
-    match confidence {
-        compiler_languages_python::Confidence::Index => OccurrenceConfidence::Index,
-    }
-}
-
 /// The total, name-preserving parameter-convention mapping. The extractor's
 /// closed parameter lattice and the lane's Python convention lattice share
 /// every category, so no two conventions collapse and none is unreachable.
@@ -782,14 +1331,24 @@ const fn parameter_convention(kind: ParameterKind) -> PythonParameterKind {
     }
 }
 
-/// The declaration's dynamic-confidence tier: a proven annotation state is
-/// the extractor's index tier (`Indexed`); pure surface syntax stays
-/// `Syntactic`. The mapping is total over both reachable states.
-const fn dynamic_confidence(resolved: bool) -> Confidence {
+/// The declaration's dynamic-confidence tier for a Ruff-proven type state: a
+/// resolved annotation is the lane's index tier; pure surface syntax stays
+/// `Syntactic`. Checker-supplied facts use `Compiler` directly.
+const fn lowered_tier(resolved: bool) -> Confidence {
     if resolved {
         Confidence::Indexed
     } else {
         Confidence::Syntactic
+    }
+}
+
+/// The strongest tier of one declaration's parts: a checker-supplied part
+/// dominates, then syntax-proven resolution, then pure surface syntax.
+const fn combined_tier(any_checked: bool, any_resolved: bool) -> Confidence {
+    if any_checked {
+        Confidence::Compiler
+    } else {
+        lowered_tier(any_resolved)
     }
 }
 
@@ -850,6 +1409,72 @@ fn builtin_record(name: &'static [u8]) -> SemanticTypeRecord<'static> {
 /// The `None` builtin row.
 fn none_record() -> SemanticTypeRecord<'static> {
     builtin_record(b"None")
+}
+
+/// One tuple row over its ordered element coordinates.
+fn tuple_record() -> SemanticTypeRecord<'static> {
+    SemanticTypeRecord {
+        tag: SemanticTypeTag::Tuple,
+        payload0: 0,
+        payload1: 0,
+        text: None,
+        text2: None,
+        nominal: None,
+        children: ListSpan::new(0, 0),
+    }
+}
+
+/// One union row over its ordered member coordinates.
+const fn union_record() -> SemanticTypeRecord<'static> {
+    SemanticTypeRecord {
+        tag: SemanticTypeTag::Union,
+        payload0: 0,
+        payload1: 0,
+        text: None,
+        text2: None,
+        nominal: None,
+        children: ListSpan::new(0, 0),
+    }
+}
+
+/// One generic-application row over its base and argument coordinates.
+const fn apply_record() -> SemanticTypeRecord<'static> {
+    SemanticTypeRecord {
+        tag: SemanticTypeTag::Apply,
+        payload0: 0,
+        payload1: 0,
+        text: None,
+        text2: None,
+        nominal: None,
+        children: ListSpan::new(0, 0),
+    }
+}
+
+/// One callable row: parameters then the optional result child, with the
+/// result-presence flag packed into the reserved payload cell.
+const fn function_pointer_record(payload1: u32) -> SemanticTypeRecord<'static> {
+    SemanticTypeRecord {
+        tag: SemanticTypeTag::FunctionPointer,
+        payload0: 0,
+        payload1,
+        text: None,
+        text2: None,
+        nominal: None,
+        children: ListSpan::new(0, 0),
+    }
+}
+
+/// One type-variable use row whose text cell owns the written spelling.
+fn typevar_record<'source>(text: &'source [u8]) -> SemanticTypeRecord<'source> {
+    SemanticTypeRecord {
+        tag: SemanticTypeTag::TypeVar,
+        payload0: 0,
+        payload1: 0,
+        text: Some(text),
+        text2: None,
+        nominal: None,
+        children: ListSpan::new(0, 0),
+    }
 }
 
 /// One honest unknown row whose reason carries no spelling.
@@ -1136,7 +1761,11 @@ mod tests {
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
-    use super::{FactSet, PythonCollectError, collect};
+    use super::{
+        FactSet, PythonCollectError, collect_syntax_only, collect_with_checker,
+    };
+
+    use compiler_languages_python::{CheckerReport, Pyrefly};
 
     const SOURCE_BYTES: &[u8] = b"python-semantic-lane-source";
     const OUTPUT_CAPACITY: usize = 65_536;
@@ -1147,6 +1776,8 @@ mod tests {
         Source(#[from] core::num::TryFromIntError),
         #[error("the python authority rejected the valid fixture: {0:?}")]
         Collect(PythonCollectError),
+        #[error("the extraction authority rejected the valid fixture: {0:?}")]
+        CollectAuth(compiler_languages_python::ExtractionError),
         #[error("{label} faulted: {fault:?}")]
         Admission {
             label: &'static str,
@@ -1164,6 +1795,8 @@ mod tests {
         Extension { ordinal: usize },
         #[error("expected the fixture to be rejected")]
         ExpectedRejection,
+        #[error("the pyrefly authority failed: {0:?}")]
+        Checker(compiler_languages_python::CheckerError),
     }
 
     fn identity() -> Result<SourceIdentity, TestError> {
@@ -1185,10 +1818,26 @@ mod tests {
     }
 
     /// Collects one fixture into the lane and writes its validated fragment,
-    /// proving the untouched output tail stayed unchanged.
+    /// proving the untouched output tail stayed unchanged. The syntax-only
+    /// entry point pins these laws deterministically, with or without a
+    /// provisioned pyrefly.
     fn write(source: &[u8]) -> Result<Vec<u8>, TestError> {
+        write_with(source, None)
+    }
+
+    /// Collects one fixture with a caller-supplied type-authority report.
+    fn write_with(
+        source: &[u8],
+        checker: Option<&CheckerReport>,
+    ) -> Result<Vec<u8>, TestError> {
         let mut facts = FactSet::new();
-        collect(PythonVersion::Python314, source, &mut facts).map_err(TestError::Collect)?;
+        collect_with_checker(
+            &super::extract(source, PythonVersion::Python314).map_err(TestError::CollectAuth)?,
+            source,
+            &mut facts,
+            checker,
+        )
+        .map_err(TestError::Collect)?;
         let mut output = vec![0xa5_u8; OUTPUT_CAPACITY];
         let length = {
             let written =
@@ -1758,6 +2407,12 @@ mod tests {
         Ok(())
     }
 
+
+    /// Extracts one live-test fixture under the canonical profile.
+    fn fixture(source: &[u8]) -> Result<compiler_languages_python::ModuleFacts, TestError> {
+        super::extract(source, PythonVersion::Python314).map_err(TestError::CollectAuth)
+    }
+
     /// A source beyond the lane's 128-fact bound is the exact typed lowering
     /// rejection, never a truncated emission.
     #[test]
@@ -1767,7 +2422,7 @@ mod tests {
             source.push_str(&format!("value_{ordinal} = {ordinal}\n"));
         }
         let mut facts = FactSet::new();
-        match collect(PythonVersion::Python314, source.as_bytes(), &mut facts) {
+        match collect_syntax_only(PythonVersion::Python314, source.as_bytes(), &mut facts) {
             Err(PythonCollectError::Lowering(_)) => Ok(()),
             Err(other) => Err(TestError::Collect(other)),
             Ok(()) => Err(TestError::ExpectedRejection),
@@ -1791,7 +2446,7 @@ mod tests {
     #[test]
     fn ruff_class_declaration_flows_into_the_shared_fact_lane() -> Result<(), LegacyTestError> {
         let mut facts = FactSet::new();
-        collect(
+        collect_syntax_only(
             PythonVersion::Python313,
             b"class RuffAuthority:\n    pass\n",
             &mut facts,
@@ -1807,12 +2462,264 @@ mod tests {
     #[test]
     fn ruff_assignment_is_not_admitted_as_a_constant() -> Result<(), LegacyTestError> {
         let mut facts = FactSet::new();
-        collect(PythonVersion::Python313, b"value = 1\n", &mut facts)
+        collect_syntax_only(PythonVersion::Python313, b"value = 1\n", &mut facts)
             .map_err(LegacyTestError::Collect)?;
         if facts.kind_at(0) == Some(EntityKind::Static) {
             Ok(())
         } else {
             Err(LegacyTestError::Static)
         }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    enum LegacyErrorKind {
+        #[error("Ruff assignment binding did not retain mutable static semantics")]
+        Static,
+    }
+
+    /// `list[int]` lowers to an `Apply` row over the `list` builtin row and
+    /// the integer row, at the indexed confidence tier.
+    #[test]
+    fn list_annotation_lowers_apply_over_builtin_and_element_rows() -> Result<(), TestError> {
+        let source = b"value = 0\nitems: list[int] = 1\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        // Rows: the `list` builtin leaf, the integer leaf, the plain anchor
+        // fact, then the `items` fact.
+        if rows.len() != 4 || rows[3].record.tag != SemanticTypeTag::Apply {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![0, 1] {
+            return Err(TestError::Tail);
+        }
+        let extension = python_extension(&view, 1)?;
+        if extension.dynamic_confidence != compiler_ir::Confidence::Indexed {
+            return Err(TestError::Extension { ordinal: 0 });
+        }
+        Ok(())
+    }
+
+    /// `dict[str, int]` lowers to an `Apply` row over the `dict` builtin row
+    /// plus its key and value rows.
+    #[test]
+    fn dict_annotation_lowers_apply_over_key_and_value_rows() -> Result<(), TestError> {
+        let source = b"value = 0\nlookup: dict[str, int] = 1\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        if rows.len() != 5 || rows[4].record.tag != SemanticTypeTag::Apply {
+            return Err(TestError::Entity { ordinal: 4 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![2, 0, 1] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// `tuple[int, str]` lowers to a `Tuple` row over its element rows.
+    #[test]
+    fn tuple_annotation_lowers_tuple_row_over_element_rows() -> Result<(), TestError> {
+        let source = b"value = 0\npair: tuple[int, str] = 1\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        if rows.len() != 4 || rows[3].record.tag != SemanticTypeTag::Tuple {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![0, 1] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// `Callable[[int], str]` lowers to a `FunctionPointer` row over the
+    /// parameter row and the result row, with the result flag committed.
+    #[test]
+    fn callable_annotation_lowers_function_pointer_row() -> Result<(), TestError> {
+        let source = b"value = 0\nhandler: Callable[[int], str] = None\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        if rows.len() != 4 || rows[3].record.tag != SemanticTypeTag::FunctionPointer {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        if rows[3].record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![0, 1] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// `Optional[int]` lowers to a union row over the element row and the
+    /// `None` builtin row.
+    #[test]
+    fn optional_annotation_lowers_union_with_none() -> Result<(), TestError> {
+        let source = b"value = 0\nmaybe: Optional[int] = None\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        if rows.len() != 4 || rows[3].record.tag != SemanticTypeTag::Union {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![0, 1] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// A generic class application lowers to an `Apply` row whose base is
+    /// the class's backward fact row.
+    #[test]
+    fn generic_class_annotation_lowers_apply_over_nominal_row() -> Result<(), TestError> {
+        let source = b"class Box:\n    pass\n\nboxed: Box[int] = 1\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        // Rows: the integer leaf, the fact row of `boxed`, ... the class row
+        // is fact ordinal 0 and the anonymous pool starts at 128.
+        if rows[2].record.tag != SemanticTypeTag::Apply {
+            return Err(TestError::Entity { ordinal: 2 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        if last_type_children(payload, &rows)? != vec![0, 128] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// A nested compound (`dict[str, list[int]]`) expresses the inner list
+    /// as one pooled anonymous row and reuses it as the outer child.
+    #[test]
+    fn nested_compound_annotation_lowers_pooled_inner_row() -> Result<(), TestError> {
+        let source = b"value = 0\ndeep: dict[str, list[int]] = 1\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        if rows.len() != 6 || rows[5].record.tag != SemanticTypeTag::Apply {
+            return Err(TestError::Entity { ordinal: 5 });
+        }
+        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
+        // Children: the dict builtin, the str leaf, and the pooled inner
+        // `list[int]` application row.
+        if last_type_children(payload, &rows)? != vec![3, 0, 2] {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// The live pyrefly authority fills the inferred constant, upgrades the
+    /// local call to `Oracle` and the resolved import call to `Import`, and
+    /// leaves the checker-proved-nothing parameter exactly `Unannotated`.
+    #[test]
+    fn checker_report_fills_inference_and_upgrades_occurrences() -> Result<(), TestError> {
+        let source = b"from json import dumps\n\ncounter = 42\n\ndef scale(factor):\n    return factor * 2\n\nscale(counter)\ndumps(counter)\n";
+        let facts = fixture(source)?;
+        let adapter = Pyrefly::uvx();
+        if !adapter.is_available() {
+            return Ok(());
+        }
+        let report = match adapter.analyze(source, PythonVersion::Python314, &facts) {
+            Ok(report) => report,
+            Err(
+                compiler_languages_python::CheckerError::Spawn { .. }
+                | compiler_languages_python::CheckerError::OutputLimit { .. }
+                | compiler_languages_python::CheckerError::Exit { .. },
+            ) => return Ok(()),
+            Err(fault) => return Err(TestError::Checker(fault)),
+        };
+        let bytes = write_with(source, Some(&report))?;
+        let view = view_of(&bytes)?;
+
+        // Fact ordinals: dumps alias = 0, counter = 1, factor param = 2,
+        // scale = 3. No compound rows, so type row index equals the ordinal.
+        let rows = type_facts(&view)?;
+        let counter = &rows[1].record;
+        if counter.tag != SemanticTypeTag::Primitive
+            || counter.payload0 != u32::from(PrimitiveShape::Integer)
+        {
+            return Err(TestError::Entity { ordinal: 1 });
+        }
+        if python_extension(&view, 1)?.dynamic_confidence != compiler_ir::Confidence::Compiler {
+            return Err(TestError::Extension { ordinal: 1 });
+        }
+        let factor = &rows[2].record;
+        if factor.tag != SemanticTypeTag::Unknown
+            || factor.payload0 != u32::from(TypeReason::Unannotated)
+        {
+            return Err(TestError::Entity { ordinal: 2 });
+        }
+        if python_extension(&view, 2)?.dynamic_confidence != compiler_ir::Confidence::Syntactic {
+            return Err(TestError::Extension { ordinal: 2 });
+        }
+
+        // The local call resolves at `Oracle`; the resolved import call is a
+        // foreign `pypi` package key at `Import`.
+        let occurrences = occurrences(&view)?;
+        if occurrences.len() != 2 {
+            return Err(TestError::Count {
+                expected: 2,
+                actual: occurrences.len(),
+            });
+        }
+        let local = &occurrences[0];
+        if local.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+            || !matches!(
+                local.occurrence.target,
+                OccurrenceTarget::Local(target) if target.raw == 3
+            )
+        {
+            return Err(TestError::Entity { ordinal: 3 });
+        }
+        let imported = &occurrences[1];
+        let compiler_ir::OccurrenceTarget::Foreign(key) = &imported.occurrence.target else {
+            return Err(TestError::Entity { ordinal: 0 });
+        };
+        if imported.occurrence.confidence != compiler_ir::OccurrenceConfidence::Import
+            || key.path != "json"
+            || key.display != "dumps"
+        {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    /// A checker-inferred class instance names that class's nominal row.
+    #[test]
+    fn checker_inferred_instance_names_the_class_row() -> Result<(), TestError> {
+        let source = b"class Node:\n    pass\n\nnode = Node()\n";
+        let facts = fixture(source)?;
+        let adapter = Pyrefly::uvx();
+        if !adapter.is_available() {
+            return Ok(());
+        }
+        let report = match adapter.analyze(source, PythonVersion::Python314, &facts) {
+            Ok(report) => report,
+            Err(
+                compiler_languages_python::CheckerError::Spawn { .. }
+                | compiler_languages_python::CheckerError::OutputLimit { .. }
+                | compiler_languages_python::CheckerError::Exit { .. },
+            ) => return Ok(()),
+            Err(fault) => return Err(TestError::Checker(fault)),
+        };
+        let bytes = write_with(source, Some(&report))?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        // node = fact 1; its inferred `Node` names the class row 0.
+        let expected = Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(0)));
+        if rows[1].record.tag != SemanticTypeTag::Nominal || rows[1].record.nominal != expected {
+            return Err(TestError::Entity { ordinal: 1 });
+        }
+        if python_extension(&view, 1)?.dynamic_confidence != compiler_ir::Confidence::Compiler {
+            return Err(TestError::Extension { ordinal: 1 });
+        }
+        Ok(())
     }
 }

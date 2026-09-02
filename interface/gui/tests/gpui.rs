@@ -21,8 +21,8 @@ use interface_core::{
 };
 #[cfg(feature = "real-gpui")]
 use interface_gui::{
-    CommandId, FormField, FormState, GpuiShellView, NativeTextInputError, PaletteEditError,
-    ProjectionState, Route, TextInputTarget,
+    CommandId, DOCUMENT_ITEMS, DocumentSearchRow, DocumentSearchScope, FormField, FormState,
+    GpuiShellView, NativeTextInputError, PaletteEditError, ProjectionState, Route, TextInputTarget,
 };
 
 #[cfg(feature = "real-gpui")]
@@ -723,5 +723,91 @@ fn entity_form_keyboard_navigation_and_escape_operate_on_typed_fields(cx: &mut T
     cx.simulate_keystrokes("shift-tab escape");
     cx.read_entity(&view, |view, _| {
         assert_eq!(view.form, None);
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn documentation_search_focus_ranks_and_opens_the_exact_symbol(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-l");
+    cx.simulate_input("Ir");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.navigation.route, Route::Search);
+        assert_eq!(view.documentation.query_text(), "Ir");
+        assert!(matches!(
+            view.documentation.selected_search_row(),
+            Some(DocumentSearchRow::Symbol(hit)) if DOCUMENT_ITEMS[hit.item].name == "Ir"
+        ));
+    });
+
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.navigation.route, Route::Libraries);
+        assert_eq!(DOCUMENT_ITEMS[view.documentation.selected_item].name, "Ir");
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn documentation_search_has_its_own_wide_ime_safe_query_boundary(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    let wide_query = "semantic-package-coordinate/".repeat(8);
+    assert!(wide_query.len() > INPUT_TEXT_BYTES);
+
+    cx.simulate_keystrokes("cmd-l");
+    cx.simulate_input(&wide_query);
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.documentation.query_text(), wide_query);
+        assert_eq!(view.input_error, None);
+    });
+
+    let rejected = "x".repeat(interface_gui::MAX_DOCUMENT_QUERY_BYTES + 1);
+    let (overflow_view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+    cx.simulate_keystrokes("cmd-l");
+    cx.simulate_input(&rejected);
+    cx.read_entity(&overflow_view, |view, _| {
+        assert_eq!(
+            view.documentation.query_text(),
+            &rejected[..interface_gui::MAX_DOCUMENT_QUERY_BYTES]
+        );
+        assert_eq!(
+            view.input_error,
+            Some(NativeTextInputError::InputTooLong {
+                target: TextInputTarget::DocumentationSearch,
+                actual: rejected.len(),
+                maximum: interface_gui::MAX_DOCUMENT_QUERY_BYTES,
+            })
+        );
+    });
+}
+
+#[cfg(feature = "real-gpui")]
+#[gpui::test]
+fn package_discovery_adds_a_search_match_to_the_collapsible_library(cx: &mut TestAppContext) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_input("trustfall");
+    cx.read_entity(&view, |view, _| {
+        assert_eq!(view.navigation.route, Route::Search);
+        assert_eq!(view.documentation.scope, DocumentSearchScope::Packages);
+        assert!(!view.documentation.library_packages[3]);
+        assert_eq!(
+            view.documentation.selected_search_row(),
+            Some(DocumentSearchRow::Package(3))
+        );
+    });
+
+    cx.simulate_keystrokes("enter cmd-b");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.documentation.library_packages[3]);
+        assert_eq!(view.navigation.route, Route::Libraries);
+        assert!(view.documentation.sidebar_collapsed);
     });
 }

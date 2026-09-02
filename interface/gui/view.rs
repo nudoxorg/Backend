@@ -12,11 +12,11 @@ use crate::{
     ApplicationInput, ApplicationReply, ApplicationService, ApplyError, CommandId,
     ConfirmPaletteCommand, DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DiscoverPackages, DismissForm,
     DismissPalette, DocumentFilter, DocumentKind, DocumentSearchRow, DocumentSearchScope,
-    FocusDocumentationSearch, FormError, FormField, FormState, NextFormField, OpenPalette,
-    OpenSettings, PaletteDirection, PreviousFormField, ResultLimit, Route,
-    SelectFirstPaletteCommand, SelectLastPaletteCommand, SelectNextPaletteCommand,
-    SelectNextPalettePage, SelectPreviousPaletteCommand, SelectPreviousPalettePage, ServiceAction,
-    ShellState, ToggleSidebar,
+    FocusDocumentationSearch, FormError, FormField, FormState, NavigateDocumentBack,
+    NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings, PaletteDirection,
+    PreviousFormField, ResultLimit, Route, SelectFirstPaletteCommand, SelectLastPaletteCommand,
+    SelectNextPaletteCommand, SelectNextPalettePage, SelectPreviousPaletteCommand,
+    SelectPreviousPalettePage, ServiceAction, ShellState, ToggleSidebar,
 };
 use core::ops::Deref;
 use gpui::{
@@ -130,7 +130,11 @@ fn execution_delivery(reply: &ApplicationReply) -> ExecutionDelivery {
 impl GpuiShellView {
     /// Creates a focused product shell around the service that owns application behavior.
     #[must_use]
-    pub fn new(service: ApplicationService, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        mut service: ApplicationService,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.bind_keys([
             KeyBinding::new("cmd-k", OpenPalette, Some(SHELL_CONTEXT)),
             KeyBinding::new("ctrl-k", OpenPalette, Some(SHELL_CONTEXT)),
@@ -152,21 +156,30 @@ impl GpuiShellView {
             KeyBinding::new("ctrl-b", ToggleSidebar, Some(SHELL_CONTEXT)),
             KeyBinding::new("cmd-shift-p", DiscoverPackages, Some(SHELL_CONTEXT)),
             KeyBinding::new("ctrl-shift-p", DiscoverPackages, Some(SHELL_CONTEXT)),
+            KeyBinding::new("alt-left", NavigateDocumentBack, Some(SHELL_CONTEXT)),
+            KeyBinding::new("alt-right", NavigateDocumentForward, Some(SHELL_CONTEXT)),
         ]);
         let focus = cx.focus_handle();
         let palette_focus = cx.focus_handle();
         let search_focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let mut state = ShellState::default();
+        let initial_health = service.execute(&ApplicationInput::Health {
+            correlation: CorrelationId(1),
+        });
+        if let Err(error) = state.apply(initial_health) {
+            debug_assert_eq!(state.projection_error, Some(error));
+        }
         Self {
             service: Rc::new(RefCell::new(service)),
-            state: ShellState::default(),
+            state,
             focus,
             palette_focus,
             search_focus,
             palette_scroll: UniformListScrollHandle::new(),
             search_scroll: UniformListScrollHandle::new(),
             search_active: false,
-            next_correlation: 1,
+            next_correlation: 2,
             driven_execution: None,
             native_input: input::NativeInputState::default(),
             native_input_bounds: Rc::new(std::cell::Cell::new(None)),
@@ -299,6 +312,28 @@ impl GpuiShellView {
         self.state.discover_packages();
         self.search_active = true;
         window.focus(&self.search_focus, cx);
+        cx.notify();
+    }
+
+    fn navigate_document_back_action(
+        &mut self,
+        _: &NavigateDocumentBack,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_active = false;
+        self.state.navigate_document_back();
+        cx.notify();
+    }
+
+    fn navigate_document_forward_action(
+        &mut self,
+        _: &NavigateDocumentForward,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_active = false;
+        self.state.navigate_document_forward();
         cx.notify();
     }
 
@@ -524,10 +559,7 @@ impl GpuiShellView {
                     .char_indices()
                     .next_back()
                     .map_or("", |(index, _)| &current[..index]);
-                match interface_core::InputText::try_from_str(shortened) {
-                    Ok(query) => self.state.replace_documentation_query(query),
-                    Err(_) => self.state.clear_documentation_query(),
-                }
+                self.state.replace_documentation_query(shortened.to_owned());
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -594,147 +626,242 @@ impl GpuiShellView {
             .px(px(14.0))
             .flex()
             .items_center()
-            .gap(px(12.0))
             .border_b_1()
             .border_color(rgb(BORDER))
             .bg(rgb(RAIL_BACKGROUND))
             .text_color(rgb(FOREGROUND))
             .child(
                 div()
-                    .id("toggle-documentation-sidebar")
-                    .size(px(34.0))
+                    .w_1_3()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .rounded(px(7.0))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(PANEL_HOVER)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.toggle_sidebar();
-                        cx.notify();
-                    }))
-                    .child("☰"),
-            )
-            .child(
-                div()
-                    .w(px(196.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(9.0))
+                    .gap(px(6.0))
                     .child(
                         div()
-                            .size(px(28.0))
+                            .id("toggle-documentation-sidebar")
+                            .size(px(34.0))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(8.0))
-                            .bg(rgb(ACCENT_STRONG))
-                            .text_color(rgb(RAIL_BACKGROUND))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("H"),
+                            .rounded(px(7.0))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.toggle_sidebar();
+                                cx.notify();
+                            }))
+                            .child("☰"),
                     )
                     .child(
                         div()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap(px(2.0))
                             .child(
                                 div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Hummingbird"),
+                                    .id("document-history-back")
+                                    .size(px(30.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(6.0))
+                                    .text_color(if self.state.documentation.can_go_back() {
+                                        rgb(FOREGROUND)
+                                    } else {
+                                        rgb(METADATA_TEXT).opacity(0.35)
+                                    })
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.search_active = false;
+                                        this.state.navigate_document_back();
+                                        cx.notify();
+                                    }))
+                                    .child("←"),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(METADATA_TEXT))
-                                    .child("Semantic docs"),
+                                    .id("document-history-forward")
+                                    .size(px(30.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(6.0))
+                                    .text_color(if self.state.documentation.can_go_forward() {
+                                        rgb(FOREGROUND)
+                                    } else {
+                                        rgb(METADATA_TEXT).opacity(0.35)
+                                    })
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(rgb(PANEL_HOVER)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.search_active = false;
+                                        this.state.navigate_document_forward();
+                                        cx.notify();
+                                    }))
+                                    .child("→"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .ml(px(5.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .size(px(28.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(8.0))
+                                    .bg(rgb(ACCENT_STRONG))
+                                    .text_color(rgb(RAIL_BACKGROUND))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("H"),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child("Hummingbird Docs"),
                             ),
                     ),
             )
             .child(
                 div()
-                    .id("global-documentation-search")
-                    .relative()
-                    .h(px(38.0))
-                    .max_w(px(620.0))
-                    .flex_1()
-                    .px(px(12.0))
+                    .w_1_3()
+                    .px(px(10.0))
                     .flex()
                     .items_center()
-                    .gap(px(9.0))
-                    .rounded(px(9.0))
-                    .border_1()
-                    .border_color(if self.search_active {
-                        rgb(ACCENT)
-                    } else {
-                        rgb(BORDER)
-                    })
-                    .bg(rgb(PAGE_BACKGROUND))
-                    .cursor_text()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.state.select_route(Route::Search);
-                        this.search_active = true;
-                        window.focus(&this.search_focus, cx);
-                        cx.notify();
-                    }))
-                    .child(div().text_color(rgb(ACCENT)).child("⌕"))
+                    .justify_center()
                     .child(
                         div()
+                            .id("global-documentation-search")
+                            .track_focus(&self.search_focus)
                             .relative()
-                            .flex_1()
-                            .text_sm()
-                            .when(query.is_empty(), |text| text.text_color(rgb(METADATA_TEXT)))
-                            .child(query_label)
-                            .when(self.search_active, |input| {
-                                input.child(self.native_input_bridge(
-                                    crate::TextInputTarget::DocumentationSearch,
-                                    &self.search_focus,
-                                    cx,
-                                ))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(PANEL_BACKGROUND))
-                            .text_xs()
-                            .text_color(rgb(METADATA_TEXT))
-                            .child("⌘L"),
+                            .h(px(38.0))
+                            .w_full()
+                            .max_w(px(620.0))
+                            .px(px(12.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(if self.search_active {
+                                rgb(ACCENT)
+                            } else {
+                                rgb(BORDER)
+                            })
+                            .bg(rgb(PAGE_BACKGROUND))
+                            .cursor_text()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.state.select_route(Route::Search);
+                                this.search_active = true;
+                                window.focus(&this.search_focus, cx);
+                                cx.notify();
+                            }))
+                            .child(div().text_color(rgb(ACCENT)).child("⌕"))
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_sm()
+                                    .when(query.is_empty(), |text| {
+                                        text.text_color(rgb(METADATA_TEXT))
+                                    })
+                                    .child(query_label)
+                                    .when(self.search_active, |input| {
+                                        input.child(self.native_input_bridge(
+                                            crate::TextInputTarget::DocumentationSearch,
+                                            &self.search_focus,
+                                            cx,
+                                        ))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(4.0))
+                                    .bg(rgb(PANEL_BACKGROUND))
+                                    .text_xs()
+                                    .text_color(rgb(METADATA_TEXT))
+                                    .child("⌘L"),
+                            ),
                     ),
             )
             .child(
                 div()
-                    .id("top-add-package")
-                    .h(px(36.0))
-                    .px(px(13.0))
+                    .w_1_3()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .rounded(px(8.0))
-                    .bg(rgb(ACCENT_STRONG))
-                    .text_color(rgb(RAIL_BACKGROUND))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(ACCENT)))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.state.discover_packages();
-                        this.search_active = true;
-                        window.focus(&this.search_focus, cx);
-                        cx.notify();
-                    }))
-                    .child("+")
-                    .child("Add package"),
-            )
-            .child(
-                div()
-                    .max_w(px(220.0))
-                    .text_xs()
-                    .text_color(rgb(METADATA_TEXT))
-                    .child(package.name)
-                    .child(" / ")
-                    .child(document.name),
-            )
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(METADATA_TEXT))
+                            .child(package.name)
+                            .child(" / ")
+                            .child(document.name),
+                    )
+                    .child(
+                        div()
+                            .id("top-add-package")
+                            .h(px(36.0))
+                            .flex_none()
+                            .px(px(13.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .rounded(px(8.0))
+                            .bg(rgb(ACCENT_STRONG))
+                            .text_color(rgb(RAIL_BACKGROUND))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(ACCENT)))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.state.discover_packages();
+                                this.search_active = true;
+                                window.focus(&this.search_focus, cx);
+                                cx.notify();
+                            }))
+                            .child("+")
+                            .child("Add package"),
+                    )
+                    .when(!self.state.documentation.outline_visible, |bar| {
+                        bar.child(
+                            div()
+                                .id("show-document-outline")
+                                .h(px(32.0))
+                                .flex_none()
+                                .px(px(9.0))
+                                .flex()
+                                .items_center()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .text_xs()
+                                .text_color(rgb(METADATA_TEXT))
+                                .cursor_pointer()
+                                .hover(|style| {
+                                    style.bg(rgb(PANEL_HOVER)).text_color(rgb(FOREGROUND))
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.set_documentation_outline_visible(true);
+                                    cx.notify();
+                                }))
+                                .child("Outline"),
+                        )
+                    }),
+                )
     }
 
     fn navigation_rail(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1097,6 +1224,13 @@ impl GpuiShellView {
                         Self::metric_card("0", "fabricated capabilities", "Unavailable providers remain explicit"),
                     ]),
             )
+            .when_some(self.state.pages.home.generated, |home, generated| {
+                home.child(
+                    div()
+                        .max_w(px(1100.0))
+                        .child(Self::generated_details(&generated)),
+                )
+            })
             .child(
                 div()
                     .max_w(px(1100.0))
@@ -1160,7 +1294,7 @@ impl GpuiShellView {
                                         div()
                                             .text_size(px(24.0))
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .child(if self.state.documentation.scope == DocumentSearchScope::Packages { "Add a package" } else { "Search the semantic index" }),
+                                            .child(if self.state.documentation.scope == DocumentSearchScope::Packages { "Add a package" } else { "Search documentation" }),
                                     )
                                     .child(
                                         div()
@@ -1171,10 +1305,28 @@ impl GpuiShellView {
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(rgb(METADATA_TEXT))
-                                    .child(row_count.to_string())
-                                    .child(" results · ↑↓ to move · Enter to open"),
+                                    .flex()
+                                    .flex_col()
+                                    .items_end()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(METADATA_TEXT))
+                                            .child(row_count.to_string())
+                                            .child(" results · ↑↓ to move · Enter to open"),
+                                    )
+                                    .when(
+                                        self.state.documentation.scope
+                                            != DocumentSearchScope::Packages,
+                                        |controls| {
+                                            controls.child(Self::action_button(
+                                                ServiceAction::Search,
+                                                "Query snapshot index",
+                                                cx,
+                                            ))
+                                        },
+                                    ),
                             ),
                     )
                     .child(self.search_scope_controls(cx))
@@ -1183,21 +1335,66 @@ impl GpuiShellView {
                     })
                     .child(self.index_provenance_strip()),
             )
-            .child(
-                uniform_list(
-                    "documentation-search-results",
-                    row_count,
-                    cx.processor(move |this, range: core::ops::Range<usize>, _, cx| {
-                        range
-                            .filter_map(|index| rows.get(index).copied().map(|row| {
-                                this.search_result_row(row, index, index == selected, cx)
-                            }))
-                            .collect()
-                    }),
+            .when(row_count != 0, |search| {
+                search.child(
+                    uniform_list(
+                        "documentation-search-results",
+                        row_count,
+                        cx.processor(move |this, range: core::ops::Range<usize>, _, cx| {
+                            range
+                                .filter_map(|index| {
+                                    rows.get(index).copied().map(|row| {
+                                        this.search_result_row(row, index, index == selected, cx)
+                                    })
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(&self.search_scroll)
+                    .flex_1(),
                 )
-                .track_scroll(&self.search_scroll)
-                .flex_1(),
-            )
+            })
+            .when(row_count == 0, |search| {
+                search.child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .max_w(px(460.0))
+                                .p(px(24.0))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(9.0))
+                                .rounded(px(12.0))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .bg(rgb(PANEL_BACKGROUND))
+                                .child(
+                                    div()
+                                        .text_size(px(24.0))
+                                        .text_color(rgb(ACCENT))
+                                        .child("⌕"),
+                                )
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child("No indexed match"),
+                                )
+                                .child(
+                                    div()
+                                        .text_center()
+                                        .text_sm()
+                                        .line_height(px(20.0))
+                                        .text_color(rgb(METADATA_TEXT))
+                                        .child("Try a package name, qualified symbol path, API kind, or a word from the documentation summary."),
+                                ),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -1834,9 +2031,13 @@ impl GpuiShellView {
                     )
                     .child(
                         div()
+                            .px(px(7.0))
+                            .py(px(4.0))
+                            .rounded(px(5.0))
+                            .bg(rgb(PANEL_BACKGROUND))
                             .text_xs()
                             .text_color(rgb(METADATA_TEXT))
-                            .child(hit.score.to_string()),
+                            .child(search_match_label(hit.score)),
                     )
                     .into_any_element()
             }
@@ -2755,6 +2956,8 @@ impl Render for GpuiShellView {
             .on_action(cx.listener(Self::focus_documentation_search))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::discover_packages_action))
+            .on_action(cx.listener(Self::navigate_document_back_action))
+            .on_action(cx.listener(Self::navigate_document_forward_action))
             .on_action(cx.listener(Self::next_form_field))
             .on_action(cx.listener(Self::previous_form_field))
             .on_key_down(cx.listener(Self::update_palette_query))
@@ -2781,16 +2984,6 @@ impl Deref for GpuiShellView {
 
     fn deref(&self) -> &Self::Target {
         &self.state
-    }
-}
-
-fn route_description(route: Route) -> &'static str {
-    match route {
-        Route::Home => "Start with a stable overview of search, indexing, and connection health.",
-        Route::Libraries => "Manage local library coverage without touching source files.",
-        Route::Search => "Run exact, lexical, graph, and vector retrieval through one service.",
-        Route::Connections => "Configure and inspect AI-client and MCP connections.",
-        Route::Settings => "Set preferences and inspect product diagnostics.",
     }
 }
 
@@ -3080,6 +3273,15 @@ const fn kind_short_label(kind: DocumentKind) -> &'static str {
         DocumentKind::Trait => "T",
         DocumentKind::Function => "ƒ",
         DocumentKind::Module => "M",
+    }
+}
+
+const fn search_match_label(score: u16) -> &'static str {
+    match score {
+        120.. => "exact",
+        90..=119 => "prefix",
+        48..=89 => "path",
+        _ => "docs",
     }
 }
 

@@ -1,6 +1,28 @@
 //! Validates the fixed Go semantic-authority image emitted by `go/packages`.
-//! Keeps declaration facts borrowed from a checksummed binary plane.
+//! Keeps every semantic plane — declarations, recursive type rows, methods,
+//! type parameters, struct/interface members, documentation, references, and
+//! build constraints — borrowed from one checksummed binary format.
 //! Rejects malformed or source-mismatched images before compiler admission.
+//!
+//! ## Format version 3 (zero-copy, fixed-width rows)
+//!
+//! Header (116 bytes): magic `NGAI`, version `3`, header length, declaration
+//! count, atom-plane byte length, body byte length, SHA-256 source digest,
+//! SHA-256 checksum, then seven plane row counts (types, references, methods,
+//! type parameters, members, docs, build constraints) and one reserved word.
+//!
+//! Body planes, in order: declarations (40 B rows), type rows (52 B), methods
+//! (64 B), type parameters (16 B), members — struct fields and interface
+//! method signatures (40 B), documentation rows (16 B), references (48 B),
+//! build constraints (28 B), pooled type children (8 B), and the shared UTF-8
+//! atom plane. Every range cell is validated against its plane; the pooled
+//! child plane must tile each type row's declared child run exactly; member
+//! runs must match the type rows that declare them; documentation,
+//! reference, and constraint rows must be canonically ordered; every
+//! reference owner must resolve to a function declaration or a method row
+//! whose file and span contain the call site. A func type row's parameter
+//! count cell splits its child run into the leading parameters and the
+//! trailing results; every other kind must leave that cell zero.
 
 use core::str;
 
@@ -8,10 +30,21 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
-const VERSION: u16 = 1;
-const HEADER_BYTES: usize = 88;
-const DECLARATION_BYTES: usize = 12;
-const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v1\0";
+const VERSION: u16 = 3;
+const HEADER_BYTES: usize = 116;
+const DECLARATION_BYTES: usize = 40;
+const TYPE_ROW_BYTES: usize = 52;
+const METHOD_BYTES: usize = 64;
+const TYPE_PARAMETER_BYTES: usize = 16;
+const MEMBER_BYTES: usize = 40;
+const DOC_BYTES: usize = 16;
+const REFERENCE_BYTES: usize = 48;
+const CONSTRAINT_BYTES: usize = 28;
+const CHILD_BYTES: usize = 8;
+const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v3\0";
+
+/// The `u32::MAX` sentinel shared by every optional coordinate cell.
+pub const NONE: u32 = u32::MAX;
 
 /// A closed declaration classification supplied by the Go type authority.
 #[repr(u8)]
@@ -42,6 +75,82 @@ impl DeclarationKind {
     }
 }
 
+/// The closed type-row discriminants of the recursive type plane. Frozen;
+/// mirrors the oracle's `TypeKind` JSON enum.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypeRowKind {
+    /// A basic type (`int`, `byte`, `unsafe.Pointer`, …); the name is required.
+    Basic = 0,
+    /// A defined named type by reference (`pkg` + `name` + type arguments).
+    Named = 1,
+    /// A true alias by reference.
+    Alias = 2,
+    /// A use of a generic type parameter by name.
+    TypeParam = 3,
+    /// A pointer; the element is the row's one child.
+    Pointer = 4,
+    /// A slice; the element is the row's one child.
+    Slice = 5,
+    /// A fixed-length array; the element is the row's one child and the
+    /// length cell owns the size.
+    Array = 6,
+    /// A map; children are `[key, value]`.
+    Map = 7,
+    /// A channel; the element is the row's one child and the direction cell
+    /// owns `chan` / `chan<-` / `<-chan`.
+    Chan = 8,
+    /// A function; children are parameters followed by results.
+    Func = 9,
+    /// A struct; members own the fields and the row owns no children.
+    Struct = 10,
+    /// An interface; children are the embeddeds and members the explicit
+    /// method signatures.
+    Interface = 11,
+    /// A constraint union; children are the term types (child flag bit 0 is
+    /// the tilde marker).
+    Union = 12,
+    /// A tuple; children are the component types.
+    Tuple = 13,
+    /// The oracle's honest unknown shape.
+    Invalid = 14,
+}
+
+impl TypeRowKind {
+    const fn decode(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Basic),
+            1 => Some(Self::Named),
+            2 => Some(Self::Alias),
+            3 => Some(Self::TypeParam),
+            4 => Some(Self::Pointer),
+            5 => Some(Self::Slice),
+            6 => Some(Self::Array),
+            7 => Some(Self::Map),
+            8 => Some(Self::Chan),
+            9 => Some(Self::Func),
+            10 => Some(Self::Struct),
+            11 => Some(Self::Interface),
+            12 => Some(Self::Union),
+            13 => Some(Self::Tuple),
+            14 => Some(Self::Invalid),
+            _ => None,
+        }
+    }
+}
+
+/// Channel direction cell values.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChanDir {
+    /// An unrestricted `chan`.
+    Both = 0,
+    /// A send-only `chan<-`.
+    Send = 1,
+    /// A receive-only `<-chan`.
+    Recv = 2,
+}
+
 /// One borrowed Go declaration from the checked authority image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Declaration<'image> {
@@ -51,21 +160,211 @@ pub struct Declaration<'image> {
     pub exported: bool,
     /// Exact UTF-8 identifier bytes lent from the image atom plane.
     pub name: &'image [u8],
+    /// The declaring package's import path (empty for none).
+    pub package: &'image [u8],
+    /// The declaration's type-row root, when the authority spelled one.
+    pub type_root: Option<u32>,
+    /// The absolute file byte range of the declaration's full source text,
+    /// when the authority resolved one.
+    pub span: Option<(u32, u32)>,
+    /// The span's source file spelling.
+    pub file: &'image [u8],
+}
+
+/// One borrowed recursive type row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeRow<'image> {
+    /// The row's closed discriminant.
+    pub kind: TypeRowKind,
+    /// Channel direction (chan rows only; [`ChanDir::Both`] elsewhere).
+    pub dir: ChanDir,
+    /// Whether a func row's final parameter is variadic.
+    pub variadic: bool,
+    /// Basic / named / alias / type-parameter name bytes.
+    pub name: &'image [u8],
+    /// Defining package import path (empty for universe names).
+    pub package: &'image [u8],
+    /// Fixed array length (array rows only).
+    pub length: i64,
+    /// Leading child count owned by parameters (func rows only; the
+    /// remaining children are results). Every other kind carries zero.
+    pub param_count: u32,
+    /// Ordered pooled child run `[start, start + count)`.
+    pub children: (u32, u32),
+    /// Ordered member run `[start, start + count)`.
+    pub members: (u32, u32),
+}
+
+/// One borrowed method row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MethodRow<'image> {
+    /// Owning declaration index (the receiver's named type).
+    pub owner: u32,
+    /// Whether the method name is exported.
+    pub exported: bool,
+    /// `true` for `func (t *T)`, `false` for `func (t T)`.
+    pub pointer_receiver: bool,
+    /// `true` for methods promoted through embedded fields.
+    pub promoted: bool,
+    /// Method identifier bytes.
+    pub name: &'image [u8],
+    /// Signature type-row root, when spelled.
+    pub type_root: Option<u32>,
+    /// Receiver binding name bytes (`s` in `(s *Server)`).
+    pub receiver: &'image [u8],
+    /// Receiver type-parameter names, NUL-separated (validated at open).
+    pub receiver_type_params: &'image [u8],
+    /// Promoted-method origin spelling (`sync.Mutex`); empty when declared.
+    pub origin: &'image [u8],
+    /// Absolute file byte range of the declaring `func` decl, when resolved.
+    pub span: Option<(u32, u32)>,
+    /// The declaring source file spelling.
+    pub file: &'image [u8],
+}
+
+/// One borrowed type-parameter row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeParameterRow<'image> {
+    /// Owning declaration index.
+    pub owner: u32,
+    /// Parameter name bytes.
+    pub name: &'image [u8],
+    /// Constraint type-row root, when the source wrote one.
+    pub constraint: Option<u32>,
+}
+
+/// What kind of member a member row carries.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberKind {
+    /// A struct field.
+    Field = 0,
+    /// An interface method signature.
+    Method = 1,
+}
+
+/// One borrowed member row (struct field or interface method signature).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemberRow<'image> {
+    /// Owning type-row index.
+    pub owner: u32,
+    /// The member's closed kind.
+    pub kind: MemberKind,
+    /// Whether the field is anonymous/embedded (struct fields only).
+    pub embedded: bool,
+    /// Whether the member name is exported.
+    pub exported: bool,
+    /// Member name bytes (the implicit type name for embedded fields).
+    pub name: &'image [u8],
+    /// Member type-row root, when spelled.
+    pub type_root: Option<u32>,
+    /// Raw struct tag bytes (struct fields only; empty otherwise).
+    pub tag: &'image [u8],
+    /// Declaring package import path (interface methods; empty otherwise).
+    pub package: &'image [u8],
+}
+
+/// Which lane owns one documentation row.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocOwner {
+    /// A declaration row.
+    Declaration = 0,
+    /// A method row.
+    Method = 1,
+    /// A member row.
+    Member = 2,
+}
+
+/// One borrowed documentation row: cleaned doc prose for one owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DocRow<'image> {
+    /// The owning lane.
+    pub owner_kind: DocOwner,
+    /// The owner's row index inside its lane.
+    pub owner: u32,
+    /// The cleaned doc text (markers and directives already stripped).
+    pub text: &'image [u8],
+}
+
+/// One borrowed reference row: a resolved free-function call edge with its
+/// owner-relative span proven at validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReferenceRow<'image> {
+    /// Owning declaration index (the caller's owning declaration).
+    pub owner: u32,
+    /// Called function's bare name.
+    pub target: &'image [u8],
+    /// Target package import path; empty for a same-package call.
+    pub target_package: &'image [u8],
+    /// Bare receiver type name; empty when the caller is a package-level
+    /// function.
+    pub receiver: &'image [u8],
+    /// Absolute `[start, end)` byte span of the call site.
+    pub span: (u32, u32),
+    /// Source file spelling of the call site.
+    pub file: &'image [u8],
+    /// `true` when the caller is the declaration itself; `false` when it is
+    /// the method row at `owner_row`.
+    pub owner_is_declaration: bool,
+    /// Resolved caller row: the declaration index, or the method row index.
+    pub owner_row: u32,
+    /// The call span relative to the resolved owner's span start.
+    pub relative: (u32, u32),
+}
+
+/// One borrowed build-constraint row: one excluded source file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConstraintRow<'image> {
+    /// The excluded source file.
+    pub file: &'image [u8],
+    /// The normalized constraint expression (`windows`).
+    pub constraint: &'image [u8],
+    /// The exported declaration blob: `(kind byte, name, 0x00)` records.
+    pub exported: &'image [u8],
+    /// Number of exported declaration records in the blob.
+    pub exported_count: u32,
+}
+
+/// One parsed exported declaration from a build-constraint blob.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConstrainedDecl<'image> {
+    /// The declaration's closed kind.
+    pub kind: DeclarationKind,
+    /// The declaration's name bytes.
+    pub name: &'image [u8],
 }
 
 /// A validated immutable Go authority image borrowing caller-owned bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct GoImage<'image> {
     bytes: &'image [u8],
     declaration_count: usize,
-    declaration_offset: usize,
+    type_count: usize,
+    method_count: usize,
+    type_parameter_count: usize,
+    member_count: usize,
+    doc_count: usize,
+    reference_count: usize,
+    constraint_count: usize,
+    child_count: usize,
+    declarations_offset: usize,
+    types_offset: usize,
+    methods_offset: usize,
+    type_parameters_offset: usize,
+    members_offset: usize,
+    docs_offset: usize,
+    references_offset: usize,
+    constraints_offset: usize,
+    children_offset: usize,
     atom_offset: usize,
     atom_bytes: usize,
     source_digest: [u8; 32],
 }
 
 impl<'image> GoImage<'image> {
-    /// Opens one complete fixed-layout Go authority image.
+    /// Opens one complete fixed-layout Go authority image and proves every
+    /// structural law before lending any row.
     pub fn open(bytes: &'image [u8]) -> Result<Self, ImageError> {
         if bytes.len() < HEADER_BYTES {
             return Err(ImageError::Header(HeaderError::Truncated {
@@ -88,58 +387,111 @@ impl<'image> GoImage<'image> {
                 found: header_bytes,
             }));
         }
-        if bytes[84..HEADER_BYTES] != [0; 4] {
+        if bytes[112..HEADER_BYTES] != [0; 4] {
             return Err(ImageError::Header(HeaderError::Reserved));
         }
-        let declaration_count = usize::try_from(u32_at(bytes, 8)).map_err(|_| {
-            ImageError::Header(HeaderError::BodyLength {
-                declared: usize::MAX,
-                actual: bytes.len() - HEADER_BYTES,
-            })
-        })?;
-        let atom_bytes = usize::try_from(u32_at(bytes, 12)).map_err(|_| {
-            ImageError::Header(HeaderError::BodyLength {
-                declared: usize::MAX,
-                actual: bytes.len() - HEADER_BYTES,
-            })
-        })?;
-        let body_bytes = usize::try_from(u32_at(bytes, 16)).map_err(|_| {
-            ImageError::Header(HeaderError::BodyLength {
-                declared: usize::MAX,
-                actual: bytes.len() - HEADER_BYTES,
-            })
-        })?;
-        let declaration_bytes =
-            declaration_count
-                .checked_mul(DECLARATION_BYTES)
-                .ok_or(ImageError::Header(HeaderError::BodyLength {
-                    declared: body_bytes,
-                    actual: bytes.len() - HEADER_BYTES,
-                }))?;
-        let expected_body = declaration_bytes
-            .checked_add(atom_bytes)
-            .ok_or(ImageError::Header(HeaderError::BodyLength {
-                declared: body_bytes,
-                actual: bytes.len() - HEADER_BYTES,
-            }))?;
-        if body_bytes != expected_body || bytes.len() != HEADER_BYTES + body_bytes {
-            return Err(ImageError::Header(HeaderError::BodyLength {
-                declared: body_bytes,
-                actual: bytes.len() - HEADER_BYTES,
-            }));
-        }
+        let actual_body = bytes.len() - HEADER_BYTES;
+        let declaration_count = plane_count(bytes, 8, actual_body)?;
+        let atom_bytes = plane_count(bytes, 12, actual_body)?;
+        let body_bytes = plane_count(bytes, 16, actual_body)?;
+        let type_count = plane_count(bytes, 84, actual_body)?;
+        let reference_count = plane_count(bytes, 88, actual_body)?;
+        let method_count = plane_count(bytes, 92, actual_body)?;
+        let type_parameter_count = plane_count(bytes, 96, actual_body)?;
+        let member_count = plane_count(bytes, 100, actual_body)?;
+        let doc_count = plane_count(bytes, 104, actual_body)?;
+        let constraint_count = plane_count(bytes, 108, actual_body)?;
+
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
+
+        let declarations_offset = HEADER_BYTES;
+        let types_offset = declarations_offset + declaration_count * DECLARATION_BYTES;
+        let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
+        let type_parameters_offset = methods_offset + method_count * METHOD_BYTES;
+        let members_offset = type_parameters_offset + type_parameter_count * TYPE_PARAMETER_BYTES;
+        let docs_offset = members_offset + member_count * MEMBER_BYTES;
+        let references_offset = docs_offset + doc_count * DOC_BYTES;
+        let constraints_offset = references_offset + reference_count * REFERENCE_BYTES;
+        let children_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
+        let Some(atoms_end) = HEADER_BYTES.checked_add(body_bytes) else {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        };
+        if atoms_end != bytes.len() || atoms_end < children_offset {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        }
+        let Some(atom_offset) = atoms_end.checked_sub(atom_bytes) else {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        };
+        if atom_offset < children_offset
+            || !(atom_offset - children_offset).is_multiple_of(CHILD_BYTES)
+        {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        }
+        let child_count = (atom_offset - children_offset) / CHILD_BYTES;
+        // Every fixed plane must sit inside the children plane origin, so no
+        // declared count can push a row read past the validated body.
+        let chain = [
+            types_offset,
+            methods_offset,
+            type_parameters_offset,
+            members_offset,
+            docs_offset,
+            references_offset,
+            constraints_offset,
+        ];
+        if chain.iter().any(|offset| *offset > atom_offset) {
+            return Err(ImageError::Header(HeaderError::BodyLength {
+                declared: body_bytes,
+                actual: actual_body,
+            }));
+        }
+
         let image = Self {
             bytes,
             declaration_count,
-            declaration_offset: HEADER_BYTES,
-            atom_offset: HEADER_BYTES + declaration_bytes,
+            type_count,
+            method_count,
+            type_parameter_count,
+            member_count,
+            doc_count,
+            reference_count,
+            constraint_count,
+            child_count,
+            declarations_offset,
+            types_offset,
+            methods_offset,
+            type_parameters_offset,
+            members_offset,
+            docs_offset,
+            references_offset,
+            constraints_offset,
+            children_offset,
+            atom_offset,
             atom_bytes,
             source_digest,
         };
         image.validate_digest()?;
         image.validate_declarations()?;
+        image.validate_types()?;
+        image.validate_methods()?;
+        image.validate_type_parameters()?;
+        image.validate_members()?;
+        image.validate_docs()?;
+        image.validate_references()?;
+        image.validate_constraints()?;
         Ok(image)
     }
 
@@ -149,13 +501,634 @@ impl<'image> GoImage<'image> {
         self.source_digest
     }
 
-    /// Iterates all package-scope declarations in producer order.
+    /// Number of validated declarations.
     #[must_use]
-    pub const fn declarations(self) -> DeclarationIter<'image> {
-        DeclarationIter {
-            image: self,
-            next: 0,
+    pub const fn declaration_count(self) -> usize {
+        self.declaration_count
+    }
+
+    /// Number of validated type rows.
+    #[must_use]
+    pub const fn type_count(self) -> usize {
+        self.type_count
+    }
+
+    /// Number of validated method rows.
+    #[must_use]
+    pub const fn method_count(self) -> usize {
+        self.method_count
+    }
+
+    /// Number of validated member rows.
+    #[must_use]
+    pub const fn member_count(self) -> usize {
+        self.member_count
+    }
+
+    /// Number of validated type-parameter rows.
+    #[must_use]
+    pub const fn type_parameter_count(self) -> usize {
+        self.type_parameter_count
+    }
+
+    /// Number of validated documentation rows.
+    #[must_use]
+    pub const fn doc_count(self) -> usize {
+        self.doc_count
+    }
+
+    /// Number of validated reference rows.
+    #[must_use]
+    pub const fn reference_count(self) -> usize {
+        self.reference_count
+    }
+
+    /// Number of validated build-constraint rows.
+    #[must_use]
+    pub const fn constraint_count(self) -> usize {
+        self.constraint_count
+    }
+
+    /// Borrows one validated declaration row.
+    pub fn declaration(self, index: usize) -> Result<Declaration<'image>, ImageError> {
+        if index >= self.declaration_count {
+            return Err(ImageError::RowBounds {
+                plane: "declaration",
+                index,
+                count: self.declaration_count,
+            });
         }
+        let row = self.plane_row(self.declarations_offset, index, DECLARATION_BYTES);
+        let kind = DeclarationKind::decode(row[0]).ok_or(ImageError::DeclarationKind {
+            index,
+            found: row[0],
+        })?;
+        let exported = flag_at(row, 1).ok_or(ImageError::ExportedFlag {
+            index,
+            found: row[1],
+        })?;
+        if row[2..4] != [0; 2] {
+            return Err(ImageError::DeclarationReserved { index });
+        }
+        let name = self.atom("declaration", index, u32_at(row, 4), u32_at(row, 8))?;
+        if name.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "declaration",
+                index,
+            });
+        }
+        let package = self.atom("declaration", index, u32_at(row, 12), u32_at(row, 16))?;
+        let type_root = optional_row(u32_at(row, 20));
+        if let Some(root) = out_of_bounds_root(type_root, self.type_count) {
+            return Err(ImageError::DeclarationTypeRoot {
+                index,
+                root,
+                type_count: self.type_count,
+            });
+        }
+        let span = span_at(row, 24, 28, index)?;
+        let file = self.atom("declaration", index, u32_at(row, 32), u32_at(row, 36))?;
+        Ok(Declaration {
+            kind,
+            exported,
+            name,
+            package,
+            type_root,
+            span,
+            file,
+        })
+    }
+
+    /// Iterates all package-scope declarations in producer order.
+    pub fn declarations(self) -> impl Iterator<Item = Result<Declaration<'image>, ImageError>> {
+        (0..self.declaration_count).map(move |index| self.declaration(index))
+    }
+
+    /// Borrows one validated type row.
+    pub fn type_row(self, index: usize) -> Result<TypeRow<'image>, ImageError> {
+        if index >= self.type_count {
+            return Err(ImageError::RowBounds {
+                plane: "type",
+                index,
+                count: self.type_count,
+            });
+        }
+        let row = self.plane_row(self.types_offset, index, TYPE_ROW_BYTES);
+        let kind = TypeRowKind::decode(row[0]).ok_or(ImageError::TypeKind {
+            index,
+            found: row[0],
+        })?;
+        let dir = match row[1] {
+            0 => ChanDir::Both,
+            1 => ChanDir::Send,
+            2 => ChanDir::Recv,
+            found => return Err(ImageError::TypeDirection { index, found }),
+        };
+        let variadic = flag_at(row, 2).ok_or(ImageError::TypeVariadicFlag {
+            index,
+            found: row[2],
+        })?;
+        if row[3] != 0 || row[44..48] != [0; 4] {
+            return Err(ImageError::TypeReserved { index });
+        }
+        let name = self.atom("type", index, u32_at(row, 4), u32_at(row, 8))?;
+        let package = self.atom("type", index, u32_at(row, 12), u32_at(row, 16))?;
+        let length = i64::from_le_bytes([
+            row[20], row[21], row[22], row[23], row[24], row[25], row[26], row[27],
+        ]);
+        Ok(TypeRow {
+            kind,
+            dir,
+            variadic,
+            name,
+            package,
+            length,
+            param_count: u32_at(row, 48),
+            children: (u32_at(row, 28), u32_at(row, 32)),
+            members: (u32_at(row, 36), u32_at(row, 40)),
+        })
+    }
+
+    /// Borrows one validated pooled type child: target row plus term flags.
+    pub fn type_child(self, index: usize) -> Result<(u32, bool), ImageError> {
+        if index >= self.child_count {
+            return Err(ImageError::RowBounds {
+                plane: "type child",
+                index,
+                count: self.child_count,
+            });
+        }
+        let row = self.plane_row(self.children_offset, index, CHILD_BYTES);
+        let target = u32_at(row, 0);
+        if usize::try_from(target).is_ok_and(|target| target >= self.type_count) {
+            return Err(ImageError::TypeChildTarget {
+                index,
+                target,
+                type_count: self.type_count,
+            });
+        }
+        let flags = u32_at(row, 4);
+        if flags & !CHILD_TILDE_FLAG != 0 {
+            return Err(ImageError::TypeChildFlags { index, flags });
+        }
+        Ok((target, flags & CHILD_TILDE_FLAG == CHILD_TILDE_FLAG))
+    }
+
+    /// Borrows one validated method row.
+    pub fn method(self, index: usize) -> Result<MethodRow<'image>, ImageError> {
+        if index >= self.method_count {
+            return Err(ImageError::RowBounds {
+                plane: "method",
+                index,
+                count: self.method_count,
+            });
+        }
+        let row = self.plane_row(self.methods_offset, index, METHOD_BYTES);
+        let owner = u32_at(row, 0);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= self.declaration_count) {
+            return Err(ImageError::MethodOwner {
+                index,
+                owner,
+                declaration_count: self.declaration_count,
+            });
+        }
+        let exported = flag_at(row, 4).ok_or(ImageError::MethodFlag {
+            index,
+            cell: "exported",
+            found: row[4],
+        })?;
+        let pointer_receiver = flag_at(row, 5).ok_or(ImageError::MethodFlag {
+            index,
+            cell: "pointer-receiver",
+            found: row[5],
+        })?;
+        let promoted = flag_at(row, 6).ok_or(ImageError::MethodFlag {
+            index,
+            cell: "promoted",
+            found: row[6],
+        })?;
+        if row[7] != 0 {
+            return Err(ImageError::MethodReserved { index });
+        }
+        let name = self.atom("method", index, u32_at(row, 8), u32_at(row, 12))?;
+        if name.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "method",
+                index,
+            });
+        }
+        let type_root = optional_row(u32_at(row, 16));
+        if let Some(root) = out_of_bounds_root(type_root, self.type_count) {
+            return Err(ImageError::MethodTypeRoot {
+                index,
+                root,
+                type_count: self.type_count,
+            });
+        }
+        let receiver = self.atom("method", index, u32_at(row, 20), u32_at(row, 24))?;
+        let blob_length = u32_at(row, 32);
+        let receiver_type_params = self.atom("method", index, u32_at(row, 28), blob_length)?;
+        let param_count = u32_at(row, 36);
+        if split_nul(receiver_type_params, param_count).is_none() {
+            return Err(ImageError::MethodReceiverParams {
+                index,
+                count: param_count,
+                blob_bytes: blob_length,
+            });
+        }
+        let origin = self.atom("method", index, u32_at(row, 40), u32_at(row, 44))?;
+        let span = span_at(row, 48, 52, index)?;
+        let file = self.atom("method", index, u32_at(row, 56), u32_at(row, 60))?;
+        Ok(MethodRow {
+            owner,
+            exported,
+            pointer_receiver,
+            promoted,
+            name,
+            type_root,
+            receiver,
+            receiver_type_params,
+            origin,
+            span,
+            file,
+        })
+    }
+
+    /// Iterates every method row in producer order.
+    pub fn methods(self) -> impl Iterator<Item = Result<MethodRow<'image>, ImageError>> {
+        (0..self.method_count).map(move |index| self.method(index))
+    }
+
+    /// Borrows one validated type-parameter row.
+    pub fn type_parameter(self, index: usize) -> Result<TypeParameterRow<'image>, ImageError> {
+        if index >= self.type_parameter_count {
+            return Err(ImageError::RowBounds {
+                plane: "type parameter",
+                index,
+                count: self.type_parameter_count,
+            });
+        }
+        let row = self.plane_row(self.type_parameters_offset, index, TYPE_PARAMETER_BYTES);
+        let owner = u32_at(row, 0);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= self.declaration_count) {
+            return Err(ImageError::TypeParameterOwner {
+                index,
+                owner,
+                declaration_count: self.declaration_count,
+            });
+        }
+        let name = self.atom("type parameter", index, u32_at(row, 4), u32_at(row, 8))?;
+        if name.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "type parameter",
+                index,
+            });
+        }
+        let constraint = optional_row(u32_at(row, 12));
+        if let Some(root) = out_of_bounds_root(constraint, self.type_count) {
+            return Err(ImageError::TypeParameterConstraint {
+                index,
+                root,
+                type_count: self.type_count,
+            });
+        }
+        Ok(TypeParameterRow {
+            owner,
+            name,
+            constraint,
+        })
+    }
+
+    /// Borrows one validated member row.
+    pub fn member(self, index: usize) -> Result<MemberRow<'image>, ImageError> {
+        if index >= self.member_count {
+            return Err(ImageError::RowBounds {
+                plane: "member",
+                index,
+                count: self.member_count,
+            });
+        }
+        let row = self.plane_row(self.members_offset, index, MEMBER_BYTES);
+        let kind = match row[4] {
+            0 => MemberKind::Field,
+            1 => MemberKind::Method,
+            found => return Err(ImageError::MemberKind { index, found }),
+        };
+        let embedded = flag_at(row, 5).ok_or(ImageError::MemberFlag {
+            index,
+            cell: "embedded",
+            found: row[5],
+        })?;
+        if embedded && kind != MemberKind::Field {
+            return Err(ImageError::MemberEmbedded { index });
+        }
+        let exported = flag_at(row, 6).ok_or(ImageError::MemberFlag {
+            index,
+            cell: "exported",
+            found: row[6],
+        })?;
+        if row[7] != 0 || row[36..40] != [0; 4] {
+            return Err(ImageError::MemberReserved { index });
+        }
+        let owner = u32_at(row, 0);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= self.type_count) {
+            return Err(ImageError::MemberOwner {
+                index,
+                owner,
+                type_count: self.type_count,
+            });
+        }
+        let name = self.atom("member", index, u32_at(row, 8), u32_at(row, 12))?;
+        if name.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "member",
+                index,
+            });
+        }
+        let type_root = optional_row(u32_at(row, 16));
+        if let Some(root) = out_of_bounds_root(type_root, self.type_count) {
+            return Err(ImageError::MemberTypeRoot {
+                index,
+                root,
+                type_count: self.type_count,
+            });
+        }
+        let tag = self.atom("member", index, u32_at(row, 20), u32_at(row, 24))?;
+        let package = self.atom("member", index, u32_at(row, 28), u32_at(row, 32))?;
+        Ok(MemberRow {
+            owner,
+            kind,
+            embedded,
+            exported,
+            name,
+            type_root,
+            tag,
+            package,
+        })
+    }
+
+    /// Borrows one validated documentation row.
+    pub fn doc(self, index: usize) -> Result<DocRow<'image>, ImageError> {
+        if index >= self.doc_count {
+            return Err(ImageError::RowBounds {
+                plane: "doc",
+                index,
+                count: self.doc_count,
+            });
+        }
+        let row = self.plane_row(self.docs_offset, index, DOC_BYTES);
+        let owner_kind = match row[0] {
+            0 => DocOwner::Declaration,
+            1 => DocOwner::Method,
+            2 => DocOwner::Member,
+            found => return Err(ImageError::DocOwnerKind { index, found }),
+        };
+        if row[1..4] != [0; 3] {
+            return Err(ImageError::DocReserved { index });
+        }
+        let bound = match owner_kind {
+            DocOwner::Declaration => self.declaration_count,
+            DocOwner::Method => self.method_count,
+            DocOwner::Member => self.member_count,
+        };
+        let owner = u32_at(row, 4);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= bound) {
+            return Err(ImageError::DocOwner {
+                index,
+                owner,
+                bound,
+            });
+        }
+        let text = self.atom("doc", index, u32_at(row, 8), u32_at(row, 12))?;
+        if text.is_empty() {
+            return Err(ImageError::EmptyDoc { index });
+        }
+        Ok(DocRow {
+            owner_kind,
+            owner,
+            text,
+        })
+    }
+
+    /// Borrows one validated reference row with its resolved, owner-relative
+    /// span.
+    pub fn reference(self, index: usize) -> Result<ReferenceRow<'image>, ImageError> {
+        if index >= self.reference_count {
+            return Err(ImageError::RowBounds {
+                plane: "reference",
+                index,
+                count: self.reference_count,
+            });
+        }
+        let row = self.plane_row(self.references_offset, index, REFERENCE_BYTES);
+        let owner = u32_at(row, 0);
+        let Ok(owner_index) = usize::try_from(owner) else {
+            return Err(ImageError::ReferenceOwner {
+                index,
+                owner,
+                declaration_count: self.declaration_count,
+            });
+        };
+        if owner_index >= self.declaration_count {
+            return Err(ImageError::ReferenceOwner {
+                index,
+                owner,
+                declaration_count: self.declaration_count,
+            });
+        }
+        let target = self.atom("reference", index, u32_at(row, 4), u32_at(row, 8))?;
+        if target.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "reference target",
+                index,
+            });
+        }
+        let target_package = self.atom("reference", index, u32_at(row, 12), u32_at(row, 16))?;
+        let start = u32_at(row, 20);
+        let end = u32_at(row, 24);
+        if start > end {
+            return Err(ImageError::ReferenceSpan { index, start, end });
+        }
+        let file = self.atom("reference", index, u32_at(row, 28), u32_at(row, 32))?;
+        let receiver = self.atom("reference", index, u32_at(row, 36), u32_at(row, 40))?;
+        if row[44..48] != [0; 4] {
+            return Err(ImageError::ReferenceReserved { index });
+        }
+        let (owner_is_declaration, owner_row, owner_span, owner_file) = if receiver.is_empty() {
+            let declaration = self.declaration(owner_index)?;
+            (true, owner, declaration.span, declaration.file)
+        } else {
+            match self.method_containing(owner_index, start, end, file) {
+                Some(method_index) => {
+                    let method = self.method(method_index)?;
+                    (false, method_index as u32, method.span, method.file)
+                }
+                None => {
+                    return Err(ImageError::ReferenceOwnerUnresolved {
+                        index,
+                        owner_bytes: receiver.len(),
+                        function_bytes: target.len(),
+                    });
+                }
+            }
+        };
+        let Some((owner_start, owner_end)) = owner_span else {
+            return Err(ImageError::ReferenceOwnerSpan { index });
+        };
+        if file != owner_file {
+            return Err(ImageError::ReferenceFile { index });
+        }
+        if start < owner_start || end > owner_end {
+            return Err(ImageError::ReferenceContainment {
+                index,
+                start,
+                end,
+                owner_start,
+                owner_end,
+            });
+        }
+        Ok(ReferenceRow {
+            owner,
+            target,
+            target_package,
+            receiver,
+            span: (start, end),
+            file,
+            owner_is_declaration,
+            owner_row,
+            relative: (start - owner_start, end - owner_start),
+        })
+    }
+
+    /// Iterates every reference row in producer order.
+    pub fn references(self) -> impl Iterator<Item = Result<ReferenceRow<'image>, ImageError>> {
+        (0..self.reference_count).map(move |index| self.reference(index))
+    }
+
+    /// Borrows one validated build-constraint row.
+    pub fn constraint(self, index: usize) -> Result<ConstraintRow<'image>, ImageError> {
+        if index >= self.constraint_count {
+            return Err(ImageError::RowBounds {
+                plane: "build constraint",
+                index,
+                count: self.constraint_count,
+            });
+        }
+        let row = self.plane_row(self.constraints_offset, index, CONSTRAINT_BYTES);
+        let file = self.atom("build constraint", index, u32_at(row, 0), u32_at(row, 4))?;
+        if file.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "build constraint",
+                index,
+            });
+        }
+        let constraint = self.atom("build constraint", index, u32_at(row, 8), u32_at(row, 12))?;
+        if constraint.is_empty() {
+            return Err(ImageError::EmptyConstraint { index });
+        }
+        let blob_length = u32_at(row, 20);
+        let exported = self.atom("build constraint", index, u32_at(row, 16), blob_length)?;
+        let exported_count = u32_at(row, 24);
+        if parse_constraint_blob(exported, exported_count).is_none() {
+            return Err(ImageError::ConstraintBlob {
+                index,
+                count: exported_count,
+                blob_bytes: blob_length,
+            });
+        }
+        Ok(ConstraintRow {
+            file,
+            constraint,
+            exported,
+            exported_count,
+        })
+    }
+
+    /// Iterates every build-constraint row in producer order.
+    pub fn constraints(self) -> impl Iterator<Item = Result<ConstraintRow<'image>, ImageError>> {
+        (0..self.constraint_count).map(move |index| self.constraint(index))
+    }
+
+    /// Resolves the method row declared on the receiver type `receiver` with
+    /// the method name `name`, if any.
+    #[must_use]
+    pub fn method_row_of(self, name: &[u8], receiver: &[u8]) -> Option<usize> {
+        for index in 0..self.method_count {
+            let Ok(row) = self.method(index) else {
+                continue;
+            };
+            let Ok(owner) = self.declaration(usize::try_from(row.owner).ok()?) else {
+                continue;
+            };
+            if row.name == name && owner.name == receiver {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// Resolves the calling method row of one reference: the method owned by
+    /// `owner` whose file and span contain the call site, if any.
+    fn method_containing(self, owner: usize, start: u32, end: u32, file: &[u8]) -> Option<usize> {
+        for index in 0..self.method_count {
+            let Ok(row) = self.method(index) else {
+                continue;
+            };
+            if usize::try_from(row.owner) != Ok(owner) || row.file != file {
+                continue;
+            }
+            if let Some((row_start, row_end)) = row.span
+                && start >= row_start
+                && end <= row_end
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn plane_row(self, plane_offset: usize, index: usize, width: usize) -> &'image [u8] {
+        let start = plane_offset + index * width;
+        &self.bytes[start..start + width]
+    }
+
+    fn atom(
+        self,
+        plane: &'static str,
+        index: usize,
+        offset: u32,
+        length: u32,
+    ) -> Result<&'image [u8], ImageError> {
+        let range_fault = || ImageError::AtomRange {
+            plane,
+            index,
+            offset: usize::MAX,
+            length: usize::MAX,
+            atom_bytes: self.atom_bytes,
+        };
+        let offset = usize::try_from(offset).map_err(|_| range_fault())?;
+        let length = usize::try_from(length).map_err(|_| range_fault())?;
+        let Some(end) = offset.checked_add(length) else {
+            return Err(range_fault());
+        };
+        if end > self.atom_bytes {
+            return Err(ImageError::AtomRange {
+                plane,
+                index,
+                offset,
+                length,
+                atom_bytes: self.atom_bytes,
+            });
+        }
+        if length == 0 {
+            return Ok(&self.bytes[0..0]);
+        }
+        let start = self.atom_offset + offset;
+        let bytes = &self.bytes[start..start + length];
+        if str::from_utf8(bytes).is_err() {
+            return Err(ImageError::AtomUtf8 { plane, index });
+        }
+        Ok(bytes)
     }
 
     fn validate_digest(self) -> Result<(), ImageError> {
@@ -177,60 +1150,289 @@ impl<'image> GoImage<'image> {
         Ok(())
     }
 
-    fn declaration(self, index: usize) -> Result<Declaration<'image>, ImageError> {
-        let row = self.row(index);
-        let kind = DeclarationKind::decode(row[0]).ok_or(ImageError::DeclarationKind {
-            index,
-            found: row[0],
-        })?;
-        let exported = match row[1] {
-            0 => false,
-            1 => true,
-            found => return Err(ImageError::ExportedFlag { index, found }),
-        };
-        if row[2..4] != [0; 2] {
-            return Err(ImageError::DeclarationReserved { index });
+    fn validate_types(self) -> Result<(), ImageError> {
+        let mut expected_child = 0_usize;
+        for index in 0..self.type_count {
+            let row = self.type_row(index)?;
+            let name_required = matches!(
+                row.kind,
+                TypeRowKind::Basic
+                    | TypeRowKind::Named
+                    | TypeRowKind::Alias
+                    | TypeRowKind::TypeParam
+            );
+            if name_required && row.name.is_empty() {
+                return Err(ImageError::TypeNameRequired {
+                    index,
+                    kind: row.kind,
+                });
+            }
+            let name_forbidden = matches!(
+                row.kind,
+                TypeRowKind::Pointer
+                    | TypeRowKind::Slice
+                    | TypeRowKind::Array
+                    | TypeRowKind::Map
+                    | TypeRowKind::Chan
+                    | TypeRowKind::Func
+                    | TypeRowKind::Struct
+                    | TypeRowKind::Interface
+                    | TypeRowKind::Union
+                    | TypeRowKind::Tuple
+            );
+            if name_forbidden && !row.name.is_empty() {
+                return Err(ImageError::TypeNameForbidden {
+                    index,
+                    kind: row.kind,
+                });
+            }
+            if row.kind != TypeRowKind::Chan && row.dir != ChanDir::Both {
+                return Err(ImageError::TypeDirectionCell {
+                    index,
+                    kind: row.kind,
+                });
+            }
+            if row.kind != TypeRowKind::Func && row.variadic {
+                return Err(ImageError::TypeVariadicCell {
+                    index,
+                    kind: row.kind,
+                });
+            }
+            if row.kind == TypeRowKind::Array && row.length < 0 {
+                return Err(ImageError::ArrayLength {
+                    index,
+                    length: row.length,
+                });
+            }
+            let (min_children, max_children) = match row.kind {
+                TypeRowKind::Pointer
+                | TypeRowKind::Slice
+                | TypeRowKind::Array
+                | TypeRowKind::Chan => (1, Some(1)),
+                TypeRowKind::Map => (2, Some(2)),
+                TypeRowKind::Basic
+                | TypeRowKind::TypeParam
+                | TypeRowKind::Struct
+                | TypeRowKind::Invalid => (0, Some(0)),
+                TypeRowKind::Named
+                | TypeRowKind::Alias
+                | TypeRowKind::Func
+                | TypeRowKind::Interface
+                | TypeRowKind::Union
+                | TypeRowKind::Tuple => (0, None),
+            };
+            let child_start =
+                usize::try_from(row.children.0).map_err(|_| ImageError::TypeChildRange {
+                    index,
+                    start: usize::MAX,
+                    count: usize::try_from(row.children.1).unwrap_or(usize::MAX),
+                    child_count: self.child_count,
+                })?;
+            let child_count =
+                usize::try_from(row.children.1).map_err(|_| ImageError::TypeChildRange {
+                    index,
+                    start: child_start,
+                    count: usize::MAX,
+                    child_count: self.child_count,
+                })?;
+            let param_count_law = match row.kind {
+                TypeRowKind::Func => {
+                    usize::try_from(row.param_count).is_ok_and(|count| count <= child_count)
+                }
+                _ => row.param_count == 0,
+            };
+            if !param_count_law {
+                return Err(ImageError::TypeParamCount {
+                    index,
+                    kind: row.kind,
+                    param_count: row.param_count,
+                    child_count: row.children.1,
+                });
+            }
+            let over_max = max_children.is_some_and(|max| child_count > max);
+            let run_end = child_start.checked_add(child_count);
+            if child_count < min_children
+                || over_max
+                || child_start != expected_child
+                || run_end.is_none_or(|end| end > self.child_count)
+            {
+                return Err(ImageError::TypeChildRange {
+                    index,
+                    start: child_start,
+                    count: child_count,
+                    child_count: self.child_count,
+                });
+            }
+            for child in child_start..child_start + child_count {
+                self.type_child(child)?;
+            }
+            expected_child = child_start + child_count;
+            let member_start =
+                usize::try_from(row.members.0).map_err(|_| ImageError::TypeMemberRange {
+                    index,
+                    start: usize::MAX,
+                    count: usize::try_from(row.members.1).unwrap_or(usize::MAX),
+                    member_count: self.member_count,
+                })?;
+            let member_count =
+                usize::try_from(row.members.1).map_err(|_| ImageError::TypeMemberRange {
+                    index,
+                    start: member_start,
+                    count: usize::MAX,
+                    member_count: self.member_count,
+                })?;
+            let member_law = match row.kind {
+                TypeRowKind::Struct | TypeRowKind::Interface => None,
+                _ => Some(0),
+            };
+            let member_end = member_start.checked_add(member_count);
+            if member_law.is_some_and(|max| member_count > max)
+                || member_end.is_none_or(|end| end > self.member_count)
+            {
+                return Err(ImageError::TypeMemberRange {
+                    index,
+                    start: member_start,
+                    count: member_count,
+                    member_count: self.member_count,
+                });
+            }
         }
-        let offset = usize::try_from(u32_at(row, 4)).map_err(|_| ImageError::NameRange {
-            index,
-            offset: usize::MAX,
-            length: 0,
-            atom_bytes: self.atom_bytes,
-        })?;
-        let length = usize::try_from(u32_at(row, 8)).map_err(|_| ImageError::NameRange {
-            index,
-            offset,
-            length: usize::MAX,
-            atom_bytes: self.atom_bytes,
-        })?;
-        if length == 0
-            || offset
-                .checked_add(length)
-                .is_none_or(|end| end > self.atom_bytes)
-        {
-            return Err(ImageError::NameRange {
-                index,
-                offset,
-                length,
-                atom_bytes: self.atom_bytes,
+        if expected_child != self.child_count {
+            return Err(ImageError::TypeChildTiling {
+                declared: expected_child,
+                plane: self.child_count,
             });
         }
-        let name = &self.bytes[self.atom_offset + offset..self.atom_offset + offset + length];
-        if str::from_utf8(name).is_err() {
-            return Err(ImageError::NameUtf8 { index });
-        }
-        Ok(Declaration {
-            kind,
-            exported,
-            name,
-        })
+        Ok(())
     }
 
-    fn row(self, index: usize) -> &'image [u8] {
-        let start = self.declaration_offset + index * DECLARATION_BYTES;
-        &self.bytes[start..start + DECLARATION_BYTES]
+    fn validate_methods(self) -> Result<(), ImageError> {
+        let mut previous_owner = 0_u32;
+        for index in 0..self.method_count {
+            let row = self.method(index)?;
+            if index > 0 && row.owner < previous_owner {
+                return Err(ImageError::MethodSort {
+                    index,
+                    owner: row.owner,
+                    previous: previous_owner,
+                });
+            }
+            previous_owner = row.owner;
+        }
+        Ok(())
+    }
+
+    fn validate_type_parameters(self) -> Result<(), ImageError> {
+        let mut previous_owner = 0_u32;
+        for index in 0..self.type_parameter_count {
+            let row = self.type_parameter(index)?;
+            if index > 0 && row.owner < previous_owner {
+                return Err(ImageError::TypeParameterSort {
+                    index,
+                    owner: row.owner,
+                    previous: previous_owner,
+                });
+            }
+            previous_owner = row.owner;
+        }
+        Ok(())
+    }
+
+    fn validate_members(self) -> Result<(), ImageError> {
+        let mut previous_owner = 0_u32;
+        for index in 0..self.member_count {
+            let row = self.member(index)?;
+            if index > 0 && row.owner < previous_owner {
+                return Err(ImageError::MemberSort {
+                    index,
+                    owner: row.owner,
+                    previous: previous_owner,
+                });
+            }
+            previous_owner = row.owner;
+        }
+        // Every owner's declared run must equal exactly its contiguous run
+        // of same-owner rows, so the plane tiles without gaps or overlaps.
+        let mut cursor = 0_usize;
+        while cursor < self.member_count {
+            let owner = self.member(cursor)?.owner;
+            let mut end = cursor + 1;
+            while end < self.member_count && self.member(end)?.owner == owner {
+                end += 1;
+            }
+            let owner_index = usize::try_from(owner).map_err(|_| ImageError::MemberOwnerRange {
+                owner,
+                start: usize::MAX,
+                count: 0,
+                actual_start: cursor,
+                actual_count: end - cursor,
+            })?;
+            let declared = self.type_row(owner_index)?.members;
+            let declared_start = usize::try_from(declared.0).unwrap_or(usize::MAX);
+            let declared_count = usize::try_from(declared.1).unwrap_or(usize::MAX);
+            if declared_start != cursor || declared_count != end - cursor {
+                return Err(ImageError::MemberOwnerRange {
+                    owner,
+                    start: declared_start,
+                    count: declared_count,
+                    actual_start: cursor,
+                    actual_count: end - cursor,
+                });
+            }
+            cursor = end;
+        }
+        Ok(())
+    }
+
+    fn validate_docs(self) -> Result<(), ImageError> {
+        let mut previous = (0_u8, 0_u32);
+        for index in 0..self.doc_count {
+            let row = self.doc(index)?;
+            let key = (row.owner_kind as u8, row.owner);
+            if index > 0 && key < previous {
+                return Err(ImageError::DocSort {
+                    index,
+                    owner_kind: key.0,
+                    owner: key.1,
+                    previous_kind: previous.0,
+                    previous_owner: previous.1,
+                });
+            }
+            previous = key;
+        }
+        Ok(())
+    }
+
+    fn validate_references(self) -> Result<(), ImageError> {
+        let mut previous: Option<(&'image [u8], u32)> = None;
+        for index in 0..self.reference_count {
+            let row = self.reference(index)?;
+            if previous.is_some_and(|(previous_file, previous_start)| {
+                row.file > previous_file
+                    || (row.file == previous_file && row.span.0 < previous_start)
+            }) {
+                return Err(ImageError::ReferenceSort { index });
+            }
+            previous = Some((row.file, row.span.0));
+        }
+        Ok(())
+    }
+
+    fn validate_constraints(self) -> Result<(), ImageError> {
+        let mut previous_file: Option<&'image [u8]> = None;
+        for index in 0..self.constraint_count {
+            let row = self.constraint(index)?;
+            if previous_file.is_some_and(|previous| row.file < previous) {
+                return Err(ImageError::ConstraintSort { index });
+            }
+            previous_file = Some(row.file);
+        }
+        Ok(())
     }
 }
+
+/// Child flag bit marking a tilde (`~T`) union term.
+pub const CHILD_TILDE_FLAG: u32 = 1;
 
 /// Exact image rejection returned before a Go fact is admitted.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -241,6 +1443,16 @@ pub enum ImageError {
     /// The image checksum differs from its fixed header and body.
     #[error("Go authority image checksum does not match")]
     Digest,
+    /// A queried row index lies outside its validated plane.
+    #[error("Go authority {plane} row {index} lies outside {count}")]
+    RowBounds {
+        /// Queried plane name.
+        plane: &'static str,
+        /// Queried row index.
+        index: usize,
+        /// Validated plane row count.
+        count: usize,
+    },
     /// A declaration row has an unrecognized kind tag.
     #[error("Go authority declaration {index} has unknown kind tag {found}")]
     DeclarationKind { index: usize, found: u8 },
@@ -250,19 +1462,307 @@ pub enum ImageError {
     /// A declaration row claims non-zero reserved bits.
     #[error("Go authority declaration {index} has non-zero reserved bits")]
     DeclarationReserved { index: usize },
-    /// A declaration name coordinate lies outside the atom plane.
+    /// A type row claims non-zero reserved bits.
+    #[error("Go authority type row {index} has non-zero reserved bits")]
+    TypeReserved { index: usize },
+    /// A method row claims non-zero reserved bits.
+    #[error("Go authority method {index} has non-zero reserved bits")]
+    MethodReserved { index: usize },
+    /// A member row claims non-zero reserved bits.
+    #[error("Go authority member {index} has non-zero reserved bits")]
+    MemberReserved { index: usize },
+    /// A doc row claims non-zero reserved bits.
+    #[error("Go authority doc {index} has non-zero reserved bits")]
+    DocReserved { index: usize },
+    /// A reference row claims non-zero reserved bits.
+    #[error("Go authority reference {index} has non-zero reserved bits")]
+    ReferenceReserved { index: usize },
+    /// A declaration type-root cell names a row outside the type plane.
     #[error(
-        "Go authority declaration {index} name range {offset}..{length} exceeds atom bytes {atom_bytes}"
+        "Go authority declaration {index} names type root {root} outside {type_count} type rows"
     )]
-    NameRange {
+    DeclarationTypeRoot {
+        index: usize,
+        root: u32,
+        type_count: usize,
+    },
+    /// A declaration or method span is inverted or half-present.
+    #[error("Go authority row {index} has malformed span {start}..{end}")]
+    DeclarationSpan { index: usize, start: u32, end: u32 },
+    /// A type row has an unrecognized kind tag.
+    #[error("Go authority type row {index} has unknown kind tag {found}")]
+    TypeKind { index: usize, found: u8 },
+    /// A type row name cell is required but empty.
+    #[error("Go authority type row {index} of kind {kind:?} requires a name")]
+    TypeNameRequired { index: usize, kind: TypeRowKind },
+    /// A type row name cell carries bytes where the kind forbids them.
+    #[error("Go authority type row {index} of kind {kind:?} forbids a name")]
+    TypeNameForbidden { index: usize, kind: TypeRowKind },
+    /// A type row direction cell is outside the closed set.
+    #[error("Go authority type row {index} has unknown channel direction {found}")]
+    TypeDirection { index: usize, found: u8 },
+    /// A non-chan type row carries a channel direction.
+    #[error("Go authority type row {index} of kind {kind:?} carries a channel direction")]
+    TypeDirectionCell { index: usize, kind: TypeRowKind },
+    /// A type row variadic cell is outside the closed set.
+    #[error("Go authority type row {index} has unknown variadic flag {found}")]
+    TypeVariadicFlag { index: usize, found: u8 },
+    /// A non-func type row carries the variadic flag.
+    #[error("Go authority type row {index} of kind {kind:?} carries the variadic flag")]
+    TypeVariadicCell { index: usize, kind: TypeRowKind },
+    /// An array row declares a negative length.
+    #[error("Go authority array row {index} declares negative length {length}")]
+    ArrayLength { index: usize, length: i64 },
+    /// A func row's parameter count disagrees with its child run, or a
+    /// non-func row carries a parameter count.
+    #[error(
+        "Go authority type row {index} of kind {kind:?} declares {param_count} parameters over {child_count} children"
+    )]
+    TypeParamCount {
+        index: usize,
+        kind: TypeRowKind,
+        param_count: u32,
+        child_count: u32,
+    },
+    /// A type row's child run is out of bounds, misordered, or off-law.
+    #[error(
+        "Go authority type row {index} child range {start}..{count} violates the child plane of {child_count}"
+    )]
+    TypeChildRange {
+        index: usize,
+        start: usize,
+        count: usize,
+        child_count: usize,
+    },
+    /// A pooled type child names a row outside the type plane.
+    #[error("Go authority type child {index} names type row {target} outside {type_count}")]
+    TypeChildTarget {
+        index: usize,
+        target: u32,
+        type_count: usize,
+    },
+    /// A pooled type child carries undefined flag bits.
+    #[error("Go authority type child {index} carries undefined flags {flags:#x}")]
+    TypeChildFlags { index: usize, flags: u32 },
+    /// The pooled child plane does not exactly tile every type row's run.
+    #[error("Go authority type child plane holds {plane} children but rows declare {declared}")]
+    TypeChildTiling { declared: usize, plane: usize },
+    /// A type row's member run is out of bounds or off-law.
+    #[error(
+        "Go authority type row {index} member range {start}..{count} violates the member plane of {member_count}"
+    )]
+    TypeMemberRange {
+        index: usize,
+        start: usize,
+        count: usize,
+        member_count: usize,
+    },
+    /// A method row names an owner outside the declaration plane.
+    #[error(
+        "Go authority method {index} names owner {owner} outside {declaration_count} declarations"
+    )]
+    MethodOwner {
+        index: usize,
+        owner: u32,
+        declaration_count: usize,
+    },
+    /// A method row flag cell is outside the closed set.
+    #[error("Go authority method {index} has unknown {cell} flag {found}")]
+    MethodFlag {
+        index: usize,
+        cell: &'static str,
+        found: u8,
+    },
+    /// A method signature root names a row outside the type plane.
+    #[error("Go authority method {index} names type root {root} outside {type_count}")]
+    MethodTypeRoot {
+        index: usize,
+        root: u32,
+        type_count: usize,
+    },
+    /// A method's receiver type-parameter blob disagrees with its count.
+    #[error(
+        "Go authority method {index} receiver type-parameter blob of {blob_bytes} bytes does not hold {count} names"
+    )]
+    MethodReceiverParams {
+        index: usize,
+        count: u32,
+        blob_bytes: u32,
+    },
+    /// Method rows are not canonically ordered by owner.
+    #[error("Go authority method {index} owner {owner} precedes earlier owner {previous}")]
+    MethodSort {
+        index: usize,
+        owner: u32,
+        previous: u32,
+    },
+    /// A type-parameter row names an owner outside the declaration plane.
+    #[error(
+        "Go authority type parameter {index} names owner {owner} outside {declaration_count} declarations"
+    )]
+    TypeParameterOwner {
+        index: usize,
+        owner: u32,
+        declaration_count: usize,
+    },
+    /// A type-parameter constraint names a row outside the type plane.
+    #[error(
+        "Go authority type parameter {index} constraint names type row {root} outside {type_count}"
+    )]
+    TypeParameterConstraint {
+        index: usize,
+        root: u32,
+        type_count: usize,
+    },
+    /// Type-parameter rows are not canonically ordered by owner.
+    #[error("Go authority type parameter {index} owner {owner} precedes earlier owner {previous}")]
+    TypeParameterSort {
+        index: usize,
+        owner: u32,
+        previous: u32,
+    },
+    /// A member row has an unknown member kind.
+    #[error("Go authority member {index} has unknown kind tag {found}")]
+    MemberKind { index: usize, found: u8 },
+    /// A member row flag cell is outside the closed set.
+    #[error("Go authority member {index} has unknown {cell} flag {found}")]
+    MemberFlag {
+        index: usize,
+        cell: &'static str,
+        found: u8,
+    },
+    /// A non-field member carries the embedded flag.
+    #[error("Go authority member {index} carries the embedded flag off a struct field")]
+    MemberEmbedded { index: usize },
+    /// A member row names an owner outside the type plane.
+    #[error("Go authority member {index} names owner {owner} outside {type_count} type rows")]
+    MemberOwner {
+        index: usize,
+        owner: u32,
+        type_count: usize,
+    },
+    /// A member type root names a row outside the type plane.
+    #[error("Go authority member {index} names type root {root} outside {type_count}")]
+    MemberTypeRoot {
+        index: usize,
+        root: u32,
+        type_count: usize,
+    },
+    /// Member rows are not canonically ordered by owner.
+    #[error("Go authority member {index} owner {owner} precedes earlier owner {previous}")]
+    MemberSort {
+        index: usize,
+        owner: u32,
+        previous: u32,
+    },
+    /// A type row's declared member run disagrees with its contiguous rows.
+    #[error(
+        "Go authority type row {owner} declares members {start}..{count} but holds rows {actual_start}..{actual_count}"
+    )]
+    MemberOwnerRange {
+        owner: u32,
+        start: usize,
+        count: usize,
+        actual_start: usize,
+        actual_count: usize,
+    },
+    /// A documentation row has an unknown owner-kind tag.
+    #[error("Go authority doc {index} has unknown owner kind {found}")]
+    DocOwnerKind { index: usize, found: u8 },
+    /// A documentation row names an owner outside its lane.
+    #[error("Go authority doc {index} names owner {owner} outside {bound}")]
+    DocOwner {
+        index: usize,
+        owner: u32,
+        bound: usize,
+    },
+    /// A documentation row carries empty text.
+    #[error("Go authority doc {index} carries empty text")]
+    EmptyDoc { index: usize },
+    /// Documentation rows are not canonically ordered by owner key.
+    #[error(
+        "Go authority doc {index} owner ({owner_kind}, {owner}) precedes earlier ({previous_kind}, {previous_owner})"
+    )]
+    DocSort {
+        index: usize,
+        owner_kind: u8,
+        owner: u32,
+        previous_kind: u8,
+        previous_owner: u32,
+    },
+    /// A reference row names an owner outside the declaration plane.
+    #[error(
+        "Go authority reference {index} names owner {owner} outside {declaration_count} declarations"
+    )]
+    ReferenceOwner {
+        index: usize,
+        owner: u32,
+        declaration_count: usize,
+    },
+    /// A reference call span is inverted.
+    #[error("Go authority reference {index} has inverted call span {start}..{end}")]
+    ReferenceSpan { index: usize, start: u32, end: u32 },
+    /// A method-owning reference names no such (receiver, method) row.
+    #[error(
+        "Go authority reference {index} names unresolved method of {function_bytes} bytes on receiver of {owner_bytes} bytes"
+    )]
+    ReferenceOwnerUnresolved {
+        index: usize,
+        owner_bytes: usize,
+        function_bytes: usize,
+    },
+    /// The resolved reference owner has no span to measure against.
+    #[error("Go authority reference {index} owner has no resolved span")]
+    ReferenceOwnerSpan { index: usize },
+    /// The reference call-site file differs from the owner's file.
+    #[error("Go authority reference {index} names a file other than its owner's")]
+    ReferenceFile { index: usize },
+    /// The reference call span is not contained in the owner span.
+    #[error(
+        "Go authority reference {index} call span {start}..{end} escapes owner span {owner_start}..{owner_end}"
+    )]
+    ReferenceContainment {
+        index: usize,
+        start: u32,
+        end: u32,
+        owner_start: u32,
+        owner_end: u32,
+    },
+    /// Reference rows are not canonically ordered by (file, start).
+    #[error("Go authority reference {index} is out of canonical (file, start) order")]
+    ReferenceSort { index: usize },
+    /// A build-constraint row carries an empty constraint expression.
+    #[error("Go authority constraint {index} carries an empty constraint")]
+    EmptyConstraint { index: usize },
+    /// A build-constraint blob disagrees with its declared record count.
+    #[error(
+        "Go authority constraint {index} exported blob of {blob_bytes} bytes does not hold {count} records"
+    )]
+    ConstraintBlob {
+        index: usize,
+        count: u32,
+        blob_bytes: u32,
+    },
+    /// Build-constraint rows are not canonically ordered by file.
+    #[error("Go authority constraint {index} is out of canonical file order")]
+    ConstraintSort { index: usize },
+    /// A row requires a non-empty name and carries none.
+    #[error("Go authority {plane} row {index} carries an empty name")]
+    EmptyName { plane: &'static str, index: usize },
+    /// An atom range lies outside the atom plane.
+    #[error(
+        "Go authority {plane} row {index} atom range {offset}..{length} exceeds atom bytes {atom_bytes}"
+    )]
+    AtomRange {
+        plane: &'static str,
         index: usize,
         offset: usize,
         length: usize,
         atom_bytes: usize,
     },
-    /// A declaration name cannot be decoded as UTF-8.
-    #[error("Go authority declaration {index} name is not UTF-8")]
-    NameUtf8 { index: usize },
+    /// An atom range is not valid UTF-8.
+    #[error("Go authority {plane} row {index} atom bytes are not UTF-8")]
+    AtomUtf8 { plane: &'static str, index: usize },
 }
 
 /// Exact fixed-header violation returned by [`GoImage::open`].
@@ -288,35 +1788,116 @@ pub enum HeaderError {
     Reserved,
 }
 
-/// Exact-size iterator over validated borrowed Go declaration facts.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DeclarationIter<'image> {
-    image: GoImage<'image>,
-    next: usize,
+/// Splits one NUL-separated name blob into exactly `count` non-empty parts.
+#[must_use]
+pub fn split_nul(blob: &[u8], count: u32) -> Option<Vec<&[u8]>> {
+    let count = usize::try_from(count).ok()?;
+    if count == 0 {
+        return if blob.is_empty() {
+            Some(Vec::new())
+        } else {
+            None
+        };
+    }
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    for (position, byte) in blob.iter().enumerate() {
+        if *byte == 0 {
+            if position == start {
+                return None;
+            }
+            parts.push(&blob[start..position]);
+            start = position + 1;
+        }
+    }
+    if start != blob.len() {
+        return None;
+    }
+    (parts.len() == count).then_some(parts)
 }
 
-impl<'image> Iterator for DeclarationIter<'image> {
-    type Item = Result<Declaration<'image>, ImageError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next == self.image.declaration_count {
+/// Parses one build-constraint exported blob into its exact records:
+/// `count` records of `(kind byte, name bytes, 0x00)`.
+#[must_use]
+pub fn parse_constraint_blob(blob: &[u8], count: u32) -> Option<Vec<ConstrainedDecl<'_>>> {
+    let count = usize::try_from(count).ok()?;
+    let mut out = Vec::new();
+    let mut cursor = 0_usize;
+    for _ in 0..count {
+        let kind = DeclarationKind::decode(*blob.get(cursor)?)?;
+        cursor += 1;
+        let name_start = cursor;
+        while cursor < blob.len() && blob[cursor] != 0 {
+            cursor += 1;
+        }
+        if cursor >= blob.len() || cursor == name_start {
             return None;
         }
-        let index = self.next;
-        self.next += 1;
-        Some(self.image.declaration(index))
+        out.push(ConstrainedDecl {
+            kind,
+            name: &blob[name_start..cursor],
+        });
+        cursor += 1;
     }
+    (cursor == blob.len()).then_some(out)
+}
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.image.declaration_count - self.next;
-        (remaining, Some(remaining))
+/// Decodes one closed 0/1 flag cell.
+const fn flag_at(row: &[u8], offset: usize) -> Option<bool> {
+    match row[offset] {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
     }
 }
 
-impl ExactSizeIterator for DeclarationIter<'_> {
-    fn len(&self) -> usize {
-        self.image.declaration_count - self.next
+/// Maps the optional-row sentinel to `None`.
+const fn optional_row(raw: u32) -> Option<u32> {
+    if raw == NONE { None } else { Some(raw) }
+}
+
+/// Whether one optional type-row coordinate is present and out of bounds.
+fn optional_out_of_bounds(raw: Option<u32>, type_count: usize) -> bool {
+    raw.is_some_and(|root| usize::try_from(root).is_ok_and(|root| root >= type_count))
+}
+
+/// The raw root cell when one optional type-row coordinate is present and
+/// out of bounds, for exact error operands.
+fn out_of_bounds_root(raw: Option<u32>, type_count: usize) -> Option<u32> {
+    raw.filter(|root| optional_out_of_bounds(Some(*root), type_count))
+}
+
+/// Validates one span pair: both bounds share presence and the half-open
+/// range is ordered.
+fn span_at(
+    row: &[u8],
+    start_offset: usize,
+    end_offset: usize,
+    index: usize,
+) -> Result<Option<(u32, u32)>, ImageError> {
+    let start = u32_at(row, start_offset);
+    let end = u32_at(row, end_offset);
+    match (optional_row(start), optional_row(end)) {
+        (None, None) => Ok(None),
+        (Some(start), Some(end)) if start <= end => Ok(Some((start, end))),
+        (start, end) => Err(ImageError::DeclarationSpan {
+            index,
+            start: start.unwrap_or(NONE),
+            end: end.unwrap_or(NONE),
+        }),
     }
+}
+
+/// Reads one plane-count header cell.
+fn plane_count(bytes: &[u8], offset: usize, actual_body: usize) -> Result<usize, ImageError> {
+    let raw = u32_at(bytes, offset);
+    let count = usize::try_from(raw).map_err(|_| {
+        ImageError::Header(HeaderError::BodyLength {
+            declared: usize::MAX,
+            actual: actual_body,
+        })
+    })?;
+    Ok(count)
 }
 
 const fn u16_at(bytes: &[u8], offset: usize) -> u16 {

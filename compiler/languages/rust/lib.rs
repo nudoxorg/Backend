@@ -11,6 +11,23 @@ pub use authority::{
     RustDefinition, RustMethodCall, RustProject, SemanticKind, SourceByteLimit, SourceOrigin,
 };
 
+/// The pinned rust-analyzer HIR facade this authority borrows from.
+///
+/// Re-exported so downstream lane projections share exactly the rust-analyzer
+/// version this authority was compiled against, without widening the
+/// dependency graph or re-pinning salsa-coupled crates elsewhere.
+pub use ra_ap_hir;
+
+/// The pinned rust-analyzer inference database type behind [`RustAuthority`].
+pub use ra_ap_ide_db;
+
+/// The pinned Rust syntax tree this authority parses and spans.
+///
+/// Re-exported for the same version-lock reason as [`ra_ap_hir`]: every
+/// consumer of a borrowed [`RustAuthority`] must address the exact
+/// `ra_ap_syntax` release this authority parsed with.
+pub use ra_ap_syntax;
+
 /// Native compiler identity and sysroot accepted for one Rust authority transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RustToolchain {

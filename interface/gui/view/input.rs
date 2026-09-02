@@ -111,6 +111,44 @@ impl GpuiShellView {
         let current = self.text_for_target(target);
         let range_utf16 = requested_range.unwrap_or_else(|| self.native_input.selection.clone());
         let range = byte_range_from_utf16(current, range_utf16);
+        let insertion_start = current[..range.start].encode_utf16().count();
+        if target == TextInputTarget::DocumentationSearch {
+            let prefix = current[..range.start].len();
+            let inserted_bytes = replacement.len();
+            let suffix = current[range.end..].len();
+            let Some(actual) = prefix
+                .checked_add(inserted_bytes)
+                .and_then(|length| length.checked_add(suffix))
+            else {
+                let error = NativeTextInputError::InputLengthOverflow {
+                    target,
+                    prefix,
+                    inserted: inserted_bytes,
+                    suffix,
+                };
+                self.retain_native_input_error(error);
+                return Err(error);
+            };
+            if actual > crate::MAX_DOCUMENT_QUERY_BYTES {
+                let error = NativeTextInputError::InputTooLong {
+                    target,
+                    actual,
+                    maximum: crate::MAX_DOCUMENT_QUERY_BYTES,
+                };
+                self.retain_native_input_error(error);
+                return Err(error);
+            }
+            let mut value = String::with_capacity(actual);
+            value.push_str(&current[..range.start]);
+            value.push_str(replacement);
+            value.push_str(&current[range.end..]);
+            self.state.replace_documentation_query(value);
+            self.state.retain_input_error(None);
+            let inserted = insertion_start..insertion_start + replacement.encode_utf16().count();
+            self.native_input.selection = inserted.end..inserted.end;
+            self.native_input.marked = None;
+            return Ok(Some(inserted));
+        }
         let value = match InputText::try_from_parts(
             &current[..range.start],
             replacement,
@@ -141,7 +179,6 @@ impl GpuiShellView {
                 return Err(error);
             }
         };
-        let insertion_start = current[..range.start].encode_utf16().count();
         self.replace_target_text(target, value);
         self.state.retain_input_error(None);
 
@@ -154,7 +191,7 @@ impl GpuiShellView {
     fn replace_target_text(&mut self, target: TextInputTarget, value: InputText) {
         match target {
             TextInputTarget::DocumentationSearch => {
-                self.state.replace_documentation_query(value);
+                self.state.replace_documentation_query(value.to_string());
             }
             TextInputTarget::Palette => self.state.replace_palette_query(value),
             TextInputTarget::Form(field) => match self.state.replace_form_text(field, value) {

@@ -11,5 +11,9 @@
 mod image;
 pub mod oracle;
 
-pub use image::{Declaration, DeclarationIter, DeclarationKind, GoImage, HeaderError, ImageError};
+pub use image::{
+    ChanDir, ConstrainedDecl, Declaration, DeclarationKind, DocOwner, DocRow, GoImage, HeaderError,
+    ImageError, MemberKind, MemberRow, MethodRow, NONE, ReferenceRow, TypeParameterRow, TypeRow,
+    TypeRowKind, parse_constraint_blob, split_nul,
+};
 pub use oracle::{GoOracle, OracleError, Output};

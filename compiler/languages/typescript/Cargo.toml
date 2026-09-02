@@ -11,6 +11,11 @@ publish.workspace = true
 
 [dependencies]
 compiler-vocabulary = { path = "../../vocabulary" }
+serde.workspace = true
+serde_json.workspace = true
+# The checker report binds its exact source bytes by the same digest the
+# go authority image uses.
+sha2 = "=0.10.9"
 thiserror.workspace = true
 # OXC's tightly pinned crates form one arena-borrowed authority boundary.
 oxc_allocator = "=0.139.0"

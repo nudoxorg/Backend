@@ -254,6 +254,25 @@ impl TranslationUnit {
         (is_const, is_volatile, is_restrict)
     }
 
+    /// Returns the cursor's directly classified storage binding.
+    pub(crate) fn storage_class(cursor: CXCursor) -> clang_sys::CX_StorageClass {
+        // SAFETY: cursor was supplied by this live translation unit.
+        unsafe { clang_sys::clang_Cursor_getStorageClass(cursor) }
+    }
+
+    /// Returns the type's byte size as reported by libclang, where negative
+    /// values are libclang's incomplete, dependent, or invalid layout errors.
+    pub(crate) fn type_size_of(type_: CXType) -> i64 {
+        // SAFETY: type_ was obtained from this live translation unit.
+        unsafe { clang_sys::clang_Type_getSizeOf(type_) }
+    }
+
+    /// Returns the type's byte alignment under the same negative-error law.
+    pub(crate) fn type_align_of(type_: CXType) -> i64 {
+        // SAFETY: type_ was obtained from this live translation unit.
+        unsafe { clang_sys::clang_Type_getAlignOf(type_) }
+    }
+
     pub(crate) fn type_declaration(type_: CXType) -> Option<SymbolIdentity> {
         // SAFETY: type_ was obtained from this live translation unit.
         let declaration = unsafe { clang_sys::clang_getTypeDeclaration(type_) };
@@ -540,6 +559,7 @@ impl RequiredApi {
                     && clang_sys::clang_Cursor_getSpellingNameRange::is_loaded()
                     && clang_sys::clang_getCursorSemanticParent::is_loaded()
                     && clang_sys::clang_getCursorReferenced::is_loaded()
+                    && clang_sys::clang_Cursor_getStorageClass::is_loaded()
                     && clang_sys::clang_getCString::is_loaded()
                     && clang_sys::clang_disposeString::is_loaded()
             }
@@ -557,6 +577,8 @@ impl RequiredApi {
                     && clang_sys::clang_getArgType::is_loaded()
                     && clang_sys::clang_Type_getNumTemplateArguments::is_loaded()
                     && clang_sys::clang_Type_getTemplateArgumentAsType::is_loaded()
+                    && clang_sys::clang_Type_getSizeOf::is_loaded()
+                    && clang_sys::clang_Type_getAlignOf::is_loaded()
             }
             Self::Documentation => clang_sys::clang_Cursor_getCommentRange::is_loaded(),
             Self::Diagnostics => {

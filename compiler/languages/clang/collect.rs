@@ -16,10 +16,10 @@ use clang_sys::{
 use crate::{
     ClangInput, ClangScratch, CollectError, ScratchLane,
     facts::{
-        ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-        DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact, ReferenceKind,
-        ReferenceTarget, SourceDependencyKind, SymbolIdentity, TypeEdge, TypeFact, TypeId,
-        TypeKind, TypeQualifiers, TypeRelation,
+        BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind,
+        DefinitionState, DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact,
+        ReferenceKind, ReferenceTarget, SourceDependencyKind, StorageClass, SymbolIdentity,
+        TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
     },
     ffi::{self, TranslationUnit},
 };
@@ -190,6 +190,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             name: self.unit.name_span(cursor)?,
             owner: TranslationUnit::semantic_parent(cursor),
             documentation: self.unit.documentation_span(cursor)?,
+            storage: storage_class(TranslationUnit::storage_class(cursor)),
             type_root,
         })
     }
@@ -272,6 +273,9 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             array_len: matches!(kind, TypeKind::Array)
                 .then(|| TranslationUnit::array_len(type_))
                 .flatten(),
+            builtin: builtin_class(native_kind),
+            size_bits: measured_bits(TranslationUnit::type_size_of(type_)),
+            align_bits: measured_bits(TranslationUnit::type_align_of(type_)),
         })?;
         self.collect_type_children(id, kind, type_)?;
         Ok(Some(id))
@@ -524,10 +528,10 @@ const fn declaration_kind(kind: NativeCursorKind) -> DeclarationKind {
         clang_sys::CXCursor_Destructor => DeclarationKind::Destructor,
         clang_sys::CXCursor_FieldDecl => DeclarationKind::Field,
         clang_sys::CXCursor_VarDecl => DeclarationKind::Variable,
-        clang_sys::CXCursor_ParmDecl
-        | clang_sys::CXCursor_TemplateTypeParameter
+        clang_sys::CXCursor_ParmDecl => DeclarationKind::Parameter,
+        clang_sys::CXCursor_TemplateTypeParameter
         | clang_sys::CXCursor_NonTypeTemplateParameter
-        | clang_sys::CXCursor_TemplateTemplateParameter => DeclarationKind::Parameter,
+        | clang_sys::CXCursor_TemplateTemplateParameter => DeclarationKind::TemplateParameter,
         clang_sys::CXCursor_TypedefDecl | clang_sys::CXCursor_TypeAliasDecl => {
             DeclarationKind::TypeAlias
         }
@@ -550,6 +554,7 @@ const fn reference_kind(kind: NativeCursorKind) -> Option<ReferenceKind> {
             Some(ReferenceKind::Member)
         }
         clang_sys::CXCursor_CallExpr => Some(ReferenceKind::Call),
+        clang_sys::CXCursor_MacroExpansion => Some(ReferenceKind::MacroExpansion),
         _ => None,
     }
 }
@@ -617,6 +622,67 @@ const fn definition_state(is_definition: bool) -> DefinitionState {
     } else {
         DefinitionState::Declaration
     }
+}
+
+/// Projects libclang's closed storage class into the canonical lattice.
+/// Private-extern and OpenCL work-group-local declarations keep static
+/// storage because both bind internal-linkage storage; `ThreadLocal` has no
+/// native query on the enabled symbol surface and is therefore unreachable.
+const fn storage_class(class: clang_sys::CX_StorageClass) -> StorageClass {
+    match class {
+        clang_sys::CX_SC_Auto => StorageClass::Auto,
+        clang_sys::CX_SC_Static
+        | clang_sys::CX_SC_PrivateExtern
+        | clang_sys::CX_SC_OpenCLWorkGroupLocal => StorageClass::Static,
+        clang_sys::CX_SC_Extern => StorageClass::Extern,
+        clang_sys::CX_SC_Register => StorageClass::Register,
+        // `Invalid` and every newer native class keep no storage fact.
+        _ => StorageClass::None,
+    }
+}
+
+/// Classifies libclang's closed builtin type kinds without name or spelling
+/// inspection, retaining exotic builtins as `Other`.
+const fn builtin_class(kind: CXTypeKind) -> Option<BuiltinClass> {
+    match kind {
+        clang_sys::CXType_Void => Some(BuiltinClass::Void),
+        clang_sys::CXType_Bool => Some(BuiltinClass::Bool),
+        clang_sys::CXType_Char_U
+        | clang_sys::CXType_UChar
+        | clang_sys::CXType_Char_S
+        | clang_sys::CXType_SChar
+        | clang_sys::CXType_Char16
+        | clang_sys::CXType_Char32
+        | clang_sys::CXType_WChar => Some(BuiltinClass::Char),
+        clang_sys::CXType_Short
+        | clang_sys::CXType_Int
+        | clang_sys::CXType_Long
+        | clang_sys::CXType_LongLong
+        | clang_sys::CXType_Int128 => Some(BuiltinClass::Integer { signed: true }),
+        clang_sys::CXType_UShort
+        | clang_sys::CXType_UInt
+        | clang_sys::CXType_ULong
+        | clang_sys::CXType_ULongLong
+        | clang_sys::CXType_UInt128 => Some(BuiltinClass::Integer { signed: false }),
+        clang_sys::CXType_Float | clang_sys::CXType_Double | clang_sys::CXType_LongDouble => {
+            Some(BuiltinClass::Float)
+        }
+        clang_sys::CXType_NullPtr
+        | clang_sys::CXType_Complex
+        | clang_sys::CXType_Vector => Some(BuiltinClass::Other),
+        _ => None,
+    }
+}
+
+/// Narrows one native byte measurement into exact bit facts. Negative
+/// results are libclang's incomplete, dependent, and invalid layout errors,
+/// which keep the cell honestly empty.
+fn measured_bits(bytes: i64) -> Option<u32> {
+    if bytes <= 0 {
+        return None;
+    }
+    let bits = bytes.checked_mul(8)?;
+    u32::try_from(bits).ok()
 }
 
 /// Projects libclang's closed diagnostic severity without converting it through strings.

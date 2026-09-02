@@ -498,6 +498,9 @@ fn typescript_phase(cause: &compiler_languages_typescript::AuthorityError) -> Au
     match cause {
         compiler_languages_typescript::AuthorityError::Syntax { .. } => AuthorityPhase::Parse,
         compiler_languages_typescript::AuthorityError::Binding { .. } => AuthorityPhase::Resolve,
+        // A checker authority rejection is the type-checking phase by
+        // definition: the checker ran and rejected the transaction.
+        compiler_languages_typescript::AuthorityError::Checker { .. } => AuthorityPhase::TypeCheck,
     }
 }
 
@@ -510,6 +513,10 @@ fn typescript_class(
         }
         compiler_languages_typescript::AuthorityError::Binding { .. } => {
             AuthorityDiagnosticClass::Binding
+        }
+        // A checker rejection classifies as a type diagnostic.
+        compiler_languages_typescript::AuthorityError::Checker { .. } => {
+            AuthorityDiagnosticClass::Type
         }
     }
 }
@@ -564,11 +571,7 @@ fn go_image_phase(cause: &compiler_languages_go::ImageError) -> AuthorityPhase {
     match cause {
         compiler_languages_go::ImageError::Header(_)
         | compiler_languages_go::ImageError::Digest => AuthorityPhase::Parse,
-        compiler_languages_go::ImageError::DeclarationKind { .. }
-        | compiler_languages_go::ImageError::ExportedFlag { .. }
-        | compiler_languages_go::ImageError::DeclarationReserved { .. }
-        | compiler_languages_go::ImageError::NameRange { .. }
-        | compiler_languages_go::ImageError::NameUtf8 { .. } => AuthorityPhase::Project,
+        _ => AuthorityPhase::Project,
     }
 }
 

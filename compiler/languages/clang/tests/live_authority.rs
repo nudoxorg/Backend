@@ -5,9 +5,10 @@
 #![cfg(feature = "native-test")]
 
 use compiler_languages_clang::{
-    ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
-    DefinitionState, DiagnosticFact, IncludeFact, ReferenceFact, ReferenceKind, ReferenceTarget,
-    SourceDependencyKind, SourceSpan, TypeEdge, TypeFact, TypeId, collect,
+    BuiltinClass, ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId,
+    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, ReferenceFact, ReferenceKind,
+    ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass, TypeEdge, TypeFact, TypeId,
+    collect,
     facts::{TypeKind, TypeQualifiers},
 };
 use compiler_vocabulary::{CStandard, CxxStandard};
@@ -192,6 +193,7 @@ const fn empty_declaration() -> DeclarationFact {
         name: None,
         owner: None,
         documentation: None,
+        storage: StorageClass::None,
         type_root: None,
     }
 }
@@ -207,6 +209,9 @@ const fn empty_type() -> TypeFact {
         },
         declaration: None,
         array_len: None,
+        builtin: Some(BuiltinClass::Other),
+        size_bits: None,
+        align_bits: None,
     }
 }
 

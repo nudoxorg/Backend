@@ -4,12 +4,12 @@
 //! is deliberately presentation data: business requests still cross [`interface_core`] and the
 //! shell never claims that a lower-plane index exists when the service reports it unavailable.
 
-use interface_core::InputText;
-
 /// Number of packages represented by the first-party documentation catalog.
 pub const PACKAGE_COUNT: usize = 5;
 /// Maximum rows shown by the global documentation search surface.
 pub const MAX_DOCUMENT_RESULTS: usize = 64;
+/// Maximum UTF-8 width of a package/symbol query.
+pub const MAX_DOCUMENT_QUERY_BYTES: usize = 512;
 
 /// A documentation item kind with a stable visual treatment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,7 +185,7 @@ pub struct DocumentationState {
     /// Per-package tree disclosure.
     pub expanded_packages: [bool; PACKAGE_COUNT],
     /// Active documentation query, if nonempty.
-    pub query: Option<InputText>,
+    pub query: String,
     /// Search filter chip.
     pub filter: DocumentFilter,
     /// Indexed population selected by the reader.
@@ -198,6 +198,10 @@ pub struct DocumentationState {
     pub operations_expanded: bool,
     /// Packages pinned into the library tree. Unpinned packages remain discoverable in search.
     pub library_packages: [bool; PACKAGE_COUNT],
+    /// Stable visited-item history used by semantic links and search opens.
+    pub history: Vec<usize>,
+    /// Active position inside `history`.
+    pub history_cursor: usize,
 }
 
 impl Default for DocumentationState {
@@ -207,13 +211,15 @@ impl Default for DocumentationState {
             outline_visible: true,
             selected_item: 0,
             expanded_packages: [true, false, false, false, false],
-            query: None,
+            query: String::new(),
             filter: DocumentFilter::All,
             scope: DocumentSearchScope::Everything,
             selected_result: 0,
             source_expanded: false,
             operations_expanded: false,
             library_packages: [true, true, true, false, false],
+            history: vec![0],
+            history_cursor: 0,
         }
     }
 }
@@ -222,18 +228,19 @@ impl DocumentationState {
     /// Returns the current query without exposing its fixed transport storage.
     #[must_use]
     pub fn query_text(&self) -> &str {
-        self.query.as_ref().map_or("", |query| query)
+        &self.query
     }
 
-    /// Replaces the global documentation query and resets row selection.
-    pub fn replace_query(&mut self, query: InputText) {
-        self.query = (!query.as_ref().is_empty()).then_some(query);
+    /// Replaces the already-width-validated global documentation query.
+    pub fn replace_query(&mut self, query: String) {
+        debug_assert!(query.len() <= MAX_DOCUMENT_QUERY_BYTES);
+        self.query = query;
         self.selected_result = 0;
     }
 
     /// Clears the global query without constructing an empty transport value.
     pub fn clear_query(&mut self) {
-        self.query = None;
+        self.query.clear();
         self.selected_result = 0;
     }
 
@@ -262,11 +269,48 @@ impl DocumentationState {
     /// Selects an item and ensures its owning package is disclosed.
     pub fn select_item(&mut self, item: usize) {
         if let Some(document) = DOCUMENT_ITEMS.get(item) {
+            if self.selected_item != item {
+                self.history.truncate(self.history_cursor.saturating_add(1));
+                self.history.push(item);
+                self.history_cursor = self.history.len().saturating_sub(1);
+            }
             self.selected_item = item;
             if let Some(expanded) = self.expanded_packages.get_mut(document.package) {
                 *expanded = true;
             }
             self.source_expanded = false;
+        }
+    }
+
+    /// Returns whether an older visited document exists.
+    #[must_use]
+    pub const fn can_go_back(&self) -> bool {
+        self.history_cursor > 0
+    }
+
+    /// Returns whether a newer visited document exists.
+    #[must_use]
+    pub fn can_go_forward(&self) -> bool {
+        self.history_cursor.saturating_add(1) < self.history.len()
+    }
+
+    /// Moves to the previous visited document without creating a new history entry.
+    pub fn go_back(&mut self) {
+        if self.can_go_back() {
+            self.history_cursor -= 1;
+            if let Some(item) = self.history.get(self.history_cursor).copied() {
+                self.selected_item = item;
+            }
+        }
+    }
+
+    /// Moves to the next visited document without creating a new history entry.
+    pub fn go_forward(&mut self) {
+        if self.can_go_forward() {
+            self.history_cursor += 1;
+            if let Some(item) = self.history.get(self.history_cursor).copied() {
+                self.selected_item = item;
+            }
         }
     }
 
@@ -352,6 +396,14 @@ impl DocumentationState {
                     .map(DocumentSearchRow::Symbol),
             );
         }
+        if self.scope == DocumentSearchScope::Everything {
+            let query = self.query_text().trim();
+            rows.sort_by(|left, right| {
+                search_row_score(*right, query)
+                    .cmp(&search_row_score(*left, query))
+                    .then_with(|| search_row_label(*left).cmp(search_row_label(*right)))
+            });
+        }
         rows.truncate(MAX_DOCUMENT_RESULTS);
         rows
     }
@@ -383,6 +435,33 @@ impl DocumentationState {
     #[must_use]
     pub fn selected_search_row(&self) -> Option<DocumentSearchRow> {
         self.search_rows().get(self.selected_result).copied()
+    }
+}
+
+fn search_row_score(row: DocumentSearchRow, query: &str) -> u16 {
+    match row {
+        DocumentSearchRow::Symbol(hit) => hit.score,
+        DocumentSearchRow::Package(index) => {
+            let package = DOCUMENT_PACKAGES[index];
+            if query.is_empty() {
+                20
+            } else if eq_ascii(package.name, query) {
+                140
+            } else if starts_ascii(package.name, query) {
+                96
+            } else if contains_ascii(package.name, query) {
+                58
+            } else {
+                11
+            }
+        }
+    }
+}
+
+fn search_row_label(row: DocumentSearchRow) -> &'static str {
+    match row {
+        DocumentSearchRow::Package(index) => DOCUMENT_PACKAGES[index].name,
+        DocumentSearchRow::Symbol(hit) => DOCUMENT_ITEMS[hit.item].path,
     }
 }
 
@@ -1009,12 +1088,11 @@ pub const DOCUMENT_ITEMS: [DocumentItem; 20] = [
 #[cfg(test)]
 mod tests {
     use super::{DOCUMENT_ITEMS, DocumentFilter, DocumentationState};
-    use interface_core::InputText;
 
     #[test]
     fn ranked_search_prefers_an_exact_name_and_respects_kind_filters() {
         let mut state = DocumentationState::default();
-        state.replace_query(InputText::try_from_str("Ir").expect("bounded query"));
+        state.replace_query(String::from("Ir"));
         let hits = state.search_hits();
         assert_eq!(DOCUMENT_ITEMS[hits[0].item].name, "Ir");
 
@@ -1031,5 +1109,22 @@ mod tests {
         state.select_item(16);
         assert_eq!(state.selected_item, 16);
         assert!(state.expanded_packages[3]);
+    }
+
+    #[test]
+    fn unified_ranking_prefers_exact_symbols_and_history_tracks_links() {
+        let mut state = DocumentationState::default();
+        state.replace_query(String::from("Ir"));
+        assert!(matches!(
+            state.search_rows().first(),
+            Some(super::DocumentSearchRow::Symbol(hit)) if DOCUMENT_ITEMS[hit.item].name == "Ir"
+        ));
+
+        state.select_item(3);
+        state.select_item(6);
+        state.go_back();
+        assert_eq!(state.selected_item, 3);
+        state.go_forward();
+        assert_eq!(state.selected_item, 6);
     }
 }

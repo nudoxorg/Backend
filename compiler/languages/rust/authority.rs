@@ -295,6 +295,20 @@ impl<'analysis> RustAuthority<'analysis> {
         self.root.syntax().descendants().filter_map(ast::Path::cast)
     }
 
+    /// Streams only the top path of every path chain, skipping qualifier
+    /// children (`a::b` yields one `a::b`, never an extra `a`), so consumers
+    /// emit exactly one reference fact per written path chain.
+    pub fn top_level_paths(&self) -> impl Iterator<Item = ast::Path> + '_ {
+        self.root.syntax().descendants().filter_map(|syntax| {
+            let path = ast::Path::cast(syntax)?;
+            let nested = path
+                .syntax()
+                .parent()
+                .is_some_and(|parent| parent.kind() == ra_ap_syntax::SyntaxKind::PATH);
+            (!nested).then_some(path)
+        })
+    }
+
     /// Streams macro invocations with their unexpanded call-site syntax intact.
     pub fn macro_calls(&self) -> impl Iterator<Item = ast::MacroCall> + '_ {
         self.root
@@ -484,6 +498,14 @@ pub enum SourceOrigin {
     Local(ByteSpan),
     /// Definition belongs to another source file, dependency, or non-source compiler item.
     Foreign(SemanticKind),
+}
+
+impl SourceOrigin {
+    /// True when the definition resolved into this authority's exact source buffer.
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::Local(_))
+    }
 }
 
 /// One source declaration paired with its actual rust-analyzer HIR definition.

@@ -397,13 +397,25 @@ impl ShellState {
         self.select_route(Route::Libraries);
     }
 
+    /// Navigates to the previous visited document.
+    pub fn navigate_document_back(&mut self) {
+        self.projection.documentation.go_back();
+        self.select_route(Route::Libraries);
+    }
+
+    /// Navigates to the next visited document.
+    pub fn navigate_document_forward(&mut self) {
+        self.projection.documentation.go_forward();
+        self.select_route(Route::Libraries);
+    }
+
     /// Toggles one package row in the library tree.
     pub fn toggle_document_package(&mut self, package: usize) {
         self.projection.documentation.toggle_package(package);
     }
 
     /// Replaces the global package and symbol search query.
-    pub fn replace_documentation_query(&mut self, query: InputText) {
+    pub fn replace_documentation_query(&mut self, query: String) {
         self.projection.documentation.replace_query(query);
         self.select_route(Route::Search);
     }

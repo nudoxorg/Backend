@@ -75,12 +75,59 @@ pub enum DeclarationKind {
     Field,
     /// A variable declaration.
     Variable,
-    /// A function or template parameter.
+    /// A function parameter.
     Parameter,
+    /// A C++ template type, non-type, or template parameter.
+    TemplateParameter,
     /// A typedef or type alias.
     TypeAlias,
     /// A function, class, or partial-specialization template.
     Template,
+}
+
+/// How one declaration's storage is bound, projected from libclang's
+/// closed storage-class query into the driver's closed storage lattice.
+///
+/// `ThreadLocal` is part of the closed lattice but unreachable through the
+/// enabled `clang_3_6` symbol surface, which carries no TLS query; a TLS
+/// variable therefore retains the storage class libclang reports for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageClass {
+    /// No storage-class fact.
+    None,
+    /// Block-scope automatic storage.
+    Auto,
+    /// Static or internal-linkage storage.
+    Static,
+    /// External linkage.
+    Extern,
+    /// Register storage.
+    Register,
+    /// Thread-local storage.
+    ThreadLocal,
+}
+
+/// The closed scalar classification of one native builtin type fact.
+///
+/// The collector classifies directly from libclang's type kind, so a C `int`
+/// never has to be recovered from source text downstream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinClass {
+    /// The C `void` type.
+    Void,
+    /// The C `_Bool` type.
+    Bool,
+    /// A character type (`char`, `signed char`, `char16_t`, `wchar_t`, ...).
+    Char,
+    /// A signed or unsigned integer scalar.
+    Integer {
+        /// The type excludes negative values.
+        signed: bool,
+    },
+    /// A floating-point scalar (`float`, `double`, `long double`).
+    Float,
+    /// Any other native builtin (`nullptr_t`, `_Complex`, vector extensions).
+    Other,
 }
 
 /// Whether libclang identifies this declaration as a definition.
@@ -111,6 +158,8 @@ pub struct DeclarationFact {
     pub owner: Option<SymbolIdentity>,
     /// Exact raw-comment span in the main source file.
     pub documentation: Option<SourceSpan>,
+    /// Directly classified native storage binding.
+    pub storage: StorageClass,
     /// Root recursive type fact associated with this declaration.
     pub type_root: Option<TypeId>,
 }
@@ -177,6 +226,24 @@ pub struct TypeFact {
     pub declaration: Option<SymbolIdentity>,
     /// Exact native array cardinality when known and non-negative.
     pub array_len: Option<u64>,
+    /// Closed scalar classification when this type is a native builtin.
+    pub builtin: Option<BuiltinClass>,
+    /// Exact bit size measured by libclang, or `None` when the type is
+    /// incomplete, dependent, or otherwise unmeasured.
+    pub size_bits: Option<u32>,
+    /// Exact bit alignment measured by libclang under the same law.
+    pub align_bits: Option<u32>,
+}
+
+impl TypeFact {
+    /// True when this type fact is the native `void` type.
+    #[must_use]
+    pub const fn is_void(&self) -> bool {
+        matches!(
+            (self.kind, self.builtin),
+            (TypeKind::Builtin, Some(BuiltinClass::Void))
+        )
+    }
 }
 
 /// One directed row in the recursive type fact graph.
@@ -203,6 +270,8 @@ pub enum ReferenceKind {
     Member,
     /// A call expression.
     Call,
+    /// A macro invocation.
+    MacroExpansion,
 }
 
 /// The local, foreign, or unresolved identity result of a native reference.

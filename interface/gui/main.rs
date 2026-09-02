@@ -10,16 +10,16 @@ use gpui::{App, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptio
 use interface_core::ApplicationService;
 use interface_gui::GpuiShellView;
 
-const WINDOW_TITLE: &str = "Hummingbird";
+const WINDOW_TITLE: &str = "Hummingbird Docs";
 const APPLICATION_ID: &str = "dev.hummingbird.application";
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1180.0), px(760.0)), cx);
+        let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
         let window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(800.0), px(600.0))),
+                window_min_size: Some(size(px(940.0), px(650.0))),
                 app_id: Some(APPLICATION_ID.to_owned()),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from(WINDOW_TITLE)),

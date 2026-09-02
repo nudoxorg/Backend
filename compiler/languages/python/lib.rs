@@ -1,6 +1,16 @@
 //! Projects source-preserving Python syntax facts directly from Ruff's AST.
 //! Retains unresolved syntax explicitly instead of claiming type resolution.
 //! Keeps Python syntax authority independent of compiler IR transport.
+//!
+//! The crate exposes two peer authorities: the Ruff syntax extractor in this
+//! module, and the bounded pyrefly type-authority transaction in [`checker`].
+
+pub mod checker;
+
+pub use checker::{
+    CheckerError, CheckerReport, Inference, InferenceSite, InferredType, ImportResolution, Pyrefly,
+    SymbolOutcome, SymbolResolution,
+};
 
 use compiler_vocabulary::PythonVersion;
 use ruff_python_ast::{
@@ -18,13 +28,15 @@ pub struct Span {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeReason {
-    Unannotated {
-        position: AnnotationPosition,
-    },
+    /// The position carried no annotation at all.
+    Unannotated { position: AnnotationPosition },
+    /// Ruff proved the expression class but this extractor has no projection for it.
     UnsupportedSyntax {
         kind: AnnotationSyntaxKind,
         span: Span,
     },
+    /// The quoted-annotation recursion guard fired before resolution finished.
+    TruncatedAtDepthLimit,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationPosition {
@@ -39,6 +51,9 @@ pub enum Annotation {
         base: Box<Annotation>,
         args: Vec<Annotation>,
     },
+    /// A bracketed list display inside an annotation, such as the parameter
+    /// list of `Callable[[int], str]`.
+    List(Vec<Annotation>),
     StringLiteral(String),
     Union(Vec<Annotation>),
     Literal(Vec<LiteralValue>),
@@ -140,24 +155,38 @@ pub enum OccurrenceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterFact {
     pub name: String,
+    /// Exact source span of the declared identifier, so every consumer can
+    /// borrow the name bytes without re-tokenizing the parameter range.
+    pub name_span: Span,
     pub kind: ParameterKind,
     pub has_default: bool,
     pub default_source: Option<String>,
     pub annotation: Annotation,
+    /// Exact source span of the written annotation expression, if any.
+    pub annotation_span: Option<Span>,
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclarationFact {
     pub name: String,
+    /// Exact source span of the declared identifier.
+    pub name_span: Span,
     pub kind: DeclarationKind,
     pub span: Span,
     pub bases: Vec<Annotation>,
     pub class_form: Option<ClassForm>,
     pub decorators: Vec<String>,
+    /// Source span of each decorator spelling, parallel to `decorators`;
+    /// every span covers the leading `@` so the spelling is the tail.
+    pub decorator_spans: Vec<Span>,
     pub is_async: bool,
     pub receiver: ReceiverKind,
     pub parameters: Vec<ParameterFact>,
     pub value_source: Option<String>,
+    /// For alias declarations, the source span of the imported module
+    /// spelling (`json` in `from json import loads`, `os.path` in
+    /// `import os.path`), so cross-package keys can borrow source bytes.
+    pub value_span: Option<Span>,
     pub docstring: Option<DocstringFact>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,15 +404,18 @@ fn module_facts(
         span: module_span,
         declarations: vec![DeclarationFact {
             name: MODULE_IDENTITY.to_owned(),
+            name_span: module_span,
             kind: DeclarationKind::Module,
             span: module_span,
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
+            decorator_spans: Vec::new(),
             is_async: false,
             receiver: ReceiverKind::Plain,
             parameters: Vec::new(),
             value_source: None,
+            value_span: None,
             docstring: module_doc.clone(),
         }],
         occurrences: Vec::new(),
@@ -466,40 +498,85 @@ fn source_slice(text: &str, range: ruff_text_size::TextRange) -> Result<&str, Ex
 
 /// Projects only syntax proven by Ruff's typed expression tree.
 fn annotation(expr: &ast::Expr) -> Annotation {
+    annotation_at_depth(expr, 0)
+}
+
+/// Quoted annotations may quote further annotations; the guard keeps the
+/// projection total without trusting unbounded recursion.
+const MAX_STRING_ANNOTATION_DEPTH: usize = 8;
+
+/// Projects an annotation expression, resolving quoted annotations through
+/// Ruff's own expression authority up to the depth guard.
+fn annotation_at_depth(expr: &ast::Expr, depth: usize) -> Annotation {
     match expr {
         ast::Expr::Name(name) => Annotation::Name(name.id.as_str().to_owned()),
         ast::Expr::Attribute(_) => {
             qualified_name(expr).map_or_else(|| unsupported_annotation(expr), Annotation::Name)
         }
-        ast::Expr::StringLiteral(literal) => {
-            Annotation::StringLiteral(literal.value.to_str().to_owned())
-        }
+        ast::Expr::StringLiteral(literal) => string_annotation(literal, expr, depth),
         ast::Expr::NoneLiteral(_) => Annotation::None,
-        ast::Expr::BinOp(binary) if binary.op == ast::Operator::BitOr => {
-            Annotation::Union(vec![annotation(&binary.left), annotation(&binary.right)])
-        }
-        ast::Expr::Subscript(subscript) => application(subscript),
+        ast::Expr::BinOp(binary) if binary.op == ast::Operator::BitOr => Annotation::Union(vec![
+            annotation_at_depth(&binary.left, depth),
+            annotation_at_depth(&binary.right, depth),
+        ]),
+        ast::Expr::List(list) => Annotation::List(
+            list.elts
+                .iter()
+                .map(|element| annotation_at_depth(element, depth))
+                .collect(),
+        ),
+        ast::Expr::Subscript(subscript) => application(subscript, depth),
         _ => unsupported_annotation(expr),
     }
 }
 
+/// Resolves one quoted annotation by parsing its exact value with Ruff.
+///
+/// A value Ruff can parse as an expression is projected like any written
+/// annotation; a value Ruff rejects stays an explicit unsupported-syntax
+/// fact carrying the literal's exact span, so every consumer can borrow the
+/// unresolved spelling from the source; a value beyond the depth guard
+/// reports the truncation instead of guessing.
+fn string_annotation(
+    literal: &ast::ExprStringLiteral,
+    full: &ast::Expr,
+    depth: usize,
+) -> Annotation {
+    let value = literal.value.to_str();
+    if depth >= MAX_STRING_ANNOTATION_DEPTH {
+        return Annotation::Unknown(TypeReason::TruncatedAtDepthLimit);
+    }
+    let parsed = parse_unchecked(value, ParseOptions::from(Mode::Expression));
+    if parsed.has_syntax_errors() {
+        return unsupported_annotation(full);
+    }
+    match parsed.syntax() {
+        ast::Mod::Expression(expression) => annotation_at_depth(&expression.body, depth + 1),
+        ast::Mod::Module(_) => unsupported_annotation(full),
+    }
+}
+
 /// Projects a typed subscription as either `Literal[...]` or a generic application.
-fn application(subscript: &ast::ExprSubscript) -> Annotation {
+fn application(subscript: &ast::ExprSubscript, depth: usize) -> Annotation {
     if terminal_name(&subscript.value) == Some("Literal") {
         Annotation::Literal(literal_arguments(&subscript.slice))
     } else {
         Annotation::Generic {
-            base: Box::new(annotation(&subscript.value)),
-            args: annotation_arguments(&subscript.slice),
+            base: Box::new(annotation_at_depth(&subscript.value, depth)),
+            args: annotation_arguments(&subscript.slice, depth),
         }
     }
 }
 
 /// Keeps tuple subscription arguments distinct without re-tokenizing source text.
-fn annotation_arguments(slice: &ast::Expr) -> Vec<Annotation> {
+fn annotation_arguments(slice: &ast::Expr, depth: usize) -> Vec<Annotation> {
     match slice {
-        ast::Expr::Tuple(tuple) => tuple.elts.iter().map(annotation).collect(),
-        expression => vec![annotation(expression)],
+        ast::Expr::Tuple(tuple) => tuple
+            .elts
+            .iter()
+            .map(|expression| annotation_at_depth(expression, depth))
+            .collect(),
+        expression => vec![annotation_at_depth(expression, depth)],
     }
 }
 
@@ -658,6 +735,10 @@ fn last_segment(spelling: &str) -> &str {
     }
 }
 
+/// The proven decorator spellings of one declaration, each paired with
+/// its exact source span (including the leading `@`).
+type Decorated = (Vec<String>, Vec<Span>);
+
 struct Projection<'a> {
     text: &'a str,
     names: &'a [String],
@@ -695,14 +776,17 @@ impl<'a> Projection<'a> {
         }
     }
 
-    /// Preserves each decorator spelling after validating its parser-owned range.
-    fn decorators(&mut self, decorators: &[ast::Decorator]) -> Option<Vec<String>> {
+    /// Preserves each decorator spelling and its exact source span after
+    /// validating the parser-owned range.
+    fn decorators(&mut self, decorators: &[ast::Decorator]) -> Option<Decorated> {
         let mut values = Vec::with_capacity(decorators.len());
+        let mut spans = Vec::with_capacity(decorators.len());
         for decorator in decorators {
             let source = self.source_owned(decorator.range)?;
             values.push(source.trim_start_matches('@').to_owned());
+            spans.push(span(decorator.range));
         }
-        Some(values)
+        Some((values, spans))
     }
 
     /// Preserves an optional expression spelling without conflating absence and projection failure.
@@ -790,6 +874,10 @@ impl<'a> Projection<'a> {
         default: Option<&ast::Expr>,
         kind: ParameterKind,
     ) -> Option<ParameterFact> {
+        let annotation_span = item
+            .annotation
+            .as_deref()
+            .map(|expression| span(expression.range()));
         let annotation_value = item.annotation.as_deref().map_or(
             Annotation::Unknown(TypeReason::Unannotated {
                 position: AnnotationPosition::Parameter,
@@ -798,10 +886,12 @@ impl<'a> Projection<'a> {
         );
         let fact = ParameterFact {
             name: item.name.as_str().to_owned(),
+            name_span: span(item.name.range()),
             kind,
             has_default: default.is_some(),
             default_source: self.optional_source(default)?,
             annotation: annotation_value.clone(),
+            annotation_span,
             span: span(item.range),
         };
         self.facts.annotations.push(AnnotationFact {
@@ -902,7 +992,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 let Some(parameters) = self.params(function) else {
                     return;
                 };
-                let Some(decorators) = self.decorators(&function.decorator_list) else {
+                let Some((decorators, decorator_spans)) = self.decorators(&function.decorator_list)
+                else {
                     return;
                 };
                 let receiver =
@@ -931,15 +1022,18 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 };
                 self.add_declaration(DeclarationFact {
                     name: name.clone(),
+                    name_span: span(function.name.range()),
                     kind: DeclarationKind::Function,
                     span: declaration_span,
                     bases: Vec::new(),
                     class_form: None,
                     decorators,
+                    decorator_spans,
                     is_async: function.is_async,
                     receiver,
                     parameters,
                     value_source: None,
+                    value_span: None,
                     docstring: doc,
                 });
                 self.decorator_ranges = function.decorator_list.iter().map(|d| d.range).collect();
@@ -959,7 +1053,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 let old_decorator_owner = self.decorator_owner.take();
                 let name = class.name.as_str().to_owned();
                 let (bases, form) = self.class_form(class);
-                let Some(decorators) = self.decorators(&class.decorator_list) else {
+                let Some((decorators, decorator_spans)) = self.decorators(&class.decorator_list)
+                else {
                     return;
                 };
                 let Some(docstring) = self.docstring(&class.body) else {
@@ -967,15 +1062,18 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 };
                 self.add_declaration(DeclarationFact {
                     name: name.clone(),
+                    name_span: span(class.name.range()),
                     kind: DeclarationKind::Class,
                     span: span(class.range),
                     bases,
                     class_form: Some(form),
                     decorators,
+                    decorator_spans,
                     is_async: false,
                     receiver: ReceiverKind::Plain,
                     parameters: Vec::new(),
                     value_source: None,
+                    value_span: None,
                     docstring,
                 });
                 self.decorator_ranges = class.decorator_list.iter().map(|d| d.range).collect();
@@ -1063,19 +1161,57 @@ impl<'a> Visitor<'a> for Projection<'a> {
 }
 
 impl Projection<'_> {
+    /// The exact source span of an alias's binding identifier: the `as`
+    /// name when written, otherwise the final dotted segment of the
+    /// imported path.
+    fn alias_binding_span(&mut self, alias: &ast::Alias) -> Option<Span> {
+        if let Some(asname) = alias.asname.as_ref() {
+            return Some(span(asname.range()));
+        }
+        let range = alias.name.range();
+        let start = range.start().to_usize();
+        let end = range.end().to_usize();
+        let bytes = self.text.as_bytes();
+        let Some(spelling) = bytes.get(start..end) else {
+            self.reject(ExtractionError::InvalidRange {
+                start,
+                end,
+                source_length: bytes.len(),
+            });
+            return None;
+        };
+        let tail = spelling
+            .iter()
+            .rposition(|byte| *byte == b'.')
+            .map_or(start, |dot| start + dot + 1);
+        match source_span(bytes, tail, end) {
+            Ok(binding) => Some(binding),
+            Err(error) => {
+                self.reject(error);
+                None
+            }
+        }
+    }
+
     fn add_alias(&mut self, alias: &ast::Alias, statement: &ast::Stmt) {
         let binding = alias_binding(alias);
+        let Some(binding_span) = self.alias_binding_span(alias) else {
+            return;
+        };
         self.add_declaration(DeclarationFact {
             name: binding,
+            name_span: binding_span,
             kind: DeclarationKind::Alias,
             span: span(statement.range()),
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
+            decorator_spans: Vec::new(),
             is_async: false,
             receiver: ReceiverKind::Plain,
             parameters: Vec::new(),
             value_source: Some(alias.name.as_str().to_owned()),
+            value_span: Some(span(alias.name.range())),
             docstring: None,
         });
     }
@@ -1092,15 +1228,18 @@ impl Projection<'_> {
             };
             self.add_declaration(DeclarationFact {
                 name: name.id.as_str().to_owned(),
+                name_span: span(name.range()),
                 kind: DeclarationKind::Field,
                 span: span(statement.range()),
                 bases: Vec::new(),
                 class_form: None,
                 decorators: Vec::new(),
+                decorator_spans: Vec::new(),
                 is_async: false,
                 receiver: ReceiverKind::Plain,
                 parameters: Vec::new(),
                 value_source,
+                value_span: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {
@@ -1127,15 +1266,18 @@ impl Projection<'_> {
             };
             self.add_declaration(DeclarationFact {
                 name: name.id.as_str().to_owned(),
+                name_span: span(name.range()),
                 kind: DeclarationKind::Constant,
                 span: span(statement.range()),
                 bases: Vec::new(),
                 class_form: None,
                 decorators: Vec::new(),
+                decorator_spans: Vec::new(),
                 is_async: false,
                 receiver: ReceiverKind::Plain,
                 parameters: Vec::new(),
                 value_source,
+                value_span: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {
