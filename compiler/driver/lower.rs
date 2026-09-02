@@ -392,22 +392,26 @@ impl<'source> FactSet<'source> {
             extensions: [None; MAX_EMISSION_FACTS],
             key_digests: [0; MAX_EMISSION_FACTS],
             occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
-            occurrences: Box::new([Occurrence {
-                target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
-                    origin: compiler_ir::ForeignOrigin::Universe { ecosystem: "" },
-                    path: "",
-                    display: "",
-                    kind: None,
-                }),
-                kind: compiler_ir::ReferenceKind::FunctionCall,
-                confidence: compiler_ir::OccurrenceConfidence::Syntactic,
-                span: compiler_ir::RelSpan { start: 0, end: 0 },
-            }; MAX_EMISSION_OCCURRENCES]),
+            occurrences: Box::new(
+                [Occurrence {
+                    target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
+                        origin: compiler_ir::ForeignOrigin::Universe { ecosystem: "" },
+                        path: "",
+                        display: "",
+                        kind: None,
+                    }),
+                    kind: compiler_ir::ReferenceKind::FunctionCall,
+                    confidence: compiler_ir::OccurrenceConfidence::Syntactic,
+                    span: compiler_ir::RelSpan { start: 0, end: 0 },
+                }; MAX_EMISSION_OCCURRENCES],
+            ),
             occurrence_len: 0,
-            doc_facts: Box::new([DocFactInput {
-                owner: compiler_ir::EntityId::new(0),
-                fragment: DocFragmentInput::SoftBreak,
-            }; MAX_EMISSION_DOC_FRAGMENTS]),
+            doc_facts: Box::new(
+                [DocFactInput {
+                    owner: compiler_ir::EntityId::new(0),
+                    fragment: DocFragmentInput::SoftBreak,
+                }; MAX_EMISSION_DOC_FRAGMENTS],
+            ),
             doc_len: 0,
             extension_atoms: [&[]; MAX_EXTENSION_ATOMS],
             extension_atom_len: 0,
@@ -881,9 +885,9 @@ impl<'source> FactSet<'source> {
             let target = if child.target == u32::MAX {
                 TypeChildTarget::Text
             } else {
-                TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                    compiler_ir::TypeId::new(child.target),
-                ))
+                TypeChildTarget::Type(compiler_ir::TypeRef::Local(compiler_ir::TypeId::new(
+                    child.target,
+                )))
             };
             let wire_child = SemanticTypeChild {
                 target,
@@ -1433,15 +1437,20 @@ pub(super) fn admit<'source, 'output>(
     )
     .map_err(AdmissionFault::Canonical)?;
 
-    let mut type_facts = Box::new([TypeFactInput {
-        owner: compiler_ir::EntityId::new(0),
-        record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
-    }; MAX_TYPE_ROWS]);
-    let mut type_children = Box::new([SemanticTypeChild {
-        target: TypeChildTarget::Text,
-        name: None,
-        flags: 0,
-    }; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]);
+    let mut type_facts = Box::new(
+        [TypeFactInput {
+            owner: compiler_ir::EntityId::new(0),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
+        }; MAX_TYPE_ROWS],
+    );
+    let mut type_children = Box::new(
+        [SemanticTypeChild {
+            target: TypeChildTarget::Text,
+            name: None,
+            flags: 0,
+        };
+            MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN],
+    );
     let anonymous_rows = facts.anonymous_rows;
     // Lane order: anonymous rows first (topological by construction), then
     // fact rows — every fact-row child and anonymous child points backward.
@@ -1589,15 +1598,17 @@ pub(super) fn admit<'source, 'output>(
 
     // Occurrence lane: every admitted reference fact, owner-relative, in
     // admission order.
-    let mut occurrence_inputs = Box::new([OccurrenceInput {
-        owner: compiler_ir::EntityId::new(0),
-        occurrence: Occurrence {
-            target: compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(0)),
-            kind: compiler_ir::ReferenceKind::FunctionCall,
-            confidence: compiler_ir::OccurrenceConfidence::Syntactic,
-            span: compiler_ir::RelSpan { start: 0, end: 0 },
-        },
-    }; MAX_EMISSION_OCCURRENCES]);
+    let mut occurrence_inputs = Box::new(
+        [OccurrenceInput {
+            owner: compiler_ir::EntityId::new(0),
+            occurrence: Occurrence {
+                target: compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(0)),
+                kind: compiler_ir::ReferenceKind::FunctionCall,
+                confidence: compiler_ir::OccurrenceConfidence::Syntactic,
+                span: compiler_ir::RelSpan { start: 0, end: 0 },
+            },
+        }; MAX_EMISSION_OCCURRENCES],
+    );
     for (index, owner) in facts.occurrence_owners[..facts.occurrence_len]
         .iter()
         .enumerate()

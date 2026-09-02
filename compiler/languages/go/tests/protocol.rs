@@ -3,7 +3,9 @@
 //! Subprocess falsifiers use only temporary local scripts and the oracle override.
 
 use compiler_languages_go::oracle::DeclKind;
-use compiler_languages_go::{GoOracle, OracleError};
+use compiler_languages_go::{DocOwner, GoImage, GoOracle, OracleError};
+use sha2::{Digest, Sha256};
+use std::fs;
 
 const GOLDEN: &str = include_str!("transcripts/golden.json");
 static ENVIRONMENT: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -310,5 +312,101 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
             .iter()
             .any(|constraint| constraint.file.ends_with("linux.go"))
     );
+    Ok(())
+}
+
+/// The binary authority image round-trips the oracle's complete Output:
+/// constant values with const groups and iota flags, interface-satisfaction
+/// edges (local and cross-package), and the package doc comment. Skipped
+/// when no Go toolchain is available.
+#[test]
+fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
+    if std::process::Command::new(&compiler)
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
+        return Ok(());
+    }
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
+    let source = fixture.join("demo.go");
+    let bytes = adapter().authority_image(&source, &fixture)?;
+    let image = GoImage::open(&bytes).map_err(|cause| OracleError::Decode {
+        message: cause.to_string(),
+        transcript: String::new(),
+    })?;
+    let expected: [u8; 32] =
+        Sha256::digest(fs::read(&source).expect("fixture source bytes")).into();
+    assert_eq!(image.source_digest(), expected);
+    // Declarations: constants carry exact values, const groups, and iota.
+    let mut first_group = None;
+    for index in 0..image.declaration_count() {
+        let declaration = image
+            .declaration(index)
+            .map_err(|cause| OracleError::Decode {
+                message: cause.to_string(),
+                transcript: String::new(),
+            })?;
+        match declaration.name {
+            b"First" => {
+                assert_eq!(declaration.value, b"0");
+                assert!(declaration.iota);
+                first_group = Some(declaration.const_group);
+            }
+            b"Second" => {
+                assert_eq!(declaration.value, b"1");
+                assert!(declaration.iota);
+                assert_eq!(declaration.const_group, first_group.unwrap_or(-1));
+            }
+            b"Node" | b"Ghost" => panic!("fixture module carries no such declaration"),
+            _ => {}
+        }
+    }
+    assert!(first_group.is_some(), "iota const group missing");
+    // Satisfaction edges: Inner and Outer both satisfy demo.Reader (local)
+    // and sub.Service (cross-package) through the promoted Read method.
+    let mut local_edges = 0_usize;
+    let mut foreign_edges = 0_usize;
+    for index in 0..image.satisfaction_count() {
+        let row = image
+            .satisfaction(index)
+            .map_err(|cause| OracleError::Decode {
+                message: cause.to_string(),
+                transcript: String::new(),
+            })?;
+        let subject = image
+            .declaration(usize::try_from(row.subject).unwrap_or(usize::MAX))
+            .map_err(|cause| OracleError::Decode {
+                message: cause.to_string(),
+                transcript: String::new(),
+            })?;
+        assert_eq!(subject.kind, compiler_languages_go::DeclarationKind::Type);
+        match row.target_package {
+            b"" if row.target == b"Reader" => local_edges += 1,
+            b"example.com/demo/sub" if row.target == b"Service" => foreign_edges += 1,
+            other => panic!("unexpected satisfaction edge {other:?} -> {:?}", row.target),
+        }
+    }
+    assert_eq!(local_edges, 2, "Inner and Outer satisfy demo.Reader");
+    assert_eq!(foreign_edges, 2, "Inner and Outer satisfy sub.Service");
+    // The package doc comment rides a Package-owned documentation row.
+    let mut package_docs = 0_usize;
+    for index in 0..image.doc_count() {
+        let row = image.doc(index).map_err(|cause| OracleError::Decode {
+            message: cause.to_string(),
+            transcript: String::new(),
+        })?;
+        if row.owner_kind == DocOwner::Package {
+            package_docs += 1;
+            assert!(row.text.starts_with(b"Package demo "));
+        }
+    }
+    assert_eq!(package_docs, 1, "doc.go's package comment missing");
     Ok(())
 }

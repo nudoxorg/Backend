@@ -4,25 +4,33 @@
 //! build constraints — borrowed from one checksummed binary format.
 //! Rejects malformed or source-mismatched images before compiler admission.
 //!
-//! ## Format version 3 (zero-copy, fixed-width rows)
+//! ## Format version 4 (zero-copy, fixed-width rows)
 //!
-//! Header (116 bytes): magic `NGAI`, version `3`, header length, declaration
+//! Header (124 bytes): magic `NGAI`, version `4`, header length, declaration
 //! count, atom-plane byte length, body byte length, SHA-256 source digest,
-//! SHA-256 checksum, then seven plane row counts (types, references, methods,
-//! type parameters, members, docs, build constraints) and one reserved word.
+//! SHA-256 checksum, then eight plane row counts (types, references, methods,
+//! type parameters, members, docs, build constraints, satisfactions) and two
+//! reserved words.
 //!
-//! Body planes, in order: declarations (40 B rows), type rows (52 B), methods
+//! Body planes, in order: declarations (56 B rows), type rows (52 B), methods
 //! (64 B), type parameters (16 B), members — struct fields and interface
 //! method signatures (40 B), documentation rows (16 B), references (48 B),
-//! build constraints (28 B), pooled type children (8 B), and the shared UTF-8
-//! atom plane. Every range cell is validated against its plane; the pooled
-//! child plane must tile each type row's declared child run exactly; member
-//! runs must match the type rows that declare them; documentation,
-//! reference, and constraint rows must be canonically ordered; every
-//! reference owner must resolve to a function declaration or a method row
-//! whose file and span contain the call site. A func type row's parameter
-//! count cell splits its child run into the leading parameters and the
-//! trailing results; every other kind must leave that cell zero.
+//! build constraints (28 B), satisfaction rows (20 B), pooled type children
+//! (8 B), and the shared UTF-8 atom plane. Every range cell is validated
+//! against its plane; the pooled child plane must tile each type row's
+//! declared child run exactly; member runs must match the type rows that
+//! declare them; documentation, reference, constraint, and satisfaction rows
+//! must be canonically ordered; every reference owner must resolve to a
+//! function declaration or a method row whose file and span contain the call
+//! site; every satisfaction subject must be a named-type declaration. A func
+//! type row's parameter count cell splits its child run into the leading
+//! parameters and the trailing results; every other kind must leave that
+//! cell zero.
+//!
+//! Version 4 carries the oracle's complete `Output`: constant declarations
+//! own their exact value atom, const-group identity, and iota flag on the
+//! declaration row, interface-satisfaction edges own the satisfaction plane,
+//! and package-level doc comments own the `Package` documentation kind.
 
 use core::str;
 
@@ -30,9 +38,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
-const VERSION: u16 = 3;
-const HEADER_BYTES: usize = 116;
-const DECLARATION_BYTES: usize = 40;
+const VERSION: u16 = 4;
+const HEADER_BYTES: usize = 124;
+const DECLARATION_BYTES: usize = 56;
 const TYPE_ROW_BYTES: usize = 52;
 const METHOD_BYTES: usize = 64;
 const TYPE_PARAMETER_BYTES: usize = 16;
@@ -40,8 +48,9 @@ const MEMBER_BYTES: usize = 40;
 const DOC_BYTES: usize = 16;
 const REFERENCE_BYTES: usize = 48;
 const CONSTRAINT_BYTES: usize = 28;
+const SATISFACTION_BYTES: usize = 20;
 const CHILD_BYTES: usize = 8;
-const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v3\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v4\0";
 
 /// The `u32::MAX` sentinel shared by every optional coordinate cell.
 pub const NONE: u32 = u32::MAX;
@@ -158,6 +167,9 @@ pub struct Declaration<'image> {
     pub kind: DeclarationKind,
     /// Whether the package scope marks this identifier exported.
     pub exported: bool,
+    /// Whether the constant block this declaration belongs to uses `iota`
+    /// (constants only; `false` elsewhere).
+    pub iota: bool,
     /// Exact UTF-8 identifier bytes lent from the image atom plane.
     pub name: &'image [u8],
     /// The declaring package's import path (empty for none).
@@ -169,6 +181,11 @@ pub struct Declaration<'image> {
     pub span: Option<(u32, u32)>,
     /// The span's source file spelling.
     pub file: &'image [u8],
+    /// The exact constant value (`constant.Value.ExactString`; constants
+    /// only, empty elsewhere).
+    pub value: &'image [u8],
+    /// The const declaration block this constant belongs to (`0` for none).
+    pub const_group: i64,
 }
 
 /// One borrowed recursive type row.
@@ -274,6 +291,22 @@ pub enum DocOwner {
     Method = 1,
     /// A member row.
     Member = 2,
+    /// One package's doc comment; the owner cell names the package's first
+    /// declaration.
+    Package = 3,
+}
+
+/// One borrowed interface-satisfaction row: a named type declaration that
+/// satisfies a non-empty interface named by reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SatisfactionRow<'image> {
+    /// The satisfying named-type declaration index.
+    pub subject: u32,
+    /// The satisfied interface's bare name.
+    pub target: &'image [u8],
+    /// The satisfied interface's defining package import path; empty when
+    /// the interface declares in the subject's own package.
+    pub target_package: &'image [u8],
 }
 
 /// One borrowed documentation row: cleaned doc prose for one owner.
@@ -347,6 +380,7 @@ pub struct GoImage<'image> {
     doc_count: usize,
     reference_count: usize,
     constraint_count: usize,
+    satisfaction_count: usize,
     child_count: usize,
     declarations_offset: usize,
     types_offset: usize,
@@ -356,6 +390,7 @@ pub struct GoImage<'image> {
     docs_offset: usize,
     references_offset: usize,
     constraints_offset: usize,
+    satisfactions_offset: usize,
     children_offset: usize,
     atom_offset: usize,
     atom_bytes: usize,
@@ -387,9 +422,6 @@ impl<'image> GoImage<'image> {
                 found: header_bytes,
             }));
         }
-        if bytes[112..HEADER_BYTES] != [0; 4] {
-            return Err(ImageError::Header(HeaderError::Reserved));
-        }
         let actual_body = bytes.len() - HEADER_BYTES;
         let declaration_count = plane_count(bytes, 8, actual_body)?;
         let atom_bytes = plane_count(bytes, 12, actual_body)?;
@@ -401,6 +433,10 @@ impl<'image> GoImage<'image> {
         let member_count = plane_count(bytes, 100, actual_body)?;
         let doc_count = plane_count(bytes, 104, actual_body)?;
         let constraint_count = plane_count(bytes, 108, actual_body)?;
+        let satisfaction_count = plane_count(bytes, 112, actual_body)?;
+        if bytes[116..HEADER_BYTES] != [0; 8] {
+            return Err(ImageError::Header(HeaderError::Reserved));
+        }
 
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
@@ -413,7 +449,8 @@ impl<'image> GoImage<'image> {
         let docs_offset = members_offset + member_count * MEMBER_BYTES;
         let references_offset = docs_offset + doc_count * DOC_BYTES;
         let constraints_offset = references_offset + reference_count * REFERENCE_BYTES;
-        let children_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
+        let satisfactions_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
+        let children_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
         let Some(atoms_end) = HEADER_BYTES.checked_add(body_bytes) else {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
@@ -451,6 +488,7 @@ impl<'image> GoImage<'image> {
             docs_offset,
             references_offset,
             constraints_offset,
+            satisfactions_offset,
         ];
         if chain.iter().any(|offset| *offset > atom_offset) {
             return Err(ImageError::Header(HeaderError::BodyLength {
@@ -469,6 +507,7 @@ impl<'image> GoImage<'image> {
             doc_count,
             reference_count,
             constraint_count,
+            satisfaction_count,
             child_count,
             declarations_offset,
             types_offset,
@@ -478,6 +517,7 @@ impl<'image> GoImage<'image> {
             docs_offset,
             references_offset,
             constraints_offset,
+            satisfactions_offset,
             children_offset,
             atom_offset,
             atom_bytes,
@@ -492,6 +532,7 @@ impl<'image> GoImage<'image> {
         image.validate_docs()?;
         image.validate_references()?;
         image.validate_constraints()?;
+        image.validate_satisfactions()?;
         Ok(image)
     }
 
@@ -549,6 +590,12 @@ impl<'image> GoImage<'image> {
         self.constraint_count
     }
 
+    /// Number of validated satisfaction rows.
+    #[must_use]
+    pub const fn satisfaction_count(self) -> usize {
+        self.satisfaction_count
+    }
+
     /// Borrows one validated declaration row.
     pub fn declaration(self, index: usize) -> Result<Declaration<'image>, ImageError> {
         if index >= self.declaration_count {
@@ -567,7 +614,11 @@ impl<'image> GoImage<'image> {
             index,
             found: row[1],
         })?;
-        if row[2..4] != [0; 2] {
+        let iota = flag_at(row, 2).ok_or(ImageError::DeclarationIota {
+            index,
+            found: row[2],
+        })?;
+        if row[3] != 0 {
             return Err(ImageError::DeclarationReserved { index });
         }
         let name = self.atom("declaration", index, u32_at(row, 4), u32_at(row, 8))?;
@@ -588,14 +639,21 @@ impl<'image> GoImage<'image> {
         }
         let span = span_at(row, 24, 28, index)?;
         let file = self.atom("declaration", index, u32_at(row, 32), u32_at(row, 36))?;
+        let value = self.atom("declaration", index, u32_at(row, 40), u32_at(row, 44))?;
+        let const_group = i64::from_le_bytes([
+            row[48], row[49], row[50], row[51], row[52], row[53], row[54], row[55],
+        ]);
         Ok(Declaration {
             kind,
             exported,
+            iota,
             name,
             package,
             type_root,
             span,
             file,
+            value,
+            const_group,
         })
     }
 
@@ -881,6 +939,7 @@ impl<'image> GoImage<'image> {
             0 => DocOwner::Declaration,
             1 => DocOwner::Method,
             2 => DocOwner::Member,
+            3 => DocOwner::Package,
             found => return Err(ImageError::DocOwnerKind { index, found }),
         };
         if row[1..4] != [0; 3] {
@@ -890,6 +949,7 @@ impl<'image> GoImage<'image> {
             DocOwner::Declaration => self.declaration_count,
             DocOwner::Method => self.method_count,
             DocOwner::Member => self.member_count,
+            DocOwner::Package => self.declaration_count,
         };
         let owner = u32_at(row, 4);
         if usize::try_from(owner).is_ok_and(|owner| owner >= bound) {
@@ -1047,6 +1107,46 @@ impl<'image> GoImage<'image> {
     /// Iterates every build-constraint row in producer order.
     pub fn constraints(self) -> impl Iterator<Item = Result<ConstraintRow<'image>, ImageError>> {
         (0..self.constraint_count).map(move |index| self.constraint(index))
+    }
+
+    /// Borrows one validated interface-satisfaction row.
+    pub fn satisfaction(self, index: usize) -> Result<SatisfactionRow<'image>, ImageError> {
+        if index >= self.satisfaction_count {
+            return Err(ImageError::RowBounds {
+                plane: "satisfaction",
+                index,
+                count: self.satisfaction_count,
+            });
+        }
+        let row = self.plane_row(self.satisfactions_offset, index, SATISFACTION_BYTES);
+        let subject = u32_at(row, 0);
+        if usize::try_from(subject).is_ok_and(|subject| subject >= self.declaration_count) {
+            return Err(ImageError::SatisfactionSubject {
+                index,
+                subject,
+                declaration_count: self.declaration_count,
+            });
+        }
+        let target = self.atom("satisfaction", index, u32_at(row, 4), u32_at(row, 8))?;
+        if target.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "satisfaction target",
+                index,
+            });
+        }
+        let target_package = self.atom("satisfaction", index, u32_at(row, 12), u32_at(row, 16))?;
+        Ok(SatisfactionRow {
+            subject,
+            target,
+            target_package,
+        })
+    }
+
+    /// Iterates every satisfaction row in producer order.
+    pub fn satisfactions(
+        self,
+    ) -> impl Iterator<Item = Result<SatisfactionRow<'image>, ImageError>> {
+        (0..self.satisfaction_count).map(move |index| self.satisfaction(index))
     }
 
     /// Resolves the method row declared on the receiver type `receiver` with
@@ -1429,6 +1529,38 @@ impl<'image> GoImage<'image> {
         }
         Ok(())
     }
+
+    /// Satisfaction rows must be canonically ordered by subject, and every
+    /// subject must be a named-type declaration: the oracle only records
+    /// method-set satisfaction for `type` declarations.
+    fn validate_satisfactions(self) -> Result<(), ImageError> {
+        let mut previous_subject = 0_u32;
+        for index in 0..self.satisfaction_count {
+            let row = self.satisfaction(index)?;
+            if index > 0 && row.subject < previous_subject {
+                return Err(ImageError::SatisfactionSort {
+                    index,
+                    subject: row.subject,
+                    previous: previous_subject,
+                });
+            }
+            let declaration = self.declaration(usize::try_from(row.subject).map_err(|_| {
+                ImageError::SatisfactionSubject {
+                    index,
+                    subject: row.subject,
+                    declaration_count: self.declaration_count,
+                }
+            })?)?;
+            if declaration.kind != DeclarationKind::Type {
+                return Err(ImageError::SatisfactionSubjectKind {
+                    index,
+                    kind: declaration.kind,
+                });
+            }
+            previous_subject = row.subject;
+        }
+        Ok(())
+    }
 }
 
 /// Child flag bit marking a tilde (`~T`) union term.
@@ -1459,6 +1591,9 @@ pub enum ImageError {
     /// A declaration row has an invalid closed exported flag.
     #[error("Go authority declaration {index} has invalid exported flag {found}")]
     ExportedFlag { index: usize, found: u8 },
+    /// A declaration row has an invalid closed iota flag.
+    #[error("Go authority declaration {index} has invalid iota flag {found}")]
+    DeclarationIota { index: usize, found: u8 },
     /// A declaration row claims non-zero reserved bits.
     #[error("Go authority declaration {index} has non-zero reserved bits")]
     DeclarationReserved { index: usize },
@@ -1746,6 +1881,29 @@ pub enum ImageError {
     /// Build-constraint rows are not canonically ordered by file.
     #[error("Go authority constraint {index} is out of canonical file order")]
     ConstraintSort { index: usize },
+    /// A satisfaction row names a subject outside the declaration plane.
+    #[error(
+        "Go authority satisfaction {index} names subject {subject} outside {declaration_count} declarations"
+    )]
+    SatisfactionSubject {
+        index: usize,
+        subject: u32,
+        declaration_count: usize,
+    },
+    /// Satisfaction rows are not canonically ordered by subject.
+    #[error(
+        "Go authority satisfaction {index} subject {subject} precedes earlier subject {previous}"
+    )]
+    SatisfactionSort {
+        index: usize,
+        subject: u32,
+        previous: u32,
+    },
+    /// A satisfaction row's subject is not a named-type declaration.
+    #[error(
+        "Go authority satisfaction {index} names a subject of kind {kind:?}; only named types carry satisfaction edges"
+    )]
+    SatisfactionSubjectKind { index: usize, kind: DeclarationKind },
     /// A row requires a non-empty name and carries none.
     #[error("Go authority {plane} row {index} carries an empty name")]
     EmptyName { plane: &'static str, index: usize },

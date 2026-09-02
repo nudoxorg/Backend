@@ -1,0 +1,62 @@
+schema = 1
+capability_id = "go-authority-fidelity"
+state = "phase0"
+baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
+baseline_tree = "2c0b26f86 + uncommitted go-lane v4-image working set (committed as baseline checkpoint before any v5 edit)"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = ""
+testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/go-authority-fidelity/brief.md", sha256 = "frozen-at-first-commit" }
+matrix = { path = ".codex/evidence/capabilities/go-authority-fidelity/proof-matrix.md", sha256 = "frozen-at-first-commit" }
+research = { path = ".codex/evidence/capabilities/go-authority-fidelity/research.md", sha256 = "frozen-at-first-commit" }
+closure = { path = ".codex/evidence/capabilities/go-authority-fidelity/closure.md", sha256 = "" }
+
+[[workers]]
+task = "W0-baseline-repair"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/lower/clang.rs (cfg(test) only)", "compiler/driver/lower/typescript.rs (cfg(test) only)", "compiler/driver/lower/python.rs (cfg(test) only)", "compiler/driver/lower/rust.rs (cfg(test) only)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = ""
+retention = "active"
+
+[[workers]]
+task = "W1-image-v5-wire"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/languages/go/oracle/image.go", "compiler/languages/go/image.rs", "compiler/languages/go/lib.rs (exports only)", "compiler/languages/go/tests/protocol.rs", "compiler/driver/tests/go_image.rs (fixture format only)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = ""
+retention = "active"
+
+[[reviews]]
+boundary = "pre-edit"
+role = "reviewer"
+state = "planned"
+
+[[reviews]]
+boundary = "first-candidate"
+role = "reviewer"
+state = "planned"
+
+[[reviews]]
+boundary = "closure"
+role = "reviewer"
+state = "planned"
+
+# Environment adaptation, recorded honestly: this runtime dispatches the
+# registered `luna` (implementer) and `reviewer` (read-only Terra reviewer)
+# subagents through the opencode task tool rather than sidecar codex
+# processes. Compensating custody controls: the reviewer subagent is
+# read-only by construction; the manager reproduces every accepted finding
+# before adoption; worker checkouts run in dedicated git worktrees; card
+# digests and returned commits are recorded here per dispatch.

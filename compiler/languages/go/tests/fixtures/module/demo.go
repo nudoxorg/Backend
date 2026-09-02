@@ -8,3 +8,4 @@ const (
 	Second
 )
 var CJK名前 = Outer{}
+type Reader interface{ Read() }

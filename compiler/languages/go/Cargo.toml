@@ -1,5 +1,6 @@
 # Standalone Go oracle adapter with a bounded subprocess boundary.
-# The vendored producer remains unchanged under `oracle/`.
+# The vendored producer under `oracle/` emits the JSON transcript and the
+# fixed authority image the Rust side validates.
 # It depends only on the workspace protocol and error codecs.
 [package]
 name = "compiler-languages-go"

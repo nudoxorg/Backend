@@ -752,6 +752,47 @@ impl GoOracle {
                 .current_dir(oracle_dir);
             command
         };
+        let stdout = self.execute(&mut command)?;
+        self.decode(&stdout)
+    }
+
+    /// Runs the authority-image producer for one caller-selected source
+    /// file, returning the exact binary image bytes bound to that source's
+    /// SHA-256 digest. Uses the same override executable as [`GoOracle::run`]
+    /// (invoked as `<bin> --authority-image <source> <module>`) or
+    /// `go run . --authority-image <source> <module>` in the vendored
+    /// directory.
+    pub fn authority_image(
+        &self,
+        source: &std::path::Path,
+        module: &std::path::Path,
+    ) -> Result<Vec<u8>, OracleError> {
+        let oracle_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("oracle");
+        let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
+        let mut command = if let Ok(binary) = override_bin {
+            let mut command = std::process::Command::new(binary);
+            command.arg("--authority-image").arg(source).arg(module);
+            command
+        } else {
+            let compiler = match std::env::var("COMPILER_GO_COMPILER") {
+                Ok(path) => path,
+                Err(_) => "go".to_owned(),
+            };
+            let mut command = std::process::Command::new(compiler);
+            command
+                .args(["run", ".", "--authority-image"])
+                .arg(source)
+                .arg(module)
+                .current_dir(oracle_dir);
+            command
+        };
+        self.execute(&mut command)
+    }
+
+    /// Spawns one bounded oracle child and collects its standard output.
+    /// The child runs in its own process group; oversized output, deadlines,
+    /// and pipe faults all reap the child and fold into typed rejections.
+    fn execute(&self, command: &mut std::process::Command) -> Result<Vec<u8>, OracleError> {
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -835,7 +876,7 @@ impl GoOracle {
                 stderr: tail(&stderr.bytes),
             });
         }
-        self.decode(&stdout.bytes)
+        Ok(stdout.bytes)
     }
 }
 

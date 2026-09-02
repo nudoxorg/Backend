@@ -29,7 +29,19 @@
 //! other packages), unconstrained inline interfaces, and depth-limit
 //! truncation. Image rows carry no parameter-name plane, so carrier facts
 //! use Go's blank identifier; receiver spelling and pointer-receiver bits
-//! have no `GoFacts` cell and stay image-only facts.
+//! have no `GoFacts` cell and stay image-only facts. The same holds for the
+//! v4 authority planes the frozen `GoFacts` row cannot host: exact constant
+//! values with their const-group identity and iota flag, and package-level
+//! doc comments (the lane owns no package entity) stay image-only facts.
+//!
+//! Interface-satisfaction edges — Go's structural implements relation,
+//! proved by the oracle across the whole loaded module — project as
+//! oracle-confidence type-reference occurrences owned by the satisfying
+//! type's fact, resolving in-package targets to local ordinals and
+//! cross-package targets to foreign `go` lineage keys. The oracle records
+//! no source position for a satisfaction edge (Go never names it), so the
+//! occurrence carries the documented position-free spelling: a zero-width
+//! owner-relative span at the owner's start.
 
 use core::str;
 
@@ -132,6 +144,16 @@ enum ProjectionFault<'image> {
             reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
         )]
         owner: u32,
+    },
+    /// A satisfaction edge named an in-package interface no pushed
+    /// declaration declares.
+    SatisfactionUnresolved {
+        /// The unresolved interface spelling.
+        #[expect(
+            dead_code,
+            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
+        )]
+        target: &'image [u8],
     },
 }
 
@@ -248,6 +270,8 @@ pub(crate) fn collect<'source>(
     go.docs()?;
     // Pass five: resolved call occurrences.
     go.occurrences()?;
+    // Pass six: interface-satisfaction edges as type-reference occurrences.
+    go.satisfactions()?;
     Ok(())
 }
 
@@ -667,11 +691,14 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Pass four: one text run per documentation line, soft-break
-    /// separated, owned by the pushed fact of the row's owner.
+    /// separated, owned by the pushed fact of the row's owner. Package-level
+    /// doc rows have no lane owner — the fact lane owns no package entity —
+    /// so they stay image-only facts like the receiver spellings.
     fn docs(&mut self) -> Result<(), GoCollectError> {
         for index in 0..self.image.doc_count() {
             let row = self.image.doc(index).map_err(GoCollectError::Image)?;
             let owner = match row.owner_kind {
+                DocOwner::Package => continue,
                 DocOwner::Declaration => self
                     .declaration_ordinals
                     .get(index_of(row.owner))
@@ -751,6 +778,72 @@ impl<'x, 'source> Projector<'x, 'source> {
                     Occurrence {
                         target,
                         kind: ReferenceKind::FunctionCall,
+                        confidence: OccurrenceConfidence::Oracle,
+                        span,
+                    },
+                )
+                .map_err(lane_terminal)?;
+        }
+        Ok(())
+    }
+
+    /// Pass six: one oracle-confidence type-reference occurrence per
+    /// interface-satisfaction edge, owned by the satisfying type's fact.
+    /// In-package targets resolve to their local nominal ordinals;
+    /// cross-package targets fold to foreign `go` lineage keys. The oracle
+    /// records no position for a satisfaction edge — Go never names the
+    /// relation — so every occurrence carries the position-free spelling: a
+    /// zero-width owner-relative span at the owner's start.
+    fn satisfactions(&mut self) -> Result<(), GoCollectError> {
+        for index in 0..self.image.satisfaction_count() {
+            let row = self
+                .image
+                .satisfaction(index)
+                .map_err(GoCollectError::Image)?;
+            let subject = self
+                .declaration_ordinals
+                .get(index_of(row.subject))
+                .copied()
+                .flatten()
+                .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.subject }))?;
+            // Local resolution follows the call-occurrence convention: a
+            // name in the projector's primary package resolves to its pushed
+            // nominal ordinal; every other package routes as a foreign `go`
+            // lineage key that preserves the exact package and interface
+            // name.
+            let local = row.target_package.is_empty() || row.target_package == self.package;
+            let target = if local {
+                let ordinal = self.lookup(row.target).ok_or_else(|| {
+                    terminal(ProjectionFault::SatisfactionUnresolved { target: row.target })
+                })?;
+                OccurrenceTarget::Local(EntityId::new(ordinal))
+            } else {
+                let package = str::from_utf8(row.target_package)
+                    .map_err(|_| terminal(ProjectionFault::Utf8))?;
+                let interface =
+                    str::from_utf8(row.target).map_err(|_| terminal(ProjectionFault::Utf8))?;
+                let lineage = PackageLineage::new(ECOSYSTEM, package)
+                    .map_err(ProjectionFault::Lineage)
+                    .map_err(terminal)?;
+                let key = ForeignKey::new(
+                    ForeignOrigin::Package(lineage),
+                    interface,
+                    interface,
+                    Some(EntityKind::Record),
+                )
+                .map_err(ProjectionFault::ForeignKey)
+                .map_err(terminal)?;
+                OccurrenceTarget::Foreign(key)
+            };
+            let span = RelSpan::new(0, 0)
+                .map_err(ProjectionFault::Span)
+                .map_err(terminal)?;
+            self.facts
+                .push_occurrence(
+                    subject,
+                    Occurrence {
+                        target,
+                        kind: ReferenceKind::TypeReference,
                         confidence: OccurrenceConfidence::Oracle,
                         span,
                     },
@@ -1638,9 +1731,9 @@ mod tests {
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    const HEADER_BYTES: usize = 116;
+    const HEADER_BYTES: usize = 124;
     const NONE: u32 = u32::MAX;
-    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v3\0";
+    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v4\0";
     const FILE: &[u8] = b"main.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
@@ -1668,6 +1761,7 @@ mod tests {
     /// Fixture doc owner kinds.
     const DOC_DECLARATION: u8 = 0;
     const DOC_MEMBER: u8 = 2;
+    const DOC_PACKAGE: u8 = 3;
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
@@ -1753,6 +1847,7 @@ mod tests {
         docs: Vec<DocF>,
         references: Vec<RefF>,
         constraints: Vec<ConstraintF>,
+        satisfactions: Vec<SatisfactionF>,
         children: Vec<u32>,
     }
 
@@ -1762,6 +1857,9 @@ mod tests {
         name: Cell,
         package: Cell,
         type_root: Option<u32>,
+        value: Cell,
+        const_group: i64,
+        iota: bool,
     }
 
     #[derive(Clone)]
@@ -1824,6 +1922,13 @@ mod tests {
         constraint: Cell,
         blob: Cell,
         count: u32,
+    }
+
+    #[derive(Clone)]
+    struct SatisfactionF {
+        subject: u32,
+        target: Cell,
+        target_package: Cell,
     }
 
     impl Fixture {
@@ -2002,8 +2107,39 @@ mod tests {
                 name: spelled,
                 package,
                 type_root,
+                value: Cell {
+                    offset: 0,
+                    length: 0,
+                },
+                const_group: 0,
+                iota: false,
             });
             self.declarations.len() - 1
+        }
+
+        fn constant(
+            &mut self,
+            name: &[u8],
+            type_root: Option<u32>,
+            value: &[u8],
+            group: i64,
+        ) -> usize {
+            let index = self.declaration(KIND_CONST, name, type_root);
+            let spelled = self.atom(value);
+            self.declarations[index].value = spelled;
+            self.declarations[index].const_group = group;
+            self.declarations[index].iota = true;
+            index
+        }
+
+        fn satisfaction(&mut self, subject: usize, target: &[u8], target_package: &[u8]) {
+            let spelled = self.atom(target);
+            let package = self.atom(target_package);
+            self.satisfactions.push(SatisfactionF {
+                subject: u32::try_from(subject).unwrap_or(u32::MAX),
+                target: spelled,
+                target_package: package,
+            });
         }
 
         fn method(&mut self, owner: usize, name: &[u8], type_root: Option<u32>) -> usize {
@@ -2098,11 +2234,13 @@ mod tests {
             let cell =
                 |borrowed: Cell| (borrowed.offset.to_le_bytes(), borrowed.length.to_le_bytes());
             let file = self.file_cell();
+            let file = self.file_cell();
             let mut declarations = Vec::new();
             for row in &self.declarations {
                 let (name, name_len) = cell(row.name);
                 let (package, package_len) = cell(row.package);
-                declarations.extend_from_slice(&[row.kind, 1, 0, 0]);
+                let (value, value_len) = cell(row.value);
+                declarations.extend_from_slice(&[row.kind, 1, u8::from(row.iota), 0]);
                 declarations.extend_from_slice(&name);
                 declarations.extend_from_slice(&name_len);
                 declarations.extend_from_slice(&package);
@@ -2112,6 +2250,9 @@ mod tests {
                 declarations.extend_from_slice(&SPAN_END.to_le_bytes());
                 declarations.extend_from_slice(&file.offset.to_le_bytes());
                 declarations.extend_from_slice(&file.length.to_le_bytes());
+                declarations.extend_from_slice(&value);
+                declarations.extend_from_slice(&value_len);
+                declarations.extend_from_slice(&row.const_group.to_le_bytes());
             }
             let mut types = Vec::new();
             for row in &self.types {
@@ -2211,6 +2352,16 @@ mod tests {
                 constraints.extend_from_slice(&blob_len);
                 constraints.extend_from_slice(&row.count.to_le_bytes());
             }
+            let mut satisfactions = Vec::new();
+            for row in &self.satisfactions {
+                let (target, target_len) = cell(row.target);
+                let (package, package_len) = cell(row.target_package);
+                satisfactions.extend_from_slice(&row.subject.to_le_bytes());
+                satisfactions.extend_from_slice(&target);
+                satisfactions.extend_from_slice(&target_len);
+                satisfactions.extend_from_slice(&package);
+                satisfactions.extend_from_slice(&package_len);
+            }
             let mut children = Vec::new();
             for target in &self.children {
                 children.extend_from_slice(&target.to_le_bytes());
@@ -2225,6 +2376,7 @@ mod tests {
                 docs,
                 references,
                 constraints,
+                satisfactions,
                 children,
                 self.atom_bytes.clone(),
             ];
@@ -2237,11 +2389,12 @@ mod tests {
                 count(self.docs.len())?,
                 count(self.references.len())?,
                 count(self.constraints.len())?,
+                count(self.satisfactions.len())?,
             ];
             let body = sections.iter().map(Vec::len).sum::<usize>();
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NGAI");
-            image[4..6].copy_from_slice(&3_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&4_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(TestError::from)?
@@ -2258,6 +2411,7 @@ mod tests {
             image[100..104].copy_from_slice(&counts[5].to_le_bytes());
             image[104..108].copy_from_slice(&counts[6].to_le_bytes());
             image[108..112].copy_from_slice(&counts[7].to_le_bytes());
+            image[112..116].copy_from_slice(&counts[8].to_le_bytes());
             let mut digest = Sha256::new();
             digest.update(IMAGE_DOMAIN);
             digest.update(&image[..52]);
@@ -3037,6 +3191,12 @@ mod tests {
                     length: 0,
                 },
                 type_root: None,
+                value: Cell {
+                    offset: 0,
+                    length: 0,
+                },
+                const_group: 0,
+                iota: false,
             });
         }
         let image = fix.encode(b"package demo\n")?;
@@ -3071,6 +3231,104 @@ mod tests {
         }
         if docs.next().is_some() {
             return Err(TestError::Missing("exact member docs"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn satisfactions_project_local_and_foreign_type_reference_occurrences() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::new();
+        let client = fix.declaration(KIND_TYPE, b"Client", None);
+        let reader = fix.declaration(KIND_TYPE, b"Reader", None);
+        let _ = reader;
+        fix.satisfaction(client, b"Reader", b"");
+        fix.satisfaction(client, b"Service", b"example.com/demo/sub");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        // Facts: 0 Client, 1 Reader. Both satisfaction edges belong to fact 0.
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let local = occurrences
+            .next()
+            .ok_or(TestError::Missing("local satisfaction"))??;
+        if local.owner.raw != 0
+            || local.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
+            || local.occurrence.kind != ReferenceKind::TypeReference
+            || local.occurrence.confidence != OccurrenceConfidence::Oracle
+            || local.occurrence.span.start != 0
+            || local.occurrence.span.end != 0
+        {
+            return Err(TestError::Missing("local satisfaction occurrence"));
+        }
+        let foreign = occurrences
+            .next()
+            .ok_or(TestError::Missing("foreign satisfaction"))??;
+        let OccurrenceTarget::Foreign(key) = foreign.occurrence.target else {
+            return Err(TestError::Missing("foreign satisfaction target"));
+        };
+        let ForeignOrigin::Package(lineage) = key.origin else {
+            return Err(TestError::Missing("foreign satisfaction lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo/sub"
+            || key.path != "Service"
+            || foreign.occurrence.kind != ReferenceKind::TypeReference
+        {
+            return Err(TestError::Missing("foreign satisfaction key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact satisfaction occurrences"));
+        }
+        // Falsifier: an in-package satisfaction target naming no pushed
+        // declaration is a typed rejection, never a silently dropped edge.
+        let mut mutated = fix.clone();
+        mutated.satisfactions[0].target = mutated.atom(b"Ghost");
+        let image = mutated.encode(b"package demo\n")?;
+        let mut facts = FactSet::new();
+        if collect(b"package demo\n", &image, &mut facts).is_ok() {
+            return Err(TestError::Missing("unresolved satisfaction rejection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn constant_values_stay_image_only_without_changing_the_projection() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        fix.constant(b"First", Some(int), b"0", 1);
+        let with_values = lower(&fix, b"package demo\nconst First = 0\n")?;
+        let view = FragmentView::validate(&with_values)?;
+        if view
+            .docs()
+            .is_some_and(|mut cursor| cursor.next().is_some())
+        {
+            return Err(TestError::Missing("no value doc fragments"));
+        }
+        // The exact constant value has no GoFacts cell: the same fact set
+        // with a different value cell must commit byte-identical fragments.
+        let mut mutated = fix.clone();
+        mutated.declarations[0].value = mutated.atom(b"255");
+        let other = lower(&mutated, b"package demo\nconst First = 0\n")?;
+        if other != with_values {
+            return Err(TestError::Missing("value-free projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_docs_stay_image_only_without_owner_facts() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Node", None);
+        fix.doc(DOC_PACKAGE, 0, b"Package demo exercises every plane.");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        if view
+            .docs()
+            .is_some_and(|mut cursor| cursor.next().is_some())
+        {
+            return Err(TestError::Missing("package doc projection"));
         }
         Ok(())
     }
