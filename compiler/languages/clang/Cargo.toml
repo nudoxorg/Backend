@@ -1,0 +1,26 @@
+# Defines the direct libclang authority package for C and C++ source facts.
+# Keeps native parsing, bounded fact storage, and semantic records independent from IR encoding.
+# Lets the compiler driver choose when and how these verified facts become canonical IR.
+[package]
+name = "compiler-languages-clang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3.workspace = true
+clang-sys = { version = "1.9.1", default-features = false, features = ["clang_3_6", "runtime"] }
+compiler-vocabulary = { path = "../../vocabulary" }
+thiserror.workspace = true
+
+[features]
+# Enables live authority integration tests; the test environment must provide one libclang.
+native-test = []
+
+[lib]
+path = "lib.rs"
+
+[lints]
+workspace = true

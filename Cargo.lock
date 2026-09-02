@@ -1312,6 +1312,16 @@ name = "compiler-languages"
 version = "0.1.0"
 
 [[package]]
+name = "compiler-languages-clang"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "clang-sys",
+ "compiler-vocabulary",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "compiler-languages-csharp"
 version = "0.1.0"
 dependencies = [
