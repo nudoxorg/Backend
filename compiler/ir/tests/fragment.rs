@@ -1,12 +1,12 @@
 //! Exercises the `compiler-ir` tests fragment contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_ir::{
-    AtomInput, EntityKind, EntityRecord, EntityRecordFault, EntityType, FragmentError,
-    FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity, TypeNode,
-    TypeNodeFault, WriteError,
+    AtomInput, EntityKind, EntityKindCodeError, EntityRecord, EntityRecordFault, EntityType,
+    FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity,
+    TypeNode, TypeNodeFault, WriteError,
 };
+use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
@@ -224,4 +224,68 @@ fn every_undersized_output_is_byte_for_byte_unchanged() -> Result<(), TestFailur
     let retry = prepared.write_into(&mut retry_output[..required])?;
     assert_eq!(retry.len(), required);
     Ok(())
+}
+
+#[test]
+fn every_declaration_kind_round_trips_through_the_closed_registry() -> Result<(), TestFailure> {
+    for kind in EntityKind::ALL {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(kind_payload(kind)),
+            byte_len: 13,
+        };
+        let recipe = CompileRecipeFact::derive(
+            Language::Rust,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"format-toolchain"),
+        );
+        let entities = [EntityRecord {
+            semantic_type: TypeId::new(0),
+            name: AtomId::new(0),
+            kind,
+        }];
+        let nodes = [TypeNode::Primitive(PrimitiveType::Bool)];
+        let atoms = [AtomInput { bytes: b"alpha" }];
+        let prepared = PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms)?;
+        let mut output = [0; 256];
+        let view = FragmentView::validate(prepared.write_into(&mut output)?)?;
+        assert_eq!(view.entities().next().map(|entity| entity.kind), Some(kind));
+        let code = u16::from(kind);
+        assert_eq!(EntityKind::try_from(code), Ok(kind));
+    }
+    Ok(())
+}
+
+/// Distinguishes the atom bytes of one registry row without a string table.
+fn kind_payload(kind: EntityKind) -> &'static [u8] {
+    match kind {
+        EntityKind::Function => b"kind-function",
+        EntityKind::Constant => b"kind-constant",
+        EntityKind::Record => b"kind-record",
+        EntityKind::Module => b"kind-module",
+        EntityKind::Field => b"kind-field",
+        EntityKind::Alias => b"kind-alias",
+        EntityKind::Trait => b"kind-trait",
+        EntityKind::Implementation => b"kind-implementation",
+        EntityKind::Enum => b"kind-enum",
+        EntityKind::Variant => b"kind-variant",
+        EntityKind::Static => b"kind-static",
+        EntityKind::Reexport => b"kind-reexport",
+        EntityKind::Parameter => b"kind-parameter",
+    }
+}
+
+#[test]
+fn declaration_kinds_beyond_the_registry_reject_with_the_observed_code() {
+    for code in 13..=15 {
+        assert_eq!(
+            EntityKind::try_from(code),
+            Err(EntityKindCodeError { actual: code })
+        );
+    }
+    assert_eq!(
+        EntityKind::try_from(u16::from(EntityKind::Parameter)),
+        Ok(EntityKind::Parameter)
+    );
 }

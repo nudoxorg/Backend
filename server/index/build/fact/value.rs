@@ -3,8 +3,8 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::mem::{align_of, size_of};
 
-use compiler_ir::TypeId;
 use compiler_ir::{EntityKind, PrimitiveType, TypeNode, TypeNodeFault};
+use compiler_ir_vocabulary::TypeId;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

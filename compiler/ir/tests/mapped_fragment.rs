@@ -10,12 +10,12 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentRangeVerifyError,
     FragmentView, MappedFragment, MappedFragmentError, MappedFragmentIoPhase, PreparedFragment,
     PrimitiveType, SourceIdentity, TypeNode, open_fragment_mmap,
 };
+use compiler_ir_vocabulary::{AtomId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;

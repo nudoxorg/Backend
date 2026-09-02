@@ -19,11 +19,11 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
+use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_hydration::{PlanScratch, Projection, demand, plan};
 use heart_identity::{

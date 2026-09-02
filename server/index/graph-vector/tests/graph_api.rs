@@ -1,7 +1,7 @@
 //! Exercises the `server-index-graph-vector` tests graph-api contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir::EntityId;
+use compiler_ir_vocabulary::EntityId;
 use server_index_graph_vector::{
     GraphAuthority, GraphEdge, GraphQueryTerminal, GraphRow, PartitionId, ProjectionId,
     ValidatedGraphView,

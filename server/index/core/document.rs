@@ -5,7 +5,7 @@
 
 use core::{cmp::Ordering, mem::size_of};
 
-use compiler_ir::EntityId;
+use compiler_ir_vocabulary::EntityId;
 use heart_identity::{ArtifactId, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding};
 
 /// Fixed encoded width of one immutable globally addressable entity document.
@@ -103,7 +103,7 @@ impl TryFrom<&[u8]> for EntityDocumentId {
 #[cfg(test)]
 mod tests {
     use super::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError};
-    use compiler_ir::EntityId;
+    use compiler_ir_vocabulary::EntityId;
     use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
     #[test]

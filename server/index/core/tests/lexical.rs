@@ -1,7 +1,7 @@
 //! Exercises the `server-index-core` tests lexical contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir::EntityId;
+use compiler_ir_vocabulary::EntityId;
 use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,

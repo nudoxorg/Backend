@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use compiler_ir::{Confidence, EntityId, Ir, LinkKind, LinkTarget};
+use compiler_ir_vocabulary::EntityId;
 use server_index_graph_vector::{GraphAuthority, PartitionId, ValidatedGraphView};
 use thiserror::Error;
 use trustfall::{
@@ -42,75 +42,6 @@ pub struct TrustfallHit {
     pub partition: PartitionId,
     /// Canonical neighboring entity.
     pub entity: EntityId,
-}
-
-/// One typed neighbor read directly from the canonical compiler IR.
-///
-/// Link kind and confidence remain available instead of being erased into the
-/// older partition-only graph projection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IrTrustfallHit {
-    /// Canonical neighboring entity.
-    pub entity: EntityId,
-    /// Semantic relation represented by the edge.
-    pub kind: LinkKind,
-    /// Strongest compiler evidence retained for this logical edge.
-    pub confidence: Confidence,
-}
-
-/// Allocation-free fixed Trustfall projection over the canonical IR itself.
-///
-/// This is the fast path for the common `neighbors` operation: it reads the
-/// IR's outgoing CSR index directly and writes caller-owned storage. No graph
-/// rows, serialized segment, `Arc`, `Box`, or result map is introduced. The
-/// dynamic Trustfall adapter remains available for arbitrary query plans.
-#[derive(Clone, Copy)]
-pub struct IrTrustfallGraph<'ir> {
-    ir: &'ir Ir,
-}
-
-impl<'ir> IrTrustfallGraph<'ir> {
-    /// Borrows the same immutable IR used by compilers, renderers, and IR-VCS.
-    #[must_use]
-    pub const fn new(ir: &'ir Ir) -> Self {
-        Self { ir }
-    }
-
-    /// Writes all local outgoing neighbors in stable dense-coordinate order.
-    ///
-    /// External links stay in the canonical IR but are omitted because this
-    /// operation promises local [`EntityId`] results.
-    pub fn neighbors(
-        &self,
-        source: EntityId,
-        output: &mut [Option<IrTrustfallHit>],
-    ) -> Result<usize, TrustfallGraphError> {
-        let required = self
-            .ir
-            .links_from(source)
-            .filter(|(_, link)| matches!(link.target, LinkTarget::Local(_)))
-            .count();
-        if output.len() < required {
-            return Err(TrustfallGraphError::InsufficientOutput {
-                required,
-                available: output.len(),
-            });
-        }
-
-        let mut written = 0;
-        for (_, link) in self.ir.links_from(source) {
-            let LinkTarget::Local(entity) = link.target else {
-                continue;
-            };
-            output[written] = Some(IrTrustfallHit {
-                entity,
-                kind: link.kind,
-                confidence: link.confidence,
-            });
-            written += 1;
-        }
-        Ok(written)
-    }
 }
 
 /// Complete terminal of one Trustfall neighbor operation.
@@ -666,13 +597,7 @@ fn candidate_precedes(left: TrustfallHit, right: TrustfallHit) -> bool {
 #[cfg(test)]
 mod tests {
     use core::mem::size_of;
-    use std::hint::black_box;
 
-    use allocation_counter::{AllocationInfo, measure};
-    use compiler_ir::{
-        BorrowedTree, Confidence, EntityVersion, IrBuilder, ItemKind, LinkKind, PayloadHash,
-        StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, Visibility,
-    };
     use server_index_graph_vector::{GraphEdge, GraphRow, ProjectionId};
     use server_index_vocabulary::IndexSnapshotId;
     use trustfall::provider::check_adapter_invariants;
@@ -706,60 +631,6 @@ mod tests {
                 schema: &schema,
             },
         );
-    }
-
-    #[test]
-    fn canonical_ir_fast_path_reads_csr_without_graph_projection() {
-        let versions = [
-            EntityVersion {
-                stable: StableEntityId::from_raw([1; 16]),
-                payload: PayloadHash::from_raw([1; 16]),
-            },
-            EntityVersion {
-                stable: StableEntityId::from_raw([2; 16]),
-                payload: PayloadHash::from_raw([2; 16]),
-            },
-        ];
-        let items = [b"source".as_slice(), b"target".as_slice()].map(|name| TreeItemInput {
-            name,
-            kind: ItemKind::Function,
-            visibility: Visibility::Public,
-            parent: None,
-            semantic_type: None,
-            members: &[],
-            docs: &[],
-            attributes: &[],
-            source: None,
-            typescript: None,
-        });
-        let links = [TreeLinkInput {
-            from: TreeEntityId::new(0),
-            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
-            kind: LinkKind::Calls,
-            confidence: Confidence::Compiler,
-            source: None,
-        }];
-        let mut builder = IrBuilder::new();
-        builder
-            .add_borrowed_tree(BorrowedTree {
-                versions: &versions,
-                items: &items,
-                links: &links,
-            })
-            .expect("valid borrowed tree");
-        let ir = builder.finish().expect("valid canonical IR");
-        let mut output = [None; 1];
-        let graph = IrTrustfallGraph::new(&ir);
-        let mut result = None;
-        let allocations = measure(|| {
-            result = Some(black_box(graph.neighbors(EntityId::new(0), &mut output)));
-        });
-        assert_eq!(allocations, AllocationInfo::default());
-        let written = result
-            .expect("measurement executed")
-            .expect("direct neighbors");
-        assert_eq!(written, 1);
-        assert_eq!(output[0].map(|hit| hit.entity), Some(EntityId::new(1)));
     }
 
     #[test]

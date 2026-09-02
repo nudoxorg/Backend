@@ -16,7 +16,7 @@ use super::super::{
     scoring::projected_score,
 };
 use super::request::{CollectionMetric, PayloadIndexDescriptor};
-use compiler_ir::EntityId;
+use compiler_ir_vocabulary::EntityId;
 use server_index_graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, VectorAuthority, VectorSegmentDescriptor,
 };

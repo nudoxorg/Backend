@@ -1,4 +1,0 @@
-interface:
-  display_name: "Implement Rust Checkpoint"
-  short_description: "Execute one frozen Luna proof card"
-  default_prompt: "Use $implement-rust-checkpoint to implement and prove one frozen worker card."

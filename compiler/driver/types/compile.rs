@@ -1,16 +1,15 @@
 //! Defines types compile behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the types compile invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_ir::{AtomId, TypeId};
-use compiler_ir::{
-    AtomInput, BuiltinType, ConcreteType, EntityRecord, EntityVersion, FragmentView, IrBuilder,
-    ItemKind, PayloadHash, PreparedFragment, StableEntityId, TreeItemInput, TypeNode, Visibility,
-};
+use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 
-use crate::{lower::declaration, native::parse_with_native_tool};
+use crate::{
+    lower::{self, AdmissionFault},
+    native::parse_with_native_tool,
+};
 
 use super::{
     CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest, CompileScratch,
@@ -23,113 +22,6 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     scratch: CompileScratch<'diagnostic, 'work>,
     output: CompileOutput<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
-    let lowered = lower(request, scratch)?;
-    let source = lowered.source;
-    let recipe = lowered.recipe;
-    let declaration = lowered.declaration;
-    let entities = [EntityRecord {
-        semantic_type: TypeId::new(0),
-        name: AtomId::new(0),
-        kind: declaration.kind,
-    }];
-    let nodes = [TypeNode::Primitive(declaration.semantic_type)];
-    let atoms = [AtomInput {
-        bytes: declaration.name,
-    }];
-    let prepared =
-        PreparedFragment::prepare(source, recipe, &entities, &nodes, &atoms).map_err(|cause| {
-            CompileFailure::Prepare {
-                source_identity: source,
-                recipe,
-                cause,
-            }
-        })?;
-    let bytes = prepared
-        .write_into(output.fragment_output)
-        .map_err(|cause| CompileFailure::Write {
-            source_identity: source,
-            recipe,
-            cause,
-        })?;
-    let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
-        source_identity: source,
-        recipe,
-        cause,
-    })?;
-    Ok(CompiledFragment {
-        source,
-        recipe,
-        fragment,
-    })
-}
-
-/// Compiles directly into the one canonical semantic representation.
-pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
-    request: CompileRequest<'source, 'toolchain, 'cancel>,
-    scratch: CompileScratch<'diagnostic, 'work>,
-) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
-    let lowered = lower(request, scratch)?;
-    let source = lowered.source;
-    let recipe = lowered.recipe;
-    let declaration = lowered.declaration;
-    let mut builder = IrBuilder::new();
-    let version = EntityVersion {
-        stable: StableEntityId::from_canonical_bytes(source.identity.as_ref()),
-        payload: PayloadHash::from_canonical_bytes(request.source),
-    };
-    let versions = [version];
-    let mut tree = builder
-        .reserve_tree(&versions)
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: source,
-            recipe,
-            cause,
-        })?;
-    let semantic_type = tree
-        .intern_concrete(ConcreteType::Builtin(builtin_type(
-            declaration.semantic_type,
-        )))
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: source,
-            recipe,
-            cause,
-        })?;
-    let items = [TreeItemInput {
-        name: declaration.name,
-        kind: item_kind(declaration.kind),
-        visibility: Visibility::Public,
-        parent: None,
-        semantic_type: Some(semantic_type.erase()),
-        members: &[],
-        docs: &[],
-        attributes: &[],
-        source: None,
-        typescript: None,
-    }];
-    tree.commit(&items, &[])
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: source,
-            recipe,
-            cause,
-        })?;
-    let ir = builder.finish().map_err(|cause| CompileFailure::Build {
-        source_identity: source,
-        recipe,
-        cause,
-    })?;
-    Ok(super::CompiledIr { source, recipe, ir })
-}
-
-struct Lowered<'source> {
-    source: SourceIdentity,
-    recipe: CompileRecipeFact,
-    declaration: crate::lower::Declaration<'source>,
-}
-
-fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
-    request: CompileRequest<'source, 'toolchain, 'cancel>,
-    scratch: CompileScratch<'diagnostic, 'work>,
-) -> Result<Lowered<'source>, CompileFailure<'diagnostic>> {
     let source = source_identity(request.source)?;
     let route = FullRegistry
         .route(request.language, request.stage)
@@ -189,34 +81,49 @@ fn lower<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         toolchain: resolved,
     };
     parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
-    let declaration = declaration(request.language, request.source).map_err(|cause| {
-        CompileFailure::LoweringUnsupported {
-            source_identity: source,
-            recipe,
-            cause,
-        }
+    let mut facts = lower::FactSet::new();
+    let mut unsupported = lower::UnsupportedLane::new();
+    lower::emit(
+        request.language,
+        request.source,
+        &mut facts,
+        &mut unsupported,
+    )
+    .map_err(|cause| CompileFailure::LoweringUnsupported {
+        source_identity: source,
+        recipe,
+        cause,
     })?;
-    Ok(Lowered {
+    let bytes =
+        lower::admit(&facts, source, recipe, output.fragment_output).map_err(
+            |fault| match fault {
+                AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
+                    source_identity: source,
+                    recipe,
+                    cause: PrepareError::SemanticData { cause },
+                },
+                AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
+                    source_identity: source,
+                    recipe,
+                    cause,
+                },
+                AdmissionFault::Write(cause) => CompileFailure::Write {
+                    source_identity: source,
+                    recipe,
+                    cause,
+                },
+            },
+        )?;
+    let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
+        source_identity: source,
+        recipe,
+        cause,
+    })?;
+    Ok(CompiledFragment {
         source,
         recipe,
-        declaration,
+        fragment,
     })
-}
-
-const fn builtin_type(primitive: compiler_ir::PrimitiveType) -> BuiltinType {
-    match primitive {
-        compiler_ir::PrimitiveType::Bool => BuiltinType::Bool,
-        compiler_ir::PrimitiveType::I32 => BuiltinType::I32,
-        compiler_ir::PrimitiveType::String => BuiltinType::String,
-    }
-}
-
-const fn item_kind(kind: compiler_ir::EntityKind) -> ItemKind {
-    match kind {
-        compiler_ir::EntityKind::Function => ItemKind::Function,
-        compiler_ir::EntityKind::Constant => ItemKind::Constant,
-        compiler_ir::EntityKind::Record => ItemKind::Record,
-    }
 }
 
 fn source_identity<'diagnostic>(

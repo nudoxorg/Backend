@@ -11,14 +11,13 @@ publish.workspace = true
 
 
 [dependencies]
-compiler-ir = { path = "../../../compiler/ir" }
 server-index-graph-vector = { path = "../graph-vector" }
+compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 thiserror.workspace = true
 trustfall.workspace = true
 trustfall_core = "=0.8.1"
 
 [dev-dependencies]
-allocation-counter.workspace = true
 server-index-vocabulary = { path = "../vocabulary" }
 
 [lib]

@@ -29,10 +29,10 @@ pub use lease::{
 };
 pub use trace::{GraphTraceEvent, TraceProbe, TraceRecorder};
 pub use vector::{
-    IrVectorColumn, IrVectorColumnError, MAX_VECTOR_DIMENSION, ValidatedVectorSegment, VectorFact,
-    VectorHit, VectorPoint, VectorQueryError, VectorQueryOutcome, VectorQueryTerminal,
-    VectorSegmentDescriptor, VectorSegmentError, VectorSegmentSelection, VectorSegmentView,
-    VectorTerminal, compact_vector_facts, exact_ir_vector_query, exact_vector_query,
+    MAX_VECTOR_DIMENSION, ValidatedVectorSegment, VectorFact, VectorHit, VectorPoint,
+    VectorQueryError, VectorQueryOutcome, VectorQueryTerminal, VectorSegmentDescriptor,
+    VectorSegmentError, VectorSegmentSelection, VectorSegmentView, VectorTerminal,
+    compact_vector_facts, exact_vector_query,
 };
 
 /// Maximum admitted graph or vector partitions for one request.

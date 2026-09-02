@@ -23,7 +23,6 @@ use crate::{
         machine::{cpu_model, operating_system_release, physical_cpu_count, physical_memory_bytes},
         native::compile_corpus,
         publication::{deterministic_build, durable_publish},
-        semantic::{self, SemanticCorpus},
         support::{absolute_path, absolute_result_path, find_rustc},
         tantivy::{tantivy_build, tantivy_query},
         vector::{vector_ingress, vector_query},
@@ -120,8 +119,6 @@ impl Runtime {
         .map_err(|source| BenchmarkError::ToolchainResolution(Box::new(source)))?;
         let cache_mode = configuration.cache_mode;
         let mut fragments = FragmentSlots::new();
-        let semantic_source = SemanticCorpus::new(&sources);
-        let mut semantic_ir = None;
         let mut samples = Vec::with_capacity(Stage::all().len());
 
         Self::run_or_prepare(
@@ -141,68 +138,6 @@ impl Runtime {
                     bytes_written: written,
                     durable_bytes: 0,
                 })
-            },
-        )?;
-
-        Self::run_or_prepare(
-            Stage::SemanticIrBuild,
-            configuration,
-            record,
-            &mut samples,
-            cache_mode,
-            sample,
-            || {
-                let (ir, work) = semantic::build(&semantic_source)?;
-                semantic_ir = Some(ir);
-                Ok(work)
-            },
-        )?;
-
-        Self::run_or_prepare(
-            Stage::SemanticIrRender,
-            configuration,
-            record,
-            &mut samples,
-            cache_mode,
-            sample,
-            || {
-                semantic::render(
-                    semantic_ir
-                        .as_ref()
-                        .ok_or(BenchmarkError::MissingSemanticIr)?,
-                )
-            },
-        )?;
-
-        Self::run_or_prepare(
-            Stage::IrVcsDiff,
-            configuration,
-            record,
-            &mut samples,
-            cache_mode,
-            sample,
-            || {
-                semantic::vcs(
-                    semantic_ir
-                        .as_ref()
-                        .ok_or(BenchmarkError::MissingSemanticIr)?,
-                )
-            },
-        )?;
-
-        Self::run_or_prepare(
-            Stage::TrustfallIrQuery,
-            configuration,
-            record,
-            &mut samples,
-            cache_mode,
-            sample,
-            || {
-                semantic::trustfall(
-                    semantic_ir
-                        .as_ref()
-                        .ok_or(BenchmarkError::MissingSemanticIr)?,
-                )
             },
         )?;
         let compiled = fragments.compiled(sources.len)?;
@@ -275,22 +210,6 @@ impl Runtime {
             cache_mode,
             sample,
             || vector_query(sources.len),
-        )?;
-
-        Self::run_or_prepare(
-            Stage::IrVectorExactQuery,
-            configuration,
-            record,
-            &mut samples,
-            cache_mode,
-            sample,
-            || {
-                semantic::vector(
-                    semantic_ir
-                        .as_ref()
-                        .ok_or(BenchmarkError::MissingSemanticIr)?,
-                )
-            },
         )?;
 
         Ok(samples)

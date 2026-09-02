@@ -44,16 +44,15 @@ def "main format changed" [--base: string, --check]: nothing -> record {
     let configuration_paths = (changed-paths --base $base | where {|path|
     ($path | path exists) and (($path | path parse | get extension) in $extensions) and not ($path | str ends-with ".rs")
   })
-    let declarations = control-plane | get formatting
-    for path in $configuration_paths {
-        let extension = $path | path parse | get extension
-        let matches = $declarations | transpose name declaration | where {|row| $extension in $row.declaration.extensions }
-        if ($matches | length) != 1 {
-            tooling-fail "formatter-assignment" $"changed configuration path ($path) resolves to ($matches | length) declared formatters"
-        }
-        let declaration = $matches | first | get declaration
-        let mode_arguments = if $check { $declaration.check } else { $declaration.write }
-        process-require $declaration.program ($mode_arguments | append ($root | path join $path)) | ignore
+    let formatter_paths = $configuration_paths | each {|path| $root | path join $path }
+    if not ($formatter_paths | is-empty) {
+        let mode = if $check { ["--fail-on-change"] } else { [] }
+        process-require $env.BACKEND_TREEFMT (
+            ["--working-dir" (configuration-root)]
+            | append $mode
+            | append "--no-cache"
+            | append $formatter_paths
+        ) | ignore
     }
     {
         packages: ($packages | get name)

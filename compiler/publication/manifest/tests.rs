@@ -2,11 +2,11 @@
 //! This module owns the manifest tests invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_driver::CompiledFragment;
-use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentView, PreparedFragment, PrimitiveType,
     SourceIdentity, TypeNode,
 };
+use compiler_ir_vocabulary::{AtomId, TypeId};
 use heart_identity::{
     ArtifactId, ContentId, IrManifestDomain, IrManifestEncoding, SourceFactDomain, ToolchainDomain,
 };

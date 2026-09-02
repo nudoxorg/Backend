@@ -7,11 +7,11 @@ mod support;
 
 use std::fs;
 
-use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PrimitiveType,
     TypeNode,
 };
+use compiler_ir_vocabulary::{AtomId, TypeId};
 use compiler_publication::{
     OpenPublicationScratch, OpenPublishedError, immutable::ImmutableArtifactStore, open_published,
 };

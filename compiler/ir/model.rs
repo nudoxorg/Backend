@@ -1,7 +1,7 @@
 //! Defines model behavior for `compiler-ir`, whose purpose is to encode, validate, map, and borrow canonical compiler IR fragments.
 //! This module owns the model invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use crate::{AtomId, EntityId, TypeId};
+use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::CompileRecipeFact;
 use heart_identity::{ContentId, SourceFactDomain};
 use thiserror::Error;
@@ -85,36 +85,11 @@ pub enum AtomFault {
 }
 
 /// Closed declaration shape retained in the semantic entity lane.
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntityKind {
-    Function = 0,
-    Constant = 1,
-    Record = 2,
-}
-
-impl From<EntityKind> for u16 {
-    fn from(value: EntityKind) -> Self {
-        match value {
-            EntityKind::Function => 0,
-            EntityKind::Constant => 1,
-            EntityKind::Record => 2,
-        }
-    }
-}
-
-impl TryFrom<u16> for EntityKind {
-    type Error = u16;
-
-    fn try_from(actual: u16) -> Result<Self, Self::Error> {
-        match actual {
-            0 => Ok(Self::Function),
-            1 => Ok(Self::Constant),
-            2 => Ok(Self::Record),
-            actual => Err(actual),
-        }
-    }
-}
+///
+/// The frozen discriminant registry lives in `compiler-ir-vocabulary` (it is
+/// shared by declaration-identity keys and occurrence facts); this crate
+/// re-exports it unchanged.
+pub use compiler_ir_vocabulary::{EntityKind, EntityKindCodeError};
 
 /// One borrowed semantic atom copied once into the fragment atom pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

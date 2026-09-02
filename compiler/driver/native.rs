@@ -10,13 +10,24 @@ use crate::types::{
 };
 
 mod child;
+pub use clang::{
+    ClangDiagnostic, ClangDiagnosticSeverity, ClangFailure, ClangPhase, ClangSourceSpan,
+};
+#[cfg_attr(
+    not(clang_native),
+    allow(
+        dead_code,
+        reason = "unlinked builds keep the analysis surface compilable for its typed-unavailable terminal and proofs; the linked drive arm is its production caller"
+    )
+)]
+mod clang;
 mod csharp;
 mod diagnostic;
 mod frontend;
 mod go;
 mod java;
 mod terminal;
-mod typescript;
+pub(crate) mod typescript;
 mod work;
 
 pub(crate) fn parse_with_native_tool<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
@@ -30,13 +41,9 @@ pub(crate) fn parse_with_native_tool<'source, 'toolchain, 'cancel, 'diagnostic, 
         NativeTool::Rustc => {
             frontend::drive::<frontend::RustFrontend>(recipe, source, recipe_fact, scratch, control)
         }
-        NativeTool::Clang => frontend::drive::<frontend::ClangFrontend>(
-            recipe,
-            source,
-            recipe_fact,
-            scratch,
-            control,
-        ),
+        NativeTool::Clang => {
+            frontend::ClangFrontend::drive(recipe, source, recipe_fact, scratch, control)
+        }
         NativeTool::Python => frontend::drive::<frontend::PythonFrontend>(
             recipe,
             source,

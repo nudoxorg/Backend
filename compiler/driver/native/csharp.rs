@@ -20,7 +20,7 @@ const NUGET_PACKAGES_DIRECTORY: &str = "nuget-packages";
 const WORK_DIRECTORY: &str = "csharp";
 const PROJECT: &[u8] = br#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <OutputType>Library</OutputType>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
@@ -86,6 +86,13 @@ impl NativeFrontend for CSharpFrontend {
             )
             .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
             .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
+        // The isolated environment must still name the exact resolved SDK root:
+        // the driver locates its host runtime through `DOTNET_ROOT`, never ambient
+        // state. The root is derived from the resolved executable's own layout
+        // (`<root>/bin/dotnet` or `<root>/share/dotnet/dotnet`).
+        if let Some(root) = toolchain.executable().ancestors().nth(2) {
+            command.env("DOTNET_ROOT", root);
+        }
         command
     }
 

@@ -23,5 +23,6 @@ heart-memory = { path = "../../heart/memory" }
 thiserror.workspace = true
 
 [dev-dependencies]
+compiler-ir-vocabulary = { path = "../ir-vocabulary" }
 [lib]
 path = "lib.rs"

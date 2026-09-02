@@ -71,6 +71,26 @@ impl<'source> DeclarationScanner<'source> {
         })
     }
 
+    /// Skips one balanced parenthesized group, including any quoted bytes
+    /// inside it, and returns whether a complete group closed before the
+    /// source ended.
+    pub(super) fn skip_balanced_parens(&mut self) -> bool {
+        let mut depth = 1_u32;
+        while let Some(scanned) = self.next() {
+            match scanned.token {
+                SyntaxToken::Symbol(b'(') => depth = depth.saturating_add(1),
+                SyntaxToken::Symbol(b')') => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             while self
@@ -137,6 +157,9 @@ impl<'source> DeclarationScanner<'source> {
 }
 
 /// Returns the first top-level Java type name while sharing the scanner's comment/literal rules.
+///
+/// The native javac adapter needs the public type's exact name for its
+/// source-file artifact; this lookup performs no lowering.
 pub(crate) fn java_top_level_type_name(source: &[u8]) -> Option<&[u8]> {
     let mut scanner = DeclarationScanner::new(source);
     while let Some(scanned) = scanner.next() {

@@ -1,0 +1,392 @@
+{
+  "format": 1,
+  "javaVersion": "21",
+  "modules": [],
+  "packages": [],
+  "types": [
+    {
+      "qualifiedName": "demo.Cafe😀",
+      "simpleName": "Cafe😀",
+      "kind": "CLASS",
+      "package": "demo",
+      "module": null,
+      "enclosing": null,
+      "nesting": "TOP_LEVEL",
+      "modifiers": ["public"],
+      "typeParams": [],
+      "superclass": {
+        "kind": "declared",
+        "name": "java.lang.Object",
+        "args": [],
+        "owner": null,
+        "annotations": []
+      },
+      "interfaces": [],
+      "permits": [],
+      "recordComponents": [],
+      "annotations": [],
+      "deprecated": false,
+      "fields": [
+        {
+          "name": "brewCount",
+          "type": { "kind": "primitive", "name": "int", "annotations": [] },
+          "modifiers": ["private", "final"],
+          "constant": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 4 }
+        }
+      ],
+      "enumConstants": [],
+      "constructors": [
+        {
+          "name": "Cafe😀",
+          "modifiers": ["public"],
+          "typeParams": [],
+          "params": [],
+          "return": null,
+          "thrown": [],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": null
+        }
+      ],
+      "methods": [
+        {
+          "name": "run",
+          "modifiers": ["public"],
+          "typeParams": [],
+          "params": [
+            {
+              "name": "value",
+              "type": { "kind": "primitive", "name": "int", "annotations": [] },
+              "annotations": []
+            }
+          ],
+          "return": { "kind": "void" },
+          "thrown": [
+            {
+              "kind": "declared",
+              "name": "java.lang.Exception",
+              "args": [],
+              "owner": null,
+              "annotations": []
+            }
+          ],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 5 }
+        },
+        {
+          "name": "run",
+          "modifiers": ["public"],
+          "typeParams": [],
+          "params": [
+            {
+              "name": "value",
+              "type": {
+                "kind": "declared",
+                "name": "java.lang.String",
+                "args": [],
+                "owner": null,
+                "annotations": []
+              },
+              "annotations": []
+            }
+          ],
+          "return": { "kind": "void" },
+          "thrown": [
+            {
+              "kind": "declared",
+              "name": "java.lang.IllegalStateException",
+              "args": [],
+              "owner": null,
+              "annotations": []
+            }
+          ],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 6 }
+        },
+        {
+          "name": "helper",
+          "modifiers": ["private"],
+          "typeParams": [],
+          "params": [],
+          "return": { "kind": "void" },
+          "thrown": [],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 7 }
+        },
+        {
+          "name": "brewAll",
+          "modifiers": ["public"],
+          "typeParams": [],
+          "params": [
+            {
+              "name": "styles",
+              "type": {
+                "kind": "declared",
+                "name": "java.util.List",
+                "args": [
+                  {
+                    "kind": "wildcard",
+                    "extends": {
+                      "kind": "declared",
+                      "name": "java.lang.Number",
+                      "args": [],
+                      "owner": null,
+                      "annotations": []
+                    },
+                    "super": null
+                  }
+                ],
+                "owner": null,
+                "annotations": []
+              },
+              "annotations": []
+            },
+            {
+              "name": "notes",
+              "type": {
+                "kind": "array",
+                "component": {
+                  "kind": "declared",
+                  "name": "java.lang.String",
+                  "args": [],
+                  "owner": null,
+                  "annotations": []
+                },
+                "annotations": []
+              },
+              "annotations": []
+            }
+          ],
+          "return": { "kind": "void" },
+          "thrown": [],
+          "varargs": true,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 8 }
+        },
+        {
+          "name": "pick",
+          "modifiers": ["public"],
+          "typeParams": [
+            {
+              "name": "T",
+              "bounds": [
+                {
+                  "kind": "intersection",
+                  "bounds": [
+                    {
+                      "kind": "declared",
+                      "name": "java.lang.Number",
+                      "args": [],
+                      "owner": null,
+                      "annotations": []
+                    },
+                    {
+                      "kind": "declared",
+                      "name": "java.io.Serializable",
+                      "args": [],
+                      "owner": null,
+                      "annotations": []
+                    }
+                  ]
+                }
+              ],
+              "annotations": []
+            }
+          ],
+          "params": [],
+          "return": { "kind": "typevar", "name": "T", "annotations": [] },
+          "thrown": [],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Cafe.java", "line": 9 }
+        }
+      ],
+      "nested": [],
+      "doc": "/// markdown",
+      "docKind": "END_OF_LINE",
+      "position": { "file": "Cafe.java", "line": 3 }
+    },
+    {
+      "qualifiedName": "demo.Roast",
+      "simpleName": "Roast",
+      "kind": "ENUM",
+      "package": "demo",
+      "module": null,
+      "enclosing": null,
+      "nesting": "TOP_LEVEL",
+      "modifiers": ["public"],
+      "typeParams": [],
+      "superclass": {
+        "kind": "declared",
+        "name": "java.lang.Enum",
+        "args": [
+          {
+            "kind": "declared",
+            "name": "demo.Roast",
+            "args": [],
+            "owner": null,
+            "annotations": []
+          }
+        ],
+        "owner": null,
+        "annotations": []
+      },
+      "interfaces": [],
+      "permits": [],
+      "recordComponents": [],
+      "annotations": [],
+      "deprecated": false,
+      "fields": [
+        {
+          "name": "MAX_HEAT",
+          "type": { "kind": "primitive", "name": "int", "annotations": [] },
+          "modifiers": ["public", "static", "final"],
+          "constant": { "kind": "int", "value": 2 },
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Roast.java", "line": 1 }
+        }
+      ],
+      "enumConstants": [
+        {
+          "name": "LIGHT",
+          "annotations": [],
+          "deprecated": false,
+          "doc": "Light roast.",
+          "docKind": "TRADITIONAL",
+          "source": "LIGHT(1),",
+          "position": { "file": "Roast.java", "line": 4 }
+        },
+        {
+          "name": "DARK",
+          "annotations": [],
+          "deprecated": false,
+          "doc": "Dark roast.",
+          "docKind": "TRADITIONAL",
+          "source": "DARK(2);",
+          "position": { "file": "Roast.java", "line": 7 }
+        }
+      ],
+      "constructors": [
+        {
+          "name": "Roast",
+          "modifiers": ["private"],
+          "typeParams": [],
+          "params": [
+            {
+              "name": "heat",
+              "type": { "kind": "primitive", "name": "int", "annotations": [] },
+              "annotations": []
+            }
+          ],
+          "return": null,
+          "thrown": [],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Roast.java", "line": 2 }
+        }
+      ],
+      "methods": [
+        {
+          "name": "getHeat",
+          "modifiers": [],
+          "typeParams": [],
+          "params": [],
+          "return": { "kind": "primitive", "name": "int", "annotations": [] },
+          "thrown": [],
+          "varargs": false,
+          "default": false,
+          "receiver": null,
+          "annotationDefault": null,
+          "annotations": [],
+          "deprecated": false,
+          "origin": "EXPLICIT",
+          "doc": null,
+          "docKind": null,
+          "position": { "file": "Roast.java", "line": 3 }
+        }
+      ],
+      "nested": [],
+      "doc": "Roast levels.",
+      "docKind": "TRADITIONAL",
+      "position": { "file": "Roast.java", "line": 1 }
+    }
+  ],
+  "references": [
+    {
+      "owner": "demo.Cafe😀#run(int)",
+      "target": "demo.Cafe😀#helper()",
+      "file": "Cafe.java",
+      "start": 12,
+      "end": 16
+    },
+    {
+      "owner": "demo.Cafe😀#run(String)",
+      "target": "demo.Cafe😀#helper()",
+      "file": "Cafe.java",
+      "start": 20,
+      "end": 24
+    }
+  ]
+}

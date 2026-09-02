@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{num::TryFromIntError, ops::Range};
 
-use crate::{AtomId, TypeId};
+use compiler_ir_vocabulary::{AtomId, TypeId};
 use compiler_vocabulary::{Language, NativeTool, Stage};
 use heart_identity::{
     CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,
@@ -72,7 +72,23 @@ pub(crate) const TYPE_NODE_BYTES: usize = TYPE_NODE_LAYOUT.encoded_len;
 pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
 pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
-pub(crate) const WRITTEN_SECTION_COUNT: SectionCount = SectionCount { wire: 6 };
+
+/// Section count for fragments that embed one canonical semantic-data graph.
+/// Semantic-data header: atom, product, constructor, list, and child counts.
+pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 5;
+/// Semantic product record: head atom and pooled child-list coordinates.
+pub(crate) const SEMANTIC_PRODUCT_BYTES: usize = size_of::<u32>() * 2;
+/// Semantic constructor record: closed tag plus two payload cells.
+pub(crate) const SEMANTIC_CONSTRUCTOR_BYTES: usize = size_of::<u32>() * 3;
+/// Semantic list record: pooled start and length.
+pub(crate) const SEMANTIC_LIST_BYTES: usize = size_of::<u32>() * 2;
+/// Semantic child record: role byte, local/external tag, ordinal, authority.
+pub(crate) const SEMANTIC_CHILD_BYTES: usize = size_of::<u8>() * 2 + size_of::<u32>() + HASH_BYTES;
+
+/// Child tag for a local product target.
+pub(crate) const SEMANTIC_LOCAL_TAG: u8 = 0;
+/// Child tag for an external authority-bearing product target.
+pub(crate) const SEMANTIC_EXTERNAL_TAG: u8 = 1;
 
 const PRIMITIVE_TAG: u8 = 0;
 const REFERENCE_TAG: u8 = 1;
@@ -114,6 +130,9 @@ wire_enum_u16! {
         AtomBytes = 4,
         SourceIdentity = 5,
         RecipeFact = 6,
+        SemanticData = 7,
+        Occurrences = 8,
+        TypeFacts = 9,
     }
 }
 
@@ -213,6 +232,11 @@ pub(crate) struct FragmentLayout {
     pub(crate) atom_bytes: LaneLayout,
     pub(crate) source_identity: LaneLayout,
     pub(crate) recipe_fact: LaneLayout,
+    /// Optional canonical semantic-data payload lane.
+    pub(crate) semantic_data: Option<LaneLayout>,
+    /// Optional occurrence fact-plane payload lane.
+    pub(crate) occurrences: Option<LaneLayout>,
+    pub(crate) type_facts: Option<LaneLayout>,
     pub(crate) source: SourceIdentity,
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,
@@ -271,8 +295,11 @@ pub(crate) fn decode_entity(record: &[u8]) -> Result<EntityRecord, EntityRecordF
     if reserved != 0 {
         return Err(EntityRecordFault::Reserved { actual: reserved });
     }
-    let kind = EntityKind::try_from(read_u16(record, kind_offset))
-        .map_err(|actual| EntityRecordFault::Kind { actual })?;
+    let kind = EntityKind::try_from(read_u16(record, kind_offset)).map_err(|error| {
+        EntityRecordFault::Kind {
+            actual: error.actual,
+        }
+    })?;
     Ok(EntityRecord {
         semantic_type: TypeId::new(read_u32(record, 0)),
         name: AtomId::new(read_u32(record, size_of::<u32>())),
@@ -282,10 +309,25 @@ pub(crate) fn decode_entity(record: &[u8]) -> Result<EntityRecord, EntityRecordF
 
 pub(crate) fn decode_validated_entity(record: &[u8]) -> EntityRecord {
     let kind_offset = size_of::<u32>() * 2;
+    // FragmentView validation proved every entity record in this immutably
+    // borrowed envelope carries a registry kind, so the residual arm is
+    // structurally unreachable; it names the first registry row instead of
+    // fabricating a kind for a code validation excluded.
     let kind = match read_u16(record, kind_offset) {
         0 => EntityKind::Function,
         1 => EntityKind::Constant,
-        _ => EntityKind::Record,
+        2 => EntityKind::Record,
+        3 => EntityKind::Module,
+        4 => EntityKind::Field,
+        5 => EntityKind::Alias,
+        6 => EntityKind::Trait,
+        7 => EntityKind::Implementation,
+        8 => EntityKind::Enum,
+        9 => EntityKind::Variant,
+        10 => EntityKind::Static,
+        11 => EntityKind::Reexport,
+        12 => EntityKind::Parameter,
+        _ => EntityKind::Function,
     };
     EntityRecord {
         semantic_type: TypeId::new(read_u32(record, 0)),
@@ -421,3 +463,8 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
         _ => TypeNode::Reference(TypeId::new(operand)),
     }
 }
+
+/// The fragment envelope magic: `"NXIR"` in every schema-1 fragment.
+pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
+/// The fragment envelope schema version.
+pub const FRAGMENT_SCHEMA: u16 = 1;

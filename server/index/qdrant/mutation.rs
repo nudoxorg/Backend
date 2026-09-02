@@ -4,8 +4,7 @@
 //! Verified point mutations and readback admission.
 
 use arrayvec::ArrayVec;
-use server_index_graph_vector::{IrVectorColumn, ValidatedVectorSegment};
-use server_index_vocabulary::VectorSegmentId;
+use server_index_graph_vector::ValidatedVectorSegment;
 
 use super::{
     QdrantBlockingAdapter,
@@ -26,39 +25,19 @@ impl QdrantBlockingAdapter {
         segments: &[ValidatedVectorSegment<'_>],
     ) -> Result<QdrantMutationReceipt, QdrantError> {
         let prepared = admission::prepare_segments(self.authority, segments)?;
-        self.upsert_prepared(&prepared)
-    }
-
-    /// Upserts an entity-aligned canonical IR vector column directly.
-    ///
-    /// The only encoding occurs at the unavoidable remote HTTP boundary; no
-    /// intermediate vector facts, points, segments, or owned coordinates are
-    /// created inside the process.
-    pub fn upsert_ir_column(
-        &self,
-        segment: VectorSegmentId,
-        column: IrVectorColumn<'_, '_>,
-    ) -> Result<QdrantMutationReceipt, QdrantError> {
-        let prepared = admission::prepare_ir_column(self.authority, segment, column)?;
-        self.upsert_prepared(&prepared)
-    }
-
-    fn upsert_prepared(
-        &self,
-        prepared: &[PreparedPoint<'_>],
-    ) -> Result<QdrantMutationReceipt, QdrantError> {
         if prepared.is_empty() {
             return Ok(QdrantMutationReceipt {
                 attempted: 0,
                 verified: 0,
             });
         }
-        self.ensure_existing_ids_are_compatible(prepared)?;
+        self.ensure_existing_ids_are_compatible(&prepared)?;
+        let request = wire::UpsertRequest::from_points(&prepared);
         let response = self.request_json(
             RequestPhase::UpsertPoints,
             Method::Put,
             &self.url(UPSERT_POINTS_PATH),
-            wire::UpsertRequest::from_points(prepared),
+            request,
         )?;
         if !transport::is_success(response.status) {
             return Err(transport::status_error(
@@ -68,10 +47,10 @@ impl QdrantBlockingAdapter {
         }
         wire::parse_completed_ack(RequestPhase::UpsertPoints, &response.body)?;
         let mut readback: ArrayVec<Option<QdrantReadback>, MAX_BATCH_POINTS> = ArrayVec::new();
-        for _ in prepared {
+        for _ in &prepared {
             readback.push(None);
         }
-        let verified = self.readback_into(prepared, &mut readback)?;
+        let verified = self.readback_into(&prepared, &mut readback)?;
         Ok(QdrantMutationReceipt {
             attempted: prepared.len(),
             verified,

@@ -16,6 +16,7 @@ heart-identity = { path = "../../../heart/identity" }
 server-index-build = { path = "../build" }
 server-index-core = { path = "../core" }
 server-index-vocabulary = { path = "../vocabulary" }
+compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 thiserror.workspace = true
 zerocopy.workspace = true
 

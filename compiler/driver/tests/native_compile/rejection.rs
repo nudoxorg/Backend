@@ -7,7 +7,8 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileFailure, CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile,
+    ClangDiagnosticSeverity, ClangFailure, CompileFailure, CompileOutput, CompileScratch,
+    NativeTool, ToolchainSelection, compile,
 };
 use compiler_vocabulary::{Language, Stage};
 
@@ -61,7 +62,7 @@ fn native_rejection_retains_recipe_source_and_bounded_diagnostic() -> Result<(),
                 source,
                 ToolchainSelection::ResolvedNative(toolchain),
                 &cancelled,
-                Instant::now() + Duration::from_secs(5),
+                Instant::now() + NATIVE_COMPILE_DEADLINE,
             ),
             CompileScratch {
                 diagnostic_output: &mut diagnostic,
@@ -71,6 +72,61 @@ fn native_rejection_retains_recipe_source_and_bounded_diagnostic() -> Result<(),
                 fragment_output: &mut output,
             },
         ) {
+            Err(CompileFailure::ClangFrontend {
+                source_identity,
+                recipe,
+                cause,
+            }) if tool == NativeTool::Clang => {
+                // The direct Clang authority rejects without launching a process. Its typed
+                // terminal retains the same recipe and source facts plus the structured
+                // first diagnostic on linked builds, or the typed unavailable cause.
+                if recipe.language != language {
+                    return Err(TestFailure::RecipeLanguage {
+                        tool,
+                        expected: language,
+                        actual: recipe.language,
+                    });
+                }
+                if recipe.stage != Stage::LowerIr {
+                    return Err(TestFailure::RecipeStage {
+                        tool,
+                        expected: Stage::LowerIr,
+                        actual: recipe.stage,
+                    });
+                }
+                if recipe.tool != tool {
+                    return Err(TestFailure::RecipeTool {
+                        tool,
+                        expected: tool,
+                        actual: recipe.tool,
+                    });
+                }
+                if source_identity.byte_len != source_length {
+                    return Err(TestFailure::FragmentSourceLength {
+                        tool,
+                        expected: source_length,
+                        actual: source_identity.byte_len,
+                    });
+                }
+                let mode_exact = if cfg!(clang_native) {
+                    matches!(
+                        &cause,
+                        ClangFailure::ParseRejected {
+                            diagnostic: Some(diagnostic),
+                            ..
+                        } if diagnostic.severity == ClangDiagnosticSeverity::Error
+                    )
+                } else {
+                    matches!(cause, ClangFailure::LibclangUnavailable)
+                };
+                if !mode_exact {
+                    return Err(TestFailure::CompileTerminal {
+                        tool,
+                        expected: CompileExpectation::NativeRejection,
+                        observed: CompileTerminal::ClangFrontend,
+                    });
+                }
+            }
             Err(CompileFailure::NativeRejected {
                 source_identity,
                 recipe,

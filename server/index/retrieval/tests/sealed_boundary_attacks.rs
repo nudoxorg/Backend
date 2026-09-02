@@ -10,7 +10,7 @@
 
 mod support;
 
-use compiler_ir::EntityId;
+use compiler_ir_vocabulary::EntityId;
 use heart_identity::GenerationId;
 use server_index_core::{IndexSnapshot, LexicalManifest};
 use server_index_graph_vector::{

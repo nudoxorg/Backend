@@ -118,16 +118,6 @@ enum BenchmarkError {
     },
     #[error("fresh compact fragment validation failed")]
     FragmentValidate(#[source] Box<compiler_ir::FragmentError>),
-    #[error("canonical semantic IR construction failed")]
-    SemanticIr(#[source] compiler_ir::BuildError),
-    #[error("canonical semantic IR prerequisite was not constructed")]
-    MissingSemanticIr,
-    #[error("canonical semantic rendering exceeded its accounting width")]
-    SemanticRender,
-    #[error("direct canonical-IR Trustfall query failed")]
-    TrustfallIr(#[source] server_index_trustfall::TrustfallGraphError),
-    #[error("entity-aligned IR vector column was rejected: {0:?}")]
-    IrVectorColumn(server_index_graph_vector::IrVectorColumnError),
     #[error("deterministic public index build failed: {cause:?}")]
     IndexBuild {
         cause: Box<runner::BuildFailureFact>,

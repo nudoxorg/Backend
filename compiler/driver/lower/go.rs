@@ -2,85 +2,203 @@
 //! This module owns the lower go invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use compiler_ir::{EntityKind, PrimitiveType};
+use compiler_ir_vocabulary::SemanticProductConstructor;
 
 use crate::{
     lower::{
-        Declaration,
+        FactSet, FactType, LEAF_PRODUCT, SemanticFact, UnsupportedDeclaration, UnsupportedLane,
+        UnsupportedReason, push_fact,
         scanner::{DeclarationScanner, SyntaxToken},
     },
     types::LoweringUnsupported,
 };
 
-/// Admits only top-level single-line `const name [bool|string|int] = literal` and
-/// return-typed `func name(...) primitive` declarations.
-pub(super) fn declaration(source: &[u8]) -> Result<Declaration<'_>, LoweringUnsupported> {
+/// Emits every provable top-level Go declaration: package, functions, type
+/// declarations, constants, and variables.
+///
+/// Grouped declarations inside parentheses have no line structure at the
+/// token level and are skipped rather than guessed; an untyped variable whose
+/// value is outside the closed literal recipe is recorded exactly.
+pub(super) fn collect<'source>(
+    source: &'source [u8],
+    facts: &mut FactSet<'source>,
+    unsupported: &mut UnsupportedLane<'source>,
+) -> Result<(), LoweringUnsupported> {
     let mut scanner = DeclarationScanner::new(source);
     while let Some(scanned) = scanner.next() {
         if scanned.brace_depth != 0 {
             continue;
         }
-        match scanned.token {
-            SyntaxToken::Word(b"const") => return parse_const(&mut scanner),
-            SyntaxToken::Word(b"func") => return parse_func(&mut scanner),
-            SyntaxToken::Word(_) | SyntaxToken::Symbol(_) | SyntaxToken::Literal => {}
+        let SyntaxToken::Word(word) = scanned.token else {
+            continue;
+        };
+        match word {
+            b"package" => package(&mut scanner, facts),
+            b"func" => function(&mut scanner, facts, unsupported)?,
+            b"type" => type_declaration(&mut scanner, facts),
+            b"const" => value(&mut scanner, facts, unsupported, EntityKind::Constant),
+            b"var" => value(&mut scanner, facts, unsupported, EntityKind::Static),
+            _ => {}
         }
     }
-    Err(LoweringUnsupported::GoDeclarationForm)
+    Ok(())
 }
 
-fn parse_func<'source>(
+fn package<'source>(scanner: &mut DeclarationScanner<'source>, facts: &mut FactSet<'source>) {
+    if let Some(name) = word(next_top_level(scanner)) {
+        let _ = push_fact(
+            facts,
+            SemanticFact::new(
+                EntityKind::Module,
+                name,
+                FactType::Opaque,
+                SemanticProductConstructor::PRODUCT,
+            ),
+        );
+    }
+}
+
+/// Parses one function or method declaration: optional receiver, name,
+/// parameter list, and an optional result type. A recognized `func` whose
+/// signature stays unprovable is recorded exactly instead of aborting the
+/// whole declaration set.
+fn function<'source>(
     scanner: &mut DeclarationScanner<'source>,
-) -> Result<Declaration<'source>, LoweringUnsupported> {
-    let name = match scanner.next() {
-        Some(scanned) if scanned.brace_depth == 0 => match scanned.token {
-            SyntaxToken::Word(name) => name,
-            SyntaxToken::Symbol(b'(') => {
-                skip_balanced(scanner, b'(', b')');
-                word(next_top_level(scanner))?
-            }
-            SyntaxToken::Symbol(_) | SyntaxToken::Literal => {
-                return Err(LoweringUnsupported::GoDeclarationForm);
-            }
-        },
-        _ => return Err(LoweringUnsupported::GoDeclarationForm),
+    facts: &mut FactSet<'source>,
+    unsupported: &mut UnsupportedLane<'source>,
+) -> Result<(), LoweringUnsupported> {
+    // Read the first token exactly once. A receiver is parenthesized; a
+    // receiverless function starts directly with its name. The old probe
+    // consumed the name of receiverless functions before it could be used.
+    let first = next_top_level(scanner);
+    if matches!(first, Some(SyntaxToken::Symbol(b'('))) && !scanner.skip_balanced_parens() {
+        return Ok(());
+    }
+    let Some(name) = (if matches!(first, Some(SyntaxToken::Symbol(b'('))) {
+        word(next_top_level(scanner))
+    } else {
+        word(first)
+    }) else {
+        // No provable name: nothing is recorded and nothing is guessed.
+        return Ok(());
     };
     if !matches!(next_top_level(scanner), Some(SyntaxToken::Symbol(b'('))) {
-        return Err(LoweringUnsupported::GoDeclarationForm);
+        unsupported.record(UnsupportedDeclaration {
+            name,
+            reason: UnsupportedReason::NeedsFrontend,
+        });
+        return Ok(());
     }
-    skip_balanced(scanner, b'(', b')');
-    let return_type = match next_top_level(scanner) {
-        Some(SyntaxToken::Word(word)) => primitive_type(word)?,
-        Some(SyntaxToken::Symbol(_)) | Some(SyntaxToken::Literal) | None => {
-            return Err(LoweringUnsupported::GoDeclarationForm);
-        }
-    };
-    Ok(Declaration {
-        name,
-        kind: EntityKind::Function,
-        semantic_type: return_type,
-    })
+    if !scanner.skip_balanced_parens() {
+        unsupported.record(UnsupportedDeclaration {
+            name,
+            reason: UnsupportedReason::NeedsFrontend,
+        });
+        return Ok(());
+    }
+    let fact_type = result_type(scanner);
+    push_fact(
+        facts,
+        SemanticFact::new(
+            EntityKind::Function,
+            name,
+            fact_type,
+            SemanticProductConstructor::function(0, 0),
+        ),
+    )?;
+    Ok(())
 }
 
-fn parse_const<'source>(
+fn type_declaration<'source>(
     scanner: &mut DeclarationScanner<'source>,
-) -> Result<Declaration<'source>, LoweringUnsupported> {
-    let name = word(next_top_level(scanner))?;
-    let type_or_equals = next_top_level(scanner).ok_or(LoweringUnsupported::GoDeclarationForm)?;
-    let semantic_type = match type_or_equals {
-        SyntaxToken::Symbol(b'=') => value_type(next_top_level(scanner))?,
-        SyntaxToken::Word(word) => {
-            expect_equals(scanner)?;
-            primitive_type(word)?
-        }
-        SyntaxToken::Symbol(_) | SyntaxToken::Literal => {
-            return Err(LoweringUnsupported::GoDeclarationForm);
-        }
+    facts: &mut FactSet<'source>,
+) {
+    let Some(name) = word(next_top_level(scanner)) else {
+        return;
     };
-    Ok(Declaration {
-        name,
-        kind: EntityKind::Constant,
-        semantic_type,
-    })
+    let (kind, constructor) = match next_top_level(scanner) {
+        Some(SyntaxToken::Word(b"struct")) => {
+            (EntityKind::Record, SemanticProductConstructor::PRODUCT)
+        }
+        Some(SyntaxToken::Word(b"interface")) => {
+            (EntityKind::Trait, SemanticProductConstructor::INTERSECTION)
+        }
+        Some(SyntaxToken::Word(_)) => (EntityKind::Alias, LEAF_PRODUCT),
+        // Grouped or generic forms have no provable single declaration here.
+        _ => return,
+    };
+    let _ = push_fact(
+        facts,
+        SemanticFact::new(kind, name, FactType::Opaque, constructor),
+    );
+}
+
+fn value<'source>(
+    scanner: &mut DeclarationScanner<'source>,
+    facts: &mut FactSet<'source>,
+    unsupported: &mut UnsupportedLane<'source>,
+    kind: EntityKind,
+) {
+    // A parenthesized declaration group has no provable member structure at
+    // the token level.
+    let after_name = next_top_level(scanner);
+    if matches!(after_name, Some(SyntaxToken::Symbol(b'('))) {
+        let _ = scanner.skip_balanced_parens();
+        return;
+    }
+    let Some(name) = word(after_name) else {
+        return;
+    };
+    let mut fact_type = None;
+    match next_top_level(scanner) {
+        Some(SyntaxToken::Symbol(b'=')) => {
+            fact_type = literal_type(next_top_level(scanner));
+        }
+        Some(SyntaxToken::Word(word)) => {
+            fact_type = go_type(word);
+        }
+        _ => {}
+    }
+    match fact_type {
+        Some(primitive) => {
+            let _ = push_fact(
+                facts,
+                SemanticFact::new(kind, name, FactType::Primitive(primitive), LEAF_PRODUCT),
+            );
+        }
+        None => unsupported.record(UnsupportedDeclaration {
+            name,
+            reason: UnsupportedReason::ClosedValueType,
+        }),
+    }
+}
+
+/// Classifies the result type after the parameter list: a single closed
+/// primitive word is proven; named results, parenthesized results, and
+/// non-closed types stay opaque.
+fn result_type(scanner: &mut DeclarationScanner<'_>) -> FactType {
+    match next_top_level(scanner) {
+        Some(SyntaxToken::Word(word)) => {
+            go_type(word).map_or(FactType::Opaque, FactType::Primitive)
+        }
+        Some(SyntaxToken::Symbol(b'(')) => {
+            let fact_type = match next_top_level(scanner) {
+                Some(SyntaxToken::Word(word)) => go_type(word),
+                _ => None,
+            };
+            let _ = scanner.skip_balanced_parens();
+            fact_type.map_or(FactType::Opaque, |primitive| FactType::Primitive(primitive))
+        }
+        _ => FactType::Opaque,
+    }
+}
+
+fn literal_type(token: Option<SyntaxToken<'_>>) -> Option<PrimitiveType> {
+    match token {
+        Some(SyntaxToken::Literal) => Some(PrimitiveType::String),
+        Some(SyntaxToken::Word(b"true" | b"false")) => Some(PrimitiveType::Bool),
+        _ => None,
+    }
 }
 
 fn next_top_level<'source>(
@@ -88,59 +206,21 @@ fn next_top_level<'source>(
 ) -> Option<SyntaxToken<'source>> {
     scanner
         .next()
-        .filter(|scanned| scanned.brace_depth == 0)
-        .map(|scanned| scanned.token)
+        .and_then(|scanned| (scanned.brace_depth == 0).then_some(scanned.token))
 }
 
-fn word(token: Option<SyntaxToken<'_>>) -> Result<&[u8], LoweringUnsupported> {
+fn word(token: Option<SyntaxToken<'_>>) -> Option<&[u8]> {
     match token {
-        Some(SyntaxToken::Word(word)) => Ok(word),
-        Some(SyntaxToken::Symbol(_)) | Some(SyntaxToken::Literal) | None => {
-            Err(LoweringUnsupported::GoDeclarationForm)
-        }
+        Some(SyntaxToken::Word(word)) => Some(word),
+        Some(SyntaxToken::Symbol(_)) | Some(SyntaxToken::Literal) | None => None,
     }
 }
 
-fn expect_equals(scanner: &mut DeclarationScanner<'_>) -> Result<(), LoweringUnsupported> {
-    matches!(next_top_level(scanner), Some(SyntaxToken::Symbol(b'=')))
-        .then_some(())
-        .ok_or(LoweringUnsupported::GoDeclarationForm)
-}
-
-fn skip_balanced(scanner: &mut DeclarationScanner<'_>, open: u8, close: u8) {
-    let mut depth = 1_u32;
-    while let Some(scanned) = scanner.next() {
-        if scanned.brace_depth != 0 {
-            continue;
-        }
-        match scanned.token {
-            SyntaxToken::Symbol(byte) if byte == open => depth = depth.saturating_add(1),
-            SyntaxToken::Symbol(byte) if byte == close => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return;
-                }
-            }
-            SyntaxToken::Word(_) | SyntaxToken::Symbol(_) | SyntaxToken::Literal => {}
-        }
-    }
-}
-
-fn primitive_type(word: &[u8]) -> Result<PrimitiveType, LoweringUnsupported> {
+fn go_type(word: &[u8]) -> Option<PrimitiveType> {
     match word {
-        b"bool" => Ok(PrimitiveType::Bool),
-        b"int" => Ok(PrimitiveType::I32),
-        b"string" => Ok(PrimitiveType::String),
-        _ => Err(LoweringUnsupported::GoDeclarationType),
-    }
-}
-
-fn value_type(token: Option<SyntaxToken<'_>>) -> Result<PrimitiveType, LoweringUnsupported> {
-    match token {
-        Some(SyntaxToken::Literal) => Ok(PrimitiveType::String),
-        Some(SyntaxToken::Word(b"true" | b"false")) => Ok(PrimitiveType::Bool),
-        Some(SyntaxToken::Word(_)) | Some(SyntaxToken::Symbol(_)) | None => {
-            Err(LoweringUnsupported::GoDeclarationType)
-        }
+        b"bool" => Some(PrimitiveType::Bool),
+        b"int" => Some(PrimitiveType::I32),
+        b"string" => Some(PrimitiveType::String),
+        _ => None,
     }
 }

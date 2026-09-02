@@ -5,6 +5,7 @@
 resolver = "3"
 members = [
     "compiler/*",
+    "compiler/languages/*",
     "heart/*",
     "interface/*",
     "server/journal",
@@ -27,16 +28,29 @@ arrayvec = { version = "0.7.6", default-features = false }
 atomic-waker = { version = "1.1.2", default-features = false }
 blake3 = { version = "1.8.2", default-features = false }
 bolero = "0.13.4"
-derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
+derive_more = { version = "2.1.1", default-features = false, features = [
+  "debug",
+] }
 fearless_simd = { version = "0.7.0", default-features = false }
-flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "=1.1.10", default-features = false, features = [
+  "rust_backend",
+] }
 futures-core = { version = "0.3.31", default-features = false }
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false }
-gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", default-features = false, features = [
+  "font-kit",
+  "runtime_shaders",
+  "wayland",
+  "x11",
+] }
 loom = "0.7.2"
 opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "=0.32.0"
-opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
+opentelemetry_sdk = { version = "=0.32.1", features = [
+  "logs",
+  "metrics",
+  "trace",
+] }
 rstest = { version = "0.26.1", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
@@ -49,7 +63,9 @@ tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 trybuild = "1.0.118"
 trustfall = "=0.8.1"
 ureq = "=3.4.0"
-zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
+zerocopy = { version = "0.8.56", default-features = false, features = [
+  "derive",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

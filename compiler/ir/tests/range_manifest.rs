@@ -1,12 +1,12 @@
 //! Exercises the `compiler-ir` tests range-manifest contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentRangeRequest,
     FragmentRangeVerifyError, FragmentView, PreparedFragment, PrimitiveType, SectionKind,
     SourceIdentity, TypeNode,
 };
+use compiler_ir_vocabulary::{AtomId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
