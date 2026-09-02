@@ -413,7 +413,7 @@ fn type_name_cell(payload: &[u8], cursor: &mut usize) -> Result<(), TestError> {
             let length = usize::try_from(word(
                 payload,
                 (*cursor).checked_add(1).ok_or(TestError::Coordinate)?,
-            ))
+            )?)
             .map_err(|_| TestError::Coordinate)?;
             *cursor = cursor
                 .checked_add(CELL_HEADER_BYTES)
