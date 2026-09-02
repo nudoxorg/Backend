@@ -1,0 +1,4 @@
+interface:
+  display_name: "Data Layout Audit Scope"
+  short_description: "Measured representation experiment scope"
+  default_prompt: "Use $audit-data-layout with the shared reviewed Rust skill to evaluate this representation claim."

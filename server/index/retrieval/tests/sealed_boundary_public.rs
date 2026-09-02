@@ -11,7 +11,7 @@
 
 mod support;
 
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use server_index_core::{
     ExactDegradation, ExactOperation, ExactResolution, LexicalDegradation, LexicalManifest,
     LexicalOperation, LexicalScore, LexicalSnapshotHit, LexicalTopK,

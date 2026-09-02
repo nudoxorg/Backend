@@ -11,7 +11,7 @@ use core::{
 };
 
 use compiler_ir::{Atom, AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
-use compiler_ir_vocabulary::{AtomId, TypeId};
+use compiler_ir::{AtomId, TypeId};
 use server_index_build::{
     BuildAdmissionError, BuildRegion, EntityFact, EntityProjection, IndexBuildCapacity,
     IndexBuildScratch, MAX_INDEX_ROWS, build, preflight,

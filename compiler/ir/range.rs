@@ -367,7 +367,7 @@ fn range_identity(
 
 #[cfg(test)]
 mod tests {
-    use compiler_ir_vocabulary::{AtomId, TypeId};
+    use crate::{AtomId, TypeId};
     use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;

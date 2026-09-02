@@ -14,9 +14,9 @@ mod types;
 pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
 pub use types::{
     CompileControl, CompileFailure, CompileOutput, CompileRecipeFact, CompileRequest,
-    CompileScratch, CompiledFragment, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
+    CompileScratch, CompiledFragment, CompiledIr, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
     NativeDiagnostic, NativeTool, NativeWorkError, NativeWorkPrimary, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, ResolvedToolchain,
     ResolvedToolchainView, SourceIdentity, ToolchainResolutionError, ToolchainSelection,
-    ToolchainSelectionFact, compile,
+    ToolchainSelectionFact, compile, compile_ir,
 };

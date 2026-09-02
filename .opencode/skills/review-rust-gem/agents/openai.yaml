@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Rust Gem"
+  short_description: "Hostile evidence-backed Rust implementation review"
+  default_prompt: "Use $review-rust-gem to review this slice against its approved contract and evidence."

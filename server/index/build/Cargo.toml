@@ -13,9 +13,7 @@ publish.workspace = true
 compiler-publication = { path = "../../../compiler/publication" }
 heart-identity = { path = "../../../heart/identity" }
 server-index-core = { path = "../core" }
-server-index-graph-vector = { path = "../graph-vector" }
 compiler-ir = { path = "../../../compiler/ir" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 thiserror.workspace = true
 zerocopy.workspace = true
 
@@ -24,8 +22,6 @@ allocation-counter.workspace = true
 compiler-driver = { path = "../../../compiler/driver" }
 compiler-vocabulary = { path = "../../../compiler/vocabulary" }
 server-journal = { path = "../../journal" }
-server-index-trustfall = { path = "../trustfall" }
-server-index-vocabulary = { path = "../vocabulary" }
 heart-identity = { path = "../../../heart/identity" }
 [lints]
 workspace = true

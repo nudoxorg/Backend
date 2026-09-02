@@ -4,7 +4,10 @@
 //! Bounded point/query admission and prepared request identities.
 
 use arrayvec::ArrayVec;
-use server_index_graph_vector::{ValidatedVectorSegment, VectorAuthority, VectorSegmentDescriptor};
+use server_index_graph_vector::{
+    IrVectorColumn, ValidatedVectorSegment, VectorAuthority, VectorSegmentDescriptor,
+};
+use server_index_vocabulary::VectorSegmentId;
 
 use super::{
     contract::{PhysicalPointId, QdrantAdmissionError, QdrantDataKey, QdrantError},
@@ -152,6 +155,44 @@ pub(super) fn prepare_segments<'coordinates>(
                 .into());
             }
         }
+    }
+    Ok(prepared)
+}
+
+/// Binds an entity-aligned IR vector lane directly to disposable Qdrant keys.
+/// This deliberately bypasses `VectorFact`, `VectorPoint`, and segment views.
+pub(super) fn prepare_ir_column<'coordinates>(
+    authority: VectorAuthority,
+    segment: VectorSegmentId,
+    column: IrVectorColumn<'_, 'coordinates>,
+) -> Result<ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS>, QdrantError> {
+    reject_wrong_authority(0, authority, column.authority())?;
+    let mut prepared: ArrayVec<PreparedPoint<'coordinates>, MAX_BATCH_POINTS> = ArrayVec::new();
+    for (entity, coordinates) in column.entries() {
+        let index = prepared.len();
+        let key = QdrantDataKey::new(authority, segment, column.partition(), entity);
+        let physical_id = PhysicalPointId::for_key(key);
+        for first in prepared.iter().copied() {
+            reject_identity_pair(
+                first.index,
+                first.key,
+                first.physical_id,
+                index,
+                key,
+                physical_id,
+            )?;
+        }
+        prepared
+            .try_push(PreparedPoint {
+                index,
+                key,
+                coordinates,
+                physical_id,
+            })
+            .map_err(|_| QdrantAdmissionError::BatchTooLarge {
+                maximum: MAX_BATCH_POINTS,
+                observed: index.saturating_add(1),
+            })?;
     }
     Ok(prepared)
 }

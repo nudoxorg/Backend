@@ -7,8 +7,8 @@ use compiler_driver::{
     CompileFailure, NativeArtifactRole, NativeTool, NativeWorkError, NativeWorkPhase,
     NativeWorkPrimary, ToolchainSelectionFact,
 };
+use compiler_ir::EntityId;
 use compiler_ir::{FragmentError, PrepareError, WriteError};
-use compiler_ir_vocabulary::EntityId;
 use compiler_vocabulary::{Language, Stage as CompileStage};
 use server_index_build::BuildError;
 use server_index_core::{EntityDocumentId, ExactSegmentError, LexicalSegmentError};
@@ -107,6 +107,9 @@ pub(crate) enum CompileFailureFact {
     },
     LoweringUnsupported {
         cause: compiler_driver::LoweringUnsupported,
+    },
+    Build {
+        cause: compiler_ir::BuildError,
     },
     Prepare {
         cause: PrepareError,
@@ -237,11 +240,11 @@ pub(crate) enum WriteFault {
         available: usize,
     },
     AtomLength {
-        ordinal: compiler_ir_vocabulary::AtomId,
+        ordinal: compiler_ir::AtomId,
         actual: usize,
     },
     AtomExtent {
-        ordinal: compiler_ir_vocabulary::AtomId,
+        ordinal: compiler_ir::AtomId,
     },
 }
 
@@ -334,19 +337,19 @@ pub(crate) enum BuildFailureFact {
     },
     AtomAddressSpace {
         entity: EntityId,
-        name: compiler_ir_vocabulary::AtomId,
+        name: compiler_ir::AtomId,
     },
     TypeAddressSpace {
         entity: EntityId,
-        semantic_type: compiler_ir_vocabulary::TypeId,
+        semantic_type: compiler_ir::TypeId,
     },
     MissingAtom {
         entity: EntityId,
-        name: compiler_ir_vocabulary::AtomId,
+        name: compiler_ir::AtomId,
     },
     MissingTypeNode {
         entity: EntityId,
-        semantic_type: compiler_ir_vocabulary::TypeId,
+        semantic_type: compiler_ir::TypeId,
     },
     Exact {
         cause: ExactSegmentFault,
@@ -481,6 +484,7 @@ pub(crate) fn compile_failure_fact(error: CompileFailure<'_>) -> CompileFailureF
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileFailureFact::LoweringUnsupported { cause }
         }
+        CompileFailure::Build { cause, .. } => CompileFailureFact::Build { cause },
         CompileFailure::Prepare { cause, .. } => CompileFailureFact::Prepare { cause },
         CompileFailure::Write { cause, .. } => CompileFailureFact::Write {
             cause: write_fault(&cause),

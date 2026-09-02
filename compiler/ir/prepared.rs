@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use crate::{AtomId, EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{

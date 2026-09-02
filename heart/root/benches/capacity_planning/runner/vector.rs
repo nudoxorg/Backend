@@ -5,7 +5,7 @@
 
 use core::mem::{size_of, size_of_val};
 
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use server_index_graph_vector::{
     Metric as VectorMetric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority,
     VectorFact, VectorPoint, compact_vector_facts, exact_vector_query,

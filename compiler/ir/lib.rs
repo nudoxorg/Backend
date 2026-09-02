@@ -5,20 +5,35 @@
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 #[cfg(feature = "mmap")]
 extern crate std;
 
 #[cfg(target_pointer_width = "16")]
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
+mod columnar;
+mod coordinate;
+mod interner;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
 mod prepared;
 mod range;
+mod render;
+mod semantic;
+mod vcs;
 mod view;
 mod wire;
 
+pub use coordinate::{
+    AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
+};
+pub use interner::{
+    ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
+    ListInterner, ListTable, ListTableView,
+};
 #[cfg(feature = "mmap")]
 pub use mapping::{
     MappedFragment, MappedFragmentError, MappedFragmentIoPhase, MappedFragmentView,
@@ -34,6 +49,25 @@ pub use range::{
     FragmentRange, FragmentRangeManifest, FragmentRangeManifestError, FragmentRangeManifestView,
     FragmentRangeRequest, FragmentRangeVerifyError, VerifiedFragmentRange,
     VerifiedFragmentRangeView,
+};
+pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
+pub use semantic::{
+    AtomListId, BorrowedTree, BuildError, BuiltinType, ComputedState, ComputedType, ComputedTypeId,
+    ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId, DocInput,
+    EntityColumns, EntityListId, EntityRange, EntityVersion, External, ExternalId, ExternalTarget,
+    FrontendTree, GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter, ItemKind, ItemView,
+    Link, LinkId, LinkIter, LinkKind, LinkSpace, LinkTarget, LiteralType, MappedModifier,
+    Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash, PropertyKey,
+    SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StableEntityId, StorageColumns,
+    TemplatePart, TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput,
+    TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns,
+    TypeExpr, TypeHeader, TypeListId, TypePairPayload, TypeParameter, TypeParameterListId,
+    TypeQuadPayload, TypeQuery, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload,
+    TypedTypeId, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+};
+pub use vcs::{
+    Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
+    LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,

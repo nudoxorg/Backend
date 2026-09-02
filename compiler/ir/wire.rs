@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::{num::TryFromIntError, ops::Range};
 
-use compiler_ir_vocabulary::{AtomId, TypeId};
+use crate::{AtomId, TypeId};
 use compiler_vocabulary::{Language, NativeTool, Stage};
 use heart_identity::{
     CompileRecipeDomain, ContentId, HASH_BYTES, SourceFactDomain, ToolchainDomain,

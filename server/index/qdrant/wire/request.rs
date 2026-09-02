@@ -124,10 +124,9 @@ impl PayloadIndexRequest {
     }
 }
 
-/// Typed request body for a point upsert.
-#[derive(Serialize)]
-pub(crate) struct UpsertRequest<'coordinates> {
-    points: ArrayVec<UpsertPoint<'coordinates>, MAX_BATCH_POINTS>,
+/// Typed request body borrowing the already-prepared point slice.
+pub(crate) struct UpsertRequest<'points, 'coordinates> {
+    points: &'points [super::super::admission::PreparedPoint<'coordinates>],
 }
 
 #[derive(Serialize)]
@@ -137,20 +136,37 @@ struct UpsertPoint<'coordinates> {
     payload: IdentityPayload,
 }
 
-impl<'coordinates> UpsertRequest<'coordinates> {
+impl<'points, 'coordinates> UpsertRequest<'points, 'coordinates> {
     pub(crate) fn from_points(
-        points: &[super::super::admission::PreparedPoint<'coordinates>],
+        points: &'points [super::super::admission::PreparedPoint<'coordinates>],
     ) -> Self {
-        Self {
-            points: points
-                .iter()
-                .map(|point| UpsertPoint {
-                    id: point.physical_id.0,
-                    vector: Coordinates(point.coordinates),
-                    payload: IdentityPayload::from_key(point.key),
-                })
-                .collect(),
+        Self { points }
+    }
+}
+
+impl Serialize for UpsertRequest<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut request = serializer.serialize_struct("UpsertRequest", 1)?;
+        request.serialize_field("points", &UpsertPoints(self.points))?;
+        request.end()
+    }
+}
+
+struct UpsertPoints<'points, 'coordinates>(
+    &'points [super::super::admission::PreparedPoint<'coordinates>],
+);
+
+impl Serialize for UpsertPoints<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut points = serializer.serialize_seq(Some(self.0.len()))?;
+        for point in self.0 {
+            points.serialize_element(&UpsertPoint {
+                id: point.physical_id.0,
+                vector: Coordinates(point.coordinates),
+                payload: IdentityPayload::from_key(point.key),
+            })?;
         }
+        points.end()
     }
 }
 

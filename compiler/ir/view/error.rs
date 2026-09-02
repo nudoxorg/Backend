@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use compiler_ir_vocabulary::{EntityId, TypeId};
+use crate::{EntityId, TypeId};
 use thiserror::Error;
 
 use crate::{
@@ -14,21 +14,11 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WireField {
     DeclaredLength,
-    SectionItemCount {
-        ordinal: u16,
-    },
-    SectionOffset {
-        ordinal: u16,
-    },
-    SectionByteLength {
-        ordinal: u16,
-    },
-    AtomStart {
-        ordinal: compiler_ir_vocabulary::AtomId,
-    },
-    AtomLength {
-        ordinal: compiler_ir_vocabulary::AtomId,
-    },
+    SectionItemCount { ordinal: u16 },
+    SectionOffset { ordinal: u16 },
+    SectionByteLength { ordinal: u16 },
+    AtomStart { ordinal: crate::AtomId },
+    AtomLength { ordinal: crate::AtomId },
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]

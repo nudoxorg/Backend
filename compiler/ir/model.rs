@@ -1,7 +1,7 @@
 //! Defines model behavior for `compiler-ir`, whose purpose is to encode, validate, map, and borrow canonical compiler IR fragments.
 //! This module owns the model invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use crate::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::CompileRecipeFact;
 use heart_identity::{ContentId, SourceFactDomain};
 use thiserror::Error;

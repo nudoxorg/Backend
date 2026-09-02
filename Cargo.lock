@@ -1146,7 +1146,6 @@ name = "compiler-driver"
 version = "0.1.0"
 dependencies = [
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-registry",
  "compiler-vocabulary",
  "heart-identity",
@@ -1157,7 +1156,8 @@ dependencies = [
 name = "compiler-ir"
 version = "0.1.0"
 dependencies = [
- "compiler-ir-vocabulary",
+ "allocation-counter",
+ "blake3",
  "compiler-vocabulary",
  "heart-identity",
  "memmap2",
@@ -1165,16 +1165,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "compiler-ir-vocabulary"
-version = "0.1.0"
-
-[[package]]
 name = "compiler-publication"
 version = "0.1.0"
 dependencies = [
  "compiler-driver",
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-vocabulary",
  "heart-hydration",
  "heart-identity",
@@ -2931,7 +2926,6 @@ dependencies = [
  "bolero",
  "compiler-driver",
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-publication",
  "compiler-vocabulary",
  "derive_more",
@@ -2946,6 +2940,7 @@ dependencies = [
  "server-index-core",
  "server-index-graph-vector",
  "server-index-tantivy",
+ "server-index-trustfall",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
@@ -5700,14 +5695,10 @@ dependencies = [
  "allocation-counter",
  "compiler-driver",
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-publication",
  "compiler-vocabulary",
  "heart-identity",
  "server-index-core",
- "server-index-graph-vector",
- "server-index-trustfall",
- "server-index-vocabulary",
  "server-journal",
  "thiserror 2.0.20",
  "zerocopy",
@@ -5717,7 +5708,7 @@ dependencies = [
 name = "server-index-core"
 version = "0.1.0"
 dependencies = [
- "compiler-ir-vocabulary",
+ "compiler-ir",
  "heart-identity",
  "server-index-vocabulary",
  "thiserror 2.0.20",
@@ -5728,7 +5719,7 @@ name = "server-index-graph-vector"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "compiler-ir-vocabulary",
+ "compiler-ir",
  "heart-identity",
  "loom",
  "server-index-vocabulary",
@@ -5741,7 +5732,6 @@ dependencies = [
  "allocation-counter",
  "compiler-driver",
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",
@@ -5766,8 +5756,9 @@ dependencies = [
 name = "server-index-qdrant"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "arrayvec",
- "compiler-ir-vocabulary",
+ "compiler-ir",
  "flate2",
  "serde",
  "serde_json",
@@ -5783,7 +5774,6 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "compiler-ir",
- "compiler-ir-vocabulary",
  "compiler-vocabulary",
  "heart-hydration",
  "heart-identity",
@@ -5806,7 +5796,7 @@ dependencies = [
 name = "server-index-tantivy"
 version = "0.1.0"
 dependencies = [
- "compiler-ir-vocabulary",
+ "compiler-ir",
  "heart-identity",
  "server-index-core",
  "tantivy",
@@ -5817,7 +5807,8 @@ dependencies = [
 name = "server-index-trustfall"
 version = "0.1.0"
 dependencies = [
- "compiler-ir-vocabulary",
+ "allocation-counter",
+ "compiler-ir",
  "server-index-graph-vector",
  "server-index-vocabulary",
  "thiserror 2.0.20",

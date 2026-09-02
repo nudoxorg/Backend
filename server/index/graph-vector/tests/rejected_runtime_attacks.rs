@@ -1,7 +1,7 @@
 //! Exercises the `server-index-graph-vector` tests rejected-runtime-attacks contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use core::{
     mem::size_of,
     pin::Pin,

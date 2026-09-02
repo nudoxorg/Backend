@@ -1,7 +1,7 @@
 //! Exercises the `server-index-graph-vector` tests local-query-semantics contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use server_index_graph_vector::{
     GraphAuthority, GraphEdge, GraphQueryError, GraphRow, Metric, ModelId, PartitionId,
     ProjectionId, ValidatedGraphView, ValidatedVectorSegment, VectorAuthority, VectorHit,

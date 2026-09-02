@@ -11,13 +11,13 @@ publish.workspace = true
 
 
 [dependencies]
+compiler-ir = { path = "../../../compiler/ir" }
 server-index-core = { path = "../core" }
 tantivy.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 heart-identity = { path = "../../../heart/identity" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 
 [lib]
 path = "lib.rs"

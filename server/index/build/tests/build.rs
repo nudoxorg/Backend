@@ -6,8 +6,8 @@
 mod support;
 
 use allocation_counter::{AllocationInfo, measure};
+use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{AtomInput, EntityKind, EntityRecord, PrimitiveType, TypeNode};
-use compiler_ir_vocabulary::{AtomId, TypeId};
 use heart_identity::{ContentId, SourceFactDomain};
 use server_index_core::{ExactOperation, IndexSnapshot, LexicalRow};
 use support::{

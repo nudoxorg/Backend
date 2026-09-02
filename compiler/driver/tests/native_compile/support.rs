@@ -206,6 +206,7 @@ pub(super) enum CompileTerminal {
     DiagnosticLimit,
     NativeRejected,
     LoweringUnsupported(LoweringUnsupported),
+    Build,
     Prepare,
     Write,
     Validate,
@@ -400,6 +401,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
+        CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,
         CompileFailure::Validate { .. } => CompileTerminal::Validate,

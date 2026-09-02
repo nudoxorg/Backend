@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use compiler_ir::{AtomId, EntityId, TypeId};
 use server_index_core::{ExactSegmentError, LexicalSegmentError};
 use thiserror::Error;
 

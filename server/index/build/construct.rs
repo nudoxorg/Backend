@@ -9,7 +9,7 @@ use crate::{
     initialized::{InitializationError, Initialized, try_initialize},
 };
 use compiler_ir::{Atom, FragmentView, TypeNode};
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_publication::OpenedFragment;
 use compiler_publication::manifest::StoredFragmentFacts;
 use server_index_core::{

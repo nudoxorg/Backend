@@ -19,7 +19,7 @@ use compiler_ir::{
     Atom, AtomInput, EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError,
     PreparedFragment, PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
-use compiler_ir_vocabulary::{AtomId, TypeId};
+use compiler_ir::{AtomId, TypeId};
 use compiler_publication::{
     OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragmentError,
     PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,

@@ -17,6 +17,8 @@ mod native;
 mod orchestration;
 #[path = "runner/publication.rs"]
 mod publication;
+#[path = "runner/semantic.rs"]
+mod semantic;
 #[path = "runner/support.rs"]
 mod support;
 #[path = "runner/tantivy.rs"]

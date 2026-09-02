@@ -3,7 +3,7 @@
 //! Results support capacity decisions without changing the measured implementation.
 //! Lexical row derivation and Tantivy adapter build/query phases.
 
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
     EntityDocumentId, GenerationId, IndexSnapshot, LexicalManifest, LexicalRow, LexicalScore,

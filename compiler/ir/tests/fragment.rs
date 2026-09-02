@@ -1,12 +1,12 @@
 //! Exercises the `compiler-ir` tests fragment contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_ir::{
     AtomInput, EntityKind, EntityRecord, EntityRecordFault, EntityType, FragmentError,
     FragmentView, PrepareError, PreparedFragment, PrimitiveType, SourceIdentity, TypeNode,
     TypeNodeFault, WriteError,
 };
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;

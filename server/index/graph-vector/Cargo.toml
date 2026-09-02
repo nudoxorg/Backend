@@ -10,9 +10,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+compiler-ir = { path = "../../../compiler/ir" }
 heart-identity = { path = "../../../heart/identity" }
 server-index-vocabulary = { path = "../vocabulary" }
-compiler-ir-vocabulary = { path = "../../../compiler/ir-vocabulary" }
 loom = { workspace = true, optional = true }
 
 [dev-dependencies]

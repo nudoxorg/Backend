@@ -16,7 +16,6 @@ mod qdrant;
 mod tantivy;
 mod terminal;
 mod trustfall;
-mod vector;
 
 pub use boundary::{
     RetrievalBoundary, RetrievalBoundaryError, RetrievalBoundaryEvidence,

@@ -16,7 +16,7 @@ use crate::{
     },
     scoring::projected_score,
 };
-use compiler_ir_vocabulary::EntityId;
+use compiler_ir::EntityId;
 use server_index_graph_vector::{
     Metric, ModelId, PartitionId, ValidatedVectorSegment, VectorAuthority, VectorPoint,
     VectorSegmentError, exact_vector_query,

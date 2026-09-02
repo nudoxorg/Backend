@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::num::TryFromIntError;
 
-use compiler_ir::{FragmentError, FragmentView, PrepareError, WriteError};
+use compiler_ir::{BuildError, FragmentError, FragmentView, Ir, PrepareError, WriteError};
 use compiler_vocabulary::{
     CompileRecipeFact, FrontendError, InvalidUtf8Fact, Language, LoweringUnsupported,
     NativeArtifactRole, NativeTool, NativeWorkPhase, NativeWorkerPanic, Stage,
@@ -147,6 +147,14 @@ pub struct CompiledFragment<'artifact> {
     pub recipe: CompileRecipeFact,
     /// Validated compact IR borrowing only the separate caller-owned output region.
     pub fragment: FragmentView<'artifact>,
+}
+
+/// Canonical semantic terminal shared directly with renderers, graph queries,
+/// indexers, and IR-VCS. It contains no serialized intermediary.
+pub struct CompiledIr {
+    pub source: SourceIdentity,
+    pub recipe: CompileRecipeFact,
+    pub ir: Ir,
 }
 
 /// Exact compile terminal with source-bearing native causes and bounded diagnostic facts.
@@ -351,6 +359,14 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         #[source]
         cause: LoweringUnsupported,
+    },
+    /// Rich lowering could not condense the frontend tree into canonical IR.
+    #[error("could not build canonical semantic IR for {recipe:?}")]
+    Build {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        #[source]
+        cause: BuildError,
     },
     /// Lowering could not prepare the compact IR from its typed facts.
     #[error("could not prepare compact IR for {recipe:?}")]

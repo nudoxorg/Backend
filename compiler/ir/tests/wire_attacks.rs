@@ -6,7 +6,7 @@ use compiler_ir::{
     EntityRecordFault, FragmentError, FragmentView, PrepareError, PreparedFragment, PrimitiveType,
     RecipeFactFault, SourceIdentity, SourceIdentityFault, TypeNode, TypeNodeFault, WriteError,
 };
-use compiler_ir_vocabulary::{AtomId, EntityId, TypeId};
+use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_vocabulary::{CompileRecipeFact, Language, NativeTool, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
