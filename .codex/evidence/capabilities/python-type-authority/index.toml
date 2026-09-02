@@ -1,0 +1,29 @@
+capability = "python-type-authority"
+opened = "2026-09-02"
+baseline_tree = "2f82d74b49cfebdf1b56ac538af580987c8695a7 + uncommitted python lane"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "python-render-golden"
+paths = ["compiler/driver/tests/python_render.rs"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "python-purl-lifecycle"
+paths = ["compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_purl_lifecycle/"]
+state = "planned"
+
+[[dispatches]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "python-packages-fidelity"
+paths = ["compiler/driver/tests/python_packages.rs", "compiler/driver/tests/python_packages/"]
+state = "planned"
+
+[[reviews]]
+boundary = "closure"
+role = "nudox_terra_reviewer"
+state = "planned"

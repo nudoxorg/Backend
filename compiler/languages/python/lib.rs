@@ -8,7 +8,7 @@
 pub mod checker;
 
 pub use checker::{
-    CheckerError, CheckerReport, Inference, InferenceSite, InferredType, ImportResolution, Pyrefly,
+    CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType, Pyrefly,
     SymbolOutcome, SymbolResolution,
 };
 
@@ -43,6 +43,8 @@ pub enum AnnotationPosition {
     Parameter,
     Return,
     Field,
+    /// The value expression of a PEP 695 `type` alias statement.
+    AliasValue,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Annotation {
@@ -187,6 +189,15 @@ pub struct DeclarationFact {
     /// spelling (`json` in `from json import loads`, `os.path` in
     /// `import os.path`), so cross-package keys can borrow source bytes.
     pub value_span: Option<Span>,
+    /// The PEP 695 type parameters declared by this function, class, or
+    /// `type` alias (`T` in `class Box[T]:`), each as the exact source span
+    /// of its written identifier, in declaration order. Their names scope
+    /// the annotations of exactly this declaration, and every consumer can
+    /// borrow the name bytes without a fresh buffer.
+    pub type_parameters: Vec<Span>,
+    /// For a `TypedDict` class, the written `total=` keyword value; `None`
+    /// when the keyword is absent, which PEP 589 defines as total.
+    pub total: Option<bool>,
     pub docstring: Option<DocstringFact>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,6 +427,8 @@ fn module_facts(
             parameters: Vec::new(),
             value_source: None,
             value_span: None,
+            type_parameters: Vec::new(),
+            total: None,
             docstring: module_doc.clone(),
         }],
         occurrences: Vec::new(),
@@ -739,6 +752,20 @@ fn last_segment(spelling: &str) -> &str {
 /// its exact source span (including the leading `@`).
 type Decorated = (Vec<String>, Vec<Span>);
 
+/// The exact source spans of one PEP 695 type-parameter list's written
+/// identifiers, in declaration order (`[T, U]` for `[T, U]`).
+fn type_parameter_spans(type_params: Option<&ast::TypeParams>) -> Vec<Span> {
+    type_params
+        .map(|parameters| {
+            parameters
+                .type_params
+                .iter()
+                .map(|parameter| span(parameter.name().range()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 struct Projection<'a> {
     text: &'a str,
     names: &'a [String],
@@ -957,8 +984,8 @@ impl<'a> Projection<'a> {
         }
         Some(result)
     }
-    fn class_form(&self, class: &ast::StmtClassDef) -> (Vec<Annotation>, ClassForm) {
-        let (mut bases, mut form) = (Vec::new(), ClassForm::Plain);
+    fn class_form(&self, class: &ast::StmtClassDef) -> (Vec<Annotation>, ClassForm, Option<bool>) {
+        let (mut bases, mut form, mut total) = (Vec::new(), ClassForm::Plain, None);
         if let Some(arguments) = class.arguments.as_deref() {
             for base in &arguments.args {
                 if terminal_name(base) == Some("Protocol") {
@@ -970,6 +997,13 @@ impl<'a> Projection<'a> {
                 }
                 bases.push(annotation(base));
             }
+            for keyword in &arguments.keywords {
+                if keyword.arg.as_ref().map(|name| name.as_str()) == Some("total")
+                    && let ast::Expr::BooleanLiteral(boolean) = &keyword.value
+                {
+                    total = Some(boolean.value);
+                }
+            }
         }
         if class
             .decorator_list
@@ -978,7 +1012,7 @@ impl<'a> Projection<'a> {
         {
             form = ClassForm::Dataclass;
         }
-        (bases, form)
+        (bases, form, total)
     }
 }
 impl<'a> Visitor<'a> for Projection<'a> {
@@ -1034,6 +1068,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     parameters,
                     value_source: None,
                     value_span: None,
+                    type_parameters: type_parameter_spans(function.type_params.as_deref()),
+                    total: None,
                     docstring: doc,
                 });
                 self.decorator_ranges = function.decorator_list.iter().map(|d| d.range).collect();
@@ -1052,7 +1088,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 let old_decorator_ranges = std::mem::take(&mut self.decorator_ranges);
                 let old_decorator_owner = self.decorator_owner.take();
                 let name = class.name.as_str().to_owned();
-                let (bases, form) = self.class_form(class);
+                let (bases, form, total) = self.class_form(class);
                 let Some((decorators, decorator_spans)) = self.decorators(&class.decorator_list)
                 else {
                     return;
@@ -1074,6 +1110,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     parameters: Vec::new(),
                     value_source: None,
                     value_span: None,
+                    type_parameters: type_parameter_spans(class.type_params.as_deref()),
+                    total,
                     docstring,
                 });
                 self.decorator_ranges = class.decorator_list.iter().map(|d| d.range).collect();
@@ -1096,6 +1134,9 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 for alias in &import.names {
                     self.add_alias(alias, statement);
                 }
+            }
+            ast::Stmt::TypeAlias(alias) if self.function_depth == 0 && self.class_depth == 0 => {
+                self.add_type_alias(alias, statement);
             }
             ast::Stmt::Assign(assign) if self.class_depth > 0 && self.function_depth == 0 => {
                 if let Some(target) = assign.targets.first() {
@@ -1212,7 +1253,47 @@ impl Projection<'_> {
             parameters: Vec::new(),
             value_source: Some(alias.name.as_str().to_owned()),
             value_span: Some(span(alias.name.range())),
+            type_parameters: Vec::new(),
+            total: None,
             docstring: None,
+        });
+    }
+
+    /// Records one PEP 695 `type` alias statement (`type Vector[T] =
+    /// list[T]`): an alias declaration whose written value is projected
+    /// exactly like any annotation, keyed by the new `AliasValue` position.
+    fn add_type_alias(&mut self, alias: &ast::StmtTypeAlias, statement: &ast::Stmt) {
+        let ast::Expr::Name(name) = alias.name.as_ref() else {
+            return;
+        };
+        let value_annotation = annotation(&alias.value);
+        let value_span = span(alias.value.range());
+        let Some(value_source) = self.source_owned(alias.value.range()) else {
+            return;
+        };
+        self.add_declaration(DeclarationFact {
+            name: name.id.as_str().to_owned(),
+            name_span: span(name.range()),
+            kind: DeclarationKind::Alias,
+            span: span(statement.range()),
+            bases: Vec::new(),
+            class_form: None,
+            decorators: Vec::new(),
+            decorator_spans: Vec::new(),
+            is_async: false,
+            receiver: ReceiverKind::Plain,
+            parameters: Vec::new(),
+            value_source: Some(value_source),
+            value_span: None,
+            type_parameters: type_parameter_spans(alias.type_params.as_deref()),
+            total: None,
+            docstring: None,
+        });
+        self.facts.annotations.push(AnnotationFact {
+            owner: name.id.as_str().to_owned(),
+            position: AnnotationPosition::AliasValue,
+            annotation: value_annotation,
+            span: value_span,
         });
     }
     fn field_from_target(
@@ -1240,6 +1321,8 @@ impl Projection<'_> {
                 parameters: Vec::new(),
                 value_source,
                 value_span: None,
+                type_parameters: Vec::new(),
+                total: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {
@@ -1278,6 +1361,8 @@ impl Projection<'_> {
                 parameters: Vec::new(),
                 value_source,
                 value_span: None,
+                type_parameters: Vec::new(),
+                total: None,
                 docstring: None,
             });
             if let Some(annotation_expr) = annotation_expr {

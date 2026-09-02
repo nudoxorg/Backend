@@ -17,10 +17,12 @@
 //! - Inferred types come from pyrefly's own `reveal-type` diagnostics on a
 //!   probe file that appends `reveal_type(name)` for single-bound unannotated
 //!   module constants and splices `reveal_type(param)` after a function
-//!   header's colon. A `Literal[...]` refinement widens to its base primitive;
-//!   `Any`/`Unknown` means the checker proved nothing, so consumers keep their
-//!   unannotated state. Single-line function bodies and rebound names are
-//!   never probed.
+//!   header's colon. A rebound constant — including one rebound by decorator
+//!   application — is probed exactly once, at its final binding, so only
+//!   that row's exact span carries the end-of-module type. A `Literal[...]`
+//!   refinement widens to its base primitive; `Any`/`Unknown` means the
+//!   checker proved nothing, so consumers keep their unannotated state.
+//!   Single-line function bodies are never probed.
 //! - Import resolution is the absence of a `missing-import` diagnostic over
 //!   the imported module spelling on the pristine file: the checker bound the
 //!   module, so consumers may mint `pypi` package foreign keys.
@@ -95,7 +97,9 @@ pub enum CheckerError {
         transcript: String,
     },
     /// The output bound was exceeded and the child was reaped.
-    #[error("pyrefly output limit exceeded during {phase} on {stream}: observed {observed}, limit {limit}")]
+    #[error(
+        "pyrefly output limit exceeded during {phase} on {stream}: observed {observed}, limit {limit}"
+    )]
     OutputLimit {
         /// Run phase that observed the overrun.
         phase: &'static str,
@@ -132,6 +136,9 @@ pub enum CheckerError {
     },
 }
 
+/// The narrowed key and value pair of one revealed mapping.
+type DictPair = Option<(Box<InferredType>, Box<InferredType>)>;
+
 /// One type the authority inferred for an unannotated binding or parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferredType {
@@ -154,7 +161,7 @@ pub enum InferredType {
     /// A homogeneous set; the element type when the authority narrowed one.
     Set(Option<Box<InferredType>>),
     /// A mapping with its key and value types when both are narrowed.
-    Dict(Option<(Box<InferredType>, Box<InferredType>)>),
+    Dict(DictPair),
     /// A fixed-length heterogeneous tuple with its element types.
     Tuple(Box<[InferredType]>),
     /// A union of the possible types.
@@ -340,9 +347,7 @@ impl Pyrefly {
         std::env::var_os("PATH").is_some_and(|paths| {
             std::env::split_paths(&paths).any(|dir| {
                 dir.join(&self.program).is_file()
-                    || dir
-                        .join(format!("{}.exe", self.program))
-                        .is_file()
+                    || dir.join(format!("{}.exe", self.program)).is_file()
             })
         })
     }
@@ -412,11 +417,7 @@ impl Pyrefly {
             let Some(range) = row.range(&probe_index) else {
                 continue;
             };
-            let Some(reveal) = plan
-                .reveals
-                .iter()
-                .find(|reveal| reveal.argument == range)
-            else {
+            let Some(reveal) = plan.reveals.iter().find(|reveal| reveal.argument == range) else {
                 continue;
             };
             inferences.push(Inference {
@@ -440,7 +441,12 @@ impl Pyrefly {
         }
         command
             .args(["check", "--preset", "all", "--color", "never"])
-            .args(["--output-format", "json", "--python-version", profile_tag(profile)])
+            .args([
+                "--output-format",
+                "json",
+                "--python-version",
+                profile_tag(profile),
+            ])
             .args(["-j", "1"])
             .arg(file)
             .stdout(std::process::Stdio::piped())
@@ -450,12 +456,10 @@ impl Pyrefly {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|source| CheckerError::Spawn {
-                program: self.program.clone(),
-                source,
-            })?;
+        let mut child = command.spawn().map_err(|source| CheckerError::Spawn {
+            program: self.program.clone(),
+            source,
+        })?;
         let stdout = child.stdout.take().ok_or_else(|| CheckerError::Pipe {
             stream: "stdout",
             source: std::io::Error::other("stdout was not piped"),
@@ -547,9 +551,9 @@ fn resolve_imports(
         let module = name_bytes(source, module_span)?;
         let resolved = !rows.iter().any(|row| {
             row.name == MISSING_IMPORT_DIAGNOSTIC
-                && row.range(line_index).is_some_and(|range| {
-                    ranges_overlap(range, byte_range(module_span))
-                })
+                && row
+                    .range(line_index)
+                    .is_some_and(|range| ranges_overlap(range, byte_range(module_span)))
         });
         imports.push(ImportResolution {
             binding: declaration.name.clone(),
@@ -571,9 +575,9 @@ fn resolve_symbols(
     let blocked = |span: Span| {
         rows.iter().any(|row| {
             (row.name == UNKNOWN_NAME_DIAGNOSTIC || row.name == MISSING_IMPORT_DIAGNOSTIC)
-                && row.range(line_index).is_some_and(|range| {
-                    ranges_overlap(range, byte_range(span))
-                })
+                && row
+                    .range(line_index)
+                    .is_some_and(|range| ranges_overlap(range, byte_range(span)))
         })
     };
     let mut symbols = Vec::new();
@@ -651,13 +655,11 @@ fn byte_range(span: Span) -> (usize, usize) {
 }
 
 /// Borrows one name's exact source bytes or fails with the span terminal.
-fn name_bytes<'source>(source: &'source [u8], span: Span) -> Result<&'source [u8], CheckerError> {
+fn name_bytes(source: &[u8], span: Span) -> Result<&[u8], CheckerError> {
     let (start, end) = byte_range(span);
     let in_bounds = start <= end && end <= source.len();
-    if in_bounds {
-        if let Some(bytes) = source.get(start..end) {
-            return Ok(bytes);
-        }
+    if in_bounds && let Some(bytes) = source.get(start..end) {
+        return Ok(bytes);
     }
     Err(CheckerError::InvalidSpan {
         start: span.start,
@@ -798,15 +800,14 @@ impl<'source> LineIndex<'source> {
         let mut remaining = core::str::from_utf8(line_text).ok();
         let mut offset = 0_usize;
         for _ in 0..skipped {
-            match remaining.as_mut() {
-                Some(text) if text.is_empty() => return None,
-                Some(text) => {
-                    let width = text.chars().next()?.len_utf8();
-                    *text = text.get(width..)?;
-                    offset += width;
-                }
-                None => return None,
-            }
+            let text = match remaining {
+                Some("") | None => return None,
+                Some(text) => text,
+            };
+            let width = text.chars().next()?.len_utf8();
+            let rest = remaining.as_mut()?.get(width..)?;
+            *remaining.as_mut()? = rest;
+            offset += width;
         }
         Some(start + offset)
     }
@@ -866,7 +867,7 @@ fn decode_diagnostics(transcript: &[u8]) -> Result<Vec<RawDiagnostic>, CheckerEr
     };
     let mut rows = Vec::new();
     parser
-        .read_document(&mut |parser| parser.read_error_row(&mut rows))
+        .read_document(|parser| parser.read_error_row(&mut rows))
         .map_err(|message| CheckerError::Decode {
             message,
             transcript: head_text(transcript),
@@ -917,7 +918,7 @@ impl JsonParser<'_> {
     /// its `errors` array through `visit`.
     fn read_document(
         &mut self,
-        visit: &mut dyn FnMut(&mut Self) -> Result<(), String>,
+        mut visit: impl FnMut(&mut Self) -> Result<(), String>,
     ) -> Result<(), String> {
         self.take(b'{')?;
         if self.try_take(b'}') {
@@ -1039,9 +1040,8 @@ impl JsonParser<'_> {
                 self.cursor += 2;
                 let low = self.read_hex4()?;
                 if (0xDC00..0xE000).contains(&low) {
-                    let combined = 0x10000
-                        + ((u32::from(high) - 0xD800) << 10)
-                        + (u32::from(low) - 0xDC00);
+                    let combined =
+                        0x10000 + ((u32::from(high) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
                     return char::from_u32(combined).ok_or_else(|| "invalid surrogate".to_owned());
                 }
             }
@@ -1128,8 +1128,7 @@ impl JsonParser<'_> {
             Some(b'n') => self.skip_literal(b"null"),
             Some(byte) if byte.is_ascii_digit() || *byte == b'-' => {
                 while self.bytes.get(self.cursor).is_some_and(|byte| {
-                    byte.is_ascii_alphanumeric()
-                        || matches!(byte, b'.' | b'-' | b'+' | b'e' | b'E')
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'e' | b'E')
                 }) {
                     self.cursor += 1;
                 }
@@ -1176,10 +1175,22 @@ struct ProbePlan {
     reveals: Vec<Reveal>,
 }
 
-/// Builds the probe text: the reveal header, the exact source with `reveal`
-/// statements spliced after function headers, and module reveals at the end.
+/// One planned body splice: the absolute byte offset of the inserted text,
+/// the inserted bytes, and the reveals the insertion carries.
+struct Splice {
+    /// Absolute source byte offset the text replaces from.
+    at: u32,
+    /// The inserted bytes.
+    text: Vec<u8>,
+    /// The planned reveals inside `text`.
+    reveals: Vec<Reveal>,
+}
+
+/// Builds the probe text: the reveal header, the exact source with ascending
+/// splices, then the tail. Every reveal's argument range is recorded in final
+/// probe coordinates.
 fn build_probe_plan(source: &[u8], facts: &ModuleFacts) -> Result<ProbePlan, CheckerError> {
-    let mut insertions: Vec<(u32, Vec<u8>, Vec<Reveal>)> = Vec::new();
+    let mut insertions: Vec<Splice> = Vec::new();
     let mut appended = Vec::new();
     let mut appended_reveals = Vec::new();
     collect_parameter_reveals(source, facts, &mut insertions)?;
@@ -1187,25 +1198,25 @@ fn build_probe_plan(source: &[u8], facts: &ModuleFacts) -> Result<ProbePlan, Che
 
     // Assemble: header, source with ascending splices, then the tail. Every
     // reveal's argument range is recorded in final probe coordinates.
-    insertions.sort_by_key(|(at, _, _)| *at);
+    insertions.sort_by_key(|splice| splice.at);
     let mut text = Vec::with_capacity(source.len() + REVEAL_HEADER.len() + 64);
     text.extend_from_slice(REVEAL_HEADER);
     let mut reveals = Vec::new();
     let mut cursor = 0_usize;
-    for (at, mut bytes, mut insertion_reveals) in insertions {
-        let at = usize::try_from(at)
+    for mut splice in insertions {
+        let at = usize::try_from(splice.at)
             .unwrap_or(source.len())
             .min(source.len());
         text.extend_from_slice(source.get(cursor..at).unwrap_or(&[]));
         let base = text.len();
-        for reveal in &mut insertion_reveals {
+        for reveal in &mut splice.reveals {
             reveals.push(Reveal {
                 argument: (base + reveal.argument.0, base + reveal.argument.1),
                 site: reveal.site,
                 kind: reveal.kind,
             });
         }
-        text.append(&mut bytes);
+        text.extend_from_slice(&splice.text);
         cursor = at;
     }
     text.extend_from_slice(source.get(cursor..).unwrap_or(&[]));
@@ -1235,7 +1246,7 @@ fn build_probe_plan(source: &[u8], facts: &ModuleFacts) -> Result<ProbePlan, Che
 fn collect_parameter_reveals(
     source: &[u8],
     facts: &ModuleFacts,
-    insertions: &mut Vec<(u32, Vec<u8>, Vec<Reveal>)>,
+    insertions: &mut Vec<Splice>,
 ) -> Result<(), CheckerError> {
     for declaration in &facts.declarations {
         if declaration.kind != DeclarationKind::Function {
@@ -1280,7 +1291,11 @@ fn collect_parameter_reveals(
                 end: declaration.span.end,
                 source_length: source.len(),
             })?;
-            insertions.push((at, inserted, reveals));
+            insertions.push(Splice {
+                at,
+                text: inserted,
+                reveals,
+            });
         }
     }
     Ok(())
@@ -1334,9 +1349,13 @@ fn first_body_line(source: &[u8], header_end: u32) -> Option<(usize, &[u8])> {
 
 /// Plans `reveal_type(name)` lines appended in module scope.
 ///
-/// Only names bound exactly once by an unannotated module constant are
-/// probed: a rebind's end-of-module type would not describe the earlier
-/// binding rows, and a written annotation already has its own authority.
+/// Single-bound unannotated module constants are always probed. A rebound
+/// constant — including one rebound by decorator application such as
+/// `handler = cache(handler)` — is probed exactly once, at its final
+/// binding: the end-of-module type is that final binding's type, so only the
+/// final row's exact name span carries it, and every earlier binding row
+/// keeps its own honest unannotated state. A written annotation already has
+/// its own authority.
 fn collect_module_reveals(
     source: &[u8],
     facts: &ModuleFacts,
@@ -1356,7 +1375,14 @@ fn collect_module_reveals(
                     && other.kind == DeclarationKind::Constant
                     && other.name == declaration.name
             });
-        if bound_again {
+        // A rebound name is probed only at its final binding: a later
+        // declaration of the same name makes this row's end-of-module type
+        // proven wrong, so this row stays unannotated.
+        if bound_again
+            && facts.declarations[index + 1..].iter().any(|other| {
+                other.kind == DeclarationKind::Constant && other.name == declaration.name
+            })
+        {
             continue;
         }
         let annotated = facts.annotations.iter().any(|fact| {
@@ -1414,10 +1440,7 @@ pub fn parse_revealed_type(rendered: &str) -> InferredType {
             .collect();
         return match members.len() {
             0 => InferredType::Any,
-            1 => members
-                .first()
-                .cloned()
-                .unwrap_or(InferredType::Any),
+            1 => members.first().cloned().unwrap_or(InferredType::Any),
             _ => InferredType::Union(members.into_boxed_slice()),
         };
     }
@@ -1467,10 +1490,9 @@ fn parse_single_type(text: &str) -> InferredType {
             "list" => InferredType::List(narrowed_arg(&args)),
             "set" | "frozenset" => InferredType::Set(narrowed_arg(&args)),
             "dict" => match args.as_slice() {
-                [key, value] => InferredType::Dict(Some((
-                    Box::new(key.clone()),
-                    Box::new(value.clone()),
-                ))),
+                [key, value] => {
+                    InferredType::Dict(Some((Box::new(key.clone()), Box::new(value.clone()))))
+                }
                 _ => InferredType::Dict(None),
             },
             "tuple" => InferredType::Tuple(args.into_boxed_slice()),
@@ -1509,10 +1531,7 @@ fn parse_callable_rendering(trimmed: &str) -> Option<InferredType> {
             let stripped = segment.trim().trim_start_matches('*').trim();
             let halves = split_top_level(stripped, b':');
             let type_text = if halves.len() > 1 {
-                halves
-                    .last()
-                    .cloned()
-                    .unwrap_or_default()
+                halves.last().cloned().unwrap_or_default()
             } else {
                 stripped.to_owned()
             };
@@ -1530,9 +1549,7 @@ fn subscript_args(text: &str, open: usize) -> Vec<InferredType> {
     let Some((_, close)) = bracket_range(text.get(open..).unwrap_or("")) else {
         return Vec::new();
     };
-    let inner = text
-        .get(open + 1..open + close)
-        .unwrap_or("");
+    let inner = text.get(open + 1..open + close).unwrap_or("");
     split_top_level(inner, b',')
         .iter()
         .filter(|argument| !argument.trim().is_empty())
@@ -1657,8 +1674,8 @@ impl Workspace {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let path = std::env::temp_dir()
-            .join(format!("pyrefly-check-{}-{nanos}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("pyrefly-check-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).map_err(|source| CheckerError::Workspace { source })?;
         Ok(Self { path })
     }
@@ -1686,8 +1703,8 @@ mod tests {
     use crate::{DeclarationKind, Span, extract};
 
     use super::{
-        CheckerError, InferredType, InferenceSite, Pyrefly, decode_diagnostics, parse_revealed_type,
-        split_top_level,
+        CheckerError, InferenceSite, InferredType, Pyrefly, decode_diagnostics,
+        parse_revealed_type, split_top_level,
     };
 
     /// One failed expectation with its exact operands.
@@ -1734,7 +1751,10 @@ mod tests {
     #[test]
     fn missing_json_document_is_the_typed_decode_terminal() {
         match decode_diagnostics(b"no json here\n") {
-            Err(CheckerError::Decode { message, transcript }) => {
+            Err(CheckerError::Decode {
+                message,
+                transcript,
+            }) => {
                 assert_eq!(message, "no JSON document");
                 assert_eq!(transcript, "no json here\n");
             }
@@ -1784,14 +1804,21 @@ mod tests {
             ("Literal[b'x']", InferredType::Bytes),
             ("LiteralString", InferredType::Str),
             ("None", InferredType::NoneType),
-            ("Literal[3] | None", InferredType::Union(
-                Box::from([InferredType::Integer, InferredType::NoneType]),
-            )),
-            ("list[int]", InferredType::List(Some(Box::new(InferredType::Integer)))),
-            ("dict[str, int]", InferredType::Dict(Some((
-                Box::new(InferredType::Str),
-                Box::new(InferredType::Integer),
-            )))),
+            (
+                "Literal[3] | None",
+                InferredType::Union(Box::from([InferredType::Integer, InferredType::NoneType])),
+            ),
+            (
+                "list[int]",
+                InferredType::List(Some(Box::new(InferredType::Integer))),
+            ),
+            (
+                "dict[str, int]",
+                InferredType::Dict(Some((
+                    Box::new(InferredType::Str),
+                    Box::new(InferredType::Integer),
+                ))),
+            ),
             (
                 "tuple[Literal[1], Literal['b']]",
                 InferredType::Tuple(Box::from([InferredType::Integer, InferredType::Str])),
@@ -1825,16 +1852,34 @@ mod tests {
     }
 
     /// The probe plan splices parameter reveals after the header colon,
-    /// appends module reveals, and skips one-line bodies and rebinds.
+    /// appends module reveals, skips one-line bodies, and probes a rebound
+    /// constant exactly once — at its final binding.
     #[test]
     fn probe_plan_splices_and_appends_exactly() -> Result<(), TestError> {
         let source = b"value = 42\nrebound = 1\nrebound = 2\n\ndef area(r):\n    return r * 2\n\ndef one_line(x): return x\n\nclass Node:\n    def grow(self, times):\n        return times\n";
         let facts = extract(source, PythonVersion::Python314).map_err(|_| TestError::Authority)?;
         let plan = super::build_probe_plan(source, &facts).map_err(TestError::Live)?;
-        let text = core::str::from_utf8(plan.text.as_slice())
-            .map_err(|_| TestError::Plan)?;
-        // `value` is probed once; `rebound` (bound twice) never is.
-        if !text.contains("\nreveal_type(value)") || text.contains("reveal_type(rebound") {
+        let text = core::str::from_utf8(plan.text.as_slice()).map_err(|_| TestError::Plan)?;
+        // `value` is probed once; `rebound` (bound twice) is probed exactly
+        // once, and only the final binding's span is the reveal site.
+        if !text.contains("\nreveal_type(value)") {
+            return Err(TestError::Plan);
+        }
+        if text.matches("reveal_type(rebound").count() != 1 {
+            return Err(TestError::Plan);
+        }
+        let site_bytes = |reveal: &super::Reveal| -> Option<&[u8]> {
+            let start = usize::try_from(reveal.site.start).ok()?;
+            let end = usize::try_from(reveal.site.end).ok()?;
+            source.get(start..end)
+        };
+        let rebound_reveal = plan
+            .reveals
+            .iter()
+            .find(|reveal| site_bytes(reveal) == Some(b"rebound".as_slice()))
+            .ok_or(TestError::Plan)?;
+        // The second `rebound` binding starts at byte 23 (`rebound = 2`).
+        if rebound_reveal.site.start != 23 {
             return Err(TestError::Plan);
         }
         // `area`'s parameter is probed on its own indented body line;
@@ -1846,7 +1891,9 @@ mod tests {
             return Err(TestError::Plan);
         }
         // The method's `self` and `times` are probed on one body line.
-        if !text.contains("    def grow(self, times):\n        reveal_type(self); reveal_type(times)") {
+        if !text
+            .contains("    def grow(self, times):\n        reveal_type(self); reveal_type(times)")
+        {
             return Err(TestError::Plan);
         }
         // Every reveal argument range lands exactly on the probed name,
@@ -1965,7 +2012,9 @@ mod tests {
         let value_site = facts
             .declarations
             .iter()
-            .find(|declaration| declaration.name == "counter" && declaration.kind == DeclarationKind::Constant)
+            .find(|declaration| {
+                declaration.name == "counter" && declaration.kind == DeclarationKind::Constant
+            })
             .map(|declaration| declaration.name_span)
             .ok_or(TestError::Plan)?;
         if report.inference_at(value_site) != Some(&InferredType::Integer) {
@@ -2009,7 +2058,8 @@ mod tests {
     #[test]
     fn live_unresolvable_import_is_reported_unresolved() -> Result<(), TestError> {
         let checker = Pyrefly::uvx();
-        let source = b"import definitely_missing_module_xyz\n\nuse_it = definitely_missing_module_xyz\n";
+        let source =
+            b"import definitely_missing_module_xyz\n\nuse_it = definitely_missing_module_xyz\n";
         let facts = extract(source, PythonVersion::Python314).map_err(|_| TestError::Authority)?;
         let report = match checker.analyze(source, PythonVersion::Python314, &facts) {
             Ok(report) => report,
