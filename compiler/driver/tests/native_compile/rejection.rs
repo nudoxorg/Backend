@@ -7,137 +7,96 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileFailure, CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile,
+    AuthorityFailure, CompileFailure, CompileOutput, CompileScratch, NativeTool,
+    ToolchainSelection, compile,
 };
 use compiler_vocabulary::{Language, Stage};
 
 use super::support::*;
 
 #[test]
-fn native_rejection_retains_recipe_source_and_bounded_diagnostic() -> Result<(), TestFailure> {
-    let cases = [
-        (
-            Language::Rust,
-            NativeTool::Rustc,
-            b"pub const = ;".as_slice(),
+fn oxc_rejection_retains_recipe_source_and_bounded_authority_diagnostic() -> Result<(), TestFailure>
+{
+    let language = Language::TypeScript;
+    let tool = NativeTool::TypeScriptCompiler;
+    let source = b"export const = ;";
+    let source_length = source_length(source)?;
+    let toolchain = direct_authority_toolchain(tool)?;
+    let native_work = TemporaryWork::create()?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0xa5; 128];
+    let mut output = [0xa5; 512];
+    match compile(
+        request(
+            language,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            &cancelled,
+            Instant::now() + Duration::from_secs(1),
         ),
-        (
-            Language::Clang,
-            NativeTool::Clang,
-            b"const char * = ;".as_slice(),
-        ),
-        (
-            Language::TypeScript,
-            NativeTool::TypeScriptCompiler,
-            b"export const = ;".as_slice(),
-        ),
-        (
-            Language::CSharp,
-            NativeTool::CSharpCompiler,
-            b"public class Probe { public const string = ; }".as_slice(),
-        ),
-        (
-            Language::Go,
-            NativeTool::GoCompiler,
-            b"package fixture\nconst = ;\n".as_slice(),
-        ),
-        (
-            Language::Java,
-            NativeTool::JavaCompiler,
-            b"public final class Broken { public static final String = ; }".as_slice(),
-        ),
-    ];
-    for (language, tool, source) in cases {
-        let source_length = source_length(source)?;
-        let executable = executable(tool)?;
-        let toolchain = resolved(tool, &executable)?;
-        let native_work = TemporaryWork::create()?;
-        let cancelled = AtomicBool::new(false);
-        let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 512];
-        match compile(
-            request(
-                language,
-                source,
-                ToolchainSelection::ResolvedNative(toolchain),
-                &cancelled,
-                Instant::now() + Duration::from_secs(5),
-            ),
-            CompileScratch {
-                diagnostic_output: &mut diagnostic,
-                native_work: native_work.path(),
-            },
-            CompileOutput {
-                fragment_output: &mut output,
-            },
-        ) {
-            Err(CompileFailure::NativeRejected {
-                source_identity,
-                recipe,
-                diagnostic,
-                ..
-            }) => {
-                if Language::from(recipe.profile) != language {
-                    return Err(TestFailure::RecipeLanguage {
-                        tool,
-                        expected: language,
-                        actual: Language::from(recipe.profile),
-                    });
-                }
-                if recipe.stage != Stage::LowerIr {
-                    return Err(TestFailure::RecipeStage {
-                        tool,
-                        expected: Stage::LowerIr,
-                        actual: recipe.stage,
-                    });
-                }
-                if recipe.tool != tool {
-                    return Err(TestFailure::RecipeTool {
-                        tool,
-                        expected: tool,
-                        actual: recipe.tool,
-                    });
-                }
-                if source_identity.byte_len != source_length {
-                    return Err(TestFailure::FragmentSourceLength {
-                        tool,
-                        expected: source_length,
-                        actual: source_identity.byte_len,
-                    });
-                }
-                if diagnostic.bytes.is_empty() {
-                    return Err(TestFailure::EmptyNativeDiagnostic { tool });
-                }
-                if diagnostic.truncated {
-                    return Err(TestFailure::TruncatedNativeDiagnostic { tool });
-                }
-                if diagnostic.observed != diagnostic.bytes.len() {
-                    return Err(TestFailure::NativeDiagnosticObserved {
-                        tool,
-                        expected: diagnostic.bytes.len(),
-                        actual: diagnostic.observed,
-                    });
-                }
-            }
-            Err(failure) => {
-                return Err(TestFailure::CompileTerminal {
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: native_work.path(),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    ) {
+        Err(CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure:
+                AuthorityFailure::TypeScript {
+                    diagnostic: authority_diagnostic,
+                    ..
+                },
+        }) => {
+            if Language::from(recipe.profile) != language {
+                return Err(TestFailure::RecipeLanguage {
                     tool,
-                    expected: CompileExpectation::NativeRejection,
-                    observed: compile_terminal(&failure),
+                    expected: language,
+                    actual: Language::from(recipe.profile),
                 });
             }
-            Ok(_compiled) => {
-                return Err(TestFailure::CompileTerminal {
+            if source_identity.byte_len != source_length {
+                return Err(TestFailure::FragmentSourceLength {
                     tool,
-                    expected: CompileExpectation::NativeRejection,
-                    observed: CompileTerminal::Compiled,
+                    expected: source_length,
+                    actual: source_identity.byte_len,
+                });
+            }
+            if authority_diagnostic.primary.is_empty() {
+                return Err(TestFailure::EmptyNativeDiagnostic { tool });
+            }
+            if authority_diagnostic.truncated {
+                return Err(TestFailure::TruncatedNativeDiagnostic { tool });
+            }
+            if authority_diagnostic.observed != authority_diagnostic.primary.len() {
+                return Err(TestFailure::NativeDiagnosticObserved {
+                    tool,
+                    expected: authority_diagnostic.primary.len(),
+                    actual: authority_diagnostic.observed,
                 });
             }
         }
-        native_work.assert_empty()?;
-        if !output.iter().all(|byte| *byte == 0xa5) {
-            return Err(TestFailure::OutputTailChanged { tool });
+        Err(failure) => {
+            return Err(TestFailure::CompileTerminal {
+                tool,
+                expected: CompileExpectation::AuthorityInputRequired,
+                observed: compile_terminal(&failure),
+            });
         }
+        Ok(_) => {
+            return Err(TestFailure::CompileTerminal {
+                tool,
+                expected: CompileExpectation::AuthorityInputRequired,
+                observed: CompileTerminal::Compiled,
+            });
+        }
+    }
+    native_work.assert_empty()?;
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestFailure::OutputTailChanged { tool });
     }
     Ok(())
 }

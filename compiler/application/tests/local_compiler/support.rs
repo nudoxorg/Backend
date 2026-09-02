@@ -5,6 +5,7 @@ use std::{
     env, fs, io,
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    process::{Command, ExitStatus},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -16,7 +17,6 @@ use compiler_application::{
 };
 use compiler_driver::{NativeTool, ResolvedToolchain, ToolchainSelection};
 use compiler_vocabulary::{LanguageProfile, Stage};
-use heart_identity::{ContentId, SourceFactDomain};
 use interface_core::{
     CorrelationId, GenerateRequest, GenerateTarget, RejectedSourceText, SourceText,
 };
@@ -29,11 +29,17 @@ static FIXTURE_ORDINAL: AtomicUsize = AtomicUsize::new(0);
 pub(super) enum LocalCompilerTestError {
     #[error("fixture filesystem operation failed")]
     Io(#[from] io::Error),
-    #[error("test did not receive an absolute stable rustc toolchain root")]
+    #[error("test did not receive a configured Nix Python executable")]
     MissingToolchain,
-    #[error("stable rustc executable path could not be canonicalized")]
-    RustcPath(#[source] io::Error),
-    #[error("resolved rustc toolchain was rejected")]
+    #[error("configured Python executable path could not be canonicalized")]
+    PythonPath(#[source] io::Error),
+    #[error("configured Python executable could not report its exact version")]
+    PythonVersion(#[source] io::Error),
+    #[error("configured Python executable rejected its version probe")]
+    PythonVersionRejected { status: ExitStatus },
+    #[error("configured Python executable reported no version identity bytes")]
+    PythonVersionEmpty,
+    #[error("resolved Python toolchain was rejected")]
     Toolchain(#[from] compiler_driver::ToolchainResolutionError),
     #[error("local compiler toolchain table was rejected")]
     ToolchainSet(#[from] LocalToolchainSetError),
@@ -41,6 +47,8 @@ pub(super) enum LocalCompilerTestError {
     Timeout(#[from] LocalCompilerTimeoutError),
     #[error("durable publication limits were rejected")]
     Limits(#[from] server_journal::PublicationLimitError),
+    #[error("the required two-slot publication capacity was not representable")]
+    PublicationCapacity,
     #[error("local compiler publication owner could not open")]
     CompilerOpen(#[from] LocalCompilerOpenError),
     #[error("local compiler publication owner could not shut down")]
@@ -58,11 +66,6 @@ pub(super) enum LocalCompilerTestError {
     },
     #[error("generated source authority had an unexpected byte length")]
     GeneratedSourceLength { observed: u32 },
-    #[error("distinct compiler sources produced the same typed source identity")]
-    SourceIdentityCollision {
-        first: ContentId<SourceFactDomain>,
-        second: ContentId<SourceFactDomain>,
-    },
     #[error("generated publication binding was zero")]
     GeneratedBindingZero,
     #[error("compiler diagnostic did not preserve the expected closed terminal")]
@@ -77,8 +80,12 @@ pub(super) enum LocalCompilerTestError {
     ToolchainDuplicate {
         observed: Option<LocalToolchainSetError>,
     },
-    #[error("cancelled test source exceeded the compact source authority width")]
-    CancelledSourceLength { actual: usize },
+    #[error("test source exceeded the compact source authority width")]
+    SourceLength {
+        actual: usize,
+        #[source]
+        source: std::num::TryFromIntError,
+    },
 }
 
 impl From<RejectedSourceText> for LocalCompilerTestError {
@@ -119,27 +126,65 @@ impl Fixture {
     }
 }
 
-pub(super) fn rustc_path() -> Result<PathBuf, LocalCompilerTestError> {
-    let root =
-        env::var_os("COMPILER_STABLE_TOOLCHAIN").ok_or(LocalCompilerTestError::MissingToolchain)?;
-    PathBuf::from(root)
-        .join("bin/rustc")
+pub(super) fn python_path() -> Result<PathBuf, LocalCompilerTestError> {
+    let configured = env::var_os("COMPILER_PYTHON_COMPILER").map(PathBuf::from);
+    let candidate = match configured {
+        Some(path) if path.is_file() => path,
+        Some(_) => return Err(LocalCompilerTestError::MissingToolchain),
+        None => {
+            let Some(paths) = env::var_os("PATH") else {
+                return Err(LocalCompilerTestError::MissingToolchain);
+            };
+            let mut found = None;
+            for directory in env::split_paths(&paths) {
+                let candidate = directory.join("python3");
+                if candidate.is_file() {
+                    let canonical = candidate
+                        .canonicalize()
+                        .map_err(LocalCompilerTestError::PythonPath)?;
+                    if canonical.starts_with("/nix/store/") {
+                        found = Some(canonical);
+                        break;
+                    }
+                }
+            }
+            found.ok_or(LocalCompilerTestError::MissingToolchain)?
+        }
+    };
+    candidate
         .canonicalize()
-        .map_err(LocalCompilerTestError::RustcPath)
+        .map_err(LocalCompilerTestError::PythonPath)
 }
 
-pub(super) fn rust_toolchains(
-    rustc: &Path,
+pub(super) fn python_toolchains(
+    python: &Path,
 ) -> Result<[ToolchainSelection<'_>; 3], LocalCompilerTestError> {
+    let output = Command::new(python)
+        .arg("--version")
+        .output()
+        .map_err(LocalCompilerTestError::PythonVersion)?;
+    if !output.status.success() {
+        return Err(LocalCompilerTestError::PythonVersionRejected {
+            status: output.status,
+        });
+    }
+    let version = if output.stdout.is_empty() {
+        output.stderr.as_slice()
+    } else {
+        output.stdout.as_slice()
+    };
+    if version.is_empty() {
+        return Err(LocalCompilerTestError::PythonVersionEmpty);
+    }
     Ok([
-        ToolchainSelection::ResolvedNative(ResolvedToolchain::from_version(
-            NativeTool::Rustc,
-            rustc,
-            b"interface-local-compiler-test-v1",
-        )?),
         ToolchainSelection::ExplicitlyUnavailable {
-            tool: NativeTool::Python,
+            tool: NativeTool::Rustc,
         },
+        ToolchainSelection::ResolvedNative(ResolvedToolchain::from_version(
+            NativeTool::Python,
+            python,
+            version,
+        )?),
         ToolchainSelection::ExplicitlyUnavailable {
             tool: NativeTool::TypeScriptCompiler,
         },
@@ -162,7 +207,7 @@ pub(super) fn open_local_compiler<'path, 'scratch, 'cancel>(
             cancelled,
         },
     };
-    LocalCompiler::create(config, one_slot()?, scratch)
+    LocalCompiler::create(config, two_slots()?, scratch)
         .map_err(LocalCompilerTestError::CompilerOpen)
 }
 
@@ -183,7 +228,9 @@ pub(super) fn generate(
     ))
 }
 
-fn one_slot() -> Result<PublicationLimits, LocalCompilerTestError> {
-    PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
-        .map_err(LocalCompilerTestError::Limits)
+fn two_slots() -> Result<PublicationLimits, LocalCompilerTestError> {
+    let two = NonZeroUsize::MIN
+        .checked_add(1)
+        .ok_or(LocalCompilerTestError::PublicationCapacity)?;
+    PublicationLimits::new(two, two).map_err(LocalCompilerTestError::Limits)
 }

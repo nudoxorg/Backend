@@ -5,6 +5,7 @@ use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
+use std::sync::atomic::Ordering;
 
 use crate::{
     lower::{self, AdmissionFault, typescript::TypeScriptCollectError},
@@ -12,9 +13,10 @@ use crate::{
 };
 
 use super::{
-    AuthorityDiagnostic, AuthorityFailure, CompileFailure, CompileOutput, CompileRecipeFact,
-    CompileRequest, CompileScratch, CompiledFragment, NativeRecipe, ResolvedToolchain,
-    SemanticAuthorityInput, SourceIdentity, ToolchainSelection, ToolchainSelectionFact,
+    AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, CompileFailure, CompileOutput,
+    CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, NativeDiagnostic,
+    NativeRecipe, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, ToolchainSelection,
+    ToolchainSelectionFact,
 };
 
 pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
@@ -22,15 +24,41 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     scratch: CompileScratch<'diagnostic, 'work>,
     output: CompileOutput<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
-    let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
-    emit_facts(
-        &prepared,
-        request.source,
-        request.control.cancelled,
-        request.authority,
-        &mut facts,
-    )?;
+    let prepared = match prepare(request)? {
+        PreparedRoute::Direct(prepared) => {
+            emit_facts(
+                &prepared,
+                request.source,
+                request.control.cancelled,
+                request.authority,
+                Some(scratch.diagnostic_output),
+                &mut facts,
+            )?;
+            prepared
+        }
+        PreparedRoute::Native {
+            prepared,
+            native_recipe,
+        } => {
+            parse_with_native_tool(
+                native_recipe,
+                prepared.source,
+                prepared.recipe,
+                scratch,
+                request.control,
+            )?;
+            emit_facts(
+                &prepared,
+                request.source,
+                request.control.cancelled,
+                request.authority,
+                None,
+                &mut facts,
+            )?;
+            prepared
+        }
+    };
     let bytes = lower::admit(
         &facts,
         prepared.source,
@@ -72,15 +100,41 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
-    let prepared = prepare(request, scratch)?;
     let mut facts = lower::FactSet::new();
-    emit_facts(
-        &prepared,
-        request.source,
-        request.control.cancelled,
-        request.authority,
-        &mut facts,
-    )?;
+    let prepared = match prepare(request)? {
+        PreparedRoute::Direct(prepared) => {
+            emit_facts(
+                &prepared,
+                request.source,
+                request.control.cancelled,
+                request.authority,
+                Some(scratch.diagnostic_output),
+                &mut facts,
+            )?;
+            prepared
+        }
+        PreparedRoute::Native {
+            prepared,
+            native_recipe,
+        } => {
+            parse_with_native_tool(
+                native_recipe,
+                prepared.source,
+                prepared.recipe,
+                scratch,
+                request.control,
+            )?;
+            emit_facts(
+                &prepared,
+                request.source,
+                request.control.cancelled,
+                request.authority,
+                None,
+                &mut facts,
+            )?;
+            prepared
+        }
+    };
     let ir = facts
         .build_ir(request.profile, prepared.source)
         .map_err(|cause| CompileFailure::Build {
@@ -100,10 +154,17 @@ struct PreparedCompile {
     recipe: CompileRecipeFact,
 }
 
-fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
+enum PreparedRoute<'source, 'toolchain> {
+    Direct(PreparedCompile),
+    Native {
+        prepared: PreparedCompile,
+        native_recipe: NativeRecipe<'source, 'toolchain>,
+    },
+}
+
+fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
-    scratch: CompileScratch<'diagnostic, 'work>,
-) -> Result<PreparedCompile, CompileFailure<'diagnostic>> {
+) -> Result<PreparedRoute<'source, 'toolchain>, CompileFailure<'diagnostic>> {
     let source = source_identity(request.source)?;
     let language = Language::from(request.profile);
     let route = FullRegistry
@@ -177,6 +238,39 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             profile: request.profile,
         });
     }
+    let requires_project_authority = matches!(
+        request.profile,
+        LanguageProfile::Go(_) | LanguageProfile::CSharp(_) | LanguageProfile::Java(_)
+    );
+    if requires_project_authority && matches!(request.authority, SemanticAuthorityInput::None) {
+        return Err(CompileFailure::AuthorityInputRequired {
+            source_identity: source,
+            recipe,
+            profile: request.profile,
+        });
+    }
+    if request.control.cancelled.load(Ordering::Acquire) {
+        return Err(CompileFailure::Cancelled {
+            source_identity: source,
+            recipe,
+            diagnostic: NativeDiagnostic {
+                bytes: &[],
+                observed: 0,
+                truncated: false,
+            },
+        });
+    }
+    if std::time::Instant::now() >= request.control.deadline {
+        return Err(CompileFailure::DeadlineExceeded {
+            source_identity: source,
+            recipe,
+            diagnostic: NativeDiagnostic {
+                bytes: &[],
+                observed: 0,
+                truncated: false,
+            },
+        });
+    }
     let native_recipe = NativeRecipe {
         profile: request.profile,
         stage: request.stage,
@@ -185,18 +279,28 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     };
     let direct_authority = matches!(
         request.profile,
-        LanguageProfile::C(_) | LanguageProfile::Cxx(_) | LanguageProfile::Python(_)
-    ) || matches!(
-        request.authority,
-        SemanticAuthorityInput::Rust { .. }
-            | SemanticAuthorityInput::Go { .. }
-            | SemanticAuthorityInput::CSharp { .. }
-            | SemanticAuthorityInput::Java { .. }
+        LanguageProfile::C(_)
+            | LanguageProfile::Cxx(_)
+            | LanguageProfile::TypeScript(_)
+            | LanguageProfile::Python(_)
     );
-    if !direct_authority {
-        parse_with_native_tool(native_recipe, source, recipe, scratch, request.control)?;
+    let direct_authority = direct_authority
+        || matches!(
+            request.authority,
+            SemanticAuthorityInput::Rust { .. }
+                | SemanticAuthorityInput::Go { .. }
+                | SemanticAuthorityInput::CSharp { .. }
+                | SemanticAuthorityInput::Java { .. }
+        );
+    let prepared = PreparedCompile { source, recipe };
+    if direct_authority {
+        Ok(PreparedRoute::Direct(prepared))
+    } else {
+        Ok(PreparedRoute::Native {
+            prepared,
+            native_recipe,
+        })
     }
-    Ok(PreparedCompile { source, recipe })
 }
 
 fn source_identity<'diagnostic>(
@@ -233,6 +337,7 @@ fn emit_facts<'source, 'diagnostic>(
     source: &'source [u8],
     cancelled: &std::sync::atomic::AtomicBool,
     authority: SemanticAuthorityInput<'source>,
+    diagnostic_output: Option<&'diagnostic mut [u8]>,
     facts: &mut lower::FactSet<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
     match prepared.recipe.profile {
@@ -249,8 +354,15 @@ fn emit_facts<'source, 'diagnostic>(
             Ok(())
         }
         LanguageProfile::TypeScript(profile) => {
-            lower::typescript::collect(profile, source, facts)
-                .map_err(|cause| typescript_terminal(prepared.source, prepared.recipe, cause))?;
+            lower::typescript::collect(profile, source, facts).map_err(|cause| {
+                typescript_terminal(
+                    diagnostic_output,
+                    source,
+                    prepared.source,
+                    prepared.recipe,
+                    cause,
+                )
+            })?;
             if facts.len() == 0 {
                 return Err(CompileFailure::LoweringUnsupported {
                     source_identity: prepared.source,
@@ -551,6 +663,8 @@ fn clang_terminal<'diagnostic>(
 }
 
 fn typescript_terminal<'diagnostic>(
+    diagnostic_output: Option<&'diagnostic mut [u8]>,
+    source: &[u8],
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
     cause: TypeScriptCollectError,
@@ -568,7 +682,7 @@ fn typescript_terminal<'diagnostic>(
             source_identity,
             recipe,
             failure: AuthorityFailure::TypeScript {
-                diagnostic: AuthorityDiagnostic::absent(),
+                diagnostic: typescript_diagnostic(diagnostic_output, source, &cause),
                 cause,
             },
         },
@@ -586,5 +700,38 @@ fn typescript_terminal<'diagnostic>(
             recipe,
             cause,
         },
+    }
+}
+
+fn typescript_diagnostic<'diagnostic>(
+    output: Option<&'diagnostic mut [u8]>,
+    source: &[u8],
+    cause: &compiler_languages_typescript::AuthorityError,
+) -> AuthorityDiagnostic<'diagnostic> {
+    let Some(span) = cause.primary_span() else {
+        return AuthorityDiagnostic::absent();
+    };
+    let Ok(start) = usize::try_from(span.start) else {
+        return AuthorityDiagnostic::absent();
+    };
+    let Ok(end) = usize::try_from(span.end) else {
+        return AuthorityDiagnostic::absent();
+    };
+    let Some(primary) = source.get(start..end) else {
+        return AuthorityDiagnostic::absent();
+    };
+    let Some(output) = output else {
+        return AuthorityDiagnostic::absent();
+    };
+    let retained = primary.len().min(output.len());
+    let (Some(source), Some(destination)) = (primary.get(..retained), output.get_mut(..retained))
+    else {
+        return AuthorityDiagnostic::absent();
+    };
+    destination.copy_from_slice(source);
+    match AuthorityDiagnostic::new(destination, primary.len(), retained != primary.len()) {
+        Ok(diagnostic) => diagnostic,
+        Err(AuthorityDiagnosticFault::PrefixExceedsObserved { .. })
+        | Err(AuthorityDiagnosticFault::TruncationMismatch { .. }) => AuthorityDiagnostic::absent(),
     }
 }

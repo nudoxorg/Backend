@@ -1,6 +1,7 @@
-//! Exercises the `compiler-driver` tests native-compile matrix contract through its observable boundary.
-//! The cases target malformed, partial, reordered, and resource-constrained behavior.
-//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+//! Exercises direct in-process frontend matrix behavior through public driver requests.
+//! Covers source identity, canonical profile binding, and caller-owned fragment borrowing.
+//! Leaves project-bearing profile successes to their real authority-image and HIR fixtures.
+
 use std::{
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
@@ -9,98 +10,59 @@ use std::{
 use compiler_driver::{
     CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, PrimitiveType, SemanticImageAuthority, TypeNode};
-use compiler_vocabulary::{Language, LanguageProfile, RustEdition, Stage};
+use compiler_ir::{EntityKind, SemanticImageAuthority};
+use compiler_vocabulary::{Language, LanguageProfile, PythonVersion};
 
 use super::support::*;
 
 #[test]
-fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), TestFailure> {
-    #[allow(
-        clippy::type_complexity,
-        reason = "one homogeneous case table drives every closed language fact row"
-    )]
-    let cases: [(
-        Language,
-        NativeTool,
-        &'static [u8],
-        &'static [(&'static [u8], EntityKind)],
-        Option<PrimitiveType>,
-    ); 7] = [
-        (
-            Language::Rust,
-            NativeTool::Rustc,
-            b"pub const RUST_VALID: &str = \"yes\";".as_slice(),
-            &[(b"RUST_VALID", EntityKind::Constant)],
-            Some(PrimitiveType::String),
-        ),
+fn direct_in_process_frontends_bind_real_source_without_native_work() -> Result<(), TestFailure> {
+    let cases = [
         (
             Language::Python,
             NativeTool::Python,
-            b"PYTHON_VALID = \"yes\"\n".as_slice(),
-            &[(b"PYTHON_VALID", EntityKind::Constant)],
-            Some(PrimitiveType::String),
+            b"PYTHON_VALID = 'yes'\n".as_slice(),
+            &[(b"PYTHON_VALID".as_slice(), EntityKind::Static)][..],
         ),
         (
             Language::Clang,
             NativeTool::Clang,
             b"const char *clang_valid = \"yes\";".as_slice(),
-            &[(b"clang_valid", EntityKind::Static)],
-            None,
+            &[(b"clang_valid".as_slice(), EntityKind::Static)][..],
         ),
         (
             Language::TypeScript,
             NativeTool::TypeScriptCompiler,
-            b"export const TYPESCRIPT_VALID: string = \"yes\";".as_slice(),
-            &[(b"TYPESCRIPT_VALID", EntityKind::Constant)],
-            None,
-        ),
-        (
-            Language::CSharp,
-            NativeTool::CSharpCompiler,
-            b"public class Probe { public const string CSHARP_VALID = \"yes\"; }".as_slice(),
-            &[
-                (b"Probe", EntityKind::Record),
-                (b"CSHARP_VALID", EntityKind::Constant),
-            ],
-            Some(PrimitiveType::String),
-        ),
-        (
-            Language::Go,
-            NativeTool::GoCompiler,
-            b"package fixture\nconst GO_VALID string = \"yes\"\n".as_slice(),
-            &[
-                (b"fixture", EntityKind::Module),
-                (b"GO_VALID", EntityKind::Constant),
-            ],
-            Some(PrimitiveType::String),
-        ),
-        (
-            Language::Java,
-            NativeTool::JavaCompiler,
-            b"public final class JavaValid { public static final String NAME = \"yes\"; }"
-                .as_slice(),
-            &[
-                (b"JavaValid", EntityKind::Record),
-                (b"NAME", EntityKind::Constant),
-            ],
-            Some(PrimitiveType::String),
+            b"export const TYPESCRIPT_VALID = 'yes';".as_slice(),
+            &[(b"TYPESCRIPT_VALID".as_slice(), EntityKind::Constant)][..],
         ),
     ];
-    for (language, tool, source, expected_facts, expected_type) in cases {
-        let source_length = source_length(source)?;
-        let executable = executable(tool)?;
-        let toolchain = resolved(tool, &executable)?;
+    for (language, tool, source, expected) in cases {
+        let executable = match language {
+            Language::Python | Language::Clang => Some(executable(tool)?),
+            Language::TypeScript => None,
+            Language::Rust | Language::Go | Language::Java | Language::CSharp => {
+                return Err(TestFailure::CompileTerminal {
+                    tool,
+                    expected: CompileExpectation::CompactFact,
+                    observed: CompileTerminal::AuthorityInputRequired,
+                });
+            }
+        };
+        let resolved = match executable.as_deref() {
+            Some(executable) => resolved(tool, executable)?,
+            None => direct_authority_toolchain(tool)?,
+        };
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
         let mut diagnostic = [0xa5; 4_096];
-        let mut output = [0xa5; 4096];
+        let mut output = [0xa5; 4_096];
         let output_pointer = output.as_ptr();
-        let fragment_len = match compile(
+        let compiled = compile(
             request(
                 language,
                 source,
-                ToolchainSelection::ResolvedNative(toolchain),
+                ToolchainSelection::ResolvedNative(resolved),
                 &cancelled,
                 Instant::now() + Duration::from_secs(5),
             ),
@@ -111,91 +73,34 @@ fn native_adapters_parse_real_source_before_lending_compact_ir() -> Result<(), T
             CompileOutput {
                 fragment_output: &mut output,
             },
-        ) {
-            Ok(compiled) => {
-                if Language::from(compiled.recipe.profile) != language {
-                    return Err(TestFailure::RecipeLanguage {
-                        tool,
-                        expected: language,
-                        actual: Language::from(compiled.recipe.profile),
-                    });
-                }
-                if compiled.recipe.stage != Stage::LowerIr {
-                    return Err(TestFailure::RecipeStage {
-                        tool,
-                        expected: Stage::LowerIr,
-                        actual: compiled.recipe.stage,
-                    });
-                }
-                if compiled.recipe.tool != tool {
-                    return Err(TestFailure::RecipeTool {
-                        tool,
-                        expected: tool,
-                        actual: compiled.recipe.tool,
-                    });
-                }
-                if compiled.source.byte_len != source_length {
-                    return Err(TestFailure::FragmentSourceLength {
-                        tool,
-                        expected: source_length,
-                        actual: compiled.source.byte_len,
-                    });
-                }
-                if !core::ptr::eq(compiled.fragment.as_ref().as_ptr(), output_pointer) {
-                    return Err(TestFailure::FragmentBorrow { tool });
-                }
-                assert_facts(&compiled.fragment, expected_facts)?;
-                assert_type_facts(&compiled.fragment, tool)?;
-                // The only committed primitive is the spelled closed type;
-                // every container fact stays type-opaque.
-                let primitive_types: Vec<PrimitiveType> = compiled
-                    .fragment
-                    .type_nodes()
-                    .filter_map(|node| match node {
-                        TypeNode::Primitive(primitive_type) => Some(primitive_type),
-                        _ => None,
-                    })
-                    .collect();
-                match expected_type {
-                    Some(expected_type) if primitive_types.as_slice() != [expected_type] => {
-                        return Err(TestFailure::PrimitiveType {
-                            tool,
-                            expected: expected_type,
-                            actual: primitive_types.first().copied(),
-                        });
-                    }
-                    None if !primitive_types.is_empty() => {
-                        return Err(TestFailure::PrimitiveType {
-                            tool,
-                            expected: PrimitiveType::Bool,
-                            actual: primitive_types.first().copied(),
-                        });
-                    }
-                    Some(_) | None => {}
-                }
-                compiled.fragment.as_ref().len()
-            }
-            Err(failure) => {
-                return Err(TestFailure::CompileTerminal {
-                    tool,
-                    expected: CompileExpectation::CompactFact,
-                    observed: compile_terminal(&failure),
-                });
-            }
-        };
-        native_work.assert_empty()?;
-        if !output[fragment_len..].iter().all(|byte| *byte == 0xa5) {
-            return Err(TestFailure::OutputTailChanged { tool });
+        )
+        .map_err(|failure| TestFailure::CompileTerminal {
+            tool,
+            expected: CompileExpectation::CompactFact,
+            observed: compile_terminal(&failure),
+        })?;
+        if Language::from(compiled.recipe.profile) != language {
+            return Err(TestFailure::RecipeLanguage {
+                tool,
+                expected: language,
+                actual: Language::from(compiled.recipe.profile),
+            });
         }
+        if !core::ptr::eq(compiled.fragment.as_ref().as_ptr(), output_pointer) {
+            return Err(TestFailure::FragmentBorrow { tool });
+        }
+        assert_facts(&compiled.fragment, expected)?;
+        assert_type_facts(&compiled.fragment, tool)?;
+        native_work.assert_empty()?;
     }
     Ok(())
 }
 
 #[test]
-fn semantic_ir_binds_the_exact_source_profile() -> Result<(), TestFailure> {
-    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
-    let source = b"pub const PROFILE_BOUND: bool = true;";
-    let tool = NativeTool::Rustc;
+fn direct_python_semantic_ir_binds_the_exact_source_profile() -> Result<(), TestFailure> {
+    let profile = LanguageProfile::Python(PythonVersion::Python314);
+    let source = b"PROFILE_BOUND = True\n";
+    let tool = NativeTool::Python;
     let executable = executable(tool)?;
     let toolchain = resolved(tool, &executable)?;
     let native_work = TemporaryWork::create()?;
@@ -203,7 +108,7 @@ fn semantic_ir_binds_the_exact_source_profile() -> Result<(), TestFailure> {
     let mut diagnostic = [0xa5; 4_096];
     let compiled = compile_ir(
         request(
-            Language::Rust,
+            Language::Python,
             source,
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
@@ -219,11 +124,10 @@ fn semantic_ir_binds_the_exact_source_profile() -> Result<(), TestFailure> {
         expected: CompileExpectation::CompactFact,
         observed: compile_terminal(&failure),
     })?;
-    let actual = compiled.ir.storage_columns().authority;
-    if actual != SemanticImageAuthority::Language(profile) {
+    if compiled.ir.storage_columns().authority != SemanticImageAuthority::Language(profile) {
         return Err(TestFailure::SemanticAuthority {
             expected: profile,
-            actual,
+            actual: compiled.ir.storage_columns().authority,
         });
     }
     native_work.assert_empty()

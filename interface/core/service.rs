@@ -244,7 +244,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         Self::dependency_unavailable(correlation, capability)
     }
 
-    fn dependency_unavailable(
+    const fn dependency_unavailable(
         correlation: crate::CorrelationId,
         capability: Capability,
     ) -> ApplicationReply {
@@ -365,7 +365,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         self.adapt(correlation, pin, next_action(&input))
     }
 
-    fn adapt(
+    const fn adapt(
         &mut self,
         correlation: crate::CorrelationId,
         pin: Pin,
@@ -407,7 +407,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         }
     }
 
-    fn adapt_non_action(
+    const fn adapt_non_action(
         correlation: crate::CorrelationId,
         decision: PolicyDecision,
     ) -> ApplicationReply {
@@ -443,7 +443,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         }
     }
 
-    fn start_execution(
+    const fn start_execution(
         &mut self,
         correlation: crate::CorrelationId,
         pin: Pin,
@@ -587,7 +587,7 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         }
     }
 
-    fn execution_reply(
+    const fn execution_reply(
         correlation: crate::CorrelationId,
         state: ExecutionState,
     ) -> ApplicationReply {
@@ -639,21 +639,21 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
     }
 
     fn text_bound(value: InputText) -> Option<Diagnostic> {
-        if value.len() > MAX_SEMANTIC_TEXT_BYTES {
-            Some(Diagnostic {
-                code: DiagnosticCode::SemanticTextTooLong,
-                detail: DiagnosticDetail::TextLength {
-                    actual: value.len(),
-                    maximum: MAX_SEMANTIC_TEXT_BYTES,
-                    rejected: value,
-                },
-            })
-        } else {
-            None
-        }
+        (value.len() > MAX_SEMANTIC_TEXT_BYTES).then(|| Diagnostic {
+            code: DiagnosticCode::SemanticTextTooLong,
+            detail: DiagnosticDetail::TextLength {
+                actual: value.len(),
+                maximum: MAX_SEMANTIC_TEXT_BYTES,
+                rejected: value,
+            },
+        })
     }
 
-    fn limit(requested: u8) -> Option<Diagnostic> {
+    #[allow(
+        clippy::if_then_some_else_none,
+        reason = "the stable compiler cannot evaluate bool::then_some in this required const terminal constructor"
+    )]
+    const fn limit(requested: u8) -> Option<Diagnostic> {
         if requested > MAX_REPLY_ROWS {
             Some(Diagnostic {
                 code: DiagnosticCode::ResultLimitExceeded,
@@ -667,21 +667,24 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         }
     }
 
-    fn operation_unavailable(operation: OperationKey) -> Diagnostic {
+    const fn operation_unavailable(operation: OperationKey) -> Diagnostic {
         Diagnostic {
             code: DiagnosticCode::OperationUnavailable,
             detail: DiagnosticDetail::Operation(operation),
         }
     }
 
-    fn rejected(correlation: crate::CorrelationId, diagnostic: Diagnostic) -> ApplicationReply {
+    const fn rejected(
+        correlation: crate::CorrelationId,
+        diagnostic: Diagnostic,
+    ) -> ApplicationReply {
         ApplicationReply {
             correlation,
             outcome: ApplicationOutcome::Failed { diagnostic },
         }
     }
 
-    fn compiler_terminal(
+    const fn compiler_terminal(
         correlation: crate::CorrelationId,
         terminal: CompilerTerminal,
     ) -> ApplicationReply {

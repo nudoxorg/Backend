@@ -1,6 +1,7 @@
-//! Exercises the `compiler-driver` tests native-compile lowering contract through its observable boundary.
-//! The cases target malformed, partial, reordered, and resource-constrained behavior.
-//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+//! Exercises semantic-admission behavior through the public compiler boundary.
+//! Replaces retired source-scanner expectations with exact authority and durable-admission proof.
+//! Keeps every failure source typed, source-bound, and independent of host PATH discovery.
+
 use std::{
     num::NonZeroUsize,
     sync::atomic::AtomicBool,
@@ -8,10 +9,9 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileFailure, CompileOutput, CompileScratch, LoweringUnsupported, NativeTool,
-    ToolchainSelection, compile, compile_ir,
+    CompileFailure, CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile,
 };
-use compiler_ir::{EntityKind, ItemKind, PrimitiveType, TypeNode, Visibility};
+use compiler_ir::EntityKind;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -52,71 +52,38 @@ enum TypeScriptPublicationError {
 }
 
 #[test]
-fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Result<(), TestFailure> {
-    #[allow(
-        clippy::type_complexity,
-        reason = "one homogeneous case table drives every closed language fact row"
-    )]
-    let cases: [(
-        Language,
-        NativeTool,
-        &'static [u8],
-        &'static [(&'static [u8], EntityKind)],
-        Option<PrimitiveType>,
-    ); 4] = [
+fn external_profiles_require_bound_authority_images_before_any_native_work()
+-> Result<(), TestFailure> {
+    let cases = [
         (
-            Language::TypeScript,
-            NativeTool::TypeScriptCompiler,
-            b"export function TYPESCRIPT_FUNCTION(): boolean { return true; }".as_slice(),
-            &[(b"TYPESCRIPT_FUNCTION", EntityKind::Function)],
-            None,
+            Language::Go,
+            NativeTool::GoCompiler,
+            b"package fixture\nfunc GoFact() {}\n".as_slice(),
         ),
         (
             Language::CSharp,
             NativeTool::CSharpCompiler,
-            b"public class Probe { public static int CSHARP_FUNCTION() { return 1; } }".as_slice(),
-            &[
-                (b"Probe", EntityKind::Record),
-                (b"CSHARP_FUNCTION", EntityKind::Function),
-            ],
-            Some(PrimitiveType::I32),
-        ),
-        (
-            Language::Go,
-            NativeTool::GoCompiler,
-            b"package fixture\nfunc GO_FUNCTION() bool { return true }\n".as_slice(),
-            &[
-                (b"fixture", EntityKind::Module),
-                (b"GO_FUNCTION", EntityKind::Function),
-            ],
-            Some(PrimitiveType::Bool),
+            b"public interface CSharpFact {}\n".as_slice(),
         ),
         (
             Language::Java,
             NativeTool::JavaCompiler,
-            b"public final class JavaFunction { public static int JAVA_FUNCTION() { return 1; } }"
-                .as_slice(),
-            &[
-                (b"JavaFunction", EntityKind::Record),
-                (b"JAVA_FUNCTION", EntityKind::Function),
-            ],
-            Some(PrimitiveType::I32),
+            b"public interface JavaFact {}\n".as_slice(),
         ),
     ];
-    for (language, tool, source, expected_facts, expected_type) in cases {
-        let executable = executable(tool)?;
-        let toolchain = resolved(tool, &executable)?;
+    for (language, tool, source) in cases {
+        let toolchain = direct_authority_toolchain(tool)?;
         let native_work = TemporaryWork::create()?;
         let cancelled = AtomicBool::new(false);
-        let mut diagnostic = [0; 4_096];
-        let mut output = [0xa5; 4096];
-        let compiled = compile(
+        let mut diagnostic = [0xa5; 128];
+        let mut output = [0xa5; 512];
+        match compile(
             request(
                 language,
                 source,
                 ToolchainSelection::ResolvedNative(toolchain),
                 &cancelled,
-                Instant::now() + Duration::from_secs(10),
+                Instant::now() + Duration::from_secs(1),
             ),
             CompileScratch {
                 diagnostic_output: &mut diagnostic,
@@ -125,63 +92,47 @@ fn native_subset_declaration_forms_produce_their_closed_compact_facts() -> Resul
             CompileOutput {
                 fragment_output: &mut output,
             },
-        )
-        .map_err(|failure| TestFailure::CompileTerminal {
-            tool,
-            expected: CompileExpectation::CompactFact,
-            observed: compile_terminal(&failure),
-        })?;
-        assert_facts(&compiled.fragment, expected_facts)?;
-        assert_type_facts(&compiled.fragment, tool)?;
-        // Every container fact stays type-opaque; the only committed
-        // primitive is the member's spelled closed type.
-        let primitive_types: Vec<PrimitiveType> = compiled
-            .fragment
-            .type_nodes()
-            .filter_map(|node| match node {
-                TypeNode::Primitive(primitive_type) => Some(primitive_type),
-                _ => None,
-            })
-            .collect();
-        if let Some(expected_type) = expected_type {
-            if primitive_types.as_slice() != [expected_type] {
-                return Err(TestFailure::PrimitiveType {
+        ) {
+            Err(CompileFailure::AuthorityInputRequired { profile, .. })
+                if Language::from(profile) == language => {}
+            Err(failure) => {
+                return Err(TestFailure::CompileTerminal {
                     tool,
-                    expected: expected_type,
-                    actual: primitive_types.first().copied(),
+                    expected: CompileExpectation::AuthorityInputRequired,
+                    observed: compile_terminal(&failure),
                 });
             }
-        } else if !primitive_types.is_empty() {
-            return Err(TestFailure::PrimitiveType {
-                tool,
-                expected: PrimitiveType::Bool,
-                actual: primitive_types.first().copied(),
-            });
+            Ok(_) => {
+                return Err(TestFailure::CompileTerminal {
+                    tool,
+                    expected: CompileExpectation::AuthorityInputRequired,
+                    observed: CompileTerminal::Compiled,
+                });
+            }
         }
         native_work.assert_empty()?;
+        if !output.iter().all(|byte| *byte == 0xa5) {
+            return Err(TestFailure::OutputTailChanged { tool });
+        }
     }
     Ok(())
 }
 
-#[cfg(unix)]
 #[test]
-fn real_tsc_admission_then_oxc_bindings_fill_the_compact_fragment() -> Result<(), TestFailure> {
+fn direct_oxc_bindings_fill_the_compact_fragment_without_a_tsc_spawn() -> Result<(), TestFailure> {
     let tool = NativeTool::TypeScriptCompiler;
-    let executable = executable(tool)?;
-    let runner_work = TemporaryWork::create()?;
-    let runner = runner_work.write_typescript_runner(&typescript_node()?, &executable)?;
-    let toolchain = resolved(tool, &runner)?;
+    let toolchain = direct_authority_toolchain(tool)?;
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
+    let mut diagnostic = [0xa5; 128];
     let mut output = [0xa5; 4_096];
     let compiled = compile(
         request(
             Language::TypeScript,
-            b"export class Box {} export const value = new Box();",
+            b"export interface Shape { area(): number; } export const value = 1;",
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(1),
         ),
         CompileScratch {
             diagnostic_output: &mut diagnostic,
@@ -199,103 +150,33 @@ fn real_tsc_admission_then_oxc_bindings_fill_the_compact_fragment() -> Result<()
     assert_facts(
         &compiled.fragment,
         &[
-            (b"Box", EntityKind::Record),
+            (b"Shape", EntityKind::Trait),
             (b"value", EntityKind::Constant),
         ],
     )?;
     assert_type_facts(&compiled.fragment, tool)?;
-    if compiled
-        .fragment
-        .type_nodes()
-        .any(|node| matches!(node, TypeNode::Primitive(_)))
-    {
-        return Err(TestFailure::PrimitiveType {
-            tool,
-            expected: PrimitiveType::Bool,
-            actual: compiled.fragment.type_nodes().find_map(|node| match node {
-                TypeNode::Primitive(primitive) => Some(primitive),
-                TypeNode::Reference(_) => None,
-            }),
-        });
-    }
-    native_work.assert_empty()?;
-    let semantic_work = TemporaryWork::create()?;
-    let semantic = compile_ir(
-        request(
-            Language::TypeScript,
-            b"export class Box {} export const value = new Box();",
-            ToolchainSelection::ResolvedNative(toolchain),
-            &cancelled,
-            Instant::now() + Duration::from_secs(10),
-        ),
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: semantic_work.path(),
-        },
-    )
-    .map_err(|failure| TestFailure::CompileTerminal {
-        tool,
-        expected: CompileExpectation::CompactFact,
-        observed: compile_terminal(&failure),
-    })?;
-    if semantic.ir.entity_count() != 2 {
-        return Err(TestFailure::SemanticEntityCount {
-            expected: 2,
-            actual: semantic.ir.entity_count(),
-        });
-    }
-    let record_count = semantic.ir.items_of_kind(ItemKind::Record).len();
-    if record_count != 1 {
-        return Err(TestFailure::SemanticItemKindCount {
-            kind: ItemKind::Record,
-            expected: 1,
-            actual: record_count,
-        });
-    }
-    if let Some(actual) = semantic
-        .ir
-        .storage_columns()
-        .entities
-        .visibility
-        .iter()
-        .copied()
-        .find(|visibility| *visibility != Visibility::Unknown)
-    {
-        return Err(TestFailure::SemanticVisibility {
-            expected: Visibility::Unknown,
-            actual,
-        });
-    }
-    semantic_work.assert_empty()?;
-    std::fs::remove_file(runner).map_err(TestFailure::TypeScriptFixtureWrite)?;
-    runner_work.assert_empty()?;
-    Ok(())
+    native_work.assert_empty()
 }
 
-#[cfg(unix)]
 #[test]
 #[allow(
     clippy::result_large_err,
     reason = "the integration proof returns exact durable publication and reopen terminals by value so a failing test preserves their operands"
 )]
-fn real_tsc_and_oxc_compact_fragment_survives_durable_reopen()
--> Result<(), TypeScriptPublicationError> {
+fn direct_oxc_compact_fragment_survives_durable_reopen() -> Result<(), TypeScriptPublicationError> {
     let tool = NativeTool::TypeScriptCompiler;
-    let executable = executable(tool)?;
-    let runner_work = TemporaryWork::create()?;
-    let runner = runner_work.write_typescript_runner(&typescript_node()?, &executable)?;
-    let toolchain = resolved(tool, &runner)?;
+    let toolchain = direct_authority_toolchain(tool)?;
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
+    let mut diagnostic = [0xa5; 128];
     let mut output = [0xa5; 4_096];
     let compiled = compile(
         request(
             Language::TypeScript,
-            b"export class ReopenedBox {} export const reopened = new ReopenedBox();",
+            b"export interface ReopenedShape {} export const reopened = 1;",
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(1),
         ),
         CompileScratch {
             diagnostic_output: &mut diagnostic,
@@ -311,7 +192,6 @@ fn real_tsc_and_oxc_compact_fragment_survives_durable_reopen()
         observed: compile_terminal(&failure),
     })?;
     native_work.assert_empty()?;
-
     let publication_root = TemporaryWork::create()?;
     let artifacts = publication_root.path().join("artifacts");
     let journal = publication_root.path().join("journal");
@@ -362,28 +242,27 @@ fn real_tsc_and_oxc_compact_fragment_survives_durable_reopen()
         return Err(TypeScriptPublicationError::MissingFragment);
     };
     let fragment = fragment.map_err(TypeScriptPublicationError::Fragment)?;
-    let expected = [
-        (b"ReopenedBox".as_slice(), EntityKind::Record),
-        (b"reopened".as_slice(), EntityKind::Constant),
-    ];
-    assert_facts(&fragment.view, &expected)?;
+    assert_facts(
+        &fragment.view,
+        &[
+            (b"ReopenedShape", EntityKind::Trait),
+            (b"reopened", EntityKind::Constant),
+        ],
+    )?;
     publisher
         .shutdown()
-        .map_err(TypeScriptPublicationError::Shutdown)?;
-    std::fs::remove_file(runner).map_err(TestFailure::TypeScriptFixtureWrite)?;
-    runner_work.assert_empty()?;
-    Ok(())
+        .map_err(TypeScriptPublicationError::Shutdown)
 }
 
 #[test]
-fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Result<(), TestFailure> {
+fn rust_without_a_project_never_falls_back_to_source_lowering() -> Result<(), TestFailure> {
     let source = b"pub const alpha: u64 = { const INNER: bool = true; 1 };";
     let executable = executable(NativeTool::Rustc)?;
     let toolchain = resolved(NativeTool::Rustc, &executable)?;
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
-    let mut output = [0xa5; 4096];
+    let mut diagnostic = [0xa5; 4_096];
+    let mut output = [0xa5; 4_096];
     match compile(
         request(
             Language::Rust,
@@ -400,25 +279,18 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
             fragment_output: &mut output,
         },
     ) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause: LoweringUnsupported::NoSupportedDeclaration,
-            ..
-        }) => {}
+        Err(CompileFailure::AuthorityInputRequired { .. }) => {}
         Err(failure) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
+                expected: CompileExpectation::AuthorityInputRequired,
                 observed: compile_terminal(&failure),
             });
         }
-        Ok(_compiled) => {
+        Ok(_) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
+                expected: CompileExpectation::AuthorityInputRequired,
                 observed: CompileTerminal::Compiled,
             });
         }
@@ -433,7 +305,8 @@ fn unsupported_rust_outer_type_cannot_borrow_an_inner_bool_annotation() -> Resul
 }
 
 #[test]
-fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<(), TestFailure> {
+fn one_more_than_the_fact_lane_capacity_never_uses_a_rust_source_fallback()
+-> Result<(), TestFailure> {
     let mut source = String::new();
     for ordinal in 0..=128 {
         source.push_str(&format!("pub static CAPACITY_{ordinal}: bool = true;\n"));
@@ -442,7 +315,7 @@ fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<
     let toolchain = resolved(NativeTool::Rustc, &executable)?;
     let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 4_096];
+    let mut diagnostic = [0xa5; 4_096];
     let mut output = [0xa5; 4_096];
     match compile(
         request(
@@ -450,7 +323,7 @@ fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<
             source.as_bytes(),
             ToolchainSelection::ResolvedNative(toolchain),
             &cancelled,
-            Instant::now() + Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(5),
         ),
         CompileScratch {
             diagnostic_output: &mut diagnostic,
@@ -460,159 +333,126 @@ fn one_more_than_the_fact_lane_capacity_returns_the_closed_terminal() -> Result<
             fragment_output: &mut output,
         },
     ) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause: LoweringUnsupported::NoSupportedDeclaration,
-            ..
-        }) => {}
+        Err(CompileFailure::AuthorityInputRequired { .. }) => {}
         Err(failure) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
+                expected: CompileExpectation::AuthorityInputRequired,
                 observed: compile_terminal(&failure),
             });
         }
         Ok(_) => {
             return Err(TestFailure::CompileTerminal {
                 tool: NativeTool::Rustc,
-                expected: CompileExpectation::LoweringUnsupported(
-                    LoweringUnsupported::NoSupportedDeclaration,
-                ),
+                expected: CompileExpectation::AuthorityInputRequired,
                 observed: CompileTerminal::Compiled,
             });
         }
     }
     native_work.assert_empty()?;
-    assert!(output.iter().all(|byte| *byte == 0xa5));
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestFailure::OutputTailChanged {
+            tool: NativeTool::Rustc,
+        });
+    }
     Ok(())
 }
+
 #[test]
-fn rust_declaration_atoms_kinds_and_types_reject_source_digest_only_lowering()
--> Result<(), TestFailure> {
+fn rust_authority_required_terminal_retains_each_source_identity() -> Result<(), TestFailure> {
     let alpha_source = b"pub const alpha: bool = true;";
     let bravo_source = b"pub const bravo: i32 = 1;";
     let executable = executable(NativeTool::Rustc)?;
     let toolchain = resolved(NativeTool::Rustc, &executable)?;
-    let native_work = TemporaryWork::create()?;
     let cancelled = AtomicBool::new(false);
-    let mut alpha_diagnostic = [0; 4_096];
-    let mut bravo_diagnostic = [0; 4_096];
-    let mut alpha_output = [0; 4096];
-    let mut bravo_output = [0; 4096];
-    let alpha = compile(
-        request(
-            Language::Rust,
-            alpha_source,
-            ToolchainSelection::ResolvedNative(toolchain),
-            &cancelled,
-            Instant::now() + Duration::from_secs(5),
-        ),
-        CompileScratch {
-            diagnostic_output: &mut alpha_diagnostic,
-            native_work: native_work.path(),
-        },
-        CompileOutput {
-            fragment_output: &mut alpha_output,
-        },
-    )
-    .map_err(|failure| TestFailure::CompileTerminal {
-        tool: NativeTool::Rustc,
-        expected: CompileExpectation::CompactFact,
-        observed: compile_terminal(&failure),
-    })?;
-    native_work.assert_empty()?;
-    let bravo = compile(
-        request(
-            Language::Rust,
-            bravo_source,
-            ToolchainSelection::ResolvedNative(toolchain),
-            &cancelled,
-            Instant::now() + Duration::from_secs(5),
-        ),
-        CompileScratch {
-            diagnostic_output: &mut bravo_diagnostic,
-            native_work: native_work.path(),
-        },
-        CompileOutput {
-            fragment_output: &mut bravo_output,
-        },
-    )
-    .map_err(|failure| TestFailure::CompileTerminal {
-        tool: NativeTool::Rustc,
-        expected: CompileExpectation::CompactFact,
-        observed: compile_terminal(&failure),
-    })?;
-    native_work.assert_empty()?;
-
-    if alpha.fragment.as_ref() == bravo.fragment.as_ref() {
+    let mut alpha_diagnostic = [0xa5; 4_096];
+    let mut bravo_diagnostic = [0xa5; 4_096];
+    let mut alpha_output = [0xa5; 4_096];
+    let mut bravo_output = [0xa5; 4_096];
+    let alpha_work = TemporaryWork::create()?;
+    let bravo_work = TemporaryWork::create()?;
+    let alpha = authority_required(
+        alpha_source,
+        toolchain,
+        &cancelled,
+        &mut alpha_diagnostic,
+        alpha_work.path(),
+        &mut alpha_output,
+    )?;
+    let bravo = authority_required(
+        bravo_source,
+        toolchain,
+        &cancelled,
+        &mut bravo_diagnostic,
+        bravo_work.path(),
+        &mut bravo_output,
+    )?;
+    if alpha.0.identity == bravo.0.identity {
         return Err(TestFailure::ExpectedDistinctFact {
-            fact: FragmentFact::Bytes,
+            fact: FragmentFact::Source,
         });
     }
-    if alpha.source.identity == bravo.source.identity {
+    if alpha.1.identity == bravo.1.identity {
         return Err(TestFailure::ExpectedDistinctFact {
-            fact: FragmentFact::SourceIdentity,
+            fact: FragmentFact::Recipe,
         });
     }
-    if alpha.recipe.identity == bravo.recipe.identity {
-        return Err(TestFailure::ExpectedDistinctFact {
-            fact: FragmentFact::RecipeIdentity,
-        });
-    }
-    let alpha_kind = alpha.fragment.entities().next().map(|entity| entity.kind);
-    if alpha_kind != Some(EntityKind::Constant) {
-        return Err(TestFailure::EntityKind {
+    alpha_work.assert_empty()?;
+    bravo_work.assert_empty()?;
+    if !alpha_output.iter().all(|byte| *byte == 0xa5)
+        || !bravo_output.iter().all(|byte| *byte == 0xa5)
+    {
+        return Err(TestFailure::OutputTailChanged {
             tool: NativeTool::Rustc,
-            expected: EntityKind::Constant,
-            actual: alpha_kind,
-        });
-    }
-    let alpha_atom = alpha.fragment.atoms().next().map(|atom| atom.bytes);
-    if alpha_atom != Some(&b"alpha"[..]) {
-        return Err(TestFailure::AtomLength {
-            tool: NativeTool::Rustc,
-            expected: b"alpha".len(),
-            actual: alpha_atom.map(<[u8]>::len),
-        });
-    }
-    let bravo_atom = bravo.fragment.atoms().next().map(|atom| atom.bytes);
-    if bravo_atom != Some(&b"bravo"[..]) {
-        return Err(TestFailure::AtomLength {
-            tool: NativeTool::Rustc,
-            expected: b"bravo".len(),
-            actual: bravo_atom.map(<[u8]>::len),
-        });
-    }
-    let alpha_type = alpha
-        .fragment
-        .type_nodes()
-        .next()
-        .and_then(|node| match node {
-            TypeNode::Primitive(primitive_type) => Some(primitive_type),
-            _ => None,
-        });
-    if alpha_type != Some(PrimitiveType::Bool) {
-        return Err(TestFailure::PrimitiveType {
-            tool: NativeTool::Rustc,
-            expected: PrimitiveType::Bool,
-            actual: alpha_type,
-        });
-    }
-    let bravo_type = bravo
-        .fragment
-        .type_nodes()
-        .next()
-        .and_then(|node| match node {
-            TypeNode::Primitive(primitive_type) => Some(primitive_type),
-            _ => None,
-        });
-    if bravo_type != Some(PrimitiveType::I32) {
-        return Err(TestFailure::PrimitiveType {
-            tool: NativeTool::Rustc,
-            expected: PrimitiveType::I32,
-            actual: bravo_type,
         });
     }
     Ok(())
+}
+
+fn authority_required<'source, 'toolchain, 'cancel>(
+    source: &'source [u8],
+    toolchain: compiler_driver::ResolvedToolchain<'toolchain>,
+    cancelled: &'cancel AtomicBool,
+    diagnostic: &mut [u8],
+    native_work: &std::path::Path,
+    output: &mut [u8],
+) -> Result<
+    (
+        compiler_driver::SourceIdentity,
+        compiler_driver::CompileRecipeFact,
+    ),
+    TestFailure,
+> {
+    match compile(
+        request(
+            Language::Rust,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            cancelled,
+            Instant::now() + Duration::from_secs(5),
+        ),
+        CompileScratch {
+            diagnostic_output: diagnostic,
+            native_work,
+        },
+        CompileOutput {
+            fragment_output: output,
+        },
+    ) {
+        Err(CompileFailure::AuthorityInputRequired {
+            source_identity,
+            recipe,
+            ..
+        }) => Ok((source_identity, recipe)),
+        Err(failure) => Err(TestFailure::CompileTerminal {
+            tool: NativeTool::Rustc,
+            expected: CompileExpectation::AuthorityInputRequired,
+            observed: compile_terminal(&failure),
+        }),
+        Ok(_) => Err(TestFailure::CompileTerminal {
+            tool: NativeTool::Rustc,
+            expected: CompileExpectation::AuthorityInputRequired,
+            observed: CompileTerminal::Compiled,
+        }),
+    }
 }

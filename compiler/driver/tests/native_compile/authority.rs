@@ -23,7 +23,7 @@ fn exact_toolchain_version_bytes_change_the_bound_recipe_authority() -> Result<(
     )?;
     if first.identity == second.identity {
         return Err(TestFailure::ExpectedDistinctFact {
-            fact: FragmentFact::ToolchainIdentity,
+            fact: FragmentFact::Toolchain,
         });
     }
     Ok(())

@@ -14,8 +14,8 @@ use compiler_driver::{
     NativeWorkPhase, NativeWorkPrimary, ResolvedToolchain, ToolchainResolutionError,
     ToolchainSelection,
 };
+use compiler_ir::EntityKind;
 use compiler_ir::SemanticImageAuthority;
-use compiler_ir::{EntityKind, PrimitiveType};
 use compiler_vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
@@ -26,14 +26,6 @@ use thiserror::Error;
 pub(super) enum TestFailure {
     #[error("host does not expose the required {tool:?} executable")]
     MissingHostTool { tool: NativeTool },
-    #[error(
-        "host does not expose the explicit Node.js executable for the TypeScript authority fixture"
-    )]
-    MissingTypeScriptNode,
-    #[error("TypeScript authority fixture path was not valid UTF-8")]
-    TypeScriptFixturePath,
-    #[error("could not materialize the exact TypeScript authority fixture")]
-    TypeScriptFixtureWrite(#[source] std::io::Error),
     #[error("could not canonicalize the required {tool:?} executable")]
     Canonicalize {
         tool: NativeTool,
@@ -84,22 +76,6 @@ pub(super) enum TestFailure {
         actual: Language,
     },
     #[error(
-        "the locally reproducible {tool:?} adapter bound {actual:?}, not {expected:?}, as recipe stage"
-    )]
-    RecipeStage {
-        tool: NativeTool,
-        expected: Stage,
-        actual: Stage,
-    },
-    #[error(
-        "the locally reproducible {tool:?} adapter bound {actual:?}, not {expected:?}, as recipe tool"
-    )]
-    RecipeTool {
-        tool: NativeTool,
-        expected: NativeTool,
-        actual: NativeTool,
-    },
-    #[error(
         "the locally reproducible {tool:?} adapter bound source length {actual}, not {expected}"
     )]
     FragmentSourceLength {
@@ -109,22 +85,6 @@ pub(super) enum TestFailure {
     },
     #[error("the locally reproducible {tool:?} adapter returned a fragment outside caller output")]
     FragmentBorrow { tool: NativeTool },
-    #[error(
-        "the locally reproducible {tool:?} adapter atom fact had length {actual:?}, not {expected}"
-    )]
-    AtomLength {
-        tool: NativeTool,
-        expected: usize,
-        actual: Option<usize>,
-    },
-    #[error(
-        "the locally reproducible {tool:?} adapter declaration kind was {actual:?}, not {expected:?}"
-    )]
-    EntityKind {
-        tool: NativeTool,
-        expected: EntityKind,
-        actual: Option<EntityKind>,
-    },
     #[error(
         "the adapter emitted {actual_count} entities, not the expected {expected_count}; the first differing entity row is {ordinal}"
     )]
@@ -137,14 +97,6 @@ pub(super) enum TestFailure {
     TypeFactsMissing { tool: NativeTool },
     #[error("the {tool:?} adapter type-fact section failed to decode")]
     TypeFactsUndecodable { tool: NativeTool },
-    #[error(
-        "the locally reproducible {tool:?} adapter primitive type fact was {actual:?}, not {expected:?}"
-    )]
-    PrimitiveType {
-        tool: NativeTool,
-        expected: PrimitiveType,
-        actual: Option<PrimitiveType>,
-    },
     #[error("the locally reproducible {tool:?} adapter changed output bytes after its fragment")]
     OutputTailChanged { tool: NativeTool },
     #[error("the locally reproducible {tool:?} native rejection emitted no diagnostic bytes")]
@@ -174,34 +126,19 @@ pub(super) enum TestFailure {
         expected: LanguageProfile,
         actual: SemanticImageAuthority,
     },
-    #[error("semantic IR retained {actual} declaration rows, not {expected}")]
-    SemanticEntityCount { expected: usize, actual: usize },
-    #[error("semantic IR retained {actual} {kind:?} rows, not {expected}")]
-    SemanticItemKindCount {
-        kind: compiler_ir::ItemKind,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("semantic IR visibility was {actual:?}, not unproven {expected:?}")]
-    SemanticVisibility {
-        expected: compiler_ir::Visibility,
-        actual: compiler_ir::Visibility,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FragmentFact {
-    Bytes,
-    SourceIdentity,
-    RecipeIdentity,
-    ToolchainIdentity,
+    Source,
+    Recipe,
+    Toolchain,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CompileExpectation {
     CompactFact,
-    NativeRejection,
-    LoweringUnsupported(LoweringUnsupported),
+    AuthorityInputRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -294,29 +231,6 @@ impl TemporaryWork {
             None => Ok(()),
         }
     }
-
-    #[cfg(unix)]
-    pub(super) fn write_typescript_runner(
-        &self,
-        node: &Path,
-        compiler: &Path,
-    ) -> Result<PathBuf, TestFailure> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let node = node.to_str().ok_or(TestFailure::TypeScriptFixturePath)?;
-        let compiler = compiler
-            .to_str()
-            .ok_or(TestFailure::TypeScriptFixturePath)?;
-        let runner = self.path.join("typescript-authority-runner");
-        let body = format!("#!/bin/sh\nexec {node} {compiler} \"$@\"\n");
-        fs::write(&runner, body).map_err(TestFailure::TypeScriptFixtureWrite)?;
-        let mut permissions = fs::metadata(&runner)
-            .map_err(TestFailure::TypeScriptFixtureWrite)?
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&runner, permissions).map_err(TestFailure::TypeScriptFixtureWrite)?;
-        Ok(runner)
-    }
 }
 
 impl Drop for TemporaryWork {
@@ -375,13 +289,6 @@ pub(super) fn configured_executable(tool: NativeTool) -> Option<PathBuf> {
     env::var_os(variable).map(PathBuf::from)
 }
 
-pub(super) fn typescript_node() -> Result<PathBuf, TestFailure> {
-    let path = env::var_os("COMPILER_TYPESCRIPT_NODE").ok_or(TestFailure::MissingTypeScriptNode)?;
-    PathBuf::from(path)
-        .canonicalize()
-        .map_err(TestFailure::TypeScriptFixtureWrite)
-}
-
 pub(super) fn resolved<'path>(
     tool: NativeTool,
     path: &'path Path,
@@ -414,6 +321,22 @@ pub(super) fn resolved<'path>(
         return Err(TestFailure::EmptyVersion { tool });
     }
     Ok(ResolvedToolchain::from_version(tool, path, version_bytes)?)
+}
+
+/// Binds the inert local executable used only by direct-authority tests.
+///
+/// The profiles using this witness never spawn the command: their source facts come from an
+/// in-process authority or a validated borrowed image.  The closed tool value still binds the
+/// canonical recipe without asking the host to discover an unavailable external compiler.
+pub(super) fn direct_authority_toolchain(
+    tool: NativeTool,
+) -> Result<ResolvedToolchain<'static>, TestFailure> {
+    ResolvedToolchain::from_version(
+        tool,
+        Path::new("/usr/bin/true"),
+        b"compiler-driver-direct-authority-test-v1",
+    )
+    .map_err(TestFailure::Resolve)
 }
 
 pub(super) fn source_length(source: &[u8]) -> Result<u32, TestFailure> {
