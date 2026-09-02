@@ -3,14 +3,18 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use std::time::Duration;
 
-use compiler_vocabulary::{AuthorityPhase, Language, LoweringUnsupported, NativeTool, Stage};
+use compiler_vocabulary::{
+    AuthorityDiagnosticClass, AuthorityPhase, Language, LoweringUnsupported, NativeTool, Stage,
+};
 use interface_core::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, FragmentCause, PublicationCause,
     SourceAuthority,
 };
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
-use super::super::scalar::{AuthorityPhaseWire, LanguageWire, NativeToolWire, StageWire};
+use super::super::scalar::{
+    AuthorityDiagnosticClassWire, AuthorityPhaseWire, LanguageWire, NativeToolWire, StageWire,
+};
 use super::authority::{CompilerAttemptWire, SourceAuthorityWire};
 use super::native::{NativeIoFactRef, NativeIoPhaseRef, NativeWorkCauseWire};
 use super::publication::serialize_publication_cause;
@@ -183,16 +187,32 @@ impl Serialize for AuthorityPhaseRef<'_> {
     }
 }
 
+pub(crate) struct AuthorityDiagnosticClassRef<'value>(pub(crate) &'value AuthorityDiagnosticClass);
+
+impl Serialize for AuthorityDiagnosticClassRef<'_> {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        AuthorityDiagnosticClassWire::serialize(self.0, serializer)
+    }
+}
+
 /// Projects the named wire shape for compiler causes whose core enum contains tuple variants.
 pub(crate) fn serialize_compiler_cause<Output: Serializer>(
     cause: &CompilerCause,
     serializer: Output,
 ) -> Result<Output::Ok, Output::Error> {
-    let mut state = serializer.serialize_struct("CompilerCause", 3)?;
+    let mut state = serializer.serialize_struct("CompilerCause", 4)?;
     match cause {
-        CompilerCause::Authority { phase, diagnostic } => {
+        CompilerCause::Authority {
+            phase,
+            class,
+            diagnostic,
+        } => {
             state.serialize_field("kind", "authority")?;
             state.serialize_field("phase", &AuthorityPhaseRef(phase))?;
+            state.serialize_field("class", &AuthorityDiagnosticClassRef(class))?;
             state.serialize_field("diagnostic", &DiagnosticRef(diagnostic))?;
         }
         CompilerCause::NativeWork(cause) => {

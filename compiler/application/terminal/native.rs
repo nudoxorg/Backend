@@ -47,12 +47,29 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::DeadlineExceeded { source_identity, recipe, diagnostic } => deadline_exceeded(source_identity, recipe, diagnostic),
         CompileFailure::DiagnosticLimit { source_identity, recipe, limit, observed, diagnostic } => diagnostic_limit(source_identity, recipe, limit, observed, diagnostic),
         CompileFailure::NativeRejected { source_identity, recipe, status, diagnostic } => native_rejected(source_identity, recipe, status, diagnostic),
-        CompileFailure::Authority { source_identity, recipe, phase, diagnostic, .. } => compile_from_driver(source_identity, recipe, CompilerCause::Authority { phase, diagnostic: authority_diagnostic(diagnostic) }),
+        CompileFailure::Authority { source_identity, recipe, failure } => authority_terminal(source_identity, recipe, &failure),
         CompileFailure::LoweringUnsupported { source_identity, recipe, cause } => compile_from_driver(source_identity, recipe, CompilerCause::Lowering(cause)),
         CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
         CompileFailure::Validate { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Validate),
     }
+}
+
+fn authority_terminal(
+    source: compiler_ir::SourceIdentity,
+    recipe: compiler_vocabulary::CompileRecipeFact,
+    failure: &compiler_driver::AuthorityFailure<'_>,
+) -> CompilerTerminal {
+    let projection = failure.projection();
+    compile_from_driver(
+        source,
+        recipe,
+        CompilerCause::Authority {
+            phase: projection.phase,
+            class: projection.class,
+            diagnostic: authority_diagnostic(projection.diagnostic),
+        },
+    )
 }
 
 const fn unsupported_stage(
@@ -225,5 +242,105 @@ const fn configured_tool(fact: ToolchainSelectionFact) -> Option<compiler_vocabu
     match fact {
         ToolchainSelectionFact::ResolvedNative { tool } => Some(tool),
         ToolchainSelectionFact::ExplicitlyUnavailable { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use compiler_driver::{AuthorityDiagnostic, AuthorityFailure};
+    use compiler_languages_typescript::{AuthorityError, with_analysis};
+    use compiler_vocabulary::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
+        Stage, TypeScriptSource,
+    };
+    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+    use interface_core::{CompilerCause, CompilerTerminal};
+
+    use super::authority_terminal;
+
+    #[derive(Debug, thiserror::Error)]
+    enum TestError {
+        #[error("OXC accepted a syntactically malformed TypeScript fixture")]
+        OxcAccepted,
+        #[error("OXC returned a non-syntax terminal for malformed TypeScript")]
+        OxcFailure,
+        #[error("OXC syntax terminal had no retained diagnostics")]
+        OxcDiagnostics,
+        #[error("bounded authority diagnostic construction failed")]
+        Diagnostic,
+        #[error("authority terminal did not remain a compile terminal")]
+        Terminal,
+        #[error("authority terminal changed its source or recipe authority")]
+        Attempt,
+        #[error("authority terminal lost its OXC parse/syntax classification")]
+        Classification,
+        #[error("authority terminal lost its bounded primary diagnostic")]
+        Projection,
+    }
+
+    #[test]
+    fn actual_oxc_syntax_failure_projects_to_application_terminal() -> Result<(), TestError> {
+        let source_bytes = b"const =;";
+        let source_text = "const =;";
+        let analyzed = with_analysis(TypeScriptSource::TypeScript, source_text, |_| ());
+        let Err(cause) = analyzed else {
+            return Err(TestError::OxcAccepted);
+        };
+        let AuthorityError::Syntax { diagnostics } = cause else {
+            return Err(TestError::OxcFailure);
+        };
+        if diagnostics.is_empty() {
+            return Err(TestError::OxcDiagnostics);
+        }
+        let Ok(diagnostic) = AuthorityDiagnostic::new(b"syntax", 6, false) else {
+            return Err(TestError::Diagnostic);
+        };
+        let source = compiler_ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
+            byte_len: 8,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"oxc-authority"),
+        );
+        let failure = AuthorityFailure::TypeScript {
+            diagnostic,
+            cause: AuthorityError::Syntax { diagnostics },
+        };
+        let terminal = authority_terminal(source, recipe, &failure);
+        let CompilerTerminal::Compile { attempted, cause } = terminal else {
+            return Err(TestError::Terminal);
+        };
+        if attempted.source.identity != source.identity
+            || attempted.source.byte_len != source.byte_len
+            || attempted.recipe != recipe.identity
+        {
+            return Err(TestError::Attempt);
+        }
+        let CompilerCause::Authority {
+            phase,
+            class,
+            diagnostic,
+        } = cause
+        else {
+            return Err(TestError::Terminal);
+        };
+        if phase != AuthorityPhase::Parse || class != AuthorityDiagnosticClass::Syntax {
+            return Err(TestError::Classification);
+        }
+        let Some(diagnostic) = diagnostic else {
+            return Err(TestError::Projection);
+        };
+        if diagnostic.byte_len != 6
+            || diagnostic.observed != 6
+            || diagnostic.truncated
+            || diagnostic.bytes.get(..diagnostic.byte_len) != Some(b"syntax")
+        {
+            return Err(TestError::Projection);
+        }
+        Ok(())
     }
 }

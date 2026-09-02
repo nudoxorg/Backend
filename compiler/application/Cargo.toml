@@ -20,6 +20,10 @@ heart-identity = { path = "../../heart/identity" }
 compiler-ir = { path = "../ir" }
 thiserror.workspace = true
 interface-core = { path = "../../interface/core" }
+
+[dev-dependencies]
+compiler-languages-typescript = { path = "../languages/typescript" }
+
 [lints]
 workspace = true
 

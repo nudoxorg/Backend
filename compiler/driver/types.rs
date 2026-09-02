@@ -10,8 +10,8 @@ mod terminal;
 mod toolchain;
 
 pub use authority::{
-    AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityPhase, AuthorityProfileMismatch,
-    FrontendAuthorityError,
+    AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
+    AuthorityProfileMismatch,
 };
 pub use compile::{compile, compile_ir};
 pub(crate) use request::NativeRecipe;

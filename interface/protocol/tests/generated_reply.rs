@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use compiler_vocabulary::{
-    CompileRecipeFact, Language, LanguageProfile, NativeTool, RustEdition, Stage,
+    AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
+    NativeTool, RustEdition, Stage,
 };
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, ContentId,
@@ -112,6 +113,33 @@ fn compiler_failure_reply() -> Result<ApplicationReply, TestError> {
     };
     Ok(ApplicationReply {
         correlation: CorrelationId(402),
+        outcome: ApplicationOutcome::Failed {
+            diagnostic: Diagnostic {
+                code: DiagnosticCode::CompilerTerminal,
+                detail: DiagnosticDetail::Compiler(terminal),
+            },
+        },
+    })
+}
+
+fn authority_failure_reply() -> Result<ApplicationReply, TestError> {
+    let artifact = generated_artifact();
+    let attempted = CompilerAttempt {
+        source: artifact.source,
+        recipe: artifact.recipe.identity,
+    };
+    let diagnostic =
+        CompilerDiagnostic::from_native(b"syntax", 6, false).ok_or(TestError::MissingDiagnostic)?;
+    let terminal = CompilerTerminal::Compile {
+        attempted,
+        cause: CompilerCause::Authority {
+            phase: AuthorityPhase::Parse,
+            class: AuthorityDiagnosticClass::Syntax,
+            diagnostic: Some(diagnostic),
+        },
+    };
+    Ok(ApplicationReply {
+        correlation: CorrelationId(405),
         outcome: ApplicationOutcome::Failed {
             diagnostic: Diagnostic {
                 code: DiagnosticCode::CompilerTerminal,
@@ -296,6 +324,55 @@ fn compiler_terminal_keeps_typed_attempt_and_bounded_native_diagnostic() -> Resu
     if let Some(message) = native_diagnostic.get("message") {
         return Err(TestError::Projection {
             channel: "native diagnostic erased message",
+            observed: message.clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn authority_terminal_keeps_class_count_and_primary_bytes_across_cli_and_mcp()
+-> Result<(), TestError> {
+    let reply = authority_failure_reply()?;
+    let cli: Value = serde_json::from_slice(&encode_cli_reply(reply)?)?;
+    let request_id = Value::String(String::from("authority-request"));
+    let mcp = serde_json::to_value(mcp_reply(&request_id, authority_failure_reply()?))?;
+    let structured = &mcp["result"]["structuredContent"];
+    let cause = &cli["diagnostic"]["detail"]["terminal"]["cause"];
+
+    expect_projection("authority cli/mcp parity", &cli, structured.clone())?;
+    expect_projection("authority request id", &mcp["id"], request_id)?;
+    expect_projection(
+        "authority correlation",
+        &cli["correlation"],
+        Value::from(405),
+    )?;
+    expect_projection("authority kind", &cause["kind"], Value::from("authority"))?;
+    expect_projection("authority phase", &cause["phase"], Value::from("parse"))?;
+    expect_projection("authority class", &cause["class"], Value::from("syntax"))?;
+    expect_projection(
+        "authority diagnostic byte length",
+        &cause["diagnostic"]["byte_len"],
+        Value::from(6),
+    )?;
+    expect_projection(
+        "authority diagnostic observed",
+        &cause["diagnostic"]["observed"],
+        Value::from(6),
+    )?;
+    expect_projection(
+        "authority diagnostic truncation",
+        &cause["diagnostic"]["truncated"],
+        Value::from(false),
+    )?;
+    expect_projection(
+        "authority primary bytes",
+        &cause["diagnostic"]["bytes"],
+        serde_json::json!([115, 121, 110, 116, 97, 120]),
+    )?;
+    if let Some(message) = cause.get("message") {
+        return Err(TestError::Projection {
+            channel: "authority cause erased message",
             observed: message.clone(),
         });
     }

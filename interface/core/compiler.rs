@@ -6,8 +6,8 @@
 use std::{io::ErrorKind, ops::Deref, time::Duration};
 
 use compiler_vocabulary::{
-    AuthorityPhase, CompileRecipeFact, Language, LanguageProfile, LoweringUnsupported,
-    MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool, Stage,
+    AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
+    LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool, Stage,
 };
 pub use compiler_vocabulary::{
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactRole, NativeWorkPhase,
@@ -220,6 +220,8 @@ pub enum CompilerCause {
     Authority {
         /// Exact authority transaction phase that failed.
         phase: AuthorityPhase,
+        /// Exact source-diagnostic class derived from the retained frontend error.
+        class: AuthorityDiagnosticClass,
         /// Bounded authority diagnostic projection, when the authority exposed bytes.
         diagnostic: Option<CompilerDiagnostic>,
     },
@@ -526,7 +528,11 @@ impl CompilerDiagnostic {
         }
         let retained = bytes.len().min(MAX_NATIVE_DIAGNOSTIC_BYTES);
         let mut output = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
-        output[..retained].copy_from_slice(&bytes[..retained]);
+        let (Some(source), Some(destination)) = (bytes.get(..retained), output.get_mut(..retained))
+        else {
+            return None;
+        };
+        destination.copy_from_slice(source);
         Some(Self(Box::new(CompilerDiagnosticFacts {
             byte_len: retained,
             observed,

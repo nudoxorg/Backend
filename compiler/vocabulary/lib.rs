@@ -97,6 +97,25 @@ pub enum AuthorityPhase {
     Project,
 }
 
+/// Closed class of diagnostic authority retained at application boundaries.
+///
+/// The concrete frontend error stays in `compiler-driver`; this compact class
+/// lets CLI, MCP, and GPUI distinguish syntax, binding, type, infrastructure,
+/// and canonical-projection failures without rendering an error string.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityDiagnosticClass {
+    /// The authority rejected source or image syntax.
+    Syntax,
+    /// The authority could not bind a symbol, import, package, or project graph.
+    Binding,
+    /// The authority could not establish a required type fact.
+    Type,
+    /// Loading or running the selected authority itself failed.
+    Authority,
+    /// Canonical admission rejected a complete authority fact set.
+    Projection,
+}
+
 /// Semantic compiler phase requested by an application operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {

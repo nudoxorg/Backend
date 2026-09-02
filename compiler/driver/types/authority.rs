@@ -1,15 +1,13 @@
 //! Defines exact semantic-authority failures retained by `compiler-driver`.
-//! Keeps every language frontend's closed error type intact through IR admission.
-//! Projects only bounded diagnostics at application and transport boundaries.
+//! Keeps each frontend's closed error type intact through canonical admission.
+//! Projects bounded diagnostics only after deriving their typed cause class.
 
-use compiler_vocabulary::LanguageProfile;
+use compiler_vocabulary::{AuthorityDiagnosticClass, AuthorityPhase, LanguageProfile};
 
-pub use compiler_vocabulary::AuthorityPhase;
-
-/// Bounded primary diagnostic retained beside an exact frontend error.
+/// Bounded primary diagnostic retained beside one exact frontend error.
 ///
 /// The primary bytes are copied only by the authority that owns the diagnostic
-/// transport.  `observed` remains the complete source diagnostic size, making
+/// transport. `observed` remains the complete source diagnostic size, making
 /// truncation explicit to application surfaces without replacing the source
 /// error with rendered text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,80 +84,333 @@ pub enum AuthorityDiagnosticFault {
     },
 }
 
-/// Concrete error emitted by one exact language authority.
+/// Complete source error from one language authority.
 ///
-/// This enum is deliberately not a common prose/error-code DTO: each variant
-/// retains the original closed error type from the frontend that produced it.
+/// A variant selects its language and retains its concrete closed source
+/// error, so callers cannot attach a mismatched phase or diagnostic class.
 #[derive(Debug, thiserror::Error)]
-pub enum FrontendAuthorityError {
+pub enum AuthorityFailure<'diagnostic> {
     /// Direct libclang collection did not yield complete C or C++ facts.
-    #[error(transparent)]
-    Clang(#[from] compiler_languages_clang::CollectError),
+    #[error("direct libclang authority failed")]
+    Clang {
+        /// Bounded source diagnostic retained by the Clang authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact libclang source failure.
+        #[source]
+        cause: compiler_languages_clang::CollectError,
+    },
     /// Rust-analyzer did not yield complete HIR/type facts for the selected Cargo graph.
-    #[error(transparent)]
-    Rust(#[from] compiler_languages_rust::RustAuthorityError),
+    #[error("Rust semantic authority failed")]
+    Rust {
+        /// Bounded source diagnostic retained by the Rust authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact rust-analyzer source failure.
+        #[source]
+        cause: compiler_languages_rust::RustAuthorityError,
+    },
     /// OXC syntax/binding authority did not yield TypeScript facts.
-    #[error(transparent)]
-    TypeScript(#[from] compiler_languages_typescript::AuthorityError),
+    #[error("TypeScript semantic authority failed")]
+    TypeScript {
+        /// Bounded source diagnostic retained by the TypeScript authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact OXC source failure.
+        #[source]
+        cause: compiler_languages_typescript::AuthorityError,
+    },
     /// Ruff/Python semantic authority did not yield source facts.
-    #[error(transparent)]
-    Python(#[from] compiler_languages_python::ExtractionError),
+    #[error("Python semantic authority failed")]
+    Python {
+        /// Bounded source diagnostic retained by the Python authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact Python source failure.
+        #[source]
+        cause: compiler_languages_python::ExtractionError,
+    },
     /// The real Go package/type authority boundary did not yield complete facts.
-    #[error(transparent)]
-    Go(#[from] compiler_languages_go::OracleError),
+    #[error("Go semantic authority failed")]
+    Go {
+        /// Bounded source diagnostic retained by the Go authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact Go source failure.
+        #[source]
+        cause: compiler_languages_go::OracleError,
+    },
     /// The Roslyn authority boundary did not yield complete facts.
-    #[error(transparent)]
-    CSharp(#[from] compiler_languages_csharp::DecodeError),
+    #[error("C# semantic authority failed")]
+    CSharp {
+        /// Bounded source diagnostic retained by the C# authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact Roslyn source failure.
+        #[source]
+        cause: compiler_languages_csharp::DecodeError,
+    },
     /// The validated javac authority image did not yield complete facts.
-    #[error(transparent)]
-    Java(#[from] compiler_languages_java::ImageError),
+    #[error("Java semantic authority failed")]
+    Java {
+        /// Bounded source diagnostic retained by the Java authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact javac image failure.
+        #[source]
+        cause: compiler_languages_java::ImageError,
+    },
 }
 
-impl FrontendAuthorityError {
-    /// Returns the unique compiler profile family that owns this source error.
+/// Bounded application projection derived from one exact authority failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityFailureProjection<'diagnostic> {
+    /// Typed authority transaction phase derived from the concrete source error.
+    pub phase: AuthorityPhase,
+    /// Typed source-diagnostic class derived from the concrete source error.
+    pub class: AuthorityDiagnosticClass,
+    /// Bounded source diagnostic bytes and exact count facts.
+    pub diagnostic: AuthorityDiagnostic<'diagnostic>,
+}
+
+impl<'diagnostic> AuthorityFailure<'diagnostic> {
+    /// Derives the only public diagnostic projection for this exact source failure.
     #[must_use]
-    pub const fn language(self: &Self) -> compiler_vocabulary::Language {
+    pub fn projection(&self) -> AuthorityFailureProjection<'diagnostic> {
         match self {
-            Self::Clang(_) => compiler_vocabulary::Language::Clang,
-            Self::Rust(_) => compiler_vocabulary::Language::Rust,
-            Self::TypeScript(_) => compiler_vocabulary::Language::TypeScript,
-            Self::Python(_) => compiler_vocabulary::Language::Python,
-            Self::Go(_) => compiler_vocabulary::Language::Go,
-            Self::CSharp(_) => compiler_vocabulary::Language::CSharp,
-            Self::Java(_) => compiler_vocabulary::Language::Java,
+            Self::Clang { diagnostic, cause } => AuthorityFailureProjection {
+                phase: clang_phase(cause),
+                class: clang_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::Rust { diagnostic, cause } => AuthorityFailureProjection {
+                phase: rust_phase(cause),
+                class: rust_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::TypeScript { diagnostic, cause } => AuthorityFailureProjection {
+                phase: typescript_phase(cause),
+                class: typescript_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::Python { diagnostic, cause } => AuthorityFailureProjection {
+                phase: python_phase(cause),
+                class: python_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::Go { diagnostic, cause } => AuthorityFailureProjection {
+                phase: go_phase(cause),
+                class: go_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::CSharp { diagnostic, cause } => AuthorityFailureProjection {
+                phase: csharp_phase(cause),
+                class: csharp_class(cause),
+                diagnostic: *diagnostic,
+            },
+            Self::Java { diagnostic, cause } => AuthorityFailureProjection {
+                phase: java_phase(cause),
+                class: java_class(cause),
+                diagnostic: *diagnostic,
+            },
         }
     }
 
-    /// Checks that the authority's language family agrees with the exact requested profile.
+    /// Binds this source error only to a profile owned by its exact authority.
     ///
     /// # Errors
     ///
-    /// Returns [`AuthorityProfileMismatch`] without losing the source error
-    /// when a caller attempts to attach it to a different language profile.
-    pub fn bind_profile(self, profile: LanguageProfile) -> Result<Self, AuthorityProfileMismatch> {
-        let actual = self.language();
-        let expected = profile.language();
-        if actual == expected {
+    /// Returns [`AuthorityProfileMismatch`] with this untouched source error
+    /// when the caller selects a profile from another language family.
+    pub fn bind_profile(
+        self,
+        profile: LanguageProfile,
+    ) -> Result<Self, AuthorityProfileMismatch<'diagnostic>> {
+        let accepted = matches!(
+            (&self, profile),
+            (
+                Self::Clang { .. },
+                LanguageProfile::C(_) | LanguageProfile::Cxx(_)
+            ) | (Self::Rust { .. }, LanguageProfile::Rust(_))
+                | (Self::TypeScript { .. }, LanguageProfile::TypeScript(_))
+                | (Self::Python { .. }, LanguageProfile::Python(_))
+                | (Self::Go { .. }, LanguageProfile::Go(_))
+                | (Self::CSharp { .. }, LanguageProfile::CSharp(_))
+                | (Self::Java { .. }, LanguageProfile::Java(_))
+        );
+        if accepted {
             Ok(self)
         } else {
             Err(AuthorityProfileMismatch {
                 profile,
-                actual,
-                source: self,
+                failure: self,
             })
         }
     }
 }
 
-/// A concrete frontend error was offered under a profile owned by another language.
+/// A concrete frontend error was offered under a profile owned by another authority.
 #[derive(Debug, thiserror::Error)]
-#[error("{actual:?} authority error cannot satisfy requested {profile:?} profile")]
-pub struct AuthorityProfileMismatch {
+#[error("semantic authority and requested profile differ")]
+pub struct AuthorityProfileMismatch<'diagnostic> {
     /// Exact profile selected by the compiler request.
     pub profile: LanguageProfile,
-    /// Language family that produced `source`.
-    pub actual: compiler_vocabulary::Language,
     /// Original frontend error that was not projected or replaced.
-    #[source]
-    pub source: FrontendAuthorityError,
+    pub failure: AuthorityFailure<'diagnostic>,
+}
+
+fn clang_phase(cause: &compiler_languages_clang::CollectError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_clang::CollectError::Parse { .. }
+        | compiler_languages_clang::CollectError::SourceContainsNul
+        | compiler_languages_clang::CollectError::SourceTooLarge { .. }
+        | compiler_languages_clang::CollectError::SourceLengthTooLarge { .. } => {
+            AuthorityPhase::Parse
+        }
+        compiler_languages_clang::CollectError::ScratchCapacity { .. }
+        | compiler_languages_clang::CollectError::CoordinateTooLarge { .. }
+        | compiler_languages_clang::CollectError::SlotOrdinalTooLarge { .. }
+        | compiler_languages_clang::CollectError::SlotCountOverflow { .. } => {
+            AuthorityPhase::Project
+        }
+        compiler_languages_clang::CollectError::Cancelled
+        | compiler_languages_clang::CollectError::Library(_)
+        | compiler_languages_clang::CollectError::MissingApi { .. }
+        | compiler_languages_clang::CollectError::IndexUnavailable
+        | compiler_languages_clang::CollectError::MainFileUnavailable => AuthorityPhase::Open,
+    }
+}
+
+fn clang_class(cause: &compiler_languages_clang::CollectError) -> AuthorityDiagnosticClass {
+    match clang_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
+}
+
+fn rust_phase(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_rust::RustAuthorityError::Workspace { .. }
+        | compiler_languages_rust::RustAuthorityError::SourceNotLoaded { .. }
+        | compiler_languages_rust::RustAuthorityError::EditionMismatch { .. }
+        | compiler_languages_rust::RustAuthorityError::MissingSemanticFact { .. } => {
+            AuthorityPhase::Resolve
+        }
+        compiler_languages_rust::RustAuthorityError::UnresolvedInferredType => {
+            AuthorityPhase::TypeCheck
+        }
+        compiler_languages_rust::RustAuthorityError::InvalidSpan { .. }
+        | compiler_languages_rust::RustAuthorityError::Coordinate { .. } => AuthorityPhase::Project,
+        compiler_languages_rust::RustAuthorityError::Cancelled
+        | compiler_languages_rust::RustAuthorityError::Toolchain(_)
+        | compiler_languages_rust::RustAuthorityError::ProjectRoot { .. }
+        | compiler_languages_rust::RustAuthorityError::MissingManifest { .. }
+        | compiler_languages_rust::RustAuthorityError::SourceBudget { .. }
+        | compiler_languages_rust::RustAuthorityError::SourceRead { .. } => AuthorityPhase::Open,
+    }
+}
+
+fn rust_class(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityDiagnosticClass {
+    match rust_phase(cause) {
+        AuthorityPhase::Resolve => AuthorityDiagnosticClass::Binding,
+        AuthorityPhase::TypeCheck => AuthorityDiagnosticClass::Type,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Parse => AuthorityDiagnosticClass::Authority,
+    }
+}
+
+fn typescript_phase(cause: &compiler_languages_typescript::AuthorityError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_typescript::AuthorityError::Syntax { .. } => AuthorityPhase::Parse,
+        compiler_languages_typescript::AuthorityError::Binding { .. } => AuthorityPhase::Resolve,
+    }
+}
+
+fn typescript_class(
+    cause: &compiler_languages_typescript::AuthorityError,
+) -> AuthorityDiagnosticClass {
+    match cause {
+        compiler_languages_typescript::AuthorityError::Syntax { .. } => {
+            AuthorityDiagnosticClass::Syntax
+        }
+        compiler_languages_typescript::AuthorityError::Binding { .. } => {
+            AuthorityDiagnosticClass::Binding
+        }
+    }
+}
+
+fn python_phase(cause: &compiler_languages_python::ExtractionError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_python::ExtractionError::RejectedSyntax { .. }
+        | compiler_languages_python::ExtractionError::NonModuleParse { .. }
+        | compiler_languages_python::ExtractionError::InvalidUtf8 { .. } => AuthorityPhase::Parse,
+        compiler_languages_python::ExtractionError::SourceLength { .. }
+        | compiler_languages_python::ExtractionError::InvalidRange { .. }
+        | compiler_languages_python::ExtractionError::MissingFunctionDelimiter { .. } => {
+            AuthorityPhase::Project
+        }
+    }
+}
+
+fn python_class(cause: &compiler_languages_python::ExtractionError) -> AuthorityDiagnosticClass {
+    match python_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
+}
+
+fn go_phase(cause: &compiler_languages_go::OracleError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_go::OracleError::Decode { .. } => AuthorityPhase::Parse,
+        compiler_languages_go::OracleError::Staleness { .. } => AuthorityPhase::Project,
+        compiler_languages_go::OracleError::Spawn { .. }
+        | compiler_languages_go::OracleError::ToolingUnavailable { .. }
+        | compiler_languages_go::OracleError::Exit { .. }
+        | compiler_languages_go::OracleError::OutputLimit { .. }
+        | compiler_languages_go::OracleError::Timeout { .. }
+        | compiler_languages_go::OracleError::Pipe { .. } => AuthorityPhase::Open,
+    }
+}
+
+fn go_class(cause: &compiler_languages_go::OracleError) -> AuthorityDiagnosticClass {
+    match go_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
+}
+
+fn csharp_phase(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityPhase {
+    AuthorityPhase::Parse
+}
+
+fn csharp_class(_cause: &compiler_languages_csharp::DecodeError) -> AuthorityDiagnosticClass {
+    AuthorityDiagnosticClass::Syntax
+}
+
+fn java_phase(cause: &compiler_languages_java::ImageError) -> AuthorityPhase {
+    match cause {
+        compiler_languages_java::ImageError::Header(_)
+        | compiler_languages_java::ImageError::Section { .. }
+        | compiler_languages_java::ImageError::Digest => AuthorityPhase::Parse,
+        compiler_languages_java::ImageError::Atom { .. }
+        | compiler_languages_java::ImageError::AbsentAtom
+        | compiler_languages_java::ImageError::Coordinate { .. }
+        | compiler_languages_java::ImageError::Tag { .. }
+        | compiler_languages_java::ImageError::ChildRange { .. }
+        | compiler_languages_java::ImageError::ReferenceRange { .. }
+        | compiler_languages_java::ImageError::DocumentationPresence
+        | compiler_languages_java::ImageError::ModifierBits { .. } => AuthorityPhase::Project,
+    }
+}
+
+fn java_class(cause: &compiler_languages_java::ImageError) -> AuthorityDiagnosticClass {
+    match java_phase(cause) {
+        AuthorityPhase::Parse => AuthorityDiagnosticClass::Syntax,
+        AuthorityPhase::Project => AuthorityDiagnosticClass::Projection,
+        AuthorityPhase::Open | AuthorityPhase::Resolve | AuthorityPhase::TypeCheck => {
+            AuthorityDiagnosticClass::Authority
+        }
+    }
 }

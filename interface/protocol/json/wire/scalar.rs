@@ -36,6 +36,19 @@ pub(super) enum AuthorityPhaseWire {
 
 #[derive(Serialize)]
 #[serde(
+    remote = "compiler_vocabulary::AuthorityDiagnosticClass",
+    rename_all = "snake_case"
+)]
+pub(super) enum AuthorityDiagnosticClassWire {
+    Syntax,
+    Binding,
+    Type,
+    Authority,
+    Projection,
+}
+
+#[derive(Serialize)]
+#[serde(
     remote = "compiler_vocabulary::LanguageProfile",
     rename_all = "snake_case"
 )]
