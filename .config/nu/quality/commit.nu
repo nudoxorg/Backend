@@ -47,9 +47,16 @@ def commit-git-environment []: nothing -> record {
 }
 
 # Returns the single declared scope owning every staged path.
+# Workspace-graph files (root manifest and lock) are scope-neutral: they
+# carry no single owner and never fail or contribute to scope derivation.
 def staged-scope [staged: list<string>]: nothing -> string {
+    let graph_files = ["Cargo.toml" "Cargo.lock"]
+    let scoped = $staged | where {|path| $path not-in $graph_files }
+    if ($scoped | is-empty) {
+        tooling-fail "commit-scope" "no staged path matches a declared scope" "stage at least one path owned by a declared scope"
+    }
     let scopes = open $env.BACKEND_KOJI_CONFIG | get commit_scopes
-    let owning = $staged | each {|path|
+    let owning = $scoped | each {|path|
         let anchored = $"/($path)"
         let matches = $scopes | where {|scope| ($scope.patterns | any {|pattern| $anchored =~ $pattern }) }
         if ($matches | length) != 1 {
@@ -58,7 +65,7 @@ def staged-scope [staged: list<string>]: nothing -> string {
         $matches | first | get name
     } | uniq
     if ($owning | length) != 1 {
-        tooling-fail "commit-scope" $"staged paths span ($owning | length) scopes: ($owning | str join ', ')" "commit each scope boundary separately"
+        tooling-fail "commit-scope" $"staged paths span ($owning | length) declared scopes: ($owning | str join ', ')" "commit each scope boundary separately"
     }
     $owning | first
 }
@@ -90,7 +97,7 @@ def "main commit" [--message: string]: nothing -> nothing {
     }
     let scope = (staged-scope $staged)
     let admitted_types = (commit-types) | str join "|"
-    let shape = $"^($admitted_types)\\(($scope)\\): .+$"
+    let shape = "^(" + $admitted_types + ")\\((" + $scope + ")\\): .+$"
     if $message !~ $shape {
         tooling-fail "commit-message" $"message must match ($shape)" "the type set is closed and the scope is derived from the staged paths"
     }

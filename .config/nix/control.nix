@@ -58,12 +58,12 @@ in
       {
         name = "compiler-ir";
         description = "Semantic IR, archives, and publication";
-        patterns = [ "^/compiler/(ir|publication)/" ];
+        patterns = [ "^/compiler/(ir|ir-vocabulary|publication)/" ];
       }
       {
         name = "compiler-frontend";
         description = "Language frontends and native compiler authorities";
-        patterns = [ "^/compiler/(frontends|languages|native)/" ];
+        patterns = [ "^/compiler/(frontends|languages|native|driver|vocabulary|registry|application)/" ];
       }
       {
         name = "heart-memory";
