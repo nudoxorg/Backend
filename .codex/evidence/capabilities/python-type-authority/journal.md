@@ -19,3 +19,12 @@ compiler-driver builds during scouting; fixed upstream mid-session (build now cl
 ureq (HTTP) but no zip crate. | decision: sdist (.tar.gz) unpack via flate2+manual tar reading
 or system tar; wheel unpack via system `unzip` with typed skip when absent — no new product
 dependency; test-tree-only concern. Revisit only if unzip is unavailable on the gate host.
+
+2026-09-02 | calibration (card-purl) | v1: reader exact; misreader found manifest overreach,
+vendoring loophole, and a nonexistent pin (six@2.16.0 -> 1.17.0). Rewrote: five-line manifest
+bound, sha256 lineage chain, real pin. v2: reader exact; misreader attacks reduced to
+enforcement strategies (fake lineage, unconnected breach paths, in-memory compare) and worker
+taste. | decision: capability scope held; enforcement is Terra's ingestion duty (mechanical
+diff checks: lineage assertions present, breach paths call the happy-path downloader, gen-1
+bytes re-read from store). Round-3 trials not spent on taste; residual discretion is
+deliberate. Card digest de298972741c795d+4 edits, current digest recorded in commit.

@@ -1,11 +1,19 @@
 //! Projects validated Roslyn authority facts through the shared canonical lane.
 //!
-//! The projection covers every plane the version-2 image carries: declaration
+//! The projection covers every plane the version-3 image carries: declaration
 //! facts, the recursive type graph (generic applications, arrays, `T?`,
 //! tuples, pointers, delegates), executable signatures with parameter and
-//! result facts, compiler-resolved occurrences, XML-documentation provenance
-//! with summary fragments, applied attributes, nullability cells, reference
-//! kinds, member-effect flags, partial roles, and generic constraints.
+//! result facts, compiler-resolved occurrences — including explicit
+//! interface implementations' bindings to the interface members they
+//! implement — XML-documentation provenance with summary fragments, applied
+//! attributes, nullability cells, reference kinds, member-effect flags,
+//! partial roles, and generic constraints.
+//!
+//! Two Roslyn facts the image retains have no lane cell and stay
+//! image-retained: declaration-site generic variance and the `params`
+//! modifier (the parameter's explicit array type still lands in full).
+//! Pattern-based locals are absent from the producer's fact surface, so the
+//! projection records none rather than inventing any.
 //!
 //! Emission is two-pass over declarations: namespaces and type declarations
 //! are committed first, so every nominal, type-child, and constraint target
@@ -37,8 +45,8 @@ use compiler_ir::{
     SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_csharp::{
-    CSharpImage, Declaration, DeclarationKind, ImageError, NullabilityCell, PartialRole,
-    Parameter, RefKind, ReferenceTag, ResolvedReference, TypeNode, TypeNodeKind, TypeRef,
+    CSharpImage, Declaration, DeclarationKind, ImageError, NullabilityCell, Parameter, PartialRole,
+    RefKind, ReferenceTag, ResolvedReference, TypeNode, TypeNodeKind, TypeRef,
 };
 use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
@@ -219,11 +227,11 @@ pub(crate) fn collect<'source>(
                     continue;
                 }
                 let ordinal = push_type_root(facts, source, &declared)?;
-                ordinals
-                    .record(coordinate, ordinal)
-                    .map_err(terminal)?;
+                ordinals.record(coordinate, ordinal).map_err(terminal)?;
                 if let Some(qualified) = declared.qualified {
-                    names.record(qualified.bytes, coordinate).map_err(terminal)?;
+                    names
+                        .record(qualified.bytes, coordinate)
+                        .map_err(terminal)?;
                 }
             }
             DeclarationKind::Namespace => {
@@ -268,16 +276,14 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Property
             | DeclarationKind::Indexer
             | DeclarationKind::Event => {
-                let ordinal =
-                    push_member(facts, &image, &names, &ordinals, source, &declared)?;
+                let ordinal = push_member(facts, &image, &names, &ordinals, source, &declared)?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
             DeclarationKind::Constructor
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
-                let ordinal =
-                    push_executable(facts, &image, &names, &ordinals, source, &declared)?;
+                let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
             }
         }
@@ -290,8 +296,7 @@ pub(crate) fn collect<'source>(
             continue;
         };
         let declared = declaration(&image, coordinate).map_err(terminal)?;
-        let extension =
-            csharp_facts(facts, &image, &declared, &attributes, coordinate)?;
+        let extension = csharp_facts(facts, &image, &declared, &attributes, coordinate)?;
         facts
             .attach_extension(
                 usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
@@ -330,11 +335,10 @@ fn checked_name<'source>(
     declared: &Declaration<'source>,
 ) -> Result<&'source [u8], CSharpCollectError> {
     let fault = |start: u32, end: u32| CSharpCollectError::Span { start, end };
-    let start = usize::try_from(declared.name_start).map_err(|_| {
-        fault(declared.name_start, declared.name_end)
-    })?;
-    let end =
-        usize::try_from(declared.name_end).map_err(|_| fault(declared.name_start, declared.name_end))?;
+    let start = usize::try_from(declared.name_start)
+        .map_err(|_| fault(declared.name_start, declared.name_end))?;
+    let end = usize::try_from(declared.name_end)
+        .map_err(|_| fault(declared.name_start, declared.name_end))?;
     let name = source
         .get(start..end)
         .ok_or(fault(declared.name_start, declared.name_end))?;
@@ -567,9 +571,15 @@ fn push_member<'source>(
     }
 
     let projection = match declared.declared_type {
-        Some(reference) => {
-            project_fact_type(facts, image, names, ordinals, anchor, reference, DEPTH_LIMIT)?
-        }
+        Some(reference) => project_fact_type(
+            facts,
+            image,
+            names,
+            ordinals,
+            anchor,
+            reference,
+            DEPTH_LIMIT,
+        )?,
         None => ProjectedType {
             record: unknown_record(TypeReason::OracleGap, None),
             children: Vec::new(),
@@ -660,8 +670,15 @@ impl Signature {
         anchor: u32,
         return_type: TypeRef,
     ) -> Result<(), CSharpCollectError> {
-        let projection =
-            project_fact_type(facts, image, names, ordinals, anchor, return_type, DEPTH_LIMIT)?;
+        let projection = project_fact_type(
+            facts,
+            image,
+            names,
+            ordinals,
+            anchor,
+            return_type,
+            DEPTH_LIMIT,
+        )?;
         if projection.void {
             return Ok(());
         }
@@ -720,21 +737,27 @@ fn push_parameter_fact<'source>(
     anchor: u32,
     parameter: Parameter<'source>,
 ) -> Result<u32, CSharpCollectError> {
-    let projection =
-        project_fact_type(facts, image, names, ordinals, anchor, parameter.ty, DEPTH_LIMIT)?;
-    let mut fact = SemanticFact::new(
-        EntityKind::Parameter,
-        parameter.name.bytes,
-        LEAF_PRODUCT,
-    )
-    .typed(projection.record);
+    let projection = project_fact_type(
+        facts,
+        image,
+        names,
+        ordinals,
+        anchor,
+        parameter.ty,
+        DEPTH_LIMIT,
+    )?;
+    let mut fact = SemanticFact::new(EntityKind::Parameter, parameter.name.bytes, LEAF_PRODUCT)
+        .typed(projection.record);
     for (target, label) in projection.children {
         fact = fact.type_child(target, label, 0);
     }
     let mut extension = empty_extension();
     extension.nullability = lane_nullability(projection.nullable);
     extension.reference_kind = lane_reference_kind(parameter.ref_kind);
-    push(facts, fact.with_extension(EmissionExtension::CSharp(extension)))
+    push(
+        facts,
+        fact.with_extension(EmissionExtension::CSharp(extension)),
+    )
 }
 
 /// One projected declaration-site type: the lattice record its fact attaches,
@@ -864,7 +887,8 @@ fn owned_node<'source>(
             };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
             record.text = Some(arity);
-            let target = child_target(facts, image, names, ordinals, anchor, element.ty, depth - 1)?;
+            let target =
+                child_target(facts, image, names, ordinals, anchor, element.ty, depth - 1)?;
             Ok(OwnedNode {
                 record,
                 children: vec![(target, None)],
@@ -880,7 +904,8 @@ fn owned_node<'source>(
             };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = SHAPE_MUT_POINTER;
-            let target = child_target(facts, image, names, ordinals, anchor, pointee.ty, depth - 1)?;
+            let target =
+                child_target(facts, image, names, ordinals, anchor, pointee.ty, depth - 1)?;
             Ok(OwnedNode {
                 record,
                 children: vec![(target, None)],
@@ -912,7 +937,8 @@ fn owned_node<'source>(
             let record = SemanticTypeRecord::leaf(SemanticTypeTag::Tuple);
             let mut children = Vec::new();
             for element in node.children {
-                let target = child_target(facts, image, names, ordinals, anchor, element.ty, depth - 1)?;
+                let target =
+                    child_target(facts, image, names, ordinals, anchor, element.ty, depth - 1)?;
                 children.push((target, element.name.map(|atom| atom.bytes)));
             }
             Ok(OwnedNode {
@@ -1004,7 +1030,10 @@ fn named_node<'source>(
         });
     }
     let arguments: Vec<_> = node.children.clone().collect();
-    match names.lookup(spelling).and_then(|coordinate| ordinals.lookup(coordinate)) {
+    match names
+        .lookup(spelling)
+        .and_then(|coordinate| ordinals.lookup(coordinate))
+    {
         Some(ordinal) if arguments.is_empty() => Ok(OwnedNode {
             record: nominal_record(ordinal),
             children: Vec::new(),
@@ -1021,7 +1050,15 @@ fn named_node<'source>(
             }
             let mut children = vec![(ordinal, None)];
             for argument in arguments {
-                let target = child_target(facts, image, names, ordinals, anchor, argument.ty, depth - 1)?;
+                let target = child_target(
+                    facts,
+                    image,
+                    names,
+                    ordinals,
+                    anchor,
+                    argument.ty,
+                    depth - 1,
+                )?;
                 children.push((target, argument.name.map(|atom| atom.bytes)));
             }
             Ok(OwnedNode {
@@ -1073,8 +1110,8 @@ fn primitive_record(spelling: &[u8]) -> Option<SemanticTypeRecord<'static>> {
     let integer = |width: u32, signed: bool| -> SemanticTypeRecord<'static> {
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_INTEGER;
-        record.payload1 = (width << INTEGER_WIDTH_SHIFT)
-            | if signed { INTEGER_SIGNED_FLAG } else { 0 };
+        record.payload1 =
+            (width << INTEGER_WIDTH_SHIFT) | if signed { INTEGER_SIGNED_FLAG } else { 0 };
         record
     };
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
@@ -1190,16 +1227,9 @@ fn csharp_facts<'source>(
         is_extension: declared.flags.is_extension,
     };
 
-    // Nullability: executables and delegates carry their return type's cell,
-    // members their declared type's cell, everything else stays oblivious.
-    let nullability_source = match declared.kind {
-        DeclarationKind::Constructor
-        | DeclarationKind::Method
-        | DeclarationKind::Operator
-        | DeclarationKind::Conversion
-        | DeclarationKind::Delegate => declared.declared_type,
-        _ => declared.declared_type,
-    };
+    // Nullability: executables, delegates, and members carry their return
+    // or declared type's cell; namespaces and type declarations have none.
+    let nullability_source = declared.declared_type;
     if let Some(return_type) = nullability_source
         && let Ok(node) = image.type_node(return_type)
     {
@@ -1227,7 +1257,7 @@ fn csharp_facts<'source>(
     // Attributes: one interned spelling per applied attribute row.
     let mut atoms = Vec::new();
     let raw_coordinate = u32::try_from(coordinate).unwrap_or(u32::MAX);
-    for (declaration, spelling) in attributes
+    for (_declaration, spelling) in attributes
         .iter()
         .filter(|(declaration, _)| *declaration == raw_coordinate)
     {
@@ -1257,10 +1287,7 @@ fn csharp_facts<'source>(
 
 /// Resolves one spelling through the image's declaration rows to a pushed
 /// fact ordinal, matching by qualified name.
-fn names_lookup<'source>(
-    image: &CSharpImage<'source>,
-    spelling: &[u8],
-) -> Option<u32> {
+fn names_lookup<'source>(image: &CSharpImage<'source>, spelling: &[u8]) -> Option<u32> {
     for (index, candidate) in image.declarations().enumerate() {
         let candidate = candidate.ok()?;
         if candidate.qualified?.bytes == spelling {
@@ -1317,10 +1344,7 @@ fn push_occurrence<'source>(
     let target = match reference.target {
         Some(coordinate) => {
             let ordinal = ordinals
-                .lookup(
-                    usize::try_from(coordinate)
-                        .map_err(|_| ProjectionFault::IndexCapacity)?,
-                )
+                .lookup(usize::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity)?)
                 .ok_or(ProjectionFault::IndexCapacity)?;
             OccurrenceTarget::Local(EntityId::new(ordinal))
         }
@@ -1357,21 +1381,31 @@ fn push_occurrence<'source>(
 }
 
 /// The lane's reference-kind cell for one image reference class. The lane's
-/// closed lattice and the image's closed vocabulary share all four
-/// categories, so no two classes collapse and none is unreachable.
+/// closed lattice and the image's closed vocabulary share the four expression
+/// classes, so no two of those collapse and none is unreachable. An explicit
+/// interface implementation's binding has no implementation class in the
+/// lane's closed lattice; it lands as `MethodCall` — the class an invocation
+/// through the implemented interface member carries — at oracle confidence,
+/// so consumers can still resolve every implementation of one interface
+/// member from the occurrence plane alone.
 const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
     match kind {
-        ReferenceTag::Invocation => ReferenceKind::MethodCall,
+        ReferenceTag::Invocation | ReferenceTag::InterfaceImplementation => {
+            ReferenceKind::MethodCall
+        }
         ReferenceTag::ObjectCreation => ReferenceKind::TypeReference,
         ReferenceTag::MemberAccess => ReferenceKind::FieldAccess,
         ReferenceTag::UsingDirective => ReferenceKind::Import,
     }
 }
 
-/// The foreign declaration kind hinted by one image reference class.
+/// The foreign declaration kind hinted by one image reference class. An
+/// implementation binding resolves to a method-shaped interface member.
 const fn foreign_kind(kind: ReferenceTag) -> Option<EntityKind> {
     match kind {
-        ReferenceTag::Invocation => Some(EntityKind::Function),
+        ReferenceTag::Invocation | ReferenceTag::InterfaceImplementation => {
+            Some(EntityKind::Function)
+        }
         ReferenceTag::ObjectCreation => Some(EntityKind::Record),
         ReferenceTag::MemberAccess => Some(EntityKind::Field),
         ReferenceTag::UsingDirective => Some(EntityKind::Module),
@@ -1406,7 +1440,11 @@ fn push_doc<'source>(
 fn summary_inner(xml: &[u8]) -> Option<&[u8]> {
     let opener = find(xml, b"<summary")?;
     let after_open = opener + b"<summary".len();
-    let close_angle = xml.get(after_open..)?.iter().position(|byte| *byte == b'>')? + after_open;
+    let close_angle = xml
+        .get(after_open..)?
+        .iter()
+        .position(|byte| *byte == b'>')?
+        + after_open;
     let inner_start = close_angle.checked_add(1)?;
     let closer = find(xml.get(inner_start..)?, b"</summary>")? + inner_start;
     xml.get(inner_start..closer)
@@ -1436,10 +1474,7 @@ fn summary_fragments<'source>(
 }
 
 /// Emits one borrowed text fragment when the trimmed bytes are non-empty.
-fn push_text<'source>(
-    fragments: &mut Vec<DocFragmentInput<'source>>,
-    bytes: &'source [u8],
-) {
+fn push_text<'source>(fragments: &mut Vec<DocFragmentInput<'source>>, bytes: &'source [u8]) {
     let trimmed = trim(bytes);
     if !trimmed.is_empty() {
         fragments.push(DocFragmentInput::Text(trimmed));
@@ -1500,9 +1535,16 @@ fn tag_fragments<'source>(
                 let inner = trim(after_body.get(..close).unwrap_or(&[]));
                 Some((inner, close + close_of(name).len()))
             };
-            if let Some(link) = see_link(names, ordinals, open_tag, label.and_then(|(inner, _)| {
-                if inner.is_empty() { None } else { Some(inner) }
-            })) {
+            if let Some(link) = see_link(
+                names,
+                ordinals,
+                open_tag,
+                label.and_then(
+                    |(inner, _)| {
+                        if inner.is_empty() { None } else { Some(inner) }
+                    },
+                ),
+            ) {
                 fragments.push(link);
             }
             return match label {
@@ -1627,19 +1669,22 @@ mod tests {
     const DIRECTORY_ENTRY_BYTES: usize = 16;
     const IMAGE_DIGEST_OFFSET: usize = 224;
     const ABSENT: u32 = u32::MAX;
-    const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v2\0";
+    const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
 
     /// Wire kind cells reused by fixture rows.
     const KIND_NAMED: u8 = 1;
     const KIND_TUPLE: u8 = 5;
     const KIND_FIELD: u8 = 9;
     const KIND_METHOD: u8 = 15;
+    const KIND_OPERATOR: u8 = 16;
     const NULL_NONE: u8 = 0;
     const PARTIAL_DEFINITION: u8 = 1;
     const PARTIAL_IMPLEMENTATION: u8 = 2;
     const REF_VALUE: u8 = 0;
     const REF_REF: u8 = 2;
     const REF_INVOCATION: u8 = 1;
+    const REF_IMPL_BINDING: u8 = 5;
+    const FLAG_EXPLICIT_INTERFACE: u8 = 0x10;
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
@@ -1722,6 +1767,11 @@ mod tests {
             self.decl_start = decl_start;
             self.name_start = name_start;
             self.name_end = name_end;
+            self
+        }
+
+        fn of_kind(mut self, kind: u8) -> Self {
+            self.kind = kind;
             self
         }
 
@@ -1865,7 +1915,8 @@ mod tests {
                 .at(name_start, name_start, name_end)
         }
 
-        /// One method declaration row, not yet pushed.
+        /// One method declaration row, not yet pushed. The declared type is
+        /// the method's return type coordinate, when one exists.
         fn method(
             &mut self,
             owner: u32,
@@ -1876,14 +1927,17 @@ mod tests {
             let name_atom = self.atom(name);
             let (name_start, name_end) = Self::span_of(source, name);
             let decl_start = name_start;
-            Decl::new(KIND_METHOD, name_atom, None)
+            let declared = Decl::new(KIND_METHOD, name_atom, None)
                 .owned_by(owner)
-                .at(decl_start, name_start, name_end)
+                .at(decl_start, name_start, name_end);
+            match declared_type {
+                Some(ty) => declared.typed(ty),
+                None => declared,
+            }
         }
 
         fn encode(&self, source: &[u8]) -> Result<Vec<u8>, TestError> {
-            let cell =
-                |value: usize| u32::try_from(value).map_err(|_| TestError::Num);
+            let cell = |value: usize| u32::try_from(value).map_err(|_| TestError::Num);
             let mut atoms = Vec::new();
             let mut atom_bytes = Vec::new();
             for text in &self.atoms {
@@ -1929,11 +1983,12 @@ mod tests {
                 declarations.push(0);
                 declarations.extend_from_slice(&cell(row.name)?.to_le_bytes());
                 declarations.extend_from_slice(
-                    &row.qualified.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes(),
+                    &row.qualified
+                        .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                        .to_le_bytes(),
                 );
                 declarations.extend_from_slice(&row.owner.unwrap_or(ABSENT).to_le_bytes());
-                declarations
-                    .extend_from_slice(&row.declared_type.unwrap_or(ABSENT).to_le_bytes());
+                declarations.extend_from_slice(&row.declared_type.unwrap_or(ABSENT).to_le_bytes());
                 declarations.extend_from_slice(&row.decl_start.to_le_bytes());
                 declarations.extend_from_slice(&row.name_start.to_le_bytes());
                 declarations.extend_from_slice(&row.name_end.to_le_bytes());
@@ -1950,7 +2005,9 @@ mod tests {
                         .to_le_bytes(),
                 );
                 declarations.extend_from_slice(
-                    &row.doc.map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT)).to_le_bytes(),
+                    &row.doc
+                        .map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT))
+                        .to_le_bytes(),
                 );
             }
             let mut type_rows = Vec::new();
@@ -1959,7 +2016,9 @@ mod tests {
                 let child_start = cell(type_children.len() / 8)?;
                 for (name, ty) in &row.children {
                     type_children.extend_from_slice(
-                        &name.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes(),
+                        &name
+                            .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                            .to_le_bytes(),
                     );
                     type_children.extend_from_slice(&ty.to_le_bytes());
                 }
@@ -1968,7 +2027,9 @@ mod tests {
                 type_rows.push(0);
                 type_rows.push(row.has_return);
                 type_rows.extend_from_slice(
-                    &row.spelling.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes(),
+                    &row.spelling
+                        .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                        .to_le_bytes(),
                 );
                 type_rows.extend_from_slice(&child_start.to_le_bytes());
                 type_rows.extend_from_slice(&cell(row.children.len())?.to_le_bytes());
@@ -2013,7 +2074,7 @@ mod tests {
             let row_bytes = [8_u16, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28];
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NCAI");
-            image[4..6].copy_from_slice(&2_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&3_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(|_| TestError::Num)?
@@ -2021,7 +2082,9 @@ mod tests {
             );
             let body = sections.iter().map(Vec::len).sum::<usize>();
             image[8..12].copy_from_slice(
-                &u32::try_from(body).map_err(|_| TestError::Num)?.to_le_bytes(),
+                &u32::try_from(body)
+                    .map_err(|_| TestError::Num)?
+                    .to_le_bytes(),
             );
             image[12..44].copy_from_slice(Sha256::digest(source).as_slice());
             image[44..46].copy_from_slice(
@@ -2044,7 +2107,9 @@ mod tests {
                         .to_le_bytes(),
                 );
                 image[entry + 8..entry + 12].copy_from_slice(
-                    &u32::try_from(offset).map_err(|_| TestError::Num)?.to_le_bytes(),
+                    &u32::try_from(offset)
+                        .map_err(|_| TestError::Num)?
+                        .to_le_bytes(),
                 );
                 image[entry + 12..entry + 16].copy_from_slice(
                     &u32::try_from(section.len())
@@ -2154,8 +2219,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_schema1_fragment_without_semantic_sections()
-    -> Result<(), TestError> {
+    fn empty_image_admits_the_schema1_fragment_without_semantic_sections() -> Result<(), TestError>
+    {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2170,8 +2235,7 @@ mod tests {
     }
 
     #[test]
-    fn one_class_commits_its_recursive_self_nominal_and_extension_row()
-    -> Result<(), TestError> {
+    fn one_class_commits_its_recursive_self_nominal_and_extension_row() -> Result<(), TestError> {
         let mut fix = Fixture::default();
         let _ = fix.class(b"Demo.Widget", b"class Widget {}");
         let source = b"class Widget {}";
@@ -2201,8 +2265,8 @@ mod tests {
     }
 
     #[test]
-    fn recursive_field_targets_the_strictly_backward_declaration_ordinal()
-    -> Result<(), TestError> {
+    fn recursive_field_targets_the_strictly_backward_declaration_ordinal() -> Result<(), TestError>
+    {
         let source = b"class Node { Node next; }";
         let mut fix = Fixture::default();
         let node = fix.class(b"demo.Node", source);
@@ -2242,8 +2306,18 @@ mod tests {
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.P", source);
         let spellings: [(&[u8], &[u8], u32, u32); 6] = [
-            (b"System.Int32", b"a0", PrimitiveShape::Integer as u32, (32 << 1) | 1),
-            (b"System.Byte", b"a1", PrimitiveShape::Integer as u32, 8 << 1),
+            (
+                b"System.Int32",
+                b"a0",
+                PrimitiveShape::Integer as u32,
+                (32 << 1) | 1,
+            ),
+            (
+                b"System.Byte",
+                b"a1",
+                PrimitiveShape::Integer as u32,
+                8 << 1,
+            ),
             (
                 b"System.IntPtr",
                 b"a2",
@@ -2262,8 +2336,11 @@ mod tests {
         }
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
+        // Facts: 0 class, then one carrier fact per field. Primitive field
+        // types attach directly to their facts, so the lane holds exactly
+        // seven records in fact order with no anonymous rows.
         for (index, (spelling, name, shape, payload1)) in spellings.iter().enumerate() {
-            let field = row(&view, 6 + 1 + index)?;
+            let field = row(&view, 1 + index)?;
             if field.record.tag != SemanticTypeTag::Primitive
                 || field.record.payload0 != *shape
                 || field.record.payload1 != *payload1
@@ -2284,8 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn tuple_and_annotated_value_forms_project_their_children()
-    -> Result<(), TestError> {
+    fn tuple_and_annotated_value_forms_project_their_children() -> Result<(), TestError> {
         let source = b"class P { (int, string Name) pair; int? maybe; }";
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.P", source);
@@ -2318,13 +2394,14 @@ mod tests {
         fix.declarations.push(maybe_field);
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 class, 1 pair, 2 maybe. Two anonymous primitive rows
-        // precede them in the fragment type lane.
-        let pair = row(&view, 2 + 1)?;
+        // Facts: 0 class, 1 pair, 2 maybe. Compound children intern one
+        // anonymous row per projection — int, string, and the second int —
+        // so the lane is [int, string, int, class, pair, maybe].
+        let pair = row(&view, 4)?;
         if pair.record.tag != SemanticTypeTag::Tuple || pair.record.children.length != 2 {
             return Err(TestError::Missing("tuple row"));
         }
-        let maybe = row(&view, 2 + 2)?;
+        let maybe = row(&view, 5)?;
         if maybe.record.tag != SemanticTypeTag::Annotated
             || maybe.record.text != Some(b"?".as_slice())
             || maybe.record.children.length != 1
@@ -2335,8 +2412,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_application_and_constraint_pool_carry_backward_ordinals()
-    -> Result<(), TestError> {
+    fn generic_application_and_constraint_pool_carry_backward_ordinals() -> Result<(), TestError> {
         let source = b"interface IPart {} class Widget<T> where T : IPart {}";
         let mut fix = Fixture::default();
         let part = fix.class(b"demo.IPart", source);
@@ -2382,8 +2458,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_system_types_fold_to_unknowns_and_nuget_occurrences()
-    -> Result<(), TestError> {
+    fn foreign_system_types_fold_to_unknowns_and_nuget_occurrences() -> Result<(), TestError> {
         let source = b"class Widget { System.DateTime stamp; }";
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.Widget", source);
@@ -2447,8 +2522,8 @@ mod tests {
     }
 
     #[test]
-    fn signatures_lower_parameter_and_result_carriers_with_reference_kinds()
-    -> Result<(), TestError> {
+    fn signatures_lower_parameter_and_result_carriers_with_reference_kinds() -> Result<(), TestError>
+    {
         let source =
             b"class Widget { int brew(string count) { return 0; } int brew() { return 1; } }";
         let mut fix = Fixture::default();
@@ -2480,9 +2555,10 @@ mod tests {
         {
             return Err(TestError::Missing("overload fact set"));
         }
-        // The fragment type lane interleaves the two interned primitive
-        // parameter rows ahead of the fact rows.
-        let param = row(&view, 2 + 1)?;
+        // Every parameter and result type is primitive, so each carrier's
+        // own record rides on the fact; the lane holds the six records in
+        // fact order with no anonymous rows.
+        let param = row(&view, 1)?;
         if param.record.payload0 != u32::from(PrimitiveShape::Str) {
             return Err(TestError::Missing("string parameter row"));
         }
@@ -2490,20 +2566,20 @@ mod tests {
         if parameter_extension.reference_kind != compiler_ir::CSharpReferenceKind::Ref {
             return Err(TestError::Missing("ref convention"));
         }
-        let method_row = row(&view, 2 + 3)?;
+        let method_row = row(&view, 3)?;
         if method_row.record.tag != SemanticTypeTag::FunctionPointer
             || method_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
             || method_row.record.children.length != 2
         {
             return Err(TestError::Missing("function pointer over carriers"));
         }
-        let zero_arity = row(&view, 2 + 5)?;
+        let zero_arity = row(&view, 5)?;
         if zero_arity.record.children.length != 1 {
             return Err(TestError::Missing("zero-arity overload row"));
         }
         // Falsifier: retyping the parameter changes the committed bytes.
         let mut mutated = fix.clone();
-        mutated.params[0].ty = int_row;
+        mutated.declarations[1].params[0].ty = int_row;
         let other = lower(&mutated, source)?;
         if other == bytes {
             return Err(TestError::Tail);
@@ -2512,8 +2588,7 @@ mod tests {
     }
 
     #[test]
-    fn async_and_iterator_effects_live_only_in_the_extension_plane()
-    -> Result<(), TestError> {
+    fn async_and_iterator_effects_live_only_in_the_extension_plane() -> Result<(), TestError> {
         let source = b"class Widget { async run() { yield 1; } }";
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.Widget", source);
@@ -2536,8 +2611,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_pair_commits_one_type_fact_owned_by_the_definition()
-    -> Result<(), TestError> {
+    fn partial_pair_commits_one_type_fact_owned_by_the_definition() -> Result<(), TestError> {
         let source = b"partial class Widget {} partial class Widget {}";
         let mut fix = Fixture::default();
         let first = fix.class(b"demo.Widget", source);
@@ -2558,8 +2632,8 @@ mod tests {
     }
 
     #[test]
-    fn xml_provenance_and_summary_fragments_link_local_and_foreign_crefs()
-    -> Result<(), TestError> {
+    fn xml_provenance_and_summary_fragments_link_local_and_foreign_crefs() -> Result<(), TestError>
+    {
         let source = b"interface IPart {} partial class Widget {}";
         let mut fix = Fixture::default();
         let part = fix.class(b"demo.IPart", source);
@@ -2666,15 +2740,13 @@ mod tests {
     }
 
     #[test]
-    fn namespace_facts_anchor_owner_relative_import_occurrences()
-    -> Result<(), TestError> {
+    fn namespace_facts_anchor_owner_relative_import_occurrences() -> Result<(), TestError> {
         let source = b"namespace Demo { using System; class Widget {} }";
         let mut fix = Fixture::default();
         let namespace_atom = fix.atom(b"Demo");
         let (start, end) = Fixture::span_of(source, b"Demo");
-        fix.declarations.push(
-            Decl::new(8, namespace_atom, Some(namespace_atom)).at(start, start, end),
-        );
+        fix.declarations
+            .push(Decl::new(8, namespace_atom, Some(namespace_atom)).at(start, start, end));
         let widget = fix.class(b"Demo.Widget", source);
         let using_spelling = fix.atom(b"System");
         let file = fix.atom(b"Widget.cs");
@@ -2711,8 +2783,217 @@ mod tests {
     }
 
     #[test]
-    fn the_exact_lane_bound_admits_and_one_more_declaration_rejects()
+    fn explicit_interface_implementation_binds_to_its_interface_member_occurrence()
     -> Result<(), TestError> {
+        let source =
+            b"interface IPart { void Brew(); } class Widget: IPart { void IPart.Brew() {} }";
+        let mut fix = Fixture::default();
+        let part_ty = fix.named(b"demo.IPart");
+        let part_qualified = fix.atom(b"demo.IPart");
+        let part_name = fix.atom(b"IPart");
+        let (part_at, part_end) = Fixture::span_of(source, b"IPart");
+        fix.declarations.push(
+            Decl::new(3, part_name, Some(part_qualified))
+                .typed(part_ty)
+                .at(part_at, part_at, part_end),
+        );
+        let member = fix.method(0, b"Brew", None, source);
+        fix.declarations.push(member);
+        let widget = fix.class(b"demo.Widget", source);
+        // The explicit implementation names `IPart.Brew` at byte 66; the
+        // declaring span must name those exact source bytes.
+        let implementation = fix
+            .method(widget, b"Brew", None, source)
+            .at(66, 66, 70)
+            .flagged(FLAG_EXPLICIT_INTERFACE);
+        fix.declarations.push(implementation);
+        let binding_spelling = fix.atom(b"demo.IPart.Brew");
+        let binding_file = fix.atom(b"Widget.cs");
+        fix.references.push(RefRow {
+            owner: 3,
+            target: Some(1),
+            spelling: binding_spelling,
+            file: binding_file,
+            start: 66,
+            end: 70,
+            kind: REF_IMPL_BINDING,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // Facts: 0 IPart, 1 Widget, 2 the interface member, 3 the explicit
+        // implementation. The binding occurrence is owned by the
+        // implementation and targets the implemented member.
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("occurrence"))?
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let OccurrenceTarget::Local(target) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("local binding target"));
+        };
+        if occurrence.owner.raw != 3 || target.raw != 2 {
+            return Err(TestError::Missing("binding ordinals"));
+        }
+        if occurrence.occurrence.kind != compiler_ir::ReferenceKind::MethodCall
+            || occurrence.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("oracle method-call binding"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("single occurrence"));
+        }
+        // Falsifier: pointing the binding at the interface declaration
+        // instead of its member retargets the committed occurrence.
+        let mut mutated = fix.clone();
+        mutated.references[0].target = Some(0);
+        let other = lower(&mutated, source)?;
+        if other == bytes {
+            return Err(TestError::Tail);
+        }
+        let view = FragmentView::validate(&other)?;
+        let occurrence = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .next()
+            .ok_or(TestError::Missing("occurrence"))?
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let OccurrenceTarget::Local(target) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("local binding target"));
+        };
+        if target.raw != 0 {
+            return Err(TestError::Missing("mutated binding target"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn operator_overloads_and_conversions_land_as_signature_bearing_functions()
+    -> Result<(), TestError> {
+        let source = b"class Money { static Money operator +(Money a, Money b) { return a; } static implicit operator Money(int value) { return new Money(); } }";
+        let mut fix = Fixture::default();
+        let money = fix.class(b"demo.Money", source);
+        let money_ty = fix.named(b"demo.Money");
+        let int_ty = fix.named(b"System.Int32");
+        let a = fix.atom(b"a");
+        let b = fix.atom(b"b");
+        let value = fix.atom(b"value");
+        let addition = fix
+            .method(money, b"+", Some(money_ty), source)
+            .of_kind(KIND_OPERATOR)
+            .with_param(ParamRow {
+                ty: money_ty,
+                name: a,
+                ref_kind: REF_VALUE,
+            })
+            .with_param(ParamRow {
+                ty: money_ty,
+                name: b,
+                ref_kind: REF_VALUE,
+            });
+        fix.declarations.push(addition);
+        let conversion = fix
+            .method(money, b"Money", Some(money_ty), source)
+            .of_kind(17)
+            .at(95, 95, 100)
+            .with_param(ParamRow {
+                ty: int_ty,
+                name: value,
+                ref_kind: REF_VALUE,
+            });
+        fix.declarations.push(conversion);
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // Facts: 0 Money, 1 a, 2 b, 3 the addition's result, 4 the operator,
+        // 5 value, 6 the conversion's result, 7 the conversion.
+        let entities = entity_rows(&view);
+        if entities.len() != 8
+            || entities[4].1 != EntityKind::Function
+            || entities[7].1 != EntityKind::Function
+        {
+            return Err(TestError::Missing("operator and conversion functions"));
+        }
+        let operator_row = row(&view, 4)?;
+        if operator_row.record.tag != SemanticTypeTag::FunctionPointer
+            || operator_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || operator_row.record.children.length != 3
+        {
+            return Err(TestError::Missing("operator function row"));
+        }
+        let conversion_row = row(&view, 7)?;
+        if conversion_row.record.tag != SemanticTypeTag::FunctionPointer
+            || conversion_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || conversion_row.record.children.length != 2
+        {
+            return Err(TestError::Missing("conversion function row"));
+        }
+        // Falsifier: retyping the conversion's result changes the committed
+        // bytes into a nominal-of-int signature.
+        let mut mutated = fix.clone();
+        mutated.declarations[2].declared_type = Some(int_ty);
+        let other = lower(&mutated, source)?;
+        if other == bytes {
+            return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn params_parameter_lands_its_explicit_array_type_row() -> Result<(), TestError> {
+        let source = b"class Bag { void Rest(params string[] rest) {} }";
+        let mut fix = Fixture::default();
+        let bag = fix.class(b"demo.Bag", source);
+        let string_ty = fix.named(b"System.String");
+        let rest_name = fix.atom(b"rest");
+        let array_spelling = fix.atom(b"string[]");
+        let array_row = u32::try_from(fix.types.len()).map_err(|_| TestError::Num)?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            nullable: NULL_NONE,
+            has_return: 0,
+            spelling: Some(array_spelling),
+            children: vec![(None, string_ty)],
+        });
+        let rest = fix.method(bag, b"Rest", None, source).with_param(ParamRow {
+            ty: array_row,
+            name: rest_name,
+            ref_kind: REF_VALUE,
+        });
+        fix.declarations.push(rest);
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // Facts: 0 Bag; the interned element row precedes the carriers, so
+        // 1 is the anonymous string element, 2 the `rest` carrier, 3 Rest.
+        let parameter = row(&view, 2)?;
+        if parameter.record.tag != SemanticTypeTag::Array
+            || parameter.record.text != Some(b"[]".as_slice())
+            || parameter.record.children.length != 1
+        {
+            return Err(TestError::Missing("params array row"));
+        }
+        // Falsifier: a second element raises the array's rank, and the
+        // committed row must carry the comma spelling instead. The rank
+        // rides in the row's text cell, so the carrier ordinal is stable.
+        let mut mutated = fix.clone();
+        let int_ty = mutated.named(b"System.Int32");
+        mutated.types[array_row as usize]
+            .children
+            .push((None, int_ty));
+        let other = lower(&mutated, source)?;
+        if other == bytes {
+            return Err(TestError::Tail);
+        }
+        let view = FragmentView::validate(&other)?;
+        let parameter = row(&view, 2)?;
+        if parameter.record.text != Some(b"[,]".as_slice()) {
+            return Err(TestError::Missing("rank-two spelling"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_exact_lane_bound_admits_and_one_more_declaration_rejects() -> Result<(), TestError> {
         let mut exact = Fixture::default();
         let mut source = Vec::new();
         for index in 0..MAX_EMISSION_FACTS {
@@ -2738,12 +3019,19 @@ mod tests {
         if view.entities().count() != MAX_EMISSION_FACTS {
             return Err(TestError::Missing("exact bound"));
         }
+        // The over-bound declaration still names honest source bytes, so the
+        // rejection is the lane's capacity terminal, not a span fault.
+        source.extend_from_slice(b"T999 ");
         let mut over = exact.clone();
         let name = over.atom(b"T999");
         let qualified = over.atom(b"demo.T999");
         let ty = over.named(b"demo.T999");
-        over.declarations
-            .push(Decl::new(1, name, Some(qualified)).typed(ty).at(0, 0, 4));
+        let (name_start, name_end) = Fixture::span_of(&source, b"T999");
+        over.declarations.push(
+            Decl::new(1, name, Some(qualified))
+                .typed(ty)
+                .at(name_start, name_start, name_end),
+        );
         let image = over.encode(&source)?;
         let mut facts = FactSet::new();
         match collect(&source, &image, &mut facts) {
@@ -2757,8 +3045,7 @@ mod tests {
     }
 
     #[test]
-    fn source_binding_and_name_spans_are_proven_before_admission()
-    -> Result<(), TestError> {
+    fn source_binding_and_name_spans_are_proven_before_admission() -> Result<(), TestError> {
         let mut fix = Fixture::default();
         let _ = fix.class(b"demo.Widget", b"class Widget {}");
         let source = b"class Widget {}";

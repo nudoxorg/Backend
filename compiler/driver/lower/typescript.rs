@@ -6,14 +6,15 @@
 
 use compiler_ir::{
     AnonRecordForm, ComputedType, ComputedTypeId, DocFragmentInput, DocLinkTarget, EntityId,
-    EntityKind, ForeignKey, ForeignOrigin, IrBuilder, LatticeMappedModifier, NominalRef, Occurrence,
-    OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape, ProductChildRole,
-    ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord,
-    SemanticTypeTag, TypeId, TypeParameterListId, TypeQuery, TypeReason, TypeWidth,
+    EntityKind, ForeignKey, ForeignOrigin, IrBuilder, LatticeMappedModifier, NominalRef,
+    Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
+    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
+    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeQuery, TypeReason,
+    TypeWidth,
 };
 use compiler_languages_typescript::{
-    AuthorityError, Checker, CheckerError, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    Semantic, Span, SymbolFlags, SymbolId, TypeTree, with_analysis,
+    AuthorityError, BoundReference, Checker, CheckerError, CheckerIndex, GetSpan, Origin,
+    ReferenceFlags, Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -1351,7 +1352,9 @@ pub(crate) fn collect<'source>(
 ) -> Result<(), TypeScriptCollectError> {
     let report = match Checker::default().run(profile, source) {
         Ok(report) => Some(report),
-        Err(CheckerError::ToolingUnavailable { .. } | CheckerError::ModuleUnavailable { .. }) => None,
+        Err(CheckerError::ToolingUnavailable { .. } | CheckerError::ModuleUnavailable { .. }) => {
+            None
+        }
         Err(cause) => {
             return Err(TypeScriptCollectError::Authority(AuthorityError::Checker {
                 cause,
@@ -1408,12 +1411,15 @@ pub(crate) fn collect_with_checker<'source, 'report>(
 impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
-    /// reference pass, then the documentation pass.
+    /// narrowing pass, the reference pass, the checker-only reference pass,
+    /// then the documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
         self.pass_declarations()?;
         self.pass_members()?;
         self.pass_checker()?;
+        self.pass_narrowings()?;
         self.pass_references()?;
+        self.pass_checker_references()?;
         self.pass_docs()?;
         Ok(())
     }
@@ -1905,7 +1911,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 // Import bindings already carry their npm foreign origin.
                 continue;
             }
-            let row = intern_computed_tree(&registry, self.facts, &mut self.mint, tree, owner, 0)?;
+            let row =
+                intern_computed_tree(&registry, self.facts, tree, owner, 0, SpellDomain::Owner)?;
             let ordinal = row
                 .checked_sub(ANONYMOUS_ROW_BASE)
                 .ok_or_else(lane_rejection)?;
@@ -1927,14 +1934,56 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(())
     }
 
-    /// Pass four: every OXC reference becomes one occurrence fact owned by
+    /// Pass four: the checker's assignment narrowings. Every reported
+    /// narrowing whose declaration name binds to a published fact receives
+    /// one extra owned computed row in the anonymous pool — the
+    /// control-flow-sensitive type at that exact assignment site, a fact
+    /// the syntax plane cannot see. The extension's computed cell keeps
+    /// the declaration-time type; narrowing rows carry no computed-cell
+    /// proof because they extend rather than replace it.
+    fn pass_narrowings(&mut self) -> Result<(), TypeScriptCollectError> {
+        let Some(checker) = self.checker.as_ref() else {
+            return Ok(());
+        };
+        let narrowings: Vec<_> = checker.narrowings().copied().collect();
+        let registry = FactRegistry {
+            source: self.source,
+            decl_starts: &self.decl_starts,
+            decl_ends: &self.decl_ends,
+            name_starts: &self.name_starts,
+            name_ends: &self.name_ends,
+            fact_kinds: &self.fact_kinds,
+            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
+        };
+        for narrowing in narrowings {
+            let Some(tree) = narrowing.r#type else {
+                continue;
+            };
+            let Some(owner) = registry.fact_at_name_start(narrowing.name.start) else {
+                // The checker narrowed a declaration the lane does not
+                // publish; there is no honest owner for the row.
+                continue;
+            };
+            let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
+            if registry.fact_kinds.get(owner_index) == Some(&EntityKind::Reexport) {
+                continue;
+            }
+            let site = SpellDomain::Range(narrowing.site.start, narrowing.site.end);
+            intern_computed_tree(&registry, self.facts, tree, owner, 0, site)?;
+        }
+        Ok(())
+    }
+
+    /// Pass five: every OXC reference becomes one occurrence fact owned by
     /// the innermost pushed declaration containing it. Resolved in-file
     /// targets carry [`OccurrenceConfidence::Index`]; import-resolved targets
     /// carry their npm foreign key at [`OccurrenceConfidence::Import`];
     /// unresolved names stay [`OccurrenceConfidence::Syntactic`] against the
     /// npm universe. When the checker authority ran, a checker-resolved
     /// same-file reference upgrades to [`OccurrenceConfidence::Oracle`] and
-    /// targets the exact overload member the checker picked at a call site.
+    /// targets the exact overload member the checker picked at a call site,
+    /// and a checker-resolved language-library base upgrades to an
+    /// npm-universe oracle key.
     fn pass_references(&mut self) -> Result<(), TypeScriptCollectError> {
         let scoping = self.semantic.scoping();
         let nodes = self.semantic.nodes();
@@ -1972,17 +2021,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         flags: ReferenceFlags,
         symbol: Option<(SymbolId, SymbolFlags)>,
     ) -> Result<(), TypeScriptCollectError> {
-        let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
-        let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
-            return Ok(());
-        };
-        let (Some(relative_start), Some(relative_end)) = (
-            span.start.checked_sub(owner_start),
-            span.end.checked_sub(owner_start),
-        ) else {
-            return Ok(());
-        };
-        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
         let kind = if flags.is_type() {
             ReferenceKind::TypeReference
         } else if self.is_call_position(span) {
@@ -2015,22 +2053,52 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
             }
             None => {
-                let name = self.text_span(span).unwrap_or("");
-                let key = ForeignKey::new(
-                    ForeignOrigin::Universe {
-                        ecosystem: NPM_ECOSYSTEM,
-                    },
-                    name,
-                    name,
-                    None,
-                )
-                .map_err(foreign_fault)?;
-                (
-                    OccurrenceTarget::Foreign(key),
-                    OccurrenceConfidence::Syntactic,
-                )
+                if let Some(upgraded) = self.checker_resolved_unresolved(span)? {
+                    upgraded
+                } else {
+                    let name = self.text_span(span).unwrap_or("");
+                    let key = ForeignKey::new(
+                        ForeignOrigin::Universe {
+                            ecosystem: NPM_ECOSYSTEM,
+                        },
+                        name,
+                        name,
+                        None,
+                    )
+                    .map_err(foreign_fault)?;
+                    (
+                        OccurrenceTarget::Foreign(key),
+                        OccurrenceConfidence::Syntactic,
+                    )
+                }
             }
         };
+        self.commit_occurrence(owner, span, kind, target, confidence)
+    }
+
+    /// Commits one occurrence fact owned by `owner`, projecting the
+    /// absolute source span onto the owner-relative wire span. A span that
+    /// does not sit inside its owner is silently absent rather than
+    /// misattributed.
+    fn commit_occurrence(
+        &mut self,
+        owner: u32,
+        span: Span,
+        kind: ReferenceKind,
+        target: OccurrenceTarget<'source>,
+        confidence: OccurrenceConfidence,
+    ) -> Result<(), TypeScriptCollectError> {
+        let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
+        let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
+            return Ok(());
+        };
+        let (Some(relative_start), Some(relative_end)) = (
+            span.start.checked_sub(owner_start),
+            span.end.checked_sub(owner_start),
+        ) else {
+            return Ok(());
+        };
+        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
         self.facts
             .push_occurrence(
                 owner,
@@ -2043,6 +2111,176 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             )
             .map_err(fault)?;
         Ok(())
+    }
+
+    /// Upgrades one OXC-unresolved reference when the checker authority
+    /// resolved it: a same-file target becomes a [`Local`] occurrence at
+    /// oracle confidence, and a language-library foreign base becomes an
+    /// npm-universe occurrence at oracle confidence whose path is the exact
+    /// use-site spelling. Foreign package modules stay at the honest
+    /// syntactic degradation: their module bytes are not spelled anywhere
+    /// in this source, and every borrowed wire cell must stay
+    /// source-backed.
+    fn checker_resolved_unresolved(
+        &self,
+        span: Span,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(checker) = self.checker.as_ref() else {
+            return Ok(None);
+        };
+        let resolved = checker
+            .references()
+            .find(|reference| reference.span.start == span.start && reference.span.end == span.end);
+        let Some(resolved) = resolved else {
+            return Ok(None);
+        };
+        if let Some(target) = resolved.target {
+            if let Some(fact) = self.fact_at_name_start(target.start) {
+                return Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Oracle,
+                )));
+            }
+            return Ok(None);
+        }
+        if resolved.module == Some("typescript")
+            && let Some(path) = self.text_span(span)
+            && !path.is_empty()
+        {
+            let key = ForeignKey::new(
+                ForeignOrigin::Universe {
+                    ecosystem: NPM_ECOSYSTEM,
+                },
+                path,
+                path,
+                None,
+            )
+            .map_err(foreign_fault)?;
+            return Ok(Some((
+                OccurrenceTarget::Foreign(key),
+                OccurrenceConfidence::Oracle,
+            )));
+        }
+        Ok(None)
+    }
+
+    /// Pass six: the checker's references that OXC never visits — property
+    /// accesses and other member sites OXC does not bind. Every published
+    /// same-file target commits a Local occurrence at oracle confidence
+    /// (a call site targets the exact overload member the checker picked);
+    /// a language-library foreign base commits its npm-universe oracle
+    /// key. Every other site stays absent rather than guessed, and a span
+    /// already covered by an OXC reference is never committed twice.
+    fn pass_checker_references(&mut self) -> Result<(), TypeScriptCollectError> {
+        let Some(checker) = self.checker.as_ref() else {
+            return Ok(());
+        };
+        // Bound reference rows are `Copy`; the loop body mutates the lane,
+        // so the iteration set is copied out of the borrowed report first.
+        let references: Vec<_> = checker.references().copied().collect();
+        for reference in references {
+            if self.occurrence_covers(reference.span)? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(reference.span.start) else {
+                continue;
+            };
+            let Some((target, confidence, kind)) = self.checker_only_target(reference)? else {
+                continue;
+            };
+            let span = Span::new(reference.span.start, reference.span.end);
+            self.commit_occurrence(owner, span, kind, target, confidence)?;
+        }
+        Ok(())
+    }
+
+    /// Reports whether a committed occurrence already names the exact
+    /// absolute source span.
+    fn occurrence_covers(&self, span: Utf8Span) -> Result<bool, TypeScriptCollectError> {
+        let count = self.facts.occurrence_len;
+        for index in 0..count {
+            let owner = *self
+                .facts
+                .occurrence_owners
+                .get(index)
+                .ok_or_else(lane_rejection)?;
+            let occurrence = self
+                .facts
+                .occurrences
+                .get(index)
+                .ok_or_else(lane_rejection)?;
+            let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
+            let Some(base) = self.decl_starts.get(owner_index).copied() else {
+                continue;
+            };
+            if base.checked_add(occurrence.span.start) == Some(span.start)
+                && base.checked_add(occurrence.span.end) == Some(span.end)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Resolves the target, confidence, and kind of one checker-only
+    /// reference site. Same-file targets resolve through the published fact
+    /// of the target's binding name; language-library bases resolve through
+    /// the use-site spelling against the npm universe; every other base is
+    /// left absent instead of guessed.
+    fn checker_only_target(
+        &self,
+        reference: BoundReference<'report>,
+    ) -> Result<
+        Option<(
+            OccurrenceTarget<'source>,
+            OccurrenceConfidence,
+            ReferenceKind,
+        )>,
+        TypeScriptCollectError,
+    > {
+        let call = reference.overload_index.is_some();
+        if let Some(target) = reference.target {
+            let Some(fact) = self.fact_at_name_start(target.start) else {
+                return Ok(None);
+            };
+            let kind = if call {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            return Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Oracle,
+                kind,
+            )));
+        }
+        if reference.module == Some("typescript")
+            && let Some(path) = self.slice_span(Span::new(reference.span.start, reference.span.end))
+            && let Ok(path) = core::str::from_utf8(path)
+            && !path.is_empty()
+        {
+            let key = ForeignKey::new(
+                ForeignOrigin::Universe {
+                    ecosystem: NPM_ECOSYSTEM,
+                },
+                path,
+                path,
+                None,
+            )
+            .map_err(foreign_fault)?;
+            let kind = if call {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::VariableUse
+            };
+            return Ok(Some((
+                OccurrenceTarget::Foreign(key),
+                OccurrenceConfidence::Oracle,
+                kind,
+            )));
+        }
+        Ok(None)
     }
 
     /// Resolves one type-reference name through the checker's report when
@@ -2087,9 +2325,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(checker) = self.checker.as_ref() else {
             return Ok(None);
         };
-        let resolved = checker.references().find(|reference| {
-            reference.span.start == span.start && reference.span.end == span.end
-        });
+        let resolved = checker
+            .references()
+            .find(|reference| reference.span.start == span.start && reference.span.end == span.end);
         let Some(resolved) = resolved else {
             return Ok(None);
         };
@@ -2132,7 +2370,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         None
     }
 
-    /// Pass four: every `/** */` block comment becomes the documentation of
+    /// Pass seven: every `/** */` block comment becomes the documentation of
     /// the next declared fact, split into text lines, inline code spans, and
     /// `{@link ...}` targets resolved against the published facts.
     fn pass_docs(&mut self) -> Result<(), TypeScriptCollectError> {
@@ -2305,9 +2543,9 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
             if start == UNSET || end == UNSET {
                 continue;
             }
-            let spelled = self.source.get(
-                usize::try_from(start).ok()?..usize::try_from(end).ok()?,
-            )?;
+            let spelled = self
+                .source
+                .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
             if spelled.as_bytes() == name {
                 return Some(ordinal);
             }
@@ -2318,36 +2556,79 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
     /// Borrows the exact source bytes one checker spelling names inside its
     /// owning declaration's source text, so computed record text cells stay
     /// source-backed. `None` when the declaration never spells the name.
-    fn source_spelling(&self, name: &[u8], owner: u32) -> Option<&'source [u8]> {
+    fn source_spelling_owner(&self, name: &[u8], owner: u32) -> Option<&'source [u8]> {
         let owner_index = usize::try_from(owner).ok()?;
         let start = *self.decl_starts.get(owner_index)?;
         let end = *self.decl_ends.get(owner_index)?;
         if start == UNSET || end == UNSET {
             return None;
         }
-        let declaration = self.source.get(
-            usize::try_from(start).ok()?..usize::try_from(end).ok()?,
-        )?;
+        self.source_spelling_in(name, start, end)
+    }
+
+    /// Borrows the exact source bytes one checker spelling names inside the
+    /// `[start, end)` source range. `None` when the range never spells the
+    /// name.
+    fn source_spelling_in(&self, name: &[u8], start: u32, end: u32) -> Option<&'source [u8]> {
+        let declaration = self
+            .source
+            .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
         let at = find_sub(declaration.as_bytes(), name, 0)?;
         let end = at.checked_add(name.len())?;
         Some(declaration.as_bytes().get(at..end)?)
     }
+
+    /// Borrows the exact source bytes one checker spelling names inside its
+    /// spelling domain: the owner declaration for declaration-computed rows,
+    /// the narrowing site for narrowing rows (falling back to the owner
+    /// declaration when the site never spells the name).
+    fn source_spelling(
+        &self,
+        domain: SpellDomain,
+        name: &[u8],
+        owner: u32,
+    ) -> Option<&'source [u8]> {
+        match domain {
+            SpellDomain::Owner => self.source_spelling_owner(name, owner),
+            SpellDomain::Range(start, end) => self
+                .source_spelling_in(name, start, end)
+                .or_else(|| self.source_spelling_owner(name, owner)),
+        }
+    }
+}
+
+/// The source span that owns one computed tree's member spellings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpellDomain {
+    /// The owning declaration's declaring span.
+    Owner,
+    /// One explicit source range — a narrowing's assignment site.
+    Range(u32, u32),
 }
 
 /// Interns one checker-computed type as an anonymous type row owned by
 /// `owner`, interning every child row first so the pooled lane stays
 /// topologically backward. Returns the row's lane coordinate
 /// (`ANONYMOUS_ROW_BASE` plus its pool ordinal).
-fn intern_computed_tree<'a, 'source>(
+///
+/// `spell` names the source span that owns the tree's member spellings:
+/// the owner's declaring span for declaration-computed rows, or the exact
+/// assignment site for narrowing rows (whose shapes are spelled at the
+/// site, not at the declaration).
+fn intern_computed_tree<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
-    mint: &mut ComputedMint,
     tree: &TypeTree,
     owner: u32,
     depth: u8,
+    spell: SpellDomain,
 ) -> Result<u32, TypeScriptCollectError> {
     if depth > MAX_TYPE_DEPTH {
-        return intern_computed_leaf(facts, unknown_record(TypeReason::TruncatedAtDepthLimit), owner);
+        return intern_computed_leaf(
+            facts,
+            unknown_record(TypeReason::TruncatedAtDepthLimit),
+            owner,
+        );
     }
     match tree {
         TypeTree::This => intern_computed_leaf(
@@ -2359,7 +2640,7 @@ fn intern_computed_tree<'a, 'source>(
             // A computed type parameter names the source spelling of its
             // declared generic parameter; the record text is sliced from
             // the exact source bytes, never from the report.
-            match registry.source_spelling(name.as_bytes(), owner) {
+            match registry.source_spelling(spell, name.as_bytes(), owner) {
                 Some(spelling) => {
                     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
                     record.text = Some(spelling);
@@ -2374,14 +2655,23 @@ fn intern_computed_tree<'a, 'source>(
             // printed shape is an honest oracle gap.
             intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner)
         }
-        TypeTree::Primitive { name } => intern_computed_leaf(facts, checker_primitive(name)?, owner),
-        TypeTree::Literal { base, .. } => intern_computed_leaf(facts, checker_literal(*base), owner),
+        TypeTree::Primitive { name } => {
+            intern_computed_leaf(facts, checker_primitive(name)?, owner)
+        }
+        TypeTree::Literal { base, .. } => {
+            intern_computed_leaf(facts, checker_literal(*base), owner)
+        }
         TypeTree::Union { members } => {
-            let children = intern_computed_children(registry, facts, mint, members, owner, depth)?;
-            intern_computed_row(facts, SemanticTypeRecord::leaf(SemanticTypeTag::Union), owner, &children)
+            let children = intern_computed_children(registry, facts, members, owner, depth, spell)?;
+            intern_computed_row(
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Union),
+                owner,
+                &children,
+            )
         }
         TypeTree::Intersection { members } => {
-            let children = intern_computed_children(registry, facts, mint, members, owner, depth)?;
+            let children = intern_computed_children(registry, facts, members, owner, depth, spell)?;
             intern_computed_row(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
@@ -2390,12 +2680,24 @@ fn intern_computed_tree<'a, 'source>(
             )
         }
         TypeTree::Tuple { elements } => {
-            let children = intern_computed_children(registry, facts, mint, elements, owner, depth)?;
-            intern_computed_row(facts, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple), owner, &children)
+            let children =
+                intern_computed_children(registry, facts, elements, owner, depth, spell)?;
+            intern_computed_row(
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Tuple),
+                owner,
+                &children,
+            )
         }
         TypeTree::Array { element } => {
-            let children =
-                intern_computed_children(registry, facts, mint, core::slice::from_ref(element), owner, depth)?;
+            let children = intern_computed_children(
+                registry,
+                facts,
+                core::slice::from_ref(element),
+                owner,
+                depth,
+                spell,
+            )?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
             record.text = Some(&b"[]"[..]);
             intern_computed_row(facts, record, owner, &children)
@@ -2405,10 +2707,24 @@ fn intern_computed_tree<'a, 'source>(
             let mut len = 0_usize;
             for parameter in parameters {
                 let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
-                *slot = intern_computed_tree(registry, facts, mint, parameter, owner, depth.saturating_add(1))?;
+                *slot = intern_computed_tree(
+                    registry,
+                    facts,
+                    parameter,
+                    owner,
+                    depth.saturating_add(1),
+                    spell,
+                )?;
                 len += 1;
             }
-            let result_row = intern_computed_tree(registry, facts, mint, result, owner, depth.saturating_add(1))?;
+            let result_row = intern_computed_tree(
+                registry,
+                facts,
+                result,
+                owner,
+                depth.saturating_add(1),
+                spell,
+            )?;
             let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
             *slot = result_row;
             len += 1;
@@ -2418,7 +2734,7 @@ fn intern_computed_tree<'a, 'source>(
         }
         TypeTree::Object { members } => {
             // Members carry names and flags, so each member's row is
-            // interned first and then linked with its declaration-site
+            // interned first and then linked with its spelling-domain
             // source spelling.
             let mut rows = [0_u32; MAX_TYPE_CHILDREN];
             if members.len() > MAX_TYPE_CHILDREN {
@@ -2428,10 +2744,10 @@ fn intern_computed_tree<'a, 'source>(
                 let row = intern_computed_tree(
                     registry,
                     facts,
-                    mint,
                     &member.member_type,
                     owner,
                     depth.saturating_add(1),
+                    spell,
                 )?;
                 if let Some(slot) = rows.get_mut(position) {
                     *slot = row;
@@ -2448,7 +2764,7 @@ fn intern_computed_tree<'a, 'source>(
                     flags |= SemanticTypeChild::FLAG_READONLY;
                 }
                 let spelling = registry
-                    .source_spelling(member.name.as_bytes(), owner)
+                    .source_spelling(spell, member.name.as_bytes(), owner)
                     .ok_or_else(lane_rejection)?;
                 let row = rows.get(position).copied().ok_or_else(lane_rejection)?;
                 facts
@@ -2459,9 +2775,16 @@ fn intern_computed_tree<'a, 'source>(
                 .intern_anonymous_type_row(owner, record)
                 .map_err(fault)
         }
-        TypeTree::Reference { name, module, args } => {
-            intern_computed_reference(registry, facts, mint, name, module.as_deref(), args, owner, depth)
-        }
+        TypeTree::Reference { name, module, args } => intern_computed_reference(
+            registry,
+            facts,
+            name,
+            module.as_deref(),
+            args,
+            owner,
+            depth,
+            spell,
+        ),
     }
 }
 
@@ -2469,15 +2792,15 @@ fn intern_computed_tree<'a, 'source>(
 /// nominal, a foreign module type names the checker-resolved spelling —
 /// the closed lattice has no foreign-nominal row form — and applied
 /// foreign bases keep their exact argument structure.
-fn intern_computed_reference<'a, 'source>(
+fn intern_computed_reference<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
-    mint: &mut ComputedMint,
     name: &str,
     module: Option<&str>,
     args: &[TypeTree],
     owner: u32,
     depth: u8,
+    spell: SpellDomain,
 ) -> Result<u32, TypeScriptCollectError> {
     // The library array shape keeps the lane's own array record.
     if module == Some("typescript")
@@ -2488,12 +2811,12 @@ fn intern_computed_reference<'a, 'source>(
         return intern_computed_tree(
             registry,
             facts,
-            mint,
             &TypeTree::Array {
                 element: Box::new(element),
             },
             owner,
             depth.saturating_add(1),
+            spell,
         );
     }
     let local = module
@@ -2505,9 +2828,9 @@ fn intern_computed_reference<'a, 'source>(
         None => {
             // A checker-resolved foreign module type is known and named,
             // but the closed lattice has no foreign-nominal row form; the
-            // record keeps the declaration-site source spelling so the
+            // record keeps the spelling-domain source slice so the
             // backlog stays countable.
-            let record = match registry.source_spelling(name.as_bytes(), owner) {
+            let record = match registry.source_spelling(spell, name.as_bytes(), owner) {
                 Some(spelling) => {
                     let mut record = unknown_record(TypeReason::NoIrRepresentation);
                     record.text = Some(spelling);
@@ -2534,7 +2857,14 @@ fn intern_computed_reference<'a, 'source>(
     }
     for argument in args {
         let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
-        *slot = intern_computed_tree(registry, facts, mint, argument, owner, depth.saturating_add(1))?;
+        *slot = intern_computed_tree(
+            registry,
+            facts,
+            argument,
+            owner,
+            depth.saturating_add(1),
+            spell,
+        )?;
         len += 1;
     }
     intern_computed_row(
@@ -2545,18 +2875,18 @@ fn intern_computed_reference<'a, 'source>(
     )
 }
 
-fn intern_computed_children<'a, 'source>(
+fn intern_computed_children<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
-    mint: &mut ComputedMint,
     trees: &[TypeTree],
     owner: u32,
     depth: u8,
+    spell: SpellDomain,
 ) -> Result<[u32; MAX_TYPE_CHILDREN], TypeScriptCollectError> {
     let mut children = [0_u32; MAX_TYPE_CHILDREN];
     for (position, tree) in trees.iter().enumerate() {
         let slot = children.get_mut(position).ok_or_else(lane_rejection)?;
-        *slot = intern_computed_tree(registry, facts, mint, tree, owner, depth.saturating_add(1))?;
+        *slot = intern_computed_tree(registry, facts, tree, owner, depth.saturating_add(1), spell)?;
     }
     Ok(children)
 }
@@ -2569,9 +2899,7 @@ fn intern_computed_row<'a, 'source>(
     children: &[u32],
 ) -> Result<u32, TypeScriptCollectError> {
     for child in children {
-        facts
-            .anonymous_type_child(*child, None, 0)
-            .map_err(fault)?;
+        facts.anonymous_type_child(*child, None, 0).map_err(fault)?;
     }
     facts
         .intern_anonymous_type_row(owner, record)
@@ -2589,9 +2917,7 @@ fn intern_computed_leaf<'a, 'source>(
 }
 
 /// The closed primitive record of one checker primitive spelling.
-fn checker_primitive(
-    name: &str,
-) -> Result<SemanticTypeRecord<'static>, TypeScriptCollectError> {
+fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScriptCollectError> {
     let record = match name {
         "number" => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
@@ -2801,7 +3127,7 @@ mod tests {
     };
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    use super::{TypeScriptCollectError, collect};
+    use super::{TypeScriptCollectError, collect, collect_with_checker};
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
@@ -2883,9 +3209,9 @@ mod tests {
         use super::*;
 
         const GOLDEN: &str =
-            include_str!("../../../languages/typescript/tests/transcripts/golden.json");
+            include_str!("../../languages/typescript/tests/transcripts/golden.json");
         const GOLDEN_SOURCE: &[u8] =
-            include_bytes!("../../../languages/typescript/tests/fixtures/source.ts");
+            include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
 
         /// The wire `NONE` sentinel of an absent extension cell.
         const NONE: u32 = u32::MAX;
@@ -2896,11 +3222,20 @@ mod tests {
                 .map_err(|cause| TestError::Golden(cause.to_string()))
         }
 
-        fn fragment_from_golden() -> Result<(FragmentView<'static>, Vec<u8>), TestError> {
+        /// Lowers the golden fixture with the golden transcript. The owned
+        /// bytes outlive the caller's borrowed view.
+        fn fragment_from_golden() -> Result<Vec<u8>, TestError> {
             let report = golden()?;
-            let bytes = fragment_with_checker(GOLDEN_SOURCE, Some(&report))?;
-            let view = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            Ok((view, bytes))
+            fragment_with_checker(GOLDEN_SOURCE, Some(&report))
+        }
+
+        /// Opens one validated view of the lowered golden fragment. The
+        /// fragment bytes are leaked so the borrowed view can travel as
+        /// `'static`; the test process is short-lived, so the leak is
+        /// bounded and deliberate.
+        fn golden_view() -> Result<FragmentView<'static>, TestError> {
+            let leaked: &'static [u8] = Box::leak(fragment_from_golden()?.into_boxed_slice());
+            FragmentView::validate(leaked).map_err(TestError::Validate)
         }
 
         /// Decodes one entity's TypeScript extension wire fact straight from
@@ -2939,49 +3274,40 @@ mod tests {
                 return Err(TestError::MissingExtension);
             }
             let ordinal = word(
-                usize::try_from(payload)
-                    .map_err(|_| TestError::MissingExtension)?
-                    + usize::try_from(entity)
-                        .map_err(|_| TestError::MissingExtension)?
-                        * 4,
+                usize::try_from(payload).map_err(|_| TestError::MissingExtension)?
+                    + usize::try_from(entity).map_err(|_| TestError::MissingExtension)? * 4,
             )?;
             if ordinal == NONE {
                 return Err(TestError::MissingExtension);
             }
-            let fact_at = usize::try_from(payload)
-                .map_err(|_| TestError::MissingExtension)?
+            let fact_at = usize::try_from(payload).map_err(|_| TestError::MissingExtension)?
                 + usize::try_from(rows).map_err(|_| TestError::MissingExtension)? * 4
-                + usize::try_from(ordinal)
-                    .map_err(|_| TestError::MissingExtension)?
-                    * 12;
-            Ok((
-                word(fact_at)?,
-                word(fact_at + 4)?,
-                word(fact_at + 8)?,
-            ))
+                + usize::try_from(ordinal).map_err(|_| TestError::MissingExtension)? * 12;
+            Ok((word(fact_at)?, word(fact_at + 4)?, word(fact_at + 8)?))
         }
 
         /// Every type row in lane order: anonymous computed rows first, then
         /// one row per pushed fact.
-        fn type_rows(
-            view: &FragmentView<'_>,
-        ) -> Result<Vec<compiler_ir::DecodedTypeFact<'_>>, TestError> {
-            let cursor = view.type_facts().ok_or(TestError::MissingTypeFact { owner: 0 })?;
+        fn type_rows<'a>(
+            view: &'a FragmentView<'a>,
+        ) -> Result<Vec<compiler_ir::DecodedTypeFact<'a>>, TestError> {
+            let cursor = view
+                .type_facts()
+                .ok_or(TestError::MissingTypeFact { owner: 0 })?;
             Ok(cursor.filter_map(|result| result.ok()).collect())
         }
 
-        fn computed_row_of(
-            rows: &[compiler_ir::DecodedTypeFact<'_>],
+        fn computed_row_of<'a>(
+            rows: &'a [compiler_ir::DecodedTypeFact<'a>],
             cell: (u32, u32, u32),
-        ) -> Result<compiler_ir::DecodedTypeFact<'_>, TestError> {
+        ) -> Result<compiler_ir::DecodedTypeFact<'a>, TestError> {
             rows.get(cell.2 as usize)
                 .copied()
                 .ok_or(TestError::MissingTypeFact { owner: cell.2 })
         }
 
         #[test]
-        fn golden_computed_cells_fill_extension_facts_with_checker_rows()
-        -> Result<(), TestError> {
+        fn golden_computed_cells_fill_extension_facts_with_checker_rows() -> Result<(), TestError> {
             let report = golden()?;
             let without = fragment_with_checker(GOLDEN_SOURCE, None)?;
             let with_bytes = fragment_with_checker(GOLDEN_SOURCE, Some(&report))?;
@@ -3003,13 +3329,11 @@ mod tests {
 
         #[test]
         fn golden_inferred_const_and_union_records_match_the_checker() -> Result<(), TestError> {
-            let (checked, _) = fragment_from_golden()?;
+            let checked = golden_view()?;
             let rows = type_rows(&checked)?;
             // `inferred = 7` computes a 32-bit signed integer literal record.
-            let (inferred, _, inferred_cell) = typescript_cell(
-                &checked,
-                fact_named(&checked, b"inferred")?.0,
-            )?;
+            let (inferred, _, inferred_cell) =
+                typescript_cell(&checked, fact_named(&checked, b"inferred")?.0)?;
             let inferred_row = computed_row_of(&rows, (0, inferred, inferred_cell))?;
             expect_tag(&inferred_row, SemanticTypeTag::Primitive)?;
             assert_eq!(
@@ -3031,7 +3355,7 @@ mod tests {
 
         #[test]
         fn golden_foreign_generic_base_names_the_resolved_spelling() -> Result<(), TestError> {
-            let (checked, _) = fragment_from_golden()?;
+            let checked = golden_view()?;
             // The DECLARED annotation `Map<string, number>` keeps an honest
             // unknown: the checker resolved `Map` to the foreign `typescript`
             // module, and the closed lattice has no foreign-nominal row, so
@@ -3056,9 +3380,9 @@ mod tests {
         }
 
         #[test]
-        fn golden_this_type_and_local_nominal_computed_rows_bind_by_name()
-        -> Result<(), TestError> {
-            let (checked, _) = fragment_from_golden()?;
+        fn golden_this_type_and_local_nominal_computed_rows_bind_by_name() -> Result<(), TestError>
+        {
+            let checked = golden_view()?;
             let rows = type_rows(&checked)?;
             // `made` computes to the `Box` nominal: the computed row names
             // the same-file class fact.
@@ -3085,37 +3409,279 @@ mod tests {
         }
 
         #[test]
-        fn golden_oracle_confidence_picks_distinct_overload_targets()
-        -> Result<(), TestError> {
-            let (checked, _) = fragment_from_golden()?;
-            let (g_one, _) = fact_named(&checked, b"g")?;
+        fn golden_oracle_confidence_picks_distinct_overload_targets() -> Result<(), TestError> {
+            let checked = golden_view()?;
             let oracle_calls: Vec<DecodedOccurrence<'_>> = occurrences(&checked)?
                 .into_iter()
-                .filter(|occurrence| occurrence.occurrence.confidence == OccurrenceConfidence::Oracle
-                    && occurrence.occurrence.kind == ReferenceKind::FunctionCall)
-                .collect();
-            // The two overload call sites resolve at oracle confidence to the
-            // two distinct `g` overload facts.
-            let targets: Vec<u32> = oracle_calls
-                .iter()
-                .map(|occurrence| match occurrence.occurrence.target {
-                    OccurrenceTarget::Local(entity) => entity.raw,
-                    OccurrenceTarget::Foreign(_) => u32::MAX,
+                .filter(|occurrence| {
+                    occurrence.occurrence.confidence == OccurrenceConfidence::Oracle
+                        && occurrence.occurrence.kind == ReferenceKind::FunctionCall
                 })
                 .collect();
-            assert_eq!(targets.len(), 2, "observed {targets:?}");
-            assert_ne!(targets[0], targets[1]);
-            for target in &targets {
-                let (name, kind) = entities(&checked)
-                    .into_iter()
-                    .find(|(ordinal, _, _)| ordinal == target)
-                    .ok_or(TestError::MissingEntity {
-                        name: "overload target".to_owned(),
-                    })?;
-                assert_eq!(name, b"g".to_vec());
-                assert_eq!(kind, EntityKind::Function);
+            // The two `g` overload call sites resolve at oracle confidence to
+            // the two distinct `g` overload facts.
+            let g_targets: Vec<u32> = oracle_calls
+                .iter()
+                .filter_map(|occurrence| match occurrence.occurrence.target {
+                    OccurrenceTarget::Local(entity) => Some(entity.raw),
+                    OccurrenceTarget::Foreign(_) => None,
+                })
+                .filter(|target| {
+                    entities(&checked)
+                        .into_iter()
+                        .any(|(ordinal, name, _)| ordinal == *target && name == b"g")
+                })
+                .collect();
+            assert_eq!(g_targets.len(), 2, "observed {g_targets:?}");
+            assert_ne!(g_targets[0], g_targets[1]);
+            // The checker-only property-call site `slot.get()` also commits
+            // at oracle confidence and targets the exact `get` member fact.
+            let get_target = oracle_calls
+                .iter()
+                .filter_map(|occurrence| match occurrence.occurrence.target {
+                    OccurrenceTarget::Local(entity) => Some(entity.raw),
+                    OccurrenceTarget::Foreign(_) => None,
+                })
+                .find(|target| {
+                    entities(&checked)
+                        .into_iter()
+                        .any(|(ordinal, name, _)| ordinal == *target && name == b"get")
+                })
+                .ok_or(TestError::MissingEntity {
+                    name: "get call target".to_owned(),
+                })?;
+            let (_, get_kind) = fact_named(&checked, b"get")?;
+            assert_eq!(get_kind, EntityKind::Function);
+            let _ = get_target;
+            // No span commits twice: every committed occurrence names a
+            // distinct (owner, relative-span) pair.
+            let mut covered: Vec<(u32, u32, u32)> = Vec::new();
+            for fact in occurrences(&checked)? {
+                let key = (
+                    fact.owner.raw,
+                    u32::from(fact.occurrence.span.start),
+                    u32::from(fact.occurrence.span.end),
+                );
+                if covered.contains(&key) {
+                    return Err(TestError::Tail);
+                }
+                covered.push(key);
             }
-            let _ = g_one;
+            Ok(())
+        }
+
+        #[test]
+        fn golden_narrowing_extends_the_declared_fact_with_a_site_row() -> Result<(), TestError> {
+            let checked = golden_view()?;
+            let (widened, _) = fact_named(&checked, b"widened")?;
+            // The declaration-time computed cell keeps the annotated union.
+            let (_, _, computed) = typescript_cell(&checked, widened)?;
+            assert_ne!(computed, NONE);
+            let rows = type_rows(&checked)?;
+            let computed_row = computed_row_of(&rows, (0, widened, computed))?;
+            expect_tag(&computed_row, SemanticTypeTag::Union)?;
+            assert_eq!(computed_row.record.children.length, 2);
+            // The assignment narrowing commits one extra owned row: the
+            // string-literal type of `widened = "text"` at that exact site.
+            let site_rows: Vec<_> = rows
+                .iter()
+                .filter(|fact| fact.owner.raw == widened)
+                .collect();
+            assert!(
+                site_rows
+                    .iter()
+                    .any(|fact| fact.record.tag == SemanticTypeTag::Primitive
+                        && fact.record.payload0 == u32::from(PrimitiveShape::Str)),
+                "expected a narrowed string row, observed {:?}",
+                site_rows
+                    .iter()
+                    .map(|fact| fact.record.tag)
+                    .collect::<Vec<_>>()
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn narrowing_object_members_bind_spellings_at_the_assignment_site() -> Result<(), TestError>
+        {
+            // `alpha` is spelled only at the assignment site, never in the
+            // owner declaration; the row commits, which proves the spelling
+            // domain is the site span.
+            let source: &[u8] = b"let wide: number = 0;\nwide = { alpha: 1 };";
+            let mut report = golden()?;
+            report.source_digest = hex_digest_of(source);
+            report.declarations = Box::new([]);
+            report.references = Box::new([]);
+            report.narrowings = Box::new([compiler_languages_typescript::Narrowing {
+                name_start: 4,
+                name_end: 8,
+                start: 22,
+                end: 42,
+                r#type: Some(compiler_languages_typescript::TypeTree::Object {
+                    members: Box::new([compiler_languages_typescript::ObjectMember {
+                        name: "alpha".to_owned(),
+                        optional: false,
+                        readonly: false,
+                        member_type: compiler_languages_typescript::TypeTree::Primitive {
+                            name: "number".to_owned(),
+                        },
+                    }]),
+                }),
+            }]);
+            let bytes = fragment_with_checker(source, Some(&report))?;
+            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
+            let (wide, _) = fact_named(&checked, b"wide")?;
+            let rows = type_rows(&checked)?;
+            let record_row = rows
+                .iter()
+                .find(|fact| {
+                    fact.owner.raw == wide && fact.record.tag == SemanticTypeTag::AnonymousRecord
+                })
+                .ok_or(TestError::MissingTypeFact { owner: wide })?;
+            assert_eq!(record_row.record.children.length, 1);
+            // Renaming the member to a name the site never spells is the
+            // typed lane rejection: computed child names are proven source
+            // slices, never borrowed report bytes.
+            let mut renamed = report.clone();
+            renamed.narrowings = Box::new([compiler_languages_typescript::Narrowing {
+                name_start: 4,
+                name_end: 8,
+                start: 22,
+                end: 42,
+                r#type: Some(compiler_languages_typescript::TypeTree::Object {
+                    members: Box::new([compiler_languages_typescript::ObjectMember {
+                        name: "beta".to_owned(),
+                        optional: false,
+                        readonly: false,
+                        member_type: compiler_languages_typescript::TypeTree::Primitive {
+                            name: "number".to_owned(),
+                        },
+                    }]),
+                }),
+            }]);
+            let failure = fragment_with_checker(source, Some(&renamed))
+                .expect_err("an unspelled member name must reject");
+            assert!(matches!(failure, TestError::Collect(..)));
+            Ok(())
+        }
+
+        #[test]
+        fn checker_resolved_global_reaches_an_oracle_universe_key() -> Result<(), TestError> {
+            let source: &[u8] = b"export const term = console;";
+            let mut report = golden()?;
+            report.source_digest = hex_digest_of(source);
+            report.declarations = Box::new([]);
+            report.references = Box::new([compiler_languages_typescript::Reference {
+                start: 20,
+                end: 27,
+                target_start: None,
+                target_end: None,
+                module: Some("typescript".to_owned()),
+                name: Some("console".to_owned()),
+                overload_index: None,
+            }]);
+            report.narrowings = Box::new([]);
+            let bytes = fragment_with_checker(source, Some(&report))?;
+            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
+            let (term, _) = fact_named(&checked, b"term")?;
+            let upgraded = occurrences(&checked)?
+                .into_iter()
+                .find(|fact| {
+                    fact.owner.raw == term
+                        && fact.occurrence.confidence == OccurrenceConfidence::Oracle
+                })
+                .ok_or(TestError::MissingOccurrence)?;
+            match upgraded.occurrence.target {
+                OccurrenceTarget::Foreign(key) => {
+                    assert_eq!(key.path, "console");
+                    assert!(matches!(
+                        key.origin,
+                        compiler_ir::ForeignOrigin::Universe { ecosystem: "npm" }
+                    ));
+                }
+                OccurrenceTarget::Local(_) => return Err(TestError::MissingOccurrence),
+                OccurrenceTarget::Stable(_) => return Err(TestError::MissingOccurrence),
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn package_module_bases_stay_honestly_syntactic() -> Result<(), TestError> {
+            // A checker-resolved npm package module whose bytes are not
+            // spelled in this source cannot become a borrowed foreign key;
+            // the occurrence keeps the honest syntactic degradation.
+            let source: &[u8] = b"export const q = missing;";
+            let mut report = golden()?;
+            report.source_digest = hex_digest_of(source);
+            report.declarations = Box::new([]);
+            report.references = Box::new([compiler_languages_typescript::Reference {
+                start: 17,
+                end: 24,
+                target_start: None,
+                target_end: None,
+                module: Some("left-pad".to_owned()),
+                name: Some("missing".to_owned()),
+                overload_index: None,
+            }]);
+            report.narrowings = Box::new([]);
+            let bytes = fragment_with_checker(source, Some(&report))?;
+            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
+            let (q, _) = fact_named(&checked, b"q")?;
+            let syntactic = occurrences(&checked)?
+                .into_iter()
+                .find(|fact| {
+                    fact.owner.raw == q
+                        && fact.occurrence.confidence == OccurrenceConfidence::Syntactic
+                })
+                .ok_or(TestError::MissingOccurrence)?;
+            assert!(matches!(
+                syntactic.occurrence.target,
+                OccurrenceTarget::Foreign(_)
+            ));
+            assert!(
+                !occurrences(&checked)?
+                    .into_iter()
+                    .any(|fact| fact.owner.raw == q
+                        && fact.occurrence.confidence == OccurrenceConfidence::Oracle)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn checker_only_property_call_targets_the_exact_member() -> Result<(), TestError> {
+            let source: &[u8] = b"export class Box { tick(): number { return 1; } }\nexport const box = new Box();\nexport const t = box.tick();";
+            let mut report = golden()?;
+            report.source_digest = hex_digest_of(source);
+            report.declarations = Box::new([]);
+            // `tick` at 101..105 resolves to the method declared at 19..23;
+            // OXC binds no reference for a property-access name.
+            report.references = Box::new([compiler_languages_typescript::Reference {
+                start: 101,
+                end: 105,
+                target_start: Some(19),
+                target_end: Some(23),
+                module: None,
+                name: None,
+                overload_index: Some(0),
+            }]);
+            report.narrowings = Box::new([]);
+            let bytes = fragment_with_checker(source, Some(&report))?;
+            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
+            let (tick, tick_kind) = fact_named(&checked, b"tick")?;
+            assert_eq!(tick_kind, EntityKind::Function);
+            // The checker-only call is the one oracle call that targets the
+            // `tick` method fact; OXC's own call-site commits (`new Box()`)
+            // stay untouched.
+            let calls: Vec<_> = occurrences(&checked)?
+                .into_iter()
+                .filter(|fact| {
+                    fact.occurrence.kind == ReferenceKind::FunctionCall
+                        && fact.occurrence.target
+                            == OccurrenceTarget::Local(compiler_ir::EntityId::new(tick))
+                })
+                .collect();
+            assert_eq!(calls.len(), 1, "expected exactly the checker-only call");
+            assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Oracle);
             Ok(())
         }
 
@@ -3136,8 +3702,8 @@ mod tests {
             // the same spelling is known-but-unrepresentable instead.
             let mut report = golden()?;
             let use_start = 16_u32;
-            let use_end = use_start + u32::try_from("TotallyMissing".len())
-                .map_err(|_| TestError::Tail)?;
+            let use_end =
+                use_start + u32::try_from("TotallyMissing".len()).map_err(|_| TestError::Tail)?;
             report.source_digest = hex_digest_of(source);
             report.references = Box::new([compiler_languages_typescript::Reference {
                 start: use_start,

@@ -15,11 +15,11 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
+use compiler_ir::LanguageExtensionWireFact as _;
 use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustFacts,
     RustOwnership, SemanticTypeTag,
 };
-use compiler_ir::LanguageExtensionWireFact as _;
 use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain, SourceByteLimit};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
@@ -140,12 +140,8 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         return Err(TestError::MissingRustc);
     };
     let toolchain = RustToolchain::discover(&tool).map_err(|_| TestError::MissingRustc)?;
-    let project = RustProject::open_with_source(
-        root,
-        &source_path,
-        &toolchain,
-        RustEdition::Rust2024,
-    )?;
+    let project =
+        RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)?;
     let resolved = ResolvedToolchain::from_version(
         compiler_driver::NativeTool::Rustc,
         &tool,
@@ -183,14 +179,14 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         Err(failure) => return Err(TestError::Compile(failure_label(&failure))),
     };
     let _ = compiled;
-    // The declared wire length lives in the fragment header.
+    // The declared wire length lives at header offset 8: after the 4-byte
+    // magic, the 2-byte schema, and the 2-byte section count.
     let declared = fragment_output
-        .get(12..16)
+        .get(8..12)
         .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
         .map(u32::from_le_bytes)
         .ok_or(TestError::Falsified("fragment header truncated"))?;
-    let length =
-        usize::try_from(declared).map_err(|_| TestError::Coordinate)?;
+    let length = usize::try_from(declared).map_err(|_| TestError::Coordinate)?;
     let bytes = fragment_output.get(..length).ok_or(TestError::Falsified(
         "declared length exceeds the output buffer",
     ))?;
@@ -335,10 +331,7 @@ fn word(payload: &[u8], at: usize) -> Result<u32, TestError> {
 /// Decodes the raw Rust extension row of one entity ordinal: a 16-byte
 /// header, seven 20-byte directory entries (Rust is the fourth), then the
 /// row table and the fixed-width fact pool.
-fn rust_extension(
-    lane: &Lane<'_>,
-    ordinal: usize,
-) -> Result<compiler_ir::RustFacts, TestError> {
+fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<compiler_ir::RustFacts, TestError> {
     let payload = lane
         .view
         .language_extension_payload()
@@ -355,11 +348,8 @@ fn rust_extension(
     if fact_ordinal == u32::MAX {
         return Err(TestError::Falsified("rust extension row absent"));
     }
-    let at = offset
-        + rows * 4
-        + usize::try_from(fact_ordinal)
-            .map_err(|_| TestError::Coordinate)?
-            * 16;
+    let at =
+        offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Coordinate)? * 16;
     compiler_ir::RustFacts::decode(payload, at).ok_or(TestError::Falsified("rust row decode"))
 }
 
@@ -419,8 +409,7 @@ fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
 /// Reads one pooled atom list from the extension-pool payload.
 fn pooled_atom_list(pool: &[u8], index: usize) -> Result<Vec<u32>, TestError> {
     let mut cursor = 4usize;
-    let list_count =
-        usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
+    let list_count = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
     cursor += 4;
     for list in 0..list_count {
         let length = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
@@ -449,8 +438,7 @@ fn entity_ordinal(lane: &Lane<'_>, name: &[u8], kind: EntityKind) -> Result<usiz
 /// an Apply over the foreign Option leaf and an inner Apply over the foreign
 /// Box leaf and the Node self-nominal row.
 #[test]
-fn recursive_field_closes_on_the_self_nominal_through_option_box()
--> Result<(), TestError> {
+fn recursive_field_closes_on_the_self_nominal_through_option_box() -> Result<(), TestError> {
     let bytes = compile_fixture(FIXTURE_BODY)?;
     let lane = lane_of(&bytes)?;
     let node = entity_ordinal(&lane, b"Node", EntityKind::Record)?;
@@ -469,7 +457,8 @@ fn recursive_field_closes_on_the_self_nominal_through_option_box()
         return Err(TestError::Falsified("Option apply lacks base and argument"));
     }
     // The base is the deduplicated foreign `Option` unknown row.
-    let base = &lane.types
+    let base = &lane
+        .types
         .get(usize::try_from(children[0]).map_err(|_| TestError::Coordinate)?)
         .ok_or(TestError::Falsified("base row absent"))?;
     if base.record.tag != SemanticTypeTag::Unknown || base.record.text != Some(&b"Option"[..]) {
@@ -518,8 +507,7 @@ fn record_carries_the_diagonal_self_nominal() -> Result<(), TestError> {
 /// A signature lowers to receiver, parameter, and result rows with exact
 /// HIR ownership cells: a shared borrow, a mutable borrow, and a move.
 #[test]
-fn signature_lowers_receiver_parameters_result_and_ownership()
--> Result<(), TestError> {
+fn signature_lowers_receiver_parameters_result_and_ownership() -> Result<(), TestError> {
     let bytes = compile_fixture(FIXTURE_BODY)?;
     let lane = lane_of(&bytes)?;
     let shared = entity_ordinal(&lane, b"shared", EntityKind::Parameter)?;
@@ -541,8 +529,7 @@ fn signature_lowers_receiver_parameters_result_and_ownership()
 /// pushed trait... `Clone` is foreign, so the constraint stays `None` while
 /// the bound predicate keeps its written name.
 #[test]
-fn generic_bounds_and_macro_spellings_reach_the_extension_rows()
--> Result<(), TestError> {
+fn generic_bounds_and_macro_spellings_reach_the_extension_rows() -> Result<(), TestError> {
     let bytes = compile_fixture(FIXTURE_BODY)?;
     let lane = lane_of(&bytes)?;
     let sweep = entity_ordinal(&lane, b"sweep", EntityKind::Function)?;
