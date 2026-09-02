@@ -76,7 +76,8 @@ const fn entity_kind(kind: OxcDeclarationKind) -> EntityKind {
         OxcDeclarationKind::Constant => EntityKind::Constant,
         OxcDeclarationKind::Variable => EntityKind::Static,
         OxcDeclarationKind::Function => EntityKind::Function,
-        OxcDeclarationKind::Class | OxcDeclarationKind::Interface => EntityKind::Record,
+        OxcDeclarationKind::Class => EntityKind::Record,
+        OxcDeclarationKind::Interface => EntityKind::Trait,
         OxcDeclarationKind::TypeAlias => EntityKind::Alias,
         OxcDeclarationKind::Enum => EntityKind::Enum,
         OxcDeclarationKind::EnumMember => EntityKind::Variant,
@@ -89,9 +90,8 @@ const fn entity_kind(kind: OxcDeclarationKind) -> EntityKind {
 const fn constructor(kind: OxcDeclarationKind) -> SemanticProductConstructor {
     match kind {
         OxcDeclarationKind::Function => SemanticProductConstructor::function(0, 0),
-        OxcDeclarationKind::Class | OxcDeclarationKind::Interface => {
-            SemanticProductConstructor::PRODUCT
-        }
+        OxcDeclarationKind::Class => SemanticProductConstructor::PRODUCT,
+        OxcDeclarationKind::Interface => SemanticProductConstructor::INTERSECTION,
         OxcDeclarationKind::Enum => SemanticProductConstructor::UNION,
         _ => LEAF_PRODUCT,
     }
@@ -111,6 +111,8 @@ mod tests {
         Collect(TypeScriptCollectError),
         #[error("OXC declaration count differed from the canonical lane")]
         Count,
+        #[error("OXC interface declaration was not retained as the canonical trait kind")]
+        InterfaceKind,
     }
 
     #[test]
@@ -124,6 +126,21 @@ mod tests {
         .map_err(TestError::Collect)?;
         if facts.len() != 3 {
             return Err(TestError::Count);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn oxc_interface_is_never_rewritten_as_a_record() -> Result<(), TestError> {
+        let mut facts = FactSet::new();
+        collect(
+            TypeScriptSource::TypeScript,
+            b"export interface Shape { area(): number; }",
+            &mut facts,
+        )
+        .map_err(TestError::Collect)?;
+        if facts.len() != 1 || facts.kind_at(0) != Some(compiler_ir::EntityKind::Trait) {
+            return Err(TestError::InterfaceKind);
         }
         Ok(())
     }

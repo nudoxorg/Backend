@@ -309,6 +309,16 @@ impl<'source> FactSet<'source> {
         }
     }
 
+    /// Returns one authority-admitted declaration kind by its validated lane ordinal.
+    #[cfg(test)]
+    pub(super) fn kind_at(&self, ordinal: usize) -> Option<EntityKind> {
+        if ordinal >= self.len {
+            None
+        } else {
+            self.kinds.get(ordinal).copied()
+        }
+    }
+
     /// Admits one fact after proving its name, its constructor payload against
     /// its child count, every child role against the constructor's closed role
     /// lane, and every child target against the already-pushed prefix.
