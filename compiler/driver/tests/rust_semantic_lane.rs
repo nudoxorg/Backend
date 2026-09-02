@@ -354,40 +354,29 @@ fn rust_extension(lane: &Lane<'_>, ordinal: usize) -> Result<compiler_ir::RustFa
 }
 
 /// Decodes the child coordinates of one type-fact row from the raw payload.
-/// Every child in this lane carries an empty name cell, so each child is one
-/// local target tag, one u32 coordinate, one empty name cell, and one flag.
 fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
+    const RECORD_FIXED_BYTES: usize = 4 + 1 + 4 + 4;
+
     let payload = lane
         .view
         .type_fact_payload()
         .ok_or(TestError::Falsified("no type fact section"))?;
-    let cell = |cursor: &mut usize| -> Result<(), TestError> {
-        match payload.get(*cursor).copied() {
-            Some(0) => *cursor += 1,
-            Some(1) => {
-                let length = word(payload, *cursor + 1)?;
-                *cursor += 1 + 4 + usize::try_from(length).map_err(|_| TestError::Coordinate)?;
-            }
-            _ => return Err(TestError::Falsified("truncated name cell")),
-        }
-        Ok(())
-    };
+
     let mut cursor = 4usize;
     let count = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Coordinate)?;
-    for index in 0..count {
-        cursor += 4 + 1 + 4 + 4;
-        cell(&mut cursor)?;
-        cell(&mut cursor)?;
+    for _ in 0..count {
+        cursor = cursor
+            .checked_add(RECORD_FIXED_BYTES)
+            .ok_or(TestError::Coordinate)?;
+        type_name_cell(payload, &mut cursor)?;
+        type_name_cell(payload, &mut cursor)?;
         match payload.get(cursor).copied() {
-            Some(0) => cursor += 1,
-            Some(1) => cursor += 5,
-            Some(2) => cursor += 21,
+            Some(0) => cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?,
+            Some(1) => cursor = cursor.checked_add(5).ok_or(TestError::Coordinate)?,
+            Some(2) => cursor = cursor.checked_add(21).ok_or(TestError::Coordinate)?,
             _ => return Err(TestError::Falsified("truncated nominal cell")),
         }
-        cursor += 8;
-        if index == row {
-            break;
-        }
+        cursor = cursor.checked_add(8).ok_or(TestError::Coordinate)?;
     }
     let fact = lane
         .types
@@ -395,15 +384,86 @@ fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
         .ok_or(TestError::Falsified("type row absent"))?;
     let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Coordinate)?;
     let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Coordinate)?;
+    let child_count = usize::try_from(word(payload, cursor)?).map_err(|_| TestError::Coordinate)?;
+    cursor = cursor.checked_add(4).ok_or(TestError::Coordinate)?;
+    let end = start.checked_add(length).ok_or(TestError::Coordinate)?;
+    if end > child_count {
+        return Err(TestError::Falsified("child span out of range"));
+    }
     let mut targets = Vec::new();
-    for position in 0..length {
-        let at = cursor + (start + position) * 7;
-        if payload.get(at).copied() != Some(0) {
-            return Err(TestError::Falsified("child target not local"));
+    for position in 0..end {
+        let target = type_child_entry(payload, &mut cursor)?;
+        if position >= start {
+            let Some(target) = target else {
+                return Err(TestError::Falsified("child target not local"));
+            };
+            targets.push(target);
         }
-        targets.push(word(payload, at + 1)?);
     }
     Ok(targets)
+}
+
+/// Advances over one variable-size name cell in the type-fact grammar.
+fn type_name_cell(payload: &[u8], cursor: &mut usize) -> Result<(), TestError> {
+    const CELL_HEADER_BYTES: usize = 1 + 4;
+
+    match payload.get(*cursor).copied() {
+        Some(0) => *cursor = (*cursor).checked_add(1).ok_or(TestError::Coordinate)?,
+        Some(1) => {
+            let length = usize::try_from(word(
+                payload,
+                (*cursor).checked_add(1).ok_or(TestError::Coordinate)?,
+            ))
+            .map_err(|_| TestError::Coordinate)?;
+            *cursor = cursor
+                .checked_add(CELL_HEADER_BYTES)
+                .and_then(|at| at.checked_add(length))
+                .ok_or(TestError::Coordinate)?;
+        }
+        _ => return Err(TestError::Falsified("truncated name cell")),
+    }
+    Ok(())
+}
+
+/// Decodes one pooled child and returns only a local type target.
+fn type_child_entry(payload: &[u8], cursor: &mut usize) -> Result<Option<u32>, TestError> {
+    const LOCAL_TARGET_TAG: u8 = 0;
+    const EXTERNAL_TARGET_TAG: u8 = 1;
+    const TEXT_TARGET_TAG: u8 = 2;
+    const FRAGMENT_ID_BYTES: usize = 32;
+    const LOCAL_TARGET_BYTES: usize = 1 + 4;
+    const EXTERNAL_TARGET_BYTES: usize = 1 + FRAGMENT_ID_BYTES + 4;
+
+    let tag = payload
+        .get(*cursor)
+        .copied()
+        .ok_or(TestError::Falsified("truncated child target"))?;
+    let target = match tag {
+        LOCAL_TARGET_TAG => {
+            let target = word(
+                payload,
+                (*cursor).checked_add(1).ok_or(TestError::Coordinate)?,
+            )?;
+            *cursor = cursor
+                .checked_add(LOCAL_TARGET_BYTES)
+                .ok_or(TestError::Coordinate)?;
+            Some(target)
+        }
+        EXTERNAL_TARGET_TAG => {
+            *cursor = cursor
+                .checked_add(EXTERNAL_TARGET_BYTES)
+                .ok_or(TestError::Coordinate)?;
+            None
+        }
+        TEXT_TARGET_TAG => {
+            *cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?;
+            None
+        }
+        _ => return Err(TestError::Falsified("truncated child target")),
+    };
+    type_name_cell(payload, cursor)?;
+    *cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?;
+    Ok(target)
 }
 
 /// Reads one pooled atom list from the extension-pool payload.
