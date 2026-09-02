@@ -1038,7 +1038,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let _ = projected.child(*ordinal, None);
         }
         let extension = self.extension(declaration, 0)?;
-        let fact = projected.attach(fact).with_extension(EmissionExtension::Clang(extension));
+        let fact = projected
+            .attach(fact)
+            .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
         Ok(())
@@ -1661,7 +1663,7 @@ fn include_spelling<'source>(
     let end = usize::try_from(include.span.end).ok()?;
     let bytes = source.get(start..end)?;
     let open = *bytes.first()?;
-    let (opener, closer) = match open {
+    let (_opener, closer) = match open {
         b'<' => (open, b'>'),
         b'"' => (open, b'"'),
         _ => return None,
@@ -1849,9 +1851,10 @@ mod tests {
 
     use compiler_ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity, TypeReason,
+        FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
+        SemanticTypeTag, SourceIdentity, TypeReason,
     };
+    use compiler_languages_clang::{IncludeFact, SourceSpan};
     use compiler_vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
@@ -1892,6 +1895,12 @@ mod tests {
         }
     }
 
+    impl From<compiler_ir::FragmentError> for TestError {
+        fn from(error: compiler_ir::FragmentError) -> Self {
+            Self::Validate(error)
+        }
+    }
+
     /// Lowers one fixture source and writes its validated fragment,
     /// proving the untouched output tail stayed unchanged.
     fn lower(source: &[u8]) -> Result<Vec<u8>, TestError> {
@@ -1909,7 +1918,7 @@ mod tests {
         let recipe = CompileRecipeFact::derive(
             LanguageProfile::C(CStandard::C23),
             Stage::LowerIr,
-            NativeTool::CCompiler,
+            NativeTool::Clang,
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
         );
@@ -2580,12 +2589,9 @@ mod tests {
     fn include_spellings_borrow_the_delimited_path() -> Result<(), TestError> {
         let source = b"#include <stdio.h>\nint x;\n";
         let directive = SourceSpan { start: 0, end: 18 };
-        let include = super::empty_include();
-        let include = IncludeFact { ..include };
-        let _ = include;
         let spelling = include_spelling(
             source,
-            &super::IncludeFact {
+            &IncludeFact {
                 kind: compiler_languages_clang::SourceDependencyKind::Include,
                 span: directive,
                 resolved: None,
@@ -2601,9 +2607,6 @@ mod tests {
     /// or wrapped references.
     #[test]
     fn owner_relative_spans_subtract_and_reject_wrapping() -> Result<(), TestError> {
-        let owner = super::empty_span();
-        let owner = SourceSpan { start: 10, end: 30 };
-        let _ = owner;
         let inside = super::owner_relative_span(
             SourceSpan { start: 10, end: 30 },
             SourceSpan { start: 12, end: 15 },
