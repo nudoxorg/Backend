@@ -2835,8 +2835,10 @@ mod tests {
         let payload = view
             .type_fact_payload()
             .ok_or(TestError::Missing("type payload"))?;
-        let mut cursor = 4_usize;
-        let rows = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
+        let mut cursor = 8_usize;
+        let declared = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
+        let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Tail)?;
+        let rows = declared.checked_add(computed).ok_or(TestError::Tail)?;
         let mut positions = Vec::new();
         for _ in 0..rows {
             cursor += 4 + 1 + 4 + 4;
@@ -2866,21 +2868,50 @@ mod tests {
         cursor += 4;
         let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Tail)?;
         let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Tail)?;
-        for _ in 0..start {
-            // Local tag + u32 + empty name cell + flags.
-            cursor += 1 + 4 + 1 + 1;
-        }
-        for _ in 0..length {
-            if payload.get(cursor).copied() != Some(0) {
-                return Err(TestError::Missing("local child"));
+        let end = start.checked_add(length).ok_or(TestError::Tail)?;
+        for child_index in 0..end {
+            let tag = payload
+                .get(cursor)
+                .copied()
+                .ok_or(TestError::Missing("child tag"))?;
+            cursor += 1;
+            let target = match tag {
+                0 => {
+                    let target = word(payload, cursor)?;
+                    cursor += 4;
+                    Some(target)
+                }
+                1 => {
+                    cursor = cursor.checked_add(32 + 4).ok_or(TestError::Tail)?;
+                    None
+                }
+                2 => None,
+                _ => return Err(TestError::Missing("child tag")),
+            };
+            if child_index >= start {
+                if let Some(target) = target {
+                    positions.push(
+                        target
+                            .checked_sub(MAX_EMISSION_FACTS as u32)
+                            .unwrap_or(target),
+                    );
+                } else {
+                    return Err(TestError::Missing("local child"));
+                }
             }
-            let target = word(payload, cursor + 1)?;
-            positions.push(
-                target
-                    .checked_sub(MAX_EMISSION_FACTS as u32)
-                    .unwrap_or(target),
-            );
-            cursor += 1 + 4 + 1 + 1;
+            let present = payload
+                .get(cursor)
+                .copied()
+                .ok_or(TestError::Missing("child name cell"))?;
+            cursor += 1;
+            if present == 1 {
+                let name_length =
+                    usize::try_from(word(payload, cursor)?).map_err(|_| TestError::Tail)?;
+                cursor = cursor.checked_add(4 + name_length).ok_or(TestError::Tail)?;
+            } else if present != 0 {
+                return Err(TestError::Missing("child name cell"));
+            }
+            cursor = cursor.checked_add(1).ok_or(TestError::Tail)?;
         }
         Ok(positions)
     }
@@ -2905,7 +2936,8 @@ mod tests {
         }
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        let arch = |signed: bool| (TypeWidth::Arch.to_cell()) | u32::from(signed);
+        let arch =
+            |signed: bool| (TypeWidth::Arch.to_cell() << INTEGER_WIDTH_SHIFT) | u32::from(signed);
         let expected: [(u32, u32, u32); 9] = [
             (SHAPE_INTEGER, arch(true), 0),
             (SHAPE_INTEGER, 8 << INTEGER_WIDTH_SHIFT, 0),

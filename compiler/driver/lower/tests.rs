@@ -349,9 +349,11 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
     }
     let occurrence = Occurrence {
         target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
-            origin: compiler_ir::ForeignOrigin::Universe { ecosystem: "" },
-            path: "",
-            display: "",
+            origin: compiler_ir::ForeignOrigin::Universe {
+                ecosystem: "example",
+            },
+            path: "example.com/demo",
+            display: "demo",
             kind: None,
         }),
         kind: compiler_ir::ReferenceKind::FunctionCall,
