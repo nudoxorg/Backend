@@ -92,6 +92,23 @@ fn type_of(ir: &Ir, name: &'static str, kind: ItemKind, expected: &str) {
     );
 }
 
+fn declared_unknown_with_computed_type(ir: &Ir, name: &'static str, kind: ItemKind) {
+    let id = item(ir, name, kind);
+    assert!(
+        ir.item(id).and_then(|item| item.semantic_type()).is_none(),
+        "{name} must keep its declared type unknown"
+    );
+    assert!(
+        ir.storage_columns()
+            .language_extensions
+            .typescript
+            .get(id)
+            .and_then(|facts| facts.computed)
+            .is_some(),
+        "{name} computed type must remain in the TypeScript extension plane"
+    );
+}
+
 #[test]
 fn recursive_renders() {
     let ir = compile(CASES[0].1);
@@ -196,7 +213,7 @@ fn self_nominal_renders() {
 #[test]
 fn inference_renders() {
     let ir = compile(CASES[8].1);
-    type_of(&ir, "x", ItemKind::Static, "f64");
+    declared_unknown_with_computed_type(&ir, "x", ItemKind::Static);
 }
 
 #[test]
@@ -253,7 +270,7 @@ fn overloads_render() {
         ItemKind::Function,
         "/* visibility unknown */ fn g(value: f64) -> str",
     );
-    type_of(&ir, "a", ItemKind::Constant, "str");
+    declared_unknown_with_computed_type(&ir, "a", ItemKind::Constant);
 }
 
 #[test]

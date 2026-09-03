@@ -14,7 +14,7 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
-    DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, OccurrenceConfidence,
+    DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
 use compiler_languages_typescript::{Checker, Report};
@@ -389,9 +389,33 @@ fn golden_narrowing_extends_the_declared_fact_with_a_site_row() {
 }
 
 #[test]
-fn computed_rows_stay_topologically_backward() {
-    let decoded = view(b"export const value: string | number = 'x';", None);
-    assert!(!facts(&decoded).is_empty());
+fn computed_reference_to_earlier_fact_resolves_locally() {
+    let report = Checker::default().decode(TRANSCRIPT).unwrap();
+    let compiled = try_lower(SOURCE, Some(&report)).unwrap();
+    let box_id = compiled
+        .ir
+        .items()
+        .find(|item| item.name() == b"Box" && item.kind() == ItemKind::Record)
+        .unwrap()
+        .id();
+    let made_id = compiled
+        .ir
+        .items()
+        .find(|item| item.name() == b"made" && item.kind() == ItemKind::Constant)
+        .unwrap()
+        .id();
+    assert!(
+        compiled
+            .ir
+            .storage_columns()
+            .language_extensions
+            .typescript
+            .get(made_id)
+            .and_then(|facts| facts.computed)
+            .is_some(),
+        "the computed made -> Box reference must remain in the TypeScript extension plane"
+    );
+    assert_ne!(box_id, made_id);
 }
 #[test]
 fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
