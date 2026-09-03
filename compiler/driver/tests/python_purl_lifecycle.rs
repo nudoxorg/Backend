@@ -88,7 +88,7 @@ fn malformed_purl_is_typed_rejection() -> Result<(), TestError> {
 #[test]
 fn real_downloader_enforces_cap_timeout_and_archive_corruption() -> Result<(), TestError> {
     let purl = python_support::Purl::parse("pypi:six@1.17.0")?;
-    let (url, wheel) = python_support::locate(&purl)?;
+    let (url, declared_digest, wheel) = python_support::locate(&purl)?;
     if !wheel.ends_with(".whl") {
         return Err(TestError::Fact("wheel filename was not recorded"));
     }
@@ -122,6 +122,9 @@ fn real_downloader_enforces_cap_timeout_and_archive_corruption() -> Result<(), T
         8 * 1024 * 1024,
         Instant::now() + Duration::from_secs(60),
     )?;
+    if python_support::sha256(&archive) != declared_digest {
+        return Err(TestError::Digest);
+    }
     let mut corrupt = archive.clone();
     let at = corrupt.len() / 2;
     if let Some(byte) = corrupt.get_mut(at) {
@@ -190,7 +193,9 @@ fn compile_fragment<'a>(
             fragment_output: output,
         },
     )
-    .map_err(|_| TestError::Fact("shipping Python compile failed"))
+    .map_err(|failure| TestError::SixCompile {
+        cause: format!("{failure:?}"),
+    })
 }
 
 #[test]
@@ -198,21 +203,21 @@ fn compile_fragment<'a>(
 fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
 -> Result<(), TestError> {
     let purl = python_support::Purl::parse("pypi:six@1.17.0")?;
-    let (url, _wheel) = python_support::locate(&purl)?;
+    let (url, declared_digest, _wheel) = python_support::locate(&purl)?;
     let archive = python_support::download(
         &url,
         8 * 1024 * 1024,
         Instant::now() + Duration::from_secs(60),
     )?;
     let download_digest = python_support::sha256(&archive);
+    if download_digest != declared_digest {
+        return Err(TestError::Digest);
+    }
     let root = python_support::fresh_dir("journey")?;
     python_support::unpack(&archive, &root)?;
     let source_path = python_support::find_six(&root)?;
     let source = fs::read(&source_path).map_err(io)?;
     let source_digest = python_support::sha256(&source);
-    if source_digest == download_digest {
-        return Err(TestError::Digest);
-    }
     let tool = python_toolchain()?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];

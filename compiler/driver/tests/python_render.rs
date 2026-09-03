@@ -343,7 +343,7 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         &ir,
         "callback",
         ItemKind::Static,
-        "/* visibility unknown */ static callback: fn(param: ?unsupported) -> str",
+        "/* visibility unknown */ static callback: fn(?unsupported) -> str",
     )?;
     exact_signature(
         &ir,
@@ -408,11 +408,20 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
     }
     exact_type(&first, "items", "?unsupported<?unsupported>")?;
     exact_type(&first, "lookup", "?unsupported<str, ?unsupported>")?;
-    exact_type(&first, "callback", "fn(param: ?unsupported) -> str")?;
+    exact_type(&first, "callback", "fn(?unsupported) -> str")?;
     exact_type(&first, "answer", "?unsupported | ?unsupported")?;
     exact_type(&first, "maybe", "?unsupported | ?unsupported")?;
     let alternate = compile_source(b"left: int\nright: str\n")?;
-    exact_type(&alternate, "left", "?unsupported")?;
+    let left = entity(&alternate, "left", ItemKind::Static)?;
+    if alternate
+        .item(left)
+        .and_then(|item| item.semantic_type())
+        .is_some()
+    {
+        return Err(TestError::Falsified(
+            "python arch-signed integer leaked into the live IR type DAG",
+        ));
+    }
     exact_type(&alternate, "right", "str")?;
     exact_type(&first, "choice", "str")?;
     Ok(())
@@ -482,10 +491,6 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
             (name, row.kind)
         })
         .collect();
-    let calls = entities
-        .iter()
-        .position(|(name, kind)| *name == b"calls" && *kind == EntityKind::Function)
-        .ok_or(TestError::MissingEntity { name: "calls" })?;
     let overloaded = entities
         .iter()
         .position(|(name, kind)| *name == b"overloaded" && *kind == EntityKind::Function)
@@ -541,19 +546,17 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
             occurrences.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
         }
     }
+    // The fragment path is the deterministic syntax-only lane: import
+    // bindings resolve to foreign pypi package keys at Index tier, and the
+    // checker's Import/Oracle upgrades live on the checker-provisioned
+    // paths (see the live-Ir tests and the real-package matrix).
     if !occurrences.iter().any(|fact| {
-        fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Import
-            && matches!(&fact.occurrence.target, OccurrenceTarget::Foreign(key) if matches!(key.origin, compiler_ir::ForeignOrigin::Package(lineage) if lineage.ecosystem == "pypi") && key.path == "typing")
-    }) {
-        return Err(TestError::Falsified("typing import occurrence absent"));
-    }
-    if !occurrences.iter().any(|fact| {
-        fact.owner.raw as usize == calls
-            && fact.occurrence.kind == ReferenceKind::FunctionCall
-            && fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Oracle
+        fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Index
             && matches!(fact.occurrence.target, OccurrenceTarget::Local(target) if target.raw as usize == overloaded)
     }) {
-        return Err(TestError::Falsified("overloaded call oracle occurrence absent"));
+        return Err(TestError::Falsified(
+            "overloaded call occurrence absent at the index tier",
+        ));
     }
     fs::remove_dir_all(&work).map_err(TestError::Io)?;
     Ok(())
@@ -609,6 +612,10 @@ fn python_fragment_forward_reference_structural_rows_validate() -> Result<(), Te
         .iter()
         .position(|(name, kind)| *name == b"Reader" && *kind == EntityKind::Record)
         .ok_or(TestError::MissingEntity { name: "Reader" })?;
+    let read = entities
+        .iter()
+        .position(|(name, kind)| *name == b"read" && *kind == EntityKind::Function)
+        .ok_or(TestError::MissingEntity { name: "read" })?;
     let mut cursor = decoded
         .type_facts()
         .ok_or(TestError::Compile("type facts"))?;
@@ -616,34 +623,33 @@ fn python_fragment_forward_reference_structural_rows_validate() -> Result<(), Te
         .by_ref()
         .map(|row| row.map_err(|_| TestError::Compile("type fact decode")))
         .collect::<Result<_, _>>()?;
-    if rows
+    let records: Vec<&DecodedTypeFact<'_>> = rows
         .iter()
         .filter(|row| row.record.tag == SemanticTypeTag::AnonymousRecord)
-        .count()
-        != 2
-        || rows
+        .collect();
+    let pointers: Vec<&DecodedTypeFact<'_>> = rows
+        .iter()
+        .filter(|row| row.record.tag == SemanticTypeTag::FunctionPointer)
+        .collect();
+    // Both structural classes host their members: Mapping (first
+    // declaration) reserves its own ordinal, Reader follows. Each record
+    // names its member count; the method FnPtr exists twice — once as
+    // Reader's pooled member row, once as the `read` function's own typed
+    // fact.
+    if records.len() != 2
+        || pointers.len() != 2
+        || !records
             .iter()
-            .filter(|row| row.record.tag == SemanticTypeTag::FunctionPointer)
-            .count()
-            != 1
-        || rows
+            .any(|row| row.owner.raw as usize == mapping && row.record.children.length == 2)
+        || !records
             .iter()
-            .filter(|row| row.owner.raw as usize == mapping)
-            .count()
-            != 1
-        || rows
+            .any(|row| row.owner.raw as usize == reader && row.record.children.length == 1)
+        || !pointers
             .iter()
-            .filter(|row| row.owner.raw as usize == reader)
-            .count()
-            != 1
-        || rows
+            .any(|row| row.owner.raw as usize == reader && row.record.children.length == 3)
+        || !pointers
             .iter()
-            .find(|row| row.owner.raw as usize == mapping)
-            .is_none_or(|row| row.record.children.length != 2)
-        || rows
-            .iter()
-            .find(|row| row.owner.raw as usize == reader)
-            .is_none_or(|row| row.record.children.length != 1)
+            .any(|row| row.owner.raw as usize == read && row.record.children.length == 3)
     {
         return Err(TestError::Falsified("structural member rows absent"));
     }

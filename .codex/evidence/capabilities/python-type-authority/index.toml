@@ -1,26 +1,29 @@
 capability = "python-type-authority"
 opened = "2026-09-02"
-baseline_tree = "2f82d74b49cfebdf1b56ac538af580987c8695a7 + uncommitted python lane"
+baseline_tree = "d9411952f8235d09aafd7e0589173de1c03ee8c0 + uncommitted python lane (lower/python.rs -33-line test cleanup; purl/packages compile-repair pending)"
+
+[[dispatches]]
+task = "d1-anonymous-child-protocol"
+role = "nudox_luna_implementer"
+card = "card-d1-protocol-repair.md"
+baseline = "lower.rs 1786LOC a205626c4c224fd4; lower/tests.rs 388LOC 674cea2e2f68f371; python_render.rs 655LOC 96b70278652efde2"
+paths = ["compiler/driver/lower.rs", "compiler/driver/tests/python_render.rs"]
+state = "accepted"
+commit = "7bf08a76088863483400917a4cf038ddd32540d5"
+
+[[dispatches]]
+task = "d2-live-fnptr-labels"
+role = "nudox_luna_implementer"
+card = "card-d2-live-fnptr-labels.md"
+baseline = "lower.rs post-7bf08a760"
+paths = ["compiler/driver/lower.rs"]
+state = "dispatched"
 
 [[dispatches]]
 task = "pending"
 role = "nudox_luna_implementer"
-card = "python-render-golden"
-paths = ["compiler/driver/tests/python_render.rs"]
-state = "planned"
-
-[[dispatches]]
-task = "pending"
-role = "nudox_luna_implementer"
-card = "python-purl-lifecycle"
-paths = ["compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_purl_lifecycle/"]
-state = "planned"
-
-[[dispatches]]
-task = "pending"
-role = "nudox_luna_implementer"
-card = "python-packages-fidelity"
-paths = ["compiler/driver/tests/python_packages.rs", "compiler/driver/tests/python_packages/"]
+card = "card-purl-compile-repair.md"
+paths = ["compiler/driver/tests/python_support/mod.rs", "compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_packages.rs"]
 state = "planned"
 
 [[reviews]]

@@ -101,9 +101,19 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-pub fn locate(purl: &Purl) -> Result<(String, String), Error> {
+/// One shared transport with a hard 30-second global timeout: ureq 3.x
+/// carries timeouts on the agent config, not on individual requests.
+fn transport() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .new_agent()
+}
+
+pub fn locate(purl: &Purl) -> Result<(String, [u8; 32], String), Error> {
     let url = format!("https://pypi.org/pypi/{}/{}/json", purl.name, purl.version);
-    let response = ureq::get(&url)
+    let response = transport()
+        .get(&url)
         .call()
         .map_err(|source| Error::Network { source })?;
     let status = response.status().as_u16();
@@ -114,6 +124,7 @@ pub fn locate(purl: &Purl) -> Result<(String, String), Error> {
     response
         .into_body()
         .into_reader()
+        .take(4 * 1024 * 1024)
         .read_to_string(&mut text)
         .map_err(|source| Error::Read {
             observed: text.len(),
@@ -121,6 +132,7 @@ pub fn locate(purl: &Purl) -> Result<(String, String), Error> {
         })?;
     let marker = format!("https://files.pythonhosted.org/packages/");
     let mut sdist = None;
+    let mut sdist_digest = None;
     let mut wheel = None;
     for quoted in text.split('"') {
         if quoted.starts_with(&marker)
@@ -133,14 +145,61 @@ pub fn locate(purl: &Purl) -> Result<(String, String), Error> {
             wheel = Some(quoted.to_owned());
         }
     }
-    match (sdist, wheel) {
-        (Some(sdist), Some(wheel)) => Ok((sdist, wheel)),
+    // The pinned digest is located straight from the JSON's own sdist
+    // record, so the later download can be verified against PyPI's
+    // declared bytes rather than only the transport's word. Each entry
+    // lists `digests` before its terminal `url`, so the LAST `digests`
+    // before the sdist URL — bounded to one entry — is the sdist's own.
+    if let Some(sdist_url) = &sdist {
+        let record_start = text.find(sdist_url.as_str());
+        if let Some(record_start) = record_start {
+            let window = &text[..record_start];
+            if let Some(digest_marker) = window.rfind("\"digests\"") {
+                if record_start - digest_marker <= 2048 {
+                    let digests = &text[digest_marker..record_start];
+                    if let Some(sha_marker) = digests.find("\"sha256\"") {
+                        let after = &digests[sha_marker + "\"sha256\"".len()..];
+                        let hex_start = after.find('"').map_or(0, |offset| offset + 1);
+                        let hex = &after[hex_start..];
+                        if let Some(hex_end) = hex.find('"') {
+                            if hex_end == 64 {
+                                sdist_digest = Some(decode_hex64(&hex[..64])?);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match (sdist, sdist_digest, wheel) {
+        (Some(sdist), Some(sdist_digest), Some(wheel)) => Ok((sdist, sdist_digest, wheel)),
         _ => Err(Error::MissingSource),
     }
 }
 
+/// Decodes 64 hexadecimal characters into the 32 digest bytes.
+fn decode_hex64(text: &str) -> Result<[u8; 32], Error> {
+    fn hex_digit(byte: u8) -> Result<u8, Error> {
+        match byte {
+            b'0'..=b'9' => Ok(byte - b'0'),
+            b'a'..=b'f' => Ok(byte - b'a' + 10),
+            b'A'..=b'F' => Ok(byte - b'A' + 10),
+            _ => Err(Error::Path {
+                path: "sha256 hex".into(),
+            }),
+        }
+    }
+    let bytes = text.as_bytes();
+    let mut out = [0_u8; 32];
+    for (index, pair) in bytes.chunks(2).enumerate() {
+        out[index] = hex_digit(pair[0])? << 4 | hex_digit(pair[1])?;
+    }
+    Ok(out)
+}
+
 pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
-    let response = ureq::get(url)
+    let response = transport()
+        .get(url)
         .call()
         .map_err(|source| Error::Network { source })?;
     let status = response.status().as_u16();
@@ -177,6 +236,16 @@ pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Err
     Ok(bytes)
 }
 
+/// Rejects archive member paths whose components escape the unpack root:
+/// anything containing a `..` component (absolute paths already fail the
+/// root-prefix check at the join site).
+fn reject_escaping(path: &str) -> Result<(), Error> {
+    if path.split(['/', '\\']).any(|component| component == "..") {
+        return Err(Error::Path { path: path.into() });
+    }
+    Ok(())
+}
+
 pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     let mut decoder = GzDecoder::new(bytes);
     let mut tar = Vec::new();
@@ -197,6 +266,7 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
         let name = std::str::from_utf8(&header[..name_end]).map_err(|_| Error::Path {
             path: "non-utf8".into(),
         })?;
+        reject_escaping(name)?;
         let size_text = std::str::from_utf8(&header[124..136])
             .map_err(|_| Error::Path { path: name.into() })?;
         let size = usize::from_str_radix(size_text.trim_matches('\0').trim(), 8)
@@ -218,10 +288,14 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
                 if kind == b'x'
                     && let Some(override_path) = pax_path_override(payload)?
                 {
+                    reject_escaping(&override_path)?;
                     pending_override = Some(override_path);
                 }
             }
-            b'5' => std::fs::create_dir_all(&target).map_err(|source| Error::Io { source })?,
+            b'5' => {
+                pending_override = None;
+                std::fs::create_dir_all(&target).map_err(|source| Error::Io { source })?
+            }
             0 | b'0' => {
                 let destination = match pending_override.take() {
                     Some(override_path) => {
@@ -247,7 +321,6 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
             }
             other => return Err(Error::Entry { kind: other }),
         }
-        pending_override = None;
         offset += 512 + size.div_ceil(512) * 512;
     }
     Ok(())
@@ -314,7 +387,104 @@ pub fn find_six(root: &Path) -> Result<PathBuf, Error> {
 }
 
 pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
-    let path = std::env::temp_dir().join(format!("nudox-python-{label}-{}", std::process::id()));
+    // Every call gets a unique directory: a leftover directory from an
+    // aborted earlier run must never be silently reused as this run's
+    // journal or artifact store.
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "nudox-python-{label}-{}-{sequence}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&path).map_err(|source| Error::Io { source })?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, unpack};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::path::Path;
+
+    /// Wraps one crafted tar stream in the gzip envelope `unpack` requires.
+    fn gz(tar: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::new(6));
+        std::io::Write::write_all(&mut encoder, tar).expect("fixture tar writes into memory");
+        encoder.finish().expect("fixture gzip finish")
+    }
+
+    /// Writes one 512-byte ustar header: `name`, octal `size`, kind.
+    fn header(name: &[u8; 100], size: u32, kind: u8) -> [u8; 512] {
+        let mut block = [0_u8; 512];
+        block[..100].copy_from_slice(name);
+        // The ustar size field is 12 bytes: 11 octal digits plus the NUL.
+        let octal = format!("{size:011o}\0");
+        block[124..136].copy_from_slice(octal.as_bytes());
+        block[156] = kind;
+        block
+    }
+
+    /// One regular-file entry with its padded payload.
+    fn entry(name: &[u8; 100], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = header(name, payload.len() as u32, b'0').to_vec();
+        let padded = payload.len().div_ceil(512) * 512;
+        bytes.extend_from_slice(payload);
+        bytes.resize(bytes.len() + padded - payload.len(), 0);
+        bytes
+    }
+
+    /// A `..` member name must be rejected, never written outside root.
+    #[test]
+    fn traversal_member_is_typed_rejection() {
+        let mut tar = entry(&make_name("../pwned.txt"), b"hostile");
+        tar.extend_from_slice(&[0_u8; 1024]);
+        let archive = gz(&tar);
+        let root = std::env::temp_dir().join("nudox-traversal-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let outcome = unpack(&archive, &root);
+        assert!(matches!(outcome, Err(Error::Path { .. })));
+        drop(std::fs::remove_dir_all(&root));
+    }
+
+    /// A pax `path=` record renames the next regular entry.
+    #[test]
+    fn pax_path_override_renames_next_entry() {
+        let mut tar = header(&make_name("pax"), 26, b'x').to_vec();
+        let record = b"26 path=renamed/module.py\n";
+        tar.extend_from_slice(record);
+        tar.resize(tar.len() + 512 - record.len(), 0);
+        tar.extend_from_slice(&entry(&make_name("orig.py"), b"content"));
+        tar.extend_from_slice(&[0_u8; 1024]);
+        let archive = gz(&tar);
+        let root = std::env::temp_dir().join("nudox-pax-root");
+        std::fs::create_dir_all(&root).expect("root");
+        unpack(&archive, &root).expect("unpack");
+        assert!(root.join("renamed/module.py").is_file());
+        assert!(!root.join("orig.py").exists());
+        drop(std::fs::remove_dir_all(&root));
+    }
+
+    /// A pax `path=` override may not escape the root either.
+    #[test]
+    fn pax_path_override_traversal_is_typed_rejection() {
+        let mut tar = header(&make_name("pax"), 31, b'x').to_vec();
+        let record = b"31 path=../../escaped/pwned.py\n";
+        tar.extend_from_slice(record);
+        tar.resize(tar.len() + 512 - record.len(), 0);
+        tar.extend_from_slice(&entry(&make_name("orig.py"), b"content"));
+        tar.extend_from_slice(&[0_u8; 1024]);
+        let archive = gz(&tar);
+        let root = std::env::temp_dir().join("nudox-pax-escape-root");
+        std::fs::create_dir_all(&root).expect("root");
+        let outcome = unpack(&archive, &root);
+        assert!(matches!(outcome, Err(Error::Path { .. })));
+        drop(std::fs::remove_dir_all(&root));
+    }
+
+    fn make_name(name: &str) -> [u8; 100] {
+        let mut bytes = [0_u8; 100];
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        bytes
+    }
 }

@@ -464,8 +464,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None => return Ok(None),
                 }
             };
-            let name = self.slice(parameter.name_span)?;
-            children.push((row, Some(name)));
+            children.push(row);
         }
         let mut payload1 = 0;
         if let Some(annotation) = self.return_annotation(member) {
@@ -476,18 +475,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 anchor,
             )? {
                 Some(row) => {
-                    children.push((row, None));
+                    children.push(row);
                     payload1 = SemanticTypeRecord::RESULT_FLAG;
                 }
                 None => return Ok(None),
             }
         }
-        for (row, name) in children {
-            if self.facts.anonymous_type_child(row, name, 0).is_err() {
-                return Ok(None);
-            }
-        }
-        self.intern_row(function_pointer_record(payload1), anchor)
+        self.parent_row(function_pointer_record(payload1), &children, anchor)
     }
 
     /// The module-level `TypeVar(...)` binding names annotations resolve
@@ -715,16 +709,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         };
         let extension = self.python_extension(&[], None, tier)?;
         let mut fact = SemanticFact::new(kind, name, LEAF_PRODUCT).typed(lowered_record);
-        let result_index = if lowered_record.tag == SemanticTypeTag::FunctionPointer
-            && lowered_record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0
-        {
-            children.len().checked_sub(1)
-        } else {
-            None
-        };
-        for (index, ordinal) in children.into_iter().enumerate() {
-            let child_name = (Some(index) != result_index).then_some(b"param" as &'source [u8]);
-            fact = fact.type_child(ordinal, child_name, 0);
+        for ordinal in children {
+            fact = fact.type_child(ordinal, None, 0);
         }
         let fact = fact.with_extension(EmissionExtension::Python(extension));
         let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
@@ -1153,9 +1139,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             }
             Annotation::Generic { .. } => match self.compound_root(annotation, spelling, tables)? {
-                Some((record, children)) if record.tag == SemanticTypeTag::FunctionPointer => {
-                    self.parent_row_named(record, &children, anchor)
-                }
                 Some((record, children)) => self.parent_row(record, &children, anchor),
                 None => Ok(None),
             },
@@ -1173,26 +1156,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         for child in children {
             let admitted = self.facts.anonymous_type_child(*child, None, 0).is_ok();
             if !admitted {
-                return Ok(None);
-            }
-        }
-        self.intern_row(record, anchor)
-    }
-
-    fn parent_row_named(
-        &mut self,
-        record: SemanticTypeRecord<'source>,
-        children: &[u32],
-        anchor: u32,
-    ) -> Result<Option<u32>, PythonCollectError> {
-        let result_index = if record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0 {
-            children.len().checked_sub(1)
-        } else {
-            None
-        };
-        for (index, child) in children.iter().enumerate() {
-            let name = (Some(index) != result_index).then_some(b"param" as &'source [u8]);
-            if self.facts.anonymous_type_child(*child, name, 0).is_err() {
                 return Ok(None);
             }
         }
