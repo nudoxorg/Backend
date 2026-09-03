@@ -2601,10 +2601,10 @@ enum SpellDomain {
     Range(u32, u32),
 }
 
-/// Interns one checker-computed type as an anonymous type row owned by
+/// Interns one checker-computed type as a computed type row owned by
 /// `owner`, interning every child row first so the pooled lane stays
 /// topologically backward. Returns the row's lane coordinate
-/// (`ANONYMOUS_ROW_BASE` plus its pool ordinal).
+/// (`COMPUTED_ROW_BASE` plus its pool ordinal).
 ///
 /// `spell` names the source span that owns the tree's member spellings:
 /// the owner's declaring span for declaration-computed rows, or the exact
@@ -2662,7 +2662,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Union),
                 owner,
-                &children,
+                &children[..members.len()],
             )
         }
         TypeTree::Intersection { members } => {
@@ -2671,7 +2671,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
                 owner,
-                &children,
+                &children[..members.len()],
             )
         }
         TypeTree::Tuple { elements } => {
@@ -2681,7 +2681,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Tuple),
                 owner,
-                &children,
+                &children[..elements.len()],
             )
         }
         TypeTree::Array { element } => {
@@ -2763,12 +2763,10 @@ fn intern_computed_tree<'source>(
                     .ok_or_else(lane_rejection)?;
                 let row = rows.get(position).copied().ok_or_else(lane_rejection)?;
                 facts
-                    .anonymous_type_child(row, Some(spelling), flags)
+                    .computed_type_child(row, Some(spelling), flags)
                     .map_err(fault)?;
             }
-            facts
-                .intern_anonymous_type_row(owner, record)
-                .map_err(fault)
+            facts.intern_computed_type_row(owner, record).map_err(fault)
         }
         TypeTree::Reference { name, module, args } => intern_computed_reference(
             registry,
@@ -2818,7 +2816,8 @@ fn intern_computed_reference<'source>(
         .is_none()
         .then(|| registry.fact_by_name_bytes(name.as_bytes()))
         .flatten();
-    let base = match local {
+    let local_fact = local;
+    let base = match local_fact {
         Some(fact) => fact,
         None => {
             // A checker-resolved foreign module type is known and named,
@@ -2837,6 +2836,11 @@ fn intern_computed_reference<'source>(
         }
     };
     if args.is_empty() {
+        if local.is_none() {
+            // A foreign base already owns the honest unknown row above; it is
+            // the computed root, not an entity ordinal for a nominal cell.
+            return Ok(base);
+        }
         // A bare reference is still its own computed row: every computed
         // declaration owns exactly one root row in the anonymous pool, in
         // pool order, so the computed-cell mint stays aligned.
@@ -2894,11 +2898,9 @@ fn intern_computed_row<'a, 'source>(
     children: &[u32],
 ) -> Result<u32, TypeScriptCollectError> {
     for child in children {
-        facts.anonymous_type_child(*child, None, 0).map_err(fault)?;
+        facts.computed_type_child(*child, None, 0).map_err(fault)?;
     }
-    facts
-        .intern_anonymous_type_row(owner, record)
-        .map_err(fault)
+    facts.intern_computed_type_row(owner, record).map_err(fault)
 }
 
 fn intern_computed_leaf<'a, 'source>(
@@ -2906,9 +2908,7 @@ fn intern_computed_leaf<'a, 'source>(
     record: SemanticTypeRecord<'source>,
     owner: u32,
 ) -> Result<u32, TypeScriptCollectError> {
-    facts
-        .intern_anonymous_type_row(owner, record)
-        .map_err(fault)
+    facts.intern_computed_type_row(owner, record).map_err(fault)
 }
 
 /// The closed primitive record of one checker primitive spelling.

@@ -59,6 +59,8 @@ pub enum FactFault {
     TypeChildCapacity,
     /// The anonymous type-row pool is full.
     TypeRowCapacity,
+    /// The computed type-row lane is full.
+    ComputedRowCapacity,
     /// An occurrence names an owner outside the pushed prefix.
     OccurrenceOwner {
         /// Owner ordinal the occurrence named.

@@ -60,10 +60,15 @@ pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
 pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 2048;
+/// Dense bound of checker-computed type rows in the schema-2 segment.
+pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 1024;
 /// Total type-row budget: one record per fact plus the anonymous pool.
-pub(super) const MAX_TYPE_ROWS: usize = MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS;
+pub(super) const MAX_TYPE_ROWS: usize =
+    MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
 /// First pool-local ordinal of an anonymous type row.
 const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
+/// First pool-local ordinal of a computed type row.
+const COMPUTED_ROW_BASE: u32 = ANONYMOUS_ROW_BASE + MAX_ANONYMOUS_TYPE_ROWS as u32;
 /// Sentinel marking an absent row in an extension plane's row table.
 const SECTION_NONE: u32 = u32::MAX;
 
@@ -322,12 +327,22 @@ pub(super) struct FactSet<'source> {
     anonymous_owners: Box<[u32; MAX_ANONYMOUS_TYPE_ROWS]>,
     anonymous_child_starts: Box<[u32; MAX_ANONYMOUS_TYPE_ROWS]>,
     anonymous_child_counts: Box<[u8; MAX_ANONYMOUS_TYPE_ROWS]>,
-    anonymous_child_targets: Box<[u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
-    anonymous_child_names: Box<[Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
-    anonymous_child_flags: Box<[u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
+    anonymous_child_targets: Box<[u32]>,
+    anonymous_child_names: Box<[Option<&'source [u8]>]>,
+    anonymous_child_flags: Box<[u8]>,
     anonymous_rows: usize,
     anonymous_children_total: usize,
     anonymous_child_pending: u32,
+    computed_records: Box<[SemanticTypeRecord<'source>]>,
+    computed_owners: Box<[u32]>,
+    computed_child_starts: Box<[u32]>,
+    computed_child_counts: Box<[u8]>,
+    computed_child_targets: Box<[u32]>,
+    computed_child_names: Box<[Option<&'source [u8]>]>,
+    computed_child_flags: Box<[u8]>,
+    computed_rows: usize,
+    computed_children_total: usize,
+    computed_child_pending: u32,
 }
 
 // The boxed lanes keep this caller-owned collector below the 64 KiB stack
@@ -402,12 +417,28 @@ impl<'source> FactSet<'source> {
             anonymous_owners: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
             anonymous_child_starts: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
             anonymous_child_counts: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
-            anonymous_child_targets: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
-            anonymous_child_names: Box::new([None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
-            anonymous_child_flags: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
+            anonymous_child_targets: vec![0; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
+            anonymous_child_names: vec![None; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
+            anonymous_child_flags: vec![0; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
             anonymous_rows: 0,
             anonymous_children_total: 0,
             anonymous_child_pending: 0,
+            computed_records: vec![opaque_record(); MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
+            computed_owners: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
+            computed_child_starts: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
+            computed_child_counts: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
+            computed_child_targets: vec![0; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
+            computed_child_names: vec![None; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
+            computed_child_flags: vec![0; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+                .into_boxed_slice(),
+            computed_rows: 0,
+            computed_children_total: 0,
+            computed_child_pending: 0,
         }
     }
 
@@ -532,6 +563,73 @@ impl<'source> FactSet<'source> {
         self.anonymous_child_flags[pooled] = flags;
         self.anonymous_children_total += 1;
         self.anonymous_child_pending += 1;
+        Ok(())
+    }
+
+    /// Interns one checker-computed row in the schema-2-only lane.
+    pub(super) fn intern_computed_type_row(
+        &mut self,
+        owner: u32,
+        record: SemanticTypeRecord<'source>,
+    ) -> Result<u32, FactFault> {
+        if owner >= self.len as u32 {
+            return Err(FactFault::RefTarget {
+                lane: "computed_owners",
+                raw: owner,
+                fact_count: self.len,
+            });
+        }
+        if self.computed_rows == MAX_COMPUTED_TYPE_ROWS {
+            return Err(FactFault::ComputedRowCapacity);
+        }
+        let child_count = self.computed_child_pending;
+        record
+            .validate(child_count)
+            .map_err(FactFault::TypeRecord)?;
+        let index = self.computed_rows;
+        self.computed_records[index] = record;
+        self.computed_owners[index] = owner;
+        self.computed_child_starts[index] =
+            (self.computed_children_total - child_count as usize) as u32;
+        self.computed_child_counts[index] = child_count as u8;
+        self.computed_rows += 1;
+        self.computed_child_pending = 0;
+        Ok(COMPUTED_ROW_BASE + index as u32)
+    }
+
+    /// Appends a child to the computed row currently being built. Computed
+    /// targets are either declared rows or strictly earlier computed rows.
+    pub(super) fn computed_type_child(
+        &mut self,
+        target: u32,
+        name: Option<&'source [u8]>,
+        flags: u8,
+    ) -> Result<(), FactFault> {
+        let valid = if target >= COMPUTED_ROW_BASE {
+            target - COMPUTED_ROW_BASE < self.computed_rows as u32
+        } else if target >= ANONYMOUS_ROW_BASE {
+            target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
+        } else {
+            target < self.len as u32
+        };
+        if !valid {
+            return Err(FactFault::TypeChildTarget {
+                position: self.computed_child_pending as usize,
+                target,
+                fact_count: self.len,
+            });
+        }
+        if self.computed_child_pending == MAX_TYPE_CHILDREN as u32
+            || self.computed_children_total == MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN
+        {
+            return Err(FactFault::TypeChildCapacity);
+        }
+        let pooled = self.computed_children_total;
+        self.computed_child_targets[pooled] = target;
+        self.computed_child_names[pooled] = name;
+        self.computed_child_flags[pooled] = flags;
+        self.computed_children_total += 1;
+        self.computed_child_pending += 1;
         Ok(())
     }
 
@@ -898,35 +996,24 @@ impl<'source> FactSet<'source> {
                     is_const: false,
                 };
             }
-            let computed = value
-                .computed
-                .map(|id| {
-                    let target = id.erase().raw;
-                    ANONYMOUS_ROW_BASE.checked_add(target).ok_or(
-                        compiler_ir::BuildError::Dangling {
-                            space: compiler_ir::SemanticSpace::Type,
-                            raw: target,
-                        },
-                    )?;
-                    let record = self.anonymous_records.get(target as usize).ok_or(
-                        compiler_ir::BuildError::Dangling {
-                            space: compiler_ir::SemanticSpace::Type,
-                            raw: target,
-                        },
-                    )?;
-                    value.declared.ok_or(compiler_ir::BuildError::Dangling {
-                        space: compiler_ir::SemanticSpace::Type,
-                        raw: target,
-                    })?;
-                    let computed = match (record.tag, PrimitiveShape::try_from(record.payload0)) {
-                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
-                            tree.intern_computed(compiler_ir::ComputedType::KeyOf(TypeId::new(0)))?
+            let computed = value.computed.and_then(|id| {
+                self.computed_records
+                    .get(id.erase().raw as usize)
+                    .and_then(|record| {
+                        match (record.tag, PrimitiveShape::try_from(record.payload0)) {
+                            (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
+                                Some(tree.intern_computed(compiler_ir::ComputedType::KeyOf(
+                                    TypeId::new(0),
+                                )))
+                            }
+                            (SemanticTypeTag::SelfType, _) => {
+                                Some(tree.intern_computed(compiler_ir::ComputedType::This))
+                            }
+                            _ => None,
                         }
-                        _ => tree.intern_computed(compiler_ir::ComputedType::This)?,
-                    };
-                    Ok::<_, compiler_ir::BuildError>(computed)
-                })
-                .transpose()?;
+                    })
+            });
+            let computed = computed.transpose()?;
             let declared = value
                 .declared
                 .map(|id| {
@@ -1945,20 +2032,25 @@ pub(super) fn admit<'source, 'output>(
     )
     .map_err(AdmissionFault::Canonical)?;
 
-    let mut type_facts = Box::new(
-        [TypeFactInput {
+    let mut type_facts = vec![
+        TypeFactInput {
             owner: compiler_ir::EntityId::new(0),
             record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
-        }; MAX_TYPE_ROWS],
-    );
-    let mut type_children = Box::new(
-        [SemanticTypeChild {
+        };
+        MAX_TYPE_ROWS
+    ]
+    .into_boxed_slice();
+    let mut type_children = vec![
+        SemanticTypeChild {
             target: TypeChildTarget::Text,
             name: None,
             flags: 0,
         };
-            MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN],
-    );
+        MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN
+            + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN
+            + MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN
+    ]
+    .into_boxed_slice();
     let anonymous_rows = facts.anonymous_rows;
     // Lane order: anonymous rows first (topological by construction), then
     // fact rows — every fact-row child and anonymous child points backward.
@@ -2029,13 +2121,49 @@ pub(super) fn admit<'source, 'output>(
             record,
         };
     }
-    let type_row_count = anonymous_rows + fact_count;
+    let computed_rows = facts.computed_rows;
+    let mut computed_facts = vec![
+        TypeFactInput {
+            owner: compiler_ir::EntityId::new(0),
+            record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
+        };
+        MAX_COMPUTED_TYPE_ROWS
+    ]
+    .into_boxed_slice();
+    let declared_count = anonymous_rows + fact_count;
+    for (index, source_record) in facts.computed_records[..computed_rows].iter().enumerate() {
+        let child_count = usize::from(facts.computed_child_counts[index]);
+        let record = SemanticTypeRecord {
+            children: ListSpan::new(type_pooled_cursor as u32, child_count as u32),
+            ..*source_record
+        };
+        let base = facts.computed_child_starts[index] as usize;
+        for offset in 0..child_count {
+            let pooled = type_pooled_cursor + offset;
+            let target = facts.computed_child_targets[base + offset];
+            let target = if target >= COMPUTED_ROW_BASE {
+                declared_count as u32 + target - COMPUTED_ROW_BASE
+            } else {
+                remap(target)
+            };
+            type_children[pooled] = SemanticTypeChild {
+                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                    compiler_ir::TypeId::new(target),
+                )),
+                name: facts.computed_child_names[base + offset],
+                flags: facts.computed_child_flags[base + offset],
+            };
+        }
+        type_pooled_cursor += child_count;
+        computed_facts[index] = TypeFactInput {
+            owner: compiler_ir::EntityId::new(facts.computed_owners[index]),
+            record,
+        };
+    }
     let type_fact_lane = TypeFactLane {
-        inputs: &type_facts[..type_row_count],
+        inputs: &type_facts[..declared_count],
+        computed: &computed_facts[..computed_rows],
         children: &type_children[..type_pooled_cursor],
-        // The computed segment carries no rows until the dedicated computed
-        // emission lane lands; the declared plane is byte-identical either way.
-        computed: &[],
     };
 
     // Language-extension section: dense per-plane fact pools plus their row
