@@ -16,7 +16,13 @@ pub const MAX_LOCAL_TOOLCHAINS: usize = NativeTool::ALL.len();
 pub const MAX_LOCAL_COMPILER_TIMEOUT: Duration = Duration::from_hours(1);
 
 /// Maximum compact IR fragment bytes accepted by this single-request adapter.
-pub const MAX_FRAGMENT_OUTPUT_BYTES: usize = 512;
+///
+/// Sized for the schema-2 envelope: header, directory, entity/type-node/atom
+/// lanes, source and recipe facts, and the type-fact plane with its
+/// declared+computed segment header at the documented small-module bounds,
+/// with headroom for pooled children. Re-frozen together with the emission
+/// geometry constants.
+pub const MAX_FRAGMENT_OUTPUT_BYTES: usize = 2048;
 /// Maximum canonical package-manifest bytes accepted by this one-fragment adapter.
 pub const MAX_MANIFEST_OUTPUT_BYTES: usize = 512;
 /// Maximum fragment entries published by one application `Generate` request.

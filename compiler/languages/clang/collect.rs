@@ -16,10 +16,10 @@ use clang_sys::{
 use crate::{
     ClangInput, ClangScratch, CollectError, ScratchLane,
     facts::{
-        BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind,
-        DefinitionState, DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact,
-        ReferenceKind, ReferenceTarget, SourceDependencyKind, StorageClass, SymbolIdentity,
-        TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
+        BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
+        DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact, ReferenceKind,
+        ReferenceTarget, SourceDependencyKind, StorageClass, SymbolIdentity, TypeEdge, TypeFact,
+        TypeId, TypeKind, TypeQualifiers, TypeRelation,
     },
     ffi::{self, TranslationUnit},
 };
@@ -667,9 +667,9 @@ const fn builtin_class(kind: CXTypeKind) -> Option<BuiltinClass> {
         clang_sys::CXType_Float | clang_sys::CXType_Double | clang_sys::CXType_LongDouble => {
             Some(BuiltinClass::Float)
         }
-        clang_sys::CXType_NullPtr
-        | clang_sys::CXType_Complex
-        | clang_sys::CXType_Vector => Some(BuiltinClass::Other),
+        clang_sys::CXType_NullPtr | clang_sys::CXType_Complex | clang_sys::CXType_Vector => {
+            Some(BuiltinClass::Other)
+        }
         _ => None,
     }
 }

@@ -105,3 +105,43 @@ Two independent passes over producer (image.go/serialize.go), reader
 (image.rs), lower (go.rs), and lane (compiler/ir GoFacts) produced no new
 wire facts after R1-R3; the v5 plane set is closed unless the Sol fork
 (M6) or a real-module mismatch (M9) reopens it.
+
+## R8 — Stale-artifact hazard on this host (informs all gates)
+
+After cherry-picked commits landed (the three v5 wire commits appear twice
+in the reflog — original plus cherry-pick), `cargo` did not invalidate
+`compiler-languages-go`: the linked rlib still rejected version 5
+(`Header(Version { found: 5 })`) while the tree said `VERSION: u16 = 5`.
+One `touch` of the source rebuilt the rlib and the gate went green. Every
+gate sequence in this capability therefore begins with the affected
+package sources touched or `cargo clean -p <pkg>` when a freshly landed
+commit misbehaves against a green reading. Recorded as an environment
+fact, not a code law.
+
+## R9 — Mandate delta from the parent (revises M8, M9)
+
+The parent mandate (this session) fixes the corpus at 20 mostly-random
+REAL modules (broadly-known + stdlib-adjacent + 17+ niche including
+multi-module repositories), requires perf profiles, deep generated-IR
+review vs source truth, and integration tests codifying the pipeline. It
+also restates "project EVERYTHING ... constant values" (M6) and adds
+rendering via compiler/ir render.rs with golden tests (M7). M9 rewritten;
+M6 stays the only open fork with a precise proposal pending (GoFacts wire
+WIDTH 28 -> 32 hosting a constant-value atom cell, or an equivalent
+additive revision decided by Sol). Package rows are projectable within
+driver authority as Module entities (namespace boundary kind) if W3's
+design supports it; module-row metadata (go directive, version) has no
+lane cell and stays image-only unless M6's fork resolves otherwise.
+
+## R10 — W1 outcome and gate state at re-freeze
+
+W1 landed as commits a358683ce -> 4201c2744 -> 98711b363 -> 3178de64c
+(v5 wire + reader + protocol tests + fixture). Gates this session:
+`cargo test -p compiler-languages-go` 28/28 green; `cargo test
+-p compiler-driver --test go_image` green (the v1-fixture inherited red
+was already repaired by W1's fixture update; the test's error-erasure
+`Err(_) => Compile` was replaced with cause retention during diagnosis).
+`cargo test -p compiler-driver --lib` still blocked by stale `#[cfg(test)]`
+modules in lower/{clang,csharp,rust,typescript,python}.rs (40 errors,
+E0277/E0422/E0308/E0004/E0106/E0599 families) — exactly M10/W0. go.rs's
+own cfg(test) module compiles (warnings only).

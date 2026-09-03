@@ -98,11 +98,9 @@ fn tsx_profile_accepts_jsx_while_typescript_profile_rejects_it() -> Result<(), A
         Err(AuthorityError::Syntax { diagnostics }) if !diagnostics.is_empty() => Ok(()),
         Ok(_)
         | Err(AuthorityError::Binding { .. } | AuthorityError::Syntax { .. })
-        | Err(AuthorityError::Checker { .. }) => {
-            Err(AuthorityTestError::MissingResolvedUse {
-                name: "TSX grammar distinction",
-            })
-        }
+        | Err(AuthorityError::Checker { .. }) => Err(AuthorityTestError::MissingResolvedUse {
+            name: "TSX grammar distinction",
+        }),
     }
 }
 
@@ -118,11 +116,9 @@ fn malformed_source_preserves_every_parser_diagnostic() -> Result<(), AuthorityT
         Err(AuthorityError::Syntax { diagnostics }) if !diagnostics.is_empty() => Ok(()),
         Ok(_)
         | Err(AuthorityError::Binding { .. } | AuthorityError::Syntax { .. })
-        | Err(AuthorityError::Checker { .. }) => {
-            Err(AuthorityTestError::UnexpectedAdmission {
-                case: "malformed TypeScript source",
-            })
-        }
+        | Err(AuthorityError::Checker { .. }) => Err(AuthorityTestError::UnexpectedAdmission {
+            case: "malformed TypeScript source",
+        }),
     }
 }
 

@@ -5,12 +5,14 @@
 use std::{path::PathBuf, process::Command};
 
 mod authority;
+mod purl;
 
 pub use authority::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFieldAccess, RustMethodCall, RustProject, SemanticKind,
-    SourceByteLimit, SourceOrigin,
+    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustMethodCall,
+    RustProject, SemanticKind, SourceByteLimit, SourceOrigin,
 };
+pub use purl::{RustLocatedPackage, RustPackageUrl, RustPurlError};
 
 /// The pinned rust-analyzer HIR facade this authority borrows from.
 ///

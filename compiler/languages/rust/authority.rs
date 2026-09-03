@@ -10,12 +10,12 @@ use std::{
 };
 
 use compiler_vocabulary::RustEdition;
-use ra_ap_base_db::EditionedFileId;
+use ra_ap_base_db::{EditionedFileId, all_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
-use ra_ap_project_model::{CargoConfig, RustLibSource};
+use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
     ast::{self, HasName},
@@ -38,6 +38,20 @@ pub struct RustProject {
 }
 
 impl RustProject {
+    pub(crate) fn validate_root(root: impl AsRef<Path>) -> Result<PathBuf, RustAuthorityError> {
+        let root =
+            root.as_ref()
+                .canonicalize()
+                .map_err(|source| RustAuthorityError::ProjectRoot {
+                    path: root.as_ref().to_path_buf(),
+                    source,
+                })?;
+        let manifest = root.join("Cargo.toml");
+        if !manifest.is_file() {
+            return Err(RustAuthorityError::MissingManifest { path: manifest });
+        }
+        Ok(root)
+    }
     /// Validates one caller-selected Cargo root and seals its language profile.
     ///
     /// # Errors
@@ -112,6 +126,18 @@ impl RustProject {
             RustAuthority<'analysis>,
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
+        self.analyze_with_features(control, RustFeatureControl::default(), lower)
+    }
+
+    /// Runs analysis with explicit Cargo feature unification controls.
+    pub fn analyze_with_features<Output>(
+        &self,
+        control: RustAnalysisControl<'_>,
+        features: RustFeatureControl<'_>,
+        lower: impl for<'analysis> FnOnce(
+            RustAuthority<'analysis>,
+        ) -> Result<Output, RustAuthorityError>,
+    ) -> Result<Output, RustAuthorityError> {
         control.check()?;
         let source_path = &self.source_path;
         let source_bytes = fs::metadata(source_path)
@@ -132,6 +158,7 @@ impl RustProject {
             ))),
             no_deps: false,
             metadata_extra_args: vec!["--offline".to_owned()],
+            features: features.cargo_features(),
             ..CargoConfig::default()
         };
         let load = ra_ap_load_cargo::LoadCargoConfig {
@@ -159,8 +186,20 @@ impl RustProject {
                 path: source_path.clone(),
             },
         )?;
-        let source_file = EditionedFileId::current_edition(&database, file_id);
-        let observed = rust_edition(source_file.edition(&database));
+        // `all_crates` is topologically ordered, so shared roots resolve to the first
+        // crate in the loader's deterministic crate-graph order.
+        let observed_edition = all_crates(&database)
+            .iter()
+            .find_map(|krate| {
+                let root_file_id = krate.root_file_id(&database);
+                (root_file_id.file_id(&database) == file_id)
+                    .then_some(root_file_id.edition(&database))
+            })
+            .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
+                path: source_path.clone(),
+            })?;
+        let source_file = EditionedFileId::new(&database, file_id, observed_edition);
+        let observed = rust_edition(observed_edition);
         if observed != self.edition {
             return Err(RustAuthorityError::EditionMismatch {
                 requested: self.edition,
@@ -211,6 +250,46 @@ pub struct RustAnalysisControl<'cancel> {
     pub cancelled: &'cancel AtomicBool,
     /// Maximum root-source size admitted before Cargo workspace loading.
     pub maximum_source_bytes: SourceByteLimit,
+}
+
+/// Caller-selected Cargo feature policy, borrowing the requested spellings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustFeatureControl<'features> {
+    /// Enable every declared feature.
+    pub all_features: bool,
+    /// Suppress the package's default feature set.
+    pub no_default_features: bool,
+    /// Exact feature names requested by the caller.
+    pub features: &'features [&'features str],
+}
+
+impl<'features> RustFeatureControl<'features> {
+    /// The unchanged Cargo default.
+    #[must_use]
+    pub const fn default() -> Self {
+        Self {
+            all_features: false,
+            no_default_features: false,
+            features: &[],
+        }
+    }
+}
+
+impl<'features> RustFeatureControl<'features> {
+    fn cargo_features(self) -> CargoFeatures {
+        if self.all_features {
+            CargoFeatures::All
+        } else {
+            CargoFeatures::Selected {
+                features: self
+                    .features
+                    .iter()
+                    .map(|feature| (*feature).to_owned())
+                    .collect(),
+                no_default_features: self.no_default_features,
+            }
+        }
+    }
 }
 
 impl RustAnalysisControl<'_> {
@@ -284,13 +363,60 @@ impl<'analysis> RustAuthority<'analysis> {
 
     /// Streams method calls with the actual inferred receiver/call type and resolved function.
     pub fn method_calls(&self) -> impl Iterator<Item = RustMethodCall<'analysis>> + '_ {
-        self.root.syntax().descendants().filter_map(|syntax| {
-            ast::MethodCallExpr::cast(syntax).map(|syntax| RustMethodCall {
+        let mut calls = Vec::new();
+        for syntax in self.root.syntax().descendants() {
+            let Some(syntax) = ast::MethodCallExpr::cast(syntax) else {
+                continue;
+            };
+            calls.push(RustMethodCall {
                 inferred: self.semantics.type_of_expr(&syntax.clone().into()),
                 target: self.semantics.resolve_method_call(&syntax),
                 syntax,
-            })
-        })
+                projected_span: None,
+            });
+        }
+
+        // A macro argument is parsed as a token tree in the source file. Descending
+        // each token gives us the expanded syntax node that rust-analyzer inferred;
+        // its original-range map still points at the written argument.
+        for macro_call in self.macro_calls() {
+            let Some(token_tree) = macro_call.token_tree() else {
+                continue;
+            };
+            for token in token_tree
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+            {
+                for descended in self.semantics.descend_into_macros_no_opaque(token, false) {
+                    let Some(syntax) = descended
+                        .value
+                        .parent()
+                        .and_then(|node| node.ancestors().find_map(ast::MethodCallExpr::cast))
+                    else {
+                        continue;
+                    };
+                    let Some(name) = syntax.name_ref() else {
+                        continue;
+                    };
+                    let Ok(Some(projected_span)) = self.projected_span(name.syntax()) else {
+                        continue;
+                    };
+                    if calls.iter().any(|call: &RustMethodCall<'analysis>| {
+                        call.projected_span == Some(projected_span)
+                    }) {
+                        continue;
+                    }
+                    calls.push(RustMethodCall {
+                        inferred: self.semantics.type_of_expr(&syntax.clone().into()),
+                        target: self.semantics.resolve_method_call(&syntax),
+                        syntax,
+                        projected_span: Some(projected_span),
+                    });
+                }
+            }
+        }
+        calls.into_iter()
     }
 
     /// Streams path syntax so callers can retain rust-analyzer resolution and substitutions.
@@ -878,6 +1004,8 @@ pub struct RustMethodCall<'analysis> {
     pub inferred: Option<TypeInfo<'analysis>>,
     /// Concrete function selected by static method dispatch, when rust-analyzer can resolve one.
     pub target: Option<Function>,
+    /// Original-source span for a call discovered through macro expansion.
+    pub projected_span: Option<ByteSpan>,
 }
 
 /// One written field-access expression with its resolved named HIR field.

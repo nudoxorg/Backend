@@ -38,6 +38,7 @@ pub use canonical_data::{
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
 };
+pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
@@ -54,7 +55,6 @@ pub use compiler_ir_vocabulary::{
 pub use compiler_ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
 };
-pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,
@@ -123,7 +123,7 @@ pub use semantic_extension_section::{
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
-pub use type_facts::{DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane};
+pub use type_facts::{DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment};
 pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
     LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,

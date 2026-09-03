@@ -61,6 +61,22 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
             )
         }
         CompileFailure::LoweringUnsupported { source_identity, recipe, cause } => compile_from_driver(source_identity, recipe, CompilerCause::Lowering(cause)),
+        CompileFailure::ExtensionAtomUnbound { source_identity, recipe, row, provisional, atom_count } => compile_from_driver(
+            source_identity,
+            recipe,
+            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
+                row: u32::try_from(row).unwrap_or(u32::MAX),
+                provisional,
+                atom_count: u32::try_from(atom_count).unwrap_or(u32::MAX),
+            }),
+        ),
+        CompileFailure::FactRejected { source_identity, recipe, rejected } => compile_from_driver(
+            source_identity,
+            recipe,
+            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
+                fact: u32::try_from(rejected.fact).unwrap_or(u32::MAX),
+            }),
+        ),
         CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
         CompileFailure::Validate { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Validate),
@@ -269,6 +285,101 @@ mod tests {
     use interface_core::{CompilerCause, CompilerTerminal};
 
     use super::authority_terminal;
+
+    #[derive(Debug, thiserror::Error)]
+    enum ProjectionError {
+        #[error("the terminal did not stay a compile terminal")]
+        Terminal,
+        #[error("the terminal cause was not the lowering cause")]
+        Cause,
+        #[error("the extension-atom projection lost its operands")]
+        ExtensionOperands,
+        #[error("the fact-rejection projection lost its ordinal")]
+        FactOrdinal,
+    }
+
+    fn lowering_cause(
+        terminal: CompilerTerminal,
+    ) -> Result<compiler_vocabulary::LoweringUnsupported, ProjectionError> {
+        let CompilerTerminal::Compile { cause, .. } = terminal else {
+            return Err(ProjectionError::Terminal);
+        };
+        let CompilerCause::Lowering(cause) = cause else {
+            return Err(ProjectionError::Cause);
+        };
+        Ok(cause)
+    }
+
+    fn fact_rejection() -> compiler_driver::FactRejection {
+        compiler_driver::FactRejection {
+            fact: 17,
+            name_len: 6,
+            cause: compiler_driver::FactFault::Capacity,
+        }
+    }
+
+    fn source_and_recipe() -> (
+        compiler_ir::SourceIdentity,
+        compiler_vocabulary::CompileRecipeFact,
+    ) {
+        let source = compiler_ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"projection"),
+            byte_len: 10,
+        };
+        let recipe = compiler_vocabulary::CompileRecipeFact::derive(
+            compiler_vocabulary::LanguageProfile::Python(
+                compiler_vocabulary::PythonVersion::Python314,
+            ),
+            compiler_vocabulary::Stage::LowerIr,
+            compiler_vocabulary::NativeTool::Python,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"projection-toolchain"),
+        );
+        (source, recipe)
+    }
+
+    #[test]
+    fn extension_atom_unbound_projects_with_exact_operands() -> Result<(), ProjectionError> {
+        let (source, recipe) = source_and_recipe();
+        let failure = compiler_driver::CompileFailure::ExtensionAtomUnbound {
+            source_identity: source,
+            recipe,
+            row: 9,
+            provisional: 12,
+            atom_count: 11,
+        };
+        let cause = lowering_cause(super::compile_terminal(failure))?;
+        let compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
+            row,
+            provisional,
+            atom_count,
+        } = cause
+        else {
+            return Err(ProjectionError::ExtensionOperands);
+        };
+        if row != 9 || provisional != 12 || atom_count != 11 {
+            return Err(ProjectionError::ExtensionOperands);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fact_rejection_projects_with_the_exact_ordinal() -> Result<(), ProjectionError> {
+        let (source, recipe) = source_and_recipe();
+        let failure = compiler_driver::CompileFailure::FactRejected {
+            source_identity: source,
+            recipe,
+            rejected: fact_rejection(),
+        };
+        let cause = lowering_cause(super::compile_terminal(failure))?;
+        let compiler_vocabulary::LoweringUnsupported::FactRejected { fact } = cause else {
+            return Err(ProjectionError::FactOrdinal);
+        };
+        if fact != 17 {
+            return Err(ProjectionError::FactOrdinal);
+        }
+        Ok(())
+    }
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {

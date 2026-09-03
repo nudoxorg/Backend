@@ -69,7 +69,7 @@ impl<'fragment> FragmentView<'fragment> {
 
     pub fn type_facts(&self) -> Option<crate::type_facts::TypeFactCursor<'fragment>> {
         self.type_fact_lane
-            .map(crate::type_facts::TypeFactCursor::new)
+            .map(|payload| crate::type_facts::TypeFactCursor::new(payload, self.layout.schema))
     }
 
     pub fn type_fact_payload(&self) -> Option<&'fragment [u8]> {
@@ -189,7 +189,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         });
     }
     let schema = read_u16(envelope, HEADER_LAYOUT.schema);
-    if schema != crate::FRAGMENT_SCHEMA {
+    if schema != 1 && schema != crate::FRAGMENT_SCHEMA {
         return Err(FragmentError::Schema { actual: schema });
     }
     let section_count = SectionCount::from(read_u16(envelope, HEADER_LAYOUT.section_count));
@@ -326,7 +326,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         })?
                         .count,
                 );
-                crate::type_facts::validate_payload(&envelope[entry.lane.range()], entity_count)
+                crate::type_facts::validate_payload(&envelope[entry.lane.range()], entity_count, schema)
                     .map_err(|fault| FragmentError::TypeFacts { fault })?;
                 type_facts = Some(entry.lane);
             }
@@ -432,6 +432,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         });
     }
     Ok(FragmentLayout {
+        schema,
         entities,
         type_nodes,
         atoms,

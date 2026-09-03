@@ -13,3 +13,9 @@ export const callTwo = g(2);
 export class Box { self(): this { return this; } }
 export const made = new Box().self();
 export const list: number[] = [];
+export let widened: string | number = 0;
+widened = "text";
+export class Slot { get(): this { return this; } }
+export const slot = new Slot();
+export const viaSlot = slot.get();
+export const term = console;

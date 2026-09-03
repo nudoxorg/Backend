@@ -21,8 +21,10 @@ use thiserror::Error;
 enum TestError {
     #[error(transparent)]
     Toolchain(#[from] ToolchainResolutionError),
-    #[error("configured Go authority image did not compile through the direct admission lane")]
-    Compile,
+    #[error(
+        "configured Go authority image did not compile through the direct admission lane: {cause}"
+    )]
+    Compile { cause: String },
     #[error("validated entity atom coordinate could not fit this platform")]
     AtomCoordinate(#[source] std::num::TryFromIntError),
     #[error("validated entity referenced a missing compact atom")]
@@ -64,7 +66,11 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
         },
     ) {
         Ok(compiled) => compiled,
-        Err(_) => return Err(TestError::Compile),
+        Err(failure) => {
+            return Err(TestError::Compile {
+                cause: format!("{failure:?}"),
+            });
+        }
     };
     for entity in compiled.fragment.entities() {
         if entity.kind != EntityKind::Function {
@@ -81,23 +87,51 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
     Err(TestError::Declaration)
 }
 
+/// Builds one minimal but fully valid format-v5 Go authority image: a single
+/// `Brew` declaration, one package row naming it, and no other populated
+/// plane. The body planes follow the frozen order — declarations first, then
+/// packages right after the empty satisfaction plane; the module row is
+/// absent (header count 0) because the fixture resolves no module. The
+/// source digest binds the fixture bytes.
 fn fixture(source: &[u8]) -> Vec<u8> {
-    const HEADER: usize = 88;
-    const ROW: usize = 12;
-    const NAME: &[u8] = b"Brew";
-    const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v1\0";
-    let mut image = vec![0; HEADER + ROW + NAME.len()];
+    const HEADER: usize = 136;
+    const DECL_AT: usize = HEADER;
+    const PACKAGE_AT: usize = DECL_AT + 56;
+    const ATOMS_AT: usize = PACKAGE_AT + 28;
+    const BODY: usize = ATOMS_AT + 8 - HEADER;
+    const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\x00";
+    const NAME: &[u8] = b"demoBrew";
+    const NONE: u32 = u32::MAX;
+
+    let mut image = vec![0_u8; HEADER + BODY];
     image[..4].copy_from_slice(b"NGAI");
-    image[4..6].copy_from_slice(&1_u16.to_le_bytes());
-    image[6..8].copy_from_slice(&88_u16.to_le_bytes());
-    image[8..12].copy_from_slice(&1_u32.to_le_bytes());
-    image[12..16].copy_from_slice(&4_u32.to_le_bytes());
-    image[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    image[4..6].copy_from_slice(&5_u16.to_le_bytes());
+    image[6..8].copy_from_slice(&(HEADER as u16).to_le_bytes());
+    image[8..12].copy_from_slice(&1_u32.to_le_bytes()); // declarations
+    image[12..16].copy_from_slice(&(NAME.len() as u32).to_le_bytes());
+    image[16..20].copy_from_slice(&(BODY as u32).to_le_bytes());
     image[20..52].copy_from_slice(Sha256::digest(source).as_slice());
-    image[HEADER] = 3;
-    image[HEADER + 1] = 1;
-    image[HEADER + 8..HEADER + 12].copy_from_slice(&4_u32.to_le_bytes());
-    image[HEADER + ROW..].copy_from_slice(NAME);
+    image[116..120].copy_from_slice(&0_u32.to_le_bytes()); // no module row
+    image[120..124].copy_from_slice(&1_u32.to_le_bytes()); // package row
+
+    // Package row: import path "demo", clause "demo", no files.
+    image[PACKAGE_AT..PACKAGE_AT + 4].copy_from_slice(&0_u32.to_le_bytes());
+    image[PACKAGE_AT + 4..PACKAGE_AT + 8].copy_from_slice(&4_u32.to_le_bytes());
+    image[PACKAGE_AT + 8..PACKAGE_AT + 12].copy_from_slice(&0_u32.to_le_bytes());
+    image[PACKAGE_AT + 12..PACKAGE_AT + 16].copy_from_slice(&4_u32.to_le_bytes());
+    image[PACKAGE_AT + 24..PACKAGE_AT + 28].copy_from_slice(&0_u32.to_le_bytes());
+
+    // Declaration row: exported func Brew in demo, no typed root.
+    image[DECL_AT] = 3;
+    image[DECL_AT + 1] = 1;
+    image[DECL_AT + 4..DECL_AT + 8].copy_from_slice(&4_u32.to_le_bytes());
+    image[DECL_AT + 8..DECL_AT + 12].copy_from_slice(&4_u32.to_le_bytes());
+    image[DECL_AT + 16..DECL_AT + 20].copy_from_slice(&4_u32.to_le_bytes());
+    image[DECL_AT + 20..DECL_AT + 24].copy_from_slice(&NONE.to_le_bytes());
+    image[DECL_AT + 24..DECL_AT + 28].copy_from_slice(&NONE.to_le_bytes());
+    image[DECL_AT + 28..DECL_AT + 32].copy_from_slice(&NONE.to_le_bytes());
+
+    image[ATOMS_AT..].copy_from_slice(NAME);
     let mut digest = Sha256::new();
     digest.update(DOMAIN);
     digest.update(&image[..52]);

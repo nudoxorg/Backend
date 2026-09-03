@@ -5,14 +5,18 @@
 //! and generic constraints without JSON reconstruction.
 //! Rejects malformed image coordinates before they can enter canonical facts.
 //!
-//! Wire layout (version 2): a fixed 256-byte header — magic `NCAI`, version,
+//! Wire layout (version 3): a fixed 256-byte header — magic `NCAI`, version,
 //! header length, body length, the SHA-256 of the bound source, a section
 //! count, and a fixed eleven-entry section directory — followed by the
 //! canonical body sections in directory order. A domain-separated SHA-256
 //! covers every byte the header declares except the digest cell itself.
+//! Version 3 extends the version-2 closed vocabularies with the explicit
+//! interface-implementation flag on declaration rows and the
+//! implementation-binding class on reference rows; the row layouts are
+//! unchanged, and every earlier rejection stays typed.
 //!
 //! Error laws: the crate's image-fault lattice is frozen at seven variants,
-//! so every version-2 fault reuses a variant whose operands name the
+//! so every version-3 fault reuses a variant whose operands name the
 //! offending section, the row ordinal, and the observed cells:
 //! - envelope and directory violations are [`HeaderError`] arms;
 //! - a closed-tag violation on any section is [`ImageError::DeclarationKind`]
@@ -29,7 +33,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NCAI";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 const SOURCE_DIGEST_OFFSET: usize = 12;
 const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
@@ -38,7 +42,7 @@ const DIRECTORY_BYTES: usize = DIRECTORY_ENTRY_BYTES * SECTION_COUNT;
 const IMAGE_DIGEST_OFFSET: usize = DIRECTORY_OFFSET + DIRECTORY_BYTES;
 const HEADER_BYTES: usize = IMAGE_DIGEST_OFFSET + 32;
 const ABSENT: u32 = u32::MAX;
-const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v2\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
 
 /// A fixed image section in canonical directory order.
 #[repr(u16)]
@@ -180,10 +184,13 @@ pub struct DeclarationFlags {
     pub is_iterator: bool,
     /// The field is `const`.
     pub is_const: bool,
+    /// The method or property names its implemented interface member
+    /// explicitly (`void IPart.Brew() {}`).
+    pub is_explicit_interface: bool,
 }
 
 impl DeclarationFlags {
-    const ALL: u8 = 0xf;
+    const ALL: u8 = 0x1f;
 
     const fn decode(raw: u8) -> Option<Self> {
         if raw & !Self::ALL != 0 {
@@ -194,6 +201,7 @@ impl DeclarationFlags {
             is_async: raw & 0x2 != 0,
             is_iterator: raw & 0x4 != 0,
             is_const: raw & 0x8 != 0,
+            is_explicit_interface: raw & 0x10 != 0,
         })
     }
 }
@@ -350,6 +358,11 @@ pub enum ReferenceTag {
     MemberAccess = 3,
     /// A using directive (import).
     UsingDirective = 4,
+    /// An explicit interface implementation's binding to the interface
+    /// member it implements. The owner is the implementing member row and
+    /// the target is the implemented interface member row when that member
+    /// is inside the assembly.
+    InterfaceImplementation = 5,
 }
 
 impl ReferenceTag {
@@ -359,6 +372,7 @@ impl ReferenceTag {
             2 => Some(Self::ObjectCreation),
             3 => Some(Self::MemberAccess),
             4 => Some(Self::UsingDirective),
+            5 => Some(Self::InterfaceImplementation),
             _ => None,
         }
     }
@@ -821,9 +835,7 @@ impl<'image> CSharpImage<'image> {
         }
         let sections = read_directory(bytes)?;
         let mut source_digest = [0; 32];
-        source_digest.copy_from_slice(
-            &bytes[SOURCE_DIGEST_OFFSET..SOURCE_DIGEST_OFFSET + 32],
-        );
+        source_digest.copy_from_slice(&bytes[SOURCE_DIGEST_OFFSET..SOURCE_DIGEST_OFFSET + 32]);
         let image = Self {
             bytes,
             sections,
@@ -1129,8 +1141,7 @@ impl<'image> CSharpImage<'image> {
             let count = usize::try_from(u32_at(row, 12)).map_err(|_| ImageError::Span {
                 index,
                 start: u32::try_from(start).unwrap_or(u32::MAX),
-                end: u32::try_from(self.section(Section::TypeChildren).count)
-                    .unwrap_or(u32::MAX),
+                end: u32::try_from(self.section(Section::TypeChildren).count).unwrap_or(u32::MAX),
             })?;
             let _ = self.range_end(start, count, Section::TypeChildren, index)?;
         }
@@ -1274,11 +1285,7 @@ impl<'image> CSharpImage<'image> {
         if raw == ABSENT {
             return Ok(None);
         }
-        let index = self.coordinate(
-            raw,
-            Section::Types,
-            self.section(Section::Types).count,
-        )?;
+        let index = self.coordinate(raw, Section::Types, self.section(Section::Types).count)?;
         Ok(Some(TypeRef(u32::try_from(index).unwrap_or(u32::MAX))))
     }
 
@@ -1395,12 +1402,10 @@ impl<'image> Iterator for AttributeIter<'image> {
                     image.section(Section::Declarations).count,
                 )
                 .and_then(|declaration| {
-                    image
-                        .atom(u32_at(row, 4))
-                        .map(|spelling| Attribute {
-                            declaration: u32::try_from(declaration).unwrap_or(u32::MAX),
-                            spelling,
-                        })
+                    image.atom(u32_at(row, 4)).map(|spelling| Attribute {
+                        declaration: u32::try_from(declaration).unwrap_or(u32::MAX),
+                        spelling,
+                    })
                 }),
         )
     }
@@ -1492,14 +1497,16 @@ impl<'image> Iterator for ReferenceIter<'image> {
                     image.section(Section::Declarations).count,
                 )
                 .and_then(|owner| {
-                    let target = image.optional_coordinate(u32_at(row, 4), Section::Declarations)?;
+                    let target =
+                        image.optional_coordinate(u32_at(row, 4), Section::Declarations)?;
                     let spelling = image.atom(u32_at(row, 8))?;
                     let file = image.atom(u32_at(row, 12))?;
-                    let kind = ReferenceTag::decode(row[24]).ok_or(ImageError::DeclarationKind {
-                        index: owner,
-                        found: row[24],
-                        plane: Section::References,
-                    })?;
+                    let kind =
+                        ReferenceTag::decode(row[24]).ok_or(ImageError::DeclarationKind {
+                            index: owner,
+                            found: row[24],
+                            plane: Section::References,
+                        })?;
                     Ok(ResolvedReference {
                         owner: u32::try_from(owner).unwrap_or(u32::MAX),
                         target,
@@ -1605,10 +1612,7 @@ fn read_directory(bytes: &[u8]) -> Result<[SectionBounds; SECTION_COUNT], ImageE
                 image_bytes: bytes.len(),
             }));
         }
-        *section = SectionBounds {
-            offset,
-            count,
-        };
+        *section = SectionBounds { offset, count };
         expected_offset = end;
     }
     if expected_offset != bytes.len() {

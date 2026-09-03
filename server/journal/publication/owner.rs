@@ -18,7 +18,7 @@ use super::{
     },
     facts::{PublicationFacts, PublicationPaths},
     format::{
-        FACT_BYTES, HEAD_BYTES, PublicationInput, path_exists, persist_fact, persist_head,
+        FACT_BYTES, HEAD_BYTES, ChainLink, PublicationInput, path_exists, persist_fact, persist_head,
         read_fact, read_head,
     },
     service::{PublisherState, conflict, journal_failure},
@@ -32,12 +32,14 @@ pub(super) struct StoredPublication {
     pub(super) input: PublicationInput,
     receipt: ReceiptFacts,
     facts: PublicationFacts,
+    link: ChainLink,
 }
 
 struct PendingJournal {
     key: StageKey,
     receipt: ReceiptFacts,
     input: Option<PublicationInput>,
+    link: ChainLink,
 }
 
 pub(super) struct InitialState {
@@ -197,6 +199,7 @@ pub(super) fn owner_thread(
             key: journal.current_key()?,
             receipt: *receipt,
             input: None,
+            link: ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] },
         })
     });
     let mut poison = None;
@@ -289,14 +292,21 @@ fn process_group(
         if stored.input == candidate_input {
             Some(stored.receipt)
         } else {
-            let command = group.remove(candidate);
-            finish(
-                command,
-                OwnerOutcome::Failed(conflict(candidate_input, stored.input)),
-                state,
-            );
-            finish_conflicts(group, stored.input, state);
-            return;
+            let Some(ordinal) = stored.link.ordinal.checked_add(1) else {
+                poison_group(poison, PublicationFailure::InputMismatch, group, state);
+                return;
+            };
+            let event = WorkflowEvent { version: WorkflowVersion::WAVE1, key: candidate_input.key, kind: EventKind::Requested };
+            match journal.append_publication_group(&[event], buffers.frames) {
+                Ok(receipts) => match receipts.receipt_at(0) {
+                    Some(receipt) => {
+                        *pending = Some(PendingJournal { key: candidate_input.key, receipt: *receipt, input: Some(candidate_input), link: ChainLink { ordinal, parent_root: stored.input.root, parent_dep_set: stored.input.dep_set } });
+                        Some(*receipt)
+                    }
+                    None => { poison_group(poison, journal_failure(CommitError::ReceiptOverflow { sequence: FrameSequence::FIRST }), group, state); return; }
+                },
+                Err(error) => { poison_group(poison, map_group_error(error), group, state); return; }
+            }
         }
     } else if let Some(existing) = pending.as_ref() {
         if existing.key == candidate_input.key
@@ -328,7 +338,7 @@ fn process_group(
             key: candidate_input.key,
             kind: EventKind::Requested,
         };
-        match journal.append_group(&[event], buffers.frames) {
+        match journal.append_publication_group(&[event], buffers.frames) {
             Ok(receipts) => match receipts.receipt_at(0) {
                 Some(receipt) => {
                     let facts = *receipt;
@@ -336,6 +346,7 @@ fn process_group(
                         key: candidate_input.key,
                         receipt: facts,
                         input: Some(candidate_input),
+                        link: ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] },
                     });
                     Some(facts)
                 }
@@ -360,8 +371,10 @@ fn process_group(
     let Some(receipt) = receipt else {
         return;
     };
-    if current.is_none() {
-        let fact = match persist_fact(buffers.paths, candidate_input, receipt, buffers.fact_bytes) {
+    let link = pending.as_ref().map(|value| value.link).unwrap_or(ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] });
+    let needs_install = current.as_ref().is_none_or(|stored| stored.input != candidate_input);
+    if needs_install {
+        let fact = match persist_fact(buffers.paths, candidate_input, link, receipt, buffers.fact_bytes) {
             Ok(fact) => fact,
             Err(source) => {
                 poison_group(poison, source, group, state);
@@ -385,8 +398,9 @@ fn process_group(
             input: candidate_input,
             receipt,
             facts,
+            link,
         };
-        if let Err(attempted) = state.published.set(facts) {
+        if state.published.get().is_none() { if let Err(attempted) = state.published.set(facts) {
             poison_group(
                 poison,
                 PublicationFailure::PublishedStateConflict(Arc::new(PublicationStateConflict {
@@ -397,7 +411,8 @@ fn process_group(
                 state,
             );
             return;
-        }
+        }}
+        if let Ok(mut latest) = state.latest.lock() { *latest = Some(facts); }
         *current = Some(stored);
         *pending = None;
     }
@@ -548,13 +563,35 @@ fn load_existing(
     if path_exists(&paths.head_temp(), PublicationIoStep::InspectHeadTemp)? {
         return Err(PublicationOpenError::HeadTempPresent);
     }
-    let fact = read_fact(&paths.fact())?;
+    let mut ordinal = 1_u64;
+    let mut fact = read_fact(&paths.fact_for(ordinal))?;
+    while let Some(next) = ordinal.checked_add(1) {
+        match read_fact(&paths.fact_for(next))? {
+            Some(value) => {
+                let Some(previous) = fact.as_ref() else {
+                    return Err(PublicationOpenError::MissingFact);
+                };
+                if value.link.ordinal != next
+                    || value.link.parent_root != previous.input.root
+                    || value.link.parent_dep_set != previous.input.dep_set
+                {
+                    return Err(PublicationOpenError::HeadLinkMismatch);
+                }
+                ordinal = next;
+                fact = Some(value);
+            }
+            None => break,
+        }
+    }
     let head = read_head(&paths.head())?;
     match (fact, head) {
         (None, None) => Ok(None),
         (Some(_), None) => Err(PublicationOpenError::MissingHead),
         (None, Some(_)) => Err(PublicationOpenError::MissingFact),
         (Some(fact), Some(head)) => {
+            if fact.link.ordinal != ordinal || fact.link.ordinal == 0 {
+                return Err(PublicationOpenError::EncodingMismatch);
+            }
             if PublicationInput::from_parts(fact.input.root, fact.input.dep_set) != fact.input {
                 return Err(PublicationOpenError::EncodingMismatch);
             }
@@ -580,6 +617,7 @@ fn load_existing(
                 input: fact.input,
                 receipt: fact.receipt,
                 facts,
+                link: fact.link,
             }))
         }
     }

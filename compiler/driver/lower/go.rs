@@ -60,9 +60,9 @@ use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
 
 use crate::lower::{
-    EmissionExtension, FactFault, FactSet, LEAF_PRODUCT, MAX_REF_LIST_ELEMENTS, SemanticFact,
-    push_fact,
+    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_REF_LIST_ELEMENTS, SemanticFact, push_fact,
 };
+use crate::types::{FactFault, FactRejection};
 
 /// Exact rejection while borrowing one validated Go authority image.
 ///
@@ -84,6 +84,8 @@ pub(crate) enum GoCollectError {
     },
     /// The bounded canonical lane cannot admit every authority fact.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
@@ -176,7 +178,7 @@ fn push<'source>(
     facts: &mut FactSet<'source>,
     fact: SemanticFact<'source>,
 ) -> Result<u32, GoCollectError> {
-    let ordinal = push_fact(facts, fact).map_err(GoCollectError::Lowering)?;
+    let ordinal = push_fact(facts, fact).map_err(GoCollectError::Rejected)?;
     u32::try_from(ordinal)
         .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
 }

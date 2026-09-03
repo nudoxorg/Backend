@@ -63,12 +63,12 @@ use compiler_ir::{
 };
 use compiler_languages_rust::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFieldAccess, RustProject, SemanticKind, SourceByteLimit,
-    SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
+    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
+    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
 };
 use ra_ap_syntax::{
     AstNode, SyntaxNode,
-    ast::{self, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds},
+    ast::{self, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds, HasVisibility},
 };
 
 use crate::{
@@ -97,9 +97,10 @@ const PARAM_FALLBACK_NAME: &[u8] = b"param";
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 ///
-/// The closed two-variant terminal is fixed by the shared driver failure
-/// match: authority faults keep their full typed cause, and every bounded-lane
-/// rejection folds onto the lane's single closed lowering terminal.
+/// The closed terminal is fixed by the shared driver failure match: authority
+/// faults keep their full typed cause, and canonical admission rejections
+/// keep their bounded typed cause (`LoweringUnsupported::FactRejected`)
+/// through the authority's frozen `Admission` boundary.
 #[derive(Debug)]
 pub(crate) enum RustCollectError {
     /// rust-analyzer could not open, resolve, or query the selected Cargo graph.
@@ -117,16 +118,18 @@ pub(crate) enum RustCollectError {
 pub(crate) fn collect<'source>(
     project: &RustProject,
     maximum_source_bytes: SourceByteLimit,
+    features: RustFeatureControl<'source>,
     cancelled: &AtomicBool,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
     project
-        .analyze(
+        .analyze_with_features(
             RustAnalysisControl {
                 cancelled,
                 maximum_source_bytes,
             },
+            features,
             |authority| {
                 if authority.source != source {
                     return Err(RustAuthorityError::SourceBinding {
@@ -143,6 +146,19 @@ pub(crate) fn collect<'source>(
         })
 }
 
+/// Admits one fact, retaining the exact typed rejection on failure while
+/// preserving the lane ordinal on success.
+fn push<'source>(
+    facts: &mut FactSet<'source>,
+    fact: SemanticFact<'source>,
+) -> Result<usize, RustAuthorityError> {
+    push_fact(facts, fact).map_err(|cause| RustAuthorityError::Admission {
+        cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
+            fact: u32::try_from(cause.fact).unwrap_or(u32::MAX),
+        },
+    })
+}
+
 /// Folds one bounded-lane rejection onto the lane's closed terminal. The
 /// shared driver failure match owns the terminal arms and lies outside this
 /// module's ownership, so the exact rejected fact stays nameable only at this
@@ -151,15 +167,6 @@ fn admission() -> RustAuthorityError {
     RustAuthorityError::Admission {
         cause: LoweringUnsupported::NoSupportedDeclaration,
     }
-}
-
-/// Admits one fact, folding any bounded-lane rejection onto the closed
-/// terminal while preserving the lane ordinal on success.
-fn push<'source>(
-    facts: &mut FactSet<'source>,
-    fact: SemanticFact<'source>,
-) -> Result<usize, RustAuthorityError> {
-    push_fact(facts, fact).map_err(|_| admission())
 }
 
 /// Widenes one bounded lane coordinate; unreachable past the lane's fixed
@@ -509,6 +516,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 self.name_of(declaration)?,
                 constructor(kind)?,
             )
+            .with_visibility(self.declaration_visibility(declaration))
             .with_extension(EmissionExtension::Rust(extension));
             if kind != SemanticKind::Module {
                 let own_ordinal = coordinate(self.facts.len())?;
@@ -563,7 +571,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         } else {
             ast::RecordField::cast(declaration.syntax.clone()).and_then(|item| item.ty())
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(
             index,
             declaration,
@@ -667,7 +675,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         } else {
             ast::Impl::cast(declaration.syntax.clone()).and_then(|item| item.self_ty())
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(
             index,
             declaration,
@@ -702,7 +710,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             }
             _ => RustOwnership::Value,
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(index, declaration, lowered, ownership, &declaration.syntax)
     }
 
@@ -732,7 +740,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
         if let Some(receiver) = function.self_param(self.database) {
             let semantic = receiver.ty(self.database);
-            let lowered = self.lower_type(&semantic, None, MAX_TYPE_DEPTH)?;
+            let lowered = self.lower_pending_type(&semantic, None, MAX_TYPE_DEPTH)?;
             let ownership = receiver_ownership(receiver.access(self.database));
             let ordinal = self.push_parameter(SELF_NAME, lowered, ownership)?;
             parameter_ordinals.push(ordinal);
@@ -749,7 +757,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let semantic = parameter.ty().clone();
             let anchor = written.get(position).and_then(|param| param.ty());
             let name = self.parameter_name(written.get(position), parameter.name(self.database));
-            let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+            let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let ordinal = self.push_parameter(name, lowered, ownership)?;
             parameter_ordinals.push(ordinal);
@@ -761,12 +769,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .as_ref()
             .and_then(|item| item.ret_type())
             .and_then(|ret| ret.ty());
-        let lowered = self.lower_type(&returns, result_anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&returns, result_anchor.as_ref(), MAX_TYPE_DEPTH)?;
         let mut fact = SemanticFact::new(
             EntityKind::Parameter,
             self.name_of(declaration)?,
             LEAF_PRODUCT,
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(lowered.record)
         .with_extension(EmissionExtension::Rust(
             self.empty_extension(RustOwnership::Value)?,
@@ -790,6 +799,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.name_of(declaration)?,
             SemanticProductConstructor::function(arity, 1),
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(record)
         .with_extension(EmissionExtension::Rust(extension));
         for ordinal in &parameter_ordinals {
@@ -850,6 +860,35 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         PARAM_FALLBACK_NAME
     }
 
+    /// Captures only the written visibility prefix; omitted visibility is Rust-private.
+    fn declaration_visibility(&self, declaration: &Decl<'source>) -> compiler_ir::Visibility {
+        if declaration.expanded {
+            return compiler_ir::Visibility::Unknown;
+        }
+        let Some(visibility) = ast::AnyHasVisibility::cast(declaration.syntax.clone())
+            .and_then(|item| item.visibility())
+        else {
+            return compiler_ir::Visibility::Private;
+        };
+        let range = visibility.syntax().text_range();
+        let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        let Some(bytes) = self.source.get(start..end) else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        if bytes == b"pub(crate)" {
+            compiler_ir::Visibility::Package
+        } else if bytes.starts_with(b"pub(") {
+            compiler_ir::Visibility::Restricted
+        } else {
+            compiler_ir::Visibility::Public
+        }
+    }
+
     /// Pushes one member fact with a projected record and its base Rust
     /// extension row, then registers the row.
     fn push_typed(
@@ -866,6 +905,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.name_of(declaration)?,
             constructor(declaration.kind)?,
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(lowered.record)
         .with_extension(EmissionExtension::Rust(extension));
         for target in lowered.children {
@@ -941,17 +981,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts.intern_atom_list(&atoms).map_err(|_| admission())
     }
 
-    /// Pushes one pooled where-clause row per written bound: one row per
-    /// generic parameter bound and one per where predicate. The constraint
-    /// cell names the first bound that resolves to a lane-local trait; bounds
-    /// resolving outside the fragment stay `None` because the pooled lane
-    /// references only backward declaration ordinals.
-    /// Pushes one pooled where-clause row per written bound whose constraint
-    /// or default resolves to a lane-local declaration, and reports whether
-    /// the declaration wrote any bound at all. A bound resolving outside the
-    /// fragment carries no pooled row, because the pooled lane references
-    /// only backward declaration ordinals and a name-only row would add no
-    /// resolvable fact; the extension cell still records that bounds exist.
+    /// Pushes one pooled where-clause row for every written type bound and
+    /// reports whether the declaration wrote any bound at all. Local traits
+    /// name their declaration fact; foreign traits are interned as deduplicated
+    /// anonymous unknown leaves owned by the declaration fact being emitted.
+    /// An unresolved bound still gets a row, but has no constraint ordinal.
     fn where_rows(&mut self, syntax: &SyntaxNode) -> Result<Option<u32>, RustAuthorityError> {
         let start = coordinate(self.facts.type_parameter_len)?;
         let mut bounds_written = false;
@@ -967,20 +1001,33 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         };
                         let name = self.bytes_of_node(name.syntax())?;
                         let bound_list = param.type_bound_list();
-                        let constraint = self.local_trait_bound(bound_list)?;
+                        let bounds = bound_list
+                            .as_ref()
+                            .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                            .unwrap_or_default();
                         let default = match param.default_type() {
                             Some(default) => self.local_adt_target(&default)?,
                             None => None,
                         };
-                        bounds_written |= constraint.is_some() || default.is_some();
-                        if constraint.is_some() || default.is_some() {
+                        let has_bounds = !bounds.is_empty();
+                        bounds_written |= has_bounds || default.is_some();
+                        for bound in bounds {
+                            let constraint = bound
+                                .ty()
+                                .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
+                                .transpose()?
+                                .flatten();
                             self.facts
-                                .push_type_parameter(name, constraint, default)
+                                .push_type_parameter(name, constraint, None)
+                                .map_err(|_| admission())?;
+                        }
+                        if !has_bounds && default.is_some() {
+                            self.facts
+                                .push_type_parameter(name, None, default)
                                 .map_err(|_| admission())?;
                         }
                     }
-                    ast::GenericParam::ConstParam(_)
-                    | ast::GenericParam::LifetimeParam(_) => {}
+                    ast::GenericParam::ConstParam(_) | ast::GenericParam::LifetimeParam(_) => {}
                 }
             }
         }
@@ -990,11 +1037,19 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     continue;
                 };
                 let name = self.bytes_of_node(bounded.syntax())?;
-                let constraint = self.local_trait_bound(predicate.type_bound_list())?;
-                bounds_written |= constraint.is_some();
-                if let Some(constraint) = constraint {
+                let bounds = predicate
+                    .type_bound_list()
+                    .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                bounds_written |= !bounds.is_empty();
+                for bound in bounds {
+                    let constraint = bound
+                        .ty()
+                        .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
+                        .transpose()?
+                        .flatten();
                     self.facts
-                        .push_type_parameter(name, Some(constraint), None)
+                        .push_type_parameter(name, constraint, None)
                         .map_err(|_| admission())?;
                 }
             }
@@ -1002,33 +1057,35 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         Ok(bounds_written.then_some(start))
     }
 
-    /// Resolves the first written bound of one bound list to a lane-local
-    /// trait ordinal, or `None` when no bound resolves into this fragment.
-    fn local_trait_bound(
-        &self,
-        bounds: Option<ast::TypeBoundList>,
+    /// Resolves one written trait bound to its local fact or to the shared
+    /// pooled foreign leaf table. The declaration fact is the reserved owner
+    /// while this extension is built, immediately before that fact is pushed.
+    fn trait_bound_constraint(
+        &mut self,
+        bound_ty: &ast::Type,
     ) -> Result<Option<u32>, RustAuthorityError> {
-        let Some(bounds) = bounds else {
+        let ast::Type::PathType(path_type) = bound_ty else {
             return Ok(None);
         };
-        for bound in bounds.bounds() {
-            let Some(bound_ty) = bound.ty() else {
-                continue;
-            };
-            let ast::Type::PathType(path_type) = bound_ty else {
-                continue;
-            };
-            let Some(path) = path_type.path() else {
-                continue;
-            };
-            if let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(trait_)), _)) =
-                self.authority.resolve_path(&path)
-                && let Some(ordinal) = self.ordinal_of_trait(trait_)
-            {
-                return Ok(Some(ordinal));
-            }
+        let Some(path) = path_type.path() else {
+            return Ok(None);
+        };
+        let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(trait_)), _)) =
+            self.authority.resolve_path(&path)
+        else {
+            return Ok(None);
+        };
+        if let Some(ordinal) = self.ordinal_of_trait(trait_) {
+            return Ok(Some(ordinal));
         }
-        Ok(None)
+        let Some(text) = self.written_type_name(Some(bound_ty)) else {
+            return Ok(None);
+        };
+        let row = self.host(
+            Lowered::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(text))),
+            Some(bound_ty),
+        );
+        row
     }
 
     /// Resolves one written default type to a lane-local record ordinal.
@@ -1120,15 +1177,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map(|row| row.ordinal)
     }
 
-    /// Picks the anchor ordinal for anonymous rows: the most recently pushed
-    /// fact, which the lane law admits as a row owner. `None` only before
-    /// the fragment's first fact exists.
-    fn row_anchor(&self) -> Option<u32> {
-        if self.facts.len() == 0 {
-            None
-        } else {
-            coordinate(self.facts.len() - 1).ok()
-        }
+    /// Lowers a type against the fact ordinal that the caller will push next.
+    fn lower_pending_type(
+        &mut self,
+        semantic: &ra_ap_hir::Type<'_>,
+        anchor: Option<&ast::Type>,
+        depth: usize,
+    ) -> Result<Lowered<'source>, RustAuthorityError> {
+        self.lower_type(semantic, anchor, depth)
     }
 
     /// Hosts one lowered child position and returns the backward coordinate
@@ -1160,12 +1216,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     }
                 }
             }
-            let Some(anchor_row) = self.row_anchor() else {
-                return Ok(None);
-            };
+            let anchor_row = coordinate(self.facts.len())?;
             let row = self
                 .facts
-                .intern_anonymous_type_row(anchor_row, lowered.record)
+                .intern_reserved_anchor_type_row(anchor_row, lowered.record)
                 .map_err(|_| admission())?;
             if lowered.record.tag == SemanticTypeTag::Unknown
                 && let Some(text) = lowered.record.text
@@ -1449,6 +1503,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .iter()
                 .filter_map(|argument| argument.as_ref())
                 .cloned()
+                .take(written_type_argument_count(anchor))
                 .collect();
             if typed_arguments.is_empty() {
                 return Ok(Lowered::leaf(self.unresolved_record_with(written)));
@@ -1480,6 +1535,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .iter()
             .filter_map(|argument| argument.as_ref())
             .cloned()
+            .take(written_type_argument_count(anchor))
             .collect();
         if typed_arguments.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
@@ -1660,11 +1716,19 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn emit_occurrences(&mut self) -> Result<(), RustAuthorityError> {
         let authority = self.authority;
         let method_calls: Vec<_> = authority.method_calls().collect();
+        let mut emitted_method_spans = Vec::new();
         for call in &method_calls {
             let Some(name) = call.syntax.name_ref() else {
                 continue;
             };
-            let span = authority.span(name.syntax())?;
+            let span = match call.projected_span {
+                Some(span) => span,
+                None => authority.span(name.syntax())?,
+            };
+            if emitted_method_spans.contains(&span) {
+                continue;
+            }
+            emitted_method_spans.push(span);
             let definition = call.target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence
@@ -1908,6 +1972,26 @@ fn child_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type
         ast::Type::TupleType(tuple) => tuple.fields().nth(position),
         _ => None,
     }
+}
+
+/// Counts only written type arguments. HIR also supplies defaulted type
+/// arguments (for example `Box`'s allocator), which are not children of the
+/// written application row.
+fn written_type_argument_count(anchor: Option<&ast::Type>) -> usize {
+    let Some(ast::Type::PathType(path_type)) = anchor else {
+        return 0;
+    };
+    path_type
+        .path()
+        .and_then(|path| path.segment())
+        .and_then(|segment| segment.generic_arg_list())
+        .map(|arguments| {
+            arguments
+                .generic_args()
+                .filter(|argument| matches!(argument, ast::GenericArg::TypeArg(_)))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// Extracts the written anchor of one callable parameter or return position.

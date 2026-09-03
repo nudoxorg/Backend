@@ -33,14 +33,15 @@ fn configured_python_compiler_lowers_publishes_and_preserves_exact_terminals()
         Stage::LowerIr,
         "ready = 1",
     )?))?;
-    assert_durable_conflict(
-        service.execute(&generate(
-            LanguageProfile::Python(PythonVersion::Python314),
-            Stage::LowerIr,
-            "ready = 2",
-        )?),
-        b"ready = 2",
-    )?;
+    // A second generation with changed content chains onto the same journal
+    // (parent linkage); it succeeds instead of conflicting with the head —
+    // the durable-conflict terminal remains reserved for same-chain-position
+    // divergence, proven at the publication layer.
+    assert_generated(service.execute(&generate(
+        LanguageProfile::Python(PythonVersion::Python314),
+        Stage::LowerIr,
+        "ready = 2",
+    )?))?;
     assert_missing_native_toolchain(service.execute(&generate(
         LanguageProfile::Rust(RustEdition::Rust2024),
         Stage::LowerIr,
@@ -153,34 +154,6 @@ fn assert_explicitly_unavailable_tool(
                         }),
                 },
         } => Ok(()),
-        observed => Err(LocalCompilerTestError::CompilerDiagnostic {
-            observed: Box::new(observed),
-        }),
-    }
-}
-
-fn assert_durable_conflict(
-    reply: ApplicationReply,
-    source: &[u8],
-) -> Result<(), LocalCompilerTestError> {
-    let actual = source.len();
-    let byte_len = u32::try_from(actual)
-        .map_err(|source| LocalCompilerTestError::SourceLength { actual, source })?;
-    let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
-    match reply.outcome {
-        ApplicationOutcome::Failed {
-            diagnostic:
-                Diagnostic {
-                    code: DiagnosticCode::CompilerTerminal,
-                    detail:
-                        DiagnosticDetail::Compiler(CompilerTerminal::Publication {
-                            attempted,
-                            cause: PublicationCause::Rejected(PublicationPhase::Durable),
-                        }),
-                },
-        } if attempted.source.identity == identity && attempted.source.byte_len == byte_len => {
-            Ok(())
-        }
         observed => Err(LocalCompilerTestError::CompilerDiagnostic {
             observed: Box::new(observed),
         }),

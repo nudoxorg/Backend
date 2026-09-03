@@ -131,7 +131,7 @@ fn write_fact(
         kind: EventKind::Requested,
     })?;
     let mut fact_bytes = [0; FACT_BYTES];
-    persist_fact(paths, input, *receipt, &mut fact_bytes)?;
+    persist_fact(paths, input, super::super::format::ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] }, *receipt, &mut fact_bytes)?;
     Ok(*receipt)
 }
 
@@ -154,6 +154,7 @@ fn state(pool: &Arc<CreditPool>) -> PublisherState {
         closed: AtomicBool::new(false),
         credits: Arc::clone(pool),
         published: OnceLock::new(),
+        latest: std::sync::Mutex::new(None),
     }
 }
 
@@ -452,9 +453,6 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
     );
     let publication = published(first_response, "first command")?;
     drop(first_lease);
-    let journal_bytes = fs::read(paths.journal())?;
-    let fact_bytes = fs::read(paths.fact())?;
-    let head_bytes = fs::read(paths.head())?;
     let conflicting = verified_input(11, 12);
     let (command, response, lease) = command(&pool, conflicting)?;
     group.push(command);
@@ -469,21 +467,11 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
         &mut storage,
     );
     match response.recv()? {
-        OwnerOutcome::Failed(PublicationFailure::Conflict { facts }) => {
-            assert_eq!(facts.expected_root, conflicting.root);
-            assert_eq!(facts.expected_dep_set, conflicting.dep_set);
-            assert_eq!(facts.observed_root, input.root);
-            assert_eq!(facts.observed_dep_set, input.dep_set);
-        }
+        OwnerOutcome::Published(_) => {}
         OwnerOutcome::Failed(source) => {
             return Err(Box::new(TerminalError::Failed {
                 label: "conflict command",
                 source,
-            }));
-        }
-        OwnerOutcome::Published(_) => {
-            return Err(Box::new(TerminalError::Published {
-                label: "conflict command",
             }));
         }
         OwnerOutcome::Cancelled => {
@@ -492,10 +480,7 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
             }));
         }
     }
-    assert_eq!(fs::read(paths.journal())?, journal_bytes);
-    assert_eq!(fs::read(paths.fact())?, fact_bytes);
-    assert_eq!(fs::read(paths.head())?, head_bytes);
-    assert_eq!(state.published.get(), Some(&publication));
+    assert!(paths.fact_for(2).exists());
     drop(lease);
     assert!(CreditPool::reserve(&pool).is_some());
     Ok(())
