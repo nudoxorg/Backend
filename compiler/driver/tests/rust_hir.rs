@@ -90,7 +90,8 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
                 features: RustFeatureControl::default(),
             },
             control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(30),
+                // This bound proves enforcement shape, not performance; fixture analysis can exceed 30s under load.
+                deadline: Instant::now() + Duration::from_secs(300),
                 cancelled: &cancelled,
             },
         },

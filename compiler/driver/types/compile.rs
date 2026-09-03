@@ -6,6 +6,7 @@ use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::{
     lower::{self, AdmissionFault, typescript::TypeScriptCollectError},
@@ -31,6 +32,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
                 &prepared,
                 request.source,
                 request.control.cancelled,
+                request.control.deadline,
                 request.authority,
                 Some(scratch.diagnostic_output),
                 &mut facts,
@@ -52,6 +54,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
                 &prepared,
                 request.source,
                 request.control.cancelled,
+                request.control.deadline,
                 request.authority,
                 None,
                 &mut facts,
@@ -119,6 +122,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
                 &prepared,
                 request.source,
                 request.control.cancelled,
+                request.control.deadline,
                 request.authority,
                 Some(scratch.diagnostic_output),
                 &mut facts,
@@ -140,6 +144,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
                 &prepared,
                 request.source,
                 request.control.cancelled,
+                request.control.deadline,
                 request.authority,
                 None,
                 &mut facts,
@@ -354,6 +359,7 @@ fn emit_facts<'source, 'diagnostic>(
     prepared: &PreparedCompile,
     source: &'source [u8],
     cancelled: &std::sync::atomic::AtomicBool,
+    deadline: Instant,
     authority: SemanticAuthorityInput<'source>,
     diagnostic_output: Option<&'diagnostic mut [u8]>,
     facts: &mut lower::FactSet<'source>,
@@ -486,6 +492,7 @@ fn emit_facts<'source, 'diagnostic>(
                 maximum_source_bytes,
                 features,
                 cancelled,
+                deadline,
                 source,
                 facts,
             )
@@ -613,6 +620,15 @@ fn rust_terminal<'diagnostic>(
             source_identity,
             recipe,
             cause,
+        },
+        lower::rust::RustCollectError::Deadline => CompileFailure::DeadlineExceeded {
+            source_identity,
+            recipe,
+            diagnostic: NativeDiagnostic {
+                bytes: &[],
+                observed: 0,
+                truncated: false,
+            },
         },
     }
 }

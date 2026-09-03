@@ -53,7 +53,7 @@
 //! - Items `#[cfg]`-gated out of the crate never reach HIR, so they never
 //!   become facts; the lane proves only what rust-analyzer proved.
 
-use std::{sync::atomic::AtomicBool, vec::Vec};
+use std::{sync::atomic::AtomicBool, time::Instant, vec::Vec};
 
 use compiler_ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
@@ -107,6 +107,8 @@ pub(crate) enum RustCollectError {
     Authority(RustAuthorityError),
     /// Canonical admission rejected one borrowed HIR declaration.
     Lowering(compiler_vocabulary::LoweringUnsupported),
+    /// The authority deadline elapsed during the semantic walk.
+    Deadline,
 }
 
 /// Runs a non-escaping rust-analyzer transaction and emits the complete
@@ -120,6 +122,7 @@ pub(crate) fn collect<'source>(
     maximum_source_bytes: SourceByteLimit,
     features: RustFeatureControl<'source>,
     cancelled: &AtomicBool,
+    deadline: Instant,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
@@ -128,6 +131,7 @@ pub(crate) fn collect<'source>(
             RustAnalysisControl {
                 cancelled,
                 maximum_source_bytes,
+                deadline,
             },
             features,
             |authority| {
@@ -137,11 +141,12 @@ pub(crate) fn collect<'source>(
                         observed: authority.source.len(),
                     });
                 }
-                Emitter::new(&authority, source, facts).run()
+                Emitter::new(&authority, source, facts, deadline).run()
             },
         )
         .map_err(|cause| match cause {
             RustAuthorityError::Admission { cause } => RustCollectError::Lowering(cause),
+            RustAuthorityError::DeadlineExceeded => RustCollectError::Deadline,
             cause => RustCollectError::Authority(cause),
         })
 }
@@ -255,6 +260,7 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    deadline: Instant,
 }
 
 impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
@@ -262,6 +268,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         authority: &'authority RustAuthority<'analysis>,
         source: &'source [u8],
         facts: &'authority mut FactSet<'source>,
+        deadline: Instant,
     ) -> Self {
         Self {
             database: authority.database,
@@ -277,20 +284,34 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
+            deadline,
         }
     }
 
     /// Streams the complete semantic plane in lane order.
     fn run(&mut self) -> Result<(), RustAuthorityError> {
         let declarations = self.materialize_declarations()?;
+        self.check_deadline()?;
         self.ordinals = declarations.iter().map(|_| None).collect();
         self.collect_macro_sites()?;
         self.emit_type_roots(&declarations)?;
+        self.check_deadline()?;
         self.emit_members(&declarations)?;
+        self.check_deadline()?;
         self.attach_macros()?;
+        self.check_deadline()?;
         self.emit_occurrences()?;
+        self.check_deadline()?;
         self.emit_docs(&declarations)?;
         Ok(())
+    }
+
+    fn check_deadline(&self) -> Result<(), RustAuthorityError> {
+        if Instant::now() >= self.deadline {
+            Err(RustAuthorityError::DeadlineExceeded)
+        } else {
+            Ok(())
+        }
     }
 
     /// Borrows exact source bytes for a previously validated span.

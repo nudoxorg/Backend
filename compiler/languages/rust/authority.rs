@@ -7,6 +7,7 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 
 use compiler_vocabulary::RustEdition;
@@ -250,6 +251,8 @@ pub struct RustAnalysisControl<'cancel> {
     pub cancelled: &'cancel AtomicBool,
     /// Maximum root-source size admitted before Cargo workspace loading.
     pub maximum_source_bytes: SourceByteLimit,
+    /// Monotonic deadline for this authority transaction.
+    pub deadline: Instant,
 }
 
 /// Caller-selected Cargo feature policy, borrowing the requested spellings.
@@ -297,10 +300,12 @@ impl RustAnalysisControl<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`RustAuthorityError::Cancelled`] when the caller has released the work permit.
+    /// Returns a typed terminal when cancellation or the deadline releases the work permit.
     fn check(self) -> Result<(), RustAuthorityError> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(RustAuthorityError::Cancelled)
+        } else if Instant::now() >= self.deadline {
+            Err(RustAuthorityError::DeadlineExceeded)
         } else {
             Ok(())
         }
@@ -1048,6 +1053,9 @@ pub enum RustAuthorityError {
     /// The caller cancelled before the authority entered its next controllable phase.
     #[error("Rust semantic authority was cancelled")]
     Cancelled,
+    /// The caller-owned monotonic deadline elapsed before the next authority phase.
+    #[error("Rust semantic authority exceeded its deadline")]
+    DeadlineExceeded,
     /// Native toolchain discovery rejected the caller-selected compiler.
     #[error("Rust toolchain authority failed: {0}")]
     Toolchain(#[from] LoadError),

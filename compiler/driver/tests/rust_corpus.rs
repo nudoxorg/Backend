@@ -298,6 +298,13 @@ fn compile_row(
         },
     )
     .map_err(|failure| crate_error(row.purl, CrateCause::Compile(failure_label(&failure))))?;
+    let request = CompileRequest {
+        control: CompileControl {
+            deadline: Instant::now() + Duration::from_secs(180),
+            ..request.control
+        },
+        ..request
+    };
     let compiled = compile(
         request,
         CompileScratch {

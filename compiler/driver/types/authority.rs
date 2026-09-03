@@ -475,6 +475,8 @@ fn rust_phase(cause: &compiler_languages_rust::RustAuthorityError) -> AuthorityP
         | compiler_languages_rust::RustAuthorityError::Admission { .. } => AuthorityPhase::Project,
         compiler_languages_rust::RustAuthorityError::SourceBinding { .. } => AuthorityPhase::Parse,
         compiler_languages_rust::RustAuthorityError::Cancelled
+        // Unreachable: rust_terminal maps this variant before AuthorityFailure::Rust is built.
+        | compiler_languages_rust::RustAuthorityError::DeadlineExceeded
         | compiler_languages_rust::RustAuthorityError::Toolchain(_)
         | compiler_languages_rust::RustAuthorityError::ProjectRoot { .. }
         | compiler_languages_rust::RustAuthorityError::ProjectSource { .. }

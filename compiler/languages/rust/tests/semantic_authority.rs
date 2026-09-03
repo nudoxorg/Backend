@@ -6,7 +6,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use compiler_languages_rust::{
@@ -70,6 +70,7 @@ fn borrowed_authority_preserves_hir_types_resolution_macros_and_exact_spans()
         let control = RustAnalysisControl {
             cancelled: &running,
             maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + std::time::Duration::from_secs(180),
         };
         project.analyze(control, |authority| {
             let root_span = authority.span(authority.root.syntax())?;
@@ -297,6 +298,7 @@ fn source_budget_rejects_before_workspace_loading() -> Result<(), TestFailure> {
             RustAnalysisControl {
                 cancelled: &running,
                 maximum_source_bytes: SourceByteLimit::from(1),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
             },
             |_| Ok(()),
         ) {
@@ -306,6 +308,34 @@ fn source_budget_rejects_before_workspace_loading() -> Result<(), TestFailure> {
                 Ok(())
             }
             Ok(()) | Err(_) => Err(TestFailure::SourceBudgetAuthority),
+        }
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves a pre-expired authority deadline returns its distinct typed terminal at entry.
+#[test]
+fn expired_authority_deadline_rejects_before_workspace_loading() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        match project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(u32::MAX),
+                deadline: Instant::now(),
+            },
+            |_| Ok(()),
+        ) {
+            Err(RustAuthorityError::DeadlineExceeded) => Ok(()),
+            Ok(()) => Err(TestFailure::DeadlineAuthority),
+            Err(error) => Err(TestFailure::Authority(error)),
         }
     })();
     fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
@@ -327,6 +357,7 @@ fn cancelled_authority_never_loads_the_workspace() -> Result<(), TestFailure> {
             RustAnalysisControl {
                 cancelled: &cancelled,
                 maximum_source_bytes: SourceByteLimit::from(1),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
             },
             |_| Ok(()),
         ) {
@@ -367,6 +398,9 @@ enum TestFailure {
     /// Cancellation failed to stop before authority loading.
     #[error("cancelled Rust authority entered workspace loading")]
     CancellationAuthority,
+    /// An expired Rust authority deadline was not returned as its exact typed terminal.
+    #[error("expired Rust authority deadline was not rejected")]
+    DeadlineAuthority,
     /// Root source admission failed to reject its declared byte-budget violation.
     #[error("Rust source budget admitted an oversized root before workspace loading")]
     SourceBudgetAuthority,

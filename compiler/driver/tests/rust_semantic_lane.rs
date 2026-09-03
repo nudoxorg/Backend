@@ -719,7 +719,7 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A source beyond the lane's 128-fact bound is the exact typed lowering
+/// A source beyond the lane's 1024-fact geometry is the exact typed lowering
 /// rejection, never a truncated emission.
 #[test]
 fn capacity_beyond_1024_is_the_exact_lowering_rejection() -> Result<(), TestError> {
