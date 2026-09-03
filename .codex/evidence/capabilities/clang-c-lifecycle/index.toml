@@ -173,12 +173,14 @@ result_commit = "none — owned path restored; no commit"
 ingest = "Worker stopped honestly: meson packaging journey dies at compile_build_command with Authority('libclang rejected the database translation unit'). TERRA ROOT-CAUSED: L10's bare `ninja -t compdb` emits entries for EVERY edge (link edges file=*.o without -c, phony edges 'meson-internal__test' with empty command, tool-runner edges); read_compdb admits them all as TUs and libclang rejects an object file as C source. Reproduced by Terra with a real meson+ninja probe. Repair card L10c folds the module header's non-compile-selection law into compdb entry admission + finishes L10b J3/J4."
 
 [[workers]]
-task = "planned"
+task = "done (product half)"
 role = "nudox_luna_implementer"
 card = "L10c-compdb (compile-command selection law for compdb entries; repairs L10 ninja regression; delivers meson journey + absent twins)"
 card_sha256 = "ffbbeff5110972170285d6564a1a6cf746af6834e5d4a987fa5040facfe147bd"
 paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
-baseline = "b142fb136"
+baseline = "7dc7de48c"
+result_commit = "180ec274 (product) + 6f78997ea (Terra-authored test surface)"
+ingest = "Worker landed the admission law (read_compdb admits only -c + source-suffix entries; module header documents the JSON compdb selection law) and reproduced the redis probe green, but again deferred the test additions. Two bounded worker attempts on test-heavy halves -> Terra authored the remaining surface directly per the test-authoring lane law: restructured the make packaging journey (changed-content gen-2: one.c bytes change + three.c added; shutdown+reopen+index seal at BOTH generations via a shared reopen_validate_seal_and_shutdown helper; unchanged two.c fragment byte-identical, changed one.c fragment differs; gen-1 fragment reopens from the artifact store), added meson_packaging_journey_drives_publishes_reopens_and_indexes (exact TU-count 2->3 over the SAME scratch with --wipe re-drive = the junk-edge admission falsifier; meson reserves meson-*-prefixed target names — fixture renamed) and absent_meson_and_make_are_not_silently_skipped (availability-adaptive like the cmake twin precedent; the absent branch requires a tool-less host). Mechanical Terra fix in build_drive.rs: the failed-drive capture now retains stdout+stderr (meson reports failures on stdout; the typed terminal previously retained empty evidence). CUSTODY INCIDENT: the worker left a workspace-wide `cargo fmt` result uncommitted across compiler/ir + server/journal (formatting-only: line wraps + trailing commas, verified) — restored to HEAD, other lanes' surfaces untouched. Gates reproduced by Terra: build_drive 17/17 (+1 ignored corpus probe), clang_lane 18/18, clang_lifecycle 11/11, clang crate 9/9, all twice. L10/L10b/L10c closed together; R13/R16 evidence complete pending the corpus run."
 
 [[workers]]
 task = "planned"
