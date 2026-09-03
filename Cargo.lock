@@ -1300,10 +1300,15 @@ dependencies = [
  "compiler-publication",
  "compiler-registry",
  "compiler-vocabulary",
+ "flate2",
  "heart-identity",
+ "server-index-build",
+ "server-index-core",
+ "server-index-publish",
  "server-journal",
  "sha2",
  "thiserror 2.0.20",
+ "ureq",
 ]
 
 [[package]]
