@@ -15,7 +15,7 @@ use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
 };
-use ra_ap_project_model::{CargoConfig, RustLibSource};
+use ra_ap_project_model::{CargoConfig, CargoFeatures, RustLibSource};
 use ra_ap_syntax::{
     AstNode,
     ast::{self, HasName},
@@ -38,6 +38,20 @@ pub struct RustProject {
 }
 
 impl RustProject {
+    pub(crate) fn validate_root(root: impl AsRef<Path>) -> Result<PathBuf, RustAuthorityError> {
+        let root =
+            root.as_ref()
+                .canonicalize()
+                .map_err(|source| RustAuthorityError::ProjectRoot {
+                    path: root.as_ref().to_path_buf(),
+                    source,
+                })?;
+        let manifest = root.join("Cargo.toml");
+        if !manifest.is_file() {
+            return Err(RustAuthorityError::MissingManifest { path: manifest });
+        }
+        Ok(root)
+    }
     /// Validates one caller-selected Cargo root and seals its language profile.
     ///
     /// # Errors
@@ -112,6 +126,18 @@ impl RustProject {
             RustAuthority<'analysis>,
         ) -> Result<Output, RustAuthorityError>,
     ) -> Result<Output, RustAuthorityError> {
+        self.analyze_with_features(control, RustFeatureControl::default(), lower)
+    }
+
+    /// Runs analysis with explicit Cargo feature unification controls.
+    pub fn analyze_with_features<Output>(
+        &self,
+        control: RustAnalysisControl<'_>,
+        features: RustFeatureControl<'_>,
+        lower: impl for<'analysis> FnOnce(
+            RustAuthority<'analysis>,
+        ) -> Result<Output, RustAuthorityError>,
+    ) -> Result<Output, RustAuthorityError> {
         control.check()?;
         let source_path = &self.source_path;
         let source_bytes = fs::metadata(source_path)
@@ -132,6 +158,7 @@ impl RustProject {
             ))),
             no_deps: false,
             metadata_extra_args: vec!["--offline".to_owned()],
+            features: features.cargo_features(),
             ..CargoConfig::default()
         };
         let load = ra_ap_load_cargo::LoadCargoConfig {
@@ -211,6 +238,46 @@ pub struct RustAnalysisControl<'cancel> {
     pub cancelled: &'cancel AtomicBool,
     /// Maximum root-source size admitted before Cargo workspace loading.
     pub maximum_source_bytes: SourceByteLimit,
+}
+
+/// Caller-selected Cargo feature policy, borrowing the requested spellings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustFeatureControl<'features> {
+    /// Enable every declared feature.
+    pub all_features: bool,
+    /// Suppress the package's default feature set.
+    pub no_default_features: bool,
+    /// Exact feature names requested by the caller.
+    pub features: &'features [&'features str],
+}
+
+impl<'features> RustFeatureControl<'features> {
+    /// The unchanged Cargo default.
+    #[must_use]
+    pub const fn default() -> Self {
+        Self {
+            all_features: false,
+            no_default_features: false,
+            features: &[],
+        }
+    }
+}
+
+impl<'features> RustFeatureControl<'features> {
+    fn cargo_features(self) -> CargoFeatures {
+        if self.all_features {
+            CargoFeatures::All
+        } else {
+            CargoFeatures::Selected {
+                features: self
+                    .features
+                    .iter()
+                    .map(|feature| (*feature).to_owned())
+                    .collect(),
+                no_default_features: self.no_default_features,
+            }
+        }
+    }
 }
 
 impl RustAnalysisControl<'_> {
