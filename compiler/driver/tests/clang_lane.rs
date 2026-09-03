@@ -15,9 +15,12 @@ use heart_identity::{ContentId, ToolchainDomain};
 use std::{
     mem::size_of,
     path::Path,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+/// Distinguishes concurrent test threads that read the same wall-clock nonce.
+static WORK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn database_argument_borrow_array_is_pointer_sized_and_stack_safe() {
@@ -184,8 +187,11 @@ where
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
         .as_nanos();
-    let work =
-        std::env::temp_dir().join(format!("nudox-clang-lane-{}-{nonce}", std::process::id()));
+    let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{nonce}-{serial}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let result = lower_with(profile, source, &mut output, &work).and_then(|view| check(&view));
@@ -463,8 +469,11 @@ fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
         .as_nanos();
-    let work =
-        std::env::temp_dir().join(format!("nudox-clang-lane-{}-{nonce}", std::process::id()));
+    let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{nonce}-{serial}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let outcome = lower_with(LanguageProfile::C(CStandard::C23), b"", &mut output, &work);
@@ -1020,7 +1029,11 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
 #[test]
 fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> Result<(), TestError>
 {
-    let work = std::env::temp_dir().join(format!("nudox-clang-lane-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{}",
+        std::process::id(),
+        WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let committed = {
