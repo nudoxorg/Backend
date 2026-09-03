@@ -13,17 +13,17 @@ use compiler_ir::{
     TypeWidth,
 };
 use compiler_languages_typescript::{
-    AuthorityError, BoundReference, Checker, CheckerError, CheckerIndex, GetSpan, Origin,
-    ReferenceFlags, Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
+    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
+    Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
 use crate::{
     lower::{
-        EmissionExtension, FactFault, FactSet, FactTypeChild, LEAF_PRODUCT, MAX_EMISSION_FACTS,
-        MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+        COMPUTED_ROW_BASE, EmissionExtension, FactSet, FactTypeChild, LEAF_PRODUCT,
+        MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
     },
-    types::LoweringUnsupported,
+    types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
 /// Bound of one declaration's staged type-parameter rows; a source with more
@@ -34,10 +34,6 @@ const MAX_DECL_TYPE_PARAMETERS: usize = 16;
 const MAX_TYPE_DEPTH: u8 = 24;
 /// Sentinel marking an unset projection-table row.
 const UNSET: u32 = u32::MAX;
-/// First pool-local ordinal of an anonymous type row, mirroring the frozen
-/// emission lane's own constant (`lower.rs` keeps it private; the value is
-/// the fact-lane bound by definition).
-const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
 /// Bound of staged JSDoc segments on one comment line.
@@ -52,6 +48,8 @@ pub(crate) enum TypeScriptCollectError {
     Authority(AuthorityError),
     /// The canonical bounded declaration lane cannot admit every OXC symbol.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
     /// An OXC declaration span could not name a slice of the admitted source.
     Span { start: u32, end: u32 },
 }
@@ -62,8 +60,10 @@ fn lane_rejection() -> TypeScriptCollectError {
     TypeScriptCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
 
-/// Maps one typed lane rejection onto the coarse lane terminal, retaining the
-/// mandated mapping from every [`FactFault`] to [`LoweringUnsupported`].
+/// Maps one collector-internal lane rejection onto the coarse lane terminal.
+/// The declaration-lane path now retains the full [`FactFault`] through
+/// [`TypeScriptCollectError::Rejected`]; this fold remains only for the
+/// pooled-lane helpers (docs, atoms, spans) and is a recorded lane criticism.
 fn fault(_cause: FactFault) -> TypeScriptCollectError {
     lane_rejection()
 }
@@ -397,7 +397,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// type-parameter start for the checker pass.
     fn push(&mut self, fact: SemanticFact<'source>) -> Result<u32, TypeScriptCollectError> {
         let pending = self.pending_type_parameters;
-        let ordinal = push_fact(self.facts, fact).map_err(|_| lane_rejection())?;
+        let ordinal = push_fact(self.facts, fact).map_err(TypeScriptCollectError::Rejected)?;
         let ordinal = coordinate(ordinal)?;
         if let Some(slot) = self.extension_type_parameters.get_mut(ordinal as usize) {
             *slot = pending;
@@ -1338,10 +1338,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 /// the configured TypeScript checker authority as the type plane beside the
 /// in-process syntax projection.
 ///
-/// The exact TypeScript checker is spawned once for the source; when the
-/// tool or its `typescript` module is unavailable the lane proceeds at OXC
-/// fidelity with every checker-derived cell absent. A checker that RAN and
-/// violated its protocol is a typed authority rejection.
+/// The exact TypeScript checker is required once for the source. Any checker
+/// failure is a typed authority rejection; syntax projection is never used as
+/// a fallback for missing semantic facts.
 ///
 /// This accepts no reconstructed token stream. OXC contributes its distinct
 /// syntax, lexical-binding, source-coordinate, and declaration authorities.
@@ -1350,18 +1349,10 @@ pub(crate) fn collect<'source>(
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
-    let report = match Checker::default().run(profile, source) {
-        Ok(report) => Some(report),
-        Err(CheckerError::ToolingUnavailable { .. } | CheckerError::ModuleUnavailable { .. }) => {
-            None
-        }
-        Err(cause) => {
-            return Err(TypeScriptCollectError::Authority(AuthorityError::Checker {
-                cause,
-            }));
-        }
-    };
-    collect_with_checker(profile, source, report.as_ref(), facts)
+    let report = Checker::default()
+        .run(profile, source)
+        .map_err(|cause| TypeScriptCollectError::Authority(AuthorityError::Checker { cause }))?;
+    collect_with_checker(profile, source, Some(&report), facts)
 }
 
 /// Streams the OXC projection with one caller-supplied checker report.
@@ -1914,7 +1905,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let row =
                 intern_computed_tree(&registry, self.facts, tree, owner, 0, SpellDomain::Owner)?;
             let ordinal = row
-                .checked_sub(ANONYMOUS_ROW_BASE)
+                .checked_sub(COMPUTED_ROW_BASE)
                 .ok_or_else(lane_rejection)?;
             let proof = self.mint.mint(ordinal)?;
             let type_parameters = self
@@ -2606,10 +2597,10 @@ enum SpellDomain {
     Range(u32, u32),
 }
 
-/// Interns one checker-computed type as an anonymous type row owned by
+/// Interns one checker-computed type as a computed type row owned by
 /// `owner`, interning every child row first so the pooled lane stays
 /// topologically backward. Returns the row's lane coordinate
-/// (`ANONYMOUS_ROW_BASE` plus its pool ordinal).
+/// (`COMPUTED_ROW_BASE` plus its pool ordinal).
 ///
 /// `spell` names the source span that owns the tree's member spellings:
 /// the owner's declaring span for declaration-computed rows, or the exact
@@ -2667,7 +2658,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Union),
                 owner,
-                &children,
+                &children[..members.len()],
             )
         }
         TypeTree::Intersection { members } => {
@@ -2676,7 +2667,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
                 owner,
-                &children,
+                &children[..members.len()],
             )
         }
         TypeTree::Tuple { elements } => {
@@ -2686,7 +2677,7 @@ fn intern_computed_tree<'source>(
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Tuple),
                 owner,
-                &children,
+                &children[..elements.len()],
             )
         }
         TypeTree::Array { element } => {
@@ -2700,7 +2691,7 @@ fn intern_computed_tree<'source>(
             )?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
             record.text = Some(&b"[]"[..]);
-            intern_computed_row(facts, record, owner, &children)
+            intern_computed_row(facts, record, owner, &children[..1])
         }
         TypeTree::Function { parameters, result } => {
             let mut children = [0_u32; MAX_TYPE_CHILDREN];
@@ -2768,12 +2759,10 @@ fn intern_computed_tree<'source>(
                     .ok_or_else(lane_rejection)?;
                 let row = rows.get(position).copied().ok_or_else(lane_rejection)?;
                 facts
-                    .anonymous_type_child(row, Some(spelling), flags)
+                    .computed_type_child(row, Some(spelling), flags)
                     .map_err(fault)?;
             }
-            facts
-                .intern_anonymous_type_row(owner, record)
-                .map_err(fault)
+            facts.intern_computed_type_row(owner, record).map_err(fault)
         }
         TypeTree::Reference { name, module, args } => intern_computed_reference(
             registry,
@@ -2823,7 +2812,8 @@ fn intern_computed_reference<'source>(
         .is_none()
         .then(|| registry.fact_by_name_bytes(name.as_bytes()))
         .flatten();
-    let base = match local {
+    let local_fact = local;
+    let base = match local_fact {
         Some(fact) => fact,
         None => {
             // A checker-resolved foreign module type is known and named,
@@ -2842,6 +2832,11 @@ fn intern_computed_reference<'source>(
         }
     };
     if args.is_empty() {
+        if local.is_none() {
+            // A foreign base already owns the honest unknown row above; it is
+            // the computed root, not an entity ordinal for a nominal cell.
+            return Ok(base);
+        }
         // A bare reference is still its own computed row: every computed
         // declaration owns exactly one root row in the anonymous pool, in
         // pool order, so the computed-cell mint stays aligned.
@@ -2899,11 +2894,9 @@ fn intern_computed_row<'a, 'source>(
     children: &[u32],
 ) -> Result<u32, TypeScriptCollectError> {
     for child in children {
-        facts.anonymous_type_child(*child, None, 0).map_err(fault)?;
+        facts.computed_type_child(*child, None, 0).map_err(fault)?;
     }
-    facts
-        .intern_anonymous_type_row(owner, record)
-        .map_err(fault)
+    facts.intern_computed_type_row(owner, record).map_err(fault)
 }
 
 fn intern_computed_leaf<'a, 'source>(
@@ -2911,9 +2904,7 @@ fn intern_computed_leaf<'a, 'source>(
     record: SemanticTypeRecord<'source>,
     owner: u32,
 ) -> Result<u32, TypeScriptCollectError> {
-    facts
-        .intern_anonymous_type_row(owner, record)
-        .map_err(fault)
+    facts.intern_computed_type_row(owner, record).map_err(fault)
 }
 
 /// The closed primitive record of one checker primitive spelling.
@@ -3113,1161 +3104,4 @@ fn trim_jsdoc_line(line: &[u8]) -> &[u8] {
         _ => trimmed,
     };
     trim_bytes(trimmed, b" \t")
-}
-
-#[cfg(test)]
-mod tests {
-    use compiler_ir::{
-        DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView,
-        OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeRecord,
-        SemanticTypeTag, SourceIdentity, TypeReason, TypeWidth,
-    };
-    use compiler_vocabulary::{
-        CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
-    };
-    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
-
-    use super::{TypeScriptCollectError, collect, collect_with_checker};
-
-    #[derive(Debug, thiserror::Error)]
-    enum TestError {
-        #[error("collect rejected the source: {0:?}")]
-        Collect(TypeScriptCollectError),
-        #[error("lane admission fault: {0:?}")]
-        Admission(crate::lower::AdmissionFault),
-        #[error("fragment validation failed")]
-        Validate(#[from] compiler_ir::FragmentError),
-        #[error("source length does not fit the source identity")]
-        Source(#[from] core::num::TryFromIntError),
-        #[error("fragment output tail changed")]
-        Tail,
-        #[error("no entity named {name}")]
-        MissingEntity { name: String },
-        #[error("no type fact for owner {owner}")]
-        MissingTypeFact { owner: u32 },
-        #[error("no occurrence fact")]
-        MissingOccurrence,
-        #[error("no documentation fact")]
-        MissingDoc,
-        #[error("unexpected record: expected {expected:?}, observed {observed:?}")]
-        Record {
-            expected: SemanticTypeTag,
-            observed: SemanticTypeTag,
-        },
-        #[error("golden checker transcript fault: {0}")]
-        Golden(String),
-        #[error("no TypeScript extension section payload")]
-        MissingExtension,
-    }
-
-    /// Lowers one source and admits the lane into one validated fragment.
-    /// The declared-only OXC path: no checker report, no subprocess.
-    fn fragment(source: &[u8]) -> Result<Vec<u8>, TestError> {
-        fragment_with_checker(source, None)
-    }
-
-    /// Lowers one source with one caller-supplied checker report and admits
-    /// the lane into one validated fragment, returning the exact committed
-    /// bytes with the untouched tail proven unchanged.
-    fn fragment_with_checker(
-        source: &[u8],
-        checker: Option<&compiler_languages_typescript::Report>,
-    ) -> Result<Vec<u8>, TestError> {
-        let mut facts = crate::lower::FactSet::new();
-        collect_with_checker(TypeScriptSource::TypeScript, source, checker, &mut facts)
-            .map_err(TestError::Collect)?;
-        let identity = SourceIdentity {
-            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            byte_len: u32::try_from(source.len())?,
-        };
-        let recipe = CompileRecipeFact::derive(
-            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-            Stage::LowerIr,
-            NativeTool::TypeScriptCompiler,
-            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-            ContentId::<ToolchainDomain>::from_canonical_bytes(b"typescript-lane-toolchain"),
-        );
-        let mut output = vec![0xa5_u8; 65_536];
-        let length = crate::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::Admission)?
-            .len();
-        if !output[length..].iter().all(|byte| *byte == 0xa5) {
-            return Err(TestError::Tail);
-        }
-        output.truncate(length);
-        Ok(output)
-    }
-
-    fn view(bytes: &[u8]) -> Result<FragmentView<'_>, TestError> {
-        FragmentView::validate(bytes).map_err(TestError::Validate)
-    }
-
-    /// Offline falsifiers for the checker authority's consumption: computed
-    /// cells, oracle-confidence overload targets, and the foreign-base
-    /// distinction, all driven by the recorded golden checker transcript.
-    mod checker_consumption {
-        use super::*;
-
-        const GOLDEN: &str =
-            include_str!("../../languages/typescript/tests/transcripts/golden.json");
-        const GOLDEN_SOURCE: &[u8] =
-            include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
-
-        /// The wire `NONE` sentinel of an absent extension cell.
-        const NONE: u32 = u32::MAX;
-
-        fn golden() -> Result<compiler_languages_typescript::Report, TestError> {
-            compiler_languages_typescript::Checker::default()
-                .decode(GOLDEN.as_bytes())
-                .map_err(|cause| TestError::Golden(cause.to_string()))
-        }
-
-        /// Lowers the golden fixture with the golden transcript. The owned
-        /// bytes outlive the caller's borrowed view.
-        fn fragment_from_golden() -> Result<Vec<u8>, TestError> {
-            let report = golden()?;
-            fragment_with_checker(GOLDEN_SOURCE, Some(&report))
-        }
-
-        /// Opens one validated view of the lowered golden fragment. The
-        /// fragment bytes are leaked so the borrowed view can travel as
-        /// `'static`; the test process is short-lived, so the leak is
-        /// bounded and deliberate.
-        fn golden_view() -> Result<FragmentView<'static>, TestError> {
-            let leaked: &'static [u8] = Box::leak(fragment_from_golden()?.into_boxed_slice());
-            FragmentView::validate(leaked).map_err(TestError::Validate)
-        }
-
-        /// Decodes one entity's TypeScript extension wire fact straight from
-        /// the committed section: `(type_parameters, declared, computed)`.
-        /// The TypeScript plane is plane zero; its fact rows are 12 bytes of
-        /// three `u32` cells.
-        fn typescript_cell(
-            view: &FragmentView<'_>,
-            entity: u32,
-        ) -> Result<(u32, u32, u32), TestError> {
-            const HEADER: usize = 16;
-            const DIRECTORY: usize = 20;
-            let bytes = view
-                .language_extension_payload()
-                .ok_or(TestError::MissingExtension)?;
-            let directory = HEADER;
-            let word = |at: usize| -> Result<u32, TestError> {
-                let raw = bytes
-                    .get(at..at.checked_add(4).ok_or(TestError::MissingExtension)?)
-                    .ok_or(TestError::MissingExtension)?;
-                Ok(u32::from_le_bytes(
-                    raw.try_into().map_err(|_| TestError::MissingExtension)?,
-                ))
-            };
-            let plane_kind = bytes
-                .get(directory)
-                .copied()
-                .ok_or(TestError::MissingExtension)?;
-            if plane_kind != 1 {
-                return Err(TestError::MissingExtension);
-            }
-            let rows = word(directory + 4)?;
-            let fact_count = word(directory + 8)?;
-            let payload = word(directory + 12)?;
-            if entity >= rows || fact_count == 0 {
-                return Err(TestError::MissingExtension);
-            }
-            let ordinal = word(
-                usize::try_from(payload).map_err(|_| TestError::MissingExtension)?
-                    + usize::try_from(entity).map_err(|_| TestError::MissingExtension)? * 4,
-            )?;
-            if ordinal == NONE {
-                return Err(TestError::MissingExtension);
-            }
-            let fact_at = usize::try_from(payload).map_err(|_| TestError::MissingExtension)?
-                + usize::try_from(rows).map_err(|_| TestError::MissingExtension)? * 4
-                + usize::try_from(ordinal).map_err(|_| TestError::MissingExtension)? * 12;
-            Ok((word(fact_at)?, word(fact_at + 4)?, word(fact_at + 8)?))
-        }
-
-        /// Every type row in lane order: anonymous computed rows first, then
-        /// one row per pushed fact.
-        fn type_rows<'a>(
-            view: &'a FragmentView<'a>,
-        ) -> Result<Vec<compiler_ir::DecodedTypeFact<'a>>, TestError> {
-            let cursor = view
-                .type_facts()
-                .ok_or(TestError::MissingTypeFact { owner: 0 })?;
-            Ok(cursor.filter_map(|result| result.ok()).collect())
-        }
-
-        fn computed_row_of<'a>(
-            rows: &'a [compiler_ir::DecodedTypeFact<'a>],
-            cell: (u32, u32, u32),
-        ) -> Result<compiler_ir::DecodedTypeFact<'a>, TestError> {
-            rows.get(cell.2 as usize)
-                .copied()
-                .ok_or(TestError::MissingTypeFact { owner: cell.2 })
-        }
-
-        #[test]
-        fn golden_computed_cells_fill_extension_facts_with_checker_rows() -> Result<(), TestError> {
-            let report = golden()?;
-            let without = fragment_with_checker(GOLDEN_SOURCE, None)?;
-            let with_bytes = fragment_with_checker(GOLDEN_SOURCE, Some(&report))?;
-            let plain = FragmentView::validate(&without).map_err(TestError::Validate)?;
-            let checked = FragmentView::validate(&with_bytes).map_err(TestError::Validate)?;
-            // Without the checker the computed cell is absent for every fact.
-            let (n, _, _) = fact_named(&plain, b"n")?;
-            let (_, _, computed) = typescript_cell(&plain, n)?;
-            assert_eq!(computed, NONE);
-            // With the checker the cell names the computed row.
-            let (n_checked, _, n_computed) = typescript_cell(&checked, n)?;
-            assert_ne!(n_computed, NONE);
-            let rows = type_rows(&checked)?;
-            let row = computed_row_of(&rows, (0, n_checked, n_computed))?;
-            expect_tag(&row, SemanticTypeTag::Primitive)?;
-            assert_eq!(row.record.payload0, u32::from(PrimitiveShape::Float));
-            Ok(())
-        }
-
-        #[test]
-        fn golden_inferred_const_and_union_records_match_the_checker() -> Result<(), TestError> {
-            let checked = golden_view()?;
-            let rows = type_rows(&checked)?;
-            // `inferred = 7` computes a 32-bit signed integer literal record.
-            let (inferred, _, inferred_cell) =
-                typescript_cell(&checked, fact_named(&checked, b"inferred")?.0)?;
-            let inferred_row = computed_row_of(&rows, (0, inferred, inferred_cell))?;
-            expect_tag(&inferred_row, SemanticTypeTag::Primitive)?;
-            assert_eq!(
-                inferred_row.record.payload0,
-                u32::from(PrimitiveShape::Integer)
-            );
-            assert_eq!(
-                inferred_row.record.payload1,
-                (32_u32 << 1) | SemanticTypeRecord::INTEGER_SIGNED_FLAG
-            );
-            // `union: string | number` computes a two-member union record.
-            let (union_entity, _, union_cell) =
-                typescript_cell(&checked, fact_named(&checked, b"union")?.0)?;
-            let union_row = computed_row_of(&rows, (0, union_entity, union_cell))?;
-            expect_tag(&union_row, SemanticTypeTag::Union)?;
-            assert_eq!(union_row.record.children.length, 2);
-            Ok(())
-        }
-
-        #[test]
-        fn golden_foreign_generic_base_names_the_resolved_spelling() -> Result<(), TestError> {
-            let checked = golden_view()?;
-            // The DECLARED annotation `Map<string, number>` keeps an honest
-            // unknown: the checker resolved `Map` to the foreign `typescript`
-            // module, and the closed lattice has no foreign-nominal row, so
-            // the record names the resolved spelling for the backlog instead
-            // of claiming it is genuinely unresolvable.
-            let (table, _, _) = fact_named(&checked, b"table")?;
-            let declared = type_fact(&checked, table)?;
-            expect_tag(&declared, SemanticTypeTag::Unknown)?;
-            assert_eq!(
-                declared.record.payload0,
-                u32::from(TypeReason::NoIrRepresentation)
-            );
-            assert_eq!(declared.record.text, Some(&b"Map"[..]));
-            // The COMPUTED row carries the full applied structure: base plus
-            // exactly two arguments.
-            let (_, _, table_cell) = typescript_cell(&checked, table)?;
-            let rows = type_rows(&checked)?;
-            let applied = computed_row_of(&rows, (0, table, table_cell))?;
-            expect_tag(&applied, SemanticTypeTag::Apply)?;
-            assert_eq!(applied.record.children.length, 3);
-            Ok(())
-        }
-
-        #[test]
-        fn golden_this_type_and_local_nominal_computed_rows_bind_by_name() -> Result<(), TestError>
-        {
-            let checked = golden_view()?;
-            let rows = type_rows(&checked)?;
-            // `made` computes to the `Box` nominal: the computed row names
-            // the same-file class fact.
-            let (box_entity, _) = fact_named(&checked, b"Box")?;
-            let (made, _, made_cell) = typescript_cell(&checked, fact_named(&checked, b"made")?.0)?;
-            let made_row = computed_row_of(&rows, (0, made, made_cell))?;
-            expect_tag(&made_row, SemanticTypeTag::Nominal)?;
-            assert_eq!(
-                made_row.record.nominal,
-                Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-                    box_entity
-                )))
-            );
-            // The `self(): this` method computes a function row whose result
-            // child is the SelfType leaf.
-            let (_, _, self_cell) = typescript_cell(&checked, fact_named(&checked, b"self")?.0)?;
-            let self_row = computed_row_of(&rows, (0, 0, self_cell))?;
-            expect_tag(&self_row, SemanticTypeTag::FunctionPointer)?;
-            assert_ne!(
-                self_row.record.payload1 & SemanticTypeRecord::RESULT_FLAG,
-                0
-            );
-            Ok(())
-        }
-
-        #[test]
-        fn golden_oracle_confidence_picks_distinct_overload_targets() -> Result<(), TestError> {
-            let checked = golden_view()?;
-            let oracle_calls: Vec<DecodedOccurrence<'_>> = occurrences(&checked)?
-                .into_iter()
-                .filter(|occurrence| {
-                    occurrence.occurrence.confidence == OccurrenceConfidence::Oracle
-                        && occurrence.occurrence.kind == ReferenceKind::FunctionCall
-                })
-                .collect();
-            // The two `g` overload call sites resolve at oracle confidence to
-            // the two distinct `g` overload facts.
-            let g_targets: Vec<u32> = oracle_calls
-                .iter()
-                .filter_map(|occurrence| match occurrence.occurrence.target {
-                    OccurrenceTarget::Local(entity) => Some(entity.raw),
-                    OccurrenceTarget::Foreign(_) => None,
-                })
-                .filter(|target| {
-                    entities(&checked)
-                        .into_iter()
-                        .any(|(ordinal, name, _)| ordinal == *target && name == b"g")
-                })
-                .collect();
-            assert_eq!(g_targets.len(), 2, "observed {g_targets:?}");
-            assert_ne!(g_targets[0], g_targets[1]);
-            // The checker-only property-call site `slot.get()` also commits
-            // at oracle confidence and targets the exact `get` member fact.
-            let get_target = oracle_calls
-                .iter()
-                .filter_map(|occurrence| match occurrence.occurrence.target {
-                    OccurrenceTarget::Local(entity) => Some(entity.raw),
-                    OccurrenceTarget::Foreign(_) => None,
-                })
-                .find(|target| {
-                    entities(&checked)
-                        .into_iter()
-                        .any(|(ordinal, name, _)| ordinal == *target && name == b"get")
-                })
-                .ok_or(TestError::MissingEntity {
-                    name: "get call target".to_owned(),
-                })?;
-            let (_, get_kind) = fact_named(&checked, b"get")?;
-            assert_eq!(get_kind, EntityKind::Function);
-            let _ = get_target;
-            // No span commits twice: every committed occurrence names a
-            // distinct (owner, relative-span) pair.
-            let mut covered: Vec<(u32, u32, u32)> = Vec::new();
-            for fact in occurrences(&checked)? {
-                let key = (
-                    fact.owner.raw,
-                    u32::from(fact.occurrence.span.start),
-                    u32::from(fact.occurrence.span.end),
-                );
-                if covered.contains(&key) {
-                    return Err(TestError::Tail);
-                }
-                covered.push(key);
-            }
-            Ok(())
-        }
-
-        #[test]
-        fn golden_narrowing_extends_the_declared_fact_with_a_site_row() -> Result<(), TestError> {
-            let checked = golden_view()?;
-            let (widened, _) = fact_named(&checked, b"widened")?;
-            // The declaration-time computed cell keeps the annotated union.
-            let (_, _, computed) = typescript_cell(&checked, widened)?;
-            assert_ne!(computed, NONE);
-            let rows = type_rows(&checked)?;
-            let computed_row = computed_row_of(&rows, (0, widened, computed))?;
-            expect_tag(&computed_row, SemanticTypeTag::Union)?;
-            assert_eq!(computed_row.record.children.length, 2);
-            // The assignment narrowing commits one extra owned row: the
-            // string-literal type of `widened = "text"` at that exact site.
-            let site_rows: Vec<_> = rows
-                .iter()
-                .filter(|fact| fact.owner.raw == widened)
-                .collect();
-            assert!(
-                site_rows
-                    .iter()
-                    .any(|fact| fact.record.tag == SemanticTypeTag::Primitive
-                        && fact.record.payload0 == u32::from(PrimitiveShape::Str)),
-                "expected a narrowed string row, observed {:?}",
-                site_rows
-                    .iter()
-                    .map(|fact| fact.record.tag)
-                    .collect::<Vec<_>>()
-            );
-            Ok(())
-        }
-
-        #[test]
-        fn narrowing_object_members_bind_spellings_at_the_assignment_site() -> Result<(), TestError>
-        {
-            // `alpha` is spelled only at the assignment site, never in the
-            // owner declaration; the row commits, which proves the spelling
-            // domain is the site span.
-            let source: &[u8] = b"let wide: number = 0;\nwide = { alpha: 1 };";
-            let mut report = golden()?;
-            report.source_digest = hex_digest_of(source);
-            report.declarations = Box::new([]);
-            report.references = Box::new([]);
-            report.narrowings = Box::new([compiler_languages_typescript::Narrowing {
-                name_start: 4,
-                name_end: 8,
-                start: 22,
-                end: 42,
-                r#type: Some(compiler_languages_typescript::TypeTree::Object {
-                    members: Box::new([compiler_languages_typescript::ObjectMember {
-                        name: "alpha".to_owned(),
-                        optional: false,
-                        readonly: false,
-                        member_type: compiler_languages_typescript::TypeTree::Primitive {
-                            name: "number".to_owned(),
-                        },
-                    }]),
-                }),
-            }]);
-            let bytes = fragment_with_checker(source, Some(&report))?;
-            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (wide, _) = fact_named(&checked, b"wide")?;
-            let rows = type_rows(&checked)?;
-            let record_row = rows
-                .iter()
-                .find(|fact| {
-                    fact.owner.raw == wide && fact.record.tag == SemanticTypeTag::AnonymousRecord
-                })
-                .ok_or(TestError::MissingTypeFact { owner: wide })?;
-            assert_eq!(record_row.record.children.length, 1);
-            // Renaming the member to a name the site never spells is the
-            // typed lane rejection: computed child names are proven source
-            // slices, never borrowed report bytes.
-            let mut renamed = report.clone();
-            renamed.narrowings = Box::new([compiler_languages_typescript::Narrowing {
-                name_start: 4,
-                name_end: 8,
-                start: 22,
-                end: 42,
-                r#type: Some(compiler_languages_typescript::TypeTree::Object {
-                    members: Box::new([compiler_languages_typescript::ObjectMember {
-                        name: "beta".to_owned(),
-                        optional: false,
-                        readonly: false,
-                        member_type: compiler_languages_typescript::TypeTree::Primitive {
-                            name: "number".to_owned(),
-                        },
-                    }]),
-                }),
-            }]);
-            let failure = fragment_with_checker(source, Some(&renamed))
-                .expect_err("an unspelled member name must reject");
-            assert!(matches!(failure, TestError::Collect(..)));
-            Ok(())
-        }
-
-        #[test]
-        fn checker_resolved_global_reaches_an_oracle_universe_key() -> Result<(), TestError> {
-            let source: &[u8] = b"export const term = console;";
-            let mut report = golden()?;
-            report.source_digest = hex_digest_of(source);
-            report.declarations = Box::new([]);
-            report.references = Box::new([compiler_languages_typescript::Reference {
-                start: 20,
-                end: 27,
-                target_start: None,
-                target_end: None,
-                module: Some("typescript".to_owned()),
-                name: Some("console".to_owned()),
-                overload_index: None,
-            }]);
-            report.narrowings = Box::new([]);
-            let bytes = fragment_with_checker(source, Some(&report))?;
-            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (term, _) = fact_named(&checked, b"term")?;
-            let upgraded = occurrences(&checked)?
-                .into_iter()
-                .find(|fact| {
-                    fact.owner.raw == term
-                        && fact.occurrence.confidence == OccurrenceConfidence::Oracle
-                })
-                .ok_or(TestError::MissingOccurrence)?;
-            match upgraded.occurrence.target {
-                OccurrenceTarget::Foreign(key) => {
-                    assert_eq!(key.path, "console");
-                    assert!(matches!(
-                        key.origin,
-                        compiler_ir::ForeignOrigin::Universe { ecosystem: "npm" }
-                    ));
-                }
-                OccurrenceTarget::Local(_) => return Err(TestError::MissingOccurrence),
-                OccurrenceTarget::Stable(_) => return Err(TestError::MissingOccurrence),
-            }
-            Ok(())
-        }
-
-        #[test]
-        fn package_module_bases_stay_honestly_syntactic() -> Result<(), TestError> {
-            // A checker-resolved npm package module whose bytes are not
-            // spelled in this source cannot become a borrowed foreign key;
-            // the occurrence keeps the honest syntactic degradation.
-            let source: &[u8] = b"export const q = missing;";
-            let mut report = golden()?;
-            report.source_digest = hex_digest_of(source);
-            report.declarations = Box::new([]);
-            report.references = Box::new([compiler_languages_typescript::Reference {
-                start: 17,
-                end: 24,
-                target_start: None,
-                target_end: None,
-                module: Some("left-pad".to_owned()),
-                name: Some("missing".to_owned()),
-                overload_index: None,
-            }]);
-            report.narrowings = Box::new([]);
-            let bytes = fragment_with_checker(source, Some(&report))?;
-            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (q, _) = fact_named(&checked, b"q")?;
-            let syntactic = occurrences(&checked)?
-                .into_iter()
-                .find(|fact| {
-                    fact.owner.raw == q
-                        && fact.occurrence.confidence == OccurrenceConfidence::Syntactic
-                })
-                .ok_or(TestError::MissingOccurrence)?;
-            assert!(matches!(
-                syntactic.occurrence.target,
-                OccurrenceTarget::Foreign(_)
-            ));
-            assert!(
-                !occurrences(&checked)?
-                    .into_iter()
-                    .any(|fact| fact.owner.raw == q
-                        && fact.occurrence.confidence == OccurrenceConfidence::Oracle)
-            );
-            Ok(())
-        }
-
-        #[test]
-        fn checker_only_property_call_targets_the_exact_member() -> Result<(), TestError> {
-            let source: &[u8] = b"export class Box { tick(): number { return 1; } }\nexport const box = new Box();\nexport const t = box.tick();";
-            let mut report = golden()?;
-            report.source_digest = hex_digest_of(source);
-            report.declarations = Box::new([]);
-            // `tick` at 101..105 resolves to the method declared at 19..23;
-            // OXC binds no reference for a property-access name.
-            report.references = Box::new([compiler_languages_typescript::Reference {
-                start: 101,
-                end: 105,
-                target_start: Some(19),
-                target_end: Some(23),
-                module: None,
-                name: None,
-                overload_index: Some(0),
-            }]);
-            report.narrowings = Box::new([]);
-            let bytes = fragment_with_checker(source, Some(&report))?;
-            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (tick, tick_kind) = fact_named(&checked, b"tick")?;
-            assert_eq!(tick_kind, EntityKind::Function);
-            // The checker-only call is the one oracle call that targets the
-            // `tick` method fact; OXC's own call-site commits (`new Box()`)
-            // stay untouched.
-            let calls: Vec<_> = occurrences(&checked)?
-                .into_iter()
-                .filter(|fact| {
-                    fact.occurrence.kind == ReferenceKind::FunctionCall
-                        && fact.occurrence.target
-                            == OccurrenceTarget::Local(compiler_ir::EntityId::new(tick))
-                })
-                .collect();
-            assert_eq!(calls.len(), 1, "expected exactly the checker-only call");
-            assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Oracle);
-            Ok(())
-        }
-
-        #[test]
-        fn genuinely_unresolvable_names_stay_honestly_external() -> Result<(), TestError> {
-            // With no checker report the unresolved name keeps the closed
-            // `UnresolvedExternal` reason.
-            let source: &[u8] = b"export const q: TotallyMissing = 1;\n";
-            let bytes = fragment(source)?;
-            let plain = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (q, _, _) = fact_named(&plain, b"q")?;
-            let declared = type_fact(&plain, q)?;
-            assert_eq!(
-                declared.record.payload0,
-                u32::from(TypeReason::UnresolvedExternal)
-            );
-            // With a checker reference that names a foreign module origin,
-            // the same spelling is known-but-unrepresentable instead.
-            let mut report = golden()?;
-            let use_start = 16_u32;
-            let use_end =
-                use_start + u32::try_from("TotallyMissing".len()).map_err(|_| TestError::Tail)?;
-            report.source_digest = hex_digest_of(source);
-            report.references = Box::new([compiler_languages_typescript::Reference {
-                start: use_start,
-                end: use_end,
-                target_start: None,
-                target_end: None,
-                module: Some("somewhere".to_owned()),
-                name: Some("TotallyMissing".to_owned()),
-                overload_index: None,
-            }]);
-            let bytes = fragment_with_checker(source, Some(&report))?;
-            let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (q_checked, _, _) = fact_named(&checked, b"q")?;
-            let resolved = type_fact(&checked, q_checked)?;
-            assert_eq!(
-                resolved.record.payload0,
-                u32::from(TypeReason::NoIrRepresentation)
-            );
-            assert_eq!(resolved.record.text, Some(&b"TotallyMissing"[..]));
-            Ok(())
-        }
-
-        #[test]
-        fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections()
-        -> Result<(), TestError> {
-            // Nine union members overflow the bounded type-child lane.
-            let report = golden()?;
-            let members: Vec<compiler_languages_typescript::TypeTree> = (0..9)
-                .map(|_| compiler_languages_typescript::TypeTree::This)
-                .collect();
-            let mut wide = report.clone();
-            wide.source_digest = hex_digest_of(GOLDEN_SOURCE);
-            wide.declarations = Box::new([compiler_languages_typescript::Declaration {
-                name_start: 13,
-                name_end: 14,
-                origin: compiler_languages_typescript::Origin::Computed,
-                overload_index: None,
-                r#type: Some(compiler_languages_typescript::TypeTree::Union { members }),
-            }]);
-            let failure = fragment_with_checker(GOLDEN_SOURCE, Some(&wide))
-                .expect_err("nine union members must reject");
-            assert!(matches!(failure, TestError::Collect(..)));
-            Ok(())
-        }
-
-        fn hex_digest_of(bytes: &[u8]) -> String {
-            compiler_languages_typescript::source_digest(bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
-        }
-    }
-
-    /// One committed entity row: its ordinal, borrowed name bytes, and kind.
-    fn entities(view: &FragmentView<'_>) -> Vec<(u32, Vec<u8>, EntityKind)> {
-        let atoms: Vec<(u32, Vec<u8>)> = view
-            .atoms()
-            .map(|atom| (atom.ordinal.raw, atom.bytes.to_vec()))
-            .collect();
-        view.entities()
-            .map(|entity| {
-                let name = atoms
-                    .iter()
-                    .find(|(ordinal, _)| *ordinal == entity.name.raw)
-                    .map(|(_, bytes)| bytes.clone())
-                    .unwrap_or_default();
-                (entity.entity.raw, name, entity.kind)
-            })
-            .collect()
-    }
-
-    fn fact_named<'view>(
-        view: &FragmentView<'view>,
-        name: &[u8],
-    ) -> Result<(u32, EntityKind), TestError> {
-        entities(view)
-            .into_iter()
-            .find(|(_, entity_name, _)| entity_name == name)
-            .map(|(ordinal, _, kind)| (ordinal, kind))
-            .ok_or(TestError::MissingEntity {
-                name: String::from_utf8_lossy(name).into_owned(),
-            })
-    }
-
-    fn type_fact<'fragment>(
-        view: &FragmentView<'fragment>,
-        owner: u32,
-    ) -> Result<DecodedTypeFact<'fragment>, TestError> {
-        let Some(cursor) = view.type_facts() else {
-            return Err(TestError::MissingTypeFact { owner });
-        };
-        cursor
-            .filter_map(|result| result.ok())
-            .find(|fact| fact.owner.raw == owner)
-            .ok_or(TestError::MissingTypeFact { owner })
-    }
-
-    fn occurrences<'fragment>(
-        view: &FragmentView<'fragment>,
-    ) -> Result<Vec<DecodedOccurrence<'fragment>>, TestError> {
-        let Some(cursor) = view.occurrences() else {
-            return Err(TestError::MissingOccurrence);
-        };
-        Ok(cursor.filter_map(|result| result.ok()).collect())
-    }
-
-    fn docs<'fragment>(
-        view: &FragmentView<'fragment>,
-    ) -> Result<Vec<DecodedDocFact<'fragment>>, TestError> {
-        let Some(cursor) = view.docs() else {
-            return Err(TestError::MissingDoc);
-        };
-        Ok(cursor.filter_map(|result| result.ok()).collect())
-    }
-
-    fn expect_tag(fact: &DecodedTypeFact<'_>, tag: SemanticTypeTag) -> Result<(), TestError> {
-        if fact.record.tag != tag {
-            return Err(TestError::Record {
-                expected: tag,
-                observed: fact.record.tag,
-            });
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn declared_scalar_annotations_map_onto_lattice_records() -> Result<(), TestError> {
-        let bytes = fragment(
-            b"export const n: number = 1;
-export const s: string = \"x\";
-export const b: boolean = false;
-export const big: bigint = 1n;
-export const any_value: any = 1;
-export const unknown_value: unknown = undefined;
-export const nothing: void = undefined;
-export const nullish: null = null;",
-        )?;
-        let view = view(&bytes)?;
-        let scalar = |name: &'static str| -> Result<DecodedTypeFact<'_>, TestError> {
-            let (ordinal, kind) = fact_named(&view, name.as_bytes())?;
-            assert_eq!(kind, EntityKind::Constant);
-            type_fact(&view, ordinal)
-        };
-        let number = scalar("n")?;
-        expect_tag(&number, SemanticTypeTag::Primitive)?;
-        assert_eq!(number.record.payload0, u32::from(PrimitiveShape::Float));
-        assert_eq!(number.record.payload1, TypeWidth::Fixed(64).to_cell());
-        let string = scalar("s")?;
-        assert_eq!(string.record.payload0, u32::from(PrimitiveShape::Str));
-        let boolean = scalar("b")?;
-        assert_eq!(boolean.record.payload0, u32::from(PrimitiveShape::Bool));
-        let bigint = scalar("big")?;
-        assert_eq!(bigint.record.payload0, u32::from(PrimitiveShape::Builtin));
-        assert_eq!(bigint.record.text, Some(&b"bigint"[..]));
-        let dynamic = scalar("any_value")?;
-        expect_tag(&dynamic, SemanticTypeTag::Unknown)?;
-        assert_eq!(
-            dynamic.record.payload0,
-            u32::from(TypeReason::DynamicallyTyped)
-        );
-        let top = scalar("unknown_value")?;
-        expect_tag(&top, SemanticTypeTag::Any)?;
-        let void = scalar("nothing")?;
-        assert_eq!(void.record.text, Some(&b"void"[..]));
-        let null = scalar("nullish")?;
-        assert_eq!(null.record.text, Some(&b"null"[..]));
-        Ok(())
-    }
-
-    #[test]
-    fn mutually_recursive_interfaces_keep_diagonal_self_nominals_and_linked_members()
-    -> Result<(), TestError> {
-        let bytes = fragment(
-            b"export interface A { b: B; }
-export interface B { a: A; }",
-        )?;
-        let view = view(&bytes)?;
-        let (a_ordinal, a_kind) = fact_named(&view, b"A")?;
-        assert_eq!(a_kind, EntityKind::Trait);
-        let (b_ordinal, b_kind) = fact_named(&view, b"B")?;
-        assert_eq!(b_kind, EntityKind::Trait);
-        // Diagonal self-references: the terminal recursive case.
-        let a_record = type_fact(&view, a_ordinal)?;
-        expect_tag(&a_record, SemanticTypeTag::Nominal)?;
-        assert_eq!(
-            a_record.record.nominal,
-            Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-                a_ordinal
-            )))
-        );
-        let b_record = type_fact(&view, b_ordinal)?;
-        assert_eq!(
-            b_record.record.nominal,
-            Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-                b_ordinal
-            )))
-        );
-        // Member facts are pushed after both declarations and link at them.
-        let (b_member, _) = fact_named(&view, b"b")?;
-        let member_record = type_fact(&view, b_member)?;
-        assert_eq!(member_record.record.children.length, 0);
-        assert_eq!(
-            member_record.record.nominal,
-            Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-                b_ordinal
-            )))
-        );
-        let (a_member, _) = fact_named(&view, b"a")?;
-        let a_member_record = type_fact(&view, a_member)?;
-        assert_eq!(
-            a_member_record.record.nominal,
-            Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-                a_ordinal
-            )))
-        );
-        // Member ordinals strictly follow their declarations.
-        assert!(a_member > b_ordinal && b_member > b_ordinal);
-        Ok(())
-    }
-
-    #[test]
-    fn structural_types_commit_union_intersection_tuple_array_and_apply_records()
-    -> Result<(), TestError> {
-        let bytes = fragment(
-            b"export type U = string | number;
-export type I = string & number;
-export type Tup = [a: string, number?];
-export const arr: number[] = [];
-export interface Holder<T extends string = string> { value: T; }
-export type Applied = Holder<string>;",
-        )?;
-        let view = view(&bytes)?;
-        let (union_ordinal, _) = fact_named(&view, b"U")?;
-        let union = type_fact(&view, union_ordinal)?;
-        expect_tag(&union, SemanticTypeTag::Union)?;
-        assert_eq!(union.record.children.length, 2);
-        let (intersection_ordinal, _) = fact_named(&view, b"I")?;
-        let intersection = type_fact(&view, intersection_ordinal)?;
-        expect_tag(&intersection, SemanticTypeTag::Intersection)?;
-        assert_eq!(intersection.record.children.length, 2);
-        let (tuple_ordinal, _) = fact_named(&view, b"Tup")?;
-        let tuple = type_fact(&view, tuple_ordinal)?;
-        expect_tag(&tuple, SemanticTypeTag::Tuple)?;
-        assert_eq!(tuple.record.children.length, 2);
-        let (array_ordinal, _) = fact_named(&view, b"arr")?;
-        let array = type_fact(&view, array_ordinal)?;
-        expect_tag(&array, SemanticTypeTag::Array)?;
-        assert_eq!(array.record.text, Some(&b"[]"[..]));
-        assert_eq!(array.record.children.length, 1);
-        // The generic application carries its base and one argument child.
-        let (applied_ordinal, _) = fact_named(&view, b"Applied")?;
-        let applied = type_fact(&view, applied_ordinal)?;
-        expect_tag(&applied, SemanticTypeTag::Apply)?;
-        assert_eq!(applied.record.children.length, 2);
-        // The generic parameter is a TypeVar fact naming itself.
-        let (parameter_ordinal, parameter_kind) = fact_named(&view, b"T")?;
-        assert_eq!(parameter_kind, EntityKind::Parameter);
-        let parameter = type_fact(&view, parameter_ordinal)?;
-        expect_tag(&parameter, SemanticTypeTag::TypeVar)?;
-        assert_eq!(parameter.record.text, Some(&b"T"[..]));
-        // A labeled tuple element changes the committed bytes.
-        let relabeled = fragment(b"export type Tup = [z: string, number?];")?;
-        if relabeled == bytes {
-            return Err(TestError::Tail);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn signatures_commit_parameter_and_result_facts_and_distinct_overloads() -> Result<(), TestError>
-    {
-        let bytes = fragment(
-            b"export function f(x: number, y: string): boolean { return true; }
-declare function g(x: string): void;
-declare function g(x: number): void;",
-        )?;
-        let view = view(&bytes)?;
-        let (function_ordinal, function_kind) = fact_named(&view, b"f")?;
-        assert_eq!(function_kind, EntityKind::Function);
-        let signature = type_fact(&view, function_ordinal)?;
-        expect_tag(&signature, SemanticTypeTag::FunctionPointer)?;
-        assert_ne!(
-            signature.record.payload1 & SemanticTypeRecord::RESULT_FLAG,
-            0
-        );
-        assert_eq!(signature.record.children.length, 3);
-        let (x_ordinal, x_kind) = fact_named(&view, b"x")?;
-        assert_eq!(x_kind, EntityKind::Parameter);
-        let x_record = type_fact(&view, x_ordinal)?;
-        assert_eq!(x_record.record.payload0, u32::from(PrimitiveShape::Float));
-        let (y_ordinal, y_kind) = fact_named(&view, b"y")?;
-        assert_eq!(y_kind, EntityKind::Parameter);
-        let y_record = type_fact(&view, y_ordinal)?;
-        assert_eq!(y_record.record.payload0, u32::from(PrimitiveShape::Str));
-        // Both overload signatures survive as distinct facts with their own
-        // parameter rows, so their constructor and child cells differ.
-        let g_rows = entities(&view)
-            .into_iter()
-            .filter(|(_, name, kind)| name == b"g" && *kind == EntityKind::Function)
-            .count();
-        assert_eq!(g_rows, 2);
-        // Dropping one overload changes the committed bytes.
-        let single = fragment(b"declare function g(x: string): void;")?;
-        if single == bytes {
-            return Err(TestError::Tail);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn references_resolve_local_import_and_unresolved_targets() -> Result<(), TestError> {
-        let bytes = fragment(
-            b"import { foreign } from 'pkg';
-export interface Shape { area(): number; }
-export const s: Shape = foreign();
-export const broken = missingGlobal;",
-        )?;
-        let view = view(&bytes)?;
-        let (import_ordinal, _) = fact_named(&view, b"foreign")?;
-        let (shape_ordinal, _) = fact_named(&view, b"Shape")?;
-        let (s_ordinal, _) = fact_named(&view, b"s")?;
-        let references = occurrences(&view)?;
-        // The import site references its npm origin at import confidence.
-        assert!(references.iter().any(|fact| {
-            fact.owner.raw == import_ordinal
-                && fact.occurrence.kind == compiler_ir::ReferenceKind::Import
-                && fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Import
-        }));
-        // The annotation reference resolves locally at index confidence.
-        let local = references.iter().find(|fact| {
-            fact.owner.raw == s_ordinal
-                && fact.occurrence.kind == compiler_ir::ReferenceKind::TypeReference
-        });
-        let Some(local) = local else {
-            return Err(TestError::MissingOccurrence);
-        };
-        assert_eq!(
-            local.occurrence.target,
-            compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(shape_ordinal))
-        );
-        assert_eq!(
-            local.occurrence.confidence,
-            compiler_ir::OccurrenceConfidence::Index
-        );
-        // The call of the import binding resolves through the import table.
-        assert!(references.iter().any(|fact| {
-            fact.owner.raw == s_ordinal
-                && fact.occurrence.kind == compiler_ir::ReferenceKind::FunctionCall
-                && fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Import
-        }));
-        // The unresolved global stays syntactic against the npm universe.
-        let (broken_ordinal, _) = fact_named(&view, b"broken")?;
-        assert!(references.iter().any(|fact| {
-            fact.owner.raw == broken_ordinal
-                && fact.occurrence.confidence == compiler_ir::OccurrenceConfidence::Syntactic
-                && matches!(
-                    fact.occurrence.target,
-                    compiler_ir::OccurrenceTarget::Foreign(_)
-                )
-        }));
-        // Spans are owner-relative and non-negative by construction.
-        for fact in &references {
-            assert!(fact.occurrence.span.start <= fact.occurrence.span.end);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn jsdoc_commits_text_code_and_local_link_fragments() -> Result<(), TestError> {
-        let bytes = fragment(
-            b"/** Checks {@code x} and {@link Shape}. */
-export interface Shape {}",
-        )?;
-        let view = view(&bytes)?;
-        let (shape_ordinal, _) = fact_named(&view, b"Shape")?;
-        let fragments = docs(&view)?;
-        assert!(fragments.len() >= 5);
-        assert_eq!(fragments[0].owner.raw, shape_ordinal);
-        assert!(matches!(
-            fragments[0].fragment,
-            compiler_ir::DocFragmentInput::Text(b"Checks ")
-        ));
-        assert!(matches!(
-            fragments[1].fragment,
-            compiler_ir::DocFragmentInput::Code(b"x")
-        ));
-        let Some(link_position) = fragments
-            .iter()
-            .position(|fact| matches!(fact.fragment, compiler_ir::DocFragmentInput::Link { .. }))
-        else {
-            return Err(TestError::MissingDoc);
-        };
-        match fragments[link_position].fragment {
-            compiler_ir::DocFragmentInput::Link { label, target } => {
-                assert_eq!(label, b"Shape");
-                assert_eq!(
-                    target,
-                    compiler_ir::DocLinkTarget::Local(compiler_ir::EntityId::new(shape_ordinal))
-                );
-            }
-            _ => return Err(TestError::MissingDoc),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn absent_jsdoc_commits_no_documentation_section() -> Result<(), TestError> {
-        let bytes = fragment(b"export interface Plain {}")?;
-        let view = view(&bytes)?;
-        assert!(view.docs().is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn template_literal_mapped_and_conditional_records_commit_their_tags() -> Result<(), TestError>
-    {
-        let bytes = fragment(
-            b"export type Lit = `pre${string}post`;
-export type Mapped = { readonly [K in keyof string]: number };
-export type Removed = { [K in string]-?: number };
-export type Branch = string extends string ? number : boolean;",
-        )?;
-        let view = view(&bytes)?;
-        let (literal_ordinal, _) = fact_named(&view, b"Lit")?;
-        let literal = type_fact(&view, literal_ordinal)?;
-        expect_tag(&literal, SemanticTypeTag::TemplateLiteral)?;
-        // The frozen lane cannot express literal text parts as children.
-        assert_eq!(literal.record.children.length, 0);
-        let (mapped_ordinal, _) = fact_named(&view, b"Mapped")?;
-        let mapped = type_fact(&view, mapped_ordinal)?;
-        expect_tag(&mapped, SemanticTypeTag::Mapped)?;
-        assert_eq!(
-            mapped.record.payload0,
-            u32::from(compiler_ir::LatticeMappedModifier::Add)
-        );
-        assert_eq!(
-            mapped.record.payload1,
-            u32::from(compiler_ir::LatticeMappedModifier::Absent)
-        );
-        assert_eq!(mapped.record.text, Some(&b"K"[..]));
-        assert_eq!(mapped.record.children.length, 2);
-        let (removed_ordinal, _) = fact_named(&view, b"Removed")?;
-        let removed = type_fact(&view, removed_ordinal)?;
-        assert_eq!(
-            removed.record.payload1,
-            u32::from(compiler_ir::LatticeMappedModifier::Remove)
-        );
-        let (branch_ordinal, _) = fact_named(&view, b"Branch")?;
-        let branch = type_fact(&view, branch_ordinal)?;
-        expect_tag(&branch, SemanticTypeTag::Conditional)?;
-        assert_eq!(branch.record.children.length, 4);
-        Ok(())
-    }
-
-    #[test]
-    fn anonymous_object_literals_commit_named_member_children() -> Result<(), TestError> {
-        let bytes =
-            fragment(b"export const p: { readonly a: string; b?: number } = { a: \"x\", b: 1 };")?;
-        let view = view(&bytes)?;
-        let (record_ordinal, _) = fact_named(&view, b"p")?;
-        let record = type_fact(&view, record_ordinal)?;
-        expect_tag(&record, SemanticTypeTag::AnonymousRecord)?;
-        assert_eq!(
-            record.record.payload0,
-            u32::from(compiler_ir::AnonRecordForm::Interface)
-        );
-        assert_eq!(record.record.children.length, 2);
-        let (a_ordinal, a_kind) = fact_named(&view, b"a")?;
-        assert_eq!(a_kind, EntityKind::Field);
-        let a_record = type_fact(&view, a_ordinal)?;
-        assert_eq!(a_record.record.payload0, u32::from(PrimitiveShape::Str));
-        let (b_ordinal, b_kind) = fact_named(&view, b"b")?;
-        assert_eq!(b_kind, EntityKind::Field);
-        let b_record = type_fact(&view, b_ordinal)?;
-        assert_eq!(b_record.record.payload0, u32::from(PrimitiveShape::Float));
-        // A member flag change alters the committed child flags.
-        let unflagged =
-            fragment(b"export const p: { a: string; b?: number } = { a: \"x\", b: 1 };")?;
-        if unflagged == bytes {
-            return Err(TestError::Tail);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn single_declaration_owns_its_annotation_without_synthetic_rows() -> Result<(), TestError> {
-        let bytes = fragment(b"export const only: number = 1;")?;
-        let view = view(&bytes)?;
-        let rows = entities(&view);
-        assert_eq!(rows.len(), 1, "expected exactly one entity row");
-        let (ordinal, kind) = fact_named(&view, b"only")?;
-        assert_eq!(kind, EntityKind::Constant);
-        let record = type_fact(&view, ordinal)?;
-        assert_eq!(record.record.payload0, u32::from(PrimitiveShape::Float));
-        assert_eq!(record.record.payload1, TypeWidth::Fixed(64).to_cell());
-        Ok(())
-    }
-
-    #[test]
-    fn foreign_generic_reference_is_unknown_with_its_qualified_spelling() -> Result<(), TestError> {
-        let bytes = fragment(b"export const m: Map<string, number> = new Map();")?;
-        let view = view(&bytes)?;
-        let (ordinal, _) = fact_named(&view, b"m")?;
-        let record = type_fact(&view, ordinal)?;
-        expect_tag(&record, SemanticTypeTag::Unknown)?;
-        assert_eq!(
-            record.record.payload0,
-            u32::from(TypeReason::UnresolvedExternal)
-        );
-        assert_eq!(record.record.text, Some(&b"Map"[..]));
-        Ok(())
-    }
-
-    #[test]
-    fn empty_source_admits_the_schema1_fragment_without_semantic_data() -> Result<(), TestError> {
-        let bytes = fragment(b"")?;
-        let view = view(&bytes)?;
-        assert_eq!(view.entities().count(), 0);
-        assert!(view.type_facts().is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn declarations_beyond_the_lane_bound_are_the_typed_rejection() {
-        let mut source = Vec::new();
-        for index in 0..130 {
-            source.extend_from_slice(b"export const x");
-            let digits = index.to_string();
-            source.extend_from_slice(digits.as_bytes());
-            source.extend_from_slice(b" = 1;\n");
-        }
-        let mut facts = crate::lower::FactSet::new();
-        match collect(TypeScriptSource::TypeScript, &source, &mut facts) {
-            Err(TypeScriptCollectError::Lowering(_)) => {}
-            Err(_) | Ok(()) => panic!("expected the typed lane rejection"),
-        }
-    }
-
-    #[test]
-    fn oxc_bound_symbols_fill_the_canonical_declaration_lane() -> Result<(), TestError> {
-        let bytes = fragment(
-            b"import { foreign } from 'pkg'; export class Box {} export const value = foreign;",
-        )?;
-        let view = view(&bytes)?;
-        let rows = entities(&view);
-        assert_eq!(rows.len(), 3, "expected import, class, and constant rows");
-        let (_, box_kind) = fact_named(&view, b"Box")?;
-        assert_eq!(box_kind, EntityKind::Record);
-        Ok(())
-    }
-
-    #[test]
-    fn oxc_interface_is_never_rewritten_as_a_record() -> Result<(), TestError> {
-        let bytes = fragment(b"export interface Shape { area(): number; }")?;
-        let view = view(&bytes)?;
-        let (ordinal, kind) = fact_named(&view, b"Shape")?;
-        assert_eq!(kind, EntityKind::Trait);
-        let record = type_fact(&view, ordinal)?;
-        // The interface's declared type is its own diagonal nominal, never a
-        // rewritten record.
-        expect_tag(&record, SemanticTypeTag::Nominal)?;
-        let (member, member_kind) = fact_named(&view, b"area")?;
-        assert_eq!(member_kind, EntityKind::Function);
-        assert!(member > ordinal);
-        Ok(())
-    }
 }

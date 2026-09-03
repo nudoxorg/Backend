@@ -48,6 +48,8 @@ enum TestError {
     Write(#[from] compiler_ir::WriteError),
     #[error("could not validate a compact IR fixture")]
     Fragment(#[from] compiler_ir::FragmentError),
+    #[error("could not validate a stored compiler manifest")]
+    Manifest(#[from] compiler_publication::manifest::CompilationManifestError),
     #[error("could not commit complete fixture fragment ranges")]
     Ranges(#[from] compiler_ir::FragmentRangeManifestError),
     #[error("could not reuse a stored fixture fragment")]
@@ -150,59 +152,10 @@ fn package_manifest_is_order_invariant_and_unchanged_fragment_is_reused() -> Res
             observed: "manifest identity changed",
         });
     }
-    let rejected_change = publish(
-        &publisher,
-        &fixture.artifacts(),
-        &[
-            compiled(&alpha_bytes[..alpha_length])?,
-            compiled(&changed_bytes[..changed_length])?,
-        ],
-        PublishControl::Continue,
-    );
-    match rejected_change {
-        Err(PublishCompiledError::Uncommitted(UncommittedPublication::Failed {
-            attempted,
-            source,
-        })) => {
-            assert_ne!(attempted.generation, second.publication.generation);
-            match &*source {
-                server_journal::PublicationFailure::Conflict { facts } => {
-                    assert_eq!(
-                        facts.expected_root,
-                        *attempted.generation.pinned_root.as_ref()
-                    );
-                    assert_eq!(
-                        facts.expected_dep_set,
-                        *attempted.generation.dep_set.as_ref()
-                    );
-                    assert_eq!(
-                        facts.observed_root,
-                        *second.publication.generation.pinned_root.as_ref()
-                    );
-                    assert_eq!(
-                        facts.observed_dep_set,
-                        *second.publication.generation.dep_set.as_ref()
-                    );
-                }
-                _ => {
-                    return Err(TestError::Assertion {
-                        expected: "exact durable conflict source",
-                        observed: "another durable failure source",
-                    });
-                }
-            }
-        }
-        _ => {
-            return Err(TestError::Assertion {
-                expected: "uncommitted durable conflict",
-                observed: "another publication terminal",
-            });
-        }
-    }
     assert_eq!(publisher.published()?, Some(second.publication));
     let changed_paths = PublicationPaths::in_directory(&fixture.changed_journal());
     let changed_publisher = DurablePublisher::create(&changed_paths, limits()?)?;
-    let third = publish(
+    let changed_first = publish(
         &changed_publisher,
         &fixture.artifacts(),
         &[
@@ -211,7 +164,7 @@ fn package_manifest_is_order_invariant_and_unchanged_fragment_is_reused() -> Res
         ],
         PublishControl::Continue,
     )?;
-    if third.manifest.identity == first.manifest.identity {
+    if changed_first.manifest.identity == first.manifest.identity {
         return Err(TestError::Assertion {
             expected: "changed compiler input to select a new manifest",
             observed: "manifest identity was reused",
@@ -233,7 +186,7 @@ fn package_manifest_is_order_invariant_and_unchanged_fragment_is_reused() -> Res
             expected: "a selected durable compiler package",
             observed: "no selected compiler package",
         })?;
-    if opened.identity != third.manifest.identity {
+    if opened.identity != changed_first.manifest.identity {
         return Err(TestError::Assertion {
             expected: "reopen to select the changed durable package",
             observed: "reopen selected another manifest",
@@ -309,6 +262,110 @@ fn reopened_fragment_cursor_borrows_only_manifest_named_immutable_bytes() -> Res
     }
     assert_opened_fragment(&first, &alpha, &bravo)?;
     assert_opened_fragment(&second, &alpha, &bravo)?;
+    publisher.shutdown()?;
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "the integration path retains exact chained publication and reopen terminals"
+)]
+fn chained_publication_reopens_newest_and_preserves_generation_one_artifacts()
+-> Result<(), TestError> {
+    let fixture = Fixture::new("chained-publication")?;
+    let paths = PublicationPaths::in_directory(&fixture.journal());
+    let publisher = DurablePublisher::create(&paths, limits()?)?;
+    let mut alpha_bytes = [0_u8; 256];
+    let mut bravo_bytes = [0_u8; 256];
+    let alpha_length = write_fragment(&mut alpha_bytes, b"chain-alpha-source", b"chain-alpha")?;
+    let bravo_length = write_fragment(&mut bravo_bytes, b"chain-bravo-source", b"chain-bravo")?;
+    let first_fragment = compiled(&alpha_bytes[..alpha_length])?;
+    let first = publish(
+        &publisher,
+        &fixture.artifacts(),
+        &[first_fragment],
+        PublishControl::Continue,
+    )?;
+    let second = publish(
+        &publisher,
+        &fixture.artifacts(),
+        &[
+            compiled(&alpha_bytes[..alpha_length])?,
+            compiled(&bravo_bytes[..bravo_length])?,
+        ],
+        PublishControl::Continue,
+    )?;
+    assert_ne!(first.publication.generation, second.publication.generation);
+    assert_eq!(publisher.published()?, Some(second.publication));
+
+    let mut manifest_output = [0_u8; 1024];
+    let mut manifest_facts = [None; 2];
+    let mut fragment_output = [0_u8; 1024];
+    let mut locality_output = [0_u8; 1024];
+    let opened = open_published(
+        &publisher,
+        &fixture.artifacts(),
+        OpenPublicationScratch {
+            manifest_output: &mut manifest_output,
+            manifest_facts: &mut manifest_facts,
+            fragment_output: &mut fragment_output,
+            locality_output: &mut locality_output,
+        },
+    )?
+    .ok_or(TestError::Assertion {
+        expected: "the newest chained publication",
+        observed: "no selected chained publication",
+    })?;
+    assert_eq!(opened.publication, second.publication);
+    let mut fragments = opened.fragments();
+    let opened_alpha = next_opened_fragment(&mut fragments, 0)?;
+    let opened_bravo = next_opened_fragment(&mut fragments, 1)?;
+    assert!(fragments.next().is_none());
+    assert_opened_fragment(
+        &opened_alpha,
+        &compiled(&alpha_bytes[..alpha_length])?,
+        &compiled(&bravo_bytes[..bravo_length])?,
+    )?;
+    assert_opened_fragment(
+        &opened_bravo,
+        &compiled(&alpha_bytes[..alpha_length])?,
+        &compiled(&bravo_bytes[..bravo_length])?,
+    )?;
+
+    let manifest_path = fixture
+        .artifacts()
+        .join("manifests")
+        .join(format!("{}.irmani", hex(first.manifest.identity.as_ref())));
+    let manifest_bytes = fs::read(manifest_path)?;
+    let mut first_manifest_facts = [None; 2];
+    let first_manifest = compiler_publication::manifest::CompilationManifestView::validate(
+        &manifest_bytes,
+        &mut first_manifest_facts,
+    )?;
+    assert_eq!(*first_manifest, first.manifest);
+
+    let binding_path = fixture.artifacts().join("bindings").join(format!(
+        "{}-{}.binding",
+        hex(first.binding.generation.pinned_root.as_ref()),
+        hex(first.binding.generation.dep_set.as_ref())
+    ));
+    let binding_bytes = fs::read(binding_path)?;
+    let binding =
+        CompilationBindingView::validate(&binding_bytes).map_err(|_| TestError::Assertion {
+            expected: "generation-one binding to validate",
+            observed: "invalid generation-one binding",
+        })?;
+    assert_eq!(*binding, first.binding);
+    let fragment_path = stored_path(
+        &fixture.artifacts(),
+        compiled(&alpha_bytes[..alpha_length])?,
+    )?;
+    let stored_fragment = fs::read(fragment_path)?;
+    FragmentView::validate(&stored_fragment)?;
+    assert_eq!(stored_fragment, &alpha_bytes[..alpha_length]);
+
     publisher.shutdown()?;
     fixture.remove()?;
     Ok(())

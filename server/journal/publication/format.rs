@@ -32,8 +32,8 @@ use crate::{FrameSequence, JournalOffset, ReceiptFacts, format::CHECKSUM_BYTES};
 const FACT_MAGIC: [u8; 8] = *b"NUDXPFC\0";
 const HEAD_MAGIC: [u8; 8] = *b"NUDXPHD\0";
 const PUBLICATION_VERSION: u16 = 1;
-const FACT_DOMAIN: &[u8] = b"heart.publication.fact.v1\0";
-const HEAD_DOMAIN: &[u8] = b"heart.publication.head.v1\0";
+const FACT_DOMAIN: &[u8] = b"heart.publication.fact.v2\0";
+const HEAD_DOMAIN: &[u8] = b"heart.publication.head.v2\0";
 const KEY_DOMAIN: &[u8] = b"heart.publication.key.v1\0";
 const OUTPUT_DOMAIN: &[u8] = b"heart.publication.output.v1\0";
 
@@ -43,6 +43,13 @@ pub(super) struct PublicationInput {
     pub(super) dep_set: [u8; 32],
     pub(super) output: [u8; 32],
     pub(super) key: StageKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ChainLink {
+    pub(super) ordinal: u64,
+    pub(super) parent_root: [u8; 32],
+    pub(super) parent_dep_set: [u8; 32],
 }
 
 impl PublicationInput {
@@ -87,7 +94,6 @@ impl PublicationInput {
     pub(super) fn matches_publication(self, publication: PublicationFacts) -> bool {
         self.root == *publication.generation.pinned_root
             && self.dep_set == *publication.generation.dep_set
-            && fact_identity(self, publication.stable).checksum == publication.immutable.checksum
             && head_identity(publication.immutable, publication.stable).checksum
                 == publication.head.checksum
     }
@@ -103,6 +109,9 @@ struct FactRecord {
     dep_set: [u8; 32],
     output: [u8; 32],
     key: [u8; 32],
+    ordinal: U64<LittleEndian>,
+    parent_root: [u8; 32],
+    parent_dep_set: [u8; 32],
     sequence: U64<LittleEndian>,
     durable_end: U64<LittleEndian>,
     checksum: [u8; CHECKSUM_BYTES],
@@ -124,29 +133,6 @@ pub(super) const FACT_BYTES: usize = size_of::<FactRecord>();
 const FACT_PAYLOAD_BYTES: usize = FACT_BYTES - CHECKSUM_BYTES;
 pub(super) const HEAD_BYTES: usize = size_of::<HeadRecord>();
 const HEAD_PAYLOAD_BYTES: usize = HEAD_BYTES - CHECKSUM_BYTES;
-
-fn fact_record(input: PublicationInput, receipt: ReceiptFacts) -> FactRecord {
-    let mut record = FactRecord {
-        magic: FACT_MAGIC,
-        version: U16::new(PUBLICATION_VERSION),
-        reserved: U16::new(0),
-        root: input.root,
-        dep_set: input.dep_set,
-        output: input.output,
-        key: *input.key,
-        sequence: U64::new(*receipt.sequence),
-        durable_end: U64::new(*receipt.durable_end),
-        checksum: [0; CHECKSUM_BYTES],
-    };
-    record.checksum = checksum(FACT_DOMAIN, &record.as_bytes()[..FACT_PAYLOAD_BYTES]);
-    record
-}
-
-fn fact_identity(input: PublicationInput, receipt: ReceiptFacts) -> ImmutablePublicationIdentity {
-    ImmutablePublicationIdentity {
-        checksum: fact_record(input, receipt).checksum,
-    }
-}
 
 fn head_record(fact: ImmutablePublicationIdentity, receipt: ReceiptFacts) -> HeadRecord {
     let mut record = HeadRecord {
@@ -176,6 +162,7 @@ pub(super) struct ParsedFact {
     pub(super) receipt: ReceiptFacts,
     pub(super) identity: ImmutablePublicationIdentity,
     pub(super) bytes: [u8; FACT_BYTES],
+    pub(super) link: ChainLink,
 }
 
 pub(super) struct ParsedHead {
@@ -249,6 +236,12 @@ fn parse_fact(bytes: [u8; FACT_BYTES]) -> Result<ParsedFact, PublicationOpenErro
     {
         return Err(PublicationOpenError::EncodingMismatch);
     }
+    if record.ordinal.get() == 0
+        || (record.ordinal.get() == 1
+            && (record.parent_root != [0; 32] || record.parent_dep_set != [0; 32]))
+    {
+        return Err(PublicationOpenError::EncodingMismatch);
+    }
     let expected = checksum(FACT_DOMAIN, &record.as_bytes()[..FACT_PAYLOAD_BYTES]);
     if record.checksum != expected {
         return Err(PublicationOpenError::FactChecksum {
@@ -271,6 +264,7 @@ fn parse_fact(bytes: [u8; FACT_BYTES]) -> Result<ParsedFact, PublicationOpenErro
             checksum: record.checksum,
         },
         bytes,
+        link: ChainLink { ordinal: record.ordinal.get(), parent_root: record.parent_root, parent_dep_set: record.parent_dep_set },
     })
 }
 
@@ -313,6 +307,7 @@ pub(super) struct PersistedHead {
 pub(super) fn persist_fact(
     paths: &PublicationPaths,
     input: PublicationInput,
+    link: ChainLink,
     receipt: ReceiptFacts,
     bytes: &mut [u8; FACT_BYTES],
 ) -> Result<PersistedFact, PublicationFailure> {
@@ -324,6 +319,9 @@ pub(super) fn persist_fact(
         dep_set: input.dep_set,
         output: input.output,
         key: *input.key,
+        ordinal: U64::new(link.ordinal),
+        parent_root: link.parent_root,
+        parent_dep_set: link.parent_dep_set,
         sequence: U64::new(*receipt.sequence),
         durable_end: U64::new(*receipt.durable_end),
         checksum: [0; CHECKSUM_BYTES],
@@ -333,7 +331,7 @@ pub(super) fn persist_fact(
     match OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(paths.fact())
+        .open(paths.fact_for(link.ordinal))
     {
         Ok(mut file) => {
             file.write_all(bytes)
@@ -357,7 +355,7 @@ pub(super) fn persist_fact(
             })
         }
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            let parsed = read_fact(&paths.fact()).map_err(PublicationFailure::Open)?;
+            let parsed = read_fact(&paths.fact_for(link.ordinal)).map_err(PublicationFailure::Open)?;
             let Some(parsed) = parsed else {
                 return Err(PublicationFailure::Open(PublicationOpenError::MissingFact));
             };
@@ -394,14 +392,11 @@ pub(super) fn persist_head(
     bytes.copy_from_slice(record.as_bytes());
     match read_head(&paths.head()) {
         Ok(Some(existing)) => {
-            if existing.bytes != *bytes {
-                return Err(PublicationFailure::Open(
-                    PublicationOpenError::HeadLinkMismatch,
-                ));
+            if existing.bytes == *bytes {
+                return Ok(PersistedHead {
+                    identity: existing.identity,
+                });
             }
-            return Ok(PersistedHead {
-                identity: existing.identity,
-            });
         }
         Ok(None) => {}
         Err(error) => return Err(PublicationFailure::Open(error)),

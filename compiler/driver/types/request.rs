@@ -19,6 +19,8 @@ pub enum SemanticAuthorityInput<'source> {
         project: &'source compiler_languages_rust::RustProject,
         /// Exact root-source byte budget checked before Cargo graph loading.
         maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
+        /// Complete Cargo feature controls forwarded to the rust-analyzer CargoConfig.
+        features: compiler_languages_rust::RustFeatureControl<'source>,
     },
     /// Validated `go/packages` authority image bound to the exact request source.
     Go {
@@ -34,6 +36,11 @@ pub enum SemanticAuthorityInput<'source> {
     Java {
         /// Borrowed fixed-envelope bytes emitted by the configured javac producer.
         image: &'source [u8],
+    },
+    /// Borrowed TypeScript checker report bound to the exact request source.
+    TypeScript {
+        /// Validated checker facts produced for this source.
+        report: &'source compiler_languages_typescript::Report,
     },
 }
 

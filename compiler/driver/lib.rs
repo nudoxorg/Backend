@@ -17,8 +17,8 @@ pub use database::{DatabaseCompileFailure, compile_database_translation_unit};
 pub use types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch, CompileControl, CompileFailure, CompileOutput, CompileRecipeFact,
-    CompileRequest, CompileScratch, CompiledFragment, CompiledIr, InvalidUtf8Fact,
-    MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
+    CompileRequest, CompileScratch, CompiledFragment, CompiledIr, FactFault, FactRejection,
+    InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
     NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
     NativeWorkerPanicMessage, ResolvedToolchain, ResolvedToolchainView, SemanticAuthorityInput,
     SourceIdentity, ToolchainResolutionError, ToolchainSelection, ToolchainSelectionFact, compile,

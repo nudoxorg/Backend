@@ -52,9 +52,10 @@ use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
 
 use crate::lower::{
-    EmissionExtension, FactFault, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
+    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
     MAX_TYPE_CHILDREN, SemanticFact, push_fact,
 };
+use crate::types::{FactFault, FactRejection};
 
 /// Exact rejection while lending source-bound Roslyn declaration facts.
 #[derive(Debug)]
@@ -72,6 +73,8 @@ pub(crate) enum CSharpCollectError {
     Span { start: u32, end: u32 },
     /// A bounded canonical lane rejected an authority declaration.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
@@ -144,7 +147,7 @@ fn push<'source>(
     facts: &mut FactSet<'source>,
     fact: SemanticFact<'source>,
 ) -> Result<u32, CSharpCollectError> {
-    let ordinal = push_fact(facts, fact).map_err(CSharpCollectError::Lowering)?;
+    let ordinal = push_fact(facts, fact).map_err(CSharpCollectError::Rejected)?;
     u32::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))
 }
 

@@ -1,36 +1,60 @@
 //! Validates the fixed Go semantic-authority image emitted by `go/packages`.
-//! Keeps every semantic plane — declarations, recursive type rows, methods,
-//! type parameters, struct/interface members, documentation, references, and
-//! build constraints — borrowed from one checksummed binary format.
-//! Rejects malformed or source-mismatched images before compiler admission.
+//! Keeps every semantic plane — module metadata, package rows, declarations,
+//! recursive type rows, signature parameters, methods, type parameters,
+//! struct/interface members, complete interface method sets, documentation,
+//! references, and build constraints — borrowed from one checksummed binary
+//! format. Rejects malformed or source-mismatched images before compiler
+//! admission.
 //!
-//! ## Format version 4 (zero-copy, fixed-width rows)
+//! ## Format version 5 (zero-copy, fixed-width rows)
 //!
-//! Header (124 bytes): magic `NGAI`, version `4`, header length, declaration
+//! Header (136 bytes): magic `NGAI`, version `5`, header length, declaration
 //! count, atom-plane byte length, body byte length, SHA-256 source digest,
 //! SHA-256 checksum, then eight plane row counts (types, references, methods,
-//! type parameters, members, docs, build constraints, satisfactions) and two
-//! reserved words.
+//! type parameters, members, docs, build constraints, satisfactions), the
+//! module count, the package count, the signature-parameter count, and the
+//! method-set count, with four reserved bytes sealing the envelope.
 //!
-//! Body planes, in order: declarations (56 B rows), type rows (52 B), methods
-//! (64 B), type parameters (16 B), members — struct fields and interface
-//! method signatures (40 B), documentation rows (16 B), references (48 B),
-//! build constraints (28 B), satisfaction rows (20 B), pooled type children
-//! (8 B), and the shared UTF-8 atom plane. Every range cell is validated
-//! against its plane; the pooled child plane must tile each type row's
-//! declared child run exactly; member runs must match the type rows that
-//! declare them; documentation, reference, constraint, and satisfaction rows
-//! must be canonically ordered; every reference owner must resolve to a
-//! function declaration or a method row whose file and span contain the call
-//! site; every satisfaction subject must be a named-type declaration. A func
-//! type row's parameter count cell splits its child run into the leading
+//! Body planes, in order: declarations (56 B rows), type rows (52 B),
+//! methods (64 B), type parameters (16 B), members — struct fields and
+//! interface method signatures (40 B), documentation rows (16 B), references
+//! (48 B), build constraints (28 B), satisfaction rows (20 B), the single
+//! module row (32 B), package rows (28 B), signature-parameter rows (28 B),
+//! interface method-set rows (24 B), pooled type children (8 B), and the
+//! shared UTF-8 atom plane. Every range cell is validated against its plane;
+//! the pooled child plane must tile each type row's declared child run
+//! exactly; member runs must match the type rows that declare them;
+//! documentation, reference, constraint, and satisfaction rows must be
+//! canonically ordered; every reference owner must resolve to a function
+//! declaration or a method row whose file and span contain the call site;
+//! every satisfaction subject must be a named-type declaration. A func type
+//! row's parameter count cell splits its child run into the leading
 //! parameters and the trailing results; every other kind must leave that
 //! cell zero.
 //!
-//! Version 4 carries the oracle's complete `Output`: constant declarations
-//! own their exact value atom, const-group identity, and iota flag on the
-//! declaration row, interface-satisfaction edges own the satisfaction plane,
-//! and package-level doc comments own the `Package` documentation kind.
+//! Version 5 carries the oracle's complete `Output`. The module row owns the
+//! `go.mod` metadata (path, directory, Go directive, resolved version) and is
+//! present exactly when the oracle resolved a module. Package rows own each
+//! package's import path, package clause, and source file list, canonically
+//! ordered by import path; every declaration must name one of the package
+//! rows' import paths. Signature-parameter rows own the exact source name
+//! and source position of every parameter and result of every func type row:
+//! one row per child, owner-contiguous in type-row order, ordinals ascending
+//! from zero, the plane exactly tiling the func rows' child runs (empty names
+//! are legal — Go permits unnamed parameters and results — and a file-less
+//! position must be fully absent). Method-set rows own the complete
+//! post-embedding method set of every interface type row — a fact that is
+//! not locally derivable when an embedded interface declares in another
+//! package — owner-contiguous in type-row order, names strictly ascending
+//! within one owner, every owner an interface row. The type row layout is
+//! unchanged from version 4: its reserved bytes stay reserved. Line and
+//! column positions stay off the wire: they are losslessly derivable from
+//! the source digest plus the byte offsets already carried.
+//!
+//! Since version 4, constant declarations own their exact value atom,
+//! const-group identity, and iota flag on the declaration row,
+//! interface-satisfaction edges own the satisfaction plane, and
+//! package-level doc comments own the `Package` documentation kind.
 
 use core::str;
 
@@ -38,19 +62,23 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
-const VERSION: u16 = 4;
-const HEADER_BYTES: usize = 124;
+const VERSION: u16 = 5;
+const HEADER_BYTES: usize = 136;
+const MODULE_BYTES: usize = 32;
+const PACKAGE_BYTES: usize = 28;
 const DECLARATION_BYTES: usize = 56;
 const TYPE_ROW_BYTES: usize = 52;
+const SIGNATURE_PARAMETER_BYTES: usize = 28;
 const METHOD_BYTES: usize = 64;
 const TYPE_PARAMETER_BYTES: usize = 16;
 const MEMBER_BYTES: usize = 40;
+const METHOD_SET_BYTES: usize = 24;
 const DOC_BYTES: usize = 16;
 const REFERENCE_BYTES: usize = 48;
 const CONSTRAINT_BYTES: usize = 28;
 const SATISFACTION_BYTES: usize = 20;
 const CHILD_BYTES: usize = 8;
-const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v4\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
 
 /// The `u32::MAX` sentinel shared by every optional coordinate cell.
 pub const NONE: u32 = u32::MAX;
@@ -160,6 +188,35 @@ pub enum ChanDir {
     Recv = 2,
 }
 
+/// One borrowed module-metadata row: the `go.mod` facts of the loaded
+/// module. The plane holds exactly one row; cells are empty when the oracle
+/// resolved no module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModuleRow<'image> {
+    /// The module path (the `module` directive).
+    pub path: &'image [u8],
+    /// The module's on-disk root directory.
+    pub directory: &'image [u8],
+    /// The `go` directive spelling (e.g. `1.22`).
+    pub go_version: &'image [u8],
+    /// The resolved module version; empty for a working-tree module.
+    pub version: &'image [u8],
+}
+
+/// One borrowed package row: one Go package of the module with its source
+/// files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageRow<'image> {
+    /// The fully-qualified import path.
+    pub import_path: &'image [u8],
+    /// The package clause identifier.
+    pub name: &'image [u8],
+    /// Source file spellings, NUL-separated (validated at open).
+    pub files: &'image [u8],
+    /// Number of source files in [`PackageRow::files`].
+    pub file_count: u32,
+}
+
 /// One borrowed Go declaration from the checked authority image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Declaration<'image> {
@@ -250,6 +307,27 @@ pub struct TypeParameterRow<'image> {
     pub constraint: Option<u32>,
 }
 
+/// One borrowed signature-parameter row: the exact source name and source
+/// position of one parameter or result of one func type row. Names may be
+/// empty — Go permits unnamed parameters and results — and a nameless,
+/// positionless row is legal whenever the source wrote neither.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignatureParameterRow<'image> {
+    /// Owning func type-row index.
+    pub owner: u32,
+    /// Position inside the owner's child run: parameters first, then
+    /// results, ordinals ascending from zero.
+    pub ordinal: u32,
+    /// Exact source name bytes; empty when the source wrote none.
+    pub name: &'image [u8],
+    /// Source file spelling of the parameter identifier; empty when the
+    /// position was never resolved.
+    pub file: &'image [u8],
+    /// Byte offset of the identifier within [`SignatureParameterRow::file`];
+    /// [`NONE`] when the position was never resolved.
+    pub offset: u32,
+}
+
 /// What kind of member a member row carries.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -278,6 +356,24 @@ pub struct MemberRow<'image> {
     /// Raw struct tag bytes (struct fields only; empty otherwise).
     pub tag: &'image [u8],
     /// Declaring package import path (interface methods; empty otherwise).
+    pub package: &'image [u8],
+}
+
+/// One borrowed interface method-set row: one method of an interface type
+/// row's complete post-embedding method set. Inherited methods from
+/// embedded interfaces — including foreign-package embeddeds whose
+/// declarations the image carries only by reference — appear here beside
+/// the explicitly declared ones.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MethodSetRow<'image> {
+    /// Owning interface type-row index.
+    pub owner: u32,
+    /// Method identifier bytes.
+    pub name: &'image [u8],
+    /// Signature type-row root, when the authority spelled one.
+    pub type_root: Option<u32>,
+    /// Import path of the package that declared the method; empty when it
+    /// declares in the interface's own package or the universe.
     pub package: &'image [u8],
 }
 
@@ -372,25 +468,33 @@ pub struct ConstrainedDecl<'image> {
 #[derive(Clone, Copy, Debug)]
 pub struct GoImage<'image> {
     bytes: &'image [u8],
+    module_count: usize,
+    package_count: usize,
     declaration_count: usize,
     type_count: usize,
+    signature_parameter_count: usize,
     method_count: usize,
     type_parameter_count: usize,
     member_count: usize,
+    method_set_count: usize,
     doc_count: usize,
     reference_count: usize,
     constraint_count: usize,
     satisfaction_count: usize,
     child_count: usize,
+    packages_offset: usize,
     declarations_offset: usize,
     types_offset: usize,
+    signature_parameters_offset: usize,
     methods_offset: usize,
     type_parameters_offset: usize,
     members_offset: usize,
+    method_sets_offset: usize,
     docs_offset: usize,
     references_offset: usize,
     constraints_offset: usize,
     satisfactions_offset: usize,
+    module_offset: usize,
     children_offset: usize,
     atom_offset: usize,
     atom_bytes: usize,
@@ -434,13 +538,26 @@ impl<'image> GoImage<'image> {
         let doc_count = plane_count(bytes, 104, actual_body)?;
         let constraint_count = plane_count(bytes, 108, actual_body)?;
         let satisfaction_count = plane_count(bytes, 112, actual_body)?;
-        if bytes[116..HEADER_BYTES] != [0; 8] {
+        let module_count = plane_count(bytes, 116, actual_body)?;
+        if module_count > 1 {
+            return Err(ImageError::Header(HeaderError::ModuleCount {
+                found: module_count,
+            }));
+        }
+        let package_count = plane_count(bytes, 120, actual_body)?;
+        let signature_parameter_count = plane_count(bytes, 124, actual_body)?;
+        let method_set_count = plane_count(bytes, 128, actual_body)?;
+        if bytes[132..HEADER_BYTES] != [0; 4] {
             return Err(ImageError::Header(HeaderError::Reserved));
         }
 
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
 
+        // Body planes, in frozen order: declarations, types, methods, type
+        // parameters, members, docs, references, constraints, satisfactions,
+        // module, packages, signature parameters, interface method sets,
+        // pooled children, atoms.
         let declarations_offset = HEADER_BYTES;
         let types_offset = declarations_offset + declaration_count * DECLARATION_BYTES;
         let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
@@ -450,7 +567,12 @@ impl<'image> GoImage<'image> {
         let references_offset = docs_offset + doc_count * DOC_BYTES;
         let constraints_offset = references_offset + reference_count * REFERENCE_BYTES;
         let satisfactions_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
-        let children_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
+        let module_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
+        let packages_offset = module_offset + module_count * MODULE_BYTES;
+        let signature_parameters_offset = packages_offset + package_count * PACKAGE_BYTES;
+        let method_sets_offset =
+            signature_parameters_offset + signature_parameter_count * SIGNATURE_PARAMETER_BYTES;
+        let children_offset = method_sets_offset + method_set_count * METHOD_SET_BYTES;
         let Some(atoms_end) = HEADER_BYTES.checked_add(body_bytes) else {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
@@ -481,6 +603,7 @@ impl<'image> GoImage<'image> {
         // Every fixed plane must sit inside the children plane origin, so no
         // declared count can push a row read past the validated body.
         let chain = [
+            declarations_offset,
             types_offset,
             methods_offset,
             type_parameters_offset,
@@ -489,6 +612,10 @@ impl<'image> GoImage<'image> {
             references_offset,
             constraints_offset,
             satisfactions_offset,
+            module_offset,
+            packages_offset,
+            signature_parameters_offset,
+            method_sets_offset,
         ];
         if chain.iter().any(|offset| *offset > atom_offset) {
             return Err(ImageError::Header(HeaderError::BodyLength {
@@ -499,11 +626,15 @@ impl<'image> GoImage<'image> {
 
         let image = Self {
             bytes,
+            module_count,
+            package_count,
             declaration_count,
             type_count,
+            signature_parameter_count,
             method_count,
             type_parameter_count,
             member_count,
+            method_set_count,
             doc_count,
             reference_count,
             constraint_count,
@@ -518,17 +649,24 @@ impl<'image> GoImage<'image> {
             references_offset,
             constraints_offset,
             satisfactions_offset,
+            module_offset,
+            packages_offset,
+            signature_parameters_offset,
+            method_sets_offset,
             children_offset,
             atom_offset,
             atom_bytes,
             source_digest,
         };
         image.validate_digest()?;
+        image.validate_module()?;
         image.validate_declarations()?;
+        image.validate_packages()?;
         image.validate_types()?;
         image.validate_methods()?;
         image.validate_type_parameters()?;
         image.validate_members()?;
+        image.validate_method_sets()?;
         image.validate_docs()?;
         image.validate_references()?;
         image.validate_constraints()?;
@@ -1149,6 +1287,203 @@ impl<'image> GoImage<'image> {
         (0..self.satisfaction_count).map(move |index| self.satisfaction(index))
     }
 
+    /// Borrows the validated module-metadata row, when the oracle resolved a
+    /// module.
+    pub fn module(self) -> Result<Option<ModuleRow<'image>>, ImageError> {
+        if self.module_count == 0 {
+            return Ok(None);
+        }
+        let row = self.plane_row(self.module_offset, 0, MODULE_BYTES);
+        Ok(Some(ModuleRow {
+            path: self.atom("module", 0, u32_at(row, 0), u32_at(row, 4))?,
+            directory: self.atom("module", 0, u32_at(row, 8), u32_at(row, 12))?,
+            go_version: self.atom("module", 0, u32_at(row, 16), u32_at(row, 20))?,
+            version: self.atom("module", 0, u32_at(row, 24), u32_at(row, 28))?,
+        }))
+    }
+
+    /// Number of validated package rows.
+    #[must_use]
+    pub const fn package_count(self) -> usize {
+        self.package_count
+    }
+
+    /// Number of validated module rows (zero or one).
+    #[must_use]
+    pub const fn module_count(self) -> usize {
+        self.module_count
+    }
+
+    /// Borrows one validated package row.
+    pub fn package(self, index: usize) -> Result<PackageRow<'image>, ImageError> {
+        if index >= self.package_count {
+            return Err(ImageError::RowBounds {
+                plane: "package",
+                index,
+                count: self.package_count,
+            });
+        }
+        let row = self.plane_row(self.packages_offset, index, PACKAGE_BYTES);
+        let import_path = self.atom("package", index, u32_at(row, 0), u32_at(row, 4))?;
+        if import_path.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "package",
+                index,
+            });
+        }
+        let name = self.atom("package", index, u32_at(row, 8), u32_at(row, 12))?;
+        let blob_bytes = u32_at(row, 20);
+        let files = self.atom("package", index, u32_at(row, 16), blob_bytes)?;
+        let file_count = u32_at(row, 24);
+        if split_nul(files, file_count).is_none() {
+            return Err(ImageError::PackageFiles {
+                index,
+                count: file_count,
+                blob_bytes,
+            });
+        }
+        Ok(PackageRow {
+            import_path,
+            name,
+            files,
+            file_count,
+        })
+    }
+
+    /// Iterates every package row in producer order.
+    pub fn packages(self) -> impl Iterator<Item = Result<PackageRow<'image>, ImageError>> {
+        (0..self.package_count).map(move |index| self.package(index))
+    }
+
+    /// Number of validated signature-parameter rows.
+    #[must_use]
+    pub const fn signature_parameter_count(self) -> usize {
+        self.signature_parameter_count
+    }
+
+    /// Borrows one validated signature-parameter row: the exact source name
+    /// and source position of one parameter or result of one func type row.
+    /// The name may be empty — Go permits unnamed parameters and results —
+    /// and a file-less position must be fully absent.
+    pub fn signature_parameter(
+        self,
+        index: usize,
+    ) -> Result<SignatureParameterRow<'image>, ImageError> {
+        if index >= self.signature_parameter_count {
+            return Err(ImageError::RowBounds {
+                plane: "signature parameter",
+                index,
+                count: self.signature_parameter_count,
+            });
+        }
+        let row = self.plane_row(
+            self.signature_parameters_offset,
+            index,
+            SIGNATURE_PARAMETER_BYTES,
+        );
+        let owner = u32_at(row, 0);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= self.type_count) {
+            return Err(ImageError::SignatureParameterOwner {
+                index,
+                owner,
+                type_count: self.type_count,
+            });
+        }
+        let file = self.atom(
+            "signature parameter",
+            index,
+            u32_at(row, 16),
+            u32_at(row, 20),
+        )?;
+        let offset = u32_at(row, 24);
+        if file.is_empty() != (offset == NONE) {
+            return Err(ImageError::SignatureParameterPosition { index });
+        }
+        Ok(SignatureParameterRow {
+            owner,
+            ordinal: u32_at(row, 4),
+            name: self.atom(
+                "signature parameter",
+                index,
+                u32_at(row, 8),
+                u32_at(row, 12),
+            )?,
+            file,
+            offset,
+        })
+    }
+
+    /// Iterates every signature-parameter row in producer order.
+    pub fn signature_parameters(
+        self,
+    ) -> impl Iterator<Item = Result<SignatureParameterRow<'image>, ImageError>> {
+        (0..self.signature_parameter_count).map(move |index| self.signature_parameter(index))
+    }
+
+    /// Number of validated method-set rows.
+    #[must_use]
+    pub const fn method_set_count(self) -> usize {
+        self.method_set_count
+    }
+
+    /// Borrows one validated method-set row: one method of an interface
+    /// type row's complete post-embedding method set.
+    pub fn method_set(self, index: usize) -> Result<MethodSetRow<'image>, ImageError> {
+        if index >= self.method_set_count {
+            return Err(ImageError::RowBounds {
+                plane: "method set",
+                index,
+                count: self.method_set_count,
+            });
+        }
+        let row = self.plane_row(self.method_sets_offset, index, METHOD_SET_BYTES);
+        let owner = u32_at(row, 0);
+        if usize::try_from(owner).is_ok_and(|owner| owner >= self.type_count) {
+            return Err(ImageError::MethodSetOwner {
+                index,
+                owner,
+                type_count: self.type_count,
+            });
+        }
+        let name = self.atom("method set", index, u32_at(row, 4), u32_at(row, 8))?;
+        if name.is_empty() {
+            return Err(ImageError::EmptyName {
+                plane: "method set",
+                index,
+            });
+        }
+        let type_root = optional_row(u32_at(row, 12));
+        if let Some(root) = out_of_bounds_root(type_root, self.type_count) {
+            return Err(ImageError::MethodSetTypeRoot {
+                index,
+                root,
+                type_count: self.type_count,
+            });
+        }
+        Ok(MethodSetRow {
+            owner,
+            name,
+            type_root,
+            package: self.atom("method set", index, u32_at(row, 16), u32_at(row, 20))?,
+        })
+    }
+
+    /// Borrows one complete interface method-set row.
+    pub fn interface_method_set(self, index: usize) -> Result<MethodSetRow<'image>, ImageError> {
+        self.method_set(index)
+    }
+
+    /// Number of complete interface method-set rows.
+    #[must_use]
+    pub const fn interface_method_set_count(self) -> usize {
+        self.method_set_count
+    }
+
+    /// Iterates every method-set row in producer order.
+    pub fn method_sets(self) -> impl Iterator<Item = Result<MethodSetRow<'image>, ImageError>> {
+        (0..self.method_set_count).map(move |index| self.method_set(index))
+    }
+
     /// Resolves the method row declared on the receiver type `receiver` with
     /// the method name `name`, if any.
     #[must_use]
@@ -1250,8 +1585,49 @@ impl<'image> GoImage<'image> {
         Ok(())
     }
 
+    fn validate_module(self) -> Result<(), ImageError> {
+        if let Some(module) = self.module()?
+            && module.path.is_empty()
+        {
+            return Err(ImageError::ModulePath);
+        }
+        Ok(())
+    }
+
+    /// Package rows must be canonically ordered by import path, and every
+    /// declaration must name one of the package rows' import paths.
+    fn validate_packages(self) -> Result<(), ImageError> {
+        let mut previous_path: Option<&'image [u8]> = None;
+        for index in 0..self.package_count {
+            let row = self.package(index)?;
+            if previous_path.is_some_and(|previous| row.import_path <= previous) {
+                return Err(ImageError::PackageSort { index });
+            }
+            previous_path = Some(row.import_path);
+        }
+        for index in 0..self.declaration_count {
+            let declared = self.declaration(index)?;
+            let mut bound = false;
+            for package_index in 0..self.package_count {
+                let row = self.package(package_index)?;
+                if declared.package == row.import_path {
+                    bound = true;
+                    break;
+                }
+            }
+            if !bound {
+                return Err(ImageError::DeclarationPackage {
+                    index,
+                    package_count: self.package_count,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn validate_types(self) -> Result<(), ImageError> {
         let mut expected_child = 0_usize;
+        let mut signature_parameter_cursor = 0_usize;
         for index in 0..self.type_count {
             let row = self.type_row(index)?;
             let name_required = matches!(
@@ -1396,11 +1772,40 @@ impl<'image> GoImage<'image> {
                     member_count: self.member_count,
                 });
             }
+            // Every func row owns exactly one signature-parameter row per
+            // child: parameters first, then results, ordinals ascending.
+            if row.kind == TypeRowKind::Func {
+                for ordinal in 0..child_count {
+                    let row_index = signature_parameter_cursor + ordinal;
+                    let parameter = self.signature_parameter(row_index)?;
+                    if usize::try_from(parameter.owner).unwrap_or(usize::MAX) != index {
+                        return Err(ImageError::SignatureParameterOwnerRow {
+                            index: row_index,
+                            owner: parameter.owner,
+                            expected: u32::try_from(index).unwrap_or(u32::MAX),
+                        });
+                    }
+                    if parameter.ordinal != u32::try_from(ordinal).unwrap_or(u32::MAX) {
+                        return Err(ImageError::SignatureParameterOrdinal {
+                            index: row_index,
+                            ordinal: parameter.ordinal,
+                            expected: u32::try_from(ordinal).unwrap_or(u32::MAX),
+                        });
+                    }
+                }
+                signature_parameter_cursor += child_count;
+            }
         }
         if expected_child != self.child_count {
             return Err(ImageError::TypeChildTiling {
                 declared: expected_child,
                 plane: self.child_count,
+            });
+        }
+        if signature_parameter_cursor != self.signature_parameter_count {
+            return Err(ImageError::SignatureParameterTiling {
+                declared: signature_parameter_cursor,
+                plane: self.signature_parameter_count,
             });
         }
         Ok(())
@@ -1480,6 +1885,31 @@ impl<'image> GoImage<'image> {
                 });
             }
             cursor = end;
+        }
+        Ok(())
+    }
+
+    /// Method-set rows must be canonically ordered by (owner, name) with
+    /// owner-contiguous runs in type-row order, and every owner must be an
+    /// interface type row.
+    fn validate_method_sets(self) -> Result<(), ImageError> {
+        let mut previous: Option<(u32, &'image [u8])> = None;
+        for index in 0..self.method_set_count {
+            let row = self.method_set(index)?;
+            if previous.is_some_and(|(previous_owner, previous_name)| {
+                row.owner < previous_owner
+                    || (row.owner == previous_owner && row.name <= previous_name)
+            }) {
+                return Err(ImageError::MethodSetSort { index });
+            }
+            let owner = usize::try_from(row.owner).unwrap_or(usize::MAX);
+            if owner < self.type_count && self.type_row(owner)?.kind != TypeRowKind::Interface {
+                return Err(ImageError::MethodSetOwnerKind {
+                    index,
+                    kind: self.type_row(owner)?.kind,
+                });
+            }
+            previous = Some((row.owner, row.name));
         }
         Ok(())
     }
@@ -1904,6 +2334,86 @@ pub enum ImageError {
         "Go authority satisfaction {index} names a subject of kind {kind:?}; only named types carry satisfaction edges"
     )]
     SatisfactionSubjectKind { index: usize, kind: DeclarationKind },
+    /// A present module row has no module path.
+    #[error("Go authority module row has an empty path")]
+    ModulePath,
+    /// A package row's file blob disagrees with its declared file count.
+    #[error(
+        "Go authority package {index} file blob of {blob_bytes} bytes does not hold {count} names"
+    )]
+    PackageFiles {
+        index: usize,
+        count: u32,
+        blob_bytes: u32,
+    },
+    /// Package rows are not canonically ordered by import path.
+    #[error("Go authority package {index} is out of canonical import-path order")]
+    PackageSort { index: usize },
+    /// A declaration names a package outside the package rows.
+    #[error(
+        "Go authority declaration {index} names a package outside the {package_count} package rows"
+    )]
+    DeclarationPackage { index: usize, package_count: usize },
+    /// A signature-parameter row's position is half-present: a file without
+    /// an offset or an offset without a file.
+    #[error("Go authority signature parameter {index} has a malformed source position")]
+    SignatureParameterPosition { index: usize },
+    /// A method-set row names an owner outside the type plane.
+    #[error("Go authority method set {index} names owner {owner} outside {type_count} type rows")]
+    MethodSetOwner {
+        index: usize,
+        owner: u32,
+        type_count: usize,
+    },
+    /// A method-set row names a non-interface type row as its owner.
+    #[error(
+        "Go authority method set {index} names a type row of kind {kind:?}; only interfaces carry method sets"
+    )]
+    MethodSetOwnerKind { index: usize, kind: TypeRowKind },
+    /// A method-set signature root names a row outside the type plane.
+    #[error("Go authority method set {index} names type root {root} outside {type_count}")]
+    MethodSetTypeRoot {
+        index: usize,
+        root: u32,
+        type_count: usize,
+    },
+    /// Method-set rows are not canonically ordered by (owner, name).
+    #[error("Go authority method set {index} is out of canonical (owner, name) order")]
+    MethodSetSort { index: usize },
+    /// A signature-parameter row names an owner outside the type plane.
+    #[error(
+        "Go authority signature parameter {index} names owner {owner} outside {type_count} type rows"
+    )]
+    SignatureParameterOwner {
+        index: usize,
+        owner: u32,
+        type_count: usize,
+    },
+    /// A signature-parameter row names an owner other than the func row that
+    /// owns its run.
+    #[error(
+        "Go authority signature parameter {index} names owner {owner}; the run belongs to type row {expected}"
+    )]
+    SignatureParameterOwnerRow {
+        index: usize,
+        owner: u32,
+        expected: u32,
+    },
+    /// A signature-parameter row's ordinal disagrees with its run position.
+    #[error(
+        "Go authority signature parameter {index} carries ordinal {ordinal}; the run expects {expected}"
+    )]
+    SignatureParameterOrdinal {
+        index: usize,
+        ordinal: u32,
+        expected: u32,
+    },
+    /// The signature-parameter plane does not exactly tile every func row's
+    /// child run.
+    #[error(
+        "Go authority signature-parameter plane holds {plane} rows but func rows declare {declared}"
+    )]
+    SignatureParameterTiling { declared: usize, plane: usize },
     /// A row requires a non-empty name and carries none.
     #[error("Go authority {plane} row {index} carries an empty name")]
     EmptyName { plane: &'static str, index: usize },
@@ -1944,6 +2454,9 @@ pub enum HeaderError {
     /// Reserved header bytes are not all zero.
     #[error("reserved header bytes are non-zero")]
     Reserved,
+    /// The module plane has more than its permitted optional row.
+    #[error("module plane holds {found} rows; at most one is permitted")]
+    ModuleCount { found: usize },
 }
 
 /// Splits one NUL-separated name blob into exactly `count` non-empty parts.

@@ -78,7 +78,7 @@ fn canonical_fixture_has_exact_closed_layout_and_semantic_lanes() -> Result<(), 
     let bytes = canonical()?;
     assert_eq!(
         &bytes[..HEADER_BYTES],
-        &[78, 88, 73, 82, 1, 0, 6, 0, 245, 0, 0, 0]
+        &[78, 88, 73, 82, 2, 0, 6, 0, 245, 0, 0, 0]
     );
     assert_eq!(
         &bytes[ENTITY_DIRECTORY..ENTITY_DIRECTORY + DIRECTORY_BYTES],
@@ -141,10 +141,10 @@ fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailur
         })
     );
     bytes = golden;
-    bytes[4] = 2;
+    bytes[4] = 3;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
-        Some(FragmentError::Schema { actual: 2 })
+            Some(FragmentError::Schema { actual: 3 })
     );
     bytes = golden;
     bytes[ENTITY_FLAGS] = 3;

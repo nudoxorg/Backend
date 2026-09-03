@@ -8,11 +8,11 @@ mod image;
 mod oracle;
 
 pub use image::{
-    Attribute, Atom, CSharpImage, Declaration, DeclarationFlags, DeclarationIter,
-    DeclarationKind, Doc, DocIter, GenericIter, GenericParameter, GenericSlice, HeaderError,
-    ImageError, NullabilityCell, ParamIter, ParamSlice, PartialRole, Parameter, ReferenceIter,
-    ReferenceTag, RefKind, ResolvedReference, Section, TypeChild, TypeChildIter, TypeNode,
-    TypeNodeKind, TypeRef, VarianceTag,
+    Atom, Attribute, CSharpImage, Declaration, DeclarationFlags, DeclarationIter, DeclarationKind,
+    Doc, DocIter, GenericIter, GenericParameter, GenericSlice, HeaderError, ImageError,
+    NullabilityCell, ParamIter, ParamSlice, Parameter, PartialRole, RefKind, ReferenceIter,
+    ReferenceTag, ResolvedReference, Section, TypeChild, TypeChildIter, TypeNode, TypeNodeKind,
+    TypeRef, VarianceTag,
 };
 pub use oracle::{
     CSharpOutput, DecodeError, Nullability, ToolingUnavailable, Type, decode, probe_dotnet,

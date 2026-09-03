@@ -4,7 +4,7 @@
 use core::mem::{align_of, size_of};
 
 use compiler_ir::TypeId;
-use compiler_ir::{EntityKind, PrimitiveType, TypeNode, TypeNodeFault};
+use compiler_ir::{EntityKind, EntityKindCodeError, PrimitiveType, TypeNode, TypeNodeFault};
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
@@ -131,8 +131,8 @@ fn decode_exact_entity_value(
         });
     }
     let kind_raw = u16::from_le_bytes(wire.kind);
-    let kind =
-        EntityKind::try_from(kind_raw).map_err(|actual| ExactEntityValueError::Kind { actual })?;
+    let kind = EntityKind::try_from(kind_raw)
+        .map_err(|EntityKindCodeError { actual }| ExactEntityValueError::Kind { actual })?;
     let operand = u32::from_le_bytes(wire.type_operand);
     let semantic_type = match wire.type_tag {
         PRIMITIVE_TYPE_TAG => {

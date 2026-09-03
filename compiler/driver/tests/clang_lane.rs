@@ -23,6 +23,8 @@ use thiserror::Error;
 enum TestError {
     #[error("clang compile failed")]
     Compile,
+    #[error("clang lowering terminal: {0:?}")]
+    Lowering(compiler_vocabulary::LoweringUnsupported),
     #[error("{0}")]
     Check(&'static str),
 }
@@ -64,7 +66,12 @@ fn lower_with<'output>(
             fragment_output: output,
         },
     )
-    .map_err(|_| TestError::Compile)?;
+    .map_err(|failure| match failure {
+        compiler_driver::CompileFailure::LoweringUnsupported { cause, .. } => {
+            TestError::Lowering(cause)
+        }
+        _ => TestError::Compile,
+    })?;
     let length = compiled.fragment.as_ref().len();
     drop(compiled);
     if output[length..].iter().any(|byte| *byte != 0xa5) {
@@ -422,18 +429,37 @@ fn children<'a>(
     Ok(result)
 }
 
+/// The shared profile entry keeps trunk's typed terminal for a source with
+/// zero supported declarations; the lane's database entry admits empty
+/// translation units (asserted in clang_lifecycle.rs), which is the surface
+/// the whole-TU lifecycle publishes through.
 #[test]
-fn empty_source_has_no_semantic_sections() -> Result<(), TestError> {
-    inspect(b"", |view| {
-        if !view.entities().next().is_none()
-            || view.type_facts().is_some()
-            || view.occurrences().is_some()
-            || view.docs().is_some()
-        {
-            return Err(TestError::Check("empty semantic sections"));
+fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let work =
+        std::env::temp_dir().join(format!("nudox-clang-lane-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let mut output = vec![0xa5_u8; 65_536];
+    let outcome = lower_with(LanguageProfile::C(CStandard::C23), b"", &mut output, &work);
+    let mut removed = std::fs::remove_dir_all(&work);
+    for attempt in 0..10 {
+        if removed.is_ok() {
+            break;
         }
-        Ok(())
-    })
+        std::thread::sleep(std::time::Duration::from_millis(50u64 + 25u64 * attempt));
+        removed = std::fs::remove_dir_all(&work);
+    }
+    removed.map_err(|_| TestError::Check("remove native work"))?;
+    match outcome {
+        Err(TestError::Lowering(compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration)) => {
+            Ok(())
+        }
+        Err(other) => Err(other),
+        Ok(_) => Err(TestError::Check("empty source was admitted as a fragment")),
+    }
 }
 
 #[test]

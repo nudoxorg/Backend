@@ -228,6 +228,7 @@ impl LaneLayout {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FragmentLayout {
+    pub(crate) schema: u16,
     pub(crate) entities: LaneLayout,
     pub(crate) type_nodes: LaneLayout,
     pub(crate) atoms: LaneLayout,
@@ -468,7 +469,7 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
     }
 }
 
-/// The fragment envelope magic: `"NXIR"` in every schema-1 fragment.
+/// The fragment envelope magic: `"NXIR"` in every fragment.
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
 /// The fragment envelope schema version.
-pub const FRAGMENT_SCHEMA: u16 = 1;
+pub const FRAGMENT_SCHEMA: u16 = 2;

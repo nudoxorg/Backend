@@ -26,6 +26,12 @@ pub enum DatabaseCompileFailure<'source> {
     Arguments(#[source] DatabaseArgumentError),
     #[error("libclang rejected the database translation unit")]
     Authority(#[source] compiler_languages_clang::CollectError),
+    #[error("database translation unit fact was rejected by canonical admission")]
+    Rejected {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        rejected: crate::FactRejection,
+    },
     #[error("database translation unit was cancelled")]
     Cancelled { input: &'source [u8] },
     #[error("database translation unit could not be lowered")]
@@ -113,6 +119,13 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
         ) => DatabaseCompileFailure::Cancelled { input: source },
         lower::clang::ClangCollectError::Authority(cause) => {
             DatabaseCompileFailure::Authority(cause)
+        }
+        lower::clang::ClangCollectError::Rejected(rejected) => {
+            DatabaseCompileFailure::Rejected {
+                source_identity,
+                recipe,
+                rejected,
+            }
         }
         lower::clang::ClangCollectError::Lowering(cause) => DatabaseCompileFailure::Lowering(cause),
     })?;

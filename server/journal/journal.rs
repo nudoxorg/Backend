@@ -124,7 +124,11 @@ impl FileJournal {
         events: &[WorkflowEvent],
         frames: &mut [u8],
     ) -> Result<GroupReceipt, GroupCommitError> {
-        self.append_group_using(events, frames, persist_group)
+        self.append_group_using(events, frames, persist_group, false)
+    }
+
+    pub(crate) fn append_publication_group(&mut self, events: &[WorkflowEvent], frames: &mut [u8]) -> Result<GroupReceipt, GroupCommitError> {
+        self.append_group_using(events, frames, persist_group, true)
     }
 
     fn append_group_using(
@@ -132,6 +136,7 @@ impl FileJournal {
         events: &[WorkflowEvent],
         frames: &mut [u8],
         persist: impl FnOnce(&mut File, &[u8]) -> Result<(), PersistFailure>,
+        allow_chain: bool,
     ) -> Result<GroupReceipt, GroupCommitError> {
         if self.poisoned {
             return Err(GroupCommitError::Poisoned);
@@ -160,6 +165,15 @@ impl FileJournal {
         for (index, event) in events.iter().copied().enumerate() {
             let attempted = WorkflowRecord::from(event);
             reduced_state = reduce(reduced_state, event)
+                .or_else(|error| if allow_chain && matches!(event.kind, server_workflow::EventKind::Requested) {
+                    match reduced_state {
+                        WorkflowState::Keyed { .. } => match reduce(WorkflowState::New, event) {
+                            Ok(value) => Ok(value),
+                            Err(_) => Err(error),
+                        },
+                        WorkflowState::New => Err(error),
+                    }
+                } else { Err(error) })
                 .map_err(|source| GroupCommitError::Reduction {
                     attempted: Arc::new(attempted),
                     source,

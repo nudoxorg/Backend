@@ -4,8 +4,8 @@
 //! structural checks cannot be bypassed by a checksum error.
 
 use compiler_languages_csharp::{
-    CSharpImage, DeclarationKind, HeaderError, ImageError, NullabilityCell, PartialRole,
-    ReferenceTag, RefKind, Section, TypeNodeKind,
+    CSharpImage, DeclarationKind, HeaderError, ImageError, NullabilityCell, PartialRole, RefKind,
+    ReferenceTag, Section, TypeNodeKind,
 };
 use sha2::{Digest, Sha256};
 
@@ -14,7 +14,7 @@ const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
 const IMAGE_DIGEST_OFFSET: usize = 224;
 const ABSENT: u32 = u32::MAX;
-const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v2\0";
+const DIGEST_DOMAIN: &[u8] = b"nudox.csharp.authority.image.sha256.v3\0";
 
 #[derive(Debug, thiserror::Error)]
 enum ImageTestError {
@@ -160,9 +160,11 @@ impl Fixture {
     }
 
     fn encode(&self, source: &[u8]) -> Result<Vec<u8>, ImageTestError> {
-        let cell = |value: usize| u32::try_from(value).map_err(|_| ImageTestError::FixtureOverflow {
-            fact: "plane scalar",
-        });
+        let cell = |value: usize| {
+            u32::try_from(value).map_err(|_| ImageTestError::FixtureOverflow {
+                fact: "plane scalar",
+            })
+        };
         let mut atoms = Vec::new();
         let mut atom_bytes = Vec::new();
         for text in &self.atoms {
@@ -183,7 +185,10 @@ impl Fixture {
                 params.push(param.flags);
                 params.extend_from_slice(&0_u16.to_le_bytes());
                 params.extend_from_slice(
-                    &param.default.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes(),
+                    &param
+                        .default
+                        .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                        .to_le_bytes(),
                 );
                 params.extend_from_slice(&param.name_start.to_le_bytes());
                 params.extend_from_slice(&param.name_end.to_le_bytes());
@@ -198,26 +203,34 @@ impl Fixture {
                 generic_rows.extend_from_slice(&constraint_start.to_le_bytes());
                 generic_rows.extend_from_slice(
                     &u16::try_from(generic.constraints.len())
-                        .map_err(|_| ImageTestError::FixtureOverflow { fact: "constraint count" })?
+                        .map_err(|_| ImageTestError::FixtureOverflow {
+                            fact: "constraint count",
+                        })?
                         .to_le_bytes(),
                 );
                 generic_rows.push(generic.variance);
                 generic_rows.push(generic.flags);
             }
-            let param_count = u16::try_from(row.params.len())
-                .map_err(|_| ImageTestError::FixtureOverflow { fact: "param count" })?;
-            let generic_count = u16::try_from(row.generics.len())
-                .map_err(|_| ImageTestError::FixtureOverflow { fact: "generic count" })?;
+            let param_count =
+                u16::try_from(row.params.len()).map_err(|_| ImageTestError::FixtureOverflow {
+                    fact: "param count",
+                })?;
+            let generic_count =
+                u16::try_from(row.generics.len()).map_err(|_| ImageTestError::FixtureOverflow {
+                    fact: "generic count",
+                })?;
             declarations.push(row.kind);
             declarations.push(row.flags);
             declarations.push(row.partial);
             declarations.push(row.ref_kind);
             declarations.extend_from_slice(&cell(row.name)?.to_le_bytes());
-            declarations
-                .extend_from_slice(&row.qualified.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes());
+            declarations.extend_from_slice(
+                &row.qualified
+                    .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                    .to_le_bytes(),
+            );
             declarations.extend_from_slice(&row.owner.unwrap_or(ABSENT).to_le_bytes());
-            declarations
-                .extend_from_slice(&row.declared_type.unwrap_or(ABSENT).to_le_bytes());
+            declarations.extend_from_slice(&row.declared_type.unwrap_or(ABSENT).to_le_bytes());
             declarations.extend_from_slice(&row.decl_start.to_le_bytes());
             declarations.extend_from_slice(&row.name_start.to_le_bytes());
             declarations.extend_from_slice(&row.name_end.to_le_bytes());
@@ -225,21 +238,32 @@ impl Fixture {
             declarations.extend_from_slice(&param_count.to_le_bytes());
             declarations.extend_from_slice(&generic_start.to_le_bytes());
             declarations.extend_from_slice(&generic_count.to_le_bytes());
-            declarations.extend_from_slice(&row.doc.map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT)).to_le_bytes());
+            declarations.extend_from_slice(
+                &row.doc
+                    .map_or(ABSENT, |d| cell(d).unwrap_or(ABSENT))
+                    .to_le_bytes(),
+            );
         }
         let mut types = Vec::new();
         let mut type_children = Vec::new();
         for row in &self.types {
             let child_start = cell(type_children.len() / 4)?;
             for (name, ty) in &row.children {
-                type_children
-                    .extend_from_slice(&name.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes());
+                type_children.extend_from_slice(
+                    &name
+                        .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                        .to_le_bytes(),
+                );
                 type_children.extend_from_slice(&ty.to_le_bytes());
             }
             types.push(row.kind);
             types.push(row.nullable);
             types.extend_from_slice(&0_u16.to_le_bytes());
-            types.extend_from_slice(&row.spelling.map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT)).to_le_bytes());
+            types.extend_from_slice(
+                &row.spelling
+                    .map_or(ABSENT, |a| cell(a).unwrap_or(ABSENT))
+                    .to_le_bytes(),
+            );
             types.extend_from_slice(&child_start.to_le_bytes());
             types.extend_from_slice(&cell(row.children.len())?.to_le_bytes());
         }
@@ -280,28 +304,32 @@ impl Fixture {
             doc_rows,
             reference_rows,
         ];
-        let row_bytes = [
-            8_u16, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28,
-        ];
+        let row_bytes = [8_u16, 1, 48, 24, 12, 4, 16, 8, 8, 20, 28];
         let mut image = vec![0_u8; HEADER_BYTES];
         image[..4].copy_from_slice(b"NCAI");
-        image[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        image[4..6].copy_from_slice(&3_u16.to_le_bytes());
         image[6..8].copy_from_slice(
             &u16::try_from(HEADER_BYTES)
-                .map_err(|_| ImageTestError::FixtureOverflow { fact: "header length" })?
+                .map_err(|_| ImageTestError::FixtureOverflow {
+                    fact: "header length",
+                })?
                 .to_le_bytes(),
         );
         let body = sections.iter().map(Vec::len).sum::<usize>();
         image[8..12].copy_from_slice(
             &u32::try_from(body)
-                .map_err(|_| ImageTestError::FixtureOverflow { fact: "body length" })?
+                .map_err(|_| ImageTestError::FixtureOverflow {
+                    fact: "body length",
+                })?
                 .to_le_bytes(),
         );
         image[12..44].copy_from_slice(Sha256::digest(source).as_slice());
         let _ = IMAGE_DIGEST_OFFSET;
         image[44..46].copy_from_slice(
             &u16::try_from(sections.len())
-                .map_err(|_| ImageTestError::FixtureOverflow { fact: "section count" })?
+                .map_err(|_| ImageTestError::FixtureOverflow {
+                    fact: "section count",
+                })?
                 .to_le_bytes(),
         );
         let mut offset = HEADER_BYTES;
@@ -309,23 +337,31 @@ impl Fixture {
             let entry = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
             image[entry..entry + 2].copy_from_slice(
                 &u16::try_from(index + 1)
-                    .map_err(|_| ImageTestError::FixtureOverflow { fact: "section tag" })?
+                    .map_err(|_| ImageTestError::FixtureOverflow {
+                        fact: "section tag",
+                    })?
                     .to_le_bytes(),
             );
             image[entry + 2..entry + 4].copy_from_slice(&row_bytes[index].to_le_bytes());
             image[entry + 4..entry + 8].copy_from_slice(
                 &u32::try_from(section.len() / usize::from(row_bytes[index]))
-                    .map_err(|_| ImageTestError::FixtureOverflow { fact: "section count" })?
+                    .map_err(|_| ImageTestError::FixtureOverflow {
+                        fact: "section count",
+                    })?
                     .to_le_bytes(),
             );
             image[entry + 8..entry + 12].copy_from_slice(
                 &u32::try_from(offset)
-                    .map_err(|_| ImageTestError::FixtureOverflow { fact: "section offset" })?
+                    .map_err(|_| ImageTestError::FixtureOverflow {
+                        fact: "section offset",
+                    })?
                     .to_le_bytes(),
             );
             image[entry + 12..entry + 16].copy_from_slice(
                 &u32::try_from(section.len())
-                    .map_err(|_| ImageTestError::FixtureOverflow { fact: "section bytes" })?
+                    .map_err(|_| ImageTestError::FixtureOverflow {
+                        fact: "section bytes",
+                    })?
                     .to_le_bytes(),
             );
             offset += section.len();
@@ -359,8 +395,7 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
 -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
     let file_text = b"Widget.cs";
-    let xml_text =
-        b"<member name=\"T:Demo.Widget\"><summary>Serves.</summary></member>";
+    let xml_text = b"<member name=\"T:Demo.Widget\"><summary>Serves.</summary></member>";
     let attribute_text = b"Obsolete(\"use New\")";
     let file = fix.atom(file_text);
     let xml = fix.atom(xml_text);
@@ -381,18 +416,24 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
     let bytes = fix.encode(source)?;
     let image = CSharpImage::open(&bytes)?;
     if image.source_digest() != Sha256::digest(source).as_slice() {
-        return Err(ImageTestError::MissingFact { fact: "source digest" });
+        return Err(ImageTestError::MissingFact {
+            fact: "source digest",
+        });
     }
     let declaration = image
         .declarations()
         .next()
         .transpose()?
-        .ok_or(ImageTestError::Missing { fact: "declaration" })?;
+        .ok_or(ImageTestError::Missing {
+            fact: "declaration",
+        })?;
     if declaration.kind != DeclarationKind::Class
         || declaration.partial != PartialRole::None
         || declaration.ref_kind != RefKind::Value
     {
-        return Err(ImageTestError::MissingFact { fact: "closed cells" });
+        return Err(ImageTestError::MissingFact {
+            fact: "closed cells",
+        });
     }
     if declaration.name.bytes != b"Widget" {
         return Err(ImageTestError::Text {
@@ -400,21 +441,25 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
             actual: String::from_utf8_lossy(declaration.name.bytes).into_owned(),
         });
     }
-    let qualified = declaration
-        .qualified
-        .ok_or(ImageTestError::Missing { fact: "qualified name" })?;
+    let qualified = declaration.qualified.ok_or(ImageTestError::Missing {
+        fact: "qualified name",
+    })?;
     if qualified.bytes != b"Demo.Widget" {
-        return Err(ImageTestError::MissingFact { fact: "qualified name" });
+        return Err(ImageTestError::MissingFact {
+            fact: "qualified name",
+        });
     }
-    let declared = declaration
-        .declared_type
-        .ok_or(ImageTestError::Missing { fact: "declared type" })?;
+    let declared = declaration.declared_type.ok_or(ImageTestError::Missing {
+        fact: "declared type",
+    })?;
     let node = image.type_node(declared)?;
     if node.kind != TypeNodeKind::Named
         || node.nullable != NullabilityCell::NotAnnotated
         || node.spelling.map(|atom| atom.bytes) != Some(b"Demo.Widget".as_slice())
     {
-        return Err(ImageTestError::MissingFact { fact: "named type node" });
+        return Err(ImageTestError::MissingFact {
+            fact: "named type node",
+        });
     }
     let doc = image
         .docs()
@@ -422,15 +467,21 @@ fn image_borrows_declaration_types_and_doc_provenance_without_dto_reconstruction
         .transpose()?
         .ok_or(ImageTestError::Missing { fact: "doc row" })?;
     if doc.declaration != widget || doc.file.bytes != file_text || doc.xml.bytes != xml_text {
-        return Err(ImageTestError::MissingFact { fact: "doc provenance" });
+        return Err(ImageTestError::MissingFact {
+            fact: "doc provenance",
+        });
     }
     let attribute = image
         .attributes()
         .next()
         .transpose()?
-        .ok_or(ImageTestError::Missing { fact: "attribute row" })?;
+        .ok_or(ImageTestError::Missing {
+            fact: "attribute row",
+        })?;
     if attribute.declaration != widget || attribute.spelling.bytes != attribute_text {
-        return Err(ImageTestError::MissingFact { fact: "attribute spelling" });
+        return Err(ImageTestError::MissingFact {
+            fact: "attribute spelling",
+        });
     }
     Ok(())
 }
@@ -458,9 +509,15 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
     checksum(&mut tag_mutant);
     if !matches!(
         CSharpImage::open(&tag_mutant),
-        Err(ImageError::DeclarationKind { index: 0, found: 200, plane: Section::Declarations })
+        Err(ImageError::DeclarationKind {
+            index: 0,
+            found: 200,
+            plane: Section::Declarations
+        })
     ) {
-        return Err(ImageTestError::MissingFact { fact: "closed tag rejection" });
+        return Err(ImageTestError::MissingFact {
+            fact: "closed tag rejection",
+        });
     }
 
     // A type coordinate outside the type section is the typed span rejection.
@@ -469,10 +526,14 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
         .copy_from_slice(&9_u32.to_le_bytes());
     checksum(&mut coordinate_mutant);
     match CSharpImage::open(&coordinate_mutant) {
-        Err(ImageError::Span { start: 9, end: 1, .. }) => {}
+        Err(ImageError::Span {
+            start: 9, end: 1, ..
+        }) => {}
         other => {
             eprintln!("coordinate mutant produced {other:?}");
-            return Err(ImageTestError::MissingFact { fact: "coordinate rejection" });
+            return Err(ImageTestError::MissingFact {
+                fact: "coordinate rejection",
+            });
         }
     }
 
@@ -481,7 +542,9 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
         CSharpImage::open(&valid[..80]),
         Err(ImageError::Header(HeaderError::Truncated { .. }))
     ) {
-        return Err(ImageTestError::MissingFact { fact: "truncation rejection" });
+        return Err(ImageTestError::MissingFact {
+            fact: "truncation rejection",
+        });
     }
 
     // A non-UTF-8 atom byte is the typed UTF-8 rejection.
@@ -493,7 +556,9 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
         CSharpImage::open(&utf8_mutant),
         Err(ImageError::NameUtf8 { index: 0 })
     ) {
-        return Err(ImageTestError::MissingFact { fact: "utf8 rejection" });
+        return Err(ImageTestError::MissingFact {
+            fact: "utf8 rejection",
+        });
     }
     Ok(())
 }
@@ -514,9 +579,10 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
     });
     let partial_byte = PartialRole::Definition as u8;
     let async_flag = 0x2;
+    let explicit_interface_flag = 0x10;
     fix.declarations.push(DeclarationRow {
         kind: DeclarationKind::Method as u8,
-        flags: async_flag,
+        flags: async_flag | explicit_interface_flag,
         partial: partial_byte,
         ref_kind: RefKind::Value as u8,
         name: method_name,
@@ -541,15 +607,16 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
     let source = b"class Widget { async partial void brew(ref params int count) {}";
     let bytes = fix.encode(source)?;
     let image = CSharpImage::open(&bytes)?;
-    let declaration = image
-        .declaration(1)
-        .map_err(ImageTestError::Image)?;
+    let declaration = image.declaration(1).map_err(ImageTestError::Image)?;
     if declaration.kind != DeclarationKind::Method
         || !declaration.flags.is_async
+        || !declaration.flags.is_explicit_interface
         || declaration.partial != PartialRole::Definition
         || declaration.owner != Some(widget)
     {
-        return Err(ImageTestError::MissingFact { fact: "method cells" });
+        return Err(ImageTestError::MissingFact {
+            fact: "method cells",
+        });
     }
     let parameter = declaration
         .parameters
@@ -561,7 +628,9 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
         || !parameter.is_params
         || parameter.has_default
     {
-        return Err(ImageTestError::MissingFact { fact: "parameter cells" });
+        return Err(ImageTestError::MissingFact {
+            fact: "parameter cells",
+        });
     }
     Ok(())
 }
@@ -628,36 +697,58 @@ fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTes
                 hexdump.push_str(&format!(" {byte:02x}"));
             }
             eprintln!("{hexdump}");
-            eprintln!("atoms={} decls={} params={} tparams={} tcons={} types={} tchildren={} attrs={} docs={} refs={}",
-                fix.atoms.len(), fix.declarations.len(),
-                fix.declarations.iter().map(|d| d.params.len()).sum::<usize>(),
-                fix.declarations.iter().map(|d| d.generics.len()).sum::<usize>(),
-                fix.declarations.iter().map(|d| d.generics.iter().map(|g| g.constraints.len()).sum::<usize>()).sum::<usize>(),
+            eprintln!(
+                "atoms={} decls={} params={} tparams={} tcons={} types={} tchildren={} attrs={} docs={} refs={}",
+                fix.atoms.len(),
+                fix.declarations.len(),
+                fix.declarations
+                    .iter()
+                    .map(|d| d.params.len())
+                    .sum::<usize>(),
+                fix.declarations
+                    .iter()
+                    .map(|d| d.generics.len())
+                    .sum::<usize>(),
+                fix.declarations
+                    .iter()
+                    .map(|d| d
+                        .generics
+                        .iter()
+                        .map(|g| g.constraints.len())
+                        .sum::<usize>())
+                    .sum::<usize>(),
                 fix.types.len(),
                 fix.types.iter().map(|t| t.children.len()).sum::<usize>(),
-                fix.attributes.len(), fix.docs.len(), fix.references.len());
+                fix.attributes.len(),
+                fix.docs.len(),
+                fix.references.len()
+            );
             return Err(ImageTestError::Image(fault));
         }
     };
     let class = image.declaration(0).map_err(ImageTestError::Image)?;
     let mut generics = class.type_parameters.iter();
-    let generic = generics
-        .next()
-        .ok_or(ImageTestError::Missing { fact: "generic parameter" })?;
+    let generic = generics.next().ok_or(ImageTestError::Missing {
+        fact: "generic parameter",
+    })?;
     if generic.name.bytes != b"T"
         || generic.variance != compiler_languages_csharp::VarianceTag::Invariant
         || !generic.reference_type
         || !generic.constructor
     {
-        return Err(ImageTestError::MissingFact { fact: "generic cells" });
+        return Err(ImageTestError::MissingFact {
+            fact: "generic cells",
+        });
     }
     let mut constraints = generic.constraints;
     let constraint = constraints
         .next()
         .ok_or(ImageTestError::Missing { fact: "constraint" })?;
-    let node = image.type_node(constraint.ty)?;
+    let node = image.type_node(constraint)?;
     if node.spelling.map(|atom| atom.bytes) != Some(b"Demo.IPart".as_slice()) {
-        return Err(ImageTestError::MissingFact { fact: "constraint node" });
+        return Err(ImageTestError::MissingFact {
+            fact: "constraint node",
+        });
     }
     let field = image.declaration(1).map_err(ImageTestError::Image)?;
     let tuple = image.type_node(
@@ -669,18 +760,19 @@ fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTes
         return Err(ImageTestError::MissingFact { fact: "tuple node" });
     }
     let mut children = tuple.children;
-    let label = children
-        .nth(1)
-        .ok_or(ImageTestError::Missing { fact: "labelled child" })?;
+    let label = children.nth(1).ok_or(ImageTestError::Missing {
+        fact: "labelled child",
+    })?;
     if label.name.map(|atom| atom.bytes) != Some(b"Name".as_slice()) {
-        return Err(ImageTestError::MissingFact { fact: "tuple label" });
+        return Err(ImageTestError::MissingFact {
+            fact: "tuple label",
+        });
     }
     Ok(())
 }
 
 #[test]
-fn image_carries_references_with_closed_kinds_and_foreign_targets()
--> Result<(), ImageTestError> {
+fn image_carries_references_with_closed_kinds_and_foreign_targets() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
     let widget = fix.class(b"Demo.Widget", 6, 12);
     let spelling = fix.atom(b"System.Console.WriteLine");
@@ -703,6 +795,15 @@ fn image_carries_references_with_closed_kinds_and_foreign_targets()
         end: 55,
         kind: ReferenceTag::UsingDirective as u8,
     });
+    fix.references.push(ReferenceRow {
+        owner: widget,
+        target: Some(widget),
+        spelling,
+        file,
+        start: 56,
+        end: 60,
+        kind: ReferenceTag::InterfaceImplementation as u8,
+    });
     let source = b"class Widget { void m() { System.Console.WriteLine(); } }";
     let bytes = fix.encode(source)?;
     let image = CSharpImage::open(&bytes)?;
@@ -717,17 +818,36 @@ fn image_carries_references_with_closed_kinds_and_foreign_targets()
         || first.start != 20
         || first.end != 44
     {
-        return Err(ImageTestError::MissingFact { fact: "foreign reference" });
+        return Err(ImageTestError::MissingFact {
+            fact: "foreign reference",
+        });
     }
     let second = references
         .next()
         .transpose()?
-        .ok_or(ImageTestError::Missing { fact: "second reference" })?;
+        .ok_or(ImageTestError::Missing {
+            fact: "second reference",
+        })?;
     if second.target != Some(widget) || second.kind != ReferenceTag::UsingDirective {
-        return Err(ImageTestError::MissingFact { fact: "local reference" });
+        return Err(ImageTestError::MissingFact {
+            fact: "local reference",
+        });
+    }
+    let third = references
+        .next()
+        .transpose()?
+        .ok_or(ImageTestError::Missing {
+            fact: "third reference",
+        })?;
+    if third.target != Some(widget) || third.kind != ReferenceTag::InterfaceImplementation {
+        return Err(ImageTestError::MissingFact {
+            fact: "implementation binding",
+        });
     }
     if references.next().is_some() {
-        return Err(ImageTestError::MissingFact { fact: "exact reference count" });
+        return Err(ImageTestError::MissingFact {
+            fact: "exact reference count",
+        });
     }
     Ok(())
 }
@@ -736,13 +856,16 @@ fn plane_offset(image: &[u8], section: Section) -> Result<usize, ImageTestError>
     let directory_index = section as usize - 1;
     let entry = DIRECTORY_OFFSET + directory_index * DIRECTORY_ENTRY_BYTES;
     if image.len() < entry + 16 {
-        return Err(ImageTestError::MissingFact { fact: "directory entry" });
+        return Err(ImageTestError::MissingFact {
+            fact: "directory entry",
+        });
     }
-    let bytes: [u8; 4] = image[entry + 8..entry + 12]
-        .try_into()
-        .map_err(|_| ImageTestError::MissingFact {
-            fact: "fixed directory offset",
-        })?;
+    let bytes: [u8; 4] =
+        image[entry + 8..entry + 12]
+            .try_into()
+            .map_err(|_| ImageTestError::MissingFact {
+                fact: "fixed directory offset",
+            })?;
     usize::try_from(u32::from_le_bytes(bytes)).map_err(|_| ImageTestError::FixtureOverflow {
         fact: "directory offset",
     })

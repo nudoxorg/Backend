@@ -241,6 +241,9 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
         (SemanticAuthorityInput::Java { .. }, profile) => {
             !matches!(profile, LanguageProfile::Java(_))
         }
+        (SemanticAuthorityInput::TypeScript { .. }, profile) => {
+            !matches!(profile, LanguageProfile::TypeScript(_))
+        }
         (SemanticAuthorityInput::None, _) => false,
     };
     if authority_profile_mismatch {
@@ -366,15 +369,55 @@ fn emit_facts<'source, 'diagnostic>(
             Ok(())
         }
         LanguageProfile::TypeScript(profile) => {
-            lower::typescript::collect(profile, source, facts).map_err(|cause| {
-                typescript_terminal(
-                    diagnostic_output,
-                    source,
-                    prepared.source,
-                    prepared.recipe,
-                    cause,
-                )
-            })?;
+            let owned_report = match authority {
+                SemanticAuthorityInput::None => Some(
+                    compiler_languages_typescript::Checker::default()
+                        .run(profile, source)
+                        .map_err(|cause| {
+                            typescript_terminal(
+                                None,
+                                source,
+                                prepared.source,
+                                prepared.recipe,
+                                TypeScriptCollectError::Authority(
+                                    compiler_languages_typescript::AuthorityError::Checker {
+                                        cause,
+                                    },
+                                ),
+                            )
+                        })?,
+                ),
+                SemanticAuthorityInput::TypeScript { .. } => None,
+                _ => {
+                    return Err(CompileFailure::AuthorityInputProfileMismatch {
+                        source_identity: prepared.source,
+                        recipe: prepared.recipe,
+                        profile: LanguageProfile::TypeScript(profile),
+                    });
+                }
+            };
+            let report = match authority {
+                SemanticAuthorityInput::None => owned_report.as_ref(),
+                SemanticAuthorityInput::TypeScript { report } => Some(report),
+                _ => {
+                    return Err(CompileFailure::AuthorityInputProfileMismatch {
+                        source_identity: prepared.source,
+                        recipe: prepared.recipe,
+                        profile: LanguageProfile::TypeScript(profile),
+                    });
+                }
+            };
+            lower::typescript::collect_with_checker(profile, source, report, facts).map_err(
+                |cause| {
+                    typescript_terminal(
+                        diagnostic_output,
+                        source,
+                        prepared.source,
+                        prepared.recipe,
+                        cause,
+                    )
+                },
+            )?;
             if facts.len() == 0 {
                 return Err(CompileFailure::LoweringUnsupported {
                     source_identity: prepared.source,
@@ -400,6 +443,7 @@ fn emit_facts<'source, 'diagnostic>(
             let SemanticAuthorityInput::Rust {
                 project,
                 maximum_source_bytes,
+                features,
             } = authority
             else {
                 return Err(CompileFailure::AuthorityInputRequired {
@@ -408,8 +452,15 @@ fn emit_facts<'source, 'diagnostic>(
                     profile: LanguageProfile::Rust(profile),
                 });
             };
-            lower::rust::collect(project, maximum_source_bytes, cancelled, source, facts)
-                .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
+            lower::rust::collect(
+                project,
+                maximum_source_bytes,
+                features,
+                cancelled,
+                source,
+                facts,
+            )
+            .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
             if facts.len() == 0 {
                 return Err(CompileFailure::LoweringUnsupported {
                     source_identity: prepared.source,
@@ -493,6 +544,7 @@ fn python_terminal<'diagnostic>(
                 cause,
             },
         },
+        lower::python::PythonCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::python::PythonCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -557,6 +609,7 @@ fn go_terminal<'diagnostic>(
                 },
             }
         }
+        lower::go::GoCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::go::GoCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -599,6 +652,7 @@ fn csharp_terminal<'diagnostic>(
                 end,
             },
         },
+        lower::csharp::CSharpCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::csharp::CSharpCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -644,6 +698,7 @@ fn java_terminal<'diagnostic>(
                 },
             }
         }
+        lower::java::JavaCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::java::JavaCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -666,6 +721,7 @@ fn clang_terminal<'diagnostic>(
                 cause,
             },
         },
+        lower::clang::ClangCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::clang::ClangCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -698,6 +754,7 @@ fn typescript_terminal<'diagnostic>(
                 cause,
             },
         },
+        TypeScriptCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         TypeScriptCollectError::Span { start, end } => CompileFailure::Authority {
             source_identity,
             recipe,

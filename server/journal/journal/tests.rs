@@ -451,7 +451,7 @@ fn grouped_append_reduces_before_one_write_and_one_sync() -> Result<(), Box<dyn 
             step: CommitIoStep::SyncFrame,
             source,
         })
-    })?;
+    }, false)?;
     assert_eq!(writes, 1);
     assert_eq!(syncs, 1);
     assert_eq!(
@@ -491,7 +491,7 @@ fn grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix()
                 step: CommitIoStep::SyncFrame,
                 source: injected(InjectedFault::FrameSync),
             })
-        });
+        }, false);
         match result {
             Err(GroupCommitError::OutcomeUnknown {
                 attempted: observed,

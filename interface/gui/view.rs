@@ -861,7 +861,7 @@ impl GpuiShellView {
                                 .child("Outline"),
                         )
                     }),
-                )
+            )
     }
 
     fn navigation_rail(&self, cx: &mut Context<Self>) -> AnyElement {

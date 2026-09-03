@@ -71,9 +71,10 @@ use compiler_languages_clang::{
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::lower::{
-    EmissionExtension, FactFault, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
-    SemanticFact, push_fact,
+    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact,
+    push_fact,
 };
+use crate::types::{FactFault, FactRejection};
 
 /// Exact direct-authority rejection while borrowing libclang facts.
 ///
@@ -88,6 +89,8 @@ pub(crate) enum ClangCollectError {
     Authority(CollectError),
     /// The bounded canonical declaration lane rejected a direct fact.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
@@ -142,7 +145,7 @@ fn push<'source>(
     facts: &mut FactSet<'source>,
     fact: SemanticFact<'source>,
 ) -> Result<u32, ClangCollectError> {
-    let ordinal = push_fact(facts, fact).map_err(ClangCollectError::Lowering)?;
+    let ordinal = push_fact(facts, fact).map_err(ClangCollectError::Rejected)?;
     u32::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))
 }
 

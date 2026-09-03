@@ -5,8 +5,8 @@
 //! module and never mutates process-global configuration.
 
 use compiler_languages_typescript::{
-    Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, Origin, Report, TypeTree,
-    source_digest,
+    Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, Narrowing, Origin, Report,
+    TypeTree, source_digest,
 };
 
 const GOLDEN: &str = include_str!("transcripts/golden.json");
@@ -35,7 +35,10 @@ fn golden_transcript_decodes_declarations_and_references() -> Result<(), Checker
         message: "golden declaration missing".to_owned(),
         transcript: String::new(),
     })?;
-    assert_eq!(&source[first.name.start as usize..first.name.end as usize], "n");
+    assert_eq!(
+        &source[first.name.start as usize..first.name.end as usize],
+        "n"
+    );
     assert_eq!(first.origin, Origin::Declared);
     assert_eq!(
         first.r#type,
@@ -75,6 +78,27 @@ fn golden_transcript_decodes_declarations_and_references() -> Result<(), Checker
         .collect();
     assert!(overload_calls.contains(&("g", Some(0))));
     assert!(overload_calls.contains(&("g", Some(1))));
+    // The recorded assignment narrowing binds its declaration name span,
+    // its exact assignment site, and the literal type of the value.
+    let narrowing = *index.narrowings().next().ok_or(CheckerError::Decode {
+        message: "golden narrowing missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    assert_eq!(
+        &source[narrowing.name.start as usize..narrowing.name.end as usize],
+        "widened"
+    );
+    assert_eq!(
+        &source[narrowing.site.start as usize..narrowing.site.end as usize],
+        "widened = \"text\""
+    );
+    assert_eq!(
+        narrowing.r#type,
+        Some(&TypeTree::Literal {
+            base: LiteralBase::String,
+            text: "\"text\"".to_owned(),
+        })
+    );
     Ok(())
 }
 
@@ -178,7 +202,9 @@ fn malformed_digest_is_a_decode_fault() {
     let mut report = adapter().decode(GOLDEN.as_bytes()).expect("golden decodes");
     report.source_digest = "not-hex".to_owned();
     let error = CheckerIndex::bind(&report, golden_source()).expect_err("malformed digest");
-    assert!(matches!(error, CheckerError::Decode { ref message, .. } if message.contains("digest")));
+    assert!(
+        matches!(error, CheckerError::Decode { ref message, .. } if message.contains("digest"))
+    );
 }
 
 #[test]
@@ -190,6 +216,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
         diagnostics: Box::default(),
         declarations: Box::default(),
         references: Box::default(),
+        narrowings: Box::default(),
     };
     // The rocket occupies bytes 1..5 and code units 1..3; a span that ends
     // inside the surrogate pair cannot bind to a byte boundary.
@@ -205,6 +232,7 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
             r#type: None,
         }]),
         references: Box::default(),
+        narrowings: Box::default(),
     };
     let error = CheckerIndex::bind(&faulted, source).expect_err("surrogate span must fail");
     assert!(
@@ -213,6 +241,65 @@ fn surrogate_splitting_span_is_a_typed_binding_fault() {
     );
     // The report without declarations binds cleanly.
     CheckerIndex::bind(&clean, source).expect("clean report binds");
+}
+
+#[test]
+fn narrowing_binds_both_spans_and_tolerates_an_absent_type() -> Result<(), CheckerError> {
+    let source = "let u: string | number = 0;\nu = 1;";
+    // Declaration name `u` at 28..29; assignment site 28..34.
+    let report = Report {
+        schema_version: 1,
+        source_digest: hex_of(source.as_bytes()),
+        diagnostics: Box::default(),
+        declarations: Box::default(),
+        references: Box::default(),
+        narrowings: Box::new([Narrowing {
+            name_start: 28,
+            name_end: 29,
+            start: 28,
+            end: 34,
+            r#type: None,
+        }]),
+    };
+    let index = CheckerIndex::bind(&report, source)?;
+    let narrowing = *index.narrowings().next().ok_or(CheckerError::Decode {
+        message: "narrowing missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    assert_eq!(
+        &source[narrowing.name.start as usize..narrowing.name.end as usize],
+        "u"
+    );
+    assert_eq!(
+        &source[narrowing.site.start as usize..narrowing.site.end as usize],
+        "u = 1;"
+    );
+    assert_eq!(narrowing.r#type, None);
+    Ok(())
+}
+
+#[test]
+fn narrowing_span_outside_the_source_is_a_typed_binding_fault() {
+    let source = "let u = 0;";
+    let report = Report {
+        schema_version: 1,
+        source_digest: hex_of(source.as_bytes()),
+        diagnostics: Box::default(),
+        declarations: Box::default(),
+        references: Box::default(),
+        narrowings: Box::new([Narrowing {
+            name_start: 4,
+            name_end: 5,
+            start: 40,
+            end: 99,
+            r#type: None,
+        }]),
+    };
+    let error = CheckerIndex::bind(&report, source).expect_err("narrowing span must fail");
+    assert!(matches!(
+        error,
+        CheckerError::SpanBinding { start: 40, end: 99 }
+    ));
 }
 
 fn hex_of(bytes: &[u8]) -> String {
@@ -239,7 +326,9 @@ mod bounded_child {
         std::fs::create_dir_all(&root).expect("test temp directory");
         let path = root.join("checker.sh");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("test script");
-        let mut permissions = std::fs::metadata(&path).expect("script metadata").permissions();
+        let mut permissions = std::fs::metadata(&path)
+            .expect("script metadata")
+            .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("script permissions");
         path
@@ -361,7 +450,10 @@ fn end_to_end_fixture_preserves_overload_and_computed_facts() -> Result<(), Chec
     };
     // The vendored driver exits 3 when the `typescript` module is not
     // resolvable; that is honest tool absence, not a protocol fault.
-    match checker.run(compiler_vocabulary::TypeScriptSource::TypeScript, GOLDEN_SOURCE) {
+    match checker.run(
+        compiler_vocabulary::TypeScriptSource::TypeScript,
+        GOLDEN_SOURCE,
+    ) {
         Ok(report) => {
             assert_eq!(report.source_digest, hex_of(GOLDEN_SOURCE));
             assert!(!report.declarations.is_empty());

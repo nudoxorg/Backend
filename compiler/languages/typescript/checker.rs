@@ -22,11 +22,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
 use compiler_vocabulary::TypeScriptSource;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CoordinateError, Utf16Span, Utf8Span};
+use crate::{CoordinateError, Utf8Span, Utf16Span};
 
 /// Digest width of one SHA-256 source binding.
 const DIGEST_BYTES: usize = 32;
@@ -36,6 +36,10 @@ const TRANSCRIPT_PREFIX_LIMIT: usize = 4096;
 const TRANSCRIPT_TAIL_LIMIT: usize = 4096;
 /// Exit code the vendored driver uses when `typescript` is not resolvable.
 const MODULE_MISSING_EXIT: i32 = 3;
+/// Maximum number of files copied for one package-context run.
+const PACKAGE_FILE_LIMIT: usize = 4096;
+/// Maximum total bytes copied for one package-context run.
+const PACKAGE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 
 /// The payload schema this build reads; a differing schema is typed staleness.
 pub(crate) const REQUIRED_SCHEMA_VERSION: u32 = 1;
@@ -103,7 +107,7 @@ pub enum CheckerError {
         /// The run phase that timed out.
         phase: &'static str,
         /// Configured deadline in milliseconds.
-        milliseconds: u64,
+        milliseconds: u128,
     },
     /// The report's schema cell was not the version this adapter understands.
     #[error("TypeScript checker schema is stale: found {found}, expected {expected}")]
@@ -138,6 +142,28 @@ pub enum CheckerError {
         /// The filesystem failure.
         #[source]
         source: std::io::Error,
+    },
+    /// The package staging file count exceeded its bound.
+    #[error("TypeScript checker package file limit exceeded: observed {observed}, limit {limit}")]
+    PackageFileLimit {
+        /// Number of package files observed before rejection.
+        observed: usize,
+        /// Maximum number of package files accepted.
+        limit: usize,
+    },
+    /// The package staging byte count exceeded its bound.
+    #[error("TypeScript checker package byte limit exceeded: observed {observed}, limit {limit}")]
+    PackageByteLimit {
+        /// Total package bytes observed before rejection.
+        observed: usize,
+        /// Maximum total package bytes accepted.
+        limit: usize,
+    },
+    /// Package staging did not complete before the checker deadline.
+    #[error("TypeScript checker package staging timed out after {milliseconds}ms")]
+    PackageTimeout {
+        /// Configured deadline in milliseconds.
+        milliseconds: u128,
     },
     /// A checker UTF-16 span could not bind to the exact UTF-8 source.
     #[error("TypeScript checker span {start}..{end} does not bind to the source")]
@@ -312,6 +338,29 @@ pub struct Reference {
     pub overload_index: Option<u32>,
 }
 
+/// One control-flow-sensitive checker type observed at one plain
+/// `target = value` assignment site.
+///
+/// `name_start`/`name_end` bind the *declaration* name of the assigned
+/// symbol so the consumer can own the row by its declared fact;
+/// `start`/`end` bound the exact assignment site whose program-point type
+/// the checker reported.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Narrowing {
+    /// First UTF-16 bound of the assigned symbol's same-file declaration name.
+    pub name_start: u32,
+    /// Second UTF-16 bound of the assigned symbol's same-file declaration name.
+    pub name_end: u32,
+    /// First UTF-16 bound of the assignment site.
+    pub start: u32,
+    /// Second UTF-16 bound of the assignment site.
+    pub end: u32,
+    /// The checker's type of the assigned value at this site.
+    #[serde(default)]
+    pub r#type: Option<TypeTree>,
+}
+
 /// The complete checker report for exactly one source file.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -330,6 +379,14 @@ pub struct Report {
     /// One entry per resolved reference, in source order.
     #[serde(default)]
     pub references: Box<[Reference]>,
+    /// One entry per reported assignment narrowing, in source order.
+    ///
+    /// The cell is additive and optional: transcripts emitted before the
+    /// narrowing lane existed decode with an empty set, and the schema
+    /// version stays `1` because the closed grammar only ever grew
+    /// defaulted cells.
+    #[serde(default)]
+    pub narrowings: Box<[Narrowing]>,
 }
 
 /// One span-bound declaration fact borrowed from a validated report.
@@ -360,6 +417,17 @@ pub struct BoundReference<'report> {
     pub overload_index: Option<u32>,
 }
 
+/// One span-bound assignment narrowing borrowed from a validated report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundNarrowing<'report> {
+    /// The assigned symbol's declaration name span in UTF-8 source bytes.
+    pub name: Utf8Span,
+    /// The exact assignment site span in UTF-8 source bytes.
+    pub site: Utf8Span,
+    /// The checker's type of the assigned value at this site.
+    pub r#type: Option<&'report TypeTree>,
+}
+
 /// A validated report bound to exact UTF-8 source bytes.
 ///
 /// Every checker UTF-16 coordinate is projected onto the OXC byte grid at
@@ -370,6 +438,7 @@ pub struct CheckerIndex<'report> {
     report: &'report Report,
     declarations: Box<[BoundDeclaration<'report>]>,
     references: Box<[BoundReference<'report>]>,
+    narrowings: Box<[BoundNarrowing<'report>]>,
 }
 
 impl<'report> CheckerIndex<'report> {
@@ -398,42 +467,58 @@ impl<'report> CheckerIndex<'report> {
         let declarations = report
             .declarations
             .iter()
-            .map(|declaration| -> Result<BoundDeclaration<'report>, CheckerError> {
-                let name = bind_span(
-                    source,
-                    declaration.name_start,
-                    declaration.name_end,
-                )?;
-                Ok(BoundDeclaration {
-                    name,
-                    origin: declaration.origin,
-                    overload_index: declaration.overload_index,
-                    r#type: declaration.r#type.as_ref(),
-                })
-            })
+            .map(
+                |declaration| -> Result<BoundDeclaration<'report>, CheckerError> {
+                    let name = bind_span(source, declaration.name_start, declaration.name_end)?;
+                    Ok(BoundDeclaration {
+                        name,
+                        origin: declaration.origin,
+                        overload_index: declaration.overload_index,
+                        r#type: declaration.r#type.as_ref(),
+                    })
+                },
+            )
             .collect::<Result<Box<[_]>, CheckerError>>()?;
         let references = report
             .references
             .iter()
-            .map(|reference| -> Result<BoundReference<'report>, CheckerError> {
-                let span = bind_span(source, reference.start, reference.end)?;
-                let target = match (reference.target_start, reference.target_end) {
-                    (Some(start), Some(end)) => Some(bind_span(source, start, end)?),
-                    _ => None,
-                };
-                Ok(BoundReference {
-                    span,
-                    target,
-                    module: reference.module.as_deref(),
-                    name: reference.name.as_deref(),
-                    overload_index: reference.overload_index,
-                })
-            })
+            .map(
+                |reference| -> Result<BoundReference<'report>, CheckerError> {
+                    let span = bind_span(source, reference.start, reference.end)?;
+                    let target = match (reference.target_start, reference.target_end) {
+                        (Some(start), Some(end)) => Some(bind_span(source, start, end)?),
+                        _ => None,
+                    };
+                    Ok(BoundReference {
+                        span,
+                        target,
+                        module: reference.module.as_deref(),
+                        name: reference.name.as_deref(),
+                        overload_index: reference.overload_index,
+                    })
+                },
+            )
+            .collect::<Result<Box<[_]>, CheckerError>>()?;
+        let narrowings = report
+            .narrowings
+            .iter()
+            .map(
+                |narrowing| -> Result<BoundNarrowing<'report>, CheckerError> {
+                    let name = bind_span(source, narrowing.name_start, narrowing.name_end)?;
+                    let site = bind_span(source, narrowing.start, narrowing.end)?;
+                    Ok(BoundNarrowing {
+                        name,
+                        site,
+                        r#type: narrowing.r#type.as_ref(),
+                    })
+                },
+            )
             .collect::<Result<Box<[_]>, CheckerError>>()?;
         Ok(Self {
             report,
             declarations,
             references,
+            narrowings,
         })
     }
 
@@ -452,10 +537,16 @@ impl<'report> CheckerIndex<'report> {
     pub fn references(&self) -> impl Iterator<Item = &BoundReference<'report>> {
         self.references.iter()
     }
+
+    /// Streams every span-bound assignment narrowing in report order.
+    pub fn narrowings(&self) -> impl Iterator<Item = &BoundNarrowing<'report>> {
+        self.narrowings.iter()
+    }
 }
 
 fn bind_span(source: &str, start: u32, end: u32) -> Result<Utf8Span, CheckerError> {
-    let span = Utf16Span::try_from(start..end).map_err(|_| CheckerError::SpanBinding { start, end })?;
+    let span =
+        Utf16Span::try_from(start..end).map_err(|_| CheckerError::SpanBinding { start, end })?;
     span.to_utf8(source)
         .map_err(|cause| span_fault(cause, start, end))
 }
@@ -520,10 +611,11 @@ impl Checker {
     /// Returns [`CheckerError::Decode`] for malformed transcripts and
     /// [`CheckerError::Staleness`] for a foreign schema version.
     pub fn decode(&self, bytes: &[u8]) -> Result<Report, CheckerError> {
-        let report: Report = serde_json::from_slice(bytes).map_err(|error| CheckerError::Decode {
-            message: error.to_string(),
-            transcript: transcript_prefix(bytes),
-        })?;
+        let report: Report =
+            serde_json::from_slice(bytes).map_err(|error| CheckerError::Decode {
+                message: error.to_string(),
+                transcript: transcript_prefix(bytes),
+            })?;
         if report.schema_version != REQUIRED_SCHEMA_VERSION {
             return Err(CheckerError::Staleness {
                 found: report.schema_version,
@@ -542,18 +634,70 @@ impl Checker {
     /// # Errors
     ///
     /// Returns every [`CheckerError`] cause; tool and module unavailability
-    /// are distinct typed causes so callers may degrade honestly.
-    pub fn run(
-        &self,
-        profile: TypeScriptSource,
-        source: &[u8],
-    ) -> Result<Report, CheckerError> {
+    /// are distinct typed causes so callers can report the exact rejection.
+    pub fn run(&self, profile: TypeScriptSource, source: &[u8]) -> Result<Report, CheckerError> {
         let work = work_directory();
         std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
             phase: "prepare",
             source: cause,
         })?;
         let run = self.run_in(&work, profile, source);
+        match std::fs::remove_dir_all(&work) {
+            Ok(()) => run,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
+            Err(cause) => match run {
+                Ok(_) => Err(CheckerError::Work {
+                    phase: "cleanup",
+                    source: cause,
+                }),
+                Err(primary) => Err(primary),
+            },
+        }
+    }
+
+    /// Runs the checker against a read-only staged copy of a package tree.
+    ///
+    /// The source is installed as the package root's `index.ts` (or `index.tsx`)
+    /// in the staged tree. The caller's tree is only read, so module resolution
+    /// sees its relative imports and package-local `node_modules` without
+    /// granting the child write access to caller-owned files.
+    pub fn run_in_package(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+    ) -> Result<Report, CheckerError> {
+        let work = work_directory();
+        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+            phase: "prepare",
+            source: cause,
+        })?;
+        let started = Instant::now();
+        let run = (|| {
+            let staged = work.join("package");
+            let mut budget = PackageBudget::new(started, self.timeout);
+            stage_package(package_root, &staged, &mut budget)?;
+            let file = staged.join(package_entry_file(profile));
+            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                phase: "prepare",
+                source: cause,
+            })?;
+            match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
+                Ok(binary) => self.run_child(&work, Path::new(&binary), &file),
+                Err(std::env::VarError::NotPresent) => {
+                    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("checker")
+                        .join("main.cjs");
+                    let mut command = Command::new("node");
+                    command.arg(driver).arg(&file);
+                    self.run_child_prepared(&work, command, &file)
+                }
+                Err(cause) => Err(CheckerError::ToolingUnavailable {
+                    tool: "NUDOX_TYPESCRIPT_CHECKER_BIN",
+                    source: std::io::Error::other(cause),
+                }),
+            }
+        })();
         match std::fs::remove_dir_all(&work) {
             Ok(()) => run,
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
@@ -621,7 +765,7 @@ impl Checker {
                     .join("checker")
                     .join("main.cjs");
                 let mut command = Command::new("node");
-                command.arg(driver);
+                command.arg(driver).arg(&file);
                 self.run_child_prepared(work, command, &file)
             }
             Err(cause) => Err(CheckerError::ToolingUnavailable {
@@ -684,7 +828,8 @@ impl Checker {
         let limit = self.output_limit;
         let (limit_sender, limit_receiver) = std::sync::mpsc::channel();
         let out_sender = limit_sender.clone();
-        let out_thread = std::thread::spawn(move || read_bounded(stdout, limit, "stdout", out_sender));
+        let out_thread =
+            std::thread::spawn(move || read_bounded(stdout, limit, "stdout", out_sender));
         let err_thread =
             std::thread::spawn(move || read_bounded(stderr, limit, "stderr", limit_sender));
         let started = Instant::now();
@@ -716,9 +861,14 @@ impl Checker {
             source: std::io::Error::other("reader panicked"),
         })?;
         if let Some((stream, cause)) = out_bytes.error.or(err_bytes.error) {
-            return Err(CheckerError::Pipe { stream, source: cause });
+            return Err(CheckerError::Pipe {
+                stream,
+                source: cause,
+            });
         }
-        if let Some((stream, observed)) = limit_failure.or(out_bytes.exceeded).or(err_bytes.exceeded) {
+        if let Some((stream, observed)) =
+            limit_failure.or(out_bytes.exceeded).or(err_bytes.exceeded)
+        {
             return Err(CheckerError::OutputLimit {
                 phase: "collect",
                 stream,
@@ -729,13 +879,15 @@ impl Checker {
         let Some(status) = terminal else {
             return Err(CheckerError::Timeout {
                 phase: "collect",
-                milliseconds: u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
+                milliseconds: self.timeout.as_millis(),
             });
         };
         let stderr_tail = tail(&err_bytes.bytes);
         if !status.success() {
             if status.code() == Some(MODULE_MISSING_EXIT) {
-                return Err(CheckerError::ModuleUnavailable { stderr: stderr_tail });
+                return Err(CheckerError::ModuleUnavailable {
+                    stderr: stderr_tail,
+                });
             }
             return Err(CheckerError::Exit {
                 status: status.to_string(),
@@ -753,6 +905,131 @@ pub(crate) const fn source_file(profile: TypeScriptSource) -> &'static str {
         TypeScriptSource::TypeScript => "compiler-probe.ts",
         TypeScriptSource::Tsx => "compiler-probe.tsx",
     }
+}
+
+const fn package_entry_file(profile: TypeScriptSource) -> &'static str {
+    match profile {
+        TypeScriptSource::TypeScript => "index.ts",
+        TypeScriptSource::Tsx => "index.tsx",
+    }
+}
+
+struct PackageBudget {
+    started: Instant,
+    timeout: Duration,
+    files: usize,
+    bytes: usize,
+}
+
+impl PackageBudget {
+    fn new(started: Instant, timeout: Duration) -> Self {
+        Self {
+            started,
+            timeout,
+            files: 0,
+            bytes: 0,
+        }
+    }
+
+    fn check(&mut self, size: usize) -> Result<(), CheckerError> {
+        if self.started.elapsed() >= self.timeout {
+            return Err(CheckerError::PackageTimeout {
+                milliseconds: self.timeout.as_millis(),
+            });
+        }
+        let files = self.files.saturating_add(1);
+        if files > PACKAGE_FILE_LIMIT {
+            return Err(CheckerError::PackageFileLimit {
+                observed: files,
+                limit: PACKAGE_FILE_LIMIT,
+            });
+        }
+        let bytes = self.bytes.saturating_add(size);
+        if bytes > PACKAGE_BYTE_LIMIT {
+            return Err(CheckerError::PackageByteLimit {
+                observed: bytes,
+                limit: PACKAGE_BYTE_LIMIT,
+            });
+        }
+        self.files = files;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
+fn stage_package(
+    source: &Path,
+    destination: &Path,
+    budget: &mut PackageBudget,
+) -> Result<(), CheckerError> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+        phase: "stage metadata",
+        source: cause,
+    })?;
+    if !metadata.is_dir() {
+        return Err(CheckerError::Work {
+            phase: "stage root",
+            source: std::io::Error::other("package root is not a directory"),
+        });
+    }
+    std::fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+        phase: "stage directory",
+        source: cause,
+    })?;
+    for entry in std::fs::read_dir(source).map_err(|cause| CheckerError::Work {
+        phase: "stage directory",
+        source: cause,
+    })? {
+        if budget.started.elapsed() >= budget.timeout {
+            return Err(CheckerError::PackageTimeout {
+                milliseconds: budget.timeout.as_millis(),
+            });
+        }
+        let entry = entry.map_err(|cause| CheckerError::Work {
+            phase: "stage directory",
+            source: cause,
+        })?;
+        let child = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+            phase: "stage metadata",
+            source: cause,
+        })?;
+        if metadata.is_dir() {
+            stage_package(&child, &target, budget)?;
+        } else if metadata.is_file() {
+            let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
+            let mut bytes = Vec::new();
+            std::fs::File::open(&child)
+                .map_err(|cause| CheckerError::Work {
+                    phase: "stage read",
+                    source: cause,
+                })?
+                .take(remaining.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|cause| CheckerError::Work {
+                    phase: "stage read",
+                    source: cause,
+                })?;
+            if bytes.len() > remaining {
+                return Err(CheckerError::PackageByteLimit {
+                    observed: budget.bytes.saturating_add(bytes.len()),
+                    limit: PACKAGE_BYTE_LIMIT,
+                });
+            }
+            budget.check(bytes.len())?;
+            std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+                phase: "stage write",
+                source: cause,
+            })?;
+        } else {
+            return Err(CheckerError::Work {
+                phase: "stage entry",
+                source: std::io::Error::other("package entry is not a regular file or directory"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn work_directory() -> PathBuf {

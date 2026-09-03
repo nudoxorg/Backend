@@ -107,6 +107,14 @@ pub(crate) enum CompilerTerminalWire {
 )]
 pub(crate) enum LoweringUnsupportedWire {
     NoSupportedDeclaration,
+    ExtensionAtomUnbound {
+        row: u32,
+        provisional: u32,
+        atom_count: u32,
+    },
+    FactRejected {
+        fact: u32,
+    },
     RustFunction,
     RustConstantType,
     PythonAssignmentName,
