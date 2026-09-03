@@ -1,2 +1,2 @@
 // provenance: IrBuilder::reserve_tree/TreeBuilder::commit, Empty record with no members
-pub struct Empty
+struct Empty

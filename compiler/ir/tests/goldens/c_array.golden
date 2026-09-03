@@ -1,4 +1,4 @@
 // provenance: IrBuilder::reserve_tree/TreeBuilder::commit, ArrayHolder with measured four-element array
-pub struct ArrayHolder {
+struct ArrayHolder {
     int values[4];
 };

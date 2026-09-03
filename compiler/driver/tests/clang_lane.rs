@@ -2,8 +2,9 @@
 //! interleave, so these assertions locate rows by their decoded content.
 
 use compiler_driver::{
-    compile, compile_ir, AuthorityFailure, CompileControl, CompileFailure, CompileOutput,
-    CompileRequest, CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
+    CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    compile_ir,
 };
 use compiler_ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
@@ -556,6 +557,44 @@ fn build_ir_preserves_authority_members_and_parents() -> Result<(), TestError> {
         }
         Ok(())
     })
+}
+
+#[test]
+fn c_render_is_visibility_free_qualified_and_byte_stable() -> Result<(), TestError> {
+    let source = b"struct RenderNode { const struct RenderNode *next; int value; };";
+    let render = || {
+        let mut rendered = String::new();
+        inspect_ir(source, |ir| {
+            let item = ir
+                .items_named(b"RenderNode")
+                .next()
+                .ok_or(TestError::Check("RenderNode item"))?;
+            let signature = ir
+                .signature(item.id())
+                .ok_or(TestError::Check("RenderNode signature"))?;
+            rendered = signature.to_string();
+            Ok(())
+        })?;
+        Ok::<String, TestError>(rendered)
+    };
+    let first = render()?;
+    if first
+        .lines()
+        .any(|line| line.trim_start().starts_with("pub "))
+    {
+        return Err(TestError::Check("C rendering has pub prefix"));
+    }
+    if !first.starts_with("struct RenderNode {") {
+        return Err(TestError::Check("C struct opening"));
+    }
+    if first != "struct RenderNode {\n    const struct RenderNode *next;\n    int value;\n};" {
+        return Err(TestError::Check("C qualified member rendering"));
+    }
+    let second = render()?;
+    if first != second {
+        return Err(TestError::Check("C rendering changed across runs"));
+    }
+    Ok(())
 }
 
 #[test]

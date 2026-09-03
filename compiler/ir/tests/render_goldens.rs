@@ -151,7 +151,7 @@ fn item<'a>(
     TreeItemInput {
         name,
         kind,
-        visibility: Visibility::Public,
+        visibility: Visibility::Unknown,
         parent,
         semantic_type,
         members,

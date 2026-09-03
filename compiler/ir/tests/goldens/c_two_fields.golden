@@ -1,5 +1,5 @@
 // provenance: IrBuilder::reserve_tree/TreeBuilder::commit, Node with int and const self-pointer fields
-pub struct Node {
+struct Node {
     int value;
     const struct Node *next;
 };
