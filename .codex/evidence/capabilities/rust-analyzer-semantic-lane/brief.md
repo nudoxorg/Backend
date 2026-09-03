@@ -89,3 +89,44 @@ raw artifacts, compile-fail tests for illegal states.
 - Hostile mutation / truncation → R10, R1
 - Golden evidence → R8
 - Real public journey → R9, R5–R7
+
+## Wave-2 addendum (mandate 2026-09-02): full fidelity, rendering, lifecycle, corpus
+
+The chief mandate expands this capability to: (1) fullest HIR fidelity, (2)
+rendering perfection through the fixed `compiler/ir` render.rs with golden
+tests, (3) full PURL lifecycle publish→reopen→index, (4) a 20-crate real
+corpus proof.
+
+Adjudicated facts this wave (Terra, from the live tree):
+
+- The compact fragment already carries the complete recursive type lattice,
+  docs lane, occurrences, and Rust extension rows. The deficit is the shared
+  driver's `FactSet::build_ir` (compiler/driver/lower.rs): it maps only ≤3
+  primitive builtins, hardcodes `Visibility::Unknown`, and drops docs.
+  Deepening build_ir is additive driver-lane work (precedent: d0f2a4935
+  touched lower.rs for a Rust lane need); it is NOT a compiler/ir change and
+  the fragment wire stays untouched.
+- Visibility as a *fragment* fact does not exist on the wire (all four
+  extension cells are owned). Live-Ir visibility rides the driver-internal
+  FactSet; fragment-level visibility remains a parent wire decision and is
+  recorded as the remaining fork.
+- The frozen render goldens were aspirational: under the fixed render.rs
+  grammar they were unachievable (docs.rs `self` elision does not exist in
+  the renderer's parameter grammar; `/* visibility unknown */` was rendered
+  for every item). Goldens must be re-frozen to exact achievable output.
+  The renderer's Rust self grammar (`self: &Self`) is itself a candidate
+  parent fork if docs.rs-style elision is required.
+- `builtin_type`'s width mapping (only Bool/I32/str on the wire entity cell)
+  is wire-side and stays; the live-Ir lattice maps the full width set from
+  the type-fact records. `usize`/`isize`/`f128` have no BuiltinType in the
+  Ir lattice and fold to `?unsupported` while the fragment keeps exact
+  TypeWidth::Arch cells — recorded as a render-lattice gap for the parent.
+- `purl.rs` hardcodes `RustEdition::Rust2024` for located packages (R14 red).
+
+Corpus pinned from the local registry cache (hermetic, no network):
+workspace members compiler-ir-vocabulary@0.1.0, compiler-ir@0.1.0 via PURL;
+serde@1.0.229, serde_json@1.0.151, thiserror@2.0.20, anyhow@1.0.104;
+libc@0.2.189, hashbrown@0.16.1, smallvec@1.15.2, tinyvec@1.12.0,
+compact_str@0.10.0, either@1.18.0, memchr@2.8.3, nom@7.1.3, winnow@0.7.15,
+toml_edit@0.22.27, http@1.5.0, log@0.4.34, getopts@0.2.24 (edition 2015),
+typed-arena@2.0.2.

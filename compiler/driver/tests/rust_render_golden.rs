@@ -62,6 +62,8 @@ enum TestError {
     #[error(transparent)]
     Authority(#[from] RustAuthorityError),
     #[error(transparent)]
+    Load(#[from] compiler_languages_rust::LoadError),
+    #[error(transparent)]
     Toolchain(#[from] ToolchainResolutionError),
     #[error("compile failed: {0}")]
     Compile(&'static str),

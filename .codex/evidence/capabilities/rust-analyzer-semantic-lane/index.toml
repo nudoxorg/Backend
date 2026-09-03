@@ -1,27 +1,34 @@
 schema = 1
 capability_id = "rust-analyzer-semantic-lane"
-state = "phase0"
-baseline_commit = "815b957793926065cf95e1217338e3bf54c4f333"
-baseline_tree = "815b9577 + uncommitted rust-lane working set; frozen per-file baseline below"
+state = "executing"
+baseline_commit = "67cdc911981905431642bfe0cfb7ce5d33cb757c"
+baseline_tree = "67cdc9119 + one mechanical Terra repair: LoadError From arm in rust_render_golden.rs (test-only); frozen per-file baseline below"
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
 testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
-# Frozen per-file formatted LOC + sha256 at phase0 (independent of git status)
+# Frozen per-file formatted LOC + sha256 at wave-2 re-freeze (2026-09-02),
+# independent of git status. lower.rs/request.rs/compile.rs are shared driver
+# files: recorded because CARD-RENDER/CARD-FEATURES make additive edits there.
 [baseline.files]
-"compiler/languages/rust/authority.rs" = { loc = 1074, sha256 = "a27cb2e2e280b13d1c2e47086687feef8fdef138a9a57709f0d88aa0f7bbc8a4" }
-"compiler/languages/rust/lib.rs" = { loc = 91, sha256 = "a5a1e46d80b1721f3c23e033bfe32869617cf55e15b3100d05e9b6aead14c9b7" }
-"compiler/languages/rust/Cargo.toml" = { loc = 37, sha256 = "2be8892e0cca98a95b224bb87db8b370ab01477384cae194ceb5b1278532bf2a" }
-"compiler/driver/lower/rust.rs" = { loc = 2834, sha256 = "2bf489415fa11eaa61d4ba3ce7de95356d00010a547ae5dd3b6ffc75fe2d3dbe" }
-"compiler/driver/tests/rust_semantic_lane.rs" = { loc = 656, sha256 = "1ec5d6b78cb692f612a59e529ffedbc96c8411ae36b52e433f322315d402b3c4" }
+"compiler/languages/rust/authority.rs" = { loc = 1190, sha256 = "5d32c41901feef34a5207c3f66319c725df28f72a0ed1c3e79bb27e20ba75191" }
+"compiler/languages/rust/lib.rs" = { loc = 93, sha256 = "3c4450dd7dda1e12e36467789c79f4a162db4306f38469d4db265d550b4bd447" }
+"compiler/languages/rust/purl.rs" = { loc = 315, sha256 = "428dec1f71be67f55fb4908bb832cdcc82c8292f33a14fe0529c43e2bc94ca65" }
+"compiler/languages/rust/Cargo.toml" = { loc = 38, sha256 = "1f0f132a86de7603ead1c2015367e80b4ff7e0086fcc2c6d2b19cfb0cce54958" }
+"compiler/driver/lower/rust.rs" = { loc = 2888, sha256 = "9e175db50b2690b2cf9fe0d1b7669693b9ea8084a53b791c45be02e5346b36ad" }
+"compiler/driver/lower.rs" = { loc = 1786, sha256 = "a205626c4c224fd4b0b59e222f2092a652cd8872d5e77162f927d8663b816ff7" }
+"compiler/driver/tests/rust_semantic_lane.rs" = { loc = 739, sha256 = "d60d61e5cc7f34608b90c19747de6ba33e81528db18182eb8b9b454b4f018257" }
 "compiler/driver/tests/rust_hir.rs" = { loc = 156, sha256 = "99607b6da18138dee377c7654d4ac0733cf9185d66fe8d3ff860eaa5352a6b4b" }
+"compiler/driver/tests/rust_render_golden.rs" = { loc = 297, sha256 = "5a4acfc908764c06c8155ebaccbd359404d532920d0c5e5f4434cb3fc7f0f51e" }
 "compiler/driver/tests/authority_terminal.rs" = { loc = 131, sha256 = "814622ec5d4184f22767570bb9f39af42024c8ac7e1d42ae7445bc792eedcd13" }
+"compiler/driver/types/request.rs" = { loc = 81, sha256 = "136a3c983086879b6becdb75e9fd331ace8c882b255cf70731cda9eff8e2cec6" }
+"compiler/driver/types/compile.rs" = { loc = 749, sha256 = "0699d1b882a9bac94d1b243b35ded55e797c074a08ae236e8a69db5b93c37c05" }
 
 [artifacts]
-brief = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/brief.md", sha256 = "88cd4d27248877f19d6ad66b24220be879caa89bcbe1a0481ea0c9815b0bd2ec" }
-matrix = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/proof-matrix.md", sha256 = "63d43c51135f69656e998646b9758e9ee4169a1bfb06c600a20ee0a1eeaff13e" }
-research = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/research.md", sha256 = "b4272ab8dd26abb25ae807969730d143f2624392784c00922b116abf3f8baa7d" }
+brief = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/brief.md", sha256 = "" }
+matrix = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/proof-matrix.md", sha256 = "" }
+research = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/research.md", sha256 = "" }
 closure = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/closure.md", sha256 = "" }
 
 [[reviews]]
@@ -38,6 +45,9 @@ state = "planned"
 boundary = "closure"
 role = "reviewer"
 state = "planned"
+
+# Wave-2 worker dispatch ledger (role `luna` via opencode task tool; sidecar
+# codex parents unavailable in this runtime, per wave-1 adaptation note).
 
 # Environment adaptation, recorded honestly (matches sibling lanes): this
 # runtime dispatches the registered `luna` implementer and read-only
