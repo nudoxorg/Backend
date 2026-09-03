@@ -2775,14 +2775,12 @@ mod tests {
         let payload = view
             .type_fact_payload()
             .ok_or(TestError::Missing("type payload"))?;
-        let mut cursor = 8_usize;
+        let mut cursor = 4_usize;
         let rows = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
-        let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Tail)?;
-        let rows = rows.checked_add(computed).ok_or(TestError::Tail)?;
         let mut positions = Vec::new();
         for _ in 0..rows {
             cursor += 4 + 1 + 4 + 4;
-            for cell in 0..2 {
+            for _cell in 0..2 {
                 match payload.get(cursor).copied() {
                     Some(0) => cursor += 1,
                     Some(1) => {
@@ -2791,9 +2789,6 @@ mod tests {
                         cursor += 5 + length;
                     }
                     _ => return Err(TestError::Missing("text cell")),
-                }
-                if cell == 0 {
-                    break;
                 }
             }
             let nominal = payload
@@ -2804,7 +2799,7 @@ mod tests {
             if nominal == 1 {
                 cursor += 4;
             } else if nominal == 2 {
-                cursor += 16 + 4;
+                cursor += 32 + 4;
             }
             cursor += 8;
         }
