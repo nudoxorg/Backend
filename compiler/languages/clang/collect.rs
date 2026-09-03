@@ -171,9 +171,23 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         cursor: CXCursor,
         kind: DeclarationKind,
     ) -> Result<(), CollectError> {
+        if kind == DeclarationKind::Record
+            && TranslationUnit::template_cursor_kind(cursor) == clang_sys::CXCursor_ClassTemplate
+        {
+            return Ok(());
+        }
+        let canonical_identity = TranslationUnit::canonical_identity(cursor);
+        if canonical_identity.is_some_and(|identity| {
+            self.scratch.declarations[..self.declarations]
+                .iter()
+                .any(|fact| fact.identity == Some(identity))
+        }) {
+            return Ok(());
+        }
         let Some(span) = self.unit.cursor_span(cursor)? else {
             return Ok(());
         };
+        let identity = TranslationUnit::cursor_identity(cursor);
         let type_root = self.collect_type(TranslationUnit::cursor_type(cursor))?;
         let virtuality = if kind == DeclarationKind::Method {
             let (is_virtual, is_pure_virtual) = TranslationUnit::method_virtuality(cursor);
@@ -198,14 +212,22 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 }
             })?,
         };
+        let name = (!TranslationUnit::cursor_spelling_is_empty(cursor))
+            .then(|| self.unit.name_span(cursor))
+            .transpose()?
+            .flatten();
+        let name = (kind != DeclarationKind::Record
+            || name.is_none_or(|name| name.start > span.start))
+        .then_some(name)
+        .flatten();
         self.push_declaration(DeclarationFact {
             id,
             kind,
             definition: definition_state(TranslationUnit::is_definition(cursor)),
             virtuality,
-            identity: TranslationUnit::cursor_identity(cursor),
+            identity,
             span,
-            name: self.unit.name_span(cursor)?,
+            name,
             owner: TranslationUnit::semantic_parent(cursor),
             documentation: self.unit.documentation_span(cursor)?,
             storage: storage_class(TranslationUnit::storage_class(cursor)),

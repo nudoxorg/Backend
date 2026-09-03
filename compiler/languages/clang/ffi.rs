@@ -138,6 +138,31 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getCursorKind(cursor) }
     }
 
+    /// Returns the canonical declaration cursor's USR identity for declaration deduplication.
+    pub(crate) fn canonical_identity(cursor: CXCursor) -> Option<SymbolIdentity> {
+        // SAFETY: cursor was supplied by this live translation unit.
+        let canonical = unsafe { clang_sys::clang_getCanonicalCursor(cursor) };
+        Self::cursor_identity(canonical)
+    }
+
+    /// Returns whether libclang supplied an actual spelling for this cursor.
+    pub(crate) fn cursor_spelling_is_empty(cursor: CXCursor) -> bool {
+        // SAFETY: cursor was supplied by this live translation unit; the CXString is disposed
+        // exactly once below.
+        let spelling = unsafe { clang_sys::clang_getCursorSpelling(cursor) };
+        let pointer = unsafe { clang_sys::clang_getCString(spelling) };
+        let empty = pointer.is_null() || unsafe { CStr::from_ptr(pointer) }.to_bytes().is_empty();
+        // SAFETY: spelling is owned by this function and has not been disposed before this point.
+        unsafe { clang_sys::clang_disposeString(spelling) };
+        empty
+    }
+
+    /// Returns the template declaration kind associated with a cursor, if libclang exposes one.
+    pub(crate) fn template_cursor_kind(cursor: CXCursor) -> clang_sys::CXCursorKind {
+        // SAFETY: cursor was supplied by this live translation unit.
+        unsafe { clang_sys::clang_getTemplateCursorKind(cursor) }
+    }
+
     pub(crate) fn is_null_cursor(cursor: CXCursor) -> bool {
         // SAFETY: cursor is a value returned by this live libclang invocation.
         unsafe { clang_sys::clang_Cursor_isNull(cursor) != 0 }
@@ -599,6 +624,9 @@ impl RequiredApi {
                     && clang_sys::clang_isCursorDefinition::is_loaded()
                     && clang_sys::clang_isDeclaration::is_loaded()
                     && clang_sys::clang_getCursorUSR::is_loaded()
+                    && clang_sys::clang_getCanonicalCursor::is_loaded()
+                    && clang_sys::clang_getCursorSpelling::is_loaded()
+                    && clang_sys::clang_getTemplateCursorKind::is_loaded()
                     && clang_sys::clang_Cursor_getSpellingNameRange::is_loaded()
                     && clang_sys::clang_getCursorSemanticParent::is_loaded()
                     && clang_sys::clang_getCursorReferenced::is_loaded()

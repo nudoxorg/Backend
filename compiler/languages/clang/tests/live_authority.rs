@@ -201,6 +201,149 @@ void Derived::run() {}
     })
 }
 
+#[test]
+fn c_authority_anonymous_record_keeps_only_the_unnamed_definition() -> Result<(), TestError> {
+    let source = br"struct { int x; } point;";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::C {
+                file_name: c"anonymous.c",
+                source,
+                standard: CStandard::C23,
+            },
+            scratch,
+        )?;
+        let records = facts
+            .declarations
+            .iter()
+            .filter(|fact| fact.kind == DeclarationKind::Record)
+            .count();
+        assert_eq!(records, 1);
+        let record = facts
+            .declarations
+            .iter()
+            .find(|fact| fact.kind == DeclarationKind::Record)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Record,
+            }))?;
+        assert_eq!(record.name, None);
+        assert_eq!(record.definition, DefinitionState::Definition);
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"x")
+                && fact.owner == record.identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Variable
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"point")
+        }));
+        assert!(facts.declarations.iter().all(|fact| {
+            fact.name
+                .is_none_or(|span| source_at(source, span) != b"struct")
+        }));
+        Ok(())
+    })
+}
+
+#[test]
+fn c_authority_deduplicates_canonical_anonymous_record_cursors() -> Result<(), TestError> {
+    let source = br"struct { int x; } point;";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::C {
+                file_name: c"duplicate-anonymous.c",
+                source,
+                standard: CStandard::C23,
+            },
+            scratch,
+        )?;
+        assert_eq!(
+            facts
+                .declarations
+                .iter()
+                .filter(|fact| fact.kind == DeclarationKind::Record)
+                .count(),
+            1
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn cxx_authority_projects_template_pattern_into_box_authority() -> Result<(), TestError> {
+    let source = br"template<typename T> struct Box { T value; };
+struct User { struct Box<int> box; };";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"template.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let template = facts
+            .declarations
+            .iter()
+            .find(|fact| {
+                fact.kind == DeclarationKind::Template
+                    && fact
+                        .name
+                        .is_some_and(|span| source_at(source, span) == b"Box")
+            })
+            .copied();
+        assert!(template.is_some());
+        let template = template.ok_or(TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Template,
+        }))?;
+        assert_eq!(template.definition, DefinitionState::Definition);
+        let box_identity = template.identity;
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::TemplateParameter
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"T")
+                && fact.owner == box_identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"value")
+                && fact.owner == box_identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Record
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"User")
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"box")
+        }));
+        assert!(!facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Record
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"Box")
+        }));
+        assert!(!facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"struct")
+        }));
+        Ok(())
+    })
+}
+
 fn method_identity(
     facts: &compiler_languages_clang::ClangFacts<'_>,
     source: &[u8],
