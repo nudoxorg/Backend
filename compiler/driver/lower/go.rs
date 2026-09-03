@@ -27,12 +27,12 @@
 //! Positions the lane cannot host fold to typed `Unknown` rows that keep
 //! their reason cell: universe and foreign nominals (`error`, `comparable`,
 //! other packages), unconstrained inline interfaces, and depth-limit
-//! truncation. Image rows carry no parameter-name plane, so carrier facts
-//! use Go's blank identifier; receiver spelling and pointer-receiver bits
-//! have no `GoFacts` cell and stay image-only facts. The same holds for the
-//! v4 authority planes the frozen `GoFacts` row cannot host: exact constant
-//! values with their const-group identity and iota flag, and package-level
-//! doc comments (the lane owns no package entity) stay image-only facts.
+//! truncation. Parameter and result carriers borrow exact names from the
+//! v5 signature-parameter plane, projecting a blank image name as `_`;
+//! receiver spelling and pointer-receiver bits have no `GoFacts` cell and
+//! stay image-only. Foreign method-set entries, module metadata, exact
+//! constant values, and receiver spellings remain image-only; local
+//! method-set entries and package rows are projected below.
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
@@ -261,7 +261,7 @@ pub(crate) fn collect<'source>(
         let declaration = go.image.declaration(index).map_err(GoCollectError::Image)?;
         match declaration.kind {
             DeclarationKind::Type => go.type_family(index, &declaration)?,
-            DeclarationKind::Function => go.function(&declaration)?,
+            DeclarationKind::Function => go.function(index, &declaration)?,
             DeclarationKind::Constant | DeclarationKind::Static => go.value(&declaration)?,
             DeclarationKind::Alias => {}
         }
@@ -385,7 +385,7 @@ struct Projector<'x, 'source> {
     /// Lane ordinal per image member row index.
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
-    names: Vec<(&'source [u8], u32)>,
+    names: Vec<(&'source [u8], &'source [u8], u32)>,
     /// Memoized anonymous-context coordinates per image type row.
     anonymous: Vec<Option<u32>>,
 }
@@ -408,16 +408,16 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Records one pushed declaration name for later resolution.
-    fn record_name(&mut self, name: &'source [u8], ordinal: u32) {
-        self.names.push((name, ordinal));
+    fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
+        self.names.push((package, name, ordinal));
     }
 
     /// Resolves one declared name to its pushed fact ordinal.
-    fn lookup(&self, name: &[u8]) -> Option<u32> {
+    fn lookup(&self, package: &[u8], name: &[u8]) -> Option<u32> {
         self.names
             .iter()
-            .find(|(known, _)| *known == name)
-            .map(|(_, ordinal)| *ordinal)
+            .find(|(known_package, known, _)| *known_package == package && *known == name)
+            .map(|(_, _, ordinal)| *ordinal)
     }
 
     /// The already-pushed fact that owns anonymous rows interned for the
@@ -445,7 +445,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         .typed(nominal_record(own));
         let ordinal = push(self.facts, fact)?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.name, ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -460,7 +460,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             constructor(EntityKind::Alias),
         ));
         let ordinal = push(self.facts, fact)?;
-        self.record_name(declaration.name, ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -493,6 +493,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
         }
         let mut methods = Vec::new();
+        let mut method_names = Vec::new();
         for method_index in 0..self.image.method_count() {
             let method = self
                 .image
@@ -509,7 +510,26 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             let ordinal = self.executable(method.name, method.type_root, receiver_start)?;
             methods.push(ordinal);
+            method_names.push(method.name);
             self.method_ordinals[method_index] = Some(ordinal);
+        }
+        for method_set_index in 0..self.image.method_set_count() {
+            let method_set = self
+                .image
+                .method_set(method_set_index)
+                .map_err(GoCollectError::Image)?;
+            if usize::try_from(method_set.owner).is_ok_and(|owner| owner != index)
+                || method_set.package != declaration.package
+                || method_names.contains(&method_set.name)
+            {
+                continue;
+            }
+            methods.push(self.executable(
+                method_set.name,
+                method_set.type_root,
+                parameter_start,
+            )?);
+            method_names.push(method_set.name);
         }
         let fields_list = self.entity_list(&fields)?;
         let method_set = self.entity_list(&methods)?;
@@ -537,6 +557,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// named row; inline interface constraints have no fact to name and
     /// stay empty on the pooled row.
     fn type_parameters(&mut self, index: usize) -> Result<(), GoCollectError> {
+        let own_package = self
+            .image
+            .declaration(index)
+            .map_err(GoCollectError::Image)?
+            .package;
         for parameter_index in 0..self.image.type_parameter_count() {
             let row = self
                 .image
@@ -551,9 +576,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .filter(|row| {
                     matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
                         && row.children.1 == 0
-                        && row.package == self.package
+                        && row.package == own_package
                 })
-                .and_then(|row| self.lookup(row.name));
+                .and_then(|row| self.lookup(row.package, row.name));
             self.facts
                 .push_type_parameter(row.name, constraint, None)
                 .map_err(lane_terminal)?;
@@ -612,29 +637,16 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Pass two: one package-level function.
-    fn function(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
-        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
-        self.type_parameters_fn(declaration)?;
-        let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
-        self.record_name(declaration.name, ordinal);
-        Ok(())
-    }
-
-    /// Pushes the pooled type-parameter rows of one function declaration.
-    fn type_parameters_fn(
+    fn function(
         &mut self,
+        index: usize,
         declaration: &Declaration<'source>,
     ) -> Result<(), GoCollectError> {
-        for index in 0..self.image.declaration_count() {
-            let declared = self
-                .image
-                .declaration(index)
-                .map_err(GoCollectError::Image)?;
-            if declared.name != declaration.name || declared.kind != declaration.kind {
-                continue;
-            }
-            return self.type_parameters(index);
-        }
+        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+        self.type_parameters(index)?;
+        let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
+        self.declaration_ordinals[index] = Some(ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -644,7 +656,17 @@ impl<'x, 'source> Projector<'x, 'source> {
         let root = self.root(declaration.type_root, TypeReason::Unannotated)?;
         let fact = root.attach(SemanticFact::new(kind, declaration.name, constructor(kind)));
         let ordinal = push(self.facts, fact)?;
-        self.record_name(declaration.name, ordinal);
+        let index = self
+            .image
+            .declarations()
+            .position(|candidate| {
+                candidate.map_or(false, |candidate| {
+                    candidate.name == declaration.name && candidate.package == declaration.package
+                })
+            })
+            .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: 0 }))?;
+        self.declaration_ordinals[index] = Some(ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -747,7 +769,22 @@ impl<'x, 'source> Projector<'x, 'source> {
                 })
             })?;
             let target = if row.target_package.is_empty() {
-                let ordinal = self.lookup(row.target).ok_or_else(|| {
+                let package = if row.owner_is_declaration {
+                    self.image
+                        .declaration(index_of(row.owner_row))
+                        .map_err(GoCollectError::Image)?
+                        .package
+                } else {
+                    let method = self
+                        .image
+                        .method(index_of(row.owner_row))
+                        .map_err(GoCollectError::Image)?;
+                    self.image
+                        .declaration(index_of(method.owner))
+                        .map_err(GoCollectError::Image)?
+                        .package
+                };
+                let ordinal = self.lookup(package, row.target).ok_or_else(|| {
                     terminal(ProjectionFault::OrphanTarget {
                         function: row.target,
                     })
@@ -815,7 +852,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             // name.
             let local = row.target_package.is_empty() || row.target_package == self.package;
             let target = if local {
-                let ordinal = self.lookup(row.target).ok_or_else(|| {
+                let package = self
+                    .image
+                    .declaration(index_of(row.subject))
+                    .map_err(GoCollectError::Image)?
+                    .package;
+                let ordinal = self.lookup(package, row.target).ok_or_else(|| {
                     terminal(ProjectionFault::SatisfactionUnresolved { target: row.target })
                 })?;
                 OccurrenceTarget::Local(EntityId::new(ordinal))
@@ -881,8 +923,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let param_count = usize::try_from(row.param_count)
                     .unwrap_or(0)
                     .min(children.len());
-                for child in children.iter().take(param_count) {
-                    let ordinal = self.carrier(*child)?;
+                for (ordinal_in_signature, child) in children.iter().take(param_count).enumerate() {
+                    let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
+                    let ordinal = self.carrier(*child, name)?;
                     parameters.push(ordinal);
                     carriers.push(TypeChild {
                         target: ordinal,
@@ -890,8 +933,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                         flags: 0,
                     });
                 }
-                for child in children.iter().skip(param_count) {
-                    let ordinal = self.carrier(*child)?;
+                for (ordinal_in_signature, child) in children.iter().skip(param_count).enumerate() {
+                    let ordinal_in_signature = param_count + ordinal_in_signature;
+                    let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
+                    let ordinal = self.carrier(*child, name)?;
                     results.push(ordinal);
                     carriers.push(TypeChild {
                         target: ordinal,
@@ -950,13 +995,34 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Pushes one parameter or result carrier fact whose root record is the
     /// projected parameter type.
-    fn carrier(&mut self, row_index: u32) -> Result<u32, GoCollectError> {
+    fn signature_parameter_name(
+        &self,
+        owner: u32,
+        ordinal: usize,
+    ) -> Result<&'source [u8], GoCollectError> {
+        let parameter = self
+            .image
+            .signature_parameters()
+            .enumerate()
+            .find_map(|(_, row)| match row {
+                Ok(row) if row.owner == owner && row.ordinal == ordinal as u32 => {
+                    Some(Ok(row.name))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(GoCollectError::Image(error))),
+            })
+            .transpose()?
+            .unwrap_or(UNNAMED);
+        Ok(if parameter.is_empty() {
+            UNNAMED
+        } else {
+            parameter
+        })
+    }
+
+    fn carrier(&mut self, row_index: u32, name: &'source [u8]) -> Result<u32, GoCollectError> {
         let root = self.root(Some(row_index), TypeReason::OracleGap)?;
-        let fact = root.attach(SemanticFact::new(
-            EntityKind::Parameter,
-            UNNAMED,
-            LEAF_PRODUCT,
-        ));
+        let fact = root.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
         push(self.facts, fact)
     }
 
@@ -1208,9 +1274,9 @@ impl<'x, 'source> Projector<'x, 'source> {
     ) -> Result<RootType<'source>, GoCollectError> {
         let local = row.package == self.package
             && !row.package.is_empty()
-            && self.lookup(row.name).is_some();
+            && self.lookup(row.package, row.name).is_some();
         if local {
-            let base = self.lookup(row.name).unwrap_or_default();
+            let base = self.lookup(row.package, row.name).unwrap_or_default();
             if row.children.1 == 0 {
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
                 record.nominal = Some(NominalRef::Local(EntityId::new(base)));
@@ -1274,9 +1340,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         let local_named = matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
             && row.package == self.package
             && !row.package.is_empty()
-            && self.lookup(row.name).is_some();
+            && self.lookup(row.package, row.name).is_some();
         if local_named && row.children.1 == 0 {
-            return Ok(self.lookup(row.name).unwrap_or_default());
+            return Ok(self.lookup(row.package, row.name).unwrap_or_default());
         }
         self.project_anonymous(index_of(row_index), depth)
     }
@@ -1541,7 +1607,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             self.facts
                 .anonymous_type_child(child.target, child.name, child.flags)?;
         }
-        self.facts.intern_anonymous_type_row(anchor, row.record)
+        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
+            self.facts.intern_anonymous_type_row(anchor, row.record)
+        } else {
+            self.facts
+                .intern_reserved_anchor_type_row(anchor, row.record)
+        }
     }
 
     /// Interns one synthetic builtin leaf row (`map`, channel directions).
@@ -1550,7 +1621,11 @@ impl<'x, 'source> Projector<'x, 'source> {
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_BUILTIN;
         record.text = Some(spelling);
-        self.facts.intern_anonymous_type_row(anchor, record)
+        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
+            self.facts.intern_anonymous_type_row(anchor, record)
+        } else {
+            self.facts.intern_reserved_anchor_type_row(anchor, record)
+        }
     }
 
     /// The exact lattice cells of one basic row: exact integer and float
@@ -1729,6 +1804,7 @@ fn push_doc_lines<'source>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lower::MAX_EMISSION_FACTS;
     use compiler_ir::{FragmentView, LanguageExtensionWireFact, SourceIdentity};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
@@ -2375,6 +2451,9 @@ mod tests {
                 children.extend_from_slice(&target.to_le_bytes());
                 children.extend_from_slice(&0_u32.to_le_bytes());
             }
+            // The fixture has no resolved module metadata.  Keep the module
+            // plane absent, as required by its zero header count; packages
+            // therefore begin immediately after satisfactions.
             let module = Vec::new();
             let mut packages = Vec::new();
             let import_path = self.atom_cell(PACKAGE);
@@ -2426,8 +2505,9 @@ mod tests {
                     method_sets.extend_from_slice(&name);
                     method_sets.extend_from_slice(&name_len);
                     method_sets.extend_from_slice(&member.type_root.unwrap_or(NONE).to_le_bytes());
-                    method_sets.extend_from_slice(&0_u32.to_le_bytes());
-                    method_sets.extend_from_slice(&0_u32.to_le_bytes());
+                    let package = self.atom_cell(PACKAGE);
+                    method_sets.extend_from_slice(&package.offset.to_le_bytes());
+                    method_sets.extend_from_slice(&package.length.to_le_bytes());
                 }
             }
 
@@ -2480,6 +2560,7 @@ mod tests {
             image[104..108].copy_from_slice(&counts[5].to_le_bytes());
             image[108..112].copy_from_slice(&counts[7].to_le_bytes());
             image[112..116].copy_from_slice(&counts[8].to_le_bytes());
+            image[116..120].copy_from_slice(&0_u32.to_le_bytes());
             image[120..124].copy_from_slice(&1_u32.to_le_bytes());
             image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
             image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
@@ -2694,8 +2775,10 @@ mod tests {
         let payload = view
             .type_fact_payload()
             .ok_or(TestError::Missing("type payload"))?;
-        let mut cursor = 4_usize;
+        let mut cursor = 8_usize;
         let rows = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
+        let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Tail)?;
+        let rows = rows.checked_add(computed).ok_or(TestError::Tail)?;
         let mut positions = Vec::new();
         for _ in 0..rows {
             cursor += 4 + 1 + 4 + 4;
@@ -2725,6 +2808,7 @@ mod tests {
             }
             cursor += 8;
         }
+        cursor += 4;
         let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Tail)?;
         let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Tail)?;
         for _ in 0..start {
@@ -2735,7 +2819,12 @@ mod tests {
             if payload.get(cursor).copied() != Some(0) {
                 return Err(TestError::Missing("local child"));
             }
-            positions.push(word(payload, cursor + 1)?);
+            let target = word(payload, cursor + 1)?;
+            positions.push(
+                target
+                    .checked_sub(MAX_EMISSION_FACTS as u32)
+                    .unwrap_or(target),
+            );
             cursor += 1 + 4 + 1 + 1;
         }
         Ok(positions)
@@ -3241,7 +3330,7 @@ mod tests {
             return Err(TestError::Missing("constraint atom list"));
         }
         let listed = pooled_list(&view, 0, 1)?;
-        if listed != vec![0] {
+        if listed != vec![1] {
             return Err(TestError::Missing("constraint atom coordinate"));
         }
         Ok(())
@@ -3258,8 +3347,8 @@ mod tests {
                 kind: KIND_TYPE,
                 name,
                 package: Cell {
-                    offset: 0,
-                    length: 0,
+                    offset: fix.atom_cell(PACKAGE).offset,
+                    length: fix.atom_cell(PACKAGE).length,
                 },
                 type_root: None,
                 value: Cell {
