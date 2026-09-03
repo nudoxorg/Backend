@@ -9,3 +9,6 @@ const (
 )
 var CJK名前 = Outer{}
 type Reader interface{ Read() }
+
+func helper() {}
+func (Inner) CallsHelper() { helper() }

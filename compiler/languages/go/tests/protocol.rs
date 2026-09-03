@@ -532,6 +532,26 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         "the declaration plane must hold exactly the transcript's declarations"
     );
 
+    // A method call is owned by its receiver declaration, while its resolved
+    // span remains attached to the method row for containment.
+    let inner_index = (0..image.declaration_count())
+        .find(|&index| image.declaration(index).unwrap().name == b"Inner")
+        .expect("Inner declaration") as u32;
+    let method_reference = image
+        .references()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?
+        .into_iter()
+        .find(|row| row.target == b"helper" && row.receiver == b"Inner")
+        .expect("Inner method reference to helper");
+    assert_eq!(method_reference.owner, inner_index);
+    assert!(!method_reference.owner_is_declaration);
+    let method = image
+        .method(method_reference.owner_row as usize)
+        .map_err(image_fault)?;
+    assert_eq!(method.owner, inner_index);
+    assert_eq!(method.name, b"CallsHelper");
+
     // Signature-parameter plane: one row per func parameter/result with the
     // exact source names (empty for unnamed).
     let (json_names, json_method_sets) = json_signature_facts(&output);

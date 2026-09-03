@@ -1085,19 +1085,18 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				return nil, fmt.Errorf("go/types emitted a missing reference")
 			}
 			owner, ok := local[reference.Owner]
-			if !ok {
-				return nil, fmt.Errorf(
-					"go/types emitted a reference from undeclared owner %q",
-					reference.Owner)
-			}
 			if reference.OwnerRecv != "" {
-				receiver, ok := local[reference.OwnerRecv]
-				if !ok {
+				receiver, receiverOK := local[reference.OwnerRecv]
+				if !receiverOK {
 					return nil, fmt.Errorf(
 						"go/types emitted a reference from undeclared receiver %q",
 						reference.OwnerRecv)
 				}
 				owner = receiver
+			} else if !ok {
+				return nil, fmt.Errorf(
+					"go/types emitted a reference from undeclared owner %q",
+					reference.Owner)
 			}
 			target, err := p.atom(reference.Target)
 			if err != nil {
