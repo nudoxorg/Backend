@@ -8,9 +8,10 @@
 //! product target is a strictly backward fact ordinal.
 //!
 //! Declared types are projected row-by-row from the image's own type plane.
-//! Positions the lane cannot carry — foreign nominals, composites without a
-//! carrier row — fold to typed `Unknown` rows that retain the image spelling
-//! instead of fabricating a shape. Parameter and result carrier facts are named
+//! Foreign nominal leaves inside compounds become anonymous `Unknown` rows
+//! retaining their spelling; bare foreign leaves keep their fact-level fold.
+//! Composite rows retain every honest child shape rather than fabricating an
+//! ownership edge. Parameter and result carrier facts are named
 //! by their javac-provided type spelling because image version 1 carries no
 //! parameter-name plane. Modifiers stay out of the lane: visibility is not a
 //! lane cell and is never fabricated. Never recovers Java facts by scanning
@@ -579,9 +580,9 @@ fn primitive_cells(spelling: &[u8]) -> Result<(u32, u32), ProjectionFault<'_>> {
 }
 
 /// Projects one declared row: a pure in-image spelling becomes the nominal
-/// terminal, a nested spelling becomes a qualified path over its enclosing
-/// row, and a generic application commits only when the base and every
-/// argument resolve to in-image nominal rows.
+/// terminal; a compound uses its own spelling as the application base and
+/// retains every argument row. Enclosing rows retain only their final enclosing
+/// child, while a foreign compound base becomes an honest anonymous unknown.
 fn declared<'image>(
     facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
@@ -619,17 +620,24 @@ fn declared<'image>(
     if argument_count + 1 > MAX_TYPE_CHILDREN {
         return Ok(unknown_declared(spelling));
     }
-    let base = children
-        .next()
-        .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
-    let base = child_target(facts, image, names, base, anchor, depth - 1)?;
+    let base = match names.lookup(spelling) {
+        Some(ordinal) => ordinal,
+        None => intern_row(
+            facts,
+            anchor,
+            ProjectedType::leaf(
+                unknown_record(TypeReason::UnresolvedExternal, Some(spelling)),
+                Some(spelling),
+            ),
+        )?,
+    };
     let mut projected = ProjectedType::leaf(
         SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
         Some(spelling),
     )
     .child(base)
     .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
-    for argument in children.take(argument_count - 1) {
+    for argument in children.take(argument_count) {
         let target = child_target(facts, image, names, argument, anchor, depth - 1)?;
         projected = projected
             .child(target)
@@ -640,7 +648,7 @@ fn declared<'image>(
 
 /// Projects one array row: the arity walk collapses consecutive array rows
 /// into one row whose text carries the derived arity spelling and whose single
-/// child targets the ultimate component's nominal row.
+/// child targets the ultimate component row, including an honest foreign leaf.
 fn array<'image>(
     facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
@@ -699,9 +707,10 @@ fn array<'image>(
             intern_row(
                 facts,
                 anchor,
-                ProjectedType::leaf(qualified_record(spelling), Some(spelling))
-                    .child(anchor)
-                    .ok_or(ProjectionFault::Malformed { kind: row.kind })?,
+                ProjectedType::leaf(
+                    unknown_record(TypeReason::UnresolvedExternal, Some(spelling)),
+                    Some(spelling),
+                ),
             )?
         } else {
             intern_row(facts, anchor, component)?
@@ -725,8 +734,8 @@ fn array<'image>(
         })
 }
 
-/// Projects one wildcard row: an in-image bound commits the variance cell with
-/// its bound row; every other wildcard folds to a typed unknown.
+/// Projects one wildcard row: a bound keeps its variance cell and projected
+/// child, while an unbounded wildcard alone folds to an oracle-gap unknown.
 fn wildcard<'image>(
     facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
@@ -759,9 +768,8 @@ fn wildcard<'image>(
     Ok(ProjectedType::leaf(unknown_projection(spelling), spelling))
 }
 
-/// Projects one union or intersection row: every member must resolve to an
-/// in-image nominal row, otherwise the whole row folds to a typed unknown that
-/// retains the first member's spelling.
+/// Projects one union or intersection row with structurally lowered member
+/// children; only an empty or over-wide member list folds to an unknown.
 fn members<'image>(
     facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
@@ -817,8 +825,8 @@ fn pure_nominal<'image>(
 }
 
 /// Returns the backward coordinate usable by a compound parent. Bare local
-/// nominals retain the existing fast path; every other expressible shape is
-/// interned immediately, with the enclosing type fact as its owner.
+/// nominals retain the fast path; foreign bare leaves become anonymous unknowns
+/// and every other shape is interned with the enclosing fact as owner.
 fn child_target<'image>(
     facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
@@ -833,18 +841,18 @@ fn child_target<'image>(
     let row = image.type_fact(reference).map_err(ProjectionFault::Image)?;
     let projected = if row.kind == TypeKind::Declared && row.children.len() == 0 {
         let spelling = required_spelling(&row)?;
-        ProjectedType::leaf(qualified_record(spelling), Some(spelling))
-            .child(anchor)
-            .ok_or(ProjectionFault::Malformed { kind: row.kind })?
+        ProjectedType::leaf(
+            unknown_record(TypeReason::UnresolvedExternal, Some(spelling)),
+            Some(spelling),
+        )
     } else {
         project(facts, image, names, reference, depth, anchor)?
     };
     intern_row(facts, anchor, projected)
 }
 
-/// Interns one anonymous record only after all of its child coordinates have
-/// been produced. The anchor is the enclosing already-pushed type fact for all
-/// declaration/member carriers in this lane.
+/// Interns one anonymous record after all child coordinates are produced. The
+/// anchor is ownership only; it is never emitted as a semantic child.
 fn intern_row<'image>(
     facts: &mut FactSet<'image>,
     anchor: u32,
@@ -2210,6 +2218,249 @@ mod tests {
             }
         }
         Err(TestError::Missing("entity list"))
+    }
+
+    #[test]
+    fn foreign_nested_application_keeps_base_and_argument_rows() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.Cafe");
+        let outer = fix.atom(b"java.util.List");
+        let inner = fix.atom(b"java.util.List");
+        let string = fix.atom(b"java.lang.String");
+        let string_row = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(string),
+            children: Vec::new(),
+        });
+        let inner_row = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(inner),
+            children: vec![string_row],
+        });
+        let outer_row = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(outer),
+            children: vec![inner_row],
+        });
+        let field = fix.atom(b"grid");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: field,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(outer_row),
+            symbol: None,
+        });
+        let view =
+            FragmentView::validate(&lower(&fix, b"class Cafe { List<List<String>> grid; }")?)?;
+        // Anonymous rows precede the field: List, List, String, inner Apply;
+        // the field then owns the outer Apply.
+        let list = row(&view, 1)?;
+        let string = row(&view, 3)?;
+        let inner = row(&view, 4)?;
+        let field = row(&view, 5)?;
+        if list.record.tag != SemanticTypeTag::Unknown
+            || list.record.payload0 != reason_cell(TypeReason::UnresolvedExternal)
+            || list.record.text != Some(b"java.util.List".as_slice())
+            || string.record.tag != SemanticTypeTag::Unknown
+            || string.record.payload0 != reason_cell(TypeReason::UnresolvedExternal)
+            || string.record.text != Some(b"java.lang.String".as_slice())
+            || inner.record.tag != SemanticTypeTag::Apply
+            || inner.record.children.length != 2
+            || field.record.tag != SemanticTypeTag::Apply
+            || field.record.children.length != 2
+        {
+            return Err(TestError::Missing("honest nested foreign application"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arrays_retain_foreign_and_primitive_component_rows() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.Cafe");
+        let list_atom = fix.atom(b"java.util.List");
+        let string_atom = fix.atom(b"java.lang.String");
+        let string = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(string_atom),
+            children: Vec::new(),
+        });
+        let array = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 4,
+            flags: 0,
+            atom: None,
+            children: vec![string],
+        });
+        let list = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(list_atom),
+            children: vec![array],
+        });
+        let rows = fix.atom(b"rows");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: rows,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(list),
+            symbol: None,
+        });
+        let int_atom = fix.atom(b"int");
+        let int = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 1,
+            flags: 0,
+            atom: Some(int_atom),
+            children: Vec::new(),
+        });
+        let int_array = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 4,
+            flags: 0,
+            atom: None,
+            children: vec![int_array + 1],
+        });
+        let int_array_2 = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 4,
+            flags: 0,
+            atom: None,
+            children: vec![int],
+        });
+        let numbers = fix.atom(b"numbers");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: numbers,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(int_array_2),
+            symbol: None,
+        });
+        let view = FragmentView::validate(&lower(
+            &fix,
+            b"class Cafe { List<String[]> rows; int[][] numbers; }",
+        )?)?;
+        let rows = row(&view, 4)?;
+        if rows.record.tag != SemanticTypeTag::Apply || rows.record.children.length != 2 {
+            return Err(TestError::Missing("array generic argument"));
+        }
+        let array = row(&view, 3)?;
+        if array.record.tag != SemanticTypeTag::Array
+            || array.record.text != Some(b"[]".as_slice())
+            || array.record.children.length != 1
+        {
+            return Err(TestError::Missing("foreign array component"));
+        }
+        let numbers = row(&view, 6)?;
+        if numbers.record.tag != SemanticTypeTag::Array
+            || numbers.record.text != Some(b"[][]".as_slice())
+            || numbers.record.children.length != 1
+        {
+            return Err(TestError::Missing("primitive array arity"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wildcard_bound_and_intersection_keep_structural_children() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.Cafe");
+        let list_atom = fix.atom(b"java.util.List");
+        let string_atom = fix.atom(b"java.lang.String");
+        let string = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(string_atom),
+            children: Vec::new(),
+        });
+        let bound = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(list_atom),
+            children: vec![string],
+        });
+        let wildcard = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 5,
+            flags: 1,
+            atom: None,
+            children: vec![bound],
+        });
+        let outer = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(list_atom),
+            children: vec![wildcard],
+        });
+        let value = fix.atom(b"value");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: value,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(outer),
+            symbol: None,
+        });
+        let node = u32::try_from(fix.types.len())?;
+        fix.class(b"demo.Node");
+        let array = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 4,
+            flags: 0,
+            atom: None,
+            children: vec![node],
+        });
+        let intersection = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 7,
+            flags: 0,
+            atom: None,
+            children: vec![array, node],
+        });
+        let both = fix.atom(b"both");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: both,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(intersection),
+            symbol: None,
+        });
+        let view = FragmentView::validate(&lower(
+            &fix,
+            b"class Cafe { List<? extends List<String>> value; } class Node {}",
+        )?)?;
+        let wildcard = row(&view, 5)?;
+        if wildcard.record.tag != SemanticTypeTag::Wildcard
+            || wildcard.record.payload0 != VARIANCE_COVARIANT
+            || wildcard.record.children.length != 1
+            || row(&view, 4)?.record.tag != SemanticTypeTag::Apply
+        {
+            return Err(TestError::Missing("wildcard structural bound"));
+        }
+        let intersection = row(&view, 9)?;
+        if intersection.record.tag != SemanticTypeTag::Intersection
+            || intersection.record.children.length != 2
+            || row(&view, 8)?.record.tag != SemanticTypeTag::Array
+        {
+            return Err(TestError::Missing("intersection structural member"));
+        }
+        Ok(())
     }
 
     #[test]
