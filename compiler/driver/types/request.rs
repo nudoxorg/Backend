@@ -19,8 +19,8 @@ pub enum SemanticAuthorityInput<'source> {
         project: &'source compiler_languages_rust::RustProject,
         /// Exact root-source byte budget checked before Cargo graph loading.
         maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
-        /// Borrowed Cargo feature spellings selected for this analysis.
-        features: &'source [&'source str],
+        /// Complete Cargo feature controls forwarded to the rust-analyzer CargoConfig.
+        features: compiler_languages_rust::RustFeatureControl<'source>,
     },
     /// Validated `go/packages` authority image bound to the exact request source.
     Go {

@@ -101,11 +101,13 @@ const PARAM_FALLBACK_NAME: &[u8] = b"param";
 /// match: authority faults keep their full typed cause, and every bounded-lane
 /// rejection folds onto the lane's single closed lowering terminal.
 #[derive(Debug)]
-pub(crate) enum RustCollectError {
+pub(crate) enum RustCollectError<'source> {
     /// rust-analyzer could not open, resolve, or query the selected Cargo graph.
     Authority(RustAuthorityError),
     /// Canonical admission rejected one borrowed HIR declaration.
     Lowering(compiler_vocabulary::LoweringUnsupported),
+    /// Canonical admission rejected one exact borrowed fact.
+    Rejected(crate::types::RejectedFact<'source>),
 }
 
 /// Runs a non-escaping rust-analyzer transaction and emits the complete
@@ -117,21 +119,18 @@ pub(crate) enum RustCollectError {
 pub(crate) fn collect<'source>(
     project: &RustProject,
     maximum_source_bytes: SourceByteLimit,
-    features: &'source [&'source str],
+    features: RustFeatureControl<'source>,
     cancelled: &AtomicBool,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
-) -> Result<(), RustCollectError> {
+) -> Result<(), RustCollectError<'source>> {
     project
         .analyze_with_features(
             RustAnalysisControl {
                 cancelled,
                 maximum_source_bytes,
             },
-            RustFeatureControl {
-                features,
-                ..RustFeatureControl::default()
-            },
+            features,
             |authority| {
                 if authority.source != source {
                     return Err(RustAuthorityError::SourceBinding {

@@ -12,14 +12,15 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_ir::{EntityKind, FragmentView};
-use compiler_languages_rust::{RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
-const FIXTURE: &str = r#"#[cfg(feature = "extra")]
-pub fn extra() {}
+const FIXTURE: &str = r#"#[cfg(feature = "base")]
+pub fn base() {}
 
-pub fn always() {}
+#[cfg(feature = "extra")]
+pub fn extra() {}
 "#;
 
 #[derive(Debug, Error)]
@@ -54,7 +55,7 @@ fn fixture_root() -> Result<PathBuf, TestError> {
     })?;
     fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"feature_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\nextra = []\n",
+        "[package]\nname = \"feature_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\ndefault = [\"base\"]\nbase = []\nextra = []\n",
     )
     .map_err(|source| TestError::Io {
         operation: "write manifest",
@@ -80,7 +81,7 @@ fn rustc_path() -> Result<PathBuf, TestError> {
         .ok_or(TestError::MissingRustc)
 }
 
-fn compile_fixture(features: &[&str]) -> Result<Vec<u8>, TestError> {
+fn compile_fixture(features: RustFeatureControl<'_>) -> Result<Vec<u8>, TestError> {
     let root = fixture_root()?;
     let result = (|| {
         let source_path = root.join("src/lib.rs");
@@ -152,9 +153,42 @@ fn has_entity(bytes: &[u8], name: &[u8]) -> Result<bool, TestError> {
 
 #[test]
 fn named_feature_controls_cfg_declaration() -> Result<(), TestError> {
-    let defaults = compile_fixture(&[])?;
-    let enabled = compile_fixture(&["extra"])?;
+    let defaults = compile_fixture(RustFeatureControl::default())?;
+    let enabled = compile_fixture(RustFeatureControl {
+        features: &["extra"],
+        ..RustFeatureControl::default()
+    })?;
     assert!(!has_entity(&defaults, b"extra")?);
     assert!(has_entity(&enabled, b"extra")?);
+    Ok(())
+}
+
+#[test]
+fn no_default_features_suppresses_default_cfg_declaration() -> Result<(), TestError> {
+    let disabled = compile_fixture(RustFeatureControl {
+        no_default_features: true,
+        ..RustFeatureControl::default()
+    })?;
+    assert!(!has_entity(&disabled, b"base")?);
+    assert!(!has_entity(&disabled, b"extra")?);
+    Ok(())
+}
+
+#[test]
+fn all_features_admits_every_cfg_declaration() -> Result<(), TestError> {
+    let enabled = compile_fixture(RustFeatureControl {
+        all_features: true,
+        ..RustFeatureControl::default()
+    })?;
+    assert!(has_entity(&enabled, b"base")?);
+    assert!(has_entity(&enabled, b"extra")?);
+    Ok(())
+}
+
+#[test]
+fn default_features_admit_only_the_default_cfg_declaration() -> Result<(), TestError> {
+    let defaults = compile_fixture(RustFeatureControl::default())?;
+    assert!(has_entity(&defaults, b"base")?);
+    assert!(!has_entity(&defaults, b"extra")?);
     Ok(())
 }
