@@ -1733,9 +1733,9 @@ mod tests {
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    const HEADER_BYTES: usize = 124;
+    const HEADER_BYTES: usize = 136;
     const NONE: u32 = u32::MAX;
-    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v4\0";
+    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
     const FILE: &[u8] = b"main.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
@@ -1935,7 +1935,12 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            Self::default()
+            let mut fixture = Self::default();
+            fixture.atom(FILE);
+            fixture.atom(b"demo");
+            fixture.atom(b"main.go\0");
+            fixture.atom(PACKAGE);
+            fixture
         }
 
         fn atom(&mut self, text: &[u8]) -> Cell {
@@ -2236,7 +2241,6 @@ mod tests {
             let cell =
                 |borrowed: Cell| (borrowed.offset.to_le_bytes(), borrowed.length.to_le_bytes());
             let file = self.file_cell();
-            let file = self.file_cell();
             let mut declarations = Vec::new();
             for row in &self.declarations {
                 let (name, name_len) = cell(row.name);
@@ -2314,6 +2318,8 @@ mod tests {
                 members.extend_from_slice(&0_u32.to_le_bytes());
                 members.extend_from_slice(&0_u32.to_le_bytes());
                 members.extend_from_slice(&0_u32.to_le_bytes());
+                members.extend_from_slice(&0_u32.to_le_bytes());
+                members.extend_from_slice(&0_u32.to_le_bytes());
             }
             let mut docs = Vec::new();
             for row in &self.docs {
@@ -2369,6 +2375,62 @@ mod tests {
                 children.extend_from_slice(&target.to_le_bytes());
                 children.extend_from_slice(&0_u32.to_le_bytes());
             }
+            let module = Vec::new();
+            let mut packages = Vec::new();
+            let import_path = self.atom_cell(PACKAGE);
+            let package_name = self.atom_cell(b"demo");
+            let files = self.atom_cell(b"main.go\0");
+            packages.extend_from_slice(&import_path.offset.to_le_bytes());
+            packages.extend_from_slice(&import_path.length.to_le_bytes());
+            packages.extend_from_slice(&package_name.offset.to_le_bytes());
+            packages.extend_from_slice(&package_name.length.to_le_bytes());
+            packages.extend_from_slice(&files.offset.to_le_bytes());
+            packages.extend_from_slice(&files.length.to_le_bytes());
+            packages.extend_from_slice(&1_u32.to_le_bytes());
+
+            let mut signature_parameters = Vec::new();
+            for (owner, row) in self.types.iter().enumerate() {
+                if row.kind != ROW_FUNC {
+                    continue;
+                }
+                for ordinal in 0..row.children.1 {
+                    signature_parameters.extend_from_slice(
+                        &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
+                    );
+                    signature_parameters.extend_from_slice(&ordinal.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&NONE.to_le_bytes());
+                }
+            }
+
+            let mut method_sets = Vec::new();
+            for (owner, row) in self.types.iter().enumerate() {
+                if row.kind != ROW_INTERFACE {
+                    continue;
+                }
+                let start = usize::try_from(row.members.0).map_err(TestError::from)?;
+                let end = start
+                    .checked_add(usize::try_from(row.members.1).map_err(TestError::from)?)
+                    .ok_or(TestError::Tail)?;
+                for member in self.members.get(start..end).ok_or(TestError::Tail)? {
+                    if member.kind != 1 {
+                        continue;
+                    }
+                    let (name, name_len) = cell(member.name);
+                    method_sets.extend_from_slice(
+                        &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
+                    );
+                    method_sets.extend_from_slice(&name);
+                    method_sets.extend_from_slice(&name_len);
+                    method_sets.extend_from_slice(&member.type_root.unwrap_or(NONE).to_le_bytes());
+                    method_sets.extend_from_slice(&0_u32.to_le_bytes());
+                    method_sets.extend_from_slice(&0_u32.to_le_bytes());
+                }
+            }
+
             let sections = [
                 declarations,
                 types,
@@ -2379,6 +2441,10 @@ mod tests {
                 references,
                 constraints,
                 satisfactions,
+                module,
+                packages,
+                signature_parameters,
+                method_sets,
                 children,
                 self.atom_bytes.clone(),
             ];
@@ -2396,7 +2462,7 @@ mod tests {
             let body = sections.iter().map(Vec::len).sum::<usize>();
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NGAI");
-            image[4..6].copy_from_slice(&4_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&5_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(TestError::from)?
@@ -2407,13 +2473,16 @@ mod tests {
             image[16..20].copy_from_slice(&count(body)?.to_le_bytes());
             image[20..52].copy_from_slice(Sha256::digest(source).as_slice());
             image[84..88].copy_from_slice(&counts[1].to_le_bytes());
-            image[88..92].copy_from_slice(&counts[2].to_le_bytes());
-            image[92..96].copy_from_slice(&counts[3].to_le_bytes());
-            image[96..100].copy_from_slice(&counts[4].to_le_bytes());
-            image[100..104].copy_from_slice(&counts[5].to_le_bytes());
-            image[104..108].copy_from_slice(&counts[6].to_le_bytes());
+            image[88..92].copy_from_slice(&counts[6].to_le_bytes());
+            image[92..96].copy_from_slice(&counts[2].to_le_bytes());
+            image[96..100].copy_from_slice(&counts[3].to_le_bytes());
+            image[100..104].copy_from_slice(&counts[4].to_le_bytes());
+            image[104..108].copy_from_slice(&counts[5].to_le_bytes());
             image[108..112].copy_from_slice(&counts[7].to_le_bytes());
             image[112..116].copy_from_slice(&counts[8].to_le_bytes());
+            image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+            image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
+            image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
             let mut digest = Sha256::new();
             digest.update(IMAGE_DOMAIN);
             digest.update(&image[..52]);
