@@ -855,13 +855,14 @@ impl<'source> FactSet<'source> {
         let mut type_seen = [false; MAX_TYPE_ROWS];
         let mut semantic_types = [None; MAX_EMISSION_FACTS];
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
-            *semantic_type = Some(live_type(
+            *semantic_type = live_type(
                 &mut tree,
                 self,
                 ordinal as u32,
                 &mut type_ids,
                 &mut type_seen,
-            )?);
+                true,
+            )?;
         }
         let mut docs = [DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS];
         let mut doc_ranges = [(0usize, 0usize); MAX_EMISSION_FACTS];
@@ -1081,15 +1082,41 @@ fn builtin_type(record: SemanticTypeRecord<'_>) -> Option<BuiltinType> {
     }
     match PrimitiveShape::try_from(record.payload0) {
         Ok(PrimitiveShape::Bool) if record.payload1 == 0 => Some(BuiltinType::Bool),
-        Ok(PrimitiveShape::Integer)
-            if record.payload1 == (32u32 << 1) | SemanticTypeRecord::INTEGER_SIGNED_FLAG =>
-        {
-            Some(BuiltinType::I32)
-        }
+        Ok(PrimitiveShape::Char) if record.payload1 == 0 => Some(BuiltinType::Char),
+        Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
+            (8, 0) => Some(BuiltinType::U8),
+            (8, 1) => Some(BuiltinType::I8),
+            (16, 0) => Some(BuiltinType::U16),
+            (16, 1) => Some(BuiltinType::I16),
+            (32, 0) => Some(BuiltinType::U32),
+            (32, 1) => Some(BuiltinType::I32),
+            (64, 0) => Some(BuiltinType::U64),
+            (64, 1) => Some(BuiltinType::I64),
+            (128, 0) => Some(BuiltinType::U128),
+            (128, 1) => Some(BuiltinType::I128),
+            _ => None,
+        },
+        Ok(PrimitiveShape::Float) => match record.payload1 {
+            16 => Some(BuiltinType::F16),
+            32 => Some(BuiltinType::F32),
+            64 => Some(BuiltinType::F64),
+            _ => None,
+        },
         Ok(PrimitiveShape::Str) if record.payload1 == 0 => Some(BuiltinType::String),
         _ => None,
     }
 }
+
+/// Stable lattice code for the one unknown reason rendered as an external.
+const UNRESOLVED_EXTERNAL_REASON: u32 = {
+    #[expect(
+        clippy::as_conversions,
+        reason = "TypeReason is a repr(u32) lattice with frozen wire discriminants"
+    )]
+    {
+        compiler_ir::TypeReason::UnresolvedExternal as u32
+    }
+};
 
 fn doc_input<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
@@ -1131,16 +1158,23 @@ fn live_type<'source>(
     row: u32,
     ids: &mut [TypeId; MAX_TYPE_ROWS],
     seen: &mut [bool; MAX_TYPE_ROWS],
-) -> Result<TypeId, compiler_ir::BuildError> {
+    top_level: bool,
+) -> Result<Option<TypeId>, compiler_ir::BuildError> {
     let index = row as usize;
     if seen[index] {
-        return Ok(ids[index]);
+        return Ok(Some(ids[index]));
     }
     let record = if index < facts.len {
         facts.type_records[index]
     } else {
         facts.anonymous_records[index - ANONYMOUS_ROW_BASE as usize]
     };
+    let top_level_excluded = index < facts.len
+        && (record.tag == SemanticTypeTag::Unknown
+            || (record.tag == SemanticTypeTag::Primitive && builtin_type(record).is_none()));
+    if top_level_excluded && top_level {
+        return Ok(None);
+    }
     let child = |position: usize| -> Option<(u32, Option<&'source [u8]>, u8)> {
         if index < facts.len {
             let start = facts.type_children_base(index);
@@ -1176,226 +1210,231 @@ fn live_type<'source>(
                 })?,
             ids,
             seen,
-        )?;
+            false,
+        )?
+        .ok_or(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        })?;
     }
-    let ty =
-        match record.tag {
-            SemanticTypeTag::Primitive => match PrimitiveShape::try_from(record.payload0) {
-                Ok(PrimitiveShape::Bool) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
+    let ty = match record.tag {
+        SemanticTypeTag::Primitive => match PrimitiveShape::try_from(record.payload0) {
+            Ok(PrimitiveShape::Bool) => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
+                .erase(),
+            Ok(PrimitiveShape::Char) => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::Char))?
+                .erase(),
+            Ok(PrimitiveShape::Str) => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
+                .erase(),
+            Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
+                (8, 0) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
                     .erase(),
-                Ok(PrimitiveShape::Char) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Char))?
+                (8, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I8))?
                     .erase(),
-                Ok(PrimitiveShape::Str) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
+                (16, 0) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U16))?
                     .erase(),
-                Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
-                    (8, 0) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
-                        .erase(),
-                    (8, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I8))?
-                        .erase(),
-                    (16, 0) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U16))?
-                        .erase(),
-                    (16, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I16))?
-                        .erase(),
-                    (32, 0) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U32))?
-                        .erase(),
-                    (32, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?
-                        .erase(),
-                    (64, 0) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U64))?
-                        .erase(),
-                    (64, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I64))?
-                        .erase(),
-                    (128, 0) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U128))?
-                        .erase(),
-                    (128, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I128))?
-                        .erase(),
-                    _ => tree
-                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                        .erase(),
-                },
-                Ok(PrimitiveShape::Float) => match record.payload1 {
-                    16 => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
-                        .erase(),
-                    32 => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F32))?
-                        .erase(),
-                    64 => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F64))?
-                        .erase(),
-                    _ => tree
-                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                        .erase(),
-                },
-                Ok(PrimitiveShape::Reference) => {
-                    let lifetime = record
-                        .text
-                        .map(|bytes| tree.intern_atom(bytes))
-                        .transpose()?;
-                    tree.intern_concrete(ConcreteType::Reference {
-                        target: children[0],
-                        mutability: if record.payload1 == SemanticTypeRecord::INTEGER_SIGNED_FLAG {
-                            compiler_ir::Mutability::Mutable
-                        } else {
-                            compiler_ir::Mutability::Immutable
-                        },
-                        lifetime,
-                    })?
-                    .erase()
-                }
-                Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
-                    .intern_concrete(ConcreteType::Pointer {
-                        target: children[0],
-                        mutability: if record.payload0 == PrimitiveShape::MutPointer as u32 {
-                            compiler_ir::Mutability::Mutable
-                        } else {
-                            compiler_ir::Mutability::Immutable
-                        },
-                    })?
+                (16, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I16))?
+                    .erase(),
+                (32, 0) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U32))?
+                    .erase(),
+                (32, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?
+                    .erase(),
+                (64, 0) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U64))?
+                    .erase(),
+                (64, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I64))?
+                    .erase(),
+                (128, 0) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U128))?
+                    .erase(),
+                (128, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I128))?
                     .erase(),
                 _ => tree
                     .intern_unknown(compiler_ir::UnknownType::Unsupported)?
                     .erase(),
             },
-            SemanticTypeTag::Never => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Never))?
-                .erase(),
-            SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {
-                let spelling = match record.text {
-                    Some(spelling) => spelling,
-                    None => b"Self",
-                };
-                let atom = tree.intern_atom(spelling)?;
-                tree.intern_concrete(ConcreteType::Parameter(atom))?.erase()
-            }
-            SemanticTypeTag::Nominal => tree
-                .intern_concrete(ConcreteType::Nominal(match record.nominal {
-                    Some(NominalRef::Local(id)) => id,
-                    _ => compiler_ir::EntityId::new(0),
-                }))?
-                .erase(),
-            SemanticTypeTag::Tuple => {
-                if child_count == 0 {
-                    tree.intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))?
-                        .erase()
-                } else {
-                    let mut elements = [TupleElement {
-                        label: None,
-                        ty: children[0],
-                        kind: TupleElementKind::Required,
-                    }; MAX_TYPE_CHILDREN];
-                    for position in 0..child_count {
-                        elements[position].ty = children[position];
-                    }
-                    let list = tree.intern_tuple_elements(&elements[..child_count])?;
-                    tree.intern_concrete(ConcreteType::Tuple(list))?.erase()
-                }
-            }
-            SemanticTypeTag::Apply if child_count > 0 => {
-                let arguments = tree.intern_types(&children[1..child_count])?;
-                tree.intern_concrete(ConcreteType::Applied {
-                    constructor: children[0],
-                    arguments,
-                })?
-                .erase()
-            }
-            SemanticTypeTag::Slice if child_count == 1 => tree
-                .intern_concrete(ConcreteType::Slice(children[0]))?
-                .erase(),
-            SemanticTypeTag::Array if child_count == 1 => {
-                let length = record
+            Ok(PrimitiveShape::Float) => match record.payload1 {
+                16 => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
+                    .erase(),
+                32 => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F32))?
+                    .erase(),
+                64 => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F64))?
+                    .erase(),
+                _ => tree
+                    .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                    .erase(),
+            },
+            Ok(PrimitiveShape::Reference) => {
+                let lifetime = record
                     .text
                     .map(|bytes| tree.intern_atom(bytes))
                     .transpose()?;
-                tree.intern_concrete(ConcreteType::Array {
-                    element: children[0],
-                    length,
+                tree.intern_concrete(ConcreteType::Reference {
+                    target: children[0],
+                    mutability: if record.payload1 == SemanticTypeRecord::INTEGER_SIGNED_FLAG {
+                        compiler_ir::Mutability::Mutable
+                    } else {
+                        compiler_ir::Mutability::Immutable
+                    },
+                    lifetime,
                 })?
                 .erase()
             }
-            SemanticTypeTag::Union => {
-                let list = tree.intern_types(&children[..child_count])?;
-                tree.intern_concrete(ConcreteType::Union(list))?.erase()
-            }
-            SemanticTypeTag::Intersection
-            | SemanticTypeTag::DynTrait
-            | SemanticTypeTag::ImplTrait => {
-                let list = tree.intern_types(&children[..child_count])?;
-                tree.intern_concrete(ConcreteType::Intersection(list))?
+            Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
+                .intern_concrete(ConcreteType::Pointer {
+                    target: children[0],
+                    mutability: if record.payload0 == PrimitiveShape::MutPointer as u32 {
+                        compiler_ir::Mutability::Mutable
+                    } else {
+                        compiler_ir::Mutability::Immutable
+                    },
+                })?
+                .erase(),
+            _ => tree
+                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                .erase(),
+        },
+        SemanticTypeTag::Never => tree
+            .intern_concrete(ConcreteType::Builtin(BuiltinType::Never))?
+            .erase(),
+        SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {
+            let spelling = match record.text {
+                Some(spelling) => spelling,
+                None => b"Self",
+            };
+            let atom = tree.intern_atom(spelling)?;
+            tree.intern_concrete(ConcreteType::Parameter(atom))?.erase()
+        }
+        SemanticTypeTag::Nominal => tree
+            .intern_concrete(ConcreteType::Nominal(match record.nominal {
+                Some(NominalRef::Local(id)) => id,
+                _ => {
+                    return Ok(Some(
+                        tree.intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                            .erase(),
+                    ));
+                }
+            }))?
+            .erase(),
+        SemanticTypeTag::Tuple => {
+            if child_count == 0 {
+                tree.intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))?
                     .erase()
-            }
-            SemanticTypeTag::FunctionPointer if child_count > 0 => {
-                let has_result = record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
-                let parameter_count = child_count - usize::from(has_result);
+            } else {
                 let mut elements = [TupleElement {
                     label: None,
                     ty: children[0],
                     kind: TupleElementKind::Required,
                 }; MAX_TYPE_CHILDREN];
-                for position in 0..parameter_count {
-                    let (target, child_name, _) = child(position).ok_or(
-                        compiler_ir::BuildError::Dangling {
-                            space: compiler_ir::SemanticSpace::Type,
-                            raw: row,
-                        },
-                    )?;
-                    let target = target as usize;
-                    let name = child_name
-                        .or_else(|| (target < facts.len).then(|| facts.names[target]));
-                    elements[position] = TupleElement {
-                        label: name.map(|name| tree.intern_atom(name)).transpose()?,
-                        ty: children[position],
-                        kind: TupleElementKind::Required,
-                    };
+                for position in 0..child_count {
+                    elements[position].ty = children[position];
                 }
-                let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
-                tree.intern_concrete(ConcreteType::Function {
-                    parameters,
-                    result: has_result.then_some(children[child_count - 1]),
-                    abi: None,
-                    variadic: false,
-                    unsafe_: false,
-                })?
+                let list = tree.intern_tuple_elements(&elements[..child_count])?;
+                tree.intern_concrete(ConcreteType::Tuple(list))?.erase()
+            }
+        }
+        SemanticTypeTag::Apply if child_count > 0 => {
+            let arguments = tree.intern_types(&children[1..child_count])?;
+            tree.intern_concrete(ConcreteType::Applied {
+                constructor: children[0],
+                arguments,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Slice if child_count == 1 => tree
+            .intern_concrete(ConcreteType::Slice(children[0]))?
+            .erase(),
+        SemanticTypeTag::Array if child_count == 1 => {
+            let length = record
+                .text
+                .map(|bytes| tree.intern_atom(bytes))
+                .transpose()?;
+            tree.intern_concrete(ConcreteType::Array {
+                element: children[0],
+                length,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Union => {
+            let list = tree.intern_types(&children[..child_count])?;
+            tree.intern_concrete(ConcreteType::Union(list))?.erase()
+        }
+        SemanticTypeTag::Intersection | SemanticTypeTag::DynTrait | SemanticTypeTag::ImplTrait => {
+            let list = tree.intern_types(&children[..child_count])?;
+            tree.intern_concrete(ConcreteType::Intersection(list))?
                 .erase()
-            }
-            SemanticTypeTag::Unknown if record.payload0 == 3 => {
-                let spelling = match record.text {
-                    Some(spelling) => spelling,
-                    None => b"unresolved",
+        }
+        SemanticTypeTag::FunctionPointer if child_count > 0 => {
+            let has_result = record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
+            let parameter_count = child_count - usize::from(has_result);
+            let mut elements = [TupleElement {
+                label: None,
+                ty: children[0],
+                kind: TupleElementKind::Required,
+            }; MAX_TYPE_CHILDREN];
+            for position in 0..parameter_count {
+                let (target, child_name, _) =
+                    child(position).ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    })?;
+                let target = target as usize;
+                let name = child_name.or_else(|| (target < facts.len).then(|| facts.names[target]));
+                elements[position] = TupleElement {
+                    label: name.map(|name| tree.intern_atom(name)).transpose()?,
+                    ty: children[position],
+                    kind: TupleElementKind::Required,
                 };
-                let path = tree.intern_atom(spelling)?;
-                let external = tree.intern_external(ExternalTarget {
-                    stable: StableEntityId::from_canonical_bytes(spelling),
-                    package: None,
-                    path,
-                    display: path,
-                    kind: None,
-                })?;
-                tree.intern_concrete(ConcreteType::External(external))?
-                    .erase()
             }
-            SemanticTypeTag::Unknown => tree
-                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                .erase(),
-            _ => tree
-                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                .erase(),
-        };
+            let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
+            tree.intern_concrete(ConcreteType::Function {
+                parameters,
+                result: has_result.then_some(children[child_count - 1]),
+                abi: None,
+                variadic: false,
+                unsafe_: false,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Unknown if record.payload0 == UNRESOLVED_EXTERNAL_REASON => {
+            let spelling = match record.text {
+                Some(spelling) => spelling,
+                None => b"unresolved",
+            };
+            let path = tree.intern_atom(spelling)?;
+            let external = tree.intern_external(ExternalTarget {
+                stable: StableEntityId::from_canonical_bytes(spelling),
+                package: None,
+                path,
+                display: path,
+                kind: None,
+            })?;
+            tree.intern_concrete(ConcreteType::External(external))?
+                .erase()
+        }
+        SemanticTypeTag::Unknown => tree
+            .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+            .erase(),
+        _ => tree
+            .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+            .erase(),
+    };
     ids[index] = ty;
     seen[index] = true;
-    Ok(ty)
+    Ok(Some(ty))
 }
 
 /// Digests the identity-bearing key of one fact: kind, name, constructor

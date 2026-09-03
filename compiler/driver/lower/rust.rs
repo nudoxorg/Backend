@@ -858,14 +858,21 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Captures only the written visibility prefix; omitted visibility is Rust-private.
     fn declaration_visibility(&self, declaration: &Decl<'source>) -> compiler_ir::Visibility {
+        if declaration.expanded {
+            return compiler_ir::Visibility::Unknown;
+        }
         let Some(visibility) = ast::AnyHasVisibility::cast(declaration.syntax.clone())
             .and_then(|item| item.visibility())
         else {
             return compiler_ir::Visibility::Private;
         };
         let range = visibility.syntax().text_range();
-        let start = u32::from(range.start()) as usize;
-        let end = u32::from(range.end()) as usize;
+        let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
         let Some(bytes) = self.source.get(start..end) else {
             return compiler_ir::Visibility::Unknown;
         };

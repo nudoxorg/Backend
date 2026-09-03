@@ -36,6 +36,10 @@ pub trait Visitor {
 pub fn total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64 {
     u64::from(shared.weight) + u64::from(exclusive.weight) + u64::from(moved.weight)
 }
+
+pub fn apply(callback: fn(u8) -> u8, seed: u8) -> u8 {
+    callback(seed)
+}
 "#;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +51,7 @@ const TOTAL_SIGNATURE: &str =
 const NODE_DOCS: &str = "A recursive node storing [Node](struct.Node.html) links.";
 const U8_TYPE: &str = "u8";
 const NEXT_TYPE: &str = "Option<Box<Node>>";
+const APPLY_SIGNATURE: &str = "pub fn apply(callback: fn(u8) -> u8, seed: u8) -> u8";
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -317,5 +322,16 @@ fn next_type_preserves_foreign_apply_spellings() -> Result<(), TestError> {
                 kind: ItemKind::Field,
             })?,
         NEXT_TYPE,
+    )
+}
+
+#[test]
+fn function_pointer_parameter_signature_is_frozen() -> Result<(), TestError> {
+    let ir = compile_fixture()?;
+    let apply = item(&ir, b"apply", ItemKind::Function)?;
+    assert_golden(
+        "apply signature",
+        signature(&ir, apply, "apply")?,
+        APPLY_SIGNATURE,
     )
 }
