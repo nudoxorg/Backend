@@ -1,11 +1,13 @@
 schema = 1
 capability_id = "typescript-checker-authority"
 state = "building"
-# Re-frozen at fa7f6966d per pre-edit-1 BLOCKER 1 (the original freeze at
-# d9411952f was superseded by the L0 lane-green repair committed with a
-# custody gap; see packets/pre-edit-1.md).
-baseline_commit = "fa7f6966d03657d3d421af255a27b51137d4e34b"
-baseline_tree = "fa7f6966d + uncommitted sibling-lane working set (outside owned paths); frozen per-file baseline below"
+# L4 freeze (2026-09-03): canonical 58634ef11 plus the trunk lane's
+# uncommitted computed-coordinate (narrowings) landing inside owned paths;
+# per-file hashes below are computed from the working tree, independent of
+# git status. The prior freeze at fa7f6966d is superseded by L1b/L2/L3a
+# drift (checker.rs, lower/typescript.rs, tests).
+baseline_commit = "58634ef11186e7997ba64a230a45910edd64d550"
+baseline_tree = "58634ef11 + trunk ESC-2 narrowings landing (owned paths) + uncommitted sibling-lane working set (outside owned paths); frozen per-file baseline below"
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
@@ -17,17 +19,23 @@ node = "v26.8.1"
 node_path = "/opt/homebrew/bin/node"
 typescript_module = "5.9.3"
 typescript_resolution = "/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js"
-notes = "repository-root package.json/node_modules admitted as dev/test dependency for the vendored checker driver; authority-dependent tests must assert not-skipped"
+notes = "repository-root package.json/node_modules admitted as dev/test dependency for the vendored checker driver; authority-dependent tests must assert not-skipped. L4 session note (2026-09-03): the nix-provided default PATH lacks node; every test process needing the checker exports PATH=/opt/homebrew/bin:$PATH first (render gate spawned NotFound otherwise)"
 
-# Frozen per-file formatted LOC + sha256 at the re-freeze (independent of git status)
+# Frozen per-file formatted LOC + sha256 at the L4 freeze (independent of git status)
 [baseline.files]
 "compiler/languages/typescript/lib.rs" = { loc = 23, sha256 = "cb2c34af0967399de3eb79ac8f79fff2924676df252460835c8d4a3363e9d735" }
 "compiler/languages/typescript/authority.rs" = { loc = 166, sha256 = "787bef30b6a749d68915cfc16bd3dd6d656c9ee80cff90caab7e20ab9080d791" }
-"compiler/languages/typescript/checker.rs" = { loc = 907, sha256 = "9f71a96749a28941c87370dac5e8483a3c50fec877b13b652d8e8de6f9f0812e" }
+"compiler/languages/typescript/checker.rs" = { loc = 907, sha256 = "1e6870ece2d851d4dc8e5edca0bd5389a4b1f2295ee5f20af21aad3456438ceb" }
 "compiler/languages/typescript/coordinate.rs" = { loc = 272, sha256 = "825ed05418daba2e6341ef2e33a4e46ac427f915f77d3a42d399e4264d0b8df4" }
-"compiler/languages/typescript/error.rs" = { loc = 60, sha256 = "925843f6f6c05db67f8acd571a09af9935c860ea6e72fa0136e6ab065581bad7" }
+"compiler/languages/typescript/error.rs" = { loc = 60, sha256 = "925843f6f6c05db67f8acd571a09af9935c860ea6e72fa013e6ab065581bad7" }
 "compiler/languages/typescript/checker/main.cjs" = { loc = 434, sha256 = "03b70c661e54c9ea1429164d20b23a474c59da5abe07d08b86a8e56dab445c71" }
 "compiler/languages/typescript/Cargo.toml" = { loc = 32, sha256 = "b490323e0355aed84716e3d7328bf655e8d2538cdf12e1e9e2e253558b9f7108" }
+"compiler/driver/lower/typescript.rs" = { loc = 3107, sha256 = "4e5ada8e8a627257e3e08b8c1df3aa84cc9c0d0f014694fb142985faf199073c" }
+"compiler/driver/lower.rs" = { loc = 2285, sha256 = "f3b9ed809dcc2eb02f65a22e6d0abbc5c8ff4493c88334f9015c6bdad761c5eb" }
+"compiler/driver/native/typescript.rs" = { loc = 76, sha256 = "0fc3147921507a1d07b893dafc216d7bc9a74a1dc0727bd2e9b960a796520cf8" }
+"compiler/driver/tests/typescript_lower.rs" = { loc = 712, sha256 = "b1b2a65b025c1403adf5625201c565a6f282a3ca5b58f41a3cd9e3f98839a35f" }
+"compiler/driver/tests/typescript_render.rs" = { loc = 290, sha256 = "b5f41ebd4861c76d25681a2f8bf5a67c8b2dbd190c864c6618e7a8cd104e11da" }
+"compiler/driver/tests/typescript_authority.rs" = { loc = 343, sha256 = "ed57a8d78085ae259f1690c312f58b9718c50cc510dd83723484898d98feae1a" }
 "compiler/languages/typescript/tests/checker_protocol.rs" = { loc = 467, sha256 = "8e4407783ec319289a3c564d2477522edfa014caaad96402d7099e13172a300d" }
 "compiler/languages/typescript/tests/semantic_authority.rs" = { loc = 137, sha256 = "af8cfe4b610930b608de402b03b4d87c07979be5540989ed3f8d46073ab561dc" }
 "compiler/languages/typescript/tests/fixtures/source.ts" = { loc = 21, sha256 = "06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e" }
