@@ -1,7 +1,9 @@
 # Card L4c: full lifecycle from PURL `npm:pkg@ver` (matrix row R7)
 
 registered role: nudox_luna_implementer (expected `luna`/max)
-baseline: canonical 58634ef11 (frozen per-file hashes in index.toml [baseline.files])
+baseline: canonical 53637f54 (the L4 freeze; commit `58634ef11` named earlier was superseded —
+  53637f54 adds the L4 evidence freeze and L4b landed 870afdf39 on top; your owned paths are
+  untouched by both)
 owned paths (no other file may be edited):
   - compiler/driver/tests/typescript_purl_lifecycle.rs (NEW)
   - compiler/driver/tests/typescript_support/mod.rs    (NEW)

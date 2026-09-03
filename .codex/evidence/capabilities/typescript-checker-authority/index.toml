@@ -70,6 +70,25 @@ checkout = "shared worktree /Users/mileswirht/Downloads/backend; path discipline
 result_commit = "fa7f6966d03657d3d421af255a27b51137d4e34b"
 retention = "active"
 
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "L4b-checker-package-context"
+paths = ["compiler/languages/typescript/checker.rs", "compiler/languages/typescript/checker/main.cjs", "compiler/driver/tests/typescript_package.rs"]
+result_commit = "870afdf39"
+ingest = "Terra reproduced all four falsifiers (typescript_package 1 green; bare-run discriminator rows []) and ran the staging-bypass mutation: routing the child at the bare work-dir file flips the package-run assertions red at typescript_package.rs:112; restore goes green. R10 -> REPRODUCED BY TERRA."
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "L4a-honest-computed-cells"
+result = "blocked at a typed-ID boundary: TypeScriptFacts::computed is Option<TypedTypeId<ComputedState>> and the live ComputedType grammar has no concrete-resolution node; the stub was masking that grammar gap (this is ESC-2, compiler-ir surface). Terra re-scoped: honest-subset law (This/Conditional/Mapped/TemplateLiteral nodes; None elsewhere; fragment plane is the computed authority). No commit; owned files restored."
+
+[[reviews]]
+review_id = "post-L4b"
+role = "nudox_terra_reviewer"
+state = "planned"
+
 [[reviews]]
 review_id = "pre-edit-1"
 task_id = "ses_f9a956588ffeWMiACTSWAa8cqc"
