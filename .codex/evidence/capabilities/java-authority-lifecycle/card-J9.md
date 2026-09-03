@@ -62,7 +62,10 @@ with `PublishControl::Continue`), reopen again, assert the newest generation
 contains the new entity and the generation numbers differ; then re-open the
 FIRST generation via `ImmutableManifestStore` + `ImmutableArtifactStore` and
 assert SHA-256 equality with the first fragment bytes plus
-`FragmentView::validate` success. Remove every temp dir on success AND failure;
+`FragmentView::validate` success. IMPORTANT for the second compilation: the
+combined source list must list `Added.java` FIRST, because the doclet binds
+`--source-binding` to the FIRST source and `compile` checks the bound digest
+against the `source` argument. Remove every temp dir on success AND failure;
 surface `Harness::take_cleanup_error`.
 
 **T2 `central_commons_lang3_slice_journey`** — live network.
@@ -101,6 +104,12 @@ return a typed `FetchError` (read `central.rs` for the exact variant; the HTTP
 - P15 live evidence: T2/T3 exercise live Central; correctness comes from typed
   assertions only.
 
+## Prerequisites
+
+Card J7R (real-jar raw deflate + unnamed-package skip) must already be in your
+baseline; T1 uses default-package sources and T2 parses the real commons-lang3
+jar, both of which J7R unblocks. If your baseline lacks J7R, STOP and report.
+
 ## Semantic and resource bounds
 
 - No production edits; no new dependencies; no POM/XML parsing; no
@@ -113,7 +122,7 @@ return a typed `FetchError` (read `central.rs` for the exact variant; the HTTP
 - Temp dirs under `std::env::temp_dir()` with process-unique names, removed on
   success and failure.
 - Tests pass twice consecutively (`--test-threads=1` and default parallel).
-- LOC budget: `java_lifecycle.rs` ≤ 450; `java_lifecycle/mod.rs` ≤ 550. If a
+- LOC budget: `java_lifecycle.rs` ≤ 650; `java_lifecycle/mod.rs` ≤ 550. If a
   stage cannot fit, STOP and report; do not silently exceed.
 
 ## Forbidden adjacent surface

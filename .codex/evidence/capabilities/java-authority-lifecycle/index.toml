@@ -121,3 +121,35 @@ note = "Chain tip 2026-09-03. Worker session id was not recorded before handoff;
 boundary = "closure"
 role = "nudox_terra_reviewer"
 state = "planned"
+
+# ---- 2026-09-03 session: J9/J10 phase, corpus proof ----
+
+[[dispatches]]
+task = "ses_f9a93be8fffeQAMhiLUTME6pQk"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped"
+note = "Correctly stopped: card baseline 054535d92 was stale (Terra committed the calibration amendment after freezing). Terra process error, not worker error."
+
+[[dispatches]]
+task = "ses_f9a9295dbffebSzPsSla58i1bY"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped"
+note = "Correctly stopped on the same stale-baseline class after the baseline repoint moved the tip again. Terra repaired structurally: card pins the java-content baseline and instructs an explicit detached checkout; the active card lives outside the repo (digest be71ebbf)."
+
+[[dispatches]]
+task = "ses_f9a9147f9ffeA5eNpMwEqKtoiY"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped-honest-reds"
+note = "Stop 1: LOC budget 450 exceeded at 540 (Terra miscalibrated the per-file split; total 735 was within budget — split raised to 650/550). Stops 2-3 were real reds Terra reproduced and root-caused: (a) real jars use RAW deflate, jar.rs used zlib mode and no test exercised deflate — P14 FALSIFIED, repair card J7R; (b) default-package sources make javac report a Package row with an empty name; push_root pushed it, FactSet rejected EmptyName, and shared-lane push_fact erased the cause into NoSupportedDeclaration — repair card J7R row B. Worker scratch (java_lifecycle.rs + java_lifecycle/) left uncommitted in the worktree for the J9 resume; Terra's temporary probes reverted. ESCALATION: shared-lane push_fact error-cause erasure (lower.rs) — Sol review required."
+
+[[calibration]]
+card = "J9-java-lifecycle-integration"
+digest = "9ab69a6d255538c55437634c647c49774b98728ddc89831c7f198ef66deb8a4f"
+trials = "independent-reader + plausible-misreader, fresh roles, round 1 found T2 slice-to-javac loophole; narrow rewrite; round 2 reader exact, misreader loopholes closed (residual #[ignore] reading already foreclosed by card text)"
+note = "Card content bytes unchanged since digest 9ab69a6d except baseline-pointer mechanics and the budget/binding/prerequisite amendments recorded here"
