@@ -3132,7 +3132,7 @@ mod tests {
         // 2 slice. The wire forbids anonymous-to-fact references, so the
         // nested named slice element folds to the typed unknown that
         // retains its spelling while the chan and slice shapes stay exact.
-        let channel_row = row(&view, 1)?;
+        let channel_row = row(&view, 4)?;
         if channel_row.record.tag != SemanticTypeTag::Apply
             || field_children(&view, &channel_row)? != vec![0, 2]
         {
