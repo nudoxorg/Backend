@@ -422,7 +422,7 @@ const ADDITIONS: [PackageFacts; 15] = [
         decorators: &[],
         class: LayoutClass::FlatPackageDir,
         spot: SpotCheck::ParameterKinds {
-            symbol: "where",
+            symbol: "contents",
             kinds: &[],
         },
     },
@@ -440,9 +440,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: false,
         decorators: &[],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::DecoratorSequence {
+        spot: SpotCheck::Entity {
             symbol: "__title__",
-            decorators: &[],
+            kind: EntityKind::Static,
         },
     },
     PackageFacts {
@@ -500,9 +500,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: false,
         decorators: &[b"final", b"property", b"overload"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::ParameterKinds {
-            symbol: "varnames",
-            kinds: &[PythonParameterKind::PositionalOrKeyword],
+        spot: SpotCheck::DecoratorSequence {
+            symbol: "HookspecMarker",
+            decorators: &[b"final"],
         },
     },
     PackageFacts {
@@ -519,9 +519,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"property", b"t.overload", b"contextmanager"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::DecoratorSequence {
+        spot: SpotCheck::Entity {
             symbol: "Command",
-            decorators: &[],
+            kind: EntityKind::Record,
         },
     },
     PackageFacts {
@@ -665,9 +665,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
+        spot: SpotCheck::DocstringPrefix {
             symbol: "TOMLDecodeError",
-            kind: EntityKind::Record,
+            prefix: b"An error raised if a document is not valid TOML.",
         },
     },
     PackageFacts {
@@ -684,9 +684,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: false,
         decorators: &[],
         class: LayoutClass::FlatPackageDir,
-        spot: SpotCheck::Entity {
+        spot: SpotCheck::DocstringPrefix {
             symbol: "Encoding",
-            kind: EntityKind::Record,
+            prefix: b"Reresents a character encoding such as UTF-8,",
         },
     },
 ];
