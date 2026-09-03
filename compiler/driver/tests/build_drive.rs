@@ -148,6 +148,51 @@ fn ccache_compile_argv_is_transported_verbatim() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn make_compound_line_splits_transport_and_redirections() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("compound")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tprintf 'compile: %s\\n' one.c 1>&2; clang -Iinclude -D'VERBOSE=1' -c one.c -o one.o\n",
+    )?;
+    fs::write(root.join("one.c"), "int one(void) { return 1; }\n")?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 1);
+    assert_eq!(
+        driven.translation_units[0].arguments,
+        [
+            "clang",
+            "-Iinclude",
+            "-DVERBOSE=1",
+            "-c",
+            "one.c",
+            "-o",
+            "one.o"
+        ]
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn compound_compile_with_unknown_compiler_remains_typed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("compound-unknown")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tprintf ready; mystery-cc -c one.c -o one.o\n",
+    )?;
+    fs::write(root.join("one.c"), "int one(void) { return 1; }\n")?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false));
+    assert!(matches!(
+        result,
+        Err(BuildDriveFailure::UnrecognizedCompileCommand { .. })
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn make_recognizes_gnu_and_posix_compiler_cells() -> Result<(), Box<dyn std::error::Error>> {
     let root = directory("gnu-compilers")?;
     fs::write(
@@ -183,6 +228,99 @@ fn buck2_nested_marker_returns_query_terminal_at_cell_root()
             assert!(evidence.contains("compilation_database"));
         }
         other => return Err(format!("unexpected buck2 result: {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn buck2_compilation_database_target_is_driven() -> Result<(), Box<dyn std::error::Error>> {
+    if !Path::new("/Users/mileswirht/.local/bin/buck2").is_file() {
+        return Ok(());
+    }
+    let root = directory("buck-positive")?;
+    fs::write(root.join(".buckconfig"), "[cells]\nroot = .\n")?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    fs::write(
+        root.join("compdb.bzl"),
+        "def _impl(ctx):\n    out = ctx.actions.declare_output(\"compile_commands.json\")\n    ctx.actions.run([\"sh\", \"-c\", ctx.attrs.cmd + ' > \"$1\"', \"sh\", out.as_output()], category=\"compdb\")\n    return [DefaultInfo(default_output=out)]\n\ncompilation_database = rule(impl=_impl, attrs={\"cmd\": attrs.string(), \"srcs\": attrs.list(attrs.source())})\n",
+    )?;
+    fs::write(
+        root.join("BUCK"),
+        "load(\":compdb.bzl\", \"compilation_database\")\ncompilation_database(name=\"compdb\", srcs=[\"main.c\"], cmd=\"printf '[{\\\"directory\\\":\\\"%s\\\",\\\"file\\\":\\\"main.c\\\",\\\"arguments\\\":[\\\"clang\\\",\\\"-I\\\",\\\"include\\\",\\\"-c\\\",\\\"main.c\\\"]}]' \\\"$PWD\\\"\")\n",
+    )?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.build_system, compiler_driver::BuildSystem::Buck);
+    assert_eq!(driven.translation_units.len(), 1);
+    assert_eq!(driven.translation_units[0].arguments[1], "-I");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "explicit corpus probe; requires NUDOX_CORPUS_DIR"]
+fn redis_make_compound_probe_has_no_unrecognized_compile_command()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(corpus) = std::env::var_os("NUDOX_CORPUS_DIR") else {
+        return Ok(());
+    };
+    let root = PathBuf::from(corpus).join("redis");
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let driven = discover_and_drive(
+        &root,
+        &root.join(".nudox-test-scratch"),
+        &AtomicBool::new(false),
+    )?;
+    println!(
+        "redis observed translation units: {}",
+        driven.translation_units.len()
+    );
+    Ok(())
+}
+
+fn real_tool(name: &str) -> bool {
+    [
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/Users/mileswirht/.local/bin"),
+        PathBuf::from("/etc/profiles/per-user/mileswirht/bin"),
+    ]
+    .into_iter()
+    .chain(
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>()),
+    )
+    .any(|directory| directory.join(name).is_file())
+}
+
+#[test]
+fn cmake_and_meson_redrive_are_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+    if real_tool("cmake") {
+        let root = directory("cmake-redrive")?;
+        fs::write(
+            root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.10)\nproject(redrive C)\nadd_executable(redrive main.c)\n",
+        )?;
+        fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+        let scratch = root.join("scratch");
+        let first = discover_and_drive(&root, &scratch, &AtomicBool::new(false))?;
+        let second = discover_and_drive(&root, &scratch, &AtomicBool::new(false))?;
+        assert_eq!(first.translation_units, second.translation_units);
+        fs::remove_dir_all(root)?;
+    }
+    if real_tool("meson") && real_tool("ninja") {
+        let root = directory("meson-redrive")?;
+        fs::write(
+            root.join("meson.build"),
+            "project('redrive', 'c')\nexecutable('redrive', 'main.c')\n",
+        )?;
+        fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+        let scratch = root.join("scratch");
+        let first = discover_and_drive(&root, &scratch, &AtomicBool::new(false))?;
+        let second = discover_and_drive(&root, &scratch, &AtomicBool::new(false))?;
+        assert_eq!(first.translation_units, second.translation_units);
+        fs::remove_dir_all(root)?;
     }
     Ok(())
 }

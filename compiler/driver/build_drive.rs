@@ -115,12 +115,13 @@ pub fn discover_and_drive(
         return Err(BuildDriveFailure::Cancelled);
     }
     let build = scratch.join("build-drive");
+    let build_exists = build.is_dir();
     fs::create_dir_all(&build).map_err(BuildDriveFailure::Io)?;
     let output = match system {
         BuildSystem::Make => run_make(root, cancelled)?,
-        BuildSystem::CMake => run_one(system, root, &build, cancelled)?,
+        BuildSystem::CMake => run_one(system, root, &build, cancelled, false)?,
         BuildSystem::Meson => {
-            let setup = run_one(system, root, &build, cancelled)?;
+            let setup = run_one(system, root, &build, cancelled, build_exists)?;
             if !setup.status.success() {
                 return Err(BuildDriveFailure::DriveFailed {
                     tool: system.tool(),
@@ -145,20 +146,71 @@ pub fn discover_and_drive(
                 .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
                 .filter(|path| !path.is_empty())
                 .map_or_else(|| "//...".to_owned(), |path| format!("//{path}/..."));
-            let query = Command::new(system.tool())
-                .current_dir(cell_root)
-                .env("PATH", child_path().unwrap_or_default())
+            if cancelled.load(Ordering::Acquire) {
+                return Err(BuildDriveFailure::Cancelled);
+            }
+            let query = buck_command(&cell_root)
                 .args([
                     "uquery",
                     &format!("kind(\"compilation_database\", {package})"),
                 ])
                 .output()
-                .map_err(BuildDriveFailure::Io)?;
-            let mut evidence = String::from_utf8_lossy(&query.stdout).into_owned();
-            evidence.push_str(&String::from_utf8_lossy(&query.stderr));
-            return Err(BuildDriveFailure::ToolPresentUndrivable {
-                tool: system.tool(),
-                evidence,
+                .map_err(|cause| BuildDriveFailure::DriveFailed {
+                    tool: "buck2",
+                    captured: capture(cause.to_string().as_bytes()),
+                })?;
+            if !query.status.success() {
+                return Err(BuildDriveFailure::DriveFailed {
+                    tool: "buck2",
+                    captured: capture_combined(&query),
+                });
+            }
+            let targets = String::from_utf8_lossy(&query.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if targets.is_empty() {
+                return Err(BuildDriveFailure::ToolPresentUndrivable {
+                    tool: system.tool(),
+                    evidence: String::from_utf8_lossy(&query.stdout).into_owned(),
+                });
+            }
+            if cancelled.load(Ordering::Acquire) {
+                return Err(BuildDriveFailure::Cancelled);
+            }
+            let build_output = buck_command(&cell_root)
+                .arg("build")
+                .args(&targets)
+                .arg("--show-output")
+                .output()
+                .map_err(|cause| BuildDriveFailure::DriveFailed {
+                    tool: "buck2",
+                    captured: capture(cause.to_string().as_bytes()),
+                })?;
+            if !build_output.status.success() {
+                return Err(BuildDriveFailure::DriveFailed {
+                    tool: "buck2",
+                    captured: capture_combined(&build_output),
+                });
+            }
+            let mut translation_units = Vec::new();
+            for line in String::from_utf8_lossy(&build_output.stdout).lines() {
+                let Some(path) = line.split_whitespace().nth(1) else {
+                    continue;
+                };
+                let bytes = fs::read(cell_root.join(path)).map_err(BuildDriveFailure::Io)?;
+                translation_units
+                    .extend(read_compdb(&bytes).map_err(BuildDriveFailure::CompilationDatabase)?);
+            }
+            if translation_units.is_empty() {
+                return Err(BuildDriveFailure::NoTranslationUnits { tool: "buck2" });
+            }
+            return Ok(DrivenCompilation {
+                build_system: system,
+                database_directory: cell_root,
+                translation_units,
             });
         }
     };
@@ -281,6 +333,7 @@ fn run_one(
     root: &Path,
     build: &Path,
     cancelled: &AtomicBool,
+    wipe: bool,
 ) -> Result<Output, BuildDriveFailure> {
     if !available(system.tool()) {
         return Err(BuildDriveFailure::ToolAbsent {
@@ -302,7 +355,11 @@ fn run_one(
             .arg(build)
             .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON");
     } else {
-        command.current_dir(root).arg("setup").arg(build);
+        command.current_dir(root).arg("setup");
+        if wipe {
+            command.arg("--wipe");
+        }
+        command.arg(build);
     }
     command
         .output()
@@ -326,7 +383,7 @@ fn run_ninja(build: &Path, cancelled: &AtomicBool) -> Result<Output, BuildDriveF
     command
         .arg("-C")
         .arg(build)
-        .args(["-t", "compdb", "c", "cxx"])
+        .args(["-t", "compdb"])
         .output()
         .map_err(|cause| BuildDriveFailure::DriveFailed {
             tool: "ninja",
@@ -362,37 +419,111 @@ fn capture(bytes: &[u8]) -> CapturedOutput {
     }
 }
 
+fn capture_combined(output: &Output) -> CapturedOutput {
+    let mut bytes = output.stdout.clone();
+    bytes.extend_from_slice(&output.stderr);
+    capture(&bytes)
+}
+
+fn buck_command(cell_root: &Path) -> Command {
+    let mut command = Command::new("buck2");
+    command.current_dir(cell_root);
+    if let Some(path) = child_path() {
+        command.env("PATH", path);
+    }
+    command
+}
+
 fn parse_make(bytes: &[u8], root: &Path) -> Result<Vec<DrivenTranslationUnit>, BuildDriveFailure> {
     let text = String::from_utf8_lossy(bytes);
     let mut result = Vec::new();
     for line in text.lines() {
-        let argv = shell_words(line);
-        if argv.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
-            return Err(BuildDriveFailure::CommandCapacity {
-                required: argv.len(),
-                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
+        for command in shell_commands(line) {
+            let argv = shell_words(&command)
+                .into_iter()
+                .filter(|arg| !is_pure_redirection(arg))
+                .collect::<Vec<_>>();
+            if argv.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
+                return Err(BuildDriveFailure::CommandCapacity {
+                    required: argv.len(),
+                    capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
+                });
+            }
+            let has_compile = argv.iter().any(|arg| arg == "-c");
+            let source = argv.iter().find(|arg| is_source(arg));
+            if !has_compile {
+                continue;
+            }
+            let Some(source) = source else {
+                continue;
+            };
+            if !recognized_compiler(&argv) {
+                return Err(BuildDriveFailure::UnrecognizedCompileCommand { line: command });
+            }
+            result.push(DrivenTranslationUnit {
+                source: PathBuf::from(source),
+                arguments: argv,
+                directory: root.to_path_buf(),
             });
         }
-        let has_compile = argv.iter().any(|arg| arg == "-c");
-        let source = argv.iter().find(|arg| is_source(arg));
-        if !has_compile {
-            continue;
-        }
-        let Some(source) = source else {
-            continue;
-        };
-        if !recognized_compiler(&argv) {
-            return Err(BuildDriveFailure::UnrecognizedCompileCommand {
-                line: line.to_owned(),
-            });
-        }
-        result.push(DrivenTranslationUnit {
-            source: PathBuf::from(source),
-            arguments: argv,
-            directory: root.to_path_buf(),
-        });
     }
     Ok(result)
+}
+
+fn is_pure_redirection(value: &str) -> bool {
+    matches!(value, "1>&2" | "2>&1")
+        || value.starts_with('>')
+        || value.starts_with('<')
+        || value
+            .strip_prefix('1')
+            .is_some_and(|rest| rest.starts_with('>'))
+        || value
+            .strip_prefix('2')
+            .is_some_and(|rest| rest.starts_with('>'))
+}
+
+fn shell_commands(line: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let chars = line.char_indices().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        let (at, ch) = chars[index];
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, ';' | '|') => {
+                let end = if ch == '|' && index + 1 < chars.len() && chars[index + 1].1 == ch {
+                    index += 1;
+                    chars[index].0 + chars[index].1.len_utf8()
+                } else {
+                    at + ch.len_utf8()
+                };
+                let value = line[start..at].trim();
+                if !value.is_empty() {
+                    commands.push(value.to_owned());
+                }
+                start = end;
+            }
+            (None, '&') if index + 1 < chars.len() && chars[index + 1].1 == '&' => {
+                let value = line[start..at].trim();
+                if !value.is_empty() {
+                    commands.push(value.to_owned());
+                }
+                index += 1;
+                start = chars[index].0 + chars[index].1.len_utf8();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let value = line[start..].trim();
+    if !value.is_empty() {
+        commands.push(value.to_owned());
+    }
+    commands
 }
 
 fn recognized_compiler(argv: &[String]) -> bool {
