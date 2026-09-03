@@ -133,12 +133,14 @@ result_commit = "none — trunk blocker recorded in proof matrix R10"
 # without --wipe.
 
 [[workers]]
-task = "planned"
+task = "done"
 role = "nudox_luna_implementer"
 card = "L8-replay (server/workflow chained replay heal + pinned-test flip)"
 card_sha256 = "22ca5dd47c89bf18cf64505b3649ee1de7a2affed653bdf576f4b87356f0058b"
 paths = ["server/workflow/**", "server/journal/**", "compiler/driver/tests/clang_lifecycle.rs (pinned test only)"]
 baseline = "74c3a41fb"
+result_commit = "db845d5c9"
+ingest = "Terra reproduced all gates: server-workflow 12, server-journal 42, clang_lifecycle 7 (chained_journal_reopens_after_shutdown green; gen-1 fragment revalidated from artifact store). Diff re-read: reduce_chained mirrors the live fallback exactly (Requested+Keyed -> one retry from New; original error preserved); replay_stream unconditionally chained with faithful-inverse justification; journal inline copy DELETED. F1-F3 falsifiers present with exact StageKeyMismatch operands. fmt drift + clippy warnings located only in pre-existing trunk files (publication/format.rs, publication/owner.rs, append_group dead-code) — not L8 regressions. R10 reopen blocker healed."
 
 [[workers]]
 task = "planned"
