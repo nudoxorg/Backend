@@ -34,6 +34,7 @@ pub(crate) fn load_database(directory: &Path) -> Result<CompilationDatabase, Dat
         || !clang_sys::clang_CompileCommands_getCommand::is_loaded()
         || !clang_sys::clang_CompileCommands_dispose::is_loaded()
         || !clang_sys::clang_CompileCommand_getArg::is_loaded()
+        || !clang_sys::clang_CompileCommand_getDirectory::is_loaded()
         || !clang_sys::clang_CompileCommand_getNumArgs::is_loaded()
         || !clang_sys::clang_getCString::is_loaded()
         || !clang_sys::clang_disposeString::is_loaded()
@@ -70,9 +71,12 @@ pub(crate) fn load_database(directory: &Path) -> Result<CompilationDatabase, Dat
             arguments.push(CString::new(text).map_err(|_| DatabaseError::StringContainsNul)?);
         }
         let file_name = arguments.last().ok_or(DatabaseError::Native)?.clone();
+        let directory =
+            native_text(unsafe { clang_sys::clang_CompileCommand_getDirectory(command) })?;
         result.push(CompilationCommand {
             file_name,
             arguments,
+            directory: CString::new(directory).map_err(|_| DatabaseError::StringContainsNul)?,
         });
     }
     unsafe { clang_sys::clang_CompileCommands_dispose(commands) };
@@ -121,9 +125,10 @@ pub(crate) fn parse(input: ClangInput<'_>) -> Result<TranslationUnit, CollectErr
                 observed: input.source().len(),
             }
         })?;
+        let resolved_file_name = resolved_file_name(input)?;
         let mut unit = ptr::null_mut();
         let mut unsaved = CXUnsavedFile {
-            Filename: input.file_name().as_ptr(),
+            Filename: resolved_file_name.as_ptr(),
             Contents: input.source().as_ptr().cast::<c_char>(),
             Length: source_len,
         };
@@ -147,7 +152,7 @@ pub(crate) fn parse(input: ClangInput<'_>) -> Result<TranslationUnit, CollectErr
         let status = unsafe {
             clang_sys::clang_parseTranslationUnit2(
                 index,
-                input.file_name().as_ptr(),
+                resolved_file_name.as_ptr(),
                 arguments.as_ptr(),
                 argument_count,
                 &raw mut unsaved,
@@ -171,7 +176,7 @@ pub(crate) fn parse(input: ClangInput<'_>) -> Result<TranslationUnit, CollectErr
             });
         }
         // SAFETY: unit is live, and the input C string lives for this immediate lookup.
-        let main_file = unsafe { clang_sys::clang_getFile(unit, input.file_name().as_ptr()) };
+        let main_file = unsafe { clang_sys::clang_getFile(unit, resolved_file_name.as_ptr()) };
         if main_file.is_null() {
             // SAFETY: libclang returned the live unit and index on this successful parse path.
             unsafe { clang_sys::clang_disposeTranslationUnit(unit) };
@@ -740,10 +745,14 @@ impl RequiredApi {
 /// Produces the small fixed native command vector implied by one typed profile.
 fn parse_arguments(
     input: ClangInput<'_>,
-) -> Result<([*const c_char; crate::MAX_DATABASE_ARGUMENTS], usize), CollectError> {
-    let mut arguments = [ptr::null(); crate::MAX_DATABASE_ARGUMENTS];
+) -> Result<([*const c_char; crate::MAX_DATABASE_ARGUMENTS + 2], usize), CollectError> {
+    let mut arguments = [ptr::null(); crate::MAX_DATABASE_ARGUMENTS + 2];
     let values = if let Some(values) = input.database_arguments() {
         values
+            .get(1..values.len().saturating_sub(1))
+            .ok_or(CollectError::Parse {
+                failure: ParseFailure::InvalidArguments,
+            })?
     } else {
         &[
             c"-x",
@@ -753,17 +762,52 @@ fn parse_arguments(
             c"-ferror-limit=0",
         ]
     };
-    if values.len() > arguments.len() {
+    let extra = usize::from(input.database_working_directory().is_some()) * 2;
+    if values
+        .len()
+        .checked_add(extra)
+        .is_none_or(|len| len > arguments.len())
+    {
         return Err(CollectError::ScratchCapacity {
             lane: crate::ScratchLane::Arguments,
             capacity: arguments.len(),
             required: values.len(),
         });
     }
-    for (slot, value) in arguments.iter_mut().zip(values) {
+    let mut count = 0;
+    if let Some(directory) = input.database_working_directory() {
+        arguments[count] = c"-working-directory".as_ptr();
+        arguments[count + 1] = directory.as_ptr();
+        count += 2;
+    }
+    for (slot, value) in arguments[count..].iter_mut().zip(values) {
         *slot = value.as_ptr();
     }
-    Ok((arguments, values.len()))
+    count += values.len();
+    Ok((arguments, count))
+}
+
+/// Resolves a database-relative source path using the database command's explicit directory.
+fn resolved_file_name(input: ClangInput<'_>) -> Result<CString, CollectError> {
+    let Some(directory) = input.database_working_directory() else {
+        return Ok(input.file_name().to_owned());
+    };
+    let directory = std::str::from_utf8(directory.to_bytes()).map_err(|_| CollectError::Parse {
+        failure: ParseFailure::InvalidArguments,
+    })?;
+    let file_name =
+        std::str::from_utf8(input.file_name().to_bytes()).map_err(|_| CollectError::Parse {
+            failure: ParseFailure::InvalidArguments,
+        })?;
+    let path = Path::new(file_name);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(directory).join(path)
+    };
+    CString::new(path.to_string_lossy().as_bytes()).map_err(|_| CollectError::Parse {
+        failure: ParseFailure::InvalidArguments,
+    })
 }
 
 /// Maps libclang's closed parse status to the public typed error without discarding unknown codes.

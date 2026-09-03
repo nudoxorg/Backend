@@ -12,6 +12,10 @@ use compiler_languages_clang::{
     facts::{TypeKind, TypeQualifiers},
 };
 use compiler_vocabulary::{CStandard, CxxStandard};
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// Identifies the one direct native fact a live authority proof requires.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -57,6 +61,9 @@ enum TestError {
     /// Direct libclang collection returned its exact typed error.
     #[error(transparent)]
     Collection(#[from] CollectError),
+    /// The real compilation database could not be loaded.
+    #[error(transparent)]
+    Database(#[from] compiler_languages_clang::DatabaseError),
     /// A required direct native fact was absent from the returned bounded fact prefixes.
     #[error("missing direct native fact: {0}")]
     Missing(RequiredFact),
@@ -96,6 +103,84 @@ int caller(int *value) { return SCALE(add(*value, 2)); }
             Err(TestError::Missing(RequiredFact::Documentation))
         }
     })
+}
+
+#[test]
+fn database_authority_parses_relative_translation_unit_with_real_include() -> Result<(), TestError>
+{
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Function,
+            })
+        })?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("nudox-clang-authority-{suffix}"));
+    let source_path = root.join("src/main.c");
+    fs::create_dir_all(root.join("src")).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    fs::create_dir_all(root.join("include")).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    let source = b"#include \"base.h\"\nint main(void) { return BASE; }\n";
+    fs::write(root.join("include/base.h"), b"#define BASE 7\n").map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    fs::write(&source_path, source).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let database = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"src/main.c\",\"arguments\":[\"clang\",\"-x\",\"c\",\"-std=c23\",\"-I\",\"include\",\"src/main.c\"]}}]",
+        root.display()
+    );
+    fs::write(root.join("compile_commands.json"), database).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let result = (|| {
+        let database = compiler_languages_clang::CompilationDatabase::from_directory(&root)?;
+        let command =
+            database
+                .commands()
+                .first()
+                .ok_or(TestError::Missing(RequiredFact::Declaration {
+                    kind: DeclarationKind::Function,
+                }))?;
+        let arguments = command
+            .arguments()
+            .iter()
+            .map(|argument| argument.as_c_str())
+            .collect::<Vec<_>>();
+        let input =
+            ClangInput::from_database(command.file_name(), source, &arguments, command.directory())
+                .map_err(|_| {
+                    TestError::Missing(RequiredFact::Declaration {
+                        kind: DeclarationKind::Function,
+                    })
+                })?;
+        with_scratch(|scratch| {
+            let facts = collect(input, scratch)?;
+            require_declaration(&facts, DeclarationKind::Function)?;
+            require_dependency(&facts, SourceDependencyKind::Include)
+        })
+    })();
+    let cleanup = fs::remove_dir_all(&root);
+    result.and(cleanup.map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    }))
 }
 
 #[test]

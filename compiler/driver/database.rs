@@ -80,7 +80,7 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
     }
     let argument_slice = &borrowed[..arguments.len()];
     let file_name = command.file_name();
-    let input = ClangInput::from_database(file_name, source, argument_slice)
+    let input = ClangInput::from_database(file_name, source, argument_slice, command.directory())
         .map_err(DatabaseCompileFailure::Arguments)?;
     let byte_len =
         u32::try_from(source.len()).map_err(|cause| DatabaseCompileFailure::SourceLength {

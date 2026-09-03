@@ -112,7 +112,7 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
 #[test]
 fn database_argument_capacity_rejects_without_truncation() {
     let values = [c"-DVALUE=1"; MAX_DATABASE_ARGUMENTS + 1];
-    let result = ClangInput::from_database(c"main.c", b"int main;", &values);
+    let result = ClangInput::from_database(c"main.c", b"int main;", &values, c".");
     match result {
         Err(error) => {
             assert_eq!(error.required, MAX_DATABASE_ARGUMENTS + 1);

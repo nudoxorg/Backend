@@ -80,6 +80,8 @@ pub enum ClangInput<'source> {
         source: &'source [u8],
         /// Arguments copied from the database without adding or truncating flags.
         arguments: DatabaseArguments<'source>,
+        /// The command's explicit working directory, supplied by libclang's database authority.
+        working_directory: &'source CStr,
     },
 }
 
@@ -179,11 +181,22 @@ impl<'source> ClangInput<'source> {
         file_name: &'source CStr,
         source: &'source [u8],
         arguments: &'source [&'source CStr],
+        working_directory: &'source CStr,
     ) -> Result<Self, DatabaseArgumentError> {
         Ok(Self::Database {
             file_name,
             source,
             arguments: DatabaseArguments::new(arguments)?,
+            working_directory,
         })
+    }
+
+    pub(crate) const fn database_working_directory(self) -> Option<&'source CStr> {
+        match self {
+            Self::Database {
+                working_directory, ..
+            } => Some(working_directory),
+            _ => None,
+        }
     }
 }

@@ -39,6 +39,7 @@ pub use scratch::ClangScratch;
 pub struct CompilationCommand {
     pub(crate) file_name: std::ffi::CString,
     pub(crate) arguments: Vec<std::ffi::CString>,
+    pub(crate) directory: std::ffi::CString,
 }
 
 impl CompilationCommand {
@@ -49,6 +50,11 @@ impl CompilationCommand {
     /// All command arguments, including the compiler and source path, verbatim.
     pub fn arguments(&self) -> &[std::ffi::CString] {
         &self.arguments
+    }
+
+    /// Working directory recorded by the compilation database.
+    pub fn directory(&self) -> &std::ffi::CStr {
+        &self.directory
     }
 }
 
