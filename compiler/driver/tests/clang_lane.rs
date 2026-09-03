@@ -162,11 +162,11 @@ where
     // libclang may still hold the native work dir's files briefly after the
     // authority is dropped; retry the bounded removal before failing.
     let mut removed = std::fs::remove_dir_all(&work);
-    for _ in 0..3 {
+    for attempt in 0..10 {
         if removed.is_ok() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(50u64 + 25u64 * attempt));
         removed = std::fs::remove_dir_all(&work);
     }
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
