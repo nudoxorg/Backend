@@ -194,3 +194,19 @@ was already repaired by W1's fixture update; the test's error-erasure
 modules in lower/{clang,csharp,rust,typescript,python}.rs (40 errors,
 E0277/E0422/E0308/E0004/E0106/E0599 families) — exactly M10/W0. go.rs's
 own cfg(test) module compiles (warnings only).
+
+## R7 — Shared-target artifact poisoning across worktrees (gate law)
+
+`CARGO_TARGET_DIR` points at a target dir shared by every lane worktree
+(`/Users/mileswirht/Downloads/backend/.local/target`). Cargo considers a
+crate artifact fresh by content fingerprint, but artifacts bake
+compile-time `env!` values: the `compiler-languages-go` rlib the tests
+linked was compiled in `/private/tmp/nudox-j10c-worktree`, so
+`GoOracle::authority_image` ran `go run` against THAT worktree's oracle
+directory (pre-W11c image.go) and reproduced a fault that does not exist
+in this branch. It also produced impossible `GoFacts` field errors after
+stale `compiler-ir` artifacts. Gate law from here on: every evidence gate
+for this capability runs with a worktree-private
+`CARGO_TARGET_DIR=/private/tmp/nudox-fidelity-go/.target` so artifact
+provenance is this worktree's sources, verified by dumping the oracle
+child's cwd through a wrapper script (observed j10c cwd before the fix).
