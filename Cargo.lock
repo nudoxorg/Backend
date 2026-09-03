@@ -1302,6 +1302,7 @@ dependencies = [
  "compiler-vocabulary",
  "flate2",
  "heart-identity",
+ "serde_json",
  "server-index-build",
  "server-index-core",
  "server-index-publish",
