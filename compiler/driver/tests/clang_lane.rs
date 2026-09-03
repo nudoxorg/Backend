@@ -2,10 +2,13 @@
 //! interleave, so these assertions locate rows by their decoded content.
 
 use compiler_driver::{
-    compile, CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection,
+    AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
+    CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
-use compiler_ir::{EntityKind, FragmentView, NominalRef, PrimitiveShape, SemanticTypeTag};
+use compiler_ir::{
+    EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
+    SemanticTypeTag,
+};
 use compiler_vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use heart_identity::{ContentId, ToolchainDomain};
 use std::{
@@ -127,11 +130,572 @@ fn child_target(view: &FragmentView<'_>) -> Result<u32, TestError> {
     word(payload, at + 1)
 }
 
+fn inspect<F>(source: &[u8], check: F) -> Result<(), TestError>
+where
+    F: FnOnce(&FragmentView<'_>) -> Result<(), TestError>,
+{
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let work =
+        std::env::temp_dir().join(format!("nudox-clang-lane-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let mut output = vec![0xa5_u8; 65_536];
+    let result = lower(source, &mut output, &work).and_then(|view| check(&view));
+    let removed = std::fs::remove_dir_all(&work);
+    result.and(removed.map_err(|_| TestError::Check("remove native work")))
+}
+
+fn entities<'a>(view: &'a FragmentView<'a>) -> Vec<(&'a [u8], EntityKind)> {
+    let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+    view.entities()
+        .map(|entity| {
+            (
+                atoms.get(entity.name.raw as usize).copied().unwrap_or(&[]),
+                entity.kind,
+            )
+        })
+        .collect()
+}
+
+fn rows<'a>(
+    view: &'a FragmentView<'a>,
+) -> Result<Vec<compiler_ir::DecodedTypeFact<'a>>, TestError> {
+    view.type_facts()
+        .ok_or(TestError::Check("missing type facts"))?
+        .collect::<Result<_, _>>()
+        .map_err(|_| TestError::Check("type row decode"))
+}
+
+fn extension(
+    view: &FragmentView<'_>,
+    ordinal: usize,
+) -> Result<compiler_ir::ClangFacts, TestError> {
+    let payload = view
+        .language_extension_payload()
+        .ok_or(TestError::Check("missing extensions"))?;
+    let directory = 16 + 6 * 20;
+    let row_count = usize::try_from(word(payload, directory + 4)?)
+        .map_err(|_| TestError::Check("row count overflow"))?;
+    let fact_count = word(payload, directory + 8)?;
+    let offset = usize::try_from(word(payload, directory + 12)?)
+        .map_err(|_| TestError::Check("fact offset overflow"))?;
+    let index = word(payload, offset + ordinal * 4)?;
+    if index == u32::MAX || fact_count == 0 {
+        return Err(TestError::Check("extension row absent"));
+    }
+    let at = offset
+        + row_count * 4
+        + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * 24;
+    compiler_ir::ClangFacts::decode(payload, at)
+        .ok_or(TestError::Check("extension row undecodable"))
+}
+
+fn children<'a>(
+    view: &'a FragmentView<'a>,
+    row: &compiler_ir::DecodedTypeFact<'a>,
+) -> Result<Vec<(u8, u32, &'a [u8])>, TestError> {
+    let payload = view
+        .type_fact_payload()
+        .ok_or(TestError::Check("missing type payload"))?;
+    let count =
+        usize::try_from(word(payload, 0)?).map_err(|_| TestError::Check("row count overflow"))?;
+    let mut at = 4;
+    for _ in 0..count {
+        at += 13;
+        skip_name(payload, &mut at)?;
+        skip_name(payload, &mut at)?;
+        at += match payload.get(at).copied() {
+            Some(0) => 1,
+            Some(1) => 5,
+            Some(2) => 21,
+            _ => return Err(TestError::Check("invalid nominal cell")),
+        } + 8;
+    }
+    let child_base = at + 4;
+    let start = usize::try_from(row.record.children.start)
+        .map_err(|_| TestError::Check("child start overflow"))?;
+    let length = usize::try_from(row.record.children.length)
+        .map_err(|_| TestError::Check("child length overflow"))?;
+    let mut result = Vec::new();
+    for index in 0..length {
+        let cell = child_base + (start + index) * 9;
+        let target = word(payload, cell + 1)?;
+        let name_at = cell + 5;
+        let name = match payload.get(name_at).copied() {
+            Some(0) => &[][..],
+            Some(1) => {
+                let len = usize::try_from(word(payload, name_at + 1)?)
+                    .map_err(|_| TestError::Check("child name overflow"))?;
+                payload
+                    .get(name_at + 5..name_at + 5 + len)
+                    .ok_or(TestError::Check("child name truncated"))?
+            }
+            _ => return Err(TestError::Check("invalid child name")),
+        };
+        result.push((payload[cell], target, name));
+    }
+    Ok(result)
+}
+
+#[test]
+fn empty_source_has_no_semantic_sections() -> Result<(), TestError> {
+    inspect(b"", |view| {
+        if !view.entities().next().is_none()
+            || view.type_facts().is_some()
+            || view.occurrences().is_some()
+            || view.docs().is_some()
+        {
+            return Err(TestError::Check("empty semantic sections"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<(), TestError> {
+    let source = b"struct B; struct A { struct B *b; }; struct B { struct A *a; };";
+    inspect(source, |view| {
+        let got = entities(view);
+        if got
+            != [
+                (&b"B"[..], EntityKind::Record),
+                (&b"A"[..], EntityKind::Record),
+                (&b"b"[..], EntityKind::Field),
+                (&b"a"[..], EntityKind::Field),
+            ]
+        {
+            return Err(TestError::Check("mutual entity order"));
+        }
+        let facts = rows(view)?;
+        if facts.len() != 4 {
+            return Err(TestError::Check("mutual row count"));
+        }
+        if !facts.iter().any(|row| {
+            row.owner.raw == 0
+                && row.record.nominal == Some(NominalRef::Local(compiler_ir::EntityId::new(0)))
+        }) {
+            return Err(TestError::Check("B self nominal"));
+        }
+        for (owner, target_name) in [(2, &b"B"[..]), (3, &b"A"[..])] {
+            let row = facts
+                .iter()
+                .find(|row| row.owner.raw == owner && row.record.children.length == 1)
+                .ok_or(TestError::Check("pointer row"))?;
+            let child = children(view, row)?
+                .into_iter()
+                .next()
+                .ok_or(TestError::Check("pointer child"))?;
+            let target = got
+                .iter()
+                .position(|(name, _)| *name == target_name)
+                .ok_or(TestError::Check("target entity"))? as u32;
+            let target_row = facts
+                .iter()
+                .find(|candidate| candidate.owner.raw == target)
+                .ok_or(TestError::Check("target row"))?;
+            if child.0 != 0 || child.1 != target_row.owner.raw {
+                return Err(TestError::Check("pointer target"));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn enumerators_and_typedef_have_content_addressed_rows() -> Result<(), TestError> {
+    inspect(
+        b"enum Color { RED, GREEN };\ntypedef enum Color ColorAlias;\n",
+        |view| {
+            let got = entities(view);
+            if got.iter().map(|(_, kind)| *kind).collect::<Vec<_>>()
+                != [
+                    EntityKind::Enum,
+                    EntityKind::Variant,
+                    EntityKind::Variant,
+                    EntityKind::Alias,
+                ]
+            {
+                return Err(TestError::Check("enum kinds"));
+            }
+            let red = got
+                .iter()
+                .position(|(name, _)| *name == b"RED")
+                .ok_or(TestError::Check("RED entity"))? as u32;
+            let row = rows(view)?
+                .into_iter()
+                .find(|row| row.owner.raw == red)
+                .ok_or(TestError::Check("RED row"))?;
+            if row.record.tag != SemanticTypeTag::Primitive
+                || row.record.payload0 != u32::from(PrimitiveShape::Integer)
+                || row.record.payload1
+                    != (32 << 1) | compiler_ir::SemanticTypeRecord::INTEGER_SIGNED_FLAG
+            {
+                return Err(TestError::Check("RED integer payload"));
+            }
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
+    let source = b"int add(int a, int b);\nint use(void) { return add(1, 2); }\n";
+    inspect(source, |view| {
+        let got = entities(view);
+        for name in [&b"a"[..], &b"b"[..]] {
+            if !got.contains(&(name, EntityKind::Parameter)) {
+                return Err(TestError::Check("parameter"));
+            }
+        }
+        let add = got
+            .iter()
+            .position(|(name, kind)| *name == b"add" && *kind == EntityKind::Function)
+            .ok_or(TestError::Check("add"))? as u32;
+        let use_ordinal = got
+            .iter()
+            .position(|(name, kind)| *name == b"use" && *kind == EntityKind::Function)
+            .ok_or(TestError::Check("use"))? as u32;
+        let facts = rows(view)?;
+        let function = facts
+            .iter()
+            .find(|row| row.owner.raw == add)
+            .ok_or(TestError::Check("add fact"))?;
+        if function.record.tag != SemanticTypeTag::FunctionPointer
+            || function.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || function.record.children.length != 3
+        {
+            return Err(TestError::Check("add signature"));
+        }
+        let call = view
+            .occurrences()
+            .ok_or(TestError::Check("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Check("occurrence decode"))?
+            .into_iter()
+            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::FunctionCall)
+            .ok_or(TestError::Check("call"))?;
+        let call_offset = source
+            .windows(3)
+            .position(|window| window == b"add")
+            .ok_or(TestError::Check("call spelling"))?;
+        if call.owner.raw != use_ordinal
+            || call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+            || call.occurrence.span.start
+                != u32::try_from(call_offset).map_err(|_| TestError::Check("span overflow"))?
+        {
+            return Err(TestError::Check("call ownership/span"));
+        }
+        if call.occurrence.target
+            != compiler_ir::OccurrenceTarget::Local(compiler_ir::EntityId::new(add))
+        {
+            return Err(TestError::Check("call target"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn qualifiers_storage_and_incomplete_layout_are_extension_facts() -> Result<(), TestError> {
+    inspect(
+        b"static const int limit = 10;\nstruct Incomplete;\nextern volatile int flag;\n",
+        |view| {
+            let got = entities(view);
+            let limit = got
+                .iter()
+                .position(|(name, _)| *name == b"limit")
+                .ok_or(TestError::Check("limit"))?;
+            let flag = got
+                .iter()
+                .position(|(name, _)| *name == b"flag")
+                .ok_or(TestError::Check("flag"))?;
+            let incomplete = got
+                .iter()
+                .position(|(name, _)| *name == b"Incomplete")
+                .ok_or(TestError::Check("Incomplete"))?;
+            let limit_fact = extension(view, limit)?;
+            if !limit_fact.qualifiers.is_const
+                || limit_fact.storage != compiler_ir::ClangStorageClass::Static
+                || limit_fact.layout.size_bits != Some(32)
+                || limit_fact.layout.align_bits != Some(32)
+            {
+                return Err(TestError::Check("limit extension"));
+            }
+            let flag_fact = extension(view, flag)?;
+            if !flag_fact.qualifiers.is_volatile
+                || flag_fact.storage != compiler_ir::ClangStorageClass::Extern
+            {
+                return Err(TestError::Check("flag extension"));
+            }
+            let incomplete_fact = extension(view, incomplete)?;
+            if incomplete_fact.layout.size_bits.is_some()
+                || incomplete_fact.layout.align_bits.is_some()
+            {
+                return Err(TestError::Check("incomplete layout"));
+            }
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn template_parameter_is_pooled_and_field_is_typevar() -> Result<(), TestError> {
+    let source =
+        b"template<typename T> struct Box { T value; };\nstruct User { struct Box<int> box; };\n";
+    inspect(source, |view| {
+        let got = entities(view);
+        if got.iter().any(|(name, _)| *name == b"T") {
+            return Err(TestError::Check("T became entity"));
+        }
+        let box_ordinal = got
+            .iter()
+            .position(|(name, _)| *name == b"Box")
+            .ok_or(TestError::Check("Box"))?;
+        let fact = extension(view, box_ordinal)?;
+        let pool = view
+            .extension_pool_payload()
+            .ok_or(TestError::Check("extension pool"))?;
+        let parameter_index = fact.templates.raw as usize;
+        let count =
+            usize::try_from(word(pool, 0)?).map_err(|_| TestError::Check("parameter count"))?;
+        if parameter_index >= count {
+            return Err(TestError::Check("parameter index"));
+        }
+        let mut at = 4;
+        let mut parameter = &[][..];
+        for index in 0..count {
+            if pool.get(at) != Some(&1) {
+                return Err(TestError::Check("parameter presence"));
+            }
+            let length = usize::try_from(word(pool, at + 1)?)
+                .map_err(|_| TestError::Check("parameter length"))?;
+            let name = pool
+                .get(at + 5..at + 5 + length)
+                .ok_or(TestError::Check("parameter text"))?;
+            if index == parameter_index {
+                parameter = name;
+            }
+            at += 5 + length + 10;
+        }
+        if parameter != b"T" {
+            return Err(TestError::Check("pooled T"));
+        }
+        let value = got
+            .iter()
+            .position(|(name, _)| *name == b"value")
+            .ok_or(TestError::Check("value"))? as u32;
+        let row = rows(view)?
+            .into_iter()
+            .find(|row| row.owner.raw == value)
+            .ok_or(TestError::Check("value row"))?;
+        if row.record.tag != SemanticTypeTag::TypeVar || row.record.text != Some(b"T") {
+            return Err(TestError::Check("value TypeVar"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn anonymous_struct_names_its_field_child() -> Result<(), TestError> {
+    inspect(b"struct { int x; } point;\n", |view| {
+        let got = entities(view);
+        if got
+            != [
+                (&b"x"[..], EntityKind::Field),
+                (&b"point"[..], EntityKind::Static),
+            ]
+        {
+            return Err(TestError::Check("anonymous entities"));
+        }
+        let point = 1_u32;
+        let facts = rows(view)?;
+        let row = facts
+            .iter()
+            .find(|row| row.owner.raw == point)
+            .ok_or(TestError::Check("anonymous row"))?;
+        if row.record.tag != SemanticTypeTag::AnonymousRecord
+            || row.record.payload0 != 0
+            || row.record.children.length != 1
+        {
+            return Err(TestError::Check("anonymous record"));
+        }
+        let child = children(view, row)?
+            .into_iter()
+            .next()
+            .ok_or(TestError::Check("anonymous child"))?;
+        if child.0 != 0 || child.1 != 0 || child.2 != b"x" {
+            return Err(TestError::Check("anonymous child content"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn include_atoms_share_one_extension_pool_list() -> Result<(), TestError> {
+    inspect(
+        b"#include <stdio.h>\n#include \"local.h\"\nint x;\n",
+        |view| {
+            let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+            if !atoms.contains(&&b"stdio.h"[..]) || !atoms.contains(&&b"local.h"[..]) {
+                return Err(TestError::Check("include atoms"));
+            }
+            let fact = extension(view, 0)?;
+            let pool = view
+                .extension_pool_payload()
+                .ok_or(TestError::Check("extension pool"))?;
+            let parameter_count =
+                usize::try_from(word(pool, 0)?).map_err(|_| TestError::Check("pool count"))?;
+            let mut at = 4;
+            for _ in 0..parameter_count {
+                let length = usize::try_from(word(pool, at + 1)?)
+                    .map_err(|_| TestError::Check("pool parameter"))?;
+                at += 5 + length + 10;
+            }
+            let list_count =
+                usize::try_from(word(pool, at)?).map_err(|_| TestError::Check("list count"))?;
+            at += 4;
+            let index = fact.includes.raw as usize;
+            if index >= list_count {
+                return Err(TestError::Check("include list index"));
+            }
+            let mut list = Vec::new();
+            for list_index in 0..list_count {
+                let length = usize::try_from(word(pool, at)?)
+                    .map_err(|_| TestError::Check("list length"))?;
+                at += 4;
+                if list_index == index {
+                    for item in 0..length {
+                        list.push(word(pool, at + item * 4)?);
+                    }
+                }
+                at += length * 4;
+            }
+            if list.len() != 2
+                || !list.iter().all(|coordinate| {
+                    atoms
+                        .get(*coordinate as usize)
+                        .is_some_and(|atom| *atom == b"stdio.h" || *atom == b"local.h")
+                })
+            {
+                return Err(TestError::Check("shared include list"));
+            }
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn doxygen_ref_is_a_local_link_with_text_fragments() -> Result<(), TestError> {
+    let source = b"/// Adds one.\n/// See @ref add and foreign things.\nint add(int a);\n";
+    inspect(source, |view| {
+        let docs = view
+            .docs()
+            .ok_or(TestError::Check("docs"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Check("doc decode"))?;
+        let add = entities(view)
+            .iter()
+            .position(|(name, kind)| *name == b"add" && *kind == EntityKind::Function)
+            .ok_or(TestError::Check("add entity"))? as u32;
+        let mut link = false;
+        for doc in &docs {
+            if let compiler_ir::DocFragmentInput::Link { label, target } = &doc.fragment {
+                if *label == b"add"
+                    && *target == compiler_ir::DocLinkTarget::Local(compiler_ir::EntityId::new(add))
+                {
+                    link = true;
+                }
+            }
+        }
+        if docs.len() < 4 || !link {
+            return Err(TestError::Check("doxygen fragments/link"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn macro_definition_and_invocation_are_typed_facts() -> Result<(), TestError> {
+    inspect(b"#define LIMIT 100\nint x = LIMIT;\n", |view| {
+        let got = entities(view);
+        if !got.contains(&(&b"LIMIT"[..], EntityKind::Constant)) {
+            return Err(TestError::Check("LIMIT constant"));
+        }
+        let invocation = view
+            .occurrences()
+            .ok_or(TestError::Check("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Check("occurrence decode"))?
+            .into_iter()
+            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::MacroInvocation)
+            .ok_or(TestError::Check("macro invocation"))?;
+        if invocation.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
+            return Err(TestError::Check("macro confidence"));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), TestError> {
+    let mut source = String::new();
+    for ordinal in 0..256 {
+        source.push_str(&format!("int value_{ordinal};\n"));
+    }
+    let work = std::env::temp_dir().join(format!("nudox-clang-capacity-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let mut output = vec![0xa5_u8; 65_536];
+    let mut diagnostic_output = [0_u8; 4096];
+    let cancelled = AtomicBool::new(false);
+    let toolchain = ToolchainSelection::ResolvedNative(
+        ResolvedToolchain::from_identity(
+            NativeTool::Clang,
+            Path::new("/usr/bin/clang"),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
+        )
+        .map_err(|_| TestError::Check("toolchain path was rejected"))?,
+    );
+    let result = compile(
+        CompileRequest {
+            profile: LanguageProfile::C(CStandard::C23),
+            stage: Stage::LowerIr,
+            source: source.as_bytes(),
+            toolchain,
+            authority: SemanticAuthorityInput::None,
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(60),
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic_output,
+            native_work: &work,
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    );
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
+    match result {
+        Err(CompileFailure::Authority {
+            failure:
+                AuthorityFailure::Clang {
+                    cause: compiler_languages_clang::CollectError::ScratchCapacity { .. },
+                    ..
+                },
+            ..
+        }) => Ok(()),
+        Ok(_) => Err(TestError::Check("capacity admitted")),
+        Err(_) => Err(TestError::Check("wrong capacity terminal")),
+    }
+}
+
 #[test]
 fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> Result<(), TestError>
 {
     let work = std::env::temp_dir().join(format!("nudox-clang-lane-{}", std::process::id()));
-    std::fs::create_dir(&work).map_err(|_| TestError::Check("create native work"))?;
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let committed = {
         let view = lower(b"struct Node { struct Node *next; };", &mut output, &work)?;
@@ -211,7 +775,7 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         }
         view.as_ref().to_vec()
     };
-    std::fs::remove_dir(&work).map_err(|_| TestError::Check("remove native work"))?;
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
     if committed == mutated {
         return Err(TestError::Check("mutation did not change bytes"));
     }
