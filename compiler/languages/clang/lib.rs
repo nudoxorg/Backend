@@ -16,10 +16,11 @@ mod error;
 pub mod facts;
 mod ffi;
 mod input;
+pub mod purl;
 mod scratch;
 
 pub use collect::{collect, collect_cancellable};
-pub use error::{CollectError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
+pub use error::{CollectError, DatabaseError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
 pub use facts::{
     BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
     DiagnosticFact, DiagnosticSeverity, IncludeFact, MethodVirtuality, OverrideFact, ReferenceFact,
@@ -27,5 +28,44 @@ pub use facts::{
     StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers,
     TypeRelation,
 };
-pub use input::{ClangInput, UnsupportedLanguageProfile};
+pub use input::{
+    ClangInput, DatabaseArgumentError, DatabaseArguments, MAX_DATABASE_ARGUMENTS,
+    UnsupportedLanguageProfile,
+};
 pub use scratch::ClangScratch;
+
+/// One command retained by the native compilation database authority.
+#[derive(Debug)]
+pub struct CompilationCommand {
+    pub(crate) file_name: std::ffi::CString,
+    pub(crate) arguments: Vec<std::ffi::CString>,
+}
+
+impl CompilationCommand {
+    /// Source path as returned by the command's final database argument.
+    pub fn file_name(&self) -> &std::ffi::CStr {
+        &self.file_name
+    }
+    /// All command arguments, including the compiler and source path, verbatim.
+    pub fn arguments(&self) -> &[std::ffi::CString] {
+        &self.arguments
+    }
+}
+
+/// Native compilation-database snapshot with bounded command arguments.
+#[derive(Debug)]
+pub struct CompilationDatabase {
+    pub(crate) commands: Vec<CompilationCommand>,
+}
+
+impl CompilationDatabase {
+    /// Opens `compile_commands.json` through libclang's runtime-loaded authority.
+    pub fn from_directory(directory: &std::path::Path) -> Result<Self, DatabaseError> {
+        ffi::load_database(directory)
+    }
+
+    /// Returns commands in native database order.
+    pub fn commands(&self) -> &[CompilationCommand] {
+        &self.commands
+    }
+}

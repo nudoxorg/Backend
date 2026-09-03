@@ -7,6 +7,9 @@ use thiserror::Error;
 /// One caller-provided fact region accepted by [`crate::ClangScratch`].
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum ScratchLane {
+    /// Compilation-database native argument pointers.
+    #[error("arguments")]
+    Arguments,
     /// Declaration fact slots.
     #[error("declarations")]
     Declarations,
@@ -164,4 +167,32 @@ pub enum CollectError {
         /// Exact caller capacity at the overflow boundary.
         capacity: usize,
     },
+}
+
+/// Failure while locating or reading a native compilation database.
+#[derive(Debug, Error)]
+pub enum DatabaseError {
+    /// The directory path could not be represented as a native string.
+    #[error("compilation-database directory contains NUL")]
+    DirectoryContainsNul,
+    /// No generated compilation database was present in the directory.
+    #[error("compilation database absent")]
+    Absent,
+    /// A command exceeded the fixed argument bound.
+    #[error("compilation-database arguments require {required}, capacity is {capacity}")]
+    ArgumentCapacity {
+        /// Exact required argument count.
+        required: usize,
+        /// Fixed lane capacity.
+        capacity: usize,
+    },
+    /// A native database string was not valid UTF-8.
+    #[error("compilation database contains invalid UTF-8")]
+    InvalidUtf8,
+    /// A native database string contained an interior NUL.
+    #[error("compilation database contains an interior NUL")]
+    StringContainsNul,
+    /// Native loading or database parsing failed.
+    #[error("compilation database native failure")]
+    Native,
 }

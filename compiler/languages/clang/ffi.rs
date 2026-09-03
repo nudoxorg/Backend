@@ -6,6 +6,7 @@ use core::{
     ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void},
     ptr,
 };
+use std::{ffi::CString, path::Path};
 
 use clang_sys::{
     CXChildVisitResult, CXCursor, CXDiagnostic, CXErrorCode, CXFile, CXIndex, CXSourceLocation,
@@ -13,10 +14,71 @@ use clang_sys::{
 };
 
 use crate::{
-    CollectError, NativeApi, NativeFailure, ParseFailure,
+    CollectError, CompilationCommand, CompilationDatabase, DatabaseError, NativeApi, NativeFailure,
+    ParseFailure,
     facts::{SourceSpan, SymbolIdentity},
     input::ClangInput,
 };
+
+/// Reads the native compilation database and retains only bounded, owned command cells.
+pub(crate) fn load_database(directory: &Path) -> Result<CompilationDatabase, DatabaseError> {
+    let directory = CString::new(directory.to_string_lossy().as_bytes())
+        .map_err(|_| DatabaseError::DirectoryContainsNul)?;
+    if !clang_sys::is_loaded() {
+        clang_sys::load().map_err(|_| DatabaseError::Native)?;
+    }
+    if !clang_sys::clang_CompilationDatabase_fromDirectory::is_loaded()
+        || !clang_sys::clang_CompilationDatabase_getAllCompileCommands::is_loaded()
+        || !clang_sys::clang_CompilationDatabase_dispose::is_loaded()
+        || !clang_sys::clang_CompileCommands_getSize::is_loaded()
+        || !clang_sys::clang_CompileCommands_getCommand::is_loaded()
+        || !clang_sys::clang_CompileCommands_dispose::is_loaded()
+        || !clang_sys::clang_CompileCommand_getArg::is_loaded()
+        || !clang_sys::clang_CompileCommand_getNumArgs::is_loaded()
+        || !clang_sys::clang_getCString::is_loaded()
+        || !clang_sys::clang_disposeString::is_loaded()
+    {
+        return Err(DatabaseError::Native);
+    }
+    let mut status = clang_sys::CXCompilationDatabase_NoError;
+    // SAFETY: the path is a live NUL-terminated string for this synchronous call.
+    let database = unsafe {
+        clang_sys::clang_CompilationDatabase_fromDirectory(directory.as_ptr(), &raw mut status)
+    };
+    if database.is_null() {
+        return Err(DatabaseError::Absent);
+    }
+    // SAFETY: database is live and exclusively owned here.
+    let commands = unsafe { clang_sys::clang_CompilationDatabase_getAllCompileCommands(database) };
+    let size = unsafe { clang_sys::clang_CompileCommands_getSize(commands) };
+    let mut result = Vec::new();
+    for index in 0..size {
+        let command = unsafe { clang_sys::clang_CompileCommands_getCommand(commands, index) };
+        let count = unsafe { clang_sys::clang_CompileCommand_getNumArgs(command) } as usize;
+        if count > crate::MAX_DATABASE_ARGUMENTS {
+            unsafe { clang_sys::clang_CompileCommands_dispose(commands) };
+            unsafe { clang_sys::clang_CompilationDatabase_dispose(database) };
+            return Err(DatabaseError::ArgumentCapacity {
+                required: count,
+                capacity: crate::MAX_DATABASE_ARGUMENTS,
+            });
+        }
+        let mut arguments = Vec::with_capacity(count);
+        for argument in 0..count {
+            let value = unsafe { clang_sys::clang_CompileCommand_getArg(command, argument as u32) };
+            let text = native_text(value)?;
+            arguments.push(CString::new(text).map_err(|_| DatabaseError::StringContainsNul)?);
+        }
+        let file_name = arguments.last().ok_or(DatabaseError::Native)?.clone();
+        result.push(CompilationCommand {
+            file_name,
+            arguments,
+        });
+    }
+    unsafe { clang_sys::clang_CompileCommands_dispose(commands) };
+    unsafe { clang_sys::clang_CompilationDatabase_dispose(database) };
+    Ok(CompilationDatabase { commands: result })
+}
 
 /// A live libclang index and translation unit with the caller's main source file identity.
 pub(crate) struct TranslationUnit {
@@ -65,8 +127,8 @@ pub(crate) fn parse(input: ClangInput<'_>) -> Result<TranslationUnit, CollectErr
             Contents: input.source().as_ptr().cast::<c_char>(),
             Length: source_len,
         };
-        let arguments = parse_arguments(input);
-        let argument_count = c_int::try_from(arguments.len()).map_err(|_| CollectError::Parse {
+        let (arguments, argument_count) = parse_arguments(input)?;
+        let argument_count = c_int::try_from(argument_count).map_err(|_| CollectError::Parse {
             failure: ParseFailure::InvalidArguments,
         })?;
         // SAFETY: this function verified this symbol; filename and unsaved content stay live for the
@@ -676,14 +738,32 @@ impl RequiredApi {
 }
 
 /// Produces the small fixed native command vector implied by one typed profile.
-const fn parse_arguments(input: ClangInput<'_>) -> [*const c_char; 5] {
-    [
-        c"-x".as_ptr(),
-        input.dialect_argument().as_ptr(),
-        input.standard_argument().as_ptr(),
-        c"-fparse-all-comments".as_ptr(),
-        c"-ferror-limit=0".as_ptr(),
-    ]
+fn parse_arguments(
+    input: ClangInput<'_>,
+) -> Result<([*const c_char; crate::MAX_DATABASE_ARGUMENTS], usize), CollectError> {
+    let mut arguments = [ptr::null(); crate::MAX_DATABASE_ARGUMENTS];
+    let values = if let Some(values) = input.database_arguments() {
+        values
+    } else {
+        &[
+            c"-x",
+            input.dialect_argument(),
+            input.standard_argument(),
+            c"-fparse-all-comments",
+            c"-ferror-limit=0",
+        ]
+    };
+    if values.len() > arguments.len() {
+        return Err(CollectError::ScratchCapacity {
+            lane: crate::ScratchLane::Arguments,
+            capacity: arguments.len(),
+            required: values.len(),
+        });
+    }
+    for (slot, value) in arguments.iter_mut().zip(values) {
+        *slot = value.as_ptr();
+    }
+    Ok((arguments, values.len()))
 }
 
 /// Maps libclang's closed parse status to the public typed error without discarding unknown codes.
@@ -720,4 +800,18 @@ fn native_identity(string: CXString, domain: &[u8]) -> Option<SymbolIdentity> {
     // SAFETY: string is owned by this function and has not been disposed before this point.
     unsafe { clang_sys::clang_disposeString(string) };
     identity
+}
+
+fn native_text(string: CXString) -> Result<String, DatabaseError> {
+    let pointer = unsafe { clang_sys::clang_getCString(string) };
+    let result = if pointer.is_null() {
+        Err(DatabaseError::InvalidUtf8)
+    } else {
+        let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| DatabaseError::InvalidUtf8)
+    };
+    unsafe { clang_sys::clang_disposeString(string) };
+    result
 }

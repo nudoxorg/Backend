@@ -15,6 +15,42 @@ pub struct UnsupportedLanguageProfile {
     pub profile: LanguageProfile,
 }
 
+/// Maximum number of NUL-terminated arguments retained from one compilation-database command.
+pub const MAX_DATABASE_ARGUMENTS: usize = 64;
+
+/// Borrowed arguments read verbatim from one compilation-database command.
+#[derive(Clone, Copy, Debug)]
+pub struct DatabaseArguments<'arguments> {
+    values: &'arguments [&'arguments CStr],
+}
+
+impl<'arguments> DatabaseArguments<'arguments> {
+    /// Validates the caller-owned argument array without truncating it.
+    pub fn new(values: &'arguments [&'arguments CStr]) -> Result<Self, DatabaseArgumentError> {
+        if values.len() > MAX_DATABASE_ARGUMENTS {
+            return Err(DatabaseArgumentError {
+                required: values.len(),
+                capacity: MAX_DATABASE_ARGUMENTS,
+            });
+        }
+        Ok(Self { values })
+    }
+
+    pub(crate) const fn values(self) -> &'arguments [&'arguments CStr] {
+        self.values
+    }
+}
+
+/// Exact capacity rejection for a compilation-database command.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("compilation-database arguments require {required}, capacity is {capacity}")]
+pub struct DatabaseArgumentError {
+    /// Exact number of arguments read from the command.
+    pub required: usize,
+    /// Fixed lane capacity.
+    pub capacity: usize,
+}
+
 /// Borrowed source authority and typed parsing configuration for one translation unit.
 #[derive(Clone, Copy, Debug)]
 pub enum ClangInput<'source> {
@@ -35,6 +71,15 @@ pub enum ClangInput<'source> {
         source: &'source [u8],
         /// Canonical C++ standard passed directly to libclang.
         standard: CxxStandard,
+    },
+    /// A source and the exact arguments supplied by a compilation database.
+    Database {
+        /// File path used by libclang for source identity and diagnostics.
+        file_name: &'source CStr,
+        /// Exact source bytes for this translation unit.
+        source: &'source [u8],
+        /// Arguments copied from the database without adding or truncating flags.
+        arguments: DatabaseArguments<'source>,
     },
 }
 
@@ -66,13 +111,17 @@ impl<'source> ClangInput<'source> {
 
     pub(crate) const fn file_name(self) -> &'source CStr {
         match self {
-            Self::C { file_name, .. } | Self::Cxx { file_name, .. } => file_name,
+            Self::C { file_name, .. }
+            | Self::Cxx { file_name, .. }
+            | Self::Database { file_name, .. } => file_name,
         }
     }
 
     pub(crate) const fn source(self) -> &'source [u8] {
         match self {
-            Self::C { source, .. } | Self::Cxx { source, .. } => source,
+            Self::C { source, .. } | Self::Cxx { source, .. } | Self::Database { source, .. } => {
+                source
+            }
         }
     }
 
@@ -80,6 +129,7 @@ impl<'source> ClangInput<'source> {
         match self {
             Self::C { .. } => c"c",
             Self::Cxx { .. } => c"c++",
+            Self::Database { .. } => c"c",
         }
     }
 
@@ -113,6 +163,27 @@ impl<'source> ClangInput<'source> {
                 standard: CxxStandard::Cxx26,
                 ..
             } => c"-std=c++2c",
+            Self::Database { .. } => c"",
         }
+    }
+
+    pub(crate) const fn database_arguments(self) -> Option<&'source [&'source CStr]> {
+        match self {
+            Self::Database { arguments, .. } => Some(arguments.values()),
+            _ => None,
+        }
+    }
+
+    /// Creates a database-derived input after checking its exact argument count.
+    pub fn from_database(
+        file_name: &'source CStr,
+        source: &'source [u8],
+        arguments: &'source [&'source CStr],
+    ) -> Result<Self, DatabaseArgumentError> {
+        Ok(Self::Database {
+            file_name,
+            source,
+            arguments: DatabaseArguments::new(arguments)?,
+        })
     }
 }

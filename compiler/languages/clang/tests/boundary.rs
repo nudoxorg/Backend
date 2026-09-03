@@ -2,7 +2,9 @@
 //! The tests prove canonical profile admission and pre-native source rejection deterministically.
 //! Live direct-authority fixtures belong to a provisioned libclang environment, never an ignored test.
 
-use compiler_languages_clang::{ClangInput, ClangScratch, CollectError, collect};
+use compiler_languages_clang::{
+    ClangInput, ClangScratch, CollectError, DatabaseError, MAX_DATABASE_ARGUMENTS, collect,
+};
 use compiler_vocabulary::{CStandard, LanguageProfile, RustEdition};
 use core::sync::atomic::AtomicBool;
 
@@ -105,4 +107,28 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
         Err(error) => Err(TestError::Unexpected(error)),
         Ok(_) => Err(TestError::Profile),
     }
+}
+
+#[test]
+fn database_argument_capacity_rejects_without_truncation() {
+    let values = [c"-DVALUE=1"; MAX_DATABASE_ARGUMENTS + 1];
+    let result = ClangInput::from_database(c"main.c", b"int main;", &values);
+    match result {
+        Err(error) => {
+            assert_eq!(error.required, MAX_DATABASE_ARGUMENTS + 1);
+            assert_eq!(error.capacity, MAX_DATABASE_ARGUMENTS);
+        }
+        Ok(_) => assert!(false, "over-capacity command was accepted"),
+    }
+}
+
+#[test]
+fn absent_database_is_an_explicit_typed_terminal() {
+    let result = compiler_languages_clang::CompilationDatabase::from_directory(
+        std::path::Path::new("/definitely/no/compile_commands-here"),
+    );
+    assert!(matches!(
+        result,
+        Err(DatabaseError::Absent | DatabaseError::Native)
+    ));
 }
