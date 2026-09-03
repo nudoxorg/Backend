@@ -217,9 +217,13 @@ pub fn discover_and_drive(
         }
     };
     if !output.status.success() {
+        // Some tools (meson among them) report failures on stdout; a failed
+        // drive retains both streams so the typed terminal keeps the cause.
+        let mut both = output.stdout.clone();
+        both.extend_from_slice(&output.stderr);
         return Err(BuildDriveFailure::DriveFailed {
             tool: system.tool(),
-            captured: capture(&output.stderr),
+            captured: capture(&both),
         });
     }
     let database_directory = build.clone();
