@@ -6,6 +6,7 @@
 
 mod bound;
 pub mod central;
+pub mod harness;
 mod image;
 pub mod jar;
 pub mod purl;
