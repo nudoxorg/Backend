@@ -109,6 +109,41 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
     )?;
     let mut bytes = vec![0; prepared.required_capacity()];
     prepared.write_into(&mut bytes)?;
+    // Keep the legacy assertions below on the frozen schema-1 grammar while
+    // the production writer now emits schema 2.
+    let section_count = u16::from_le_bytes([bytes[6], bytes[7]]);
+    let mut type_offset = 0;
+    for ordinal in 0..usize::from(section_count) {
+        let entry = 12 + ordinal * 16;
+        if u16::from_le_bytes([bytes[entry], bytes[entry + 1]]) == 9 {
+            type_offset = u32::from_le_bytes([
+                bytes[entry + 8], bytes[entry + 9], bytes[entry + 10], bytes[entry + 11],
+            ]) as usize;
+            break;
+        }
+    }
+    bytes.drain(type_offset + 4..type_offset + 8);
+    bytes[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    let new_length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    bytes[8..12].copy_from_slice(&new_length.to_le_bytes());
+    for ordinal in 0..usize::from(section_count) {
+        let entry = 12 + ordinal * 16;
+        let offset = u32::from_le_bytes([
+            bytes[entry + 8], bytes[entry + 9], bytes[entry + 10], bytes[entry + 11],
+        ]) as usize;
+        if offset > type_offset {
+            bytes[entry + 8..entry + 12]
+                .copy_from_slice(&u32::try_from(offset - 4).unwrap_or(u32::MAX).to_le_bytes());
+        }
+        if u16::from_le_bytes([bytes[entry], bytes[entry + 1]]) == 9 {
+            let count = u16::from_le_bytes([bytes[entry + 4], bytes[entry + 5]]);
+            bytes[entry + 4..entry + 6].copy_from_slice(&(count - 4).to_le_bytes());
+            let length = u32::from_le_bytes([
+                bytes[entry + 12], bytes[entry + 13], bytes[entry + 14], bytes[entry + 15],
+            ]);
+            bytes[entry + 12..entry + 16].copy_from_slice(&(length - 4).to_le_bytes());
+        }
+    }
     Ok(bytes)
 }
 
@@ -117,6 +152,7 @@ fn type_fact_records_round_trip_through_borrowing_cursor() -> Result<(), TestFai
     let inputs = records();
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
@@ -151,6 +187,7 @@ fn unknown_record_tag_is_rejected_with_the_observed_byte() -> Result<(), TestFai
     let inputs = records();
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
@@ -181,6 +218,7 @@ fn nominal_out_of_range_is_rejected_at_reopen() -> Result<(), TestFailure> {
     let inputs = records();
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
@@ -228,6 +266,7 @@ fn forward_child_is_rejected_at_admission() {
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &children,
     };
     assert!(matches!(
@@ -266,6 +305,7 @@ fn forward_nominal_is_rejected_at_admission() {
     ];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     assert!(matches!(
@@ -295,6 +335,7 @@ fn self_nominal_admits_and_round_trips_as_the_recursive_terminal() -> Result<(),
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     assert!(lane.admit(1, &[]).is_ok());
@@ -324,6 +365,7 @@ fn section_header_and_trailing_bytes_are_rejected() -> Result<(), TestFailure> {
     let inputs = records();
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
@@ -354,6 +396,7 @@ fn owner_and_child_span_mutations_retain_their_coordinates() -> Result<(), TestF
     let inputs = records();
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
@@ -415,6 +458,7 @@ fn out_of_range_child_reopen_retains_the_true_record_ordinal() -> Result<(), Tes
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &children,
     };
     let bytes = write(&lane)?;
@@ -468,6 +512,7 @@ fn forward_child_reopen_retains_the_true_record_ordinal() -> Result<(), TestFail
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &children,
     };
     let bytes = write(&lane)?;
@@ -514,6 +559,7 @@ fn admission_out_of_range_child_returns_the_typed_prepare_fault() {
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &children,
     };
     let entities = [EntityRecord {
@@ -567,6 +613,7 @@ fn corrupted_external_nominal_authority_is_rejected_with_an_authority_fault()
     }];
     let lane = TypeFactLane {
         inputs: &inputs,
+        computed: &[],
         children: &[],
     };
     let bytes = write(&lane)?;
