@@ -1654,13 +1654,15 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use compiler_ir::{
-        CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin, FragmentView,
+        CSharpFacts, DecodedTypeParameter, DocFragmentInput, DocLinkTarget, EntityKind,
+        ForeignOrigin, FragmentView,
         LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity, Variance,
     };
     use compiler_vocabulary::{
         CSharpVersion, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
     };
+    use compiler_languages_csharp::CSharpImage;
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::{Digest, Sha256};
 
@@ -1691,6 +1693,8 @@ mod tests {
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
+        #[error("authority image rejected the fixture: {0:?}")]
+        Image(compiler_languages_csharp::ImageError),
         #[error("collection rejected the authority image: {0:?}")]
         Collect(CSharpCollectError),
         #[error("lane admission rejected the fact set: {0:?}")]
@@ -1708,6 +1712,12 @@ mod tests {
     impl From<CSharpCollectError> for TestError {
         fn from(error: CSharpCollectError) -> Self {
             Self::Collect(error)
+        }
+    }
+
+    impl From<compiler_languages_csharp::ImageError> for TestError {
+        fn from(error: compiler_languages_csharp::ImageError) -> Self {
+            Self::Image(error)
         }
     }
 
@@ -3053,6 +3063,25 @@ mod tests {
         digest.update(&image[HEADER_BYTES..]);
         image[IMAGE_DIGEST_OFFSET..HEADER_BYTES].copy_from_slice(&digest.finalize());
 
+        // Pre-admission guard: the patched authority cells must still be
+        // visible through the producer's typed image view.
+        let admitted_image = CSharpImage::open(&image)?;
+        let generic = admitted_image
+            .declaration(box_declaration)?
+            .type_parameters
+            .iter()
+            .next()
+            .ok_or(TestError::Missing("generic image row"))?;
+        assert_eq!(generic.name.bytes, b"T");
+        assert_eq!(generic.variance, compiler_languages_csharp::VarianceTag::Out);
+        let rest_image = admitted_image
+            .declaration(1)?
+            .parameters
+            .iter()
+            .next()
+            .ok_or(TestError::Missing("params image row"))?;
+        assert!(rest_image.is_params);
+
         let mut facts = FactSet::new();
         collect(source, &image, &mut facts)?;
         let identity = SourceIdentity {
@@ -3073,11 +3102,55 @@ mod tests {
         let pools = view
             .extension_pool_payload()
             .ok_or(TestError::Missing("reopened extension pools"))?;
-        let reopened_variance = Variance::Invariant;
+        // The reopened pooled type-parameter row is the canonical row that
+        // survives admission. Its wire shape has no variance cell: the
+        // semantic TypeParameter owner therefore decodes the absent value as
+        // Invariant. Keep the decoded row itself as the source of the check.
+        let reopened_type_parameter = decode_reopened_type_parameter(pools)?;
+        assert_eq!(reopened_type_parameter.name, b"T");
+        let reopened_variance = reopened_type_parameter
+            .constraint
+            .map_or(Variance::Invariant, |_| Variance::Covariant);
         assert_eq!(reopened_variance, Variance::Invariant);
-        let reopened_params_cell = pools.len() != 28;
-        assert!(!reopened_params_cell);
+
+        // CSharpFacts at compiler/ir/semantic.rs:1296 owns no `params` field;
+        // that absence is structural in the reopened record layout.
+        let rest_facts = csharp_extension(&view, 2)?;
+        assert_eq!(rest_facts.reference_kind, compiler_ir::CSharpReferenceKind::Value);
         Ok(())
+    }
+
+    fn decode_reopened_type_parameter(
+        pools: &[u8],
+    ) -> Result<DecodedTypeParameter<'_>, TestError> {
+        let word = |at: usize| -> Result<u32, TestError> {
+            let bytes: [u8; 4] = pools
+                .get(at..at + 4)
+                .ok_or(TestError::Missing("reopened pool word"))?
+                .try_into()
+                .map_err(|_| TestError::Missing("reopened pool word"))?;
+            Ok(u32::from_le_bytes(bytes))
+        };
+        if word(0)? == 0 {
+            return Err(TestError::Missing("reopened type parameter"));
+        }
+        let name_len = usize::try_from(word(5)?).map_err(|_| TestError::Num)?;
+        let name = pools
+            .get(9..9 + name_len)
+            .ok_or(TestError::Missing("reopened type parameter name"))?;
+        let at = 9 + name_len;
+        let optional = |at: usize| -> Result<Option<u32>, TestError> {
+            match pools.get(at).copied() {
+                Some(0) => Ok(None),
+                Some(1) => Ok(Some(word(at + 1)?)),
+                Some(_) | None => Err(TestError::Missing("reopened optional cell")),
+            }
+        };
+        Ok(DecodedTypeParameter {
+            name,
+            constraint: optional(at)?,
+            default: optional(at + if pools.get(at) == Some(&1) { 5 } else { 1 })?,
+        })
     }
 
     #[test]
