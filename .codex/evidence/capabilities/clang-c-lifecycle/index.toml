@@ -118,3 +118,48 @@ result_commit = "4921f60f"
 task_id = "C1d-journey v1+v2 (stopped: journal second-generation Conflict)"
 role = "luna"
 result_commit = "none — trunk blocker recorded in proof matrix R10"
+
+# 2026-09-03 finish round (Terra): canonical fully consumed (merge 8b465ed0c;
+# canonical=309acc8f1, ancestor verified). Trunk's f9efccc58 chained LIVE
+# publication groups only; replay_stream still rejects chained history, so the
+# pinned reopen defect (a7f6379d1) is still live and R10/R11 reopen terminals
+# require the trunk heal. Terra mechanically fixed the clang_lane parallel
+# temp-dir nonce collision (74c3a41fb; gate 18/18 twice). Four cards frozen:
+# L8 trunk replay heal -> L9 (R10/R12 journey+terminals) ∥ L10 (C2 drive +
+# R16 packaging; needs L8) -> L11 (R11/R14 corpus; needs L8+L10) -> closure.
+# Terra pre-verified with real buck2: compilation_database is not a prelude
+# rule; positive Buck drive = uquery -> build --show-output -> read_compdb
+# (probe cell, BUILD SUCCEEDED). Terra pre-verified meson re-setup fails
+# without --wipe.
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L8-replay (server/workflow chained replay heal + pinned-test flip)"
+card_sha256 = "22ca5dd47c89bf18cf64505b3649ee1de7a2affed653bdf576f4b87356f0058b"
+paths = ["server/workflow/**", "server/journal/**", "compiler/driver/tests/clang_lifecycle.rs (pinned test only)"]
+baseline = "74c3a41fb"
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L9-journey (R10 changed-content journey + R12 per-phase typed terminals)"
+card_sha256 = "81cbfed98433d4b0753472cf735c034c2816cf6664f32628848c651d0feaa1d4"
+paths = ["compiler/driver/tests/clang_lifecycle.rs"]
+baseline = "post-L8"
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L10-drive (make compound lines, buck compdb positive path, meson --wipe, R16 packaging journeys)"
+card_sha256 = "dfe918a3f3b2debcccafd6a38fbe65692a6d4ef6d01143d78e701dadb204506f"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
+baseline = "post-L8"
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L11-corpus (20 projects end-to-end + decoded-IR review + honest perf)"
+card_sha256 = "pending re-hash at dispatch"
+paths = ["compiler/driver/tests/corpus_harness.rs", ".codex/evidence/capabilities/clang-c-lifecycle/corpus.md"]
+baseline = "post-L8+L10"
