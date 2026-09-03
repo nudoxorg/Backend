@@ -33,9 +33,21 @@ const TUPLE_RESULT: &[u8] = b"anchor: int = 0\ndef f() -> tuple[int, str]: ...\n
 const DICT_RESULT: &[u8] = b"anchor: int = 0\ndef g() -> dict[str, int]: ...\n";
 const UNION_RESULT: &[u8] = b"anchor: int = 0\ndef u() -> int | str: ...\n";
 const TEN_PARAMETERS: &[u8] = b"def h(a, b, c, d, e, f, g, h2, i, j) -> None: ...\n";
-const SEVENTEEN_PARAMETERS: &[u8] = b"def k(
-    a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17,
-) -> None: ...\n";
+/// Exactly at the raised per-fact child bound, with no result annotation so
+/// the children are exactly the parameters: every one admits.
+const THIRTY_TWO_PARAMETERS: &[u8] = b"def k32(
+    a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
+    a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
+    a21, a22, a23, a24, a25, a26, a27, a28, a29, a30,
+    a31, a32,
+): ...\n";
+/// One parameter past the raised bound: the exact typed ChildCapacity terminal.
+const THIRTY_THREE_PARAMETERS: &[u8] = b"def k33(
+    a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
+    a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
+    a21, a22, a23, a24, a25, a26, a27, a28, a29, a30,
+    a31, a32, a33,
+): ...\n";
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -549,8 +561,7 @@ fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError>
         let parameters = ir
             .tuple_elements(parameters)
             .ok_or(TestError::Falsified("parameter list absent"))?;
-        let expected: [&[u8]; 10] =
-            [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
+        let expected: [&[u8]; 10] = [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
         if parameters.len() != expected.len() {
             return Err(TestError::Falsified("function row lost parameter children"));
         }
@@ -566,15 +577,32 @@ fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError>
     })
 }
 
-/// The raised bound stays honest: one parameter past it rejects with the
-/// exact typed ChildCapacity terminal, never a panic or a silent truncation.
+/// The raised bound stays honest on both sides of the boundary: a function
+/// at exactly 32 parameters admits completely, and one parameter past it
+/// rejects with the exact typed ChildCapacity terminal, never a panic or a
+/// silent truncation.
 #[test]
-fn seventeen_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
-    match attempt_fragment(SEVENTEEN_PARAMETERS, "seventeen")? {
+fn thirty_two_parameter_function_admits_at_the_bound() -> Result<(), TestError> {
+    let outcome = attempt_fragment(THIRTY_TWO_PARAMETERS, "thirty-two")?;
+    let bytes = outcome.map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let function = entity_ordinal(&lane, b"k32", EntityKind::Function)?;
+    let row = owned_row(&lane, function)?;
+    if lane.types[row].record.children.length != 32 {
+        return Err(TestError::Falsified(
+            "the at-bound function does not carry all 32 parameter children",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn thirty_three_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
+    match attempt_fragment(THIRTY_THREE_PARAMETERS, "thirty-three")? {
         Err(rejection) if rejection.cause == FactFault::ChildCapacity => Ok(()),
         Err(rejection) => Err(TestError::Rejected(rejection)),
         Ok(_) => Err(TestError::Falsified(
-            "a 17-parameter function was admitted past the bound",
+            "a 33-parameter function was admitted past the bound",
         )),
     }
 }
