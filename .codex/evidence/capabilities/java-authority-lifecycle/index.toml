@@ -148,6 +148,46 @@ commit = "none"
 state = "stopped-honest-reds"
 note = "Stop 1: LOC budget 450 exceeded at 540 (Terra miscalibrated the per-file split; total 735 was within budget — split raised to 650/550). Stops 2-3 were real reds Terra reproduced and root-caused: (a) real jars use RAW deflate, jar.rs used zlib mode and no test exercised deflate — P14 FALSIFIED, repair card J7R; (b) default-package sources make javac report a Package row with an empty name; push_root pushed it, FactSet rejected EmptyName, and shared-lane push_fact erased the cause into NoSupportedDeclaration — repair card J7R row B. Worker scratch (java_lifecycle.rs + java_lifecycle/) left uncommitted in the worktree for the J9 resume; Terra's temporary probes reverted. ESCALATION: shared-lane push_fact error-cause erasure (lower.rs) — Sol review required."
 
+[[dispatches]]
+task = "ses_f9a7af161ffestMy8GfxbvLqBb"
+role = "nudox_luna_implementer"
+card = "J7R-jar-deflate-unnamed-package"
+commit = "adf39372"
+state = "accepted"
+note = "Raw deflate one-flag fix + stored/deflate/zlib-rejection/truncation tests; unnamed-package skip + two law tests. Terra reproduced all gates."
+
+[[dispatches]]
+task = "ses_f9a53bcd0ffeZvDMkWP7zN3gCo"
+role = "nudox_luna_implementer"
+card = "J2R-declared-owner-occurrences"
+commit = "none"
+state = "stopped-correctly"
+note = "Scoped stop: ImageError::OrphanOwner left shared types/authority.rs match non-exhaustive (outside owned paths). Work left on disk."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J2R-declared-owner-occurrences"
+commit = "95c012b4"
+state = "accepted"
+note = "Terra integrated the worker's on-disk work: validator two-pass O(R+D) owner check (worker's find_map was O(R*D)), mechanical authority.rs phase arm, then root-caused the residual Pair.java orphan (member references and anonymous classes defeat tree-shape walking) and replaced the mechanism with declared-owner marking in the doclet symbol pool + isDeclared gating. Occurrences.java live test expectation corrected to the declared-owner law."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J2R amendment"
+commit = "02a640bb"
+state = "accepted"
+note = "Anonymous classes carry no declaration rows; invocations attribute to the enclosing declared executable. javac occurrences live test green (calls,calls,calls)."
+
+[[dispatches]]
+task = "ses_f9a72d6e8ffe..ses_f9a637818ffe / ses_f9a391368ffe"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration (resumes)"
+commit = "none"
+state = "stopped-honest-reds"
+note = "Three resume attempts; scratch iterated to T1-through-index and 5-file T2 slice. Remaining reds Terra-diagnosed: (1) T1 second-generation publication conflicts with the journal single head when source content changes (python lifecycle precedent implies otherwise; journal semantics = Sol question); (2) T2 fully green except files exceeding the 256-doc-fragment budget (CharUtils measured case); (3) scratch LOC 706 vs 700 budget (worker stop). Scratch remains uncommitted in the worktree."
+
 [[calibration]]
 card = "J9-java-lifecycle-integration"
 digest = "9ab69a6d255538c55437634c647c49774b98728ddc89831c7f198ef66deb8a4f"

@@ -63,9 +63,12 @@ contains the new entity and the generation numbers differ; then re-open the
 FIRST generation via `ImmutableManifestStore` + `ImmutableArtifactStore` and
 assert SHA-256 equality with the first fragment bytes plus
 `FragmentView::validate` success. IMPORTANT for the second compilation: the
-combined source list must list `Added.java` FIRST, because the doclet binds
-`--source-binding` to the FIRST source and `compile` checks the bound digest
-against the `source` argument. Remove every temp dir on success AND failure;
+journal enforces a single head — a publication whose root/dependency facts
+differ from the current head conflicts. So the second generation must MODIFY
+THE SAME BOUND SOURCE (append one method to the first fixture source),
+re-extract the image with the modified content FIRST in the source list, and
+compile with the modified source bytes (the bound digest must match
+`compile`'s `source`). Remove every temp dir on success AND failure;
 surface `Harness::take_cleanup_error`.
 
 **T2 `central_commons_lang3_slice_journey`** — live network.
