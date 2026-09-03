@@ -1345,20 +1345,17 @@ fn live_type<'source>(
                     kind: TupleElementKind::Required,
                 }; MAX_TYPE_CHILDREN];
                 for position in 0..parameter_count {
-                    let target = child(position).map(|item| item.0).ok_or(
+                    let (target, child_name, _) = child(position).ok_or(
                         compiler_ir::BuildError::Dangling {
                             space: compiler_ir::SemanticSpace::Type,
                             raw: row,
                         },
-                    )? as usize;
-                    let name = facts.names.get(target).copied().ok_or(
-                        compiler_ir::BuildError::Dangling {
-                            space: compiler_ir::SemanticSpace::Entity,
-                            raw: target as u32,
-                        },
                     )?;
+                    let target = target as usize;
+                    let name = child_name
+                        .or_else(|| (target < facts.len).then(|| facts.names[target]));
                     elements[position] = TupleElement {
-                        label: Some(tree.intern_atom(name)?),
+                        label: name.map(|name| tree.intern_atom(name)).transpose()?,
                         ty: children[position],
                         kind: TupleElementKind::Required,
                     };
