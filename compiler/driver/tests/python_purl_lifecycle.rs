@@ -199,7 +199,6 @@ fn compile_fragment<'a>(
 }
 
 #[test]
-#[ignore = "six.py (~164 declarations) exceeds the lane's frozen 128-fact capacity (MAX_EMISSION_FACTS in lower.rs); trunk capacity decision pending; all pre-compile lifecycle stages pass"]
 fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
 -> Result<(), TestError> {
     let purl = python_support::Purl::parse("pypi:six@1.17.0")?;

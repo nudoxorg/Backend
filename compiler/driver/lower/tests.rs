@@ -2,15 +2,18 @@
 //! lowered constructor, role, and name must change the committed fragment
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must remain schema-1 compatible.
-use compiler_ir::{EntityKind, FragmentView, PrepareError, PreparedFragment, SourceIdentity};
+use compiler_ir::{
+    EntityKind, FragmentView, Occurrence, PrepareError, PreparedFragment, SourceIdentity,
+};
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 use super::{
-    AdmissionFault, FactFault, FactSet, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, RejectedFact,
-    SemanticFact,
+    AdmissionFault, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS, MAX_EMISSION_DOC_FRAGMENTS,
+    MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
+    MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
@@ -332,9 +335,104 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
         maximal.push(fact).map_err(rejected)?;
     }
 
+    // Freeze every companion lane at its new exact bound before admission.
+    for _ in 0..MAX_ANONYMOUS_TYPE_ROWS {
+        maximal
+            .intern_anonymous_type_row(0, super::opaque_record())
+            .map_err(|cause| {
+                rejected(RejectedFact {
+                    fact: 0,
+                    name: b"row",
+                    cause,
+                })
+            })?;
+    }
+    let occurrence = Occurrence {
+        target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
+            origin: compiler_ir::ForeignOrigin::Universe { ecosystem: "" },
+            path: "",
+            display: "",
+            kind: None,
+        }),
+        kind: compiler_ir::ReferenceKind::FunctionCall,
+        confidence: compiler_ir::OccurrenceConfidence::Syntactic,
+        span: compiler_ir::RelSpan { start: 0, end: 0 },
+    };
+    for _ in 0..MAX_EMISSION_OCCURRENCES {
+        maximal.push_occurrence(0, occurrence).map_err(|cause| {
+            rejected(RejectedFact {
+                fact: 0,
+                name: b"row",
+                cause,
+            })
+        })?;
+    }
+    for _ in 0..MAX_EMISSION_DOC_FRAGMENTS {
+        maximal
+            .push_doc(0, compiler_ir::DocFragmentInput::SoftBreak)
+            .map_err(|cause| {
+                rejected(RejectedFact {
+                    fact: 0,
+                    name: b"row",
+                    cause,
+                })
+            })?;
+    }
+    let extension_atoms = (0..MAX_EXTENSION_ATOMS)
+        .map(|index| (index as u32).to_le_bytes())
+        .collect::<Vec<_>>();
+    for atom in &extension_atoms {
+        maximal.intern_atom(atom).map_err(|cause| {
+            rejected(RejectedFact {
+                fact: 0,
+                name: b"row",
+                cause,
+            })
+        })?;
+    }
+    for index in 0..MAX_REF_LISTS {
+        maximal.intern_atom_list(&[index as u32]).map_err(|cause| {
+            rejected(RejectedFact {
+                fact: 0,
+                name: b"row",
+                cause,
+            })
+        })?;
+        maximal.intern_type_list(&[index as u32]).map_err(|cause| {
+            rejected(RejectedFact {
+                fact: 0,
+                name: b"row",
+                cause,
+            })
+        })?;
+        maximal
+            .intern_entity_list(&[index as u32])
+            .map_err(|cause| {
+                rejected(RejectedFact {
+                    fact: 0,
+                    name: b"row",
+                    cause,
+                })
+            })?;
+    }
+    for _ in 0..MAX_TYPE_PARAMETERS {
+        maximal
+            .push_type_parameter(b"T", None, None)
+            .map_err(|cause| {
+                rejected(RejectedFact {
+                    fact: 0,
+                    name: b"row",
+                    cause,
+                })
+            })?;
+    }
+
     // The maximal lane writes one complete validated fragment within the
     // conservation reservation, with its exact entity count committed.
-    let mut output = vec![0xa5_u8; 65_536];
+    // The raised lane's exact eight-child product payload is larger than the
+    // former 64 KiB fixture; retain the same untouched-tail proof with ample
+    // caller-owned output scratch.
+    let mut output = vec![0xa5_u8; 4 * 1024 * 1024];
     let length = super::admit(
         &maximal,
         identity()?,

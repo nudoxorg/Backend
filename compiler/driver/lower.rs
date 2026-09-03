@@ -10,11 +10,10 @@ use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AtomId, BuiltinType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir, IrBuilder,
     ItemKind, LanguageExtensionInput, ListSpan, NominalRef, PayloadHash, PrimitiveShape,
-    ProductChildRole, ProductChildren, ProductId, ProductListId,
-    ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
-    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
-    TreeItemInput, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId,
-    Visibility,
+    ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef, SemanticAtom,
+    SemanticProduct, SemanticProductChild, SemanticProductConstructor, SemanticTypeChild,
+    SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput,
+    TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -24,6 +23,7 @@ use compiler_ir::{
     SourceIdentity, TypeFactInput, TypeFactLane, TypeNode, WriteError,
     canonicalize_data_with_budget,
 };
+use core::mem::size_of;
 
 pub(crate) mod clang;
 pub(crate) mod csharp;
@@ -39,27 +39,27 @@ pub(crate) mod typescript;
 /// a source with more declarations is a typed lane rejection, never a
 /// truncated emission. The bound also fixes every canonicalization scratch,
 /// output, and resource reservation below.
-pub(super) const MAX_EMISSION_FACTS: usize = 128;
+pub(super) const MAX_EMISSION_FACTS: usize = 1024;
 /// Dense bound of one fact's ordered product children.
 pub(super) const MAX_FACT_CHILDREN: usize = 8;
 /// Dense bound of one fact's ordered type-record children.
 pub(super) const MAX_TYPE_CHILDREN: usize = 8;
 /// Dense bound of the occurrence lane committed beside the declarations.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 128;
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
 /// Dense bound of the documentation lane committed beside the declarations.
-pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 256;
+pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 4096;
 /// Dense bound of extension atoms admitted beside declaration names.
-pub(super) const MAX_EXTENSION_ATOMS: usize = 384;
+pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
 /// Dense bound of pooled type parameters.
-pub(super) const MAX_TYPE_PARAMETERS: usize = 128;
+pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
 /// Dense bound of pooled reference lists per lane kind.
-pub(super) const MAX_REF_LISTS: usize = 128;
+pub(super) const MAX_REF_LISTS: usize = 512;
 /// Dense bound of one pooled reference list.
 pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
-pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 256;
+pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 2048;
 /// Total type-row budget: one record per fact plus the anonymous pool.
 pub(super) const MAX_TYPE_ROWS: usize = MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS;
 /// First pool-local ordinal of an anonymous type row.
@@ -286,18 +286,18 @@ pub(super) struct FactSet<'source> {
     len: usize,
     total_children: usize,
     kinds: [EntityKind; MAX_EMISSION_FACTS],
-    names: [&'source [u8]; MAX_EMISSION_FACTS],
-    type_records: [SemanticTypeRecord<'source>; MAX_EMISSION_FACTS],
-    type_child_targets: [u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    names: Box<[&'source [u8]; MAX_EMISSION_FACTS]>,
+    type_records: Box<[SemanticTypeRecord<'source>; MAX_EMISSION_FACTS]>,
+    type_child_targets: Box<[u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
     type_child_names: Box<[Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
-    type_child_flags: [u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    type_child_flags: Box<[u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
     type_child_counts: [u8; MAX_EMISSION_FACTS],
     total_type_children: usize,
     constructors: [SemanticProductConstructor; MAX_EMISSION_FACTS],
-    child_roles: [ProductChildRole; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
-    child_targets: [u32; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
+    child_roles: Box<[ProductChildRole; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN]>,
+    child_targets: Box<[u32; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN]>,
     child_counts: [u8; MAX_EMISSION_FACTS],
-    extensions: [Option<EmissionExtension>; MAX_EMISSION_FACTS],
+    extensions: Box<[Option<EmissionExtension>; MAX_EMISSION_FACTS]>,
     key_digests: [u64; MAX_EMISSION_FACTS],
     visibility: [Visibility; MAX_EMISSION_FACTS],
     occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
@@ -305,30 +305,35 @@ pub(super) struct FactSet<'source> {
     occurrence_len: usize,
     doc_facts: Box<[DocFactInput<'source>; MAX_EMISSION_DOC_FRAGMENTS]>,
     doc_len: usize,
-    extension_atoms: [&'source [u8]; MAX_EXTENSION_ATOMS],
+    extension_atoms: Box<[&'source [u8]; MAX_EXTENSION_ATOMS]>,
     extension_atom_len: usize,
-    type_parameters: [ExtensionTypeParameter<'source>; MAX_TYPE_PARAMETERS],
+    type_parameters: Box<[ExtensionTypeParameter<'source>; MAX_TYPE_PARAMETERS]>,
     type_parameter_len: usize,
-    atom_lists: [[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+    atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]>,
     atom_list_lengths: [u8; MAX_REF_LISTS],
     atom_list_len: usize,
-    type_lists: [[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+    type_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]>,
     type_list_lengths: [u8; MAX_REF_LISTS],
     type_list_len: usize,
-    entity_lists: [[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+    entity_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]>,
     entity_list_lengths: [u8; MAX_REF_LISTS],
     entity_list_len: usize,
     anonymous_records: Box<[SemanticTypeRecord<'source>; MAX_ANONYMOUS_TYPE_ROWS]>,
-    anonymous_owners: [u32; MAX_ANONYMOUS_TYPE_ROWS],
-    anonymous_child_starts: [u32; MAX_ANONYMOUS_TYPE_ROWS],
-    anonymous_child_counts: [u8; MAX_ANONYMOUS_TYPE_ROWS],
-    anonymous_child_targets: [u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    anonymous_owners: Box<[u32; MAX_ANONYMOUS_TYPE_ROWS]>,
+    anonymous_child_starts: Box<[u32; MAX_ANONYMOUS_TYPE_ROWS]>,
+    anonymous_child_counts: Box<[u8; MAX_ANONYMOUS_TYPE_ROWS]>,
+    anonymous_child_targets: Box<[u32; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
     anonymous_child_names: Box<[Option<&'source [u8]>; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
-    anonymous_child_flags: [u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+    anonymous_child_flags: Box<[u8; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]>,
     anonymous_rows: usize,
     anonymous_children_total: usize,
     anonymous_child_pending: u32,
 }
+
+// The boxed lanes keep this caller-owned collector below the 64 KiB stack
+// budget; each box is allocated exactly once by FactSet::new and lives with
+// its FactSet, rather than being grown during admission.
+const _: () = assert!(size_of::<FactSet<'static>>() <= 64 * 1024);
 
 impl<'source> FactSet<'source> {
     pub(super) fn new() -> Self {
@@ -336,18 +341,20 @@ impl<'source> FactSet<'source> {
             len: 0,
             total_children: 0,
             kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
-            names: [&[]; MAX_EMISSION_FACTS],
-            type_records: [opaque_record(); MAX_EMISSION_FACTS],
-            type_child_targets: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            names: Box::new([&[]; MAX_EMISSION_FACTS]),
+            type_records: Box::new([opaque_record(); MAX_EMISSION_FACTS]),
+            type_child_targets: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
             type_child_names: Box::new([None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
-            type_child_flags: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            type_child_flags: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
             type_child_counts: [0; MAX_EMISSION_FACTS],
             total_type_children: 0,
             constructors: [SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS],
-            child_roles: [ProductChildRole::ProductMember; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
-            child_targets: [0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
+            child_roles: Box::new(
+                [ProductChildRole::ProductMember; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
+            ),
+            child_targets: Box::new([0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN]),
             child_counts: [0; MAX_EMISSION_FACTS],
-            extensions: [None; MAX_EMISSION_FACTS],
+            extensions: Box::new([None; MAX_EMISSION_FACTS]),
             key_digests: [0; MAX_EMISSION_FACTS],
             visibility: [Visibility::Unknown; MAX_EMISSION_FACTS],
             occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
@@ -372,30 +379,32 @@ impl<'source> FactSet<'source> {
                 }; MAX_EMISSION_DOC_FRAGMENTS],
             ),
             doc_len: 0,
-            extension_atoms: [&[]; MAX_EXTENSION_ATOMS],
+            extension_atoms: Box::new([&[]; MAX_EXTENSION_ATOMS]),
             extension_atom_len: 0,
-            type_parameters: [ExtensionTypeParameter {
-                name: &[],
-                constraint: None,
-                default: None,
-            }; MAX_TYPE_PARAMETERS],
+            type_parameters: Box::new(
+                [ExtensionTypeParameter {
+                    name: &[],
+                    constraint: None,
+                    default: None,
+                }; MAX_TYPE_PARAMETERS],
+            ),
             type_parameter_len: 0,
-            atom_lists: [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+            atom_lists: Box::new([[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]),
             atom_list_lengths: [0; MAX_REF_LISTS],
             atom_list_len: 0,
-            type_lists: [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+            type_lists: Box::new([[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]),
             type_list_lengths: [0; MAX_REF_LISTS],
             type_list_len: 0,
-            entity_lists: [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS],
+            entity_lists: Box::new([[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]),
             entity_list_lengths: [0; MAX_REF_LISTS],
             entity_list_len: 0,
             anonymous_records: Box::new([opaque_record(); MAX_ANONYMOUS_TYPE_ROWS]),
-            anonymous_owners: [0; MAX_ANONYMOUS_TYPE_ROWS],
-            anonymous_child_starts: [0; MAX_ANONYMOUS_TYPE_ROWS],
-            anonymous_child_counts: [0; MAX_ANONYMOUS_TYPE_ROWS],
-            anonymous_child_targets: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            anonymous_owners: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
+            anonymous_child_starts: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
+            anonymous_child_counts: Box::new([0; MAX_ANONYMOUS_TYPE_ROWS]),
+            anonymous_child_targets: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
             anonymous_child_names: Box::new([None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
-            anonymous_child_flags: [0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN],
+            anonymous_child_flags: Box::new([0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN]),
             anonymous_rows: 0,
             anonymous_children_total: 0,
             anonymous_child_pending: 0,
@@ -788,7 +797,7 @@ impl<'source> FactSet<'source> {
             stable: StableEntityId::from_raw([0; 16]),
             payload: PayloadHash::from_raw([0; 16]),
         };
-        let mut versions = [empty_version; MAX_EMISSION_FACTS];
+        let mut versions = Box::new([empty_version; MAX_EMISSION_FACTS]);
         for (ordinal, version) in versions.iter_mut().take(fact_count).enumerate() {
             *version = fact_version(
                 source,
@@ -800,7 +809,7 @@ impl<'source> FactSet<'source> {
         let mut tree = builder.reserve_tree(&versions[..fact_count])?;
         let mut type_ids = [TypeId::new(0); MAX_TYPE_ROWS];
         let mut type_seen = [false; MAX_TYPE_ROWS];
-        let mut semantic_types = [None; MAX_EMISSION_FACTS];
+        let mut semantic_types = Box::new([None; MAX_EMISSION_FACTS]);
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
             *semantic_type = live_type(
                 &mut tree,
@@ -812,7 +821,7 @@ impl<'source> FactSet<'source> {
             )?;
         }
         let mut docs = [DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS];
-        let mut doc_ranges = [(0usize, 0usize); MAX_EMISSION_FACTS];
+        let mut doc_ranges = Box::new([(0usize, 0usize); MAX_EMISSION_FACTS]);
         for ordinal in 0..fact_count {
             let start = match self.doc_facts[..self.doc_len]
                 .iter()
@@ -837,7 +846,7 @@ impl<'source> FactSet<'source> {
         }
         // Rewrite FactSet-local TypeScript parameter starts into live list ids
         // before the tree commits its extension plane.
-        let mut rewritten_typescript = [empty_typescript_facts(); MAX_EMISSION_FACTS];
+        let mut rewritten_typescript = Box::new([empty_typescript_facts(); MAX_EMISSION_FACTS]);
         for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
             let Some(EmissionExtension::TypeScript(value)) = extension else {
                 continue;
@@ -952,7 +961,7 @@ impl<'source> FactSet<'source> {
             source: None,
             extension: None,
         };
-        let mut items = [empty_item; MAX_EMISSION_FACTS];
+        let mut items = Box::new([empty_item; MAX_EMISSION_FACTS]);
         for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
             let extension = match self.extensions[ordinal].as_ref() {
                 Some(EmissionExtension::TypeScript(_)) => Some(LanguageExtensionInput::TypeScript(
@@ -1589,14 +1598,17 @@ pub(super) enum AdmissionFault {
 }
 
 /// Conservative canonicalization reservation derived exactly from the bounded
-/// emission lane: at most `MAX_EMISSION_FACTS` products and atoms and at most
-/// `MAX_EMISSION_FACTS * MAX_FACT_CHILDREN` pooled children. Each limit is the
-/// worst-case reservation formula of compiler-ir `reserve_budget`, so the
-/// maximal lane is always admitted and any measured overrun remains a typed
-/// `BudgetExceeded` rather than a mid-run capacity surprise.
+/// emission lane. With `P = 1,024` products and `C = P * 8 = 8,192` children:
+/// `hash = 2*P² = 2,097,152`; `sort = P² + (P²+2P)*P = 1,076,887,552`;
+/// `probe = P² = 1,048,576`; `child = 2*C*P + C*(sort+probe) =
+/// 8,830,469,537,792`; and `lane = 4P+C = 12,288`. Thus `work = hash + sort
+/// + probe + child + lane = 8,831,549,583,360`. All products fit in `u64`
+/// (the largest is `C*(sort+probe)`, below 2^64), and these are the exact
+/// worst-case formulas used by `compiler-ir::reserve_budget`: the maximal lane
+/// is admitted and any measured overrun remains a typed `BudgetExceeded`.
 #[expect(
     clippy::as_conversions,
-    reason = "the lane bounds 128 and 1024 widen totally to u32/u64 reservation counters"
+    reason = "the widened lane bounds fit totally in u32/u64 reservation counters"
 )]
 const EMISSION_BUDGET: DataResourceBudget = DataResourceBudget {
     max_refinement_rounds: MAX_EMISSION_FACTS as u32,
@@ -1781,7 +1793,7 @@ pub(super) fn admit<'source, 'output>(
         nodes[0] = TypeNode::Reference(TypeId::new(0));
         node_count = 1;
     }
-    let mut fact_type_nodes = [0_usize; MAX_EMISSION_FACTS];
+    let mut fact_type_nodes = Box::new([0_usize; MAX_EMISSION_FACTS]);
     for (ordinal, record) in facts.type_records[..fact_count].iter().enumerate() {
         fact_type_nodes[ordinal] = match builtin_type(*record) {
             None => 0,
@@ -1803,12 +1815,14 @@ pub(super) fn admit<'source, 'output>(
     let node_prefix = &nodes[..node_count];
 
     let atom_count = fact_count + extension_atom_count;
-    let mut entities = [EntityRecord {
-        semantic_type: TypeId::new(0),
-        name: AtomId::new(0),
-        kind: EntityKind::Function,
-    }; MAX_EMISSION_FACTS];
-    let mut atoms = [AtomInput { bytes: b"" }; MAX_EMISSION_ATOMS];
+    let mut entities = Box::new(
+        [EntityRecord {
+            semantic_type: TypeId::new(0),
+            name: AtomId::new(0),
+            kind: EntityKind::Function,
+        }; MAX_EMISSION_FACTS],
+    );
+    let mut atoms = Box::new([AtomInput { bytes: b"" }; MAX_EMISSION_ATOMS]);
     for ordinal in 0..fact_count {
         #[expect(
             clippy::as_conversions,
@@ -1831,15 +1845,19 @@ pub(super) fn admit<'source, 'output>(
         atoms[fact_count + index] = AtomInput { bytes };
     }
 
-    let mut fact_products = [SemanticProduct {
-        head: AtomId::new(0),
-        children: ProductListId::new(0),
-    }; MAX_EMISSION_FACTS];
-    let mut fact_lists = [ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS];
-    let mut fact_children = [SemanticProductChild {
-        target: ProductRef::Local(ProductId::new(0)),
-        role: ProductChildRole::ProductMember,
-    }; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN];
+    let mut fact_products = Box::new(
+        [SemanticProduct {
+            head: AtomId::new(0),
+            children: ProductListId::new(0),
+        }; MAX_EMISSION_FACTS],
+    );
+    let mut fact_lists = Box::new([ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS]);
+    let mut fact_children = Box::new(
+        [SemanticProductChild {
+            target: ProductRef::Local(ProductId::new(0)),
+            role: ProductChildRole::ProductMember,
+        }; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
+    );
     let mut pooled_cursor = 0_usize;
     for ordinal in 0..fact_count {
         let child_count = usize::from(facts.child_counts[ordinal]);
@@ -1864,49 +1882,54 @@ pub(super) fn admit<'source, 'output>(
         pooled_cursor += child_count;
     }
 
-    let mut semantic_atoms = [SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS];
+    let mut semantic_atoms = Box::new([SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS]);
     for (ordinal, name) in facts.names[..fact_count].iter().enumerate() {
         semantic_atoms[ordinal] = SemanticAtom { bytes: name };
     }
-    let mut scratch_atom_order = [AtomId::new(0); MAX_EMISSION_FACTS];
-    let mut scratch_atom_map = [0_u32; MAX_EMISSION_FACTS];
-    let mut scratch_product_order = [ProductId::new(0); MAX_EMISSION_FACTS];
-    let mut scratch_product_map = [0_u32; MAX_EMISSION_FACTS];
-    let mut scratch_colors = [0_u32; MAX_EMISSION_FACTS];
-    let mut scratch_next_colors = [0_u32; MAX_EMISSION_FACTS];
-    let mut scratch_hashes = [0_u64; MAX_EMISSION_FACTS];
-    let mut scratch_next_hashes = [0_u64; MAX_EMISSION_FACTS];
-    let mut scratch_representatives = [ProductId::new(0); MAX_EMISSION_FACTS];
-    let mut scratch_intern_slots = [0_u64; MAX_EMISSION_FACTS];
+    let mut scratch_atom_order = Box::new([AtomId::new(0); MAX_EMISSION_FACTS]);
+    let mut scratch_atom_map = Box::new([0_u32; MAX_EMISSION_FACTS]);
+    let mut scratch_product_order = Box::new([ProductId::new(0); MAX_EMISSION_FACTS]);
+    let mut scratch_product_map = Box::new([0_u32; MAX_EMISSION_FACTS]);
+    let mut scratch_colors = Box::new([0_u32; MAX_EMISSION_FACTS]);
+    let mut scratch_next_colors = Box::new([0_u32; MAX_EMISSION_FACTS]);
+    let mut scratch_hashes = Box::new([0_u64; MAX_EMISSION_FACTS]);
+    let mut scratch_next_hashes = Box::new([0_u64; MAX_EMISSION_FACTS]);
+    let mut scratch_representatives = Box::new([ProductId::new(0); MAX_EMISSION_FACTS]);
+    let mut scratch_intern_slots = Box::new([0_u64; MAX_EMISSION_FACTS]);
     let mut data_scratch = DataScratch {
-        atom_order: &mut scratch_atom_order,
-        atom_to_canonical: &mut scratch_atom_map,
-        product_order: &mut scratch_product_order,
-        product_to_canonical: &mut scratch_product_map,
-        colors: &mut scratch_colors,
-        next_colors: &mut scratch_next_colors,
-        hashes: &mut scratch_hashes,
-        next_hashes: &mut scratch_next_hashes,
-        product_representatives: &mut scratch_representatives,
-        intern_slots: &mut scratch_intern_slots,
+        atom_order: &mut scratch_atom_order[..],
+        atom_to_canonical: &mut scratch_atom_map[..],
+        product_order: &mut scratch_product_order[..],
+        product_to_canonical: &mut scratch_product_map[..],
+        colors: &mut scratch_colors[..],
+        next_colors: &mut scratch_next_colors[..],
+        hashes: &mut scratch_hashes[..],
+        next_hashes: &mut scratch_next_hashes[..],
+        product_representatives: &mut scratch_representatives[..],
+        intern_slots: &mut scratch_intern_slots[..],
     };
-    let mut output_atoms = [SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS];
-    let mut output_products = [SemanticProduct {
-        head: AtomId::new(0),
-        children: ProductListId::new(0),
-    }; MAX_EMISSION_FACTS];
-    let mut output_constructors = [SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS];
-    let mut output_lists = [ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS];
-    let mut output_children = [SemanticProductChild {
-        target: ProductRef::Local(ProductId::new(0)),
-        role: ProductChildRole::ProductMember,
-    }; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN];
+    let mut output_atoms = Box::new([SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS]);
+    let mut output_products = Box::new(
+        [SemanticProduct {
+            head: AtomId::new(0),
+            children: ProductListId::new(0),
+        }; MAX_EMISSION_FACTS],
+    );
+    let mut output_constructors =
+        Box::new([SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS]);
+    let mut output_lists = Box::new([ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS]);
+    let mut output_children = Box::new(
+        [SemanticProductChild {
+            target: ProductRef::Local(ProductId::new(0)),
+            role: ProductChildRole::ProductMember,
+        }; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
+    );
     let mut data_output = DataOutput {
-        atoms: &mut output_atoms,
-        products: &mut output_products,
-        constructors: &mut output_constructors,
-        lists: &mut output_lists,
-        children: &mut output_children,
+        atoms: &mut output_atoms[..],
+        products: &mut output_products[..],
+        constructors: &mut output_constructors[..],
+        lists: &mut output_lists[..],
+        children: &mut output_children[..],
     };
     let semantic = canonicalize_data_with_budget(
         DataFacts {
@@ -1946,7 +1969,15 @@ pub(super) fn admit<'source, 'output>(
             target + anonymous_rows as u32
         }
     };
-    let mut type_parameters = facts.type_parameters;
+    let mut type_parameters = Box::new(
+        [ExtensionTypeParameter {
+            name: &[],
+            constraint: None,
+            default: None,
+        }; MAX_TYPE_PARAMETERS],
+    );
+    type_parameters[..facts.type_parameter_len]
+        .copy_from_slice(&facts.type_parameters[..facts.type_parameter_len]);
     for parameter in type_parameters[..facts.type_parameter_len].iter_mut() {
         parameter.constraint = parameter.constraint.map(&mut remap);
         parameter.default = parameter.default.map(&mut remap);
@@ -2011,20 +2042,20 @@ pub(super) fn admit<'source, 'output>(
     // tables, with provisional atom coordinates rewritten to final lane
     // positions. Pooled lists keep provisional atom coordinates until the
     // pools lane rewrites them below.
-    let mut typescript_pool = [empty_typescript_facts(); MAX_EMISSION_FACTS];
-    let mut csharp_pool = [empty_csharp_facts(); MAX_EMISSION_FACTS];
-    let mut go_pool = [empty_go_facts(); MAX_EMISSION_FACTS];
-    let mut rust_pool = [empty_rust_facts(); MAX_EMISSION_FACTS];
-    let mut python_pool = [empty_python_facts(); MAX_EMISSION_FACTS];
-    let mut java_pool = [empty_java_facts(); MAX_EMISSION_FACTS];
-    let mut clang_pool = [empty_clang_facts(); MAX_EMISSION_FACTS];
-    let mut typescript_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut csharp_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut go_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut rust_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut python_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut java_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
-    let mut clang_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
+    let mut typescript_pool = Box::new([empty_typescript_facts(); MAX_EMISSION_FACTS]);
+    let mut csharp_pool = Box::new([empty_csharp_facts(); MAX_EMISSION_FACTS]);
+    let mut go_pool = Box::new([empty_go_facts(); MAX_EMISSION_FACTS]);
+    let mut rust_pool = Box::new([empty_rust_facts(); MAX_EMISSION_FACTS]);
+    let mut python_pool = Box::new([empty_python_facts(); MAX_EMISSION_FACTS]);
+    let mut java_pool = Box::new([empty_java_facts(); MAX_EMISSION_FACTS]);
+    let mut clang_pool = Box::new([empty_clang_facts(); MAX_EMISSION_FACTS]);
+    let mut typescript_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut csharp_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut go_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut rust_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut python_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut java_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
+    let mut clang_rows = Box::new([SECTION_NONE; MAX_EMISSION_FACTS]);
     let mut typescript_len = 0_usize;
     let mut csharp_len = 0_usize;
     let mut go_len = 0_usize;
