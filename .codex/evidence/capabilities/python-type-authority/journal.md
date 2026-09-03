@@ -133,3 +133,18 @@ stale binary on the worker side; Terra re-verified 5/5 at 66f2c461. compiler-app
 (publication round-trip R7) is currently broken by the trunk's new
 CompileFailure::ExtensionAtomUnbound not yet matched in application/terminal/native.rs —
 adjacent-lane convergence in flight, not python surface.
+
+2026-09-03 | trunk consumption (fidelity round 2) | Branch rebased at canonical 309acc8f1
+(identical tip, no rebase needed). Landed since d4: geometry 128→1024, render int/None lifting,
+journal chaining, application terminal arm (fcaeaa894), checker authority on the fragment path
+(9be35faf8), per-fact child geometry 16 (19e2196d4). Terra repaired the trunk's missed
+test-support mirror of CompileFailure::FactRejected (native_compile support.rs E0004) —
+mechanical, smaller than a worker turn. Live baseline: packages 10/10 but FOUR primaries still
+terminal at capacity (attrs _make.py fact 258 ChildCapacity — swallowed SILENTLY by a dead
+match arm, pyparsing core.py fact 1024 Capacity, click core.py fact 105 ChildCapacity, jinja2
+environment.py fact 107 ChildCapacity); 16/20 primaries fully lower with deep asserts; purl
+lifecycles 8/8; authority 7/7; render 6/6; lower_facts 5/5; languages-python 35/35; application
+2/2. Bounds are Rust-side only (lower.rs consts; wire ordinals u32; validator limits derive from
+observed counts). | decision: one production card (geometry/admission with measured demand),
+then corpus unfallback + deep-IR card, 4th package-class journey, and a cross-cutting shortcut
+hunt; the silent attrs arm is mandate evidence of the dodge law.
