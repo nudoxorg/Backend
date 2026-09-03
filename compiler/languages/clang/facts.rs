@@ -16,12 +16,18 @@ use core::mem::size_of;
 pub const MAX_CLANG_FACTS: usize = 1024;
 /// Declaration rows feed trunk `MAX_EMISSION_FACTS`.
 pub const MAX_CLANG_DECLARATIONS: usize = MAX_CLANG_FACTS;
-/// Recursive type rows feed trunk type facts within `MAX_EMISSION_FACTS`.
-pub const MAX_CLANG_TYPES: usize = MAX_CLANG_FACTS;
-/// Recursive type edges feed trunk type-child adjacency within `MAX_EMISSION_FACTS`.
-pub const MAX_CLANG_TYPE_EDGES: usize = MAX_CLANG_FACTS;
-/// Reference rows feed trunk `MAX_EMISSION_OCCURRENCES`.
-pub const MAX_CLANG_REFERENCES: usize = MAX_CLANG_FACTS;
+/// Recursive type rows feed trunk type facts; one declaration may own a
+/// nominal row plus nested pointer/element rows, so the lane keeps the
+/// historical four-times ratio and matches trunk's `MAX_TYPE_ROWS` (4096 =
+/// 1024 fact rows + 2048 anonymous + 1024 computed).
+pub const MAX_CLANG_TYPES: usize = 4 * MAX_CLANG_FACTS;
+/// Recursive type edges feed trunk type-child adjacency within
+/// `MAX_EMISSION_FACTS`; edges scale with type rows, keeping the same ratio.
+pub const MAX_CLANG_TYPE_EDGES: usize = 4 * MAX_CLANG_FACTS;
+/// Reference rows feed trunk `MAX_EMISSION_OCCURRENCES`; call- and
+/// member-rich sources emit several references per declaration, keeping the
+/// historical four-times ratio.
+pub const MAX_CLANG_REFERENCES: usize = 4 * MAX_CLANG_FACTS;
 /// Diagnostic rows feed trunk `MAX_EMISSION_DOC_FRAGMENTS`.
 pub const MAX_CLANG_DIAGNOSTICS: usize = MAX_CLANG_FACTS;
 /// Include rows feed the trunk extension atom lane.
@@ -433,9 +439,9 @@ pub const CLANG_INCLUDE_LANE_BYTES: usize = size_of::<IncludeFact>() * MAX_CLANG
 pub const CLANG_OVERRIDE_LANE_BYTES: usize = size_of::<OverrideFact>() * MAX_CLANG_OVERRIDES;
 
 const _: [(); CLANG_DECLARATION_LANE_BYTES] = [(); size_of::<DeclarationFact>() * MAX_CLANG_FACTS];
-const _: [(); CLANG_TYPE_LANE_BYTES] = [(); size_of::<TypeFact>() * MAX_CLANG_FACTS];
-const _: [(); CLANG_TYPE_EDGE_LANE_BYTES] = [(); size_of::<TypeEdge>() * MAX_CLANG_FACTS];
-const _: [(); CLANG_REFERENCE_LANE_BYTES] = [(); size_of::<ReferenceFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_TYPE_LANE_BYTES] = [(); size_of::<TypeFact>() * MAX_CLANG_TYPES];
+const _: [(); CLANG_TYPE_EDGE_LANE_BYTES] = [(); size_of::<TypeEdge>() * MAX_CLANG_TYPE_EDGES];
+const _: [(); CLANG_REFERENCE_LANE_BYTES] = [(); size_of::<ReferenceFact>() * MAX_CLANG_REFERENCES];
 const _: [(); CLANG_DIAGNOSTIC_LANE_BYTES] = [(); size_of::<DiagnosticFact>() * MAX_CLANG_FACTS];
 const _: [(); CLANG_INCLUDE_LANE_BYTES] = [(); size_of::<IncludeFact>() * MAX_CLANG_FACTS];
 const _: [(); CLANG_OVERRIDE_LANE_BYTES] = [(); size_of::<OverrideFact>() * MAX_CLANG_FACTS];
