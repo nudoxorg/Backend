@@ -5,7 +5,8 @@
 // package with its import path, package clause, source files, and contiguous
 // declaration run; declarations with exact constant values, const groups,
 // and iota flags; the recursive type graph as flat type rows over a pooled
-// child plane; the exact source name of every func parameter and result; methods
+// child plane; the exact source name and source position of every func
+// parameter and result; methods
 // (declared and promoted); generic type parameters; struct fields, interface
 // method signatures, and the complete post-embedding interface method set;
 // documentation rows (declarations, methods, members, and whole packages);
@@ -36,13 +37,13 @@ import (
 // Image format constants. Keep in lockstep with compiler/languages/go/image.rs.
 const (
 	authorityVersion     = 5
-	authorityHeaderBytes = 132
+	authorityHeaderBytes = 136
 
 	authorityModuleBytes    = 32
-	authorityPackageBytes   = 36
+	authorityPackageBytes   = 28
 	authorityDeclBytes      = 56
 	authorityTypeBytes      = 52
-	authoritySigParamBytes  = 16
+	authoritySigParamBytes  = 28
 	authorityMethodBytes    = 64
 	authorityParamBytes     = 16
 	authorityMemberBytes    = 40
@@ -73,23 +74,22 @@ type modulePlan struct {
 	version   atomCell
 }
 
-// packagePlan is one package row: identity, source files, and the
-// package's contiguous run of declaration rows.
+// packagePlan is one package row: identity and source files.
 type packagePlan struct {
 	importPath atomCell
 	name       atomCell
 	files      atomCell
 	fileCount  uint32
-	declStart  uint32
-	declCount  uint32
 }
 
-// sigParamPlan is one signature-parameter row: the exact source name of one
-// parameter or result of one func type row.
+// sigParamPlan is one signature-parameter row: the exact source name and
+// source position of one parameter or result of one func type row.
 type sigParamPlan struct {
 	owner   uint32
 	ordinal uint32
 	name    atomCell
+	file    atomCell
+	offset  uint32
 }
 
 // methodSetPlan is one interface method-set row: one method of an
@@ -118,18 +118,17 @@ type declPlan struct {
 
 // typePlan is one recursive type-graph row.
 type typePlan struct {
-	kind           byte
-	dir            byte
-	variadic       bool
-	name           atomCell
-	pkg            atomCell
-	length         int64
-	paramCount     uint32
-	childStart     uint32
-	childCount     uint32
-	memberStart    uint32
-	memberCount    uint32
-	methodSetCount uint32
+	kind        byte
+	dir         byte
+	variadic    bool
+	name        atomCell
+	pkg         atomCell
+	length      int64
+	paramCount  uint32
+	childStart  uint32
+	childCount  uint32
+	memberStart uint32
+	memberCount uint32
 }
 
 // childPlan is one pooled child cell: a type-row target plus term flags.
@@ -476,34 +475,23 @@ func (p *imagePlan) emitType(t *Type) (uint32, error) {
 	case 9: // func: children are parameters followed by results
 		// The row's signature-parameter rows come first so owner runs stay
 		// contiguous in type-row order: parameters, then results, in child
-		// order. Unnamed parameters and results carry empty name atoms.
+		// order. Unnamed parameters and results carry empty name atoms, and
+		// an unresolved position is fully absent (empty file, NONE offset).
 		for ordinal, parameter := range t.Params {
 			if parameter == nil {
 				return 0, fmt.Errorf("go/types emitted a missing func parameter")
 			}
-			name, err := p.atom(parameter.Name)
-			if err != nil {
+			if err := p.emitSigParam(index, uint32(ordinal), parameter); err != nil {
 				return 0, err
 			}
-			p.sigParams = append(p.sigParams, sigParamPlan{
-				owner:   index,
-				ordinal: uint32(ordinal),
-				name:    name,
-			})
 		}
 		for ordinal, result := range t.Results {
 			if result == nil {
 				return 0, fmt.Errorf("go/types emitted a missing func result")
 			}
-			name, err := p.atom(result.Name)
-			if err != nil {
+			if err := p.emitSigParam(index, uint32(len(t.Params)+ordinal), result); err != nil {
 				return 0, err
 			}
-			p.sigParams = append(p.sigParams, sigParamPlan{
-				owner:   index,
-				ordinal: uint32(len(t.Params) + ordinal),
-				name:    name,
-			})
 		}
 		count := len(t.Params) + len(t.Results)
 		start, err := p.reserveChildren(count)
@@ -627,11 +615,6 @@ func (p *imagePlan) emitType(t *Type) (uint32, error) {
 		}
 		p.types[index].childStart = start
 		p.types[index].childCount = cellCount
-		setCount, err := u32(len(t.AllMethods), "interface method set")
-		if err != nil {
-			return 0, err
-		}
-		p.types[index].methodSetCount = setCount
 		if len(t.ExplicitMethods) > 0 {
 			requests := make([]memberRequest, 0, len(t.ExplicitMethods))
 			for _, method := range t.ExplicitMethods {
@@ -708,6 +691,35 @@ func (p *imagePlan) emitType(t *Type) (uint32, error) {
 		p.types[index].childCount = cellCount
 	}
 	return index, nil
+}
+
+// emitSigParam lowers one parameter/result's signature-parameter row: the
+// exact source name plus the identifier's file and byte offset, or a fully
+// absent position when go/types resolved none.
+func (p *imagePlan) emitSigParam(owner uint32, ordinal uint32, parameter *Param) error {
+	name, err := p.atom(parameter.Name)
+	if err != nil {
+		return err
+	}
+	file := atomCell{}
+	offset := authorityNone
+	if parameter.Pos != nil {
+		if file, err = p.atom(parameter.Pos.File); err != nil {
+			return err
+		}
+		if parameter.Pos.Offset < 0 || uint64(parameter.Pos.Offset) > authorityMax {
+			return fmt.Errorf("go/types emitted parameter offset %d", parameter.Pos.Offset)
+		}
+		offset = uint32(parameter.Pos.Offset)
+	}
+	p.sigParams = append(p.sigParams, sigParamPlan{
+		owner:   owner,
+		ordinal: ordinal,
+		name:    name,
+		file:    file,
+		offset:  offset,
+	})
+	return nil
 }
 
 // imageDeclarationKind maps one Decl kind spelling onto its closed byte tag.
@@ -861,10 +873,10 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 		if pkg == nil {
 			return nil, fmt.Errorf("go/types emitted a missing package")
 		}
-		// The reader validates strict import-path order and that the
-		// declaration runs of the package rows tile the declaration plane,
-		// so the producer refuses out-of-order or duplicate paths instead
-		// of emitting an image the reader must reject.
+		// The reader validates strict import-path order and that every
+		// declaration names one of the package rows' import paths, so the
+		// producer refuses out-of-order or duplicate paths instead of
+		// emitting an image the reader must reject.
 		if len(p.packages) > 0 {
 			previous := p.packages[len(p.packages)-1]
 			if string(p.atoms[previous.importPath.offset:previous.importPath.offset+previous.importPath.length]) >= pkg.ImportPath {
@@ -876,9 +888,6 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 		}
 		packageRow := packagePlan{}
 		var err error
-		if packageRow.declStart, err = u32(len(p.decls), "declarations"); err != nil {
-			return nil, err
-		}
 		if packageRow.importPath, err = p.atom(pkg.ImportPath); err != nil {
 			return nil, err
 		}
@@ -1052,13 +1061,6 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 			}
 			p.decls = append(p.decls, plan)
 		}
-		// The package row's declaration run closes here; runs of successive
-		// package rows tile the whole declaration plane.
-		declEnd, err := u32(len(p.decls), "declarations")
-		if err != nil {
-			return nil, err
-		}
-		p.packages[len(p.packages)-1].declCount = declEnd - p.packages[len(p.packages)-1].declStart
 		// The package's doc comment; the owner names the package's first
 		// declaration, so a declaration-less package carries none. These rows
 		// are appended after finalize lays out member documentation because
@@ -1280,8 +1282,6 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[16:20], row.files.offset)
 		binary.LittleEndian.PutUint32(rowBytes[20:24], row.files.length)
 		binary.LittleEndian.PutUint32(rowBytes[24:28], row.fileCount)
-		binary.LittleEndian.PutUint32(rowBytes[28:32], row.declStart)
-		binary.LittleEndian.PutUint32(rowBytes[32:36], row.declCount)
 		packages = append(packages, rowBytes...)
 	}
 	decls := make([]byte, 0, len(p.decls)*authorityDeclBytes)
@@ -1325,7 +1325,6 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[32:36], row.childCount)
 		binary.LittleEndian.PutUint32(rowBytes[36:40], row.memberStart)
 		binary.LittleEndian.PutUint32(rowBytes[40:44], row.memberCount)
-		binary.LittleEndian.PutUint32(rowBytes[44:48], row.methodSetCount)
 		binary.LittleEndian.PutUint32(rowBytes[48:52], row.paramCount)
 		types = append(types, rowBytes...)
 	}
@@ -1336,6 +1335,9 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		binary.LittleEndian.PutUint32(rowBytes[4:8], row.ordinal)
 		binary.LittleEndian.PutUint32(rowBytes[8:12], row.name.offset)
 		binary.LittleEndian.PutUint32(rowBytes[12:16], row.name.length)
+		binary.LittleEndian.PutUint32(rowBytes[16:20], row.file.offset)
+		binary.LittleEndian.PutUint32(rowBytes[20:24], row.file.length)
+		binary.LittleEndian.PutUint32(rowBytes[24:28], row.offset)
 		sigParams = append(sigParams, rowBytes...)
 	}
 	methods := make([]byte, 0, len(p.methods)*authorityMethodBytes)

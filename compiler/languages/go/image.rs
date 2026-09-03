@@ -8,18 +8,16 @@
 //!
 //! ## Format version 5 (zero-copy, fixed-width rows)
 //!
-//! Header (132 bytes): magic `NGAI`, version `5`, header length, declaration
+//! Header (136 bytes): magic `NGAI`, version `5`, header length, declaration
 //! count, atom-plane byte length, body byte length, SHA-256 source digest,
 //! SHA-256 checksum, then eight plane row counts (types, references, methods,
 //! type parameters, members, docs, build constraints, satisfactions), the
 //! module count, the package count, the signature-parameter count, and the
-//! method-set count. Version 4's two reserved words now carry the module and
-//! package counts; the two planes whose sizes no row declares grew the
-//! envelope by exactly their two count cells.
+//! method-set count, with four reserved bytes sealing the envelope.
 //!
-//! Body planes, in order: the single module row (32 B), package rows (36 B),
+//! Body planes, in order: the single module row (32 B), package rows (28 B),
 //! declarations (56 B rows), type rows (52 B), signature-parameter rows
-//! (16 B), methods (64 B), type parameters (16 B), members — struct fields
+//! (28 B), methods (64 B), type parameters (16 B), members — struct fields
 //! and interface method signatures (40 B), interface method-set rows (24 B),
 //! documentation rows (16 B), references (48 B), build constraints (28 B),
 //! satisfaction rows (20 B), pooled type children (8 B), and the shared
@@ -36,19 +34,21 @@
 //! Version 5 carries the oracle's complete `Output`. The module row owns the
 //! `go.mod` metadata (path, directory, Go directive, resolved version).
 //! Package rows own each package's import path, package clause, and source
-//! file list, and their declaration runs must tile the declaration plane
-//! exactly, with every declaration naming its own package's import path.
-//! Signature-parameter rows own the exact source name of every parameter and
-//! result of every func type row: one row per child, owner-contiguous in
-//! type-row order, ordinals ascending from zero (empty names are legal —
-//! Go permits unnamed parameters and results). Method-set rows own the
-//! complete post-embedding method set of every interface type row — a fact
-//! that is not locally derivable when an embedded interface declares in
-//! another package — owner-contiguous in type-row order, names strictly
-//! ascending within one owner. An interface row's reserved-at-v4 cell now
-//! declares its method-set run length; every other kind must leave it zero.
-//! Line and column positions stay off the wire: they are losslessly
-//! derivable from the source digest plus the byte offsets already carried.
+//! file list, canonically ordered by import path; every declaration must
+//! name one of the package rows' import paths. Signature-parameter rows own
+//! the exact source name and source position of every parameter and result
+//! of every func type row: one row per child, owner-contiguous in type-row
+//! order, ordinals ascending from zero, the plane exactly tiling the func
+//! rows' child runs (empty names are legal — Go permits unnamed parameters
+//! and results — and a file-less position must be fully absent). Method-set
+//! rows own the complete post-embedding method set of every interface type
+//! row — a fact that is not locally derivable when an embedded interface
+//! declares in another package — owner-contiguous in type-row order, names
+//! strictly ascending within one owner, every owner an interface row. The
+//! type row layout is unchanged from version 4: its reserved bytes stay
+//! reserved. Line and column positions stay off the wire: they are
+//! losslessly derivable from the source digest plus the byte offsets already
+//! carried.
 //!
 //! Since version 4, constant declarations own their exact value atom,
 //! const-group identity, and iota flag on the declaration row,
@@ -62,12 +62,12 @@ use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NGAI";
 const VERSION: u16 = 5;
-const HEADER_BYTES: usize = 132;
+const HEADER_BYTES: usize = 136;
 const MODULE_BYTES: usize = 32;
-const PACKAGE_BYTES: usize = 36;
+const PACKAGE_BYTES: usize = 28;
 const DECLARATION_BYTES: usize = 56;
 const TYPE_ROW_BYTES: usize = 52;
-const SIGNATURE_PARAMETER_BYTES: usize = 16;
+const SIGNATURE_PARAMETER_BYTES: usize = 28;
 const METHOD_BYTES: usize = 64;
 const TYPE_PARAMETER_BYTES: usize = 16;
 const MEMBER_BYTES: usize = 40;
@@ -203,7 +203,7 @@ pub struct ModuleRow<'image> {
 }
 
 /// One borrowed package row: one Go package of the module with its source
-/// files and its contiguous declaration run.
+/// files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackageRow<'image> {
     /// The fully-qualified import path.
@@ -214,9 +214,6 @@ pub struct PackageRow<'image> {
     pub files: &'image [u8],
     /// Number of source files in [`PackageRow::files`].
     pub file_count: u32,
-    /// Contiguous declaration run `[start, start + count)` owned by this
-    /// package; the runs of all package rows tile the declaration plane.
-    pub declarations: (u32, u32),
 }
 
 /// One borrowed Go declaration from the checked authority image.
@@ -269,10 +266,6 @@ pub struct TypeRow<'image> {
     pub children: (u32, u32),
     /// Ordered member run `[start, start + count)`.
     pub members: (u32, u32),
-    /// Number of method-set rows owned by this row (interface rows only;
-    /// every other kind carries zero). The run start is the row's position
-    /// in type-row order, proved by the open-time tiling walk.
-    pub method_set_count: u32,
 }
 
 /// One borrowed method row.
@@ -313,9 +306,10 @@ pub struct TypeParameterRow<'image> {
     pub constraint: Option<u32>,
 }
 
-/// One borrowed signature-parameter row: the exact source name of one
-/// parameter or result of one func type row. Names may be empty — Go
-/// permits unnamed parameters and results.
+/// One borrowed signature-parameter row: the exact source name and source
+/// position of one parameter or result of one func type row. Names may be
+/// empty — Go permits unnamed parameters and results — and a nameless,
+/// positionless row is legal whenever the source wrote neither.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignatureParameterRow<'image> {
     /// Owning func type-row index.
@@ -325,6 +319,12 @@ pub struct SignatureParameterRow<'image> {
     pub ordinal: u32,
     /// Exact source name bytes; empty when the source wrote none.
     pub name: &'image [u8],
+    /// Source file spelling of the parameter identifier; empty when the
+    /// position was never resolved.
+    pub file: &'image [u8],
+    /// Byte offset of the identifier within [`SignatureParameterRow::file`];
+    /// [`NONE`] when the position was never resolved.
+    pub offset: u32,
 }
 
 /// What kind of member a member row carries.
@@ -544,6 +544,9 @@ impl<'image> GoImage<'image> {
         let package_count = plane_count(bytes, 120, actual_body)?;
         let signature_parameter_count = plane_count(bytes, 124, actual_body)?;
         let method_set_count = plane_count(bytes, 128, actual_body)?;
+        if bytes[132..HEADER_BYTES] != [0; 4] {
+            return Err(ImageError::Header(HeaderError::Reserved));
+        }
 
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
@@ -652,6 +655,7 @@ impl<'image> GoImage<'image> {
         image.validate_methods()?;
         image.validate_type_parameters()?;
         image.validate_members()?;
+        image.validate_method_sets()?;
         image.validate_docs()?;
         image.validate_references()?;
         image.validate_constraints()?;
@@ -809,7 +813,7 @@ impl<'image> GoImage<'image> {
             index,
             found: row[2],
         })?;
-        if row[3] != 0 {
+        if row[3] != 0 || row[44..48] != [0; 4] {
             return Err(ImageError::TypeReserved { index });
         }
         let name = self.atom("type", index, u32_at(row, 4), u32_at(row, 8))?;
@@ -827,7 +831,6 @@ impl<'image> GoImage<'image> {
             param_count: u32_at(row, 48),
             children: (u32_at(row, 28), u32_at(row, 32)),
             members: (u32_at(row, 36), u32_at(row, 40)),
-            method_set_count: u32_at(row, 44),
         })
     }
 
@@ -1331,7 +1334,6 @@ impl<'image> GoImage<'image> {
             name,
             files,
             file_count,
-            declarations: (u32_at(row, 28), u32_at(row, 32)),
         })
     }
 
@@ -1347,8 +1349,9 @@ impl<'image> GoImage<'image> {
     }
 
     /// Borrows one validated signature-parameter row: the exact source name
-    /// of one parameter or result of one func type row. The name may be
-    /// empty — Go permits unnamed parameters and results.
+    /// and source position of one parameter or result of one func type row.
+    /// The name may be empty — Go permits unnamed parameters and results —
+    /// and a file-less position must be fully absent.
     pub fn signature_parameter(
         self,
         index: usize,
@@ -1373,6 +1376,16 @@ impl<'image> GoImage<'image> {
                 type_count: self.type_count,
             });
         }
+        let file = self.atom(
+            "signature parameter",
+            index,
+            u32_at(row, 16),
+            u32_at(row, 20),
+        )?;
+        let offset = u32_at(row, 24);
+        if file.is_empty() != (offset == NONE) {
+            return Err(ImageError::SignatureParameterPosition { index });
+        }
         Ok(SignatureParameterRow {
             owner,
             ordinal: u32_at(row, 4),
@@ -1382,6 +1395,8 @@ impl<'image> GoImage<'image> {
                 u32_at(row, 8),
                 u32_at(row, 12),
             )?,
+            file,
+            offset,
         })
     }
 
@@ -1551,58 +1566,33 @@ impl<'image> GoImage<'image> {
         Ok(())
     }
 
-    /// Package rows must be canonically ordered by import path, their
-    /// declaration runs must tile the declaration plane exactly in row
-    /// order, and every declaration inside a run must name its own
-    /// package's import path.
+    /// Package rows must be canonically ordered by import path, and every
+    /// declaration must name one of the package rows' import paths.
     fn validate_packages(self) -> Result<(), ImageError> {
         let mut previous_path: Option<&'image [u8]> = None;
-        let mut cursor = 0_usize;
         for index in 0..self.package_count {
             let row = self.package(index)?;
             if previous_path.is_some_and(|previous| row.import_path <= previous) {
                 return Err(ImageError::PackageSort { index });
             }
             previous_path = Some(row.import_path);
-            let start =
-                usize::try_from(row.declarations.0).map_err(|_| ImageError::PackageDeclRange {
-                    index,
-                    start: usize::MAX,
-                    count: usize::try_from(row.declarations.1).unwrap_or(usize::MAX),
-                    declaration_count: self.declaration_count,
-                })?;
-            let count =
-                usize::try_from(row.declarations.1).map_err(|_| ImageError::PackageDeclRange {
-                    index,
-                    start,
-                    count: usize::MAX,
-                    declaration_count: self.declaration_count,
-                })?;
-            let end = start.checked_add(count);
-            if start != cursor || end.is_none_or(|end| end > self.declaration_count) {
-                return Err(ImageError::PackageDeclRange {
-                    index,
-                    start,
-                    count,
-                    declaration_count: self.declaration_count,
-                });
-            }
-            for declaration in start..end.unwrap_or(start) {
-                let declared = self.declaration(declaration)?;
-                if declared.package != row.import_path {
-                    return Err(ImageError::DeclarationPackage {
-                        index: declaration,
-                        package: u32::try_from(index).unwrap_or(u32::MAX),
-                    });
+        }
+        for index in 0..self.declaration_count {
+            let declared = self.declaration(index)?;
+            let mut bound = false;
+            for package_index in 0..self.package_count {
+                let row = self.package(package_index)?;
+                if declared.package == row.import_path {
+                    bound = true;
+                    break;
                 }
             }
-            cursor = end.unwrap_or(cursor);
-        }
-        if cursor != self.declaration_count {
-            return Err(ImageError::PackageDeclTiling {
-                declared: cursor,
-                plane: self.declaration_count,
-            });
+            if !bound {
+                return Err(ImageError::DeclarationPackage {
+                    index,
+                    package_count: self.package_count,
+                });
+            }
         }
         Ok(())
     }
@@ -1610,7 +1600,6 @@ impl<'image> GoImage<'image> {
     fn validate_types(self) -> Result<(), ImageError> {
         let mut expected_child = 0_usize;
         let mut signature_parameter_cursor = 0_usize;
-        let mut method_set_cursor = 0_usize;
         for index in 0..self.type_count {
             let row = self.type_row(index)?;
             let name_required = matches!(
@@ -1755,48 +1744,6 @@ impl<'image> GoImage<'image> {
                     member_count: self.member_count,
                 });
             }
-            // The method-set run cell is meaningful on interface rows only;
-            // every other kind must leave it zero.
-            if row.kind != TypeRowKind::Interface && row.method_set_count != 0 {
-                return Err(ImageError::TypeMethodSetCell {
-                    index,
-                    kind: row.kind,
-                    count: row.method_set_count,
-                });
-            }
-            if row.kind == TypeRowKind::Interface {
-                let set_count = usize::try_from(row.method_set_count).map_err(|_| {
-                    ImageError::TypeMethodSetRange {
-                        index,
-                        count: row.method_set_count,
-                        method_set_count: self.method_set_count,
-                    }
-                })?;
-                let set_end = method_set_cursor.checked_add(set_count);
-                if set_end.is_none_or(|end| end > self.method_set_count) {
-                    return Err(ImageError::TypeMethodSetRange {
-                        index,
-                        count: row.method_set_count,
-                        method_set_count: self.method_set_count,
-                    });
-                }
-                let mut previous_name: Option<&'image [u8]> = None;
-                for position in method_set_cursor..method_set_cursor + set_count {
-                    let method = self.method_set(position)?;
-                    if usize::try_from(method.owner).unwrap_or(usize::MAX) != index {
-                        return Err(ImageError::MethodSetOwnerRow {
-                            index: position,
-                            owner: method.owner,
-                            expected: u32::try_from(index).unwrap_or(u32::MAX),
-                        });
-                    }
-                    if previous_name.is_some_and(|previous| method.name <= previous) {
-                        return Err(ImageError::MethodSetSort { index: position });
-                    }
-                    previous_name = Some(method.name);
-                }
-                method_set_cursor += set_count;
-            }
             // Every func row owns exactly one signature-parameter row per
             // child: parameters first, then results, ordinals ascending.
             if row.kind == TypeRowKind::Func {
@@ -1831,12 +1778,6 @@ impl<'image> GoImage<'image> {
             return Err(ImageError::SignatureParameterTiling {
                 declared: signature_parameter_cursor,
                 plane: self.signature_parameter_count,
-            });
-        }
-        if method_set_cursor != self.method_set_count {
-            return Err(ImageError::MethodSetTiling {
-                declared: method_set_cursor,
-                plane: self.method_set_count,
             });
         }
         Ok(())
@@ -1916,6 +1857,31 @@ impl<'image> GoImage<'image> {
                 });
             }
             cursor = end;
+        }
+        Ok(())
+    }
+
+    /// Method-set rows must be canonically ordered by (owner, name) with
+    /// owner-contiguous runs in type-row order, and every owner must be an
+    /// interface type row.
+    fn validate_method_sets(self) -> Result<(), ImageError> {
+        let mut previous: Option<(u32, &'image [u8])> = None;
+        for index in 0..self.method_set_count {
+            let row = self.method_set(index)?;
+            if previous.is_some_and(|(previous_owner, previous_name)| {
+                row.owner < previous_owner
+                    || (row.owner == previous_owner && row.name <= previous_name)
+            }) {
+                return Err(ImageError::MethodSetSort { index });
+            }
+            let owner = usize::try_from(row.owner).unwrap_or(usize::MAX);
+            if owner < self.type_count && self.type_row(owner)?.kind != TypeRowKind::Interface {
+                return Err(ImageError::MethodSetOwnerKind {
+                    index,
+                    kind: self.type_row(owner)?.kind,
+                });
+            }
+            previous = Some((row.owner, row.name));
         }
         Ok(())
     }
@@ -2352,42 +2318,15 @@ pub enum ImageError {
     /// Package rows are not canonically ordered by import path.
     #[error("Go authority package {index} is out of canonical import-path order")]
     PackageSort { index: usize },
-    /// A package row's declaration run is out of bounds, misordered, or
-    /// overlaps a neighbor.
+    /// A declaration names a package outside the package rows.
     #[error(
-        "Go authority package {index} declaration range {start}..{count} violates the declaration plane of {declaration_count}"
+        "Go authority declaration {index} names a package outside the {package_count} package rows"
     )]
-    PackageDeclRange {
-        index: usize,
-        start: usize,
-        count: usize,
-        declaration_count: usize,
-    },
-    /// The package rows' declaration runs do not tile the declaration plane.
-    #[error(
-        "Go authority package declaration runs cover {declared} rows but the plane holds {plane}"
-    )]
-    PackageDeclTiling { declared: usize, plane: usize },
-    /// A declaration names a package other than the package row that owns
-    /// its run.
-    #[error("Go authority declaration {index} names a package foreign to package row {package}")]
-    DeclarationPackage { index: usize, package: u32 },
-    /// A non-interface type row declares a method-set run.
-    #[error("Go authority type row {index} of kind {kind:?} declares {count} method-set rows")]
-    TypeMethodSetCell {
-        index: usize,
-        kind: TypeRowKind,
-        count: u32,
-    },
-    /// An interface row's method-set run is out of bounds.
-    #[error(
-        "Go authority type row {index} declares {count} method-set rows over a plane of {method_set_count}"
-    )]
-    TypeMethodSetRange {
-        index: usize,
-        count: u32,
-        method_set_count: usize,
-    },
+    DeclarationPackage { index: usize, package_count: usize },
+    /// A signature-parameter row's position is half-present: a file without
+    /// an offset or an offset without a file.
+    #[error("Go authority signature parameter {index} has a malformed source position")]
+    SignatureParameterPosition { index: usize },
     /// A method-set row names an owner outside the type plane.
     #[error("Go authority method set {index} names owner {owner} outside {type_count} type rows")]
     MethodSetOwner {
@@ -2395,16 +2334,11 @@ pub enum ImageError {
         owner: u32,
         type_count: usize,
     },
-    /// A method-set row names an owner other than the interface row that
-    /// owns its run.
+    /// A method-set row names a non-interface type row as its owner.
     #[error(
-        "Go authority method set {index} names owner {owner}; the run belongs to type row {expected}"
+        "Go authority method set {index} names a type row of kind {kind:?}; only interfaces carry method sets"
     )]
-    MethodSetOwnerRow {
-        index: usize,
-        owner: u32,
-        expected: u32,
-    },
+    MethodSetOwnerKind { index: usize, kind: TypeRowKind },
     /// A method-set signature root names a row outside the type plane.
     #[error("Go authority method set {index} names type root {root} outside {type_count}")]
     MethodSetTypeRoot {
@@ -2412,14 +2346,9 @@ pub enum ImageError {
         root: u32,
         type_count: usize,
     },
-    /// Method-set rows are not canonically ordered by name within one owner.
-    #[error("Go authority method set {index} is out of canonical name order")]
+    /// Method-set rows are not canonically ordered by (owner, name).
+    #[error("Go authority method set {index} is out of canonical (owner, name) order")]
     MethodSetSort { index: usize },
-    /// The method-set plane does not exactly tile every interface row's run.
-    #[error(
-        "Go authority method-set plane holds {plane} rows but interface rows declare {declared}"
-    )]
-    MethodSetTiling { declared: usize, plane: usize },
     /// A signature-parameter row names an owner outside the type plane.
     #[error(
         "Go authority signature parameter {index} names owner {owner} outside {type_count} type rows"
@@ -2491,6 +2420,9 @@ pub enum HeaderError {
     /// The body dimensions do not equal the supplied image body.
     #[error("declared body length {declared} differs from actual {actual}")]
     BodyLength { declared: usize, actual: usize },
+    /// Reserved header bytes are not all zero.
+    #[error("reserved header bytes are non-zero")]
+    Reserved,
     /// The module plane does not hold exactly one row.
     #[error("module plane holds {found} rows; exactly one is required")]
     ModuleCount { found: usize },
