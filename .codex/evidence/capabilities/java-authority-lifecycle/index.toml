@@ -2,9 +2,11 @@ capability = "java-authority-lifecycle"
 opened = "2026-09-02"
 baseline_commit = "40608fc1c95dd8d41fd1a78a51d7ed92307df60a"
 baseline_tree = "748ff3104076c9e4171ebdc865c5d8bf0cf2b969"
-state = "phase0"
+state = "building"
 testing_path = "TESTING.md"
 testing_sha256 = "absent-no-file"
+worktree = "/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/java-lane"
+worktree_note = "Isolated worktree; quarantine state from concurrent lanes included and marked; never committed by this lane. Shared CARGO_TARGET_DIR caused phantom gate failures for concurrent workers; Terra re-verifies every gate sequentially."
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/java-authority-lifecycle/brief.md" }
@@ -13,70 +15,109 @@ research = { path = ".codex/evidence/capabilities/java-authority-lifecycle/resea
 closure = { path = ".codex/evidence/capabilities/java-authority-lifecycle/closure.md" }
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b8b40a3ffewPUaDEn2O53UXX"
 role = "nudox_luna_implementer"
 card = "J1-java-compound-anonymous-rows"
-paths = ["compiler/driver/lower/java.rs"]
-state = "planned"
+commit = "673e8c2a"
+state = "superseded"
+note = "Mechanism landed but tests skipped and two defects found in review (argument convention, QualifiedPath anchor fabrication); repaired by J1R/J1R2"
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b8ae3b0ffe2kWbpdmoqEvA83"
 role = "nudox_luna_implementer"
 card = "J5-java-render-goldens"
-paths = ["compiler/driver/tests/java_render.rs", "compiler/driver/tests/java_support/"]
-state = "planned"
+commit = "1cd51e4a"
+state = "accepted"
+note = "Goldens pin current house rendering vocabulary; findings adjudicated as shared-lane escalation items, not java defects (python goldens identical)"
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b8a65d1ffevXGL1Sw0e0Q52N"
 role = "nudox_luna_implementer"
 card = "J6-java-purl-local-repo"
-paths = ["compiler/languages/java/purl.rs", "compiler/languages/java/repo.rs", "compiler/languages/java/lib.rs", "compiler/languages/java/tests/purl.rs", "compiler/languages/java/tests/repo.rs"]
-state = "planned"
+commit = "f6251c42"
+state = "accepted"
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b72cc8cffeYK4rrNSZWp6i5U"
 role = "nudox_luna_implementer"
 card = "J2-java-image-v2-planes-doclet"
-paths = ["compiler/languages/java/image.rs", "compiler/languages/java/bound.rs", "compiler/languages/java/doclet/", "compiler/languages/java/tests/image.rs", "compiler/languages/java/tests/javac_authority.rs", "compiler/driver/tests/java_image.rs"]
-state = "planned"
+commit = "f8bd26e8"
+state = "accepted-with-followup"
+note = "Production + live doclet proven; hostile tests and live decode assertions delegated to J2F; SECTION_COUNT is 10 (8 v1 + 2 new) — Terra card text said 11 in error, 10 is the intended design"
 
 [[dispatches]]
-task = "pending"
-role = "nudox_luna_implementer"
-card = "J4-java-utf16-span-basis"
-paths = ["compiler/driver/lower/java.rs"]
-state = "planned"
-
-[[dispatches]]
-task = "pending"
+task = "ses_f9b723a0bffe2Tgx0F1tUUlP7K"
 role = "nudox_luna_implementer"
 card = "J7-java-jar-central"
-paths = ["compiler/languages/java/jar.rs", "compiler/languages/java/central.rs", "compiler/languages/java/Cargo.toml", "compiler/languages/java/tests/jar.rs", "compiler/languages/java/tests/central.rs"]
-state = "planned"
+commit = "7dc42f26"
+state = "accepted"
+note = "656 LOC exceeds 250 heuristic; justified by full ZIP parser + CRC-32 + tests; variance reported honestly by worker"
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b73665fffeJyN8ju1sOiryS2"
 role = "nudox_luna_implementer"
-card = "J3-java-planes-lowering"
-paths = ["compiler/driver/lower/java.rs"]
-state = "planned"
+card = "J1R-java-compound-repair"
+commit = "a425ea68"
+state = "superseded-by-terra-integration"
+note = "Repairs landed but gates blocked by concurrent-worker target races; Terra verified, fixed borrow scoping and intern order directly, committed a92d1809c"
 
 [[dispatches]]
-task = "pending"
+task = "ses_f9b551de4ffeRU4oyJhg9QgITl"
+role = "nudox_luna_implementer"
+card = "J1R2-wildcard-intersection-repair"
+commit = "8576e409"
+state = "accepted"
+note = "Root cause: array fast path embedded a fact coordinate inside an anonymous row; remap inverted it. 14/14 java tests"
+
+[[dispatches]]
+task = "ses_f9b54d1c0ffe0bCp4L23U9Yupy"
+role = "nudox_luna_implementer"
+card = "J2F-image-v2-proof-tests"
+commit = "8bcc67a2"
+state = "accepted"
+note = "Hostile plane mutations + live decode (@java.lang.Deprecated, IOException, record components left/right)"
+
+[[dispatches]]
+task = "ses_f9b545df5ffegtIDmu918DcTyC"
 role = "nudox_luna_implementer"
 card = "J8-java-doclet-harness"
-paths = ["compiler/languages/java/harness.rs", "compiler/languages/java/lib.rs", "compiler/languages/java/tests/harness.rs"]
-state = "planned"
+commit = "38dc4369"
+state = "accepted"
+note = "5 live harness tests; drop cleanup via take_cleanup_error"
 
 [[dispatches]]
-task = "pending"
+task = "terra-direct"
+role = "terra"
+card = "integration-checkpoint"
+commit = "a92d1809c"
+state = "accepted"
+note = "Terra direct mechanical fixes: shared-lane start/count pairing repair (lower.rs, Sol review REQUIRED), authority.rs new-variant arms, lib.rs export, J1R borrow scoping, intern order, fixture ordinals"
+
+[[dispatches]]
+task = "ses_f9b4931daffeWYmSxiCJCQn5xa"
 role = "nudox_luna_implementer"
-card = "J9-java-lifecycle-integration"
-paths = ["compiler/driver/tests/java_lifecycle.rs", "compiler/driver/tests/java_lifecycle/"]
-state = "planned"
+card = "J3-java-planes-lowering"
+commit = "e45b6338"
+state = "accepted-with-followup"
+note = "Production planes landed (+141 net); required tests delegated to J3F"
+
+[[dispatches]]
+task = "ses_f9b3ef68bffewrwaI83HWQlSh4"
+role = "nudox_luna_implementer"
+card = "J3F-plane-proof-tests"
+commit = "1993755"
+state = "accepted"
+note = "T1-T6 (+418 test LOC), push_root package-annotation gap closed; 20/20 java lowering tests"
+
+[[dispatches]]
+task = "session-id-unrecorded"
+role = "nudox_luna_implementer"
+card = "J4-java-utf16-span-basis"
+commit = "889bf75e"
+state = "accepted"
+note = "Chain tip 2026-09-03. Worker session id was not recorded before handoff; Terra reproduced the commit's gates directly (all six green 2026-09-03) and reviewed the diff against P10 (one-pass basis, ASCII identity, sparse boundary table, binary-search lookup, typed Utf16/IndexCapacity faults, no per-reference rescan). Custody = commit on this chain; treat session-id as lost, not as role ambiguity."
 
 [[reviews]]
-boundary = "phase0"
+boundary = "closure"
 role = "nudox_terra_reviewer"
-state = "deferred-noted"
-note = "Phase-0 frozen packet reviewed by manager; independent sidecar reviewer reserved for first end-to-end candidate and closure (tooling here exposes the registered reviewer as a task agent, not a separate codex parent; deviation recorded at first review)"
+state = "planned"
