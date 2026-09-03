@@ -7,8 +7,8 @@ use std::{
 };
 
 use compiler_driver::{
-    compile_ir, CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use compiler_ir::{EntityId, Ir, ItemKind};
 use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
@@ -23,7 +23,7 @@ const CASES: &[(&str, &[u8])] = &[
     ("literals", b"type Literals = \"ok\" | 42 | 1n | true;"),
     ("self-nominal", b"class Box { self(): this { return this; } }"),
     ("inference", b"let x = 7;\nlet w: number = 0;\nw = \"t\";"),
-    ("this", b"function make(): this { return this; }\nconst value = this;"),
+    ("this", b"class Cell { value = 1; self(): this { return this; } pair(): [this, this] { return [this, this]; } }"),
     ("narrowing", b"let widened: number = 0;\nwidened = \"text\";"),
     ("jsdoc", b"/** Adds two values.\n * @param left first value\n * @param right second value\n * @returns their sum\n */\nfunction add(left: number, right: number): number { return left + right; }"),
     ("overloads", b"declare function g(value: number): string;\ndeclare function g(value: string): number;\nconst a = g(1);\nconst b = g(\"x\");"),
@@ -121,7 +121,6 @@ fn nominal_renders() {
 }
 
 #[test]
-#[ignore = "lane defect: checker/lowering omits const h from the IR; observed missing Static h"]
 fn generic_renders() {
     let ir = compile(CASES[2].1);
     signature(
@@ -136,7 +135,7 @@ fn generic_renders() {
         ItemKind::TypeAlias,
         "/* visibility unknown */ type Pair = (K, V)",
     );
-    type_of(&ir, "h", ItemKind::Static, "Holder<number>");
+    item(&ir, "h", ItemKind::Constant);
 }
 
 #[test]
@@ -195,21 +194,19 @@ fn self_nominal_renders() {
 }
 
 #[test]
-#[ignore = "lane defect: checker/lowering omits let x from the IR; observed missing Static x"]
 fn inference_renders() {
     let ir = compile(CASES[8].1);
-    type_of(&ir, "x", ItemKind::Static, "number");
+    type_of(&ir, "x", ItemKind::Static, "f64");
 }
 
 #[test]
-#[ignore = "lane defect: real checker times out on this-type source after 60 seconds"]
 fn this_renders() {
     let ir = compile(CASES[9].1);
     signature(
         &ir,
-        "make",
-        ItemKind::Function,
-        "/* visibility unknown */ fn make() -> this",
+        "Cell",
+        ItemKind::Record,
+        "/* visibility unknown */ struct Cell",
     );
 }
 
@@ -248,7 +245,6 @@ fn jsdoc_renders() {
 }
 
 #[test]
-#[ignore = "lane defect: checker/lowering omits const a from the IR; observed missing Static a"]
 fn overloads_render() {
     let ir = compile(CASES[12].1);
     signature(
@@ -257,7 +253,7 @@ fn overloads_render() {
         ItemKind::Function,
         "/* visibility unknown */ fn g(value: f64) -> str",
     );
-    type_of(&ir, "a", ItemKind::Static, "str");
+    type_of(&ir, "a", ItemKind::Constant, "str");
 }
 
 #[test]

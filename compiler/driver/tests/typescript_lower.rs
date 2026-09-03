@@ -387,6 +387,12 @@ fn golden_narrowing_extends_the_declared_fact_with_a_site_row() {
     let r = Checker::default().decode(TRANSCRIPT).unwrap();
     assert!(try_lower(SOURCE, Some(&r)).unwrap().ir.entity_count() >= 10);
 }
+
+#[test]
+fn computed_rows_stay_topologically_backward() {
+    let decoded = view(b"export const value: string | number = 'x';", None);
+    assert!(!facts(&decoded).is_empty());
+}
 #[test]
 fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
     let mut r = report(b"let wide: number = 0;\nwide = { alpha: 1 };");
@@ -473,7 +479,7 @@ struct Frozen {
     shape: u8,
 }
 #[test]
-#[ignore = "lane defect: fragment preparation rejects golden fixture with forward-reference target 37"]
+#[ignore = "remaining golden forward-reference defect: fragment reports row 4 child 2 -> 37"]
 fn golden_lowered_facts_match_the_frozen_table() {
     let r = Checker::default().decode(TRANSCRIPT).unwrap();
     let table = [

@@ -2813,7 +2813,8 @@ fn intern_computed_reference<'source>(
     let local = module
         .is_none()
         .then(|| registry.fact_by_name_bytes(name.as_bytes()))
-        .flatten();
+        .flatten()
+        .filter(|fact| *fact < owner);
     let base = match local {
         Some(fact) => fact,
         None => {

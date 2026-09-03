@@ -864,6 +864,31 @@ impl<'source> FactSet<'source> {
                 &mut type_seen,
                 true,
             )?;
+            let computed_is_primitive = self
+                .extensions
+                .get(ordinal)
+                .and_then(|extension| extension.as_ref())
+                .and_then(|extension| match extension {
+                    EmissionExtension::TypeScript(value) => value.computed,
+                    _ => None,
+                })
+                .and_then(|computed| self.anonymous_records.get(computed.erase().raw as usize))
+                .is_some_and(|record| record.tag == SemanticTypeTag::Primitive);
+            if semantic_type.is_none()
+                && computed_is_primitive
+                && let Some(Some(EmissionExtension::TypeScript(extension))) =
+                    self.extensions.get(ordinal)
+                && let Some(computed) = extension.computed
+            {
+                let row = ANONYMOUS_ROW_BASE.checked_add(computed.erase().raw).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: computed.erase().raw,
+                    },
+                )?;
+                *semantic_type =
+                    live_type(&mut tree, self, row, &mut type_ids, &mut type_seen, false)?;
+            }
         }
         let mut docs = [DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS];
         let mut doc_ranges = [(0usize, 0usize); MAX_EMISSION_FACTS];
