@@ -1,14 +1,25 @@
 schema = 1
 capability_id = "typescript-checker-authority"
-state = "phase0"
-baseline_commit = "67cdc911981905431642bfe0cfb7ce5d33cb757c"
-baseline_tree = "67cdc9119 + uncommitted typescript lane working set; frozen per-file baseline below"
+state = "building"
+# Re-frozen at fa7f6966d per pre-edit-1 BLOCKER 1 (the original freeze at
+# d9411952f was superseded by the L0 lane-green repair committed with a
+# custody gap; see packets/pre-edit-1.md).
+baseline_commit = "fa7f6966d03657d3d421af255a27b51137d4e34b"
+baseline_tree = "fa7f6966d + uncommitted sibling-lane working set (outside owned paths); frozen per-file baseline below"
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
 testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
-# Frozen per-file formatted LOC + sha256 at phase0 (independent of git status)
+# Environment block (pre-edit-1 MAJOR 4): checker output is version-sensitive.
+[environment]
+node = "v26.8.1"
+node_path = "/opt/homebrew/bin/node"
+typescript_module = "5.9.3"
+typescript_resolution = "/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js"
+notes = "repository-root package.json/node_modules admitted as dev/test dependency for the vendored checker driver; authority-dependent tests must assert not-skipped"
+
+# Frozen per-file formatted LOC + sha256 at the re-freeze (independent of git status)
 [baseline.files]
 "compiler/languages/typescript/lib.rs" = { loc = 23, sha256 = "cb2c34af0967399de3eb79ac8f79fff2924676df252460835c8d4a3363e9d735" }
 "compiler/languages/typescript/authority.rs" = { loc = 166, sha256 = "787bef30b6a749d68915cfc16bd3dd6d656c9ee80cff90caab7e20ab9080d791" }
@@ -21,40 +32,49 @@ testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced ex
 "compiler/languages/typescript/tests/semantic_authority.rs" = { loc = 137, sha256 = "af8cfe4b610930b608de402b03b4d87c07979be5540989ed3f8d46073ab561dc" }
 "compiler/languages/typescript/tests/fixtures/source.ts" = { loc = 21, sha256 = "06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e" }
 "compiler/languages/typescript/tests/transcripts/golden.json" = { loc = 1, sha256 = "f91967d5b2da9a37d38a570f8b31a7c8fdbef0e62559266ffe81c76975707e90" }
-"compiler/driver/lower/typescript.rs" = { loc = 4273, sha256 = "874500e3f84470d8aa64094d44d0f767e4124fedea3ad516d0912300b7061578" }
+"compiler/driver/lower/typescript.rs" = { loc = 4277, sha256 = "e4705e7875f664f0846a78678eb07bceed0e580a6b519625801c7841bb6c6fb5" }
 "compiler/driver/native/typescript.rs" = { loc = 76, sha256 = "0fc3147921507a1d07b893dafc216d7bc9a74a1dc0727bd2e9b960a796520cf8" }
 
 [artifacts]
-brief = { path = ".codex/evidence/capabilities/typescript-checker-authority/brief.md", sha256 = "aa3b6ee5a237c00b114df22624b64f158036e51f228644c7586efed21bc81e48" }
-matrix = { path = ".codex/evidence/capabilities/typescript-checker-authority/proof-matrix.md", sha256 = "9f5cd181abe69e3b6a6e4c2d7ed2aa9f9def0b27d7f6a6c04be8d41bcc247719" }
-research = { path = ".codex/evidence/capabilities/typescript-checker-authority/research.md", sha256 = "a5cce831766abf5dafcbe15b29b73c2fbdbfe95ac6b7d0591ae93588e5b44fdb" }
+brief = { path = ".codex/evidence/capabilities/typescript-checker-authority/brief.md", sha256 = "b39050d7f924ba62d4c1ed84937ea4854a7dd5345dc57bc865f591d85a58bd7e" }
+matrix = { path = ".codex/evidence/capabilities/typescript-checker-authority/proof-matrix.md", sha256 = "a5715e65806f0b87d736254ea4f659793383c9e02809fb0f6b5d683beb7c4019" }
+research = { path = ".codex/evidence/capabilities/typescript-checker-authority/research.md", sha256 = "880d6ce7f0f65ff318474a52491bcac51a26e99d0d523b36d9747df56906bbd6" }
+rubric = { path = ".codex/evidence/capabilities/typescript-checker-authority/rubric.md", sha256 = "d650a6b7126e58f36a69e8b23833f304151bdff7c8c3c3a3833d2fb0f906b332" }
 closure = { path = ".codex/evidence/capabilities/typescript-checker-authority/closure.md", sha256 = "" }
 
-# Environment adaptation, recorded honestly (matches sibling lanes): this
-# runtime dispatches the registered `luna` implementer and read-only
-# `reviewer` subagents through the opencode task tool; sidecar codex parents
-# are unavailable. Compensating custody: reviewer is read-only by
-# construction; Terra reproduces every accepted finding; worker cards carry
-# exact owned paths + card digests; returned commits are recorded per
-# dispatch below.
+# Environment adaptation, recorded honestly (matches the go lane's recorded
+# adaptation; the python lane carries no such note): this runtime dispatches
+# the registered `luna` implementer and read-only `reviewer` subagents
+# through the opencode task tool; sidecar codex parents are unavailable.
+# Compensating custody: reviewer is read-only by configuration
+# (.opencode/agents/reviewer.md edit:deny); Terra reproduces every accepted
+# finding; worker cards carry exact owned paths + card digests; returned
+# commits are recorded per dispatch below.
 
 [[workers]]
-task = "pending"
+task_id = "ses_f9a95ac8bffeViax3VkzWIwM4d"
 role = "nudox_luna_implementer"
-card = "L0-lane-green"
-paths = ["compiler/driver/lower/typescript.rs (inline tests only)"]
-state = "planned"
+model = "opencode luna subagent"
+card_path = ".codex/evidence/capabilities/typescript-checker-authority/cards/L0.md"
+card_sha256 = "ea0acecc69b85030b17d79a464f43f69138695281e13ef790e3264533438c1bd"
+baseline_commit = "d9411952f"
+checkout = "shared worktree /Users/mileswirht/Downloads/backend; path discipline instead of isolated checkout"
+result_commit = "fa7f6966d03657d3d421af255a27b51137d4e34b"
+retention = "active"
+
+[[reviews]]
+review_id = "pre-edit-1"
+task_id = "ses_f9a956588ffeWMiACTSWAa8cqc"
+role = "nudox_terra_reviewer"
+model = "opencode reviewer subagent (read-only)"
+packet_path = ".codex/evidence/capabilities/typescript-checker-authority/packets/pre-edit-1.md"
+result = "findings" # 2 blockers, 7 majors, 5 minors; packet repaired before L1
 
 [[workers]]
 task = "pending"
 role = "nudox_luna_implementer"
 card = "L1-checker-first-class"
-paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs"]
-state = "planned"
-
-[[reviews]]
-boundary = "pre-edit"
-role = "nudox_terra_reviewer"
+paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/lower.rs (TypeScript surface only)", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs", "compiler/driver/tests/typescript_lower.rs"]
 state = "planned"
 
 [[reviews]]

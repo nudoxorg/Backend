@@ -18,12 +18,18 @@ fragments, publish -> reopen -> index — proven over a 20-package real corpus.
    `compiler/driver/native/typescript.rs` (`--noEmit`, `--pretty false`,
    `--target ES2022`, `--module ESNext`, `--jsx preserve` for TSX), bounded
    output + wall clock, SHA-256 source binding, UTF-16 -> UTF-8 span binding.
-   A TypeScript compile with an unavailable checker is a typed
-   `ToolingUnavailable`-class terminal, never a silently degraded declared-only
-   success.
-2. **No escape hatches.** No "future", "degradation", "backlog", or fallback
-   authority language survives in owned production paths. A proven-but-
-   unrepresented construct is a typed `TypeReason` record, not prose.
+   A TypeScript compile whose checker is unavailable (env-var binary missing,
+   node absent, or exit-3 `typescript` module missing) is a public
+   `CompileFailure::Authority` terminal whose diagnostic retains the exact
+   `CheckerError` cause — the swallow arm at `lower/typescript.rs`
+   (`ToolingUnavailable | ModuleUnavailable => None`) is deleted. Zero facts
+   are emitted on that terminal. No new `NativeTool`/vocabulary variant is
+   introduced (vocabulary is outside lane ownership); the existing
+   `AuthorityFailure::TypeScript` plumbing names the failure.
+2. **No escape hatches.** No "future", "degradation", "backlog", "proceeds at
+   reduced fidelity" authority language or authority-optional branch survives
+   in owned production paths. A proven-but-unrepresented construct is a typed
+   `TypeReason` record; its doc language names the TypeReason, not a backlog.
 3. **Full lattice coverage.** Recursive, nominal, generic, conditional, mapped,
    template-literal, literal types; self-nominals; inference + widening;
    `this`; narrowing; JSDoc; overloads; extension facts — each with an
@@ -34,7 +40,14 @@ fragments, publish -> reopen -> index — proven over a 20-package real corpus.
    (escalation only).
 5. **Full lifecycle.** PURL -> registry -> package location (monorepo/
    lockfile-aware) -> npm build when types are build artifacts -> authority ->
-   fragments -> publish -> reopen -> index.
+   fragments -> publish -> reopen -> index. Honest split of responsibility
+   (python-lane precedent): registry locate/fetch/extract and the npm build
+   invocation are lane TEST SUPPORT with typed errors, byte caps, and
+   deadlines; the production terminal is the compile pipeline over the
+   located package sources. The production checker authority gains a
+   package-context run path (`Checker` runs against a package root, so
+   in-package imports and node_modules dependencies resolve) — R10 proves a
+   module-qualified origin a bare temp-dir run cannot produce.
 6. **Backwards compatibility.** Schema-1 checker transcripts
    (`tests/transcripts/golden.json`) keep decoding; every frozen golden
    fragment fact set keeps validating byte-for-byte.
@@ -49,36 +62,51 @@ fragments, publish -> reopen -> index — proven over a 20-package real corpus.
 - No sibling lanes' files (clang/python/go/rust/java/csharp paths, their tests,
   their evidence directories) even when the shared `--lib` test binary is broken
   by their stale inline tests. This lane's gates use top-level `--test` targets.
-- No new dependency without parent authority (`ureq` is already admitted by the
-  python lane's test support; reusing it needs no new authority).
+- No new runtime dependency without parent authority. Admitted dev/test
+  dependencies: `ureq` (registry fetch, python-lane precedent) and the
+  repository-root `package.json` -> `typescript` npm module (5.9.3) required
+  by the vendored checker driver — both test-time only, never in the
+  portable client graph.
 - No unsafe, no SIMD, no async runtime.
 
 ## Baseline
 
-- Baseline commit `67cdc911981905431642bfe0cfb7ce5d33cb757c` plus the in-tree
-  uncommitted TypeScript working set (kept per parent instruction). The frozen
-  per-file formatted-LOC + SHA-256 table lives in `index.toml`.
-- Live lane state at baseline:
-  - `cargo test -p compiler-languages-typescript` GREEN (17 + 5 passed).
-  - `compiler-driver` lib (non-test) compiles clean; the shared `--lib` test
-    binary does not compile due to sibling lanes' stale inline tests
-    (clang.rs E0422/E0277/E0599, rust.rs E0433/E0277) — pre-existing at HEAD.
-  - This lane's own inline tests carry 8 stale-API compile errors
-    (E0308 x6: `fact_named` tuple arity + `ObjectMember` Vec; E0004 x2:
-    `OccurrenceTarget::Stable` arm) — lane row R1.
+- Baseline re-frozen at commit `fa7f6966d` (L0 lane-green repair included;
+  see index.toml per-file table and the pre-edit-1 packet for why the
+  original freeze was superseded). Live environment: node v26.8.1,
+  `typescript` npm module 5.9.3 resolved from repository-root
+  `node_modules/typescript` (PATH `/opt/homebrew/bin`).
+- Live lane state at the re-freeze (Terra receipts, reproduced):
+  - `cargo test -p compiler-languages-typescript` GREEN (1 + 17 + 5 passed).
+  - `cargo check -p compiler-driver --lib` clean.
+  - The shared `cargo check -p compiler-driver --lib --tests` binary does
+    not compile due to sibling lanes' stale inline tests (clang.rs ~20
+    errors, rust.rs ~9, python lane ~6 incl. its test-support files) —
+    pre-existing at HEAD and outside this lane's paths. This lane's gates
+    are top-level `--test` targets, which build the lib without inline test
+    modules.
 
 ## Ownership (exact)
 
 - `compiler/languages/typescript/**` (authority, checker, coordinate, error,
   checker/main.cjs, tests).
-- `compiler/driver/lower/typescript.rs` (incl. inline `mod tests`).
+- `compiler/driver/lower/typescript.rs` (incl. its test region until L1
+  migrates it into the integration tree).
 - `compiler/driver/native/typescript.rs`.
 - `compiler/driver/tests/typescript_*.rs` and
   `compiler/driver/tests/typescript_*/` (new integration trees).
 - `compiler/driver/types/compile.rs` + `compiler/driver/types/request.rs`:
   ONLY the TypeScript checker-authority surface additions
-  (`SemanticAuthorityInput::TypeScript` variant + routing), coordinated with
-  the lane; no other lanes' match arms may be weakened.
+  (`SemanticAuthorityInput::TypeScript { report: &'source Report }` variant
+  + routing), coordinated with the lane; no other lanes' match arms may be
+  weakened; the shared enum stays exhaustive (not `#[non_exhaustive]`), so
+  the two in-repo forced matches (`compile.rs` authority-mismatch and
+  direct-authority checks) gain explicit TypeScript arms — rustc custody.
+  Borrowing `&'source Report` preserves `Copy` on
+  `SemanticAuthorityInput`/`CompileRequest`.
+- `compiler/driver/lower.rs`: ONLY the TypeScript lane surface (its
+  `EmissionExtension::TypeScript` arm and TypeScript-relevant constants);
+  sibling lanes' surfaces there are forbidden.
 - `.codex/evidence/capabilities/typescript-checker-authority/**`.
 
 ## Consumers / dependency direction
@@ -94,11 +122,24 @@ fragments, publish -> reopen -> index — proven over a 20-package real corpus.
 ## TESTING.md
 
 TESTING.md does not exist in this repository (evidenced exclusion, matching
-sibling lanes). Clause mapping is expressed directly as proof-matrix rows:
-bounded-child/typed rejection rows (checker_protocol tests), exact
-operand/source retention, goldens, corpus, perf.
+the go lane's recorded adaptation). Clause mapping is expressed directly as
+proof-matrix rows: bounded-child/typed rejection rows (checker_protocol
+tests), exact operand/source retention, goldens, corpus, perf.
 
-## Product-authority questions (none open)
+## Product-authority questions
 
-None pending. The checker-required-vs-degraded question is settled by the
-parent mandate ("delete every degradation escape hatch").
+None open. The checker-required-vs-degraded question is settled by the
+parent mandate ("delete every degradation escape hatch") and pinned by the
+pre-edit-1 review (B2): reuse `AuthorityFailure::TypeScript`, zero new
+vocabulary.
+
+## Open environment notes
+
+- interface/protocol mirrors (`interface/protocol/tests/support/compiler/`)
+  do not carry authority inputs today; if protocol goldens later gain a
+  checker-authority field, that mirror is a separate boundary decision
+  (q2 of pre-edit-1).
+- The shared `--lib` test binary of `compiler-driver` is broken by sibling
+  lanes' stale inline tests (clang ~20, rust ~9, python ~6 errors at the
+  re-freeze). Out-of-constraint for this lane; repairs belong to sibling
+  lanes. Until then this lane's gates are top-level `--test` targets only.
