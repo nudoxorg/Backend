@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+#[path = "python_support/journey.rs"]
+mod journey_support;
 mod python_support;
 
 use compiler_driver::{
@@ -36,6 +38,8 @@ const STAGE: Stage = Stage::LowerIr;
 enum TestError {
     #[error(transparent)]
     Support(#[from] python_support::Error),
+    #[error(transparent)]
+    Journey(#[from] journey_support::Error),
     #[error("filesystem operation failed: {source}")]
     Io {
         #[source]
@@ -79,6 +83,7 @@ struct Journey {
     primary: &'static [&'static str],
     symbols: &'static [&'static [u8]],
     probe: &'static str,
+    layout: journey_support::LayoutClass,
     /// The exact typed index-admission terminal this journey may hit: the
     /// shared exact/lexical segment bound is 256 entities per index segment.
     /// six 1.17.0's whole-module fragment carries 331 decoded entities, so
@@ -105,6 +110,7 @@ const SIX_JOURNEY: Journey = Journey {
         b"u",
     ],
     probe: "six_lifecycle_probe",
+    layout: journey_support::LayoutClass::FlatSingleModule,
     index_entity_limit: Some((256, 331)),
 };
 
@@ -116,6 +122,7 @@ const IDNA_JOURNEY: Journey = Journey {
     primary: &["idna", "core.py"],
     symbols: &[b"IDNAError", b"encode", b"decode", b"uts46_remap"],
     probe: "idna_lifecycle_probe",
+    layout: journey_support::LayoutClass::SrcLayout,
     index_entity_limit: None,
 };
 
@@ -127,13 +134,24 @@ const PYYAML_JOURNEY: Journey = Journey {
     primary: &["yaml", "__init__.py"],
     symbols: &[b"load", b"dump", b"scan", b"safe_load"],
     probe: "pyyaml_lifecycle_probe",
+    layout: journey_support::LayoutClass::LibPackageDir,
+    index_entity_limit: None,
+};
+
+const WEBENCODINGS_JOURNEY: Journey = Journey {
+    label: "webencodings",
+    purl: "pypi:webencodings@0.5.1",
+    primary: &["webencodings", "__init__.py"],
+    symbols: &[b"Encoding", b"decode", b"lookup", b"ascii_lower"],
+    probe: "webencodings_lifecycle_probe",
+    layout: journey_support::LayoutClass::SrcLayout,
     index_entity_limit: None,
 };
 
 #[test]
 fn malformed_purl_is_typed_rejection() -> Result<(), TestError> {
-    match python_support::Purl::parse("pypi:six") {
-        Err(python_support::Error::Purl { input }) if input == "pypi:six" => Ok(()),
+    match journey_support::Purl::parse("pypi:six") {
+        Err(journey_support::Error::Purl { input }) if input == "pypi:six" => Ok(()),
         _ => Err(TestError::Fact(
             "malformed PURL was accepted or lost its input",
         )),
@@ -142,8 +160,8 @@ fn malformed_purl_is_typed_rejection() -> Result<(), TestError> {
 
 #[test]
 fn real_downloader_enforces_cap_timeout_and_archive_corruption() -> Result<(), TestError> {
-    let purl = python_support::Purl::parse("pypi:six@1.17.0")?;
-    let (url, declared_digest, wheel) = python_support::locate(&purl)?;
+    let purl = journey_support::Purl::parse("pypi:six@1.17.0")?;
+    let (url, declared_digest, wheel) = journey_support::locate(&purl)?;
     if !wheel.ends_with(".whl") {
         return Err(TestError::Fact("wheel filename was not recorded"));
     }
@@ -260,8 +278,8 @@ fn compile_fragment<'a>(
 /// The shared fetch→compile→publish→reopen→index→second-generation→
 /// old-fragment-revalidate skeleton behind the three package-class journeys.
 fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
-    let purl = python_support::Purl::parse(journey.purl)?;
-    let (url, declared_digest, _wheel) = python_support::locate(&purl)?;
+    let purl = journey_support::Purl::parse(journey.purl)?;
+    let (url, declared_digest, _wheel) = journey_support::locate(&purl)?;
     let archive = python_support::download(
         &url,
         8 * 1024 * 1024,
@@ -273,7 +291,13 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
     }
     let root = python_support::fresh_dir("journey")?;
     python_support::unpack(&archive, &root)?;
-    let source_path = python_support::find_primary(&root, journey.primary)?;
+    let source_path = journey_support::find_primary(&root, journey.layout, journey.primary)?;
+    eprintln!(
+        "python journey: {} class={:?} primary={}",
+        journey.label,
+        journey.layout,
+        source_path.display()
+    );
     let source = fs::read(&source_path).map_err(io)?;
     let source_digest = python_support::sha256(&source);
     let tool = python_toolchain()?;
@@ -637,7 +661,6 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
         })?;
     fs::remove_dir_all(root).map_err(io)?;
     fs::remove_dir_all(root_store).map_err(io)?;
-    let _ = published;
     Ok(())
 }
 
@@ -655,4 +678,9 @@ fn purl_idna_src_layout_full_lifecycle() -> Result<(), TestError> {
 #[test]
 fn purl_pyyaml_package_dir_full_lifecycle() -> Result<(), TestError> {
     package_class_lifecycle(&PYYAML_JOURNEY)
+}
+
+#[test]
+fn purl_webencodings_single_module_full_lifecycle() -> Result<(), TestError> {
+    package_class_lifecycle(&WEBENCODINGS_JOURNEY)
 }

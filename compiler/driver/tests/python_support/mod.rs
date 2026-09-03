@@ -9,8 +9,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("malformed PURL: {input}")]
-    Purl { input: String },
     #[error("network request failed: {source}")]
     Network {
         #[source]
@@ -37,8 +35,6 @@ pub enum Error {
     Entry { kind: u8 },
     #[error("tar path rejected: {path}")]
     Path { path: String },
-    #[error("required primary module was not found")]
-    MissingSource,
     #[error("fixture filesystem operation failed: {source}")]
     Io {
         #[source]
@@ -46,152 +42,16 @@ pub enum Error {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Purl {
-    pub ecosystem: String,
-    pub name: String,
-    pub version: String,
-}
-
-impl Purl {
-    pub fn parse(input: &str) -> Result<Self, Error> {
-        let mut parts = input.split('@');
-        let Some(left) = parts.next() else {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        };
-        let Some(version) = parts.next() else {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        };
-        if parts.next().is_some() || version.is_empty() {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        }
-        let mut name = left.split(':');
-        let Some(ecosystem) = name.next() else {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        };
-        let Some(name) = name.next() else {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        };
-        if ecosystem != "pypi" || name.is_empty() {
-            return Err(Error::Purl {
-                input: input.into(),
-            });
-        }
-        Ok(Self {
-            ecosystem: ecosystem.into(),
-            name: name.into(),
-            version: version.into(),
-        })
-    }
-}
-
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// One shared transport with a hard 30-second global timeout: ureq 3.x
-/// carries timeouts on the agent config, not on individual requests.
+/// One shared transport with a hard 30-second global timeout.
 fn transport() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .new_agent()
-}
-
-pub fn locate(purl: &Purl) -> Result<(String, [u8; 32], String), Error> {
-    let url = format!("https://pypi.org/pypi/{}/{}/json", purl.name, purl.version);
-    let response = transport()
-        .get(&url)
-        .call()
-        .map_err(|source| Error::Network { source })?;
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        return Err(Error::Status { status });
-    }
-    let mut text = String::new();
-    response
-        .into_body()
-        .into_reader()
-        .take(4 * 1024 * 1024)
-        .read_to_string(&mut text)
-        .map_err(|source| Error::Read {
-            observed: text.len(),
-            source,
-        })?;
-    let marker = format!("https://files.pythonhosted.org/packages/");
-    let needle = format!("{}-{}", purl.name, purl.version).to_ascii_lowercase();
-    let mut sdist = None;
-    let mut sdist_digest = None;
-    let mut wheel = None;
-    for quoted in text.split('"') {
-        let lowered = quoted.to_ascii_lowercase();
-        if quoted.starts_with(&marker) && quoted.ends_with(".tar.gz") && lowered.contains(&needle) {
-            sdist = Some(quoted.to_owned());
-        }
-        if quoted.ends_with(".whl") && lowered.contains(&needle) {
-            wheel = Some(quoted.to_owned());
-        }
-    }
-    // The pinned digest is located straight from the JSON's own sdist
-    // record, so the later download can be verified against PyPI's
-    // declared bytes rather than only the transport's word. Each entry
-    // lists `digests` before its terminal `url`, so the LAST `digests`
-    // before the sdist URL — bounded to one entry — is the sdist's own.
-    if let Some(sdist_url) = &sdist {
-        let record_start = text.find(sdist_url.as_str());
-        if let Some(record_start) = record_start {
-            let window = &text[..record_start];
-            if let Some(digest_marker) = window.rfind("\"digests\"") {
-                if record_start - digest_marker <= 2048 {
-                    let digests = &text[digest_marker..record_start];
-                    if let Some(sha_marker) = digests.find("\"sha256\"") {
-                        let after = &digests[sha_marker + "\"sha256\"".len()..];
-                        let hex_start = after.find('"').map_or(0, |offset| offset + 1);
-                        let hex = &after[hex_start..];
-                        if let Some(hex_end) = hex.find('"') {
-                            if hex_end == 64 {
-                                sdist_digest = Some(decode_hex64(&hex[..64])?);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    match (sdist, sdist_digest, wheel) {
-        (Some(sdist), Some(sdist_digest), Some(wheel)) => Ok((sdist, sdist_digest, wheel)),
-        _ => Err(Error::MissingSource),
-    }
-}
-
-/// Decodes 64 hexadecimal characters into the 32 digest bytes.
-fn decode_hex64(text: &str) -> Result<[u8; 32], Error> {
-    fn hex_digit(byte: u8) -> Result<u8, Error> {
-        match byte {
-            b'0'..=b'9' => Ok(byte - b'0'),
-            b'a'..=b'f' => Ok(byte - b'a' + 10),
-            b'A'..=b'F' => Ok(byte - b'A' + 10),
-            _ => Err(Error::Path {
-                path: "sha256 hex".into(),
-            }),
-        }
-    }
-    let bytes = text.as_bytes();
-    let mut out = [0_u8; 32];
-    for (index, pair) in bytes.chunks(2).enumerate() {
-        out[index] = hex_digit(pair[0])? << 4 | hex_digit(pair[1])?;
-    }
-    Ok(out)
 }
 
 pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
@@ -362,36 +222,6 @@ fn pax_path_override(payload: &[u8]) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-/// Locates one primary module by the exact trailing path components
-/// (`["six.py"]`, `["idna", "core.py"]`, `["yaml", "__init__.py"]`), so
-/// src-layout and package-dir sdists both resolve without guessing.
-pub fn find_primary(root: &Path, suffix: &[&str]) -> Result<PathBuf, Error> {
-    fn walk(path: &Path, suffix: &[&str]) -> io::Result<Option<PathBuf>> {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-            let matches = path
-                .components()
-                .rev()
-                .zip(suffix.iter().rev())
-                .all(|(component, wanted)| component.as_os_str() == *wanted)
-                && path.components().count() >= suffix.len();
-            if matches {
-                return Ok(Some(path));
-            }
-            if path.is_dir()
-                && let Some(found) = walk(&path, suffix)?
-            {
-                return Ok(Some(found));
-            }
-        }
-        Ok(None)
-    }
-    walk(root, suffix)
-        .map_err(|source| Error::Io { source })?
-        .ok_or(Error::MissingSource)
-}
-
 pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
     // Every call gets a unique directory: a leftover directory from an
     // aborted earlier run must never be silently reused as this run's
@@ -407,20 +237,20 @@ pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{Error, unpack};
     use flate2::Compression;
     use flate2::write::GzEncoder;
 
     /// Wraps one crafted tar stream in the gzip envelope `unpack` requires.
-    fn gz(tar: &[u8]) -> Vec<u8> {
+    pub(crate) fn gz(tar: &[u8]) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::new(6));
         std::io::Write::write_all(&mut encoder, tar).expect("fixture tar writes into memory");
         encoder.finish().expect("fixture gzip finish")
     }
 
     /// Writes one 512-byte ustar header: `name`, octal `size`, kind.
-    fn header(name: &[u8; 100], size: u32, kind: u8) -> [u8; 512] {
+    pub(crate) fn header(name: &[u8; 100], size: u32, kind: u8) -> [u8; 512] {
         let mut block = [0_u8; 512];
         block[..100].copy_from_slice(name);
         // The ustar size field is 12 bytes: 11 octal digits plus the NUL.
@@ -431,7 +261,7 @@ mod tests {
     }
 
     /// One regular-file entry with its padded payload.
-    fn entry(name: &[u8; 100], payload: &[u8]) -> Vec<u8> {
+    pub(crate) fn entry(name: &[u8; 100], payload: &[u8]) -> Vec<u8> {
         let mut bytes = header(name, payload.len() as u32, b'0').to_vec();
         let padded = payload.len().div_ceil(512) * 512;
         bytes.extend_from_slice(payload);
@@ -487,7 +317,7 @@ mod tests {
         drop(std::fs::remove_dir_all(&root));
     }
 
-    fn make_name(name: &str) -> [u8; 100] {
+    pub(crate) fn make_name(name: &str) -> [u8; 100] {
         let mut bytes = [0_u8; 100];
         bytes[..name.len()].copy_from_slice(name.as_bytes());
         bytes
