@@ -22,9 +22,9 @@ pub use collect::{collect, collect_cancellable};
 pub use error::{CollectError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
 pub use facts::{
     BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-    DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact, ReferenceKind,
-    ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan, StorageClass,
-    SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
+    DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact, ReferenceKind, ReferenceTarget,
+    SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan, StorageClass, SymbolIdentity,
+    TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
 };
 pub use input::{ClangInput, UnsupportedLanguageProfile};
 pub use scratch::ClangScratch;

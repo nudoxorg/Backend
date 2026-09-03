@@ -1399,6 +1399,7 @@ dependencies = [
  "ra_ap_project_model",
  "ra_ap_syntax",
  "ra_ap_vfs",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

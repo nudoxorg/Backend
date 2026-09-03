@@ -38,6 +38,7 @@ pub use canonical_data::{
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
 };
+pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
@@ -54,7 +55,6 @@ pub use compiler_ir_vocabulary::{
 pub use compiler_ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
 };
-pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_vocabulary::{
     CSharpVersion, CStandard, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile,
     PythonVersion, RustEdition, TypeScriptSource, UnknownLanguageProfile,

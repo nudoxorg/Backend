@@ -10,45 +10,9 @@ testing_sha256 = ""
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/clang-c-lifecycle/brief.md", sha256 = "3d24e957cb22cbb1eecd92212cecece98af5b11cd72d65ce9e59feb4ec41d048" }
-matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "42bde0d27f568f4fc4058f552da779cf2c67994c7ae14a5c581424831b48911a" }
-research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "21a6a9df52dfbe7d803fd9d40095e2ca22f0eee2950f76a8286c6014fb606670" }
+matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "1cb622c04e0f5e75ffd0ef31f3578d23a2df37d48aab63507b9e00a70ea5fdf4" }
+research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "c39d4f348436aae61bb06d0ff594be064b61508e808ebec4f1bda1c3da6fe1ec" }
 closure = { path = ".codex/evidence/capabilities/clang-c-lifecycle/closure.md", sha256 = "" }
-
-[[reviews]]
-review_id = "pre-edit-1"
-task_id = "ses_f9b91b16fffessyzlo2kodPK2q"
-role = "reviewer"
-config_path = ".opencode/agents/reviewer.md"
-model = "zai-coding-plan/glm-5.3-flash"
-effort = "default"
-sandbox = "read-only subagent (registered sidecar codex CLI unavailable in this environment; recorded as custody deviation)"
-writable_roots = []
-implicit_tmp_writes_excluded = true
-effective_sandbox_event = "reviewer subagent has permission edit=deny per agent config"
-snapshot_tree = "shared tree at 5417930ce + in-flight cross-lane work (live reproduction)"
-packet_path = ".codex/evidence/capabilities/clang-c-lifecycle/packets/pre-edit-1.md"
-packet_sha256 = "5e9f4005657c6ea05f08737486db3a4dd94fe5584d51c1d49afc1b02ffd4481d"
-source_before_sha256 = "n/a (pre-edit; read-only)"
-source_after_sha256 = "n/a (pre-edit; read-only)"
-result = "findings"
-
-[[reviews]]
-review_id = "pre-edit-2"
-task_id = ""
-role = "reviewer"
-config_path = ".opencode/agents/reviewer.md"
-model = ""
-effort = ""
-sandbox = ""
-writable_roots = []
-implicit_tmp_writes_excluded = true
-effective_sandbox_event = "pending (pre-edit-2 incorporates all pre-edit-1 findings; re-review at first material candidate boundary)"
-snapshot_tree = ""
-packet_path = ".codex/evidence/capabilities/clang-c-lifecycle/packets/pre-edit-2.md"
-packet_sha256 = "c7f1155003f1ad5aa74403c851ce6f2b30a7dddbaea0422b53a9797b3795c41e"
-source_before_sha256 = ""
-source_after_sha256 = ""
-result = ""
 
 [[workers]]
 task_id = "pending"
