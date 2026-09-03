@@ -820,7 +820,7 @@ impl<'source> FactSet<'source> {
                 true,
             )?;
         }
-        let mut docs = [DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS];
+        let mut docs = Box::new([DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS]);
         let mut doc_ranges = Box::new([(0usize, 0usize); MAX_EMISSION_FACTS]);
         for ordinal in 0..fact_count {
             let start = match self.doc_facts[..self.doc_len]
@@ -2152,7 +2152,7 @@ pub(super) fn admit<'source, 'output>(
 
     // Extension pooled lanes: provisional atom coordinates become final atom
     // lane positions; type and entity coordinates were already final.
-    let mut atom_list_elements = [[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS];
+    let mut atom_list_elements = Box::new([[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS]);
     for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
         .iter()
         .enumerate()
