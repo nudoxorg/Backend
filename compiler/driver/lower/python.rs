@@ -616,10 +616,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let extension = self.python_extension(&[], None, lowered_tier(lowered.resolved))?;
             // The result slot belongs to the function's key family: it is a
             // `Parameter` fact named by the function, carrying the return
-            // annotation's record.
-            let fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
-                .typed(lowered.record)
-                .with_extension(EmissionExtension::Python(extension));
+            // annotation's record and its ordered type children exactly like
+            // every other annotation fact.
+            let mut fact =
+                SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT).typed(lowered.record);
+            for ordinal in lowered.children {
+                fact = fact.type_child(ordinal, None, 0);
+            }
+            let fact = fact.with_extension(EmissionExtension::Python(extension));
             let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             result_ordinal = Some(Self::coordinate(declaration.name_span, ordinal)?);
         }
