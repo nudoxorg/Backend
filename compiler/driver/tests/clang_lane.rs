@@ -215,7 +215,7 @@ fn extension(
     );
     let stride = match schema {
         1 => 24,
-        2 => 28,
+        2 => 32,
         _ => return Err(TestError::Check("unknown extension schema")),
     };
     let directory = 16 + 6 * 20;
