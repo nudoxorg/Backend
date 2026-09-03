@@ -248,7 +248,19 @@ pub fn discover_and_drive(
         });
     }
     let database_bytes = if system == BuildSystem::CMake {
-        fs::read(build.join("compile_commands.json")).map_err(BuildDriveFailure::Io)?
+        // A succeeded configure without an exported database means the
+        // project exposed no compilable edges (header-only and interface
+        // targets among them): the honest terminal names the empty selection
+        // instead of an I/O fault about a file the build never owed.
+        match fs::read(build.join("compile_commands.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(BuildDriveFailure::NoTranslationUnits {
+                    tool: system.tool(),
+                });
+            }
+            Err(error) => return Err(BuildDriveFailure::Io(error)),
+        }
     } else {
         output.stdout
     };
@@ -443,7 +455,20 @@ fn buck_command(cell_root: &Path) -> Command {
 fn parse_make(bytes: &[u8], root: &Path) -> Result<Vec<DrivenTranslationUnit>, BuildDriveFailure> {
     let text = String::from_utf8_lossy(bytes);
     let mut result = Vec::new();
+    // Recursive makes print `make[N]: Entering directory 'DIR'` / `Leaving
+    // directory` around every sub-make; the commands a sub-make echoes are
+    // relative to that directory. Tracking the announced directory is part
+    // of transporting make's own output, not interpreting the build.
+    let mut directory = root.to_path_buf();
     for line in text.lines() {
+        if let Some(entered) = entering_directory(line) {
+            directory = PathBuf::from(entered);
+            continue;
+        }
+        if line.contains(": Leaving directory") {
+            directory = root.to_path_buf();
+            continue;
+        }
         for command in shell_commands(line) {
             let argv = shell_words(&command)
                 .into_iter()
@@ -469,11 +494,19 @@ fn parse_make(bytes: &[u8], root: &Path) -> Result<Vec<DrivenTranslationUnit>, B
             result.push(DrivenTranslationUnit {
                 source: PathBuf::from(source),
                 arguments: argv,
-                directory: root.to_path_buf(),
+                directory: directory.clone(),
             });
         }
     }
     Ok(result)
+}
+
+/// Extracts the path make announced with `Entering directory 'DIR'`.
+fn entering_directory(line: &str) -> Option<&str> {
+    let start = line.find(": Entering directory '")? + ": Entering directory '".len();
+    let rest = line.get(start..)?;
+    let end = rest.rfind('\'')?;
+    rest.get(..end)
 }
 
 fn is_pure_redirection(value: &str) -> bool {

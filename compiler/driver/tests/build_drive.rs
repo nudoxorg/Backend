@@ -320,14 +320,20 @@ fn buck2_nested_marker_returns_query_terminal_at_cell_root()
     if !root.is_dir() || !Path::new("/Users/mileswirht/.local/bin/buck2").is_file() {
         return Ok(());
     }
+    // The real checkout's uquery exits nonzero: the shallow cell's haskell
+    // prebuilt library references sources the checkout does not carry, so
+    // buck2's own evaluation fails. The honest terminal is DriveFailed with
+    // the captured query output; ToolPresentUndrivable stays reserved for a
+    // query that succeeds but finds no compilation_database rule.
     match discover_and_drive(
         &root,
         &root.join(".nudox-test-scratch"),
         &AtomicBool::new(false),
     ) {
-        Err(BuildDriveFailure::ToolPresentUndrivable { tool, evidence }) => {
+        Err(BuildDriveFailure::DriveFailed { tool, captured }) => {
             assert_eq!(tool, "buck2");
-            assert!(!evidence.is_empty());
+            assert!(!captured.bytes.is_empty());
+            let evidence = String::from_utf8_lossy(&captured.bytes);
             assert!(evidence.contains("compilation_database"));
         }
         other => return Err(format!("unexpected buck2 result: {other:?}").into()),
@@ -859,5 +865,66 @@ fn absent_meson_and_make_are_not_silently_skipped() -> Result<(), Box<dyn std::e
         ));
     }
     fs::remove_dir_all(make_root)?;
+    Ok(())
+}
+
+/// Recursive makes announce every sub-make with `Entering directory`; the
+/// commands a sub-make echoes are relative to that directory, and the
+/// adapter must transport the announced directory or the driven units point
+/// at files that do not exist under the invocation root.
+#[test]
+fn make_entering_directory_transports_submake_roots() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("submake")?;
+    fs::create_dir(root.join("src"))?;
+    fs::write(root.join("src/util.c"), "int util(void) { return 2; }\n")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\t@echo building\nall:\n\t$(MAKE) -C src util.o\n",
+    )?;
+    // A realistic recursive-make transcript (what `make -n` prints).
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\t$(MAKE) -C src util.o\nutil.o:\n\tclang -c util.c -o util.o\n",
+    )?;
+    fs::write(
+        root.join("src").join("Makefile"),
+        "util.o:\n\tclang -O2 -c util.c -o util.o\n",
+    )?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert!(
+        driven
+            .translation_units
+            .iter()
+            .any(|unit| unit.directory.ends_with("src") && unit.source == Path::new("util.c"))
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// A succeeded configure that exports no compilation database (header-only
+/// and interface-only projects) is an honest empty selection, not an I/O
+/// fault about a file the build never owed.
+#[test]
+fn cmake_project_without_compilable_edges_is_a_typed_empty_selection()
+-> Result<(), Box<dyn std::error::Error>> {
+    if !real_tool("cmake") {
+        return Ok(());
+    }
+    let root = directory("cmake-header-only")?;
+    fs::write(
+        root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.19)\nproject(header_only LANGUAGES C)\nadd_library(header_only INTERFACE)\n",
+    )?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false));
+    match result {
+        Ok(driven) => {
+            if !driven.translation_units.is_empty() {
+                return Err("header-only project unexpectedly yielded units".into());
+            }
+        }
+        Err(BuildDriveFailure::NoTranslationUnits { tool }) => assert_eq!(tool, "cmake"),
+        Err(other) => return Err(format!("unexpected terminal: {other}").into()),
+    }
+    fs::remove_dir_all(root)?;
     Ok(())
 }
