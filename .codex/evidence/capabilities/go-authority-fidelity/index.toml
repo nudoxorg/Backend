@@ -41,7 +41,10 @@ retention = "active"
 [[reviews]]
 boundary = "pre-edit"
 role = "reviewer"
-state = "planned"
+state = "executed"
+session = "ses_f9a941a13ffevomeW1A0HKjnl8"
+packet_commit = "d8f289b2b"
+outcome = "F1-F3 blockers (W0 go-fixture v4 red, baseline drift, stale scope), F4-F8 minor, Q1-Q2 questions; packet repaired at re-freeze before dispatch"
 
 [[reviews]]
 boundary = "first-candidate"

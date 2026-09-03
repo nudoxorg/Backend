@@ -86,3 +86,23 @@ stale foreign tests or weakening assertions instead of mapping moved APIs.
 | Falsifier: full crate test target green with no `#[ignore]`, no deleted
 test, and every repaired assertion still names its law. | Crate gates green.
 | RED | W0
+
+## M11 Position non-carriage (brief law 8)
+The v5 image carries no line/column positions when they are losslessly
+derivable from the source digest + byte offsets already present. |
+Weakened: an implementation starts carrying derivable positions in a new
+plane or padding cell. | Falsifier: the golden-geometry tests pin the
+exact header/plane layout (image.rs constants) and the differential
+fact-existence test (M1) pins the exact row set per oracle Output fact —
+any added position carriage changes golden bytes or adds a row class and
+fails. | Geometry goldens green. | RED | W1 (landed; Terra reproduces at
+closure)
+
+## M12 No source-text scanning in projection (brief law 4)
+Projection never recovers Go facts by scanning source text; source
+contact is the digest binding only. | Weakened: collect() slices or
+searches `source` beyond `Sha256::digest`. | Falsifier: image built for
+the digest of source A; collect() invoked with source B of identical
+length → exact `SourceBinding` fault retaining both operands, before any
+projection work; no projection output derives from B's bytes. | Test
+green in lower/go.rs cfg(test). | RED | W3
