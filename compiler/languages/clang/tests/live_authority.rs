@@ -274,6 +274,49 @@ fn c_authority_deduplicates_canonical_anonymous_record_cursors() -> Result<(), T
 }
 
 #[test]
+fn cxx_authority_canonical_record_dedupe_prefers_definition() -> Result<(), TestError> {
+    let source = br"struct Node;
+struct Node { int x; };";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"definition-preference.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let record_count = facts
+            .declarations
+            .iter()
+            .filter(|fact| fact.kind == DeclarationKind::Record)
+            .count();
+        assert_eq!(record_count, 1);
+        let record = facts
+            .declarations
+            .iter()
+            .find(|fact| fact.kind == DeclarationKind::Record)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Record,
+            }))?;
+        assert_eq!(record.definition, DefinitionState::Definition);
+        assert_eq!(
+            record.name.map(|span| source_at(source, span)),
+            Some(&b"Node"[..])
+        );
+        assert!(record.type_root.is_some());
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"x")
+                && fact.owner == record.identity
+        }));
+        Ok(())
+    })
+}
+
+#[test]
 fn cxx_authority_projects_template_pattern_into_box_authority() -> Result<(), TestError> {
     let source = br"template<typename T> struct Box { T value; };
 struct User { struct Box<int> box; };";

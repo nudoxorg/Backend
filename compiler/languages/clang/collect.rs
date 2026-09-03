@@ -177,10 +177,14 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return Ok(());
         }
         let canonical_identity = TranslationUnit::canonical_identity(cursor);
-        if canonical_identity.is_some_and(|identity| {
+        let existing = canonical_identity.and_then(|identity| {
             self.scratch.declarations[..self.declarations]
                 .iter()
-                .any(|fact| fact.identity == Some(identity))
+                .position(|fact| fact.identity == Some(identity))
+        });
+        if existing.is_some_and(|index| {
+            !TranslationUnit::is_definition(cursor)
+                || self.scratch.declarations[index].definition == DefinitionState::Definition
         }) {
             return Ok(());
         }
@@ -204,13 +208,16 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if kind == DeclarationKind::Method {
             self.record_overrides(cursor)?;
         }
-        let id = DeclarationId {
-            raw: u32::try_from(self.declarations).map_err(|_| {
-                CollectError::SlotOrdinalTooLarge {
-                    lane: ScratchLane::Declarations,
-                    observed: self.declarations,
-                }
-            })?,
+        let id = match existing {
+            Some(index) => self.scratch.declarations[index].id,
+            None => DeclarationId {
+                raw: u32::try_from(self.declarations).map_err(|_| {
+                    CollectError::SlotOrdinalTooLarge {
+                        lane: ScratchLane::Declarations,
+                        observed: self.declarations,
+                    }
+                })?,
+            },
         };
         let name = (!TranslationUnit::cursor_spelling_is_empty(cursor))
             .then(|| self.unit.name_span(cursor))
@@ -220,7 +227,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             || name.is_none_or(|name| name.start > span.start))
         .then_some(name)
         .flatten();
-        self.push_declaration(DeclarationFact {
+        let fact = DeclarationFact {
             id,
             kind,
             definition: definition_state(TranslationUnit::is_definition(cursor)),
@@ -232,7 +239,13 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             documentation: self.unit.documentation_span(cursor)?,
             storage: storage_class(TranslationUnit::storage_class(cursor)),
             type_root,
-        })
+        };
+        if let Some(index) = existing {
+            self.scratch.declarations[index] = fact;
+            Ok(())
+        } else {
+            self.push_declaration(fact)
+        }
     }
 
     /// Streams distinct overridden USR identities while the native array guard remains live.
