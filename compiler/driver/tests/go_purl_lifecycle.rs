@@ -337,6 +337,10 @@ fn lifecycle(
     let n = first.view.entities().len();
     let a = first.view.atoms().len();
     let t = first.view.type_nodes().len();
+    eprintln!("{purl_text} decoded entity count: {n}");
+    if module == "github.com/mitchellh/go-homedir@v1.1.0" && n != 27 {
+        return Err(TestError::Fact("go-homedir entity count changed from 27"));
+    }
     let mut p = (0..n).map(|_| MaybeUninit::uninit()).collect::<Vec<_>>();
     let mut e = (0..n).map(|_| MaybeUninit::uninit()).collect::<Vec<_>>();
     let mut x = (0..n).map(|_| MaybeUninit::uninit()).collect::<Vec<_>>();
@@ -517,5 +521,40 @@ fn pkg_errors_proxy_oracle_publish_reopen_index_and_chained_generation() -> Resu
         Some((256, 263)),
     );
     eprintln!("pkg/errors journey wall-clock: {:?}", started.elapsed());
+    result
+}
+
+#[test]
+fn google_uuid_proxy_oracle_publish_reopen_index_and_chained_generation() -> Result<(), TestError> {
+    let started = Instant::now();
+    let result = lifecycle(
+        "golang:github.com/google/uuid@v1.6.0",
+        "github.com/google/uuid@v1.6.0",
+        "uuid.go",
+        &[
+            b"UUID",
+            b"New",
+            b"Parse",
+            b"Must",
+            b"NewString",
+            b"FromBytes",
+        ],
+        Some((256, 411)),
+    );
+    eprintln!("google/uuid journey wall-clock: {:?}", started.elapsed());
+    result
+}
+
+#[test]
+fn homedir_proxy_oracle_publish_reopen_index_and_chained_generation() -> Result<(), TestError> {
+    let started = Instant::now();
+    let result = lifecycle(
+        "golang:github.com/mitchellh/go-homedir@v1.1.0",
+        "github.com/mitchellh/go-homedir@v1.1.0",
+        "homedir.go",
+        &[b"Dir", b"Expand", b"DisableCache", b"Reset"],
+        None,
+    );
+    eprintln!("go-homedir journey wall-clock: {:?}", started.elapsed());
     result
 }
