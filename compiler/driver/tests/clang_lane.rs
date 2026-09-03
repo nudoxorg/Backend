@@ -753,7 +753,11 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
             fragment_output: &mut output,
         },
     );
-    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
+    if let Err(error) = std::fs::remove_dir_all(&work) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(TestError::Check("remove native work"));
+        }
+    }
     match result {
         Err(CompileFailure::Authority {
             failure:
@@ -858,7 +862,11 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         }
         view.as_ref().to_vec()
     };
-    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
+    if let Err(error) = std::fs::remove_dir_all(&work) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(TestError::Check("remove native work"));
+        }
+    }
     if committed == mutated {
         return Err(TestError::Check("mutation did not change bytes"));
     }
@@ -938,7 +946,11 @@ fn virtual_override_absence_and_plain_shadowing_are_distinct_bytes() -> Result<(
     if plain_has_override || virtual_snapshot == plain_snapshot {
         return Err(TestError::Check("virtual mutation falsifier"));
     }
-    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
+    if let Err(error) = std::fs::remove_dir_all(&work) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(TestError::Check("remove native work"));
+        }
+    }
     if !virtual_has_override {
         return Err(TestError::Check("virtual override absent"));
     }
