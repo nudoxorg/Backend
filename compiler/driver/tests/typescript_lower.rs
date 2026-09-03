@@ -349,9 +349,14 @@ fn self_referential_alias_is_bounded_on_a_small_stack() {
                 .run(TypeScriptSource::TypeScript, SOURCE)
                 .unwrap();
             let view = view(SOURCE, Some(&checker));
-            let record = fact(&view, named(&view, b"x").0);
-            assert_eq!(record.record.tag, SemanticTypeTag::Nominal);
-            assert_eq!(record.record.payload0, 0);
+            let owner = named(&view, b"x").0;
+            let record = facts(&view)
+                .into_iter()
+                .find(|record| {
+                    record.owner.raw == owner
+                        && record.segment == compiler_ir::TypeFactSegment::Computed
+                })
+                .unwrap();
             (
                 record.record.tag,
                 TypeReason::try_from(record.record.payload0).ok(),
@@ -360,7 +365,7 @@ fn self_referential_alias_is_bounded_on_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
-    assert_eq!(join.0, SemanticTypeTag::Nominal);
+    assert_eq!(join, (SemanticTypeTag::Unknown, Some(TypeReason::DynamicallyTyped)));
 }
 
 #[test]
