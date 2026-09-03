@@ -381,6 +381,11 @@ func extractReferences(pkg *packages.Package) []*Reference {
 			if !ok || fn.Body == nil || fn.Name == nil {
 				return true
 			}
+			if fn.Recv == nil && fn.Name.Name == "init" {
+				// Implicit functions have no declaration row; their call edges are
+				// not representable as reference rows and are deliberately not recorded.
+				return false
+			}
 			owner, ownerRecv, ok := referenceOwner(pkg, fn)
 			if !ok {
 				return true

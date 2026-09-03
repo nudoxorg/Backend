@@ -537,10 +537,15 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
     let inner_index = (0..image.declaration_count())
         .find(|&index| image.declaration(index).unwrap().name == b"Inner")
         .expect("Inner declaration") as u32;
-    let method_reference = image
+    let references = image
         .references()
         .collect::<Result<Vec<_>, _>>()
-        .map_err(image_fault)?
+        .map_err(image_fault)?;
+    for row in &references {
+        let owner = image.declaration(row.owner as usize).map_err(image_fault)?;
+        assert_ne!(owner.name, b"init", "implicit init must not own a reference row");
+    }
+    let method_reference = references
         .into_iter()
         .find(|row| row.target == b"helper" && row.receiver == b"Inner")
         .expect("Inner method reference to helper");
