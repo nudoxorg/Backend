@@ -20,7 +20,9 @@ use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustFacts,
     RustOwnership, SemanticTypeTag,
 };
-use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{
+    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -159,6 +161,7 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         authority: SemanticAuthorityInput::Rust {
             project: &project,
             maximum_source_bytes: SourceByteLimit::from(65_536),
+            features: RustFeatureControl::default(),
         },
         control: CompileControl {
             deadline: Instant::now() + Duration::from_secs(120),
@@ -201,6 +204,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
+        CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",
         CompileFailure::Write { .. } => "write",
@@ -362,9 +366,12 @@ fn type_children(lane: &Lane<'_>, row: usize) -> Result<Vec<u32>, TestError> {
         .type_fact_payload()
         .ok_or(TestError::Falsified("no type fact section"))?;
 
-    let mut cursor = 4usize;
-    let count = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Coordinate)?;
-    for _ in 0..count {
+    // Schema 2: [declared_count u32][computed_count u32] precede the records;
+    // the pooled child lane follows every record of both segments.
+    let declared = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Coordinate)?;
+    let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Coordinate)?;
+    let mut cursor = 8usize;
+    for _ in 0..(declared + computed) {
         cursor = cursor
             .checked_add(RECORD_FIXED_BYTES)
             .ok_or(TestError::Coordinate)?;
@@ -715,15 +722,15 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
 /// A source beyond the lane's 128-fact bound is the exact typed lowering
 /// rejection, never a truncated emission.
 #[test]
-fn capacity_beyond_128_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+fn capacity_beyond_1024_is_the_exact_lowering_rejection() -> Result<(), TestError> {
     let mut body = String::new();
-    for ordinal in 0..129 {
+    for ordinal in 0..1025 {
         body.push_str(&format!("pub struct S{ordinal};\n"));
     }
     match compile_fixture(body.as_str()) {
         Err(TestError::Compile("lowering-unsupported")) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Falsified("129 declarations were admitted")),
+        Ok(_) => Err(TestError::Falsified("1025 declarations were admitted")),
     }
 }
 
