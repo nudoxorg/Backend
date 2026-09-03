@@ -254,7 +254,7 @@ pub(crate) fn collect<'source>(
     for index in 0..go.image.declaration_count() {
         let declaration = go.image.declaration(index).map_err(GoCollectError::Image)?;
         if declaration.kind == DeclarationKind::Alias {
-            go.alias(&declaration)?;
+            go.alias(index, &declaration)?;
         }
     }
     // Pass two: member planes, executables, and values in producer order.
@@ -471,7 +471,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// Pass one: one alias whose declared type is its projected target.
     /// Targets referencing later declarations fold to typed unknowns
     /// because the lane admits strictly backward references only.
-    fn alias(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
+    fn alias(
+        &mut self,
+        index: usize,
+        declaration: &Declaration<'source>,
+    ) -> Result<(), GoCollectError> {
         let root = self.root(declaration.type_root, TypeReason::OracleGap)?;
         let fact = root.attach(SemanticFact::new(
             EntityKind::Alias,
@@ -479,6 +483,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             constructor(EntityKind::Alias),
         ));
         let ordinal = push(self.facts, fact)?;
+        self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
@@ -3310,6 +3315,11 @@ mod tests {
         let c_decl = fix.declaration(KIND_ALIAS, b"C", Some(int));
         let _ = c_decl;
         let _ = b_decl;
+        fix.doc(
+            DOC_DECLARATION,
+            u32::try_from(a_decl).map_err(TestError::from)?,
+            b"Alias documentation",
+        );
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 B, 1 A, 2 C.
@@ -3324,6 +3334,14 @@ mod tests {
             || primitive.record.payload0 != SHAPE_INTEGER
         {
             return Err(TestError::Missing("alias primitive target"));
+        }
+        let mut docs = view.docs().ok_or(TestError::Missing("docs"))?;
+        let doc = docs.next().ok_or(TestError::Missing("alias doc"))??;
+        if doc.owner.raw != 1 || doc.fragment != DocFragmentInput::Text(b"Alias documentation") {
+            return Err(TestError::Missing("alias doc owner"));
+        }
+        if docs.next().is_some() {
+            return Err(TestError::Missing("exact alias docs"));
         }
         Ok(())
     }
