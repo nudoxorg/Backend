@@ -148,3 +148,34 @@ lifecycles 8/8; authority 7/7; render 6/6; lower_facts 5/5; languages-python 35/
 observed counts). | decision: one production card (geometry/admission with measured demand),
 then corpus unfallback + deep-IR card, 4th package-class journey, and a cross-cutting shortcut
 hunt; the silent attrs arm is mandate evidence of the dodge law.
+
+2026-09-03 | round-2 execution | d5 (21eaea220), d7 (18241d2e), d6 (9e47e671 REJECTED —
+SpotCheck::Entity re-labeled old pins; repaired 66d50740 PARTIALLY REJECTED — DocstringPrefix
+unconstructed + 3 empty-sequence pins; final f2ed48e0e accepted), plus Terra mechanical
+repairs: native_compile FactRejected mirror, click decorator pins corrected to real positions
+(docstring artifacts removed), python child-boundary falsifier re-pinned 17→33/32 pair, rust
+capacity falsifier re-pinned 1025→2049. All 20 primaries lower completely: pyparsing 1498
+entities (was fact-1024 terminal), click 744 (was 105 ChildCapacity), jinja2 495 (was 107),
+attrs 517 (was 258, silently swallowed). Deep review: pins survive adversarial source
+comparison (markupsafe escape / itsdangerous dumps positional-only `/` verified in fetched
+sdists). Shortcut hunt: no degradation comments/ignored tests in the lane; dead helpers
+eliminated by module split; the pyrefly silent skip now prints.
+
+2026-09-03 | CONTAMINATION INCIDENT (recorded as evidence-handling law) | The environment's
+CARGO_TARGET_DIR points absolutely at the MAIN checkout (.local/target). Both worktrees share
+package name+version, so artifact names collide; several of this session's first "green" runs
+executed STALE artifacts from the main checkout (identical 1024-geometry terminals), and one
+worktree build linked a GoFacts rlib carrying the other session's uncommitted fields (E0063
+phantom). REMEDY: every gate in this round was re-derived with
+CARGO_TARGET_DIR=/private/tmp/nudox-fidelity-python/.local/target; all reported numbers come
+from that isolated target. Concurrent-writer hazard: another session's uncommitted in-flight
+edits (compiler/ir, server/journal, rust_traits, driver Cargo.toml) appear unstaged in this
+worktree mid-round; they were never staged and every commit here stages owned paths only.
+
+2026-09-03 | geometry decision recorded | d5's mechanism: raise the named lane constants
+(1024→2048 facts, 16→32 children) — wire format unchanged (schema-1, u32 ordinals), FactSet
+inline size law held at the chosen geometry, derived constants formula-based. The card's
+original measurement-first demand was not met by the worker (blocked by the contamination
+phantom); Terra accepted the outcome on the stronger evidence: all 20 primaries lower with
+measured entity counts, and both capacity boundary falsifiers (32/33 python, 2049 rust) pin
+the admitted bound honestly. pyparsing's 1498-entity module leaves ~27% fact-lane headroom.
