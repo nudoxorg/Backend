@@ -132,6 +132,7 @@ pub fn discover_and_drive(
                 });
             }
             let query = Command::new(system.tool())
+                .current_dir(root)
                 .args(["uquery", "kind(\"compilation_database\", //...)"])
                 .output()
                 .map_err(BuildDriveFailure::Io)?;
@@ -208,9 +209,19 @@ fn detect(root: &Path) -> Result<BuildSystem, BuildDriveFailure> {
 }
 
 fn available(tool: &str) -> bool {
-    env::var_os("PATH")
+    child_path()
         .map(|path| env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
         .unwrap_or(false)
+}
+
+fn child_path() -> Option<std::ffi::OsString> {
+    let current = env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/Users/mileswirht/.local/bin"),
+    ];
+    paths.extend(env::split_paths(&current));
+    env::join_paths(paths).ok()
 }
 
 fn run_one(
@@ -228,6 +239,9 @@ fn run_one(
         return Err(BuildDriveFailure::Cancelled);
     }
     let mut command = Command::new(system.tool());
+    if let Some(path) = child_path() {
+        command.env("PATH", path);
+    }
     if system == BuildSystem::CMake {
         command
             .arg("-S")
@@ -253,7 +267,11 @@ fn run_ninja(build: &Path, cancelled: &AtomicBool) -> Result<Output, BuildDriveF
     if cancelled.load(Ordering::Acquire) {
         return Err(BuildDriveFailure::Cancelled);
     }
-    Command::new("ninja")
+    let mut command = Command::new("ninja");
+    if let Some(path) = child_path() {
+        command.env("PATH", path);
+    }
+    command
         .arg("-C")
         .arg(build)
         .args(["-t", "compdb", "c", "cxx"])
@@ -271,7 +289,11 @@ fn run_make(root: &Path, cancelled: &AtomicBool) -> Result<Output, BuildDriveFai
     if cancelled.load(Ordering::Acquire) {
         return Err(BuildDriveFailure::Cancelled);
     }
-    Command::new("make")
+    let mut command = Command::new("make");
+    if let Some(path) = child_path() {
+        command.env("PATH", path);
+    }
+    command
         .args(["-n", "-C", &root.to_string_lossy()])
         .output()
         .map_err(|cause| BuildDriveFailure::DriveFailed {

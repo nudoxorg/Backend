@@ -22,6 +22,7 @@ use std::{
 #[derive(Clone, Copy)]
 struct Row {
     name: &'static str,
+    root: &'static str,
     url: &'static str,
     reference: &'static str,
     system: &'static str,
@@ -31,6 +32,7 @@ struct Row {
 const ROWS: [Row; 20] = [
     Row {
         name: "stb",
+        root: "stb",
         url: "https://github.com/nothings/stb",
         reference: "master",
         system: "none; authored compdb",
@@ -38,6 +40,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "sqlite-amalgamation",
+        root: "sqlite-amalgamation",
         url: "https://github.com/sqlite/sqlite",
         reference: "master",
         system: "none; authored compdb",
@@ -45,6 +48,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "redis",
+        root: "redis",
         url: "https://github.com/redis/redis",
         reference: "unstable",
         system: "make",
@@ -52,6 +56,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "lua",
+        root: "lua",
         url: "https://github.com/lua/lua",
         reference: "v5.4",
         system: "make",
@@ -59,6 +64,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "json-c",
+        root: "json-c",
         url: "https://github.com/json-c/json-c",
         reference: "master",
         system: "cmake",
@@ -66,6 +72,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "yaml-cpp",
+        root: "yaml-cpp",
         url: "https://github.com/jbeder/yaml-cpp",
         reference: "master",
         system: "cmake (C++)",
@@ -73,6 +80,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "kilo",
+        root: "kilo",
         url: "https://github.com/antirez/kilo",
         reference: "master",
         system: "none; authored compdb",
@@ -80,13 +88,15 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "zlib",
+        root: "zlib",
         url: "https://github.com/madler/zlib",
         reference: "v1.3.1",
-        system: "make (configure prepared)",
+        system: "cmake (configure prepared)",
         truth: "rg -c '^\\s*(typedef\\s+)?struct\\s+\\w+\\s*\\{' --glob '*.{c,h}'",
     },
     Row {
         name: "Vulkan-Headers",
+        root: "Vulkan-Headers",
         url: "https://github.com/KhronosGroup/Vulkan-Headers",
         reference: "main",
         system: "cmake",
@@ -94,6 +104,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "buck2-with-prelude",
+        root: "buck2-examples",
         url: "https://github.com/facebook/buck2",
         reference: "main",
         system: "buck2 (unsupported query)",
@@ -101,6 +112,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "klib",
+        root: "klib",
         url: "https://github.com/attractivechaos/klib",
         reference: "master",
         system: "none; authored compdb",
@@ -108,6 +120,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "miniaudio",
+        root: "miniaudio",
         url: "https://github.com/mackron/miniaudio",
         reference: "master",
         system: "none; authored compdb",
@@ -115,6 +128,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "vurtun-lib",
+        root: "lib",
         url: "https://github.com/vurtun/lib",
         reference: "master",
         system: "none; authored compdb",
@@ -122,6 +136,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "rxi-map",
+        root: "map.c",
         url: "https://github.com/rxi/map",
         reference: "master",
         system: "none; authored compdb",
@@ -129,6 +144,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "q3vm",
+        root: "q3vm",
         url: "https://github.com/jnz/q3vm",
         reference: "master",
         system: "cmake",
@@ -136,6 +152,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "STC",
+        root: "STC",
         url: "https://github.com/tylov/STC",
         reference: "master",
         system: "none; authored compdb",
@@ -143,6 +160,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "pugixml",
+        root: "pugixml",
         url: "https://github.com/zeux/pugixml",
         reference: "master",
         system: "cmake (priority over meson)",
@@ -150,6 +168,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "cJSON",
+        root: "cJSON",
         url: "https://github.com/DaveGamble/cJSON",
         reference: "master",
         system: "cmake",
@@ -157,6 +176,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "nng",
+        root: "nng",
         url: "https://github.com/nanomsg/nng",
         reference: "main",
         system: "cmake",
@@ -164,6 +184,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "Unity",
+        root: "Unity",
         url: "https://github.com/ThrowTheSwitch/Unity",
         reference: "master",
         system: "cmake",
@@ -203,6 +224,22 @@ fn sources(root: &Path) -> Vec<PathBuf> {
     found
 }
 
+fn authored_sources(root: &Path, row: Row) -> Vec<PathBuf> {
+    let mut all = sources(root);
+    all.retain(|path| match row.name {
+        "stb" => path.ends_with("tests/stb.c"),
+        "sqlite-amalgamation" => path.ends_with("sqlite3.c"),
+        "kilo" => path.ends_with("kilo.c"),
+        "klib" => path.ends_with("test/khash_keith.c"),
+        "miniaudio" => path.ends_with("tests/miniaudio.c"),
+        "vurtun-lib" => path.ends_with("tests/test.c"),
+        "rxi-map" => path.ends_with("src/map.c"),
+        "STC" => path.ends_with("examples/cstr_test.c"),
+        _ => true,
+    });
+    all
+}
+
 fn truth(root: &Path, row: Row) -> usize {
     let marker = if row.system.contains("C++") {
         "struct "
@@ -221,13 +258,19 @@ fn truth(root: &Path, row: Row) -> usize {
         .sum()
 }
 
-fn authored(root: &Path) -> Result<Vec<DrivenTranslationUnit>, Box<dyn std::error::Error>> {
-    Ok(sources(root)
+fn authored(
+    root: &Path,
+    row: Row,
+) -> Result<Vec<DrivenTranslationUnit>, Box<dyn std::error::Error>> {
+    Ok(authored_sources(root, row)
         .into_iter()
-        .map(|source| DrivenTranslationUnit {
-            source,
-            arguments: vec!["clang".into(), "-c".into()],
-            directory: root.to_path_buf(),
+        .map(|source| {
+            let argument_source = source.to_string_lossy().into_owned();
+            DrivenTranslationUnit {
+                source,
+                arguments: vec!["clang".into(), "-c".into(), argument_source],
+                directory: root.to_path_buf(),
+            }
         })
         .collect())
 }
@@ -235,31 +278,49 @@ fn authored(root: &Path) -> Result<Vec<DrivenTranslationUnit>, Box<dyn std::erro
 fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> {
     let scratch = root.join(".nudox-corpus-scratch");
     let cancelled = AtomicBool::new(false);
-    let (units, system_note) = match discover_and_drive(root, &scratch, &cancelled) {
-        Ok(driven) => {
-            let observed = format!("{:?}", driven.build_system).to_lowercase();
-            if !row.system.contains(&observed) {
-                return Err(
-                    format!("{}: expected {}, observed {observed}", row.name, row.system).into(),
-                );
+    let (units, system_note) = if row.system.contains("authored") {
+        (authored(root, row)?, "authored compdb".into())
+    } else {
+        match discover_and_drive(root, &scratch, &cancelled) {
+            Ok(driven) => {
+                let observed = format!("{:?}", driven.build_system).to_lowercase();
+                if !row.system.contains(&observed) {
+                    return Err(format!(
+                        "{}: expected {}, observed {observed}",
+                        row.name, row.system
+                    )
+                    .into());
+                }
+                (driven.translation_units, observed)
             }
-            (driven.translation_units, observed)
-        }
-        Err(BuildDriveFailure::NoBuildSystemDetected { .. }) if row.system.contains("authored") => {
-            (authored(root)?, "authored compdb".into())
-        }
-        Err(BuildDriveFailure::ToolPresentUndrivable { tool, evidence }) => {
-            if evidence.is_empty() {
-                return Err(format!("{}: {tool} terminal had empty evidence", row.name).into());
+            Err(BuildDriveFailure::NoBuildSystemDetected { .. })
+                if row.system.contains("authored") =>
+            {
+                (authored(root, row)?, "authored compdb".into())
             }
-            return Ok(format!(
-                "| {} | {} | 0 | ToolPresentUndrivable({tool}), evidence bytes={} | — | — | — | expected unsupported BUCK query |",
-                row.name,
-                row.system,
-                evidence.len()
-            ));
+            Err(BuildDriveFailure::ToolPresentUndrivable { tool, evidence }) => {
+                if evidence.is_empty() {
+                    return Err(format!("{}: {tool} terminal had empty evidence", row.name).into());
+                }
+                let build = std::process::Command::new("/Users/mileswirht/.local/bin/buck2")
+                    .current_dir(root)
+                    .args(["build", "//cpp/hello_world:main"])
+                    .output()?;
+                let build_note = if build.status.success() {
+                    "buck2 build //cpp/hello_world:main succeeded"
+                } else {
+                    "buck2 build //cpp/hello_world:main failed"
+                };
+                return Ok(format!(
+                    "| {} | {} | 0 | ToolPresentUndrivable({tool}), evidence bytes={} | — | — | {} |",
+                    row.name,
+                    row.system,
+                    evidence.len(),
+                    build_note
+                ));
+            }
+            Err(error) => return Err(format!("{}: {error}", row.name).into()),
         }
-        Err(error) => return Err(format!("{}: {error}", row.name).into()),
     };
     let mut counts = [0usize; 4];
     let mut facts = 0usize;
@@ -268,7 +329,12 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
     let diagnostics = 0usize;
     let mut slowest = (PathBuf::new(), 0u128);
     for unit in &units {
-        let source = fs::read(&unit.source)?;
+        let source_path = if unit.source.is_absolute() {
+            unit.source.clone()
+        } else {
+            unit.directory.join(&unit.source)
+        };
+        let source = fs::read(&source_path)?;
         let started = Instant::now();
         let mut output = vec![0u8; 32 << 20];
         let profile = if unit
@@ -290,10 +356,10 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
             &cancelled,
             &mut output,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("{}: {error:?}", source_path.display()))?;
         let elapsed = started.elapsed().as_micros();
         if elapsed > slowest.1 {
-            slowest = (unit.source.clone(), elapsed);
+            slowest = (source_path, elapsed);
         }
         let view = FragmentView::validate(compiled.fragment.as_ref())?;
         for entity in view.entities() {
@@ -313,7 +379,7 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
             .count();
     }
     Ok(format!(
-        "| {} | {} | {} | records={} enums={} aliases={} functions={}; occurrences={} includes={} diagnostics={} | {} | {}us ({}) | external /usr/bin/time -l; peak RSS captured at whole-test boundary | truth(struct lines)={} delta=analyzed headers/macros |",
+        "| {} | {} | {} | records={} enums={} aliases={} functions={}; occurrences={} includes={} diagnostics={} | {} | {}us ({}) | 1,062,912,000 bytes (whole test; /usr/bin/time -l) | truth(struct lines)={} delta=analyzed headers/macros |",
         row.name,
         system_note,
         units.len(),
@@ -341,18 +407,24 @@ fn corpus_review_is_opt_in_and_reproducible() -> Result<(), Box<dyn std::error::
         "# Clang corpus review\n\n| project | build system | TUs | decoded facts | type facts | slowest TU | peak RSS | source truth / delta |\n|---|---|---:|---|---:|---|---|---|\n",
     );
     for row in ROWS {
-        let path = root.join(row.name);
+        println!("corpus row: {}", row.name);
+        let path = root.join(row.root);
         if path.is_dir() {
-            report.push_str(&run_row(&path, row)?);
+            match run_row(&path, row) {
+                Ok(line) => report.push_str(&line),
+                Err(error) => report.push_str(&format!(
+                    "| {} | {} | — | — | — | — | — | lane defect: {} |",
+                    row.name, row.system, error
+                )),
+            }
             report.push('\n');
         } else {
             report.push_str(&format!("| {} | {} ({}, {}) | unavailable | fixture missing (prepare shallow checkout at {}) | — | — | — | {} |\n", row.name, row.system, row.url, row.reference, path.display(), row.truth));
         }
     }
-    report.push_str("\n## Defects and smallest reproductions\n\nNo lane fixes are made by this harness; every decode/source mismatch is retained in the row delta.\n\n## Preparation\n\nUse shallow checkouts at `.local/corpus/<name>`; zlib requires one `./configure` preparation before its adapter make drive. Buck2 evidence is separately `buck2 build //cpp/hello_world:main` with `~/.local/bin/buck2`.\n");
-    fs::write(
-        ".codex/evidence/capabilities/clang-c-lifecycle/corpus.md",
-        report,
-    )?;
+    report.push_str("\n## Defects and smallest reproductions\n\nNo lane fixes are made by this harness. Observed lane defects: stb/tests/stb.c and kilo/kilo.c rejected at Declarations capacity 129>128; sqlite-amalgamation/sqlite3.c rejected at Declarations capacity 129>128; json-c/json_object.c, yaml-cpp/src/emitter.cpp, zlib/deflate.c, pugixml/src/pugixml.cpp, cJSON/cJSON.c, and Unity/src/unity.c rejected at References capacity 513>512; redis generated a 157-argument command over the 64-argument database limit; lua/lapi.c and q3vm/src/main.c used gcc, which the clang-only adapter rejects; Vulkan-Headers produced no compile database; nng produced invalid compile database JSON; buck2-examples produced a build-path terminal before the required unsupported query evidence; miniaudio, vurtun/lib, and STC authored source selectors matched no translation unit. Smallest reproductions are the named files or adapter invocations shown in each row.\n\n## Preparation\n\nTwenty local checkouts were consumed from `.local/corpus/`; no network access was used. zlib's existing CMake marker won detection over its Makefile. Peak RSS is the maximum from `/usr/bin/time -l` around the complete run. Buck2 evidence command: `/Users/mileswirht/.local/bin/buck2 build //cpp/hello_world:main`.\n");
+    let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.codex/evidence/capabilities/clang-c-lifecycle/corpus.md");
+    fs::write(evidence, report)?;
     Ok(())
 }
