@@ -1,0 +1,9 @@
+{
+  "class": "SingleShipped",
+  "defect_class": "entry-resolution",
+  "purl": "npm:express@4.21.1",
+  "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-10/index.d.ts\"]",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

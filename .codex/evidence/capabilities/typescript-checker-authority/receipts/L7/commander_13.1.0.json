@@ -1,0 +1,9 @@
+{
+  "class": "SingleShipped",
+  "defect_class": "checker-authority",
+  "purl": "npm:commander@13.1.0",
+  "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at signatureTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:283:50)\n    at emitOverloadGroup (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:336:18)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:361:5)\n    at visitNodes (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32457:22)\n    at forEachChildInClassDeclarationOrExpression (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32933:195)\n    at forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:32970:35)\n    at NodeObject.forEachChild (/Users/mileswirht/Downloads/backend/node_modules/typescript/lib/typescript.js:151891:12)\n    at visit (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:380:8)\n\nNode.js v26.8.1\n",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

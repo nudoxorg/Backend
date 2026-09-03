@@ -1,0 +1,9 @@
+{
+  "class": "NonStandardLayout",
+  "defect_class": "package-budget",
+  "purl": "npm:date-fns@4.1.0",
+  "raw_error": "TypeScript checker package file limit exceeded: observed 4097, limit 4096",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

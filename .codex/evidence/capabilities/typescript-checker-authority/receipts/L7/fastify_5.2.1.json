@@ -1,0 +1,9 @@
+{
+  "class": "MonorepoSubpackage",
+  "defect_class": "checker-authority",
+  "purl": "npm:fastify@5.2.1",
+  "raw_error": "TypeScript checker exited with exit status: 1; stderr tail: /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122\n  if (type.isThisType === true || type.flags & flags.ThisType) return { kind: 'this' };\n           ^\n\nTypeError: Cannot read properties of undefined (reading 'isThisType')\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:122:12)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:134:17)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:75\n    at Array.map (<anonymous>)\n    at objectTypeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:57)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:167:41)\n    at typeTree (/private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:132:14)\n    at /private/tmp/nudox-fidelity-typescript/compiler/languages/typescript/checker/main.cjs:204:75\n    at Array.map (<anonymous>)\n\nNode.js v26.8.1\n",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}
