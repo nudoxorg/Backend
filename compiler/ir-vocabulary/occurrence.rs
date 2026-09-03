@@ -98,6 +98,11 @@ pub enum ReferenceKind {
     FieldAccess = 5,
     /// An import brought into scope.
     Import = 6,
+    /// A C++ method override relation.
+    ///
+    /// The wire code lives only on this discriminant; encoding derives it
+    /// directly so rustc rejects duplicate assignments.
+    Overrides = 7,
 }
 
 /// Exact reference-kind-code rejection retaining the observed byte.
@@ -110,15 +115,7 @@ pub struct ReferenceKindCodeError {
 impl From<ReferenceKind> for u8 {
     /// Encodes the stable wire discriminant.
     fn from(value: ReferenceKind) -> Self {
-        match value {
-            ReferenceKind::FunctionCall => 0,
-            ReferenceKind::MethodCall => 1,
-            ReferenceKind::TypeReference => 2,
-            ReferenceKind::VariableUse => 3,
-            ReferenceKind::MacroInvocation => 4,
-            ReferenceKind::FieldAccess => 5,
-            ReferenceKind::Import => 6,
-        }
+        value as u8
     }
 }
 
@@ -136,6 +133,7 @@ impl TryFrom<u8> for ReferenceKind {
             4 => Ok(Self::MacroInvocation),
             5 => Ok(Self::FieldAccess),
             6 => Ok(Self::Import),
+            7 => Ok(Self::Overrides),
             actual => Err(ReferenceKindCodeError { actual }),
         }
     }
