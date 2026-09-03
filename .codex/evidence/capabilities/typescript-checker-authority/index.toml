@@ -1,19 +1,34 @@
 schema = 1
 capability_id = "typescript-checker-authority"
 state = "building"
-# L4 freeze (2026-09-03): canonical 58634ef11 plus the trunk lane's
-# uncommitted computed-coordinate (narrowings) landing inside owned paths;
-# per-file hashes below are computed from the working tree, independent of
-# git status. The prior freeze at fa7f6966d is superseded by L1b/L2/L3a
-# drift (checker.rs, lower/typescript.rs, tests).
-baseline_commit = "58634ef11186e7997ba64a230a45910edd64d550"
-baseline_tree = "58634ef11 + trunk ESC-2 narrowings landing (owned paths) + uncommitted sibling-lane working set (outside owned paths); frozen per-file baseline below"
+# L5 freeze (2026-09-03): canonical consumption verified first —
+# origin/canonical (2f82d74b4) is an ancestor of this lane's HEAD
+# 309acc8f1 (93 lane/trunk commits ahead, 0 incoming), local `canonical`
+# == HEAD, rebase is a no-op, no force used. The trunk escalations are in
+# history: computed type-fact segment behind schema-2 (dab8c366e), checker
+# computed references kept on the computed segment path (fcaeaa894),
+# computed-cell reconstruction for every computed record (0dc2fce43),
+# 1024-fact emission geometry (c8a24c743), journal-chained generations
+# (f9efccc58), exact emission-fault terminals (f99c1ccf2), render truth
+# (4d1cceba9). Supersedes the L4 freeze (58634ef11/53637f54).
+# Per-file hashes are computed from the working tree, independent of git
+# status. golden.json has no trailing newline; loc follows the L4
+# line-count convention (1).
+baseline_commit = "309acc8f1da8fba1f33858ee7cbb7cf03d7b28f3"
+baseline_tree = "309acc8f1 (== local canonical; origin/canonical ancestor); frozen per-file baseline below; worktree /private/tmp/nudox-fidelity-typescript"
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
 testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
 # Environment block (pre-edit-1 MAJOR 4): checker output is version-sensitive.
+# L5 session adaptation: the lane now runs in worktree
+# /private/tmp/nudox-fidelity-typescript, which has no root
+# package.json/node_modules. The checker driver resolves the `typescript`
+# module from NODE_PATH=/Users/mileswirht/Downloads/backend/node_modules
+# (the main checkout's admitted dev dependency, same 5.9.3) — the driver's
+# documented third resolution mechanism. Every gate command below runs with
+# PATH=/opt/homebrew/bin:$PATH and that NODE_PATH.
 [environment]
 node = "v26.8.1"
 node_path = "/opt/homebrew/bin/node"
@@ -25,23 +40,22 @@ notes = "repository-root package.json/node_modules admitted as dev/test dependen
 [baseline.files]
 "compiler/languages/typescript/lib.rs" = { loc = 23, sha256 = "cb2c34af0967399de3eb79ac8f79fff2924676df252460835c8d4a3363e9d735" }
 "compiler/languages/typescript/authority.rs" = { loc = 166, sha256 = "787bef30b6a749d68915cfc16bd3dd6d656c9ee80cff90caab7e20ab9080d791" }
-"compiler/languages/typescript/checker.rs" = { loc = 907, sha256 = "1e6870ece2d851d4dc8e5edca0bd5389a4b1f2295ee5f20af21aad3456438ceb" }
+"compiler/languages/typescript/checker.rs" = { loc = 1114, sha256 = "5d79ec23f3a019f2b6ad6bcf9ac202a38212362438c25e9fec518a2a483522f1" }
 "compiler/languages/typescript/coordinate.rs" = { loc = 272, sha256 = "825ed05418daba2e6341ef2e33a4e46ac427f915f77d3a42d399e4264d0b8df4" }
 "compiler/languages/typescript/error.rs" = { loc = 60, sha256 = "925843f6f6c05db67f8acd571a09af9935c860ea6e72fa013e6ab065581bad7" }
-"compiler/languages/typescript/checker/main.cjs" = { loc = 434, sha256 = "03b70c661e54c9ea1429164d20b23a474c59da5abe07d08b86a8e56dab445c71" }
+"compiler/languages/typescript/checker/main.cjs" = { loc = 457, sha256 = "d02d6586b2e8d0cfe093ca305b690eb6c64f672dc6d663071f356e82029ab600" }
 "compiler/languages/typescript/Cargo.toml" = { loc = 32, sha256 = "b490323e0355aed84716e3d7328bf655e8d2538cdf12e1e9e2e253558b9f7108" }
-"compiler/driver/lower/typescript.rs" = { loc = 3107, sha256 = "4e5ada8e8a627257e3e08b8c1df3aa84cc9c0d0f014694fb142985faf199073c" }
-"compiler/driver/lower.rs" = { loc = 2285, sha256 = "f3b9ed809dcc2eb02f65a22e6d0abbc5c8ff4493c88334f9015c6bdad761c5eb" }
-"compiler/driver/native/typescript.rs" = { loc = 76, sha256 = "0fc3147921507a1d07b893dafc216d7bc9a74a1dc0727bd2e9b960a796520cf8" }
-"compiler/driver/tests/typescript_lower.rs" = { loc = 712, sha256 = "b1b2a65b025c1403adf5625201c565a6f282a3ca5b58f41a3cd9e3f98839a35f" }
-"compiler/driver/tests/typescript_render.rs" = { loc = 290, sha256 = "b5f41ebd4861c76d25681a2f8bf5a67c8b2dbd190c864c6618e7a8cd104e11da" }
-"compiler/driver/tests/typescript_authority.rs" = { loc = 343, sha256 = "ed57a8d78085ae259f1690c312f58b9718c50cc510dd83723484898d98feae1a" }
 "compiler/languages/typescript/tests/checker_protocol.rs" = { loc = 467, sha256 = "8e4407783ec319289a3c564d2477522edfa014caaad96402d7099e13172a300d" }
 "compiler/languages/typescript/tests/semantic_authority.rs" = { loc = 137, sha256 = "af8cfe4b610930b608de402b03b4d87c07979be5540989ed3f8d46073ab561dc" }
 "compiler/languages/typescript/tests/fixtures/source.ts" = { loc = 21, sha256 = "06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e" }
 "compiler/languages/typescript/tests/transcripts/golden.json" = { loc = 1, sha256 = "f91967d5b2da9a37d38a570f8b31a7c8fdbef0e62559266ffe81c76975707e90" }
-"compiler/driver/lower/typescript.rs" = { loc = 4277, sha256 = "e4705e7875f664f0846a78678eb07bceed0e580a6b519625801c7841bb6c6fb5" }
+"compiler/driver/lower/typescript.rs" = { loc = 3107, sha256 = "1aa5aa0656dd6aa09c74e41517bf919722d2c55d1393bcd826c8b06c8c6f1682" }
+"compiler/driver/lower.rs" = { loc = 2448, sha256 = "e0e1831ea2b1a1dcb739ec9f26de5a329892dc0d700dda50c09804312fffc351" }
 "compiler/driver/native/typescript.rs" = { loc = 76, sha256 = "0fc3147921507a1d07b893dafc216d7bc9a74a1dc0727bd2e9b960a796520cf8" }
+"compiler/driver/tests/typescript_lower.rs" = { loc = 712, sha256 = "b1b2a65b025c1403adf5625201c565a6f282a3ca5b58f41a3cd9e3f98839a35f" }
+"compiler/driver/tests/typescript_render.rs" = { loc = 240, sha256 = "87d96d37182115b4b9dc51feeb129351a593a9e0bb0f84f6cc8ec47f12034deb" }
+"compiler/driver/tests/typescript_authority.rs" = { loc = 343, sha256 = "ed57a8d78085ae259f1690c312f58b9718c50cc510dd83723484898d98feae1a" }
+"compiler/driver/tests/typescript_package.rs" = { loc = 132, sha256 = "ddd0c26e57458cc0a628dd3bcf99a39bb9cd23a91e7f64ac6f7202a5b6f0c3d3" }
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/typescript-checker-authority/brief.md", sha256 = "b39050d7f924ba62d4c1ed84937ea4854a7dd5345dc57bc865f591d85a58bd7e" }
