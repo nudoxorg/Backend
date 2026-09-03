@@ -73,8 +73,13 @@ result = "findings" # 2 blockers, 7 majors, 5 minors; packet repaired before L1
 [[workers]]
 task = "pending"
 role = "nudox_luna_implementer"
-card = "L1-checker-first-class"
+card = "L1a-checker-first-class (card sha256 4bd16d1b5defccedbbc994dc001d9d6020fa8c2506b66e4edfbdb2f854e10b21)"
 paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/lower.rs (TypeScript surface only)", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs", "compiler/driver/tests/typescript_lower.rs"]
+state = "planned"
+
+[[reviews]]
+boundary = "post-L1a"
+role = "nudox_terra_reviewer"
 state = "planned"
 
 [[reviews]]
