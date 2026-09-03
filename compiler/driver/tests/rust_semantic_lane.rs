@@ -468,7 +468,22 @@ fn type_child_entry(payload: &[u8], cursor: &mut usize) -> Result<Option<u32>, T
 
 /// Reads one pooled atom list from the extension-pool payload.
 fn pooled_atom_list(pool: &[u8], index: usize) -> Result<Vec<u32>, TestError> {
+    let parameter_count = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Coordinate)?;
     let mut cursor = 4usize;
+    for _ in 0..parameter_count {
+        type_name_cell(pool, &mut cursor)?;
+        for _ in 0..2 {
+            let present = pool
+                .get(cursor)
+                .copied()
+                .ok_or(TestError::Falsified("truncated type parameter cell"))?;
+            cursor = cursor.checked_add(1).ok_or(TestError::Coordinate)?;
+            if present != 0 {
+                word(pool, cursor)?;
+                cursor = cursor.checked_add(4).ok_or(TestError::Coordinate)?;
+            }
+        }
+    }
     let list_count = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Coordinate)?;
     cursor += 4;
     for list in 0..list_count {

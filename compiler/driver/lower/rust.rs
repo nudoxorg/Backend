@@ -944,17 +944,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts.intern_atom_list(&atoms).map_err(|_| admission())
     }
 
-    /// Pushes one pooled where-clause row per written bound: one row per
-    /// generic parameter bound and one per where predicate. The constraint
-    /// cell names the first bound that resolves to a lane-local trait; bounds
-    /// resolving outside the fragment stay `None` because the pooled lane
-    /// references only backward declaration ordinals.
-    /// Pushes one pooled where-clause row per written bound whose constraint
-    /// or default resolves to a lane-local declaration, and reports whether
-    /// the declaration wrote any bound at all. A bound resolving outside the
-    /// fragment carries no pooled row, because the pooled lane references
-    /// only backward declaration ordinals and a name-only row would add no
-    /// resolvable fact; the extension cell still records that bounds exist.
+    /// Pushes one pooled where-clause row for every written type bound and
+    /// reports whether the declaration wrote any bound at all. Local traits
+    /// name their declaration fact; foreign traits are interned as deduplicated
+    /// anonymous unknown leaves owned by the declaration fact being emitted.
+    /// An unresolved bound still gets a row, but has no constraint ordinal.
     fn where_rows(&mut self, syntax: &SyntaxNode) -> Result<Option<u32>, RustAuthorityError> {
         let start = coordinate(self.facts.type_parameter_len)?;
         let mut bounds_written = false;
@@ -970,15 +964,29 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         };
                         let name = self.bytes_of_node(name.syntax())?;
                         let bound_list = param.type_bound_list();
-                        let constraint = self.local_trait_bound(bound_list)?;
+                        let bounds = bound_list
+                            .as_ref()
+                            .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                            .unwrap_or_default();
                         let default = match param.default_type() {
                             Some(default) => self.local_adt_target(&default)?,
                             None => None,
                         };
-                        bounds_written |= constraint.is_some() || default.is_some();
-                        if constraint.is_some() || default.is_some() {
+                        let has_bounds = !bounds.is_empty();
+                        bounds_written |= has_bounds || default.is_some();
+                        for bound in bounds {
+                            let constraint = bound
+                                .ty()
+                                .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
+                                .transpose()?
+                                .flatten();
                             self.facts
-                                .push_type_parameter(name, constraint, default)
+                                .push_type_parameter(name, constraint, None)
+                                .map_err(|_| admission())?;
+                        }
+                        if !has_bounds && default.is_some() {
+                            self.facts
+                                .push_type_parameter(name, None, default)
                                 .map_err(|_| admission())?;
                         }
                     }
@@ -992,11 +1000,19 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     continue;
                 };
                 let name = self.bytes_of_node(bounded.syntax())?;
-                let constraint = self.local_trait_bound(predicate.type_bound_list())?;
-                bounds_written |= constraint.is_some();
-                if let Some(constraint) = constraint {
+                let bounds = predicate
+                    .type_bound_list()
+                    .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                bounds_written |= !bounds.is_empty();
+                for bound in bounds {
+                    let constraint = bound
+                        .ty()
+                        .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
+                        .transpose()?
+                        .flatten();
                     self.facts
-                        .push_type_parameter(name, Some(constraint), None)
+                        .push_type_parameter(name, constraint, None)
                         .map_err(|_| admission())?;
                 }
             }
@@ -1004,33 +1020,37 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         Ok(bounds_written.then_some(start))
     }
 
-    /// Resolves the first written bound of one bound list to a lane-local
-    /// trait ordinal, or `None` when no bound resolves into this fragment.
-    fn local_trait_bound(
-        &self,
-        bounds: Option<ast::TypeBoundList>,
+    /// Resolves one written trait bound to its local fact or to the shared
+    /// pooled foreign leaf table. The declaration fact is the reserved owner
+    /// while this extension is built, immediately before that fact is pushed.
+    fn trait_bound_constraint(
+        &mut self,
+        bound_ty: &ast::Type,
     ) -> Result<Option<u32>, RustAuthorityError> {
-        let Some(bounds) = bounds else {
+        let ast::Type::PathType(path_type) = bound_ty else {
             return Ok(None);
         };
-        for bound in bounds.bounds() {
-            let Some(bound_ty) = bound.ty() else {
-                continue;
-            };
-            let ast::Type::PathType(path_type) = bound_ty else {
-                continue;
-            };
-            let Some(path) = path_type.path() else {
-                continue;
-            };
-            if let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(trait_)), _)) =
-                self.authority.resolve_path(&path)
-                && let Some(ordinal) = self.ordinal_of_trait(trait_)
-            {
-                return Ok(Some(ordinal));
-            }
+        let Some(path) = path_type.path() else {
+            return Ok(None);
+        };
+        let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(trait_)), _)) =
+            self.authority.resolve_path(&path)
+        else {
+            return Ok(None);
+        };
+        if let Some(ordinal) = self.ordinal_of_trait(trait_) {
+            return Ok(Some(ordinal));
         }
-        Ok(None)
+        let Some(text) = self.written_type_name(Some(bound_ty)) else {
+            return Ok(None);
+        };
+        let previous = self.active_anchor.replace(coordinate(self.facts.len())?);
+        let row = self.host(
+            Lowered::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(text))),
+            Some(bound_ty),
+        );
+        self.active_anchor = previous;
+        row
     }
 
     /// Resolves one written default type to a lane-local record ordinal.
