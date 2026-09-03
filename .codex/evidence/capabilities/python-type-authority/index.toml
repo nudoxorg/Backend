@@ -17,7 +17,31 @@ role = "nudox_luna_implementer"
 card = "card-d2-live-fnptr-labels.md"
 baseline = "lower.rs post-7bf08a760"
 paths = ["compiler/driver/lower.rs"]
-state = "dispatched"
+state = "accepted"
+commit = "aff5024a2"
+
+[[dispatches]]
+task = "d3-python-fidelity"
+role = "nudox_luna_implementer"
+card = "card-d3-python-fidelity.md"
+baseline = "HEAD aff5024a2"
+paths = ["compiler/driver/lower/python.rs", "compiler/driver/tests/python_render.rs"]
+state = "accepted-with-terra-repairs"
+commit = "d6909a85b (Terra mechanical repairs folded into 4187ec9b5)"
+
+[[dispatches]]
+task = "d4-corpus-twenty"
+role = "nudox_luna_implementer"
+card = "card-d4-corpus-twenty.md"
+baseline = "HEAD 4187ec9b5"
+paths = ["compiler/driver/tests/python_packages.rs"]
+state = "accepted"
+commit = "66f2c4619"
+
+[[reviews]]
+boundary = "closure"
+role = "nudox_terra_reviewer"
+state = "planned"
 
 [[dispatches]]
 task = "pending"

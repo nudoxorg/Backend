@@ -119,3 +119,17 @@ entry (PyPI lists wheels first; digests precede each entry's url); locate's retu
 aligned with callers. Gates: python_render 5/5; compiler-languages-python 35/35; purl 5/5
 (+1 ignored, D2); packages 9/9. python.rs unit tests + lib tests blocked by ADJACENT
 lanes' stale cfg(test) modules (clang.rs 21, rust.rs 10 errors) — not python surface.
+
+2026-09-02 | d4 corpus checkpoint 66f2c461 ingested | Matrix now 20 real packages (10 test
+functions, all green). 34 capacity observations recorded across the matrix (jinja2
+sandbox.py, click parser.py, werkzeug formparser.py, packaging _spyx/lots, PyYAML
+parser.py, tomli _re.py, markupsafe _native.py, itsdangerous timed.py, iniconfig,
+etc.) — every one hits the frozen 128-fact lane and funnels to the standing D2
+escalation with exact module names, strengthening the capacity fork's evidence base.
+Layout diversity proven: src-distributions (idna, packaging, pluggy, click, jinja2,
+markupsafe, werkzeug, tomli, iniconfig), package-dir (PyYAML), flat/single-module (six,
+certifi, webencodings, pyparsing, colorama). Worker's reported render failures were a
+stale binary on the worker side; Terra re-verified 5/5 at 66f2c461. compiler-application
+(publication round-trip R7) is currently broken by the trunk's new
+CompileFailure::ExtensionAtomUnbound not yet matched in application/terminal/native.rs —
+adjacent-lane convergence in flight, not python surface.
