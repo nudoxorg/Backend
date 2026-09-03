@@ -2639,6 +2639,49 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn measured_overload_maximum_decodes_all_sibling_ordinals_in_order() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let name = fix.atom(b"append");
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        // The corpus maximum is 46 same-key executables; the 47th proves its
+        // sibling list retains all measured predecessors in order.
+        for _ in 0..47 {
+            let symbol = u32::try_from(fix.symbols.len())?;
+            fix.symbols.push(SymbolRow {
+                owner: 0,
+                name,
+                parameters: Vec::new(),
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 11,
+                name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void),
+                symbol: Some(symbol),
+            });
+        }
+        let bytes = lower(&fix, b"class C { void append() {} }")?;
+        let view = FragmentView::validate(&bytes)?;
+        let pools = view
+            .extension_pool_payload()
+            .ok_or(TestError::Missing("pools"))?;
+        let listed = entity_list(pools, 46)?;
+        let expected: Vec<u32> = (1..47).collect();
+        if listed != expected {
+            return Err(TestError::Missing("ordered measured sibling list"));
+        }
+        Ok(())
+    }
+
     /// Reads one pooled entity reference list back out of the pools payload.
     /// With no type parameters the layout is four lane counts plus rows.
     fn entity_list(pools: &[u8], ordinal: usize) -> Result<Vec<u32>, TestError> {

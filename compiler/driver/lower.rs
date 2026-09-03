@@ -55,7 +55,9 @@ pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
 /// Dense bound of pooled reference lists per lane kind.
 pub(super) const MAX_REF_LISTS: usize = 512;
 /// Dense bound of one pooled reference list.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
+/// The measured corpus maximum is 46 (`ToStringBuilder.append`).
+/// 64 is the next dense bound, preserving the old geometry for lists up to 16.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 64;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
