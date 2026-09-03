@@ -1,9 +1,20 @@
 # Card L6b: full lattice coverage — structured conditional/mapped/template/literal records, honest renders, TypeReason vocabulary
 
 registered role: nudox_luna_implementer (expected `luna`/max)
-baseline: L6a's result commit on top of 309acc8f1 (Terra names the sha at
-dispatch; your owned paths' L5 hashes are in index.toml, L6a deltas are in
-the dispatch note). Dispatch AFTER L6a lands — same files.
+baseline: 3ee391835 (L6a a7845f839 + 25c3cdce1 + 067751a15 + e1b1131a and
+L4c-r2 d7a4181a all landed; card addendum below). Dispatch AFTER L6a
+lands — same files.
+
+## ADDENDUM (L5 freeze): you also close matrix row R12 legs 3-4
+
+typescript_lower.rs already contains
+`forward_nominal_checker_and_lowering_keep_the_later_class` (legs 1-2:
+checker report + compile_ir + fragment decode name the forward nominal
+`B`). ADD: (leg 3) the same forward-nominal source goes through
+publish -> `DurablePublisher::reopen` -> `open_published` and the REOPENED
+fragment's decoded computed cell for `a` still names `B`; (leg 4) the
+render display for `a` names `B`. Reuse the lifecycle choreography inline
+(heap buffers only — the test must run on a default 2 MiB thread).
 
 ## Why this card exists (evidence, not opinion)
 
@@ -80,7 +91,9 @@ vocabulary naming exactly what the record is.
    TypeReason — this card removes only the dishonest cases where a closed
    term exists.
 
-## Exact focused commands (PATH + NODE_PATH per index.toml environment)
+## Exact focused commands (PATH + NODE_PATH per index.toml environment,
+PLUS CARGO_TARGET_DIR=/private/tmp/nudox-fidelity-typescript/.local/target —
+the shared ambient target is poisoned for this lane)
 
 - cargo test -p compiler-driver --test typescript_render
 - cargo test -p compiler-driver --test typescript_lower
