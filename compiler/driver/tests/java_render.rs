@@ -90,44 +90,46 @@ fn primitive(ir: &Ir) -> String {
         .unwrap();
     ir.display_type(ty).unwrap().to_string()
 }
+fn field_type(ir: &Ir, name: &[u8]) -> String {
+    let ty = ir
+        .item(item(ir, name, ItemKind::Field))
+        .unwrap()
+        .semantic_type()
+        .unwrap();
+    ir.display_type(ty).unwrap().to_string()
+}
 
 #[test]
 fn java_declarations_render_exactly() {
     let ir = fixture();
-    assert_eq!(
-        signature(&ir, b"Widget", ItemKind::Record),
-        "/* visibility unknown */ struct Widget"
-    );
-    // FINDING: input image method run(int,int): actual `fn run`; expected
-    // `fn run(i32, i32) -> i32` (FunctionPointer rows are not exposed).
+    // Trunk 4d1cceba9: unknown visibility renders prefix-free, and a record
+    // ignores its self-nominal row.
+    assert_eq!(signature(&ir, b"Widget", ItemKind::Record), "struct Widget");
+    // Trunk 4d1cceba9 exposes the symbol's FunctionPointer row as a live
+    // function tail; the fixture's carriers keep their javac type-spelling
+    // names (`int`, `int`), typed i32, with the declared result i32.
     assert_eq!(
         signature(&ir, b"run", ItemKind::Function),
-        "/* visibility unknown */ fn run"
+        "fn run(int: i32, int: i32) -> i32"
     );
-    assert_eq!(
-        signature(&ir, b"value", ItemKind::Field),
-        "/* visibility unknown */ value: i32"
-    );
+    // `value` declares the primitive `int` row, which lowers to i32.
+    assert_eq!(signature(&ir, b"value", ItemKind::Field), "value: i32");
 }
 
 #[test]
 fn java_kind_prefixes_and_overloads_are_exact() {
     let ir = fixture();
-    assert_eq!(
-        signature(&ir, b"Shape", ItemKind::Trait),
-        "/* visibility unknown */ trait Shape"
-    );
-    assert_eq!(
-        signature(&ir, b"Color", ItemKind::Enum),
-        "/* visibility unknown */ enum Color"
-    );
-    // FINDING: input image overloads overloaded(int) and overloaded(boolean):
-    // actual both `fn overloaded`; expected distinct typed signatures.
+    // Trunk 4d1cceba9: unknown visibility renders prefix-free for every kind.
+    assert_eq!(signature(&ir, b"Shape", ItemKind::Trait), "trait Shape");
+    assert_eq!(signature(&ir, b"Color", ItemKind::Enum), "enum Color");
+    // Trunk 4d1cceba9 renders each overload's own FunctionPointer row: the
+    // fixtures declare int -> int and boolean -> boolean; carriers keep their
+    // javac spelling as the label while types lower to i32 and bool.
     assert_eq!(
         signatures(&ir, b"overloaded"),
         vec![
-            "/* visibility unknown */ fn overloaded",
-            "/* visibility unknown */ fn overloaded"
+            "fn overloaded(int: i32) -> i32",
+            "fn overloaded(boolean: bool) -> bool"
         ]
     );
 }
@@ -136,35 +138,40 @@ fn java_kind_prefixes_and_overloads_are_exact() {
 fn java_type_rows_render_exactly() {
     let ir = fixture();
     assert_eq!(primitive(&ir), "i32");
-    // FINDING: Apply/Array/Wildcard/QualifiedPath rows are admitted to the
-    // type-fact lane but compile_ir exposes no TypeId for their Java items.
-    for name in [b"input".as_slice(), b"label", b"Outer.Inner"] {
-        assert!(
-            ir.item(item(&ir, name, ItemKind::Field))
-                .unwrap()
-                .semantic_type()
-                .is_none()
-        );
-    }
+    // Trunk 4d1cceba9 exposes live type rows: `input`'s fixture row is an
+    // Array whose arity cell "[]" renders as the length and whose component
+    // is interned as an unknown row, while `label`'s wildcard and
+    // `Outer.Inner`'s qualified path have no live Ir shape and fold to
+    // ?unsupported.
+    assert_eq!(field_type(&ir, b"input"), "[?unsupported; []]");
+    assert_eq!(field_type(&ir, b"label"), "?unsupported");
+    assert_eq!(field_type(&ir, b"Outer.Inner"), "?unsupported");
 }
 
 #[test]
 fn java_docs_and_embedding_render_exactly() {
     let ir = fixture();
     let id = item(&ir, b"Outer.Inner", ItemKind::Field);
-    // FINDING: admitted Javadoc is not attached to the public Ir item view.
-    assert_eq!(ir.display_docs(id).unwrap().to_string(), "");
+    // Trunk 4d1cceba9 attaches admitted Javadoc: the fixture's inline
+    // {@link Target target} links locally to the admitted Target class,
+    // rendered as a docs.rs markdown link.
+    assert_eq!(
+        ir.display_docs(id).unwrap().to_string(),
+        "See [target](struct.Target.html)."
+    );
     let run = item(&ir, b"run", ItemKind::Function);
+    // `run` carries no documentation facts, so the DOCUMENTED profile stream
+    // equals the signature-only stream under the new docs plane.
     assert_eq!(
         ir.embedding_text(run, EmbeddingProfile::SYMBOL)
             .unwrap()
             .to_string(),
-        "/* visibility unknown */ fn run"
+        "fn run(int: i32, int: i32) -> i32"
     );
     assert_eq!(
         ir.embedding_text(run, EmbeddingProfile::DOCUMENTED)
             .unwrap()
             .to_string(),
-        "/* visibility unknown */ fn run"
+        "fn run(int: i32, int: i32) -> i32"
     );
 }

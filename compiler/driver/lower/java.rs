@@ -3259,9 +3259,14 @@ mod tests {
         let image = fix.bind(b"")?;
         let mut facts = FactSet::new();
         match collect(ProfileRelease::Java21, b"", &image, &mut facts) {
-            Err(JavaCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            // The lane admits exactly p0..p1023, so p1024 (five bytes) is the
+            // first overflowing row at ordinal 1024; the typed rejection
+            // retains its exact operands instead of folding to the lane
+            // terminal.
+            Err(JavaCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.cause == FactFault::Capacity
+                    && rejection.name_len == 5 => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }
@@ -3452,7 +3457,7 @@ mod tests {
     }
 
     #[test]
-    fn two_hundred_fifty_seven_programmatic_fields_fold_through_typed_capacity()
+    fn two_hundred_fifty_seven_programmatic_fields_admit_and_overflow_folds_typed()
     -> Result<(), TestError> {
         let mut fix = Fixture::default();
         fix.class(b"demo.C");
@@ -3468,13 +3473,39 @@ mod tests {
                 symbol: None,
             });
         }
-        match lower(&fix, b"class C {}") {
-            Err(TestError::Collect(JavaCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            ))) => Ok(()),
-            Err(error) => Err(error),
-            Ok(_) => Err(TestError::Missing("capacity rejection")),
+        // (a) At the 1024-fact geometry the class and its 257 programmatic
+        // fields admit; the old fold expectation was a 256-fact artifact.
+        lower(&fix, b"class C {}")?;
+        // (b) Push declarations until the lane overflows, like case 1: root
+        // rows are the only shape that can overflow, because pass one's
+        // ordinal table bounds member declarations below the lane width. With
+        // MAX_EMISSION_FACTS + 1 roots, p1024 (five bytes) is rejected at
+        // ordinal 1024 with its exact operands.
+        let mut full = Fixture::default();
+        for index in 0..crate::lower::MAX_EMISSION_FACTS + 1 {
+            let mut spelling = b"p".to_vec();
+            spelling.extend_from_slice(index.to_string().as_bytes());
+            let name = full.atom(&spelling);
+            full.declarations.push(DeclarationRow {
+                kind: 2,
+                name,
+                owner: None,
+                documentation: None,
+                semantic_type: None,
+                symbol: None,
+            });
         }
+        let image = full.bind(b"")?;
+        let mut facts = FactSet::new();
+        match collect(ProfileRelease::Java21, b"", &image, &mut facts) {
+            Err(JavaCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.cause == FactFault::Capacity
+                    && rejection.name_len == 5 => {}
+            Err(other) => return Err(TestError::Collect(other)),
+            Ok(()) => return Err(TestError::Missing("typed capacity rejection")),
+        }
+        Ok(())
     }
 
     #[test]
