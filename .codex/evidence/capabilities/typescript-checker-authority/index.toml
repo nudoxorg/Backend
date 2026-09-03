@@ -29,6 +29,14 @@ testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced ex
 # (the main checkout's admitted dev dependency, same 5.9.3) — the driver's
 # documented third resolution mechanism. Every gate command below runs with
 # PATH=/opt/homebrew/bin:$PATH and that NODE_PATH.
+# L5 SECOND adaptation (mandatory): the ambient CARGO_TARGET_DIR in this
+# environment points at /Users/mileswirht/Downloads/backend/.local/target,
+# SHARED by all lane worktrees. A sibling lane's stale compiler_ir artifacts
+# produced phantom-field compile errors (GoFacts constant_flags,
+# ExtensionPoolsLane identity_lists) and one false NoSupportedDeclaration
+# in this lane. Every command must set
+# CARGO_TARGET_DIR=/private/tmp/nudox-fidelity-typescript/.local/target
+# (the python lane's recorded .local/target precedent).
 [environment]
 node = "v26.8.1"
 node_path = "/opt/homebrew/bin/node"
@@ -116,6 +124,33 @@ task = "pending"
 role = "nudox_luna_implementer"
 card = "L1a-checker-first-class (card sha256 4bd16d1b5defccedbbc994dc001d9d6020fa8c2506b66e4edfbdb2f854e10b21)"
 paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/lower.rs (TypeScript surface only)", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs", "compiler/driver/tests/typescript_lower.rs"]
+state = "planned"
+
+# ---- L5 session dispatches (2026-09-03, worktree /private/tmp/nudox-fidelity-typescript) ----
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "L6a computed-trees-end-to-end (sha256 bd0173e085d9c5f7ed0eb905b1e414540100d5c9b0af8cb43a029c2f0ae9bc13)"
+result_commit = "a7845f839"
+ingest = "Terra reproduced: typescript_lower 29 passed 0 failed (D1 un-ignored), crate/render/authority/package green. INGEST FINDINGS: (a) the in-memory half now asserts every computed cell is a TypeOf proof row (Nominal,1) — verified honest against the trunk TypeOf-proof design; per-row concrete fidelity moved to the fragment half which pins the transcript rows and passes; (b) frozen-table edits verified row-by-row against golden.json: fn declared Unknown (transcript has no declared fn entry), widened kind Static, Box/Slot/Holder/g has_computed=false (transcript has no computed entries) are source-truth CORRECTIONS of stale aspirations; (c) R12 legs 3-4 (publish->reopen equality, render names B) NOT implemented — remaining red; (d) NEW defects found by Terra during ingest: foreign declared references drop to Unknown(Unsupported) (table row 4 vs transcript), oversized-union overflow folds to diagnostic-erasing NoSupportedDeclaration, unbounded lower_type/child_target mutual recursion stack-overflows on real .d.ts (L6a-r2 card)."
+
+[[workers]]
+task = "blocked-no-commit"
+role = "nudox_luna_implementer"
+card = "L4c-r1 PURL lifecycle (L4c intent re-based)"
+result = "no commit; uncommitted working set left in the worktree (typescript_purl_lifecycle.rs, typescript_support/, one permitted serde_json dev-dep line + Cargo.lock). Worker-reported blocker was LoweringUnsupported NoSupportedDeclaration on @babel/parser@7.26.8. TERRA REPRODUCED AND OVERTURNED: on the lane-local target the real cause is the production unbounded lower_type recursion (stack overflow) plus the union child-geometry overflow folding to NoSupportedDeclaration (production defects, L6a-r2); the worker's support module itself is bounded and correct so far as reviewed. Custody retained; the uncommitted set stays inspectable and is the L4c-r2 starting point after L6a-r2 lands. Pinned digests recorded by the worker: @babel/traverse 3ee452d340331bbcf5cf518a5aa781324280b6ee03081d2ebfc125f48065bf15, @babel/parser d35d24bb0029bdd4932b1705b936b60002f9faa1ac0f166c3cf0ff4b23a7156e."
+
+[[workers]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "L6a-r2 bounded-lowering-and-foreign-refs (resume of the L6a session)"
+state = "planned"
+
+[[workers]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "L4c-r2 lifecycle-green (after L6a-r2 lands)"
 state = "planned"
 
 [[reviews]]
