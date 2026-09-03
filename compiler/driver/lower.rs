@@ -68,7 +68,7 @@ pub(super) const MAX_TYPE_ROWS: usize =
 /// First pool-local ordinal of an anonymous type row.
 const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
 /// First pool-local ordinal of a computed type row.
-const COMPUTED_ROW_BASE: u32 = ANONYMOUS_ROW_BASE + MAX_ANONYMOUS_TYPE_ROWS as u32;
+pub(super) const COMPUTED_ROW_BASE: u32 = ANONYMOUS_ROW_BASE + MAX_ANONYMOUS_TYPE_ROWS as u32;
 /// Sentinel marking an absent row in an extension plane's row table.
 const SECTION_NONE: u32 = u32::MAX;
 
@@ -997,21 +997,28 @@ impl<'source> FactSet<'source> {
                 };
             }
             let computed = value.computed.and_then(|id| {
-                self.computed_records
-                    .get(id.erase().raw as usize)
-                    .and_then(|record| {
-                        match (record.tag, PrimitiveShape::try_from(record.payload0)) {
-                            (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
-                                Some(tree.intern_computed(compiler_ir::ComputedType::KeyOf(
-                                    TypeId::new(0),
-                                )))
-                            }
-                            (SemanticTypeTag::SelfType, _) => {
-                                Some(tree.intern_computed(compiler_ir::ComputedType::This))
-                            }
-                            _ => None,
+                let row = id.erase().raw as usize;
+                self.computed_records.get(row).and_then(|record| {
+                    match (record.tag, PrimitiveShape::try_from(record.payload0)) {
+                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
+                            Some(tree.intern_computed(compiler_ir::ComputedType::KeyOf(
+                                TypeId::new(0),
+                            )))
                         }
-                    })
+                        (SemanticTypeTag::SelfType, _) => {
+                            Some(tree.intern_computed(compiler_ir::ComputedType::This))
+                        }
+                        // Every other computed row carries the checker's
+                        // derivation for its owning declaration; the live cell
+                        // projects that relation truthfully as typeof owner.
+                        _ => {
+                            let owner = *self.computed_owners.get(row)?;
+                            Some(tree.intern_computed(compiler_ir::ComputedType::TypeOf(
+                                compiler_ir::TypeQuery::Entity(compiler_ir::EntityId::new(owner)),
+                            )))
+                        }
+                    }
+                })
             });
             let computed = computed.transpose()?;
             let declared = value

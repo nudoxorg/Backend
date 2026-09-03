@@ -20,8 +20,8 @@ use compiler_vocabulary::TypeScriptSource;
 
 use crate::{
     lower::{
-        EmissionExtension, FactSet, FactTypeChild, LEAF_PRODUCT, MAX_EMISSION_FACTS,
-        MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+        COMPUTED_ROW_BASE, EmissionExtension, FactSet, FactTypeChild, LEAF_PRODUCT,
+        MAX_EMISSION_FACTS, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
     },
     types::{FactFault, FactRejection, LoweringUnsupported},
 };
@@ -34,10 +34,6 @@ const MAX_DECL_TYPE_PARAMETERS: usize = 16;
 const MAX_TYPE_DEPTH: u8 = 24;
 /// Sentinel marking an unset projection-table row.
 const UNSET: u32 = u32::MAX;
-/// First pool-local ordinal of an anonymous type row, mirroring the frozen
-/// emission lane's own constant (`lower.rs` keeps it private; the value is
-/// the fact-lane bound by definition).
-const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
 /// Bound of staged JSDoc segments on one comment line.
@@ -1909,7 +1905,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let row =
                 intern_computed_tree(&registry, self.facts, tree, owner, 0, SpellDomain::Owner)?;
             let ordinal = row
-                .checked_sub(ANONYMOUS_ROW_BASE)
+                .checked_sub(COMPUTED_ROW_BASE)
                 .ok_or_else(lane_rejection)?;
             let proof = self.mint.mint(ordinal)?;
             let type_parameters = self
