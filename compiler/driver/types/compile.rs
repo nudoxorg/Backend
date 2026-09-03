@@ -380,27 +380,44 @@ fn emit_facts<'source, 'diagnostic>(
                                 prepared.source,
                                 prepared.recipe,
                                 TypeScriptCollectError::Authority(
-                                    compiler_languages_typescript::AuthorityError::Checker { cause },
+                                    compiler_languages_typescript::AuthorityError::Checker {
+                                        cause,
+                                    },
                                 ),
                             )
                         })?,
                 ),
-                _ => None,
+                SemanticAuthorityInput::TypeScript { .. } => None,
+                _ => {
+                    return Err(CompileFailure::AuthorityInputProfileMismatch {
+                        source_identity: prepared.source,
+                        recipe: prepared.recipe,
+                        profile: LanguageProfile::TypeScript(profile),
+                    });
+                }
             };
             let report = match authority {
-                SemanticAuthorityInput::TypeScript { report } => Some(report),
                 SemanticAuthorityInput::None => owned_report.as_ref(),
-                _ => None,
+                SemanticAuthorityInput::TypeScript { report } => Some(report),
+                _ => {
+                    return Err(CompileFailure::AuthorityInputProfileMismatch {
+                        source_identity: prepared.source,
+                        recipe: prepared.recipe,
+                        profile: LanguageProfile::TypeScript(profile),
+                    });
+                }
             };
-            lower::typescript::collect_with_checker(profile, source, report, facts).map_err(|cause| {
-                typescript_terminal(
-                    diagnostic_output,
-                    source,
-                    prepared.source,
-                    prepared.recipe,
-                    cause,
-                )
-            })?;
+            lower::typescript::collect_with_checker(profile, source, report, facts).map_err(
+                |cause| {
+                    typescript_terminal(
+                        diagnostic_output,
+                        source,
+                        prepared.source,
+                        prepared.recipe,
+                        cause,
+                    )
+                },
+            )?;
             if facts.len() == 0 {
                 return Err(CompileFailure::LoweringUnsupported {
                     source_identity: prepared.source,
