@@ -111,7 +111,13 @@ private final Trees trees;
 				@Override
 				public Void visitClass(ClassTree node, Void unused) {
 					Element element = trees.getElement(getCurrentPath());
-					if (element instanceof TypeElement type) emitType(type, getCurrentPath());
+					// Anonymous classes have no qualified name and are
+					// method-body implementation artifacts: they carry no
+					// declaration rows, and their bodies' invocations
+					// attribute to the enclosing declared executable.
+					if (element instanceof TypeElement type && !type.getSimpleName().isEmpty()) {
+						emitType(type, getCurrentPath());
+					}
 					return super.visitClass(node, unused);
 				}
 			}.scan(unit, null);
