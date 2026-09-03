@@ -16,7 +16,8 @@ use core::{fmt, marker::PhantomData, ops::Deref};
 use crate::{LanguageExtensionsView, SemanticImageAuthority};
 
 const MAGIC: [u8; 4] = *b"NXLE";
-const SCHEMA: u16 = 1;
+const SCHEMA_LEGACY: u16 = 1;
+const SCHEMA: u16 = 2;
 const PLANES: usize = 7;
 const PLANES_WIRE: u8 = 7;
 const HEADER: usize = 16;
@@ -59,13 +60,11 @@ impl LanguageExtensionDirectoryKind {
         }
     }
 
-    const fn fact_bytes_wire(self) -> u32 {
-        match self {
-            Self::TypeScript | Self::Python => 12,
-            Self::CSharp => 36,
-            Self::Go => 28,
-            Self::Rust | Self::Java => 16,
-            Self::Clang => 24,
+    const fn schema_fact_bytes(self, schema: u16) -> usize {
+        if matches!(self, Self::Clang) && schema == SCHEMA {
+            28
+        } else {
+            self.fact_bytes()
         }
     }
 
@@ -264,6 +263,7 @@ struct PlaneLayout {
     rows: u32,
     facts: u32,
     ordinal_bytes: usize,
+    fact_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -315,7 +315,7 @@ impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'w
             .checked_add(self.layout.ordinal_bytes)
             .and_then(|offset| {
                 ordinal
-                    .checked_mul(Facts::WIDTH)
+                    .checked_mul(self.layout.fact_bytes)
                     .and_then(|width| offset.checked_add(width))
             })
             .ok_or(LanguageExtensionReopenError::StructuralOverflow {
@@ -328,6 +328,52 @@ impl<'wire, Facts: LanguageExtensionWireFact> ReopenedLanguageExtensionColumn<'w
                     .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset })?,
             },
         )
+    }
+}
+
+impl<'wire> ReopenedLanguageExtensionColumn<'wire, crate::ClangFacts> {
+    /// Returns the schema-2 owner ordinal stored beside a clang fact.
+    pub fn owner(
+        self,
+        entity: crate::EntityId,
+    ) -> Result<Option<u32>, LanguageExtensionReopenError> {
+        if entity.raw >= self.layout.rows || self.layout.facts == 0 {
+            return Ok(None);
+        }
+        let row = entity.index();
+        let ordinal = read_word(
+            self.bytes,
+            row.checked_mul(4)
+                .and_then(|width| self.layout.offset.checked_add(width))
+                .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                    offset: self.layout.offset,
+                })?,
+        )
+        .ok_or(LanguageExtensionReopenError::Truncated)?;
+        if ordinal == NONE {
+            return Ok(None);
+        }
+        let ordinal = usize::try_from(ordinal).map_err(|_| {
+            LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            }
+        })?;
+        let offset = self
+            .layout
+            .offset
+            .checked_add(self.layout.ordinal_bytes)
+            .and_then(|offset| {
+                ordinal
+                    .checked_mul(self.layout.fact_bytes)
+                    .and_then(|width| offset.checked_add(width))
+            })
+            .and_then(|offset| offset.checked_add(crate::ClangFacts::WIDTH))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            })?;
+        read_word(self.bytes, offset)
+            .map(Some)
+            .ok_or(LanguageExtensionReopenError::Truncated)
     }
 }
 
@@ -522,7 +568,7 @@ where
                 rows.checked_mul(4)
                     .ok_or(LanguageExtensionEncodeError::LengthOverflow)?
             })
-            .and_then(|value| value.checked_add(facts.checked_mul(kind.fact_bytes())?))
+            .and_then(|value| value.checked_add(facts.checked_mul(kind.schema_fact_bytes(SCHEMA))?))
             .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
     }
     Ok(total)
@@ -640,7 +686,7 @@ where
             };
             let fact_bytes = facts
                 .len()
-                .checked_mul($kind.fact_bytes())
+                .checked_mul($kind.schema_fact_bytes(SCHEMA))
                 .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
             let length = ordinal_bytes
                 .checked_add(fact_bytes)
@@ -667,10 +713,18 @@ where
                 .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
             for (index, fact) in facts.iter().copied().enumerate() {
                 let offset = index
-                    .checked_mul($kind.fact_bytes())
+                    .checked_mul($kind.schema_fact_bytes(SCHEMA))
                     .and_then(|offset| facts_start.checked_add(offset))
                     .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
                 $encode(output, offset, fact)?;
+                if matches!($kind, LanguageExtensionDirectoryKind::Clang) {
+                    put_u32(
+                        output,
+                        offset + crate::ClangFacts::WIDTH,
+                        u32::try_from(index)
+                            .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
+                    )?;
+                }
             }
             payload = payload
                 .checked_add(length)
@@ -723,7 +777,7 @@ pub fn reopen_language_extension_section(
         return Err(LanguageExtensionReopenError::Magic { observed });
     }
     let observed_schema = get_u16(bytes, 4)?;
-    if observed_schema != SCHEMA {
+    if !matches!(observed_schema, SCHEMA_LEGACY | SCHEMA) {
         return Err(LanguageExtensionReopenError::Schema {
             observed: observed_schema,
         });
@@ -759,6 +813,7 @@ pub fn reopen_language_extension_section(
         rows: 0,
         facts: 0,
         ordinal_bytes: 0,
+        fact_bytes: 0,
     };
     let mut layouts = [empty; PLANES];
     let directory_bytes = DIRECTORY
@@ -825,7 +880,11 @@ pub fn reopen_language_extension_section(
                 .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?
         };
         let exact = facts
-            .checked_mul(kind.fact_bytes_wire())
+            .checked_mul(
+                u32::try_from(kind.schema_fact_bytes(observed_schema)).map_err(|_| {
+                    LanguageExtensionReopenError::StructuralOverflow { offset: directory }
+                })?,
+            )
             .and_then(|f| ordinal_bytes.checked_add(f))
             .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
         if length != exact {
@@ -889,7 +948,7 @@ pub fn reopen_language_extension_section(
                 LanguageExtensionReopenError::StructuralOverflow { offset: directory }
             })?;
             let base = fact
-                .checked_mul(kind.fact_bytes())
+                .checked_mul(kind.schema_fact_bytes(observed_schema))
                 .and_then(|fact_offset| ordinal_bytes_usize.checked_add(fact_offset))
                 .and_then(|fact_offset| offset_usize.checked_add(fact_offset))
                 .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
@@ -908,6 +967,7 @@ pub fn reopen_language_extension_section(
             rows,
             facts,
             ordinal_bytes: ordinal_bytes_usize,
+            fact_bytes: kind.schema_fact_bytes(observed_schema),
         };
         let slot = layouts
             .get_mut(index)
