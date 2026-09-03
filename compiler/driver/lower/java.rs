@@ -3,7 +3,7 @@
 //! The projection covers every plane the validated image carries: declaration
 //! facts, the recursive type graph, executable signatures with parameter and
 //! result carrier facts, resolved call occurrences, Javadoc fragments, and
-//! overload sibling lists. Emission is two-pass: every module, package, and
+//! overload sibling lists. Emission is four-pass: every module, package, and
 //! type declaration is committed first, so every nominal, type-child, and
 //! product target is a strictly backward fact ordinal.
 //!
@@ -20,14 +20,14 @@
 use core::{iter::ExactSizeIterator, str};
 
 use compiler_ir::{
-    AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, EntityListId, ForeignKey,
-    ForeignKeyFault, ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence,
-    OccurrenceTarget, ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor,
-    SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason, TypeWidth,
+    DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignKeyFault,
+    ForeignOrigin, JavaFacts, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
+    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, TypeReason, TypeWidth,
 };
 use compiler_languages_java::{
-    BoundImageError, Declaration, DeclarationKind, DocFlavor, ImageError, JavaAuthorityImage,
-    JavaImage, JavaRelease, Reference, SymbolRef, TypeFact, TypeKind, TypeRef,
+    BoundImageError, Declaration, DeclarationExtension, DeclarationKind, DocFlavor, ImageError,
+    JavaAuthorityImage, JavaImage, JavaRelease, Reference, SymbolRef, TypeFact, TypeKind, TypeRef,
 };
 use compiler_vocabulary::{JavaRelease as ProfileRelease, LoweringUnsupported};
 use sha2::Digest;
@@ -259,20 +259,22 @@ pub(crate) fn collect<'source>(
     let mut names = NameIndex::new();
     // Pass one: module, package, and type declarations. Type declarations
     // carry the recursive terminal — a nominal row naming their own ordinal.
-    for declared in image.declarations() {
+    let mut declaration_ordinals = [0_u32; MAX_EMISSION_FACTS];
+    for (declaration_index, declared) in image.declarations().enumerate() {
         let declared =
             declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
-        match declared.kind {
+        let ordinal = match declared.kind {
             DeclarationKind::Class
             | DeclarationKind::Interface
             | DeclarationKind::Record
             | DeclarationKind::Enum
             | DeclarationKind::Annotation => {
-                let ordinal = push_type_root(facts, &declared)?;
+                let ordinal = push_type_root(facts, image, &declared, declaration_index)?;
                 names
                     .record(declared.name.bytes, ordinal)
                     .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
                 push_docs(facts, &names, ordinal, &declared)?;
+                ordinal
             }
             DeclarationKind::Module | DeclarationKind::Package => {
                 push_root(facts, &names, &declared)?
@@ -280,29 +282,35 @@ pub(crate) fn collect<'source>(
             DeclarationKind::Field
             | DeclarationKind::EnumConstant
             | DeclarationKind::Constructor
-            | DeclarationKind::Method => {}
-        }
+            | DeclarationKind::Method => 0,
+        };
+        *declaration_ordinals
+            .get_mut(declaration_index)
+            .ok_or_else(|| terminal(ProjectionFault::IndexCapacity))? = ordinal;
     }
 
     // Pass two: members with projected rows, signature facts, and overloads.
     let mut executables = Executables::new();
     let mut symbols = SymbolIndex::new();
-    for declared in image.declarations() {
+    for (declaration_index, declared) in image.declarations().enumerate() {
         let declared =
             declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
         match declared.kind {
             DeclarationKind::Field | DeclarationKind::EnumConstant => {
-                push_member(facts, image, &names, &declared)?;
+                let ordinal = push_member(facts, image, &names, &declared, declaration_index)?;
+                declaration_ordinals[declaration_index] = ordinal;
             }
             DeclarationKind::Constructor | DeclarationKind::Method => {
-                push_executable(
+                let ordinal = push_executable(
                     facts,
                     image,
                     &names,
                     &mut executables,
                     &mut symbols,
                     &declared,
+                    declaration_index,
                 )?;
+                declaration_ordinals[declaration_index] = ordinal;
             }
             DeclarationKind::Module
             | DeclarationKind::Package
@@ -314,7 +322,37 @@ pub(crate) fn collect<'source>(
         }
     }
 
-    // Pass three: compiler-resolved call occurrences in image order.
+    // Pass three: record extensions now that every component field has an ordinal.
+    for (declaration_index, declared) in image.declarations().enumerate() {
+        let declared =
+            declared.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
+        if declared.kind != DeclarationKind::Record {
+            continue;
+        }
+        let inputs = declaration_extensions(image, declaration_index).map_err(terminal)?;
+        let mut components = [0_u32; MAX_REF_LIST_ELEMENTS];
+        for (slot, component) in inputs.record_components[..inputs.record_count]
+            .iter()
+            .enumerate()
+        {
+            components[slot] = *declaration_ordinals
+                .get(*component)
+                .ok_or_else(|| terminal(ProjectionFault::IndexCapacity))?;
+        }
+        let extension = java_facts(facts, &[], &[], &inputs, &components[..inputs.record_count])
+            .map_err(lane_terminal)?;
+        // Record roots are emitted without an extension in pass one; this
+        // replacement is deliberate because component field ordinals exist
+        // only after pass two, and attach_extension replaces the slot.
+        facts
+            .attach_extension(
+                declaration_ordinals[declaration_index] as usize,
+                EmissionExtension::Java(extension),
+            )
+            .map_err(lane_terminal)?;
+    }
+
+    // Pass four: compiler-resolved call occurrences in image order.
     for reference in image.references() {
         let reference =
             reference.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
@@ -1066,11 +1104,54 @@ fn push_root<'source>(
     facts: &mut FactSet<'source>,
     names: &NameIndex<'source>,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
     let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind));
     let ordinal = push(facts, fact)?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
+}
+
+struct JavaExtensionInputs<'image> {
+    annotations: [compiler_languages_java::Atom<'image>; MAX_REF_LIST_ELEMENTS],
+    annotation_count: usize,
+    record_components: [usize; MAX_REF_LIST_ELEMENTS],
+    record_count: usize,
+}
+
+fn declaration_extensions<'image>(
+    image: JavaImage<'image>,
+    declaration_index: usize,
+) -> Result<JavaExtensionInputs<'image>, ProjectionFault<'image>> {
+    let mut inputs = JavaExtensionInputs {
+        annotations: [compiler_languages_java::Atom { bytes: &[] }; MAX_REF_LIST_ELEMENTS],
+        annotation_count: 0,
+        record_components: [0; MAX_REF_LIST_ELEMENTS],
+        record_count: 0,
+    };
+    for extension in image
+        .declaration_extensions(declaration_index)
+        .map_err(ProjectionFault::Image)?
+    {
+        match extension.map_err(ProjectionFault::Image)? {
+            DeclarationExtension::Throws(_) => {}
+            DeclarationExtension::Annotation(atom) => {
+                *inputs
+                    .annotations
+                    .get_mut(inputs.annotation_count)
+                    .ok_or(ProjectionFault::IndexCapacity)? = atom;
+                inputs.annotation_count += 1;
+            }
+            DeclarationExtension::RecordComponent(index) => {
+                *inputs
+                    .record_components
+                    .get_mut(inputs.record_count)
+                    .ok_or(ProjectionFault::IndexCapacity)? = index;
+                inputs.record_count += 1;
+            }
+        }
+    }
+    Ok(inputs)
 }
 
 /// Pushes one type declaration with the recursive terminal: a nominal row
@@ -1078,13 +1159,24 @@ fn push_root<'source>(
 /// after the qualified name joins the link index.
 fn push_type_root<'source>(
     facts: &mut FactSet<'source>,
+    image: JavaImage<'source>,
     declared: &Declaration<'source>,
+    declaration_index: usize,
 ) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
     let self_ordinal =
         u32::try_from(facts.len()).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
-    let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind))
+    let inputs = declaration_extensions(image, declaration_index).map_err(terminal)?;
+    let extension = if declared.kind == DeclarationKind::Record {
+        None
+    } else {
+        Some(java_facts(facts, &[], &[], &inputs, &[]).map_err(lane_terminal)?)
+    };
+    let mut fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind))
         .typed(nominal_record(self_ordinal));
+    if let Some(extension) = extension {
+        fact = fact.with_extension(EmissionExtension::Java(extension));
+    }
     push(facts, fact)
 }
 
@@ -1094,7 +1186,8 @@ fn push_member<'source>(
     image: JavaImage<'source>,
     names: &NameIndex<'source>,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+    declaration_index: usize,
+) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
     let anchor = declared
         .owner
@@ -1110,13 +1203,15 @@ fn push_member<'source>(
         }
         None => ProjectedType::leaf(unknown_record(TypeReason::Unannotated, None), None),
     };
-    let fact = projected.attach(SemanticFact::new(
-        kind,
-        declared.name.bytes,
-        constructor(kind),
-    ));
+    let inputs = declaration_extensions(image, declaration_index).map_err(terminal)?;
+    let extension = java_facts(facts, &[], &[], &inputs, &[]).map_err(lane_terminal)?;
+    let fact = projected.attach(
+        SemanticFact::new(kind, declared.name.bytes, constructor(kind))
+            .with_extension(EmissionExtension::Java(extension)),
+    );
     let ordinal = push(facts, fact)?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
 }
 
 /// Pushes one constructor or method: its parameter and result carrier facts
@@ -1129,7 +1224,8 @@ fn push_executable<'source>(
     executables: &mut Executables<'source>,
     symbols: &mut SymbolIndex,
     declared: &Declaration<'source>,
-) -> Result<(), JavaCollectError> {
+    declaration_index: usize,
+) -> Result<u32, JavaCollectError> {
     let symbol_reference = declared.symbol.ok_or_else(|| {
         terminal(ProjectionFault::Malformed {
             kind: TypeKind::None,
@@ -1196,6 +1292,32 @@ fn push_executable<'source>(
         }
     }
 
+    let inputs = declaration_extensions(image, declaration_index).map_err(terminal)?;
+    let mut throw_ordinals = [0_u32; MAX_REF_LIST_ELEMENTS];
+    let mut throw_count = 0usize;
+    for extension in image
+        .declaration_extensions(declaration_index)
+        .map_err(|error| terminal(ProjectionFault::Image(error)))?
+    {
+        let DeclarationExtension::Throws(reference) =
+            extension.map_err(|error| terminal(ProjectionFault::Image(error)))?
+        else {
+            continue;
+        };
+        let projected =
+            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(terminal)?;
+        let name = projected.spelling.ok_or_else(|| {
+            terminal(ProjectionFault::Malformed {
+                kind: TypeKind::None,
+            })
+        })?;
+        throw_ordinals[throw_count] = push(
+            facts,
+            projected.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)),
+        )?;
+        throw_count += 1;
+    }
+
     // Function-pointer row: the result-presence flag commits only with a
     // result carrier, matching the javac return type.
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
@@ -1217,7 +1339,14 @@ fn push_executable<'source>(
     let Some(sibling_ordinals) = siblings.get(..sibling_count) else {
         return Err(terminal(ProjectionFault::IndexCapacity));
     };
-    let extension = java_facts(facts, sibling_ordinals).map_err(lane_terminal)?;
+    let extension = java_facts(
+        facts,
+        sibling_ordinals,
+        &throw_ordinals[..throw_count],
+        &inputs,
+        &[],
+    )
+    .map_err(lane_terminal)?;
 
     let parameter_total =
         u32::try_from(parameter_count).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
@@ -1249,7 +1378,8 @@ fn push_executable<'source>(
             ordinal,
         )
         .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
-    push_docs(facts, names, ordinal, declared)
+    push_docs(facts, names, ordinal, declared)?;
+    Ok(ordinal)
 }
 
 /// Builds one Java extension row. Throws, annotations, and record components
@@ -1259,15 +1389,26 @@ fn push_executable<'source>(
 fn java_facts<'source>(
     facts: &mut FactSet<'source>,
     siblings: &[u32],
+    throws: &[u32],
+    inputs: &JavaExtensionInputs<'source>,
+    record_components: &[u32],
 ) -> Result<JavaFacts, FactFault> {
     let overloads = facts.intern_entity_list(siblings)?;
-    let _ = facts.intern_atom_list(&[])?;
-    let _ = facts.intern_type_list(&[])?;
+    let mut atoms = [0_u32; MAX_REF_LIST_ELEMENTS];
+    for (slot, atom) in inputs.annotations[..inputs.annotation_count]
+        .iter()
+        .enumerate()
+    {
+        atoms[slot] = facts.intern_atom(atom.bytes)?;
+    }
+    let annotations = facts.intern_atom_list(&atoms[..inputs.annotation_count])?;
+    let throws = facts.intern_type_list(throws)?;
+    let record_components = facts.intern_entity_list(record_components)?;
     Ok(JavaFacts {
-        throws: TypeListId::new(0),
-        annotations: AtomListId::new(0),
+        throws,
+        annotations,
         overloads,
-        record_components: EntityListId::new(0),
+        record_components,
     })
 }
 
