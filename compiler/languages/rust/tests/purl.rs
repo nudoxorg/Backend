@@ -54,13 +54,19 @@ fn workspace_member_is_analyzed_under_its_declared_edition() {
         .unwrap_or(0);
     let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!("nudox-purl-{nonce}-{sequence}"));
-    assert!(fs::create_dir_all(root.join("src")).is_ok());
+    assert!(fs::create_dir_all(&root).is_ok());
     assert!(fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2015\"\n\n[workspace]\nmembers = [\".\"]\n",
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2015\"\n\n[lib]\npath = \"crate_root.rs\"\n\n[workspace]\nmembers = [\".\"]\n",
     )
     .is_ok());
-    assert!(fs::write(root.join("src/lib.rs"), "pub fn answer() -> u32 { 42 }\n").is_ok());
+    assert!(
+        fs::write(
+            root.join("crate_root.rs"),
+            "pub fn answer() -> u32 { 42 }\n"
+        )
+        .is_ok()
+    );
 
     let Ok(toolchain) = RustToolchain::discover(PathBuf::from("rustc")) else {
         assert!(false, "discover toolchain");
@@ -76,5 +82,9 @@ fn workspace_member_is_analyzed_under_its_declared_edition() {
         return;
     };
     assert!(located.from_workspace());
+    assert_eq!(
+        located.project().source_path.file_name(),
+        Some(std::ffi::OsStr::new("crate_root.rs"))
+    );
     assert!(fs::remove_dir_all(root).is_ok());
 }

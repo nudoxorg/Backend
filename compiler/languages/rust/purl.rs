@@ -94,11 +94,22 @@ impl<'url> RustPackageUrl<'url> {
                         .ok_or_else(|| RustPurlError::InvalidManifestPath {
                             path: package.manifest.clone(),
                         })?;
-                    let project = RustProject::open(&package_root, toolchain, package.edition)
-                        .map_err(|source| RustPurlError::Project {
-                            path: package_root,
-                            source,
-                        })?;
+                    let source_path =
+                        package
+                            .source_path
+                            .ok_or(RustPurlError::MissingPackageField {
+                                field: "lib target",
+                            })?;
+                    let project = RustProject::open_with_source(
+                        &package_root,
+                        source_path,
+                        toolchain,
+                        package.edition,
+                    )
+                    .map_err(|source| RustPurlError::Project {
+                        path: package_root,
+                        source,
+                    })?;
                     return Ok(RustLocatedPackage {
                         project,
                         from_workspace: true,
@@ -129,12 +140,12 @@ impl<'url> RustPackageUrl<'url> {
             });
         };
         let edition = registry_edition(&package_root)?;
-        let project = RustProject::open(&package_root, toolchain, edition).map_err(|source| {
-            RustPurlError::Project {
+        let source_path = registry_source_path(&package_root)?;
+        let project = RustProject::open_with_source(&package_root, source_path, toolchain, edition)
+            .map_err(|source| RustPurlError::Project {
                 path: package_root,
                 source,
-            }
-        })?;
+            })?;
         Ok(RustLocatedPackage {
             project,
             from_workspace: false,
@@ -195,6 +206,7 @@ struct MetadataPackage {
     version: String,
     manifest: PathBuf,
     edition: RustEdition,
+    source_path: Option<PathBuf>,
 }
 
 fn metadata<'url>(
@@ -268,14 +280,69 @@ fn metadata<'url>(
                     }
                 },
             };
+            let source_path = package
+                .get("targets")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|targets| {
+                    targets.iter().find_map(|target| {
+                        let is_lib = target
+                            .get("kind")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|kinds| {
+                                kinds.iter().any(|kind| kind.as_str() == Some("lib"))
+                            });
+                        is_lib
+                            .then(|| target.get("src_path"))
+                            .flatten()
+                            .and_then(serde_json::Value::as_str)
+                            .map(PathBuf::from)
+                    })
+                });
             Ok(MetadataPackage {
                 name: name.to_owned(),
                 version: version.to_owned(),
                 manifest: PathBuf::from(manifest),
                 edition,
+                source_path,
             })
         })
         .collect()
+}
+
+fn registry_source_path<'url>(package_root: &Path) -> Result<PathBuf, RustPurlError<'url>> {
+    let manifest = package_root.join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest).map_err(|source| RustPurlError::ManifestIo {
+        path: manifest.clone(),
+        source,
+    })?;
+    let mut in_lib = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_lib = line == "[lib]";
+            continue;
+        }
+        if !in_lib {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "path" {
+            continue;
+        }
+        let value = value.trim();
+        let Some(path) = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err(RustPurlError::UnknownEdition {
+                spelling: value.to_owned(),
+            });
+        };
+        return Ok(package_root.join(path));
+    }
+    Ok(package_root.join("src/lib.rs"))
 }
 
 fn parse_edition<'url>(spelling: &str) -> Result<RustEdition, RustPurlError<'url>> {
