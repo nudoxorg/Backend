@@ -186,6 +186,14 @@ ingest = "Worker landed the admission law (read_compdb admits only -c + source-s
 task = "planned"
 role = "nudox_luna_implementer"
 card = "L11-corpus (20 projects end-to-end + decoded-IR review + honest perf)"
-card_sha256 = "pending re-hash at dispatch"
+card_sha256 = "1dde9d97a7aa81115725dbd73c6fea7e6b9b697b60f4fb7c756a4aeeee6f8227"
 paths = ["compiler/driver/tests/corpus_harness.rs", ".codex/evidence/capabilities/clang-c-lifecycle/corpus.md"]
 baseline = "post-L8+L10"
+result_commit = "98ca4f24 (worker skeleton) + 0534cc968 (Terra finish: slice fallback, index sealing, typed-wall classification, spot calibration, honest columns)"
+ingest = "Worker delivered the full-lifecycle skeleton (publish gen-1 -> shutdown+reopen -> gen-2 with changed driver TU -> both generations validated) but left index sealing, slice fallback, and spot truthfulness open; Terra finished the harness and classified walls by typed cause. Final corpus: 17/20 rows full end-to-end lifecycle (stb, rxi-map, klib full; miniaudio/vurtun/STC/klib driver rows; 12 slice rows with verbatim full-set wall terminals); yaml-cpp = named index-seal defect; Vulkan-Headers = NoTranslationUnits (header-only); buck2 = typed DriveFailed terminal + real build evidence. Cause preservation (899b6c224) converted six misreported NoSupportedDeclaration walls into exact FactRejection terminals. Peak RSS 253,689,864 / 270,352,384 bytes via /usr/bin/time -l; run twice + no-op green."
+
+[[workers]]
+task = "done"
+role = "nudox_terra_reviewer"
+card = "closure review"
+state = "planned at candidate 0534cc968"
