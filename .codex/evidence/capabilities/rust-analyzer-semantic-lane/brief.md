@@ -130,3 +130,34 @@ libc@0.2.189, hashbrown@0.16.1, smallvec@1.15.2, tinyvec@1.12.0,
 compact_str@0.10.0, either@1.18.0, memchr@2.8.3, nom@7.1.3, winnow@0.7.15,
 toml_edit@0.22.27, http@1.5.0, log@0.4.34, getopts@0.2.24 (edition 2015),
 typed-arena@2.0.2.
+
+## Wave-3 addendum (mandate 2026-09-03): trunk consumption, computed fork, shortcut hunt
+
+Adjudicated trunk facts (Terra, live tree 2026-09-03):
+
+- Computed-type segment: LANDED. `compiler_ir::ComputedType` + `intern_computed`
+  exist in the shared Ir; `TypeScriptFacts` (wire WIDTH 12) carries the only
+  computed cell. Wire `RustFacts::WIDTH` is the compile-time const 16 with all
+  four cells owned; widths are not fragment-self-describing, so adding a Rust
+  computed cell changes decode of every previously published fragment.
+  → R15 is returned as AUTHORITY_FORK: parent must choose the wire law.
+  Until resolved, Rust inferred types stay on the proven anonymous-row/carrier
+  mechanism; no silent live-only minting.
+- Raised geometry (1024 facts): NOT landed. `MAX_EMISSION_FACTS` remains 128;
+  the python lane's ignored six.py test records "trunk capacity decision
+  pending". This lane does not raise shared constants. R17 is trunk-watch.
+- Journal multi-generation: `server-journal` `DurablePublisher`
+  (create/reopen/try_publish, `PublicationFacts.generation`) supports chained
+  generations; CARD-PURL-LIFECYCLE consumes it for R10's second generation.
+- Exact terminals: `compiler_driver::CompileFailure`/`NativeWorkPrimary` and
+  `compiler/application/terminal` are the typed terminals the lane tests
+  assert; no string fallbacks admitted in new lane tests.
+
+Shortcut-hunt inventory (Terra, 2026-09-03, to be consumed by cards):
+O(n·m) doc-line `span_of_text` windows scan (emit_docs, per line);
+O(n²) method-call dedup (`method_calls` projected_span contains check);
+O(rows × occurrences) `owner_of` linear scan; `foreign_rows` dedup cap 64
+(memory-only, correctness preserved); tuples >8 children fold to OracleGap
+(shared MAX_TYPE_CHILDREN bound); type walk depth 16 fold. Each retained
+bound must name its folded reason in closure (R16).
+
