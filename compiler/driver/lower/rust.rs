@@ -2452,6 +2452,7 @@ mod tests {
         collect(
             &project,
             SourceByteLimit::from(65_536),
+            RustFeatureControl::default(),
             &cancelled,
             source.as_bytes(),
             &mut facts,

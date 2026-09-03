@@ -552,6 +552,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                     fields: fields_list,
                     method_set,
                     build_constraints: AtomListId::new(0),
+                    constant_value: AtomListId::new(0),
+                    constant_group: 0,
+                    constant_flags: 0,
                 }),
             )
             .map_err(lane_terminal)?;
@@ -713,6 +716,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                         fields: EntityListId::new(0),
                         method_set: EntityListId::new(0),
                         build_constraints: list,
+                        constant_value: AtomListId::new(0),
+                        constant_group: 0,
+                        constant_flags: 0,
                     }));
                 push(self.facts, fact)?;
             }
@@ -985,6 +991,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             fields: EntityListId::new(0),
             method_set: EntityListId::new(0),
             build_constraints: AtomListId::new(0),
+            constant_value: AtomListId::new(0),
+            constant_group: 0,
+            constant_flags: 0,
         }));
         for ordinal in parameters {
             fact = fact.child(ProductChildRole::FunctionParameter, ordinal);
