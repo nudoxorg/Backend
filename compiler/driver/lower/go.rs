@@ -148,16 +148,6 @@ enum ProjectionFault<'image> {
         )]
         owner: u32,
     },
-    /// A satisfaction edge named an in-package interface no pushed
-    /// declaration declares.
-    SatisfactionUnresolved {
-        /// The unresolved interface spelling.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        target: &'image [u8],
-    },
 }
 
 /// Folds one projection fault into the lane's closed terminal. The shared
@@ -911,21 +901,20 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .copied()
                 .flatten()
                 .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.subject }))?;
-            // Local resolution follows the call-occurrence convention: a
-            // name in the projector's primary package resolves to its pushed
-            // nominal ordinal; every other package routes as a foreign `go`
-            // lineage key that preserves the exact package and interface
-            // name.
-            let local = row.target_package.is_empty() || row.target_package == self.package;
-            let target = if local {
-                let package = self
-                    .image
-                    .declaration(index_of(row.subject))
-                    .map_err(GoCollectError::Image)?
-                    .package;
-                let ordinal = self.lookup(package, row.target).ok_or_else(|| {
-                    terminal(ProjectionFault::SatisfactionUnresolved { target: row.target })
-                })?;
+            // Satisfaction targets are declared in the target package, not
+            // necessarily in the satisfying subject's package. An absent
+            // target package means the subject's declaration package.
+            let subject_package = self
+                .image
+                .declaration(index_of(row.subject))
+                .map_err(GoCollectError::Image)?
+                .package;
+            let target_package = if row.target_package.is_empty() {
+                subject_package
+            } else {
+                row.target_package
+            };
+            let target = if let Some(ordinal) = self.lookup(target_package, row.target) {
                 OccurrenceTarget::Local(EntityId::new(ordinal))
             } else {
                 let package = str::from_utf8(row.target_package)
@@ -2556,6 +2545,40 @@ mod tests {
             packages.extend_from_slice(&files.offset.to_le_bytes());
             packages.extend_from_slice(&files.length.to_le_bytes());
             packages.extend_from_slice(&1_u32.to_le_bytes());
+            if let Some(extra_path) = self
+                .declarations
+                .iter()
+                .map(|declaration| declaration.package)
+                .find(|package| {
+                    let package_end = usize::try_from(package.offset).ok().and_then(|offset| {
+                        usize::try_from(package.length)
+                            .ok()
+                            .and_then(|length| offset.checked_add(length))
+                    });
+                    let import_end = usize::try_from(import_path.offset).ok().and_then(|offset| {
+                        usize::try_from(import_path.length)
+                            .ok()
+                            .and_then(|length| offset.checked_add(length))
+                    });
+                    match (package_end, import_end) {
+                        (Some(package_end), Some(import_end)) => {
+                            self.atom_bytes.get(package.offset as usize..package_end)
+                                != self.atom_bytes.get(import_path.offset as usize..import_end)
+                        }
+                        _ => false,
+                    }
+                })
+            {
+                let extra_name = self.atom_cell(b"Extra");
+                packages.extend_from_slice(&extra_path.offset.to_le_bytes());
+                packages.extend_from_slice(&extra_path.length.to_le_bytes());
+                packages.extend_from_slice(&extra_name.offset.to_le_bytes());
+                packages.extend_from_slice(&extra_name.length.to_le_bytes());
+                packages.extend_from_slice(&files.offset.to_le_bytes());
+                packages.extend_from_slice(&files.length.to_le_bytes());
+                packages.extend_from_slice(&1_u32.to_le_bytes());
+            }
+            let package_count = u32::try_from(packages.len() / 28).map_err(TestError::from)?;
 
             let mut signature_parameters = Vec::new();
             for (owner, row) in self.types.iter().enumerate() {
@@ -2665,7 +2688,7 @@ mod tests {
             image[108..112].copy_from_slice(&counts[7].to_le_bytes());
             image[112..116].copy_from_slice(&counts[8].to_le_bytes());
             image[116..120].copy_from_slice(&0_u32.to_le_bytes());
-            image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+            image[120..124].copy_from_slice(&package_count.to_le_bytes());
             image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
             image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
             let mut digest = Sha256::new();
@@ -3663,6 +3686,36 @@ mod tests {
         let mut facts = FactSet::new();
         if collect(b"package demo\n", &image, &mut facts).is_ok() {
             return Err(TestError::Missing("unresolved satisfaction rejection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn satisfaction_target_resolves_in_declaring_package() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let keeper = fix.declaration(KIND_TYPE, b"Keeper", None);
+        let keeper_type = fix.start_row(ROW_INTERFACE);
+        fix.declarations[keeper].type_root = Some(keeper_type);
+        let subject = fix.declaration(KIND_TYPE, b"Extra", None);
+        fix.declarations[subject].package = fix.atom(b"example.com/demo/extra");
+        fix.satisfaction(subject, b"Keeper", PACKAGE);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("satisfaction occurrence"))??;
+        if occurrence.owner.raw != 1
+            || occurrence.occurrence.target != OccurrenceTarget::Local(EntityId::new(0))
+            || occurrence.occurrence.kind != ReferenceKind::TypeReference
+            || occurrence.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("declaring-package satisfaction target"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact satisfaction occurrences"));
         }
         Ok(())
     }
