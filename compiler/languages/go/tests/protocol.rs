@@ -841,11 +841,17 @@ mod mutation_battery {
 
     const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\x00";
     const HEADER: usize = 136;
-    const MODULE_AT: usize = HEADER;
-    const PACKAGES_AT: usize = MODULE_AT;
-    const DECLS_AT: usize = PACKAGES_AT + 2 * 28;
+    // Frozen body order: declarations, types, methods, type parameters,
+    // members, docs, references, constraints, satisfactions, module,
+    // packages, signature parameters, method sets, children, atoms. Every
+    // plane between types and module is empty, and this fixture carries no
+    // module row (header count 0), so packages open where satisfactions end.
+    const DECLS_AT: usize = HEADER;
     const TYPES_AT: usize = DECLS_AT + 2 * 56;
-    const SIGPARAMS_AT: usize = TYPES_AT + 2 * 52;
+    const METHODS_AT: usize = TYPES_AT + 2 * 52;
+    const MODULE_AT: usize = METHODS_AT;
+    const PACKAGES_AT: usize = MODULE_AT;
+    const SIGPARAMS_AT: usize = PACKAGES_AT + 2 * 28;
     const METHOD_SETS_AT: usize = SIGPARAMS_AT + 28;
     const CHILDREN_AT: usize = METHOD_SETS_AT + 2 * 24;
     const ATOMS_AT: usize = CHILDREN_AT + 8;

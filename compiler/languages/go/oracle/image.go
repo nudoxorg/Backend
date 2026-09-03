@@ -1470,9 +1470,13 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		children = append(children, cellBytes...)
 	}
 
+	// Frozen body order: declarations, types, methods, type parameters,
+	// members, docs, references, constraints, satisfactions, module,
+	// packages, signature parameters, interface method sets, children,
+	// atoms. The Rust reader locates every plane from this exact sequence.
 	bodyParts := [][]byte{
-		module, packages, decls, types, sigParams, methods, params, members,
-		methodSets, docs, refs, cons, sats, children, p.atoms,
+		decls, types, methods, params, members, docs, refs, cons, sats,
+		module, packages, sigParams, methodSets, children, p.atoms,
 	}
 	bodyBytes := 0
 	for _, part := range bodyParts {

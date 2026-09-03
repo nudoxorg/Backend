@@ -15,40 +15,41 @@
 //! module count, the package count, the signature-parameter count, and the
 //! method-set count, with four reserved bytes sealing the envelope.
 //!
-//! Body planes, in order: the single module row (32 B), package rows (28 B),
-//! declarations (56 B rows), type rows (52 B), signature-parameter rows
-//! (28 B), methods (64 B), type parameters (16 B), members — struct fields
-//! and interface method signatures (40 B), interface method-set rows (24 B),
-//! documentation rows (16 B), references (48 B), build constraints (28 B),
-//! satisfaction rows (20 B), pooled type children (8 B), and the shared
-//! UTF-8 atom plane. Every range cell is validated against its plane; the
-//! pooled child plane must tile each type row's declared child run exactly;
-//! member runs must match the type rows that declare them; documentation,
-//! reference, constraint, and satisfaction rows must be canonically ordered;
-//! every reference owner must resolve to a function declaration or a method
-//! row whose file and span contain the call site; every satisfaction subject
-//! must be a named-type declaration. A func type row's parameter count cell
-//! splits its child run into the leading parameters and the trailing
-//! results; every other kind must leave that cell zero.
+//! Body planes, in order: declarations (56 B rows), type rows (52 B),
+//! methods (64 B), type parameters (16 B), members — struct fields and
+//! interface method signatures (40 B), documentation rows (16 B), references
+//! (48 B), build constraints (28 B), satisfaction rows (20 B), the single
+//! module row (32 B), package rows (28 B), signature-parameter rows (28 B),
+//! interface method-set rows (24 B), pooled type children (8 B), and the
+//! shared UTF-8 atom plane. Every range cell is validated against its plane;
+//! the pooled child plane must tile each type row's declared child run
+//! exactly; member runs must match the type rows that declare them;
+//! documentation, reference, constraint, and satisfaction rows must be
+//! canonically ordered; every reference owner must resolve to a function
+//! declaration or a method row whose file and span contain the call site;
+//! every satisfaction subject must be a named-type declaration. A func type
+//! row's parameter count cell splits its child run into the leading
+//! parameters and the trailing results; every other kind must leave that
+//! cell zero.
 //!
 //! Version 5 carries the oracle's complete `Output`. The module row owns the
-//! `go.mod` metadata (path, directory, Go directive, resolved version).
-//! Package rows own each package's import path, package clause, and source
-//! file list, canonically ordered by import path; every declaration must
-//! name one of the package rows' import paths. Signature-parameter rows own
-//! the exact source name and source position of every parameter and result
-//! of every func type row: one row per child, owner-contiguous in type-row
-//! order, ordinals ascending from zero, the plane exactly tiling the func
-//! rows' child runs (empty names are legal — Go permits unnamed parameters
-//! and results — and a file-less position must be fully absent). Method-set
-//! rows own the complete post-embedding method set of every interface type
-//! row — a fact that is not locally derivable when an embedded interface
-//! declares in another package — owner-contiguous in type-row order, names
-//! strictly ascending within one owner, every owner an interface row. The
-//! type row layout is unchanged from version 4: its reserved bytes stay
-//! reserved. Line and column positions stay off the wire: they are
-//! losslessly derivable from the source digest plus the byte offsets already
-//! carried.
+//! `go.mod` metadata (path, directory, Go directive, resolved version) and is
+//! present exactly when the oracle resolved a module. Package rows own each
+//! package's import path, package clause, and source file list, canonically
+//! ordered by import path; every declaration must name one of the package
+//! rows' import paths. Signature-parameter rows own the exact source name
+//! and source position of every parameter and result of every func type row:
+//! one row per child, owner-contiguous in type-row order, ordinals ascending
+//! from zero, the plane exactly tiling the func rows' child runs (empty names
+//! are legal — Go permits unnamed parameters and results — and a file-less
+//! position must be fully absent). Method-set rows own the complete
+//! post-embedding method set of every interface type row — a fact that is
+//! not locally derivable when an embedded interface declares in another
+//! package — owner-contiguous in type-row order, names strictly ascending
+//! within one owner, every owner an interface row. The type row layout is
+//! unchanged from version 4: its reserved bytes stay reserved. Line and
+//! column positions stay off the wire: they are losslessly derivable from
+//! the source digest plus the byte offsets already carried.
 //!
 //! Since version 4, constant declarations own their exact value atom,
 //! const-group identity, and iota flag on the declaration row,
@@ -493,6 +494,7 @@ pub struct GoImage<'image> {
     references_offset: usize,
     constraints_offset: usize,
     satisfactions_offset: usize,
+    module_offset: usize,
     children_offset: usize,
     atom_offset: usize,
     atom_bytes: usize,
@@ -552,20 +554,25 @@ impl<'image> GoImage<'image> {
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
 
-        let packages_offset = HEADER_BYTES + module_count * MODULE_BYTES;
-        let declarations_offset = packages_offset + package_count * PACKAGE_BYTES;
+        // Body planes, in frozen order: declarations, types, methods, type
+        // parameters, members, docs, references, constraints, satisfactions,
+        // module, packages, signature parameters, interface method sets,
+        // pooled children, atoms.
+        let declarations_offset = HEADER_BYTES;
         let types_offset = declarations_offset + declaration_count * DECLARATION_BYTES;
-        let signature_parameters_offset = types_offset + type_count * TYPE_ROW_BYTES;
-        let methods_offset =
-            signature_parameters_offset + signature_parameter_count * SIGNATURE_PARAMETER_BYTES;
+        let methods_offset = types_offset + type_count * TYPE_ROW_BYTES;
         let type_parameters_offset = methods_offset + method_count * METHOD_BYTES;
         let members_offset = type_parameters_offset + type_parameter_count * TYPE_PARAMETER_BYTES;
-        let method_sets_offset = members_offset + member_count * MEMBER_BYTES;
-        let docs_offset = method_sets_offset + method_set_count * METHOD_SET_BYTES;
+        let docs_offset = members_offset + member_count * MEMBER_BYTES;
         let references_offset = docs_offset + doc_count * DOC_BYTES;
         let constraints_offset = references_offset + reference_count * REFERENCE_BYTES;
         let satisfactions_offset = constraints_offset + constraint_count * CONSTRAINT_BYTES;
-        let children_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
+        let module_offset = satisfactions_offset + satisfaction_count * SATISFACTION_BYTES;
+        let packages_offset = module_offset + module_count * MODULE_BYTES;
+        let signature_parameters_offset = packages_offset + package_count * PACKAGE_BYTES;
+        let method_sets_offset =
+            signature_parameters_offset + signature_parameter_count * SIGNATURE_PARAMETER_BYTES;
+        let children_offset = method_sets_offset + method_set_count * METHOD_SET_BYTES;
         let Some(atoms_end) = HEADER_BYTES.checked_add(body_bytes) else {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
@@ -596,18 +603,19 @@ impl<'image> GoImage<'image> {
         // Every fixed plane must sit inside the children plane origin, so no
         // declared count can push a row read past the validated body.
         let chain = [
-            packages_offset,
             declarations_offset,
             types_offset,
-            signature_parameters_offset,
             methods_offset,
             type_parameters_offset,
             members_offset,
-            method_sets_offset,
             docs_offset,
             references_offset,
             constraints_offset,
             satisfactions_offset,
+            module_offset,
+            packages_offset,
+            signature_parameters_offset,
+            method_sets_offset,
         ];
         if chain.iter().any(|offset| *offset > atom_offset) {
             return Err(ImageError::Header(HeaderError::BodyLength {
@@ -632,18 +640,19 @@ impl<'image> GoImage<'image> {
             constraint_count,
             satisfaction_count,
             child_count,
-            packages_offset,
             declarations_offset,
             types_offset,
-            signature_parameters_offset,
             methods_offset,
             type_parameters_offset,
             members_offset,
-            method_sets_offset,
             docs_offset,
             references_offset,
             constraints_offset,
             satisfactions_offset,
+            module_offset,
+            packages_offset,
+            signature_parameters_offset,
+            method_sets_offset,
             children_offset,
             atom_offset,
             atom_bytes,
@@ -1284,7 +1293,7 @@ impl<'image> GoImage<'image> {
         if self.module_count == 0 {
             return Ok(None);
         }
-        let row = self.plane_row(HEADER_BYTES, 0, MODULE_BYTES);
+        let row = self.plane_row(self.module_offset, 0, MODULE_BYTES);
         Ok(Some(ModuleRow {
             path: self.atom("module", 0, u32_at(row, 0), u32_at(row, 4))?,
             directory: self.atom("module", 0, u32_at(row, 8), u32_at(row, 12))?,
@@ -1577,10 +1586,10 @@ impl<'image> GoImage<'image> {
     }
 
     fn validate_module(self) -> Result<(), ImageError> {
-        if let Some(module) = self.module()? {
-            if module.path.is_empty() {
-                return Err(ImageError::ModulePath);
-            }
+        if let Some(module) = self.module()?
+            && module.path.is_empty()
+        {
+            return Err(ImageError::ModulePath);
         }
         Ok(())
     }

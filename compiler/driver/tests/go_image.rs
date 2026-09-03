@@ -81,15 +81,17 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
     Err(TestError::Declaration)
 }
 
-/// Builds one minimal but fully valid format-v5 Go authority image: an
-/// no module row, one package row owning the single `Brew` declaration,
-/// and no other populated plane. The source digest binds the fixture bytes.
+/// Builds one minimal but fully valid format-v5 Go authority image: a single
+/// `Brew` declaration, one package row naming it, and no other populated
+/// plane. The body planes follow the frozen order — declarations first, then
+/// packages right after the empty satisfaction plane; the module row is
+/// absent (header count 0) because the fixture resolves no module. The
+/// source digest binds the fixture bytes.
 fn fixture(source: &[u8]) -> Vec<u8> {
     const HEADER: usize = 136;
-    const MODULE_AT: usize = HEADER;
-    const PACKAGE_AT: usize = MODULE_AT;
-    const DECL_AT: usize = PACKAGE_AT + 28;
-    const ATOMS_AT: usize = DECL_AT + 56;
+    const DECL_AT: usize = HEADER;
+    const PACKAGE_AT: usize = DECL_AT + 56;
+    const ATOMS_AT: usize = PACKAGE_AT + 28;
     const BODY: usize = ATOMS_AT + 8 - HEADER;
     const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\x00";
     const NAME: &[u8] = b"demoBrew";
