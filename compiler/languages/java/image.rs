@@ -8,13 +8,16 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: [u8; 4] = *b"NJAI";
-const VERSION: u16 = 1;
+const V1: u16 = 1;
+const V2: u16 = 2;
 const DIRECTORY_OFFSET: usize = 48;
 const DIRECTORY_ENTRY_BYTES: usize = 16;
-const SECTION_COUNT: usize = 8;
-const HEADER_BYTES: usize = DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * SECTION_COUNT;
+const V1_SECTIONS: usize = 8;
+const V2_SECTIONS: usize = 10;
+const V1_HEADER_BYTES: usize = DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * V1_SECTIONS;
 const ABSENT: u32 = u32::MAX;
-const DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v1\0";
+const V1_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v1\0";
+const V2_DIGEST_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v2\0";
 const MODIFIER_PUBLIC: u32 = 1 << 0;
 const MODIFIER_PROTECTED: u32 = 1 << 1;
 const MODIFIER_PRIVATE: u32 = 1 << 2;
@@ -93,6 +96,10 @@ pub enum ImagePlane {
     Declarations = 7,
     /// Resolved call-reference records.
     References = 8,
+    /// Per-declaration ranges into extension entries.
+    DeclarationExtensions = 9,
+    /// Throws, annotations, and record-component entries.
+    ExtensionEntries = 10,
 }
 
 impl ImagePlane {
@@ -105,7 +112,9 @@ impl ImagePlane {
             4 => Self::Symbols,
             5 => Self::SymbolParameters,
             6 => Self::Declarations,
-            _ => Self::References,
+            7 => Self::References,
+            8 => Self::DeclarationExtensions,
+            _ => Self::ExtensionEntries,
         }
     }
 
@@ -117,6 +126,7 @@ impl ImagePlane {
             Self::TypeChildren | Self::SymbolParameters => 4,
             Self::Declarations => 32,
             Self::References => 20,
+            Self::DeclarationExtensions | Self::ExtensionEntries => 8,
         }
     }
 }
@@ -125,7 +135,9 @@ impl ImagePlane {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JavaImage<'image> {
     bytes: &'image [u8],
-    sections: [Section; SECTION_COUNT],
+    sections: [Section; V2_SECTIONS],
+    section_count: usize,
+    version: u16,
     /// The release passed to the attributed `JavacTask`.
     pub release: JavaRelease,
 }
@@ -133,7 +145,7 @@ pub struct JavaImage<'image> {
 impl<'image> JavaImage<'image> {
     /// Opens one complete image after checking its canonical envelope and all planes.
     pub fn open(bytes: &'image [u8]) -> Result<Self, ImageError> {
-        if bytes.len() < HEADER_BYTES {
+        if bytes.len() < V1_HEADER_BYTES {
             return Err(ImageError::Header(HeaderError::Truncated {
                 actual: bytes.len(),
             }));
@@ -146,11 +158,19 @@ impl<'image> JavaImage<'image> {
             }));
         }
         let version = u16_at(bytes, 4);
-        if version != VERSION {
-            return Err(ImageError::Header(HeaderError::Version { found: version }));
+        let section_count = match version {
+            V1 => V1_SECTIONS,
+            V2 => V2_SECTIONS,
+            _ => return Err(ImageError::Header(HeaderError::Version { found: version })),
+        };
+        let header_size = DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * section_count;
+        if bytes.len() < header_size {
+            return Err(ImageError::Header(HeaderError::Truncated {
+                actual: bytes.len(),
+            }));
         }
         let header_bytes = u16_at(bytes, 6);
-        if usize::from(header_bytes) != HEADER_BYTES {
+        if usize::from(header_bytes) != header_size {
             return Err(ImageError::Header(HeaderError::Length {
                 found: header_bytes,
             }));
@@ -160,36 +180,38 @@ impl<'image> JavaImage<'image> {
             JavaRelease::decode(release_raw).ok_or(ImageError::Header(HeaderError::Release {
                 found: release_raw,
             }))?;
-        let section_count = u16_at(bytes, 10);
-        if usize::from(section_count) != SECTION_COUNT {
+        let declared_section_count = u16_at(bytes, 10);
+        if usize::from(declared_section_count) != section_count {
             return Err(ImageError::Header(HeaderError::SectionCount {
-                found: section_count,
+                found: declared_section_count,
             }));
         }
 
         let body_bytes = usize::try_from(u32_at(bytes, 12)).map_err(|_| {
             ImageError::Header(HeaderError::BodyLength {
                 declared: usize::MAX,
-                actual: bytes.len() - HEADER_BYTES,
+                actual: bytes.len() - header_size,
             })
         })?;
-        let image_bytes = HEADER_BYTES
+        let image_bytes = header_size
             .checked_add(body_bytes)
             .ok_or(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
-                actual: bytes.len() - HEADER_BYTES,
+                actual: bytes.len() - header_size,
             }))?;
         if image_bytes != bytes.len() {
             return Err(ImageError::Header(HeaderError::BodyLength {
                 declared: body_bytes,
-                actual: bytes.len() - HEADER_BYTES,
+                actual: bytes.len() - header_size,
             }));
         }
 
-        let sections = read_directory(bytes)?;
+        let sections = read_directory(bytes, section_count, header_size)?;
         let image = Self {
             bytes,
             sections,
+            section_count,
+            version,
             release,
         };
         image.validate_digest()?;
@@ -248,6 +270,27 @@ impl<'image> JavaImage<'image> {
         }
     }
 
+    /// Returns the borrowed extension cursor for one declaration ordinal.
+    pub fn declaration_extensions(
+        self,
+        ordinal: usize,
+    ) -> Result<ExtensionIter<'image>, ImageError> {
+        if self.version == V1 {
+            return Ok(ExtensionIter {
+                image: self,
+                next: 0,
+                end: 0,
+            });
+        }
+        let ordinal = row_index(
+            ordinal,
+            ImagePlane::Declarations,
+            self.section(ImagePlane::Declarations).count,
+        )? as usize;
+        let row = self.row(ImagePlane::DeclarationExtensions, ordinal);
+        self.extension_range(u32_at(row, 0) as usize, u32_at(row, 4) as usize)
+    }
+
     /// Resolves one type coordinate into its borrowed type fact.
     pub fn type_fact(self, reference: TypeRef) -> Result<TypeFact<'image>, ImageError> {
         self.type_at(reference.0)
@@ -260,10 +303,15 @@ impl<'image> JavaImage<'image> {
 
     fn validate_digest(self) -> Result<(), ImageError> {
         let mut digest = Sha256::new();
-        digest.update(DIGEST_DOMAIN);
+        digest.update(if self.version == V1 {
+            V1_DIGEST_DOMAIN
+        } else {
+            V2_DIGEST_DOMAIN
+        });
         digest.update(&self.bytes[..16]);
-        digest.update(&self.bytes[DIRECTORY_OFFSET..HEADER_BYTES]);
-        digest.update(&self.bytes[HEADER_BYTES..]);
+        let header_bytes = self.header_bytes();
+        digest.update(&self.bytes[DIRECTORY_OFFSET..header_bytes]);
+        digest.update(&self.bytes[header_bytes..]);
         if digest.finalize().as_slice() != &self.bytes[16..DIRECTORY_OFFSET] {
             return Err(ImageError::Digest);
         }
@@ -275,7 +323,11 @@ impl<'image> JavaImage<'image> {
         self.validate_types()?;
         self.validate_symbols()?;
         self.validate_declarations()?;
-        self.validate_references()
+        self.validate_references()?;
+        if self.version == V2 {
+            self.validate_extensions()?;
+        }
+        Ok(())
     }
 
     fn validate_atoms(self) -> Result<(), ImageError> {
@@ -365,8 +417,84 @@ impl<'image> JavaImage<'image> {
         Ok(())
     }
 
+    fn validate_extensions(self) -> Result<(), ImageError> {
+        let mut previous_end = 0;
+        for index in 0..self.section(ImagePlane::DeclarationExtensions).count {
+            let row = self.row(ImagePlane::DeclarationExtensions, index);
+            let start = u32_at(row, 0) as usize;
+            let count = u32_at(row, 4) as usize;
+            if (count == 0 && start != 0) || (count != 0 && start < previous_end) {
+                return Err(ImageError::ChildRange {
+                    plane: ImagePlane::ExtensionEntries,
+                    start,
+                    count,
+                    upper_bound: self.section(ImagePlane::ExtensionEntries).count,
+                });
+            }
+            for entry in self.extension_range(start, count)? {
+                let entry = entry?;
+                match entry {
+                    DeclarationExtension::Throws(reference) => {
+                        self.type_at(reference.0)?;
+                    }
+                    DeclarationExtension::Annotation(_) => {}
+                    DeclarationExtension::RecordComponent(index) => {
+                        let declaration_index = coordinate(
+                            index as u32,
+                            ImagePlane::Declarations,
+                            self.section(ImagePlane::Declarations).count,
+                        )?;
+                        let declaration = Declaration::decode(
+                            self,
+                            self.row(ImagePlane::Declarations, declaration_index),
+                        )?;
+                        if !matches!(
+                            declaration.kind,
+                            DeclarationKind::Field | DeclarationKind::EnumConstant
+                        ) {
+                            return Err(ImageError::RecordComponentKind { index });
+                        }
+                    }
+                }
+            }
+            previous_end = start + count;
+        }
+        Ok(())
+    }
+
+    fn extension_range(
+        self,
+        start: usize,
+        count: usize,
+    ) -> Result<ExtensionIter<'image>, ImageError> {
+        let upper_bound = self.section(ImagePlane::ExtensionEntries).count;
+        let end = start.checked_add(count).ok_or(ImageError::ChildRange {
+            plane: ImagePlane::ExtensionEntries,
+            start,
+            count,
+            upper_bound,
+        })?;
+        if end > upper_bound {
+            return Err(ImageError::ChildRange {
+                plane: ImagePlane::ExtensionEntries,
+                start,
+                count,
+                upper_bound,
+            });
+        }
+        Ok(ExtensionIter {
+            image: self,
+            next: start,
+            end,
+        })
+    }
+
     fn section(self, plane: ImagePlane) -> Section {
         self.sections[plane as usize - 1]
+    }
+
+    fn header_bytes(self) -> usize {
+        DIRECTORY_OFFSET + DIRECTORY_ENTRY_BYTES * self.section_count
     }
 
     fn row(self, plane: ImagePlane, index: usize) -> &'image [u8] {
@@ -694,6 +822,17 @@ pub struct Declaration<'image> {
     pub semantic_type: Option<TypeRef>,
 }
 
+/// One typed fact attached to a declaration in a v2 image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeclarationExtension<'image> {
+    /// A declared exception type coordinate.
+    Throws(TypeRef),
+    /// An annotation's exact javac spelling.
+    Annotation(Atom<'image>),
+    /// The declaration ordinal of a record component field.
+    RecordComponent(usize),
+}
+
 /// A resolved method-invocation edge with Javac's UTF-16 source coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Reference<'image> {
@@ -786,13 +925,19 @@ pub enum ImageError {
         /// The encoded modifier bitset that contains an unrecognized bit.
         found: u32,
     },
+    /// A record-component entry points at a non-field declaration.
+    #[error("record component declaration {index} is not a field or enum constant")]
+    RecordComponentKind { index: usize },
+    /// Extension entry reserved bytes are non-zero.
+    #[error("extension entry reserved bytes are non-zero")]
+    ExtensionReserved,
 }
 
 /// A closed violation of the fixed Java authority image header.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum HeaderError {
     /// The complete fixed header is unavailable.
-    #[error("truncated header: found {actual} bytes, need at least {HEADER_BYTES}")]
+    #[error("truncated header: found {actual} bytes, need at least {V1_HEADER_BYTES}")]
     Truncated {
         /// The bytes that were available to parse.
         actual: usize,
@@ -1024,6 +1169,49 @@ pub struct DeclarationIter<'image> {
     next: usize,
 }
 
+/// An exact-size borrowed cursor over one declaration's v2 extension range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExtensionIter<'image> {
+    image: JavaImage<'image>,
+    next: usize,
+    end: usize,
+}
+
+impl<'image> Iterator for ExtensionIter<'image> {
+    type Item = Result<DeclarationExtension<'image>, ImageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == self.end {
+            return None;
+        }
+        let row = self.image.row(ImagePlane::ExtensionEntries, self.next);
+        self.next += 1;
+        if row[1..4] != [0; 3] {
+            return Some(Err(ImageError::ExtensionReserved));
+        }
+        Some(match row[0] {
+            1 => Ok(DeclarationExtension::Throws(TypeRef(u32_at(row, 4)))),
+            2 => self
+                .image
+                .atom(u32_at(row, 4))
+                .map(DeclarationExtension::Annotation),
+            3 => Ok(DeclarationExtension::RecordComponent(
+                u32_at(row, 4) as usize
+            )),
+            found => Err(ImageError::Tag {
+                plane: ImagePlane::ExtensionEntries,
+                found,
+            }),
+        })
+    }
+}
+
+impl ExactSizeIterator for ExtensionIter<'_> {
+    fn len(&self) -> usize {
+        self.end - self.next
+    }
+}
+
 impl<'image> Iterator for DeclarationIter<'image> {
     type Item = Result<Declaration<'image>, ImageError>;
 
@@ -1213,13 +1401,17 @@ impl<'image> JavaImage<'image> {
     }
 }
 
-fn read_directory(bytes: &[u8]) -> Result<[Section; SECTION_COUNT], ImageError> {
+fn read_directory(
+    bytes: &[u8],
+    section_count: usize,
+    header_bytes: usize,
+) -> Result<[Section; V2_SECTIONS], ImageError> {
     let mut sections = [Section {
         offset: 0,
         count: 0,
-    }; SECTION_COUNT];
-    let mut expected_offset = HEADER_BYTES;
-    for (index, section) in sections.iter_mut().enumerate() {
+    }; V2_SECTIONS];
+    let mut expected_offset = header_bytes;
+    for (index, section) in sections.iter_mut().take(section_count).enumerate() {
         let plane = ImagePlane::from_directory_index(index);
         let entry = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
         let tag = u16_at(bytes, entry);
@@ -1318,7 +1510,7 @@ fn read_directory(bytes: &[u8]) -> Result<[Section; SECTION_COUNT], ImageError> 
     }
     if expected_offset != bytes.len() {
         return Err(ImageError::Section {
-            plane: ImagePlane::References,
+            plane: ImagePlane::from_directory_index(section_count.saturating_sub(1)),
             cause: SectionError::Range {
                 offset: expected_offset,
                 length: 0,
