@@ -59,6 +59,55 @@ or approve image-only retention for v5. Interim: image carries all facts
 (M1); projection keeps today's honest image-only classification; no
 silent drops beyond the already-documented ones.
 
+RESOLUTION (parent mandate, landed W7 362483814): GoFacts grows
+`constant_value: AtomListId`, `constant_group: i64`, `constant_flags: u32`;
+the Go extension wire row grows 28 -> 44 bytes. Remaining: projection
+wiring in `value()` (card W8); `constant_flags` bit 0 is the iota flag,
+`constant_value` is the one-atom exact `ExactString` list, `constant_group`
+carries the image's group id verbatim. Module/package rows stay image-only
+(brief law 2 carries them; the lane owns no package entity — documented
+in `docs()`).
+
+## R4 — Trunk-caused stale reds classification (informs M10)
+
+Canonical tip 309acc8f1 carries test debts outside the go lane:
+1. canonical's own `lower/rust.rs` cfg(test) module does not COMPILE on
+   canonical (missing imports, 5-arg collect call vs 6-arg signature,
+   lifetime elision) — the go branch's remap (43a079741 + daff31f62) is a
+   necessary crate-target repair, retained.
+2. java capacity / csharp bound / shared lower/tests.rs bounded-lane reds
+   are trunk-caused mechanical staleness: f99c1ccf2 (cause-retention)
+   changed the capacity terminal shape; c8a24c743 (geometry 1024) raised
+   output sizes past a fixed 64 KiB test buffer; the EmptyPath occurrence
+   validation rejects the shared test's empty-path fixture. Card W9.
+3. Six rust runtime reds are rust-lane semantic expectations (self
+   receiver, recursive nominal, macro entity, trait link, variant
+   constructor, capacity terminal). Repairing them from the go lane would
+   require guessing rust semantics — the exact weakening M10's falsifier
+   forbids. Inherited; repro commands in the closure receipt.
+
+## R5 — Silent oracle-test skips (informs M13)
+
+compiler/languages/go/tests/protocol.rs lines 245, 459, 649: the three
+oracle e2e tests print "skipping Go ... unavailable" and `return Ok(())`
+when the toolchain cannot spawn. On this host (`go` not on PATH) they
+passed as no-ops; with COMPILER_GO_COMPILER=/Users/mileswirht/nudox-tools/go/bin/go
+they execute real work and pass (suite 2.72s vs 1.18s skipped). The brief
+mandates the typed-unavailable failure mode; the python lane fails typed.
+W13 replaces the skips with typed failures; gates export COMPILER_GO_COMPILER.
+
+## R6 — Extension test decoder drift (informs W9)
+
+The go cfg(test) `go_extension` helper decodes Go extension rows at the
+pre-W7 28-byte width; the landed wire is 44 bytes. `field_children`
+hand-decodes the type-fact payload with the schema-1 layout; the trunk
+landed the schema-2 computed segment (declared+computed counts at
+offsets 0/4, records, then the pooled child table). Seven projection
+tests read garbage and fail Missing(...). The calibrated decoder approach
+(one typed helper decoding the documented schema-2 layout, used by all
+tests) is the W3c precedent; card W9 completes it.
+
+
 ## R4 — Module proxy protocol (informs M8)
 
 GOPROXY protocol (proxy.golang.org live-checked: HTTP 200 on

@@ -46,8 +46,13 @@ Local. | Green; today this faults OrphanTarget (reproduce first). | RED | W3
 Exact constant values, const-group identity, iota, module metadata, and
 package rows are projectable into the fragment lane or explicitly escalated.
 | Weakened: silently dropped at projection with no lane cell and no fork.
-| Evidence: Sol fork decision recorded in journal + index; projection
-tests match the decided host. | AUTHORITY_FORK (open) | Terra
+| Evidence: Sol fork RESOLVED per parent mandate (R3): constants host in
+the `GoFacts` extension row (W7 landed, 44-byte row: constant_value atom
+list, constant_group i64, constant_flags); module/package rows stay
+image-only with documented justification. Falsifier: decoded extension row
+of a projected const fact carries the exact value atom, group id, and
+iota flag; the former image-only pin flips. | State: PARTIAL — cells and
+wire landed (W7); projection wiring RED, owned by W8. | W7 -> W8
 
 ## M7 Struct rendering
 Go structs/interfaces/functions render through compiler/ir render displays.
@@ -85,11 +90,16 @@ in evidence dir; integration test codifies the pipeline on a pinned subset.
 stale foreign tests or weakening assertions instead of mapping moved APIs.
 | Falsifier: full crate test target green with no `#[ignore]`, no deleted
 test, and every repaired assertion still names its law. | State: PARTIAL —
-W0 checkpoint 6ecb63ae7 (branch go-fidelity/w0-repair) resolved all
-owned-region compile errors and migrated the go fixture to v5 (9/19 go
-tests green); 31 sibling runtime reds and 10 go reds (re-owned as W3 R0)
-remain; the full-crate gate is required green at closure on the trunk.
-| RED | W0 -> W3 R0 -> closure gate
+the go branch carries the crate-target compile repair (rust cfg(test)
+remap 43a079741 + daff31f62; canonical tip's rust test module does not
+compile on canonical itself). Remaining reds classified Terra-side:
+(a) 8 go cfg(test) stale vs trunk schema-2 wire / 44-byte GoFacts row /
+cause-retention terminals — W9; (b) java capacity, csharp bound buffer,
+shared lower/tests.rs EmptyPath fixture — trunk-caused mechanical, W9;
+(c) 6 rust runtime reds (receiver/nominal/macro/trait/variant/capacity
+expectations) — rust-lane semantics, inherited debt, exact repro
+commands retained in the closure receipt, NOT go-lane scope. | RED |
+W9 -> closure gate
 
 ## M11 Position non-carriage (brief law 8)
 The v5 image carries no line/column positions when they are losslessly
@@ -110,3 +120,20 @@ the digest of source A; collect() invoked with source B of identical
 length → exact `SourceBinding` fault retaining both operands, before any
 projection work; no projection output derives from B's bytes. | Test
 green in lower/go.rs cfg(test). | RED | W3
+
+## M13 No silent test skips on the oracle boundary
+Go oracle e2e tests fail typed when the toolchain is absent; they never
+return `Ok(())` after printing a skip notice. | Weakened: skip-on-unavailable
+masks a broken oracle path as green (observed live: the three e2e tests
+passed as no-ops on this host until COMPILER_GO_COMPILER was set).
+| Falsifier: with a toolchain path that cannot spawn, the test returns the
+typed toolchain error, never Ok; with COMPILER_GO_COMPILER set, every e2e
+test executes real oracle work. | RED | W13
+
+## M14 Projection fault operands survive the terminal
+Projection faults retain their exact operands at the collect boundary. |
+Weakened: `terminal()`/`lane_terminal()` fold every ProjectionFault into
+`NoSupportedDeclaration` with `let _ = fault;`. | Falsifier: per fault
+class, either an existing typed CompileFailure arm carries the operands or
+the class is proven unreachable behind the reader's validated planes; no
+silent erasure remains. | RED | W13 (with Terra fork assessment)

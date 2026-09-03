@@ -59,6 +59,43 @@ session = "ses_f9a941a13ffevomeW1A0HKjnl8"
 packet_commit = "d8f289b2b"
 outcome = "F1-F3 blockers (W0 go-fixture v4 red, baseline drift, stale scope), F4-F8 minor, Q1-Q2 questions; packet repaired at re-freeze before dispatch"
 
+[[workers]]
+task = "W3b-calibration"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "isolated worktree .local/worktrees/go-lane (branch go-fidelity/w3-projection); integrated by Terra"
+paths = ["compiler/driver/lower/go.rs (cfg(test) decoders + anonymous anchor)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "a4d9a7f4a (cherry series a9b6e3f8e..a4d9a7f4a -> 9098f0e20..c5a1f2220)"
+retention = "integrated"
+note = "R1-R4 landed on go-fidelity/integration via cherry-pick; the crate-target compile remap half (43a079741) repaired canonical's non-compiling rust cfg(test) module and is retained intentionally (see R4)"
+
+[[workers]]
+task = "W3c-interim"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "isolated worktree .local/worktrees/go-lane (branch go-fidelity/w3-projection)"
+paths = ["compiler/driver/lower/go.rs"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "d989683a4 (v5 plane projection, package-keyed resolution, calibrated decoders — interim; 8 stale reds remained)"
+retention = "integrated"
+
+[[workers]]
+task = "W7-constants-cell"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "isolated worktree .local/worktrees/go-ir (branch go-fidelity/w7-constants-cell)"
+paths = ["compiler/ir/semantic.rs", "compiler/ir/semantic_extension_section.rs"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "2742571a3 (landed as 362483814); Terra mechanical constructor completion daff31f62"
+retention = "integrated"
+
 [[reviews]]
 boundary = "first-candidate"
 role = "reviewer"
