@@ -636,6 +636,7 @@ pub fn encode_language_extension_section(
         extensions.python,
         extensions.java,
         extensions.clang,
+        &[],
         output,
     )
 }
@@ -644,6 +645,14 @@ pub fn encode_language_extension_section(
 /// storage, from seven borrowed planes.
 pub fn encode_fragment_extension_section(
     input: ExtensionSectionInput<'_>,
+    output: &mut [u8],
+) -> Result<usize, LanguageExtensionEncodeError> {
+    encode_fragment_extension_section_with_identity_lists(input, &[], output)
+}
+
+pub(crate) fn encode_fragment_extension_section_with_identity_lists(
+    input: ExtensionSectionInput<'_>,
+    identity_lists: &[[u8; 16]],
     output: &mut [u8],
 ) -> Result<usize, LanguageExtensionEncodeError> {
     encode_section(
@@ -655,6 +664,7 @@ pub fn encode_fragment_extension_section(
         input.python,
         input.java,
         input.clang,
+        identity_lists,
         output,
     )
 }
@@ -672,6 +682,7 @@ fn encode_section<Ts, Cs, Go, Ru, Py, Ja, Cl>(
     python: Py,
     java: Ja,
     clang: Cl,
+    identity_lists: &[[u8; 16]],
     output: &mut [u8],
 ) -> Result<usize, LanguageExtensionEncodeError>
 where
@@ -771,7 +782,13 @@ where
                         u32::try_from(index)
                             .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
                     )?;
-                    put_u32(output, offset + crate::ClangFacts::WIDTH + 4, NONE)?;
+                    put_u32(
+                        output,
+                        offset + crate::ClangFacts::WIDTH + 4,
+                        identity_lists
+                            .get(index)
+                            .map_or(NONE, |_| u32::try_from(index).unwrap_or(NONE)),
+                    )?;
                 }
             }
             payload = payload

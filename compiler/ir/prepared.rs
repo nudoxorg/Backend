@@ -13,7 +13,8 @@ use crate::{
     docs_facts::DocumentationLane,
     extension_pools::ExtensionPoolsLane,
     semantic_extension_section::{
-        ExtensionSectionInput, encode_fragment_extension_section, fragment_extension_section_len,
+        ExtensionSectionInput, encode_fragment_extension_section_with_identity_lists,
+        fragment_extension_section_len,
     },
     wire::{
         ATOM_RECORD_BYTES, ByteLength, ByteOffset, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES,
@@ -485,8 +486,12 @@ impl<'facts> PreparedFragment<'facts> {
                 extension_layout,
             );
             let section = &mut written[extension_layout.range()];
-            encode_fragment_extension_section(*input, section)
-                .map_err(|fault| WriteError::ExtensionSection { fault })?;
+            encode_fragment_extension_section_with_identity_lists(
+                *input,
+                self.pools.map_or(&[][..], |lane| lane.identity_lists),
+                section,
+            )
+            .map_err(|fault| WriteError::ExtensionSection { fault })?;
             ordinal += 1;
         }
         if let (Some(lane), Some(pool_layout)) = (self.pools, self.layout.extension_pools) {

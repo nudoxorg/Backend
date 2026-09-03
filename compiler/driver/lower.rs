@@ -1722,6 +1722,7 @@ pub(super) fn admit<'source, 'output>(
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],
         type_lists: &pooled_type_lists[..facts.type_list_len],
         entity_lists: &pooled_entity_lists[..facts.entity_list_len],
+        identity_lists: &[],
     };
 
     let extension_section = (any_extension).then(|| ExtensionSectionInput {

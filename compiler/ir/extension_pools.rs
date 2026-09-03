@@ -41,6 +41,8 @@ pub struct ExtensionPoolsLane<'bytes> {
     pub type_lists: &'bytes [ExtensionRefList<'bytes>],
     /// Pooled entity-reference lists.
     pub entity_lists: &'bytes [ExtensionRefList<'bytes>],
+    /// Pooled foreign declaration identities, one fixed-width cell per entry.
+    pub identity_lists: &'bytes [[u8; 16]],
 }
 
 /// Exact pooled-lane rejection retaining the offending ordinal and operand.
@@ -136,6 +138,7 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
                 length += 4 + 4 * list.elements.len();
             }
         }
+        length += 4 + 16 * self.identity_lists.len();
         length
     }
 
@@ -169,6 +172,15 @@ impl<'bytes> ExtensionPoolsLane<'bytes> {
                     cursor = write_u32(payload, cursor, *raw);
                 }
             }
+        }
+        cursor = write_u32(
+            payload,
+            cursor,
+            u32::try_from(self.identity_lists.len()).unwrap_or(u32::MAX),
+        );
+        for identity in self.identity_lists {
+            payload[cursor..cursor + 16].copy_from_slice(identity);
+            cursor += 16;
         }
     }
 }
@@ -227,6 +239,7 @@ pub struct ReopenedExtensionPools<'payload> {
     atom_lists: (usize, u32),
     type_lists: (usize, u32),
     entity_lists: (usize, u32),
+    identity_lists: (usize, u32),
 }
 
 impl<'payload> ReopenedExtensionPools<'payload> {
@@ -291,6 +304,29 @@ impl<'payload> ReopenedExtensionPools<'payload> {
             .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
         Ok(DecodedRefList { words })
     }
+
+    /// Returns one pooled foreign declaration identity by ordinal.
+    pub fn identity_list(&self, ordinal: u32) -> Result<&'payload [u8; 16], ExtensionPoolFault> {
+        if ordinal >= self.identity_lists.1 {
+            return Err(ExtensionPoolFault::Truncated { needed: usize::MAX });
+        }
+        let offset = self
+            .identity_lists
+            .0
+            .checked_add(
+                usize::try_from(ordinal)
+                    .map_err(|_| ExtensionPoolFault::Truncated { needed: usize::MAX })?
+                    .checked_mul(16)
+                    .ok_or(ExtensionPoolFault::Truncated { needed: usize::MAX })?,
+            )
+            .ok_or(ExtensionPoolFault::Truncated { needed: usize::MAX })?;
+        self.bytes
+            .get(offset..offset + 16)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(ExtensionPoolFault::Truncated {
+                needed: offset + 16,
+            })
+    }
 }
 
 /// Validates one pooled-lane payload against the carrying fragment's lane
@@ -354,6 +390,16 @@ pub(crate) fn validate_extension_pool_payload(
             cursor += 4 + 4 * len;
         }
     }
+    let identity_count =
+        read_u32(payload, cursor).map_err(|_| ExtensionPoolFault::Truncated { needed: cursor })?;
+    cursor += 4;
+    let identity_bytes = usize::try_from(identity_count)
+        .ok()
+        .and_then(|count| count.checked_mul(16))
+        .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
+    cursor = cursor
+        .checked_add(identity_bytes)
+        .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
     if cursor != payload.len() {
         return Err(ExtensionPoolFault::TrailingBytes);
     }
