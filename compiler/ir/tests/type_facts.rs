@@ -14,6 +14,7 @@ use compiler_ir_vocabulary::{
 use compiler_vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
+use core::num::ParseIntError;
 
 #[derive(Debug, Error)]
 enum TestFailure {
@@ -25,6 +26,8 @@ enum TestFailure {
     Write(#[from] WriteError),
     #[error("type-fact admission failed: {0:?}")]
     Admission(TypeFactFault),
+    #[error(transparent)]
+    Fixture(#[from] ParseIntError),
 }
 
 fn source() -> SourceIdentity {
@@ -117,6 +120,12 @@ fn type_fact_records_round_trip_through_borrowing_cursor() -> Result<(), TestFai
         children: &[],
     };
     let bytes = write(&lane)?;
+    const SCHEMA_ONE_FIXTURE_HEX: &str = "4e584952010007005f01000001000100010000007c0000000c00000002000100010000008800000008000000030001000100000090000000080000000400010006000000980000000600000005000100010000009e000000240000000600010001000000c2000000440000000900010059000000060100005900000000000000000000000000000000000000000000000000000006000000656e74697479110000000ed17c05fdfd1061b3c018ed85341054eb81923049ece75cecdc6ec1655bea2c0003010011e60d30e5e9ae1517ed90faf4701f9b3a80e9b8bea7e09e6fd577c20e5b23dc0f2f126c609c6b82f2fd9500d043920c1da1436695fd5dec0626561b1fb83c9503000000000000000000000000000000000000000000000000000000000000000a0000000000000000000001000000000000000000000000000000000c00000000000000000101000000540000000000000000000000000000";
+    let fixture = (0..SCHEMA_ONE_FIXTURE_HEX.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&SCHEMA_ONE_FIXTURE_HEX[at..at + 2], 16))
+        .collect::<Result<Vec<_>, ParseIntError>>()?;
+    assert_eq!(bytes, fixture);
     let view = FragmentView::validate(&bytes)?;
     let mut cursor =
         view.type_facts()
