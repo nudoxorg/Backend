@@ -308,6 +308,44 @@ fn template_literal_mapped_and_conditional_records_commit_their_tags() {
         SemanticTypeTag::TemplateLiteral
     );
     assert_eq!(fact(&v, named(&v, b"Branch").0).record.children.length, 4);
+    let lit_owner = named(&v, b"Lit").0;
+    let branch_owner = named(&v, b"Branch").0;
+    assert!(facts(&v).iter().any(|f| {
+        f.owner.raw == lit_owner
+            && f.record.tag == SemanticTypeTag::TemplateLiteral
+            && f.record.children.length == 1
+    }));
+    assert!(facts(&v).iter().any(|f| {
+        f.owner.raw == branch_owner
+            && f.record.tag == SemanticTypeTag::Conditional
+            && f.record.children.length == 4
+    }));
+}
+
+#[test]
+fn decoded_computed_records_retain_mapped_modifiers_and_literal_bases() {
+    let source = b"export type M={ readonly [K in string]?: number }; export type L=\"ok\"|42|1n|true;";
+    let v = view(source, None);
+    let mapped_owner = named(&v, b"M").0;
+    let mapped = facts(&v)
+        .into_iter()
+        .find(|f| f.owner.raw == mapped_owner && f.record.tag == SemanticTypeTag::Mapped)
+        .unwrap();
+    assert_eq!(mapped.record.children.length, 2);
+    assert_eq!(mapped.record.payload0, 0);
+    assert_eq!(mapped.record.payload1, 0);
+    let bases: Vec<_> = facts(&v)
+        .into_iter()
+        .filter(|f| {
+            f.record.tag == SemanticTypeTag::Primitive
+                && f.record.payload0 == u32::from(PrimitiveShape::Builtin)
+                && f.record.text.is_some()
+        })
+        .map(|f| f.record.payload1)
+        .collect();
+    let mut sorted = bases;
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![0, 1, 2, 3]);
 }
 #[test]
 fn anonymous_object_literals_commit_named_member_children() {

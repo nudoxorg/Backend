@@ -14,7 +14,7 @@ use compiler_ir::{
 };
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
+    Semantic, Span, SymbolFlags, SymbolId, TemplatePart, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -957,7 +957,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
     }
 
-    /// The honest backlog record for a proven-but-unrepresented construct:
+    /// The honest `TypeReason` record for a proven-but-unrepresented construct:
     /// unknown with [`TypeReason::NoIrRepresentation`] and the exact spelling.
     fn unrepresented(&self, span: Span) -> TypeCells<'source> {
         let mut cells = TypeCells::unknown(TypeReason::NoIrRepresentation);
@@ -986,6 +986,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
         let span = Span::new(start, end);
         let next_depth = depth.saturating_add(1);
+        if let Some(cells) = self.literal_cells(span) {
+            return Ok(TypeOutcome::Cells(cells));
+        }
         let first = self
             .node_index
             .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
@@ -1028,6 +1031,25 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         self.child_target(member_span.start, member_span.end, next_depth)?;
                     cells.push_child(target, None, 0)?;
                 }
+                return Ok(TypeOutcome::Cells(cells));
+            }
+            if let Some(template) = kind.as_ts_template_literal_type() {
+                let full = self.slice_span(span).unwrap_or(&[]);
+                let inner = full
+                    .strip_prefix(b"`")
+                    .and_then(|bytes| bytes.strip_suffix(b"`"))
+                    .unwrap_or(full);
+                let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
+                for substitution in template.types.iter() {
+                    let substitution_span = substitution.span();
+                    let target = self.child_target(
+                        substitution_span.start,
+                        substitution_span.end,
+                        next_depth,
+                    )?;
+                    cells.push_child(target, None, 0)?;
+                }
+                let _ = inner;
                 return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(intersection) = kind.as_ts_intersection_type() {
@@ -1186,7 +1208,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 // Genuinely unresolvable names stay honestly external; a
                 // checker-resolved foreign module type is known and named
                 // but has no foreign-nominal row form in the closed lattice,
-                // so its exact spelling backs the backlog reason instead.
+                // so its exact spelling backs the `TypeReason` instead.
                 let reason = if self.checker_foreign_resolved(name_span) {
                     TypeReason::NoIrRepresentation
                 } else {
@@ -1268,14 +1290,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     SemanticTypeTag::SelfType,
                 )));
             }
-            if kind.as_ts_template_literal_type().is_some() {
-                // The frozen lane commits every type-record child as a nested
-                // type coordinate, so a template literal's literal text parts
-                // have no wire form; the tag alone proves the construct.
-                return Ok(TypeOutcome::Cells(TypeCells::leaf(
-                    SemanticTypeTag::TemplateLiteral,
-                )));
-            }
             if let Some(number) = kind.as_ts_number_keyword() {
                 let _ = number;
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
@@ -1330,6 +1344,38 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
         }
         Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// Recognizes the closed literal spellings on the source plane. The
+    /// checker reports their bases, while the source owns the exact value.
+    fn literal_cells(&self, span: Span) -> Option<TypeCells<'source>> {
+        let text = self.slice_span(span)?;
+        let text = trim_bytes(text, b" \t\r\n");
+        let base = if (text.starts_with(b"\"") && text.ends_with(b"\""))
+            || (text.starts_with(b"'") && text.ends_with(b"'"))
+        {
+            Some(compiler_languages_typescript::LiteralBase::String)
+        } else if text == b"true" || text == b"false" {
+            Some(compiler_languages_typescript::LiteralBase::Boolean)
+        } else if text.ends_with(b"n") && text[..text.len().saturating_sub(1)]
+            .iter()
+            .all(u8::is_ascii_digit)
+        {
+            Some(compiler_languages_typescript::LiteralBase::Bigint)
+        } else if !text.is_empty()
+            && text
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            Some(compiler_languages_typescript::LiteralBase::Number)
+        } else {
+            None
+        }?;
+        let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+        cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+        cells.record.text = Some(text);
+        cells.record.payload1 = u32::from(base as u8);
+        Some(cells)
     }
 
     fn associative_cells(
@@ -2248,7 +2294,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// oracle confidence, and a language-library foreign base becomes an
     /// npm-universe occurrence at oracle confidence whose path is the exact
     /// use-site spelling. Foreign package modules stay at the honest
-    /// syntactic degradation: their module bytes are not spelled anywhere
+    /// syntactic `TypeReason`: their module bytes are not spelled anywhere
     /// in this source, and every borrowed wire cell must stay
     /// source-backed.
     fn checker_resolved_unresolved(
@@ -2823,6 +2869,82 @@ fn intern_computed_tree<'source>(
             spell,
             SemanticTypeTag::Intersection,
         ),
+        TypeTree::Conditional {
+            check,
+            extends,
+            then_type,
+            else_type,
+        } => {
+            let children = [
+                check.as_ref().clone(),
+                extends.as_ref().clone(),
+                then_type.as_ref().clone(),
+                else_type.as_ref().clone(),
+            ];
+            let children = intern_computed_children(
+                registry,
+                facts,
+                &children,
+                owner,
+                depth,
+                spell,
+            )?;
+            intern_computed_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Conditional),
+                owner,
+                &children[..4],
+            )
+        }
+        TypeTree::Mapped {
+            parameter,
+            constraint,
+            value,
+            readonly,
+            optional,
+        } => {
+            let children = intern_computed_children(
+                registry,
+                facts,
+                &[constraint.as_ref().clone(), value.as_ref().clone()],
+                owner,
+                depth,
+                spell,
+            )?;
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Mapped);
+            record.text = registry.source_spelling(spell, parameter.as_bytes(), owner);
+            record.payload0 = u32::from(*readonly as u8);
+            record.payload1 = u32::from(*optional as u8);
+            intern_computed_row(registry, facts, record, owner, &children[..2])
+        }
+        TypeTree::TemplateLiteral { parts } => {
+            let mut children = [0_u32; MAX_TYPE_CHILDREN];
+            let mut child_count = 0;
+            let mut text = None;
+            for part in parts {
+                match part {
+                    TemplatePart::Text { text: value } => {
+                        text = registry.source_spelling(spell, value.as_bytes(), owner).or(text);
+                    }
+                    TemplatePart::Type { r#type } => {
+                        let slot = children.get_mut(child_count).ok_or_else(lane_rejection)?;
+                        *slot = intern_computed_tree(
+                            registry,
+                            facts,
+                            r#type,
+                            owner,
+                            depth.saturating_add(1),
+                            spell,
+                        )?;
+                        child_count += 1;
+                    }
+                }
+            }
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+            record.text = text;
+            intern_computed_row(registry, facts, record, owner, &children[..child_count])
+        }
         TypeTree::Tuple { elements } => {
             let children =
                 intern_computed_children(registry, facts, elements, owner, depth, spell)?;

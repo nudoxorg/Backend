@@ -8,12 +8,14 @@
 //! return typed terminals instead of inspecting source text here.
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
-    AtomId, BuiltinType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir, IrBuilder,
+    AtomId, BuiltinType, ComputedType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir,
+    IrBuilder, LiteralType,
     ItemKind, LanguageExtensionInput, ListSpan, NominalRef, PayloadHash, PrimitiveShape,
     ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef, SemanticAtom,
     SemanticProduct, SemanticProductChild, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput,
-    TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId, TypeWidth, Visibility,
+    TemplatePart, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId,
+    TypeWidth, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -1367,6 +1369,9 @@ fn live_type<'source>(
         facts.anonymous_child_counts[index - ANONYMOUS_ROW_BASE as usize] as usize
     };
     for position in 0..child_count {
+        if child(position).is_some_and(|item| item.0 == u32::MAX) {
+            continue;
+        }
         children[position] = live_type(
             tree,
             facts,
@@ -1386,7 +1391,31 @@ fn live_type<'source>(
         })?;
     }
     let ty = match record.tag {
-        SemanticTypeTag::Primitive => match PrimitiveShape::try_from(record.payload0) {
+        SemanticTypeTag::Primitive => match (record.payload0, record.payload1, record.text) {
+            (value, 0, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+                let value = bytes
+                    .strip_prefix(b"\"")
+                    .and_then(|value| value.strip_suffix(b"\""))
+                    .or_else(|| bytes.strip_prefix(b"'").and_then(|value| value.strip_suffix(b"'")))
+                    .unwrap_or(bytes);
+                let atom = tree.intern_atom(value)?;
+                tree.intern_concrete(ConcreteType::Literal(LiteralType::String(atom)))?
+                .erase()
+            }
+            (value, 1, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+                let atom = tree.intern_atom(bytes)?;
+                tree.intern_concrete(ConcreteType::Literal(LiteralType::Number(atom)))?
+                    .erase()
+            }
+            (value, 2, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+                let atom = tree.intern_atom(bytes)?;
+                tree.intern_concrete(ConcreteType::Literal(LiteralType::BigInt(atom)))?
+                    .erase()
+            }
+            (value, 3, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => tree
+                .intern_concrete(ConcreteType::Literal(LiteralType::Boolean(bytes == b"true")))?
+                .erase(),
+            (_, _, _) => match PrimitiveShape::try_from(record.payload0) {
             Ok(PrimitiveShape::Bool) => tree
                 .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
                 .erase(),
@@ -1495,10 +1524,46 @@ fn live_type<'source>(
             _ => tree
                 .intern_unknown(compiler_ir::UnknownType::Unsupported)?
                 .erase(),
+            },
         },
         SemanticTypeTag::Never => tree
             .intern_concrete(ConcreteType::Builtin(BuiltinType::Never))?
             .erase(),
+        SemanticTypeTag::Conditional if child_count == 4 => tree
+            .intern_computed(ComputedType::Conditional {
+                check: children[0],
+                extends: children[1],
+                then_type: children[2],
+                else_type: children[3],
+                distributive: record.payload1 != 0,
+            })?
+            .erase(),
+        SemanticTypeTag::Mapped if child_count == 2 => {
+            let parameter = tree.intern_atom(record.text.unwrap_or(b"K"))?;
+            let modifier = |value: u32| match value {
+                0 => compiler_ir::MappedModifier::Preserve,
+                1 => compiler_ir::MappedModifier::Add,
+                2 => compiler_ir::MappedModifier::Remove,
+                _ => compiler_ir::MappedModifier::Preserve,
+            };
+            tree.intern_computed(ComputedType::Mapped {
+                parameter,
+                constraint: children[0],
+                name_as: None,
+                value: children[1],
+                readonly: modifier(record.payload0),
+                optional: modifier(record.payload1),
+            })?
+            .erase()
+        }
+        SemanticTypeTag::TemplateLiteral => {
+            let mut parts = [TemplatePart::Placeholder(TypeId::new(0)); MAX_TYPE_CHILDREN];
+            for position in 0..child_count {
+                parts[position] = TemplatePart::Placeholder(children[position]);
+            }
+            let parts = tree.intern_template_parts(&parts[..child_count])?;
+            tree.intern_computed(ComputedType::TemplateLiteral(parts))?.erase()
+        }
         SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {
             let spelling = match record.text {
                 Some(spelling) => spelling,

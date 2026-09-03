@@ -126,6 +126,25 @@ function typeTree(type, depth) {
   if (type.flags & flags.Intersection) {
     return { kind: 'intersection', members: type.types.map((member) => typeTree(member, depth + 1)) };
   }
+  if (type.flags & flags.Conditional) {
+    return {
+      kind: 'conditional',
+      check: typeTree(type.checkType, depth + 1),
+      extends: typeTree(type.extendsType, depth + 1),
+      thenType: typeTree(type.resolvedTrueType || type.trueType, depth + 1),
+      elseType: typeTree(type.resolvedFalseType || type.falseType, depth + 1),
+    };
+  }
+  if (type.flags & flags.TemplateLiteral) {
+    const texts = type.templateTexts || [];
+    const types = type.templateTypes || [];
+    const parts = [];
+    for (let index = 0; index < texts.length; index += 1) {
+      parts.push({ kind: 'text', text: texts[index] });
+      if (index < types.length) parts.push({ kind: 'type', type: typeTree(types[index], depth + 1) });
+    }
+    return { kind: 'templateLiteral', parts };
+  }
   if (type.flags & flags.ThisType) return { kind: 'this' };
   if (type.flags & flags.TypeParameter) {
     return { kind: 'typeParameter', name: type.symbol ? type.symbol.getName() : safeText(type) };
@@ -163,6 +182,20 @@ function safeText(type) {
 /** Builds the tree of one object type: reference, tuple, or anonymous record. */
 function objectTypeTree(type, depth) {
   const objectFlags = type.objectFlags || 0;
+  if (objectFlags & ts.ObjectFlags.Mapped) {
+    const declaration = type.declaration;
+    const parameter = declaration && declaration.typeParameter;
+    const constraint = parameter && parameter.constraint;
+    const value = declaration && declaration.type;
+    return {
+      kind: 'mapped',
+      parameter: parameter && parameter.name ? parameter.name.text : 'K',
+      constraint: constraint ? typeTree(checker.getTypeFromTypeNode(constraint), depth) : { kind: 'other', text: 'unknown' },
+      value: value ? typeTree(checker.getTypeFromTypeNode(value), depth) : { kind: 'other', text: 'unknown' },
+      readonly: mappedModifier(declaration && declaration.readonlyToken),
+      optional: mappedModifier(declaration && declaration.questionToken),
+    };
+  }
   if (objectFlags & ts.ObjectFlags.Tuple) {
     const elements = (checker.getTypeArguments(type) || []).map((element) => typeTree(element, depth));
     return { kind: 'tuple', elements };
@@ -214,6 +247,11 @@ function objectTypeTree(type, depth) {
     return signatureTree(callSignatures[0], depth);
   }
   return { kind: 'object', members };
+}
+
+function mappedModifier(token) {
+  if (!token) return 'preserve';
+  return token.kind === ts.SyntaxKind.MinusToken ? 'remove' : 'add';
 }
 
 function isNominalDeclaration(origin) {
