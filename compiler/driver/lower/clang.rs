@@ -233,6 +233,32 @@ pub(crate) fn collect<'source>(
 ) -> Result<(), ClangCollectError> {
     let input = ClangInput::from_profile(c"nudox-input", source, profile)
         .map_err(|_| ClangCollectError::Lowering(LoweringUnsupported::ClangDeclarationForm))?;
+    collect_input(input, source, cancelled, facts)
+}
+
+/// Collects one already-authorized database command and admits it through the
+/// same canonical lane as [`crate::types::compile`].
+pub(crate) fn lower_database<'source, 'output>(
+    input: ClangInput<'source>,
+    source: &'source [u8],
+    source_identity: compiler_ir::SourceIdentity,
+    recipe: compiler_ir::RecipeFact,
+    profile: LanguageProfile,
+    cancelled: &AtomicBool,
+    output: &'output mut [u8],
+) -> Result<&'output [u8], ClangCollectError> {
+    let mut facts = FactSet::new();
+    collect_input(input, source, cancelled, &mut facts)?;
+    super::admit(&facts, source_identity, recipe, profile, output)
+        .map_err(|_| ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
+}
+
+fn collect_input<'source>(
+    input: ClangInput<'source>,
+    source: &'source [u8],
+    cancelled: &AtomicBool,
+    facts: &mut FactSet<'source>,
+) -> Result<(), ClangCollectError> {
     let mut declarations = [empty_declaration(); DECLARATION_CAPACITY];
     let mut types = [empty_type(); TYPE_CAPACITY];
     let mut type_edges = [empty_type_edge(); TYPE_EDGE_CAPACITY];
