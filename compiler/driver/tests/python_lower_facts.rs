@@ -66,6 +66,28 @@ enum TestError {
     Falsified(&'static str),
     #[error("coordinate conversion failed")]
     Coordinate,
+    #[error("deep-stack worker failed")]
+    Worker,
+}
+
+/// Debug-profile admission materializes megabytes of lane scratch per
+/// compile; every compile runs on an explicit deep worker stack so the
+/// falsifiers hold on libtest's default thread size.
+const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn with_deep_stack<Decoded>(
+    work: impl FnOnce() -> Result<Decoded, TestError> + Send,
+) -> Result<Decoded, TestError>
+where
+    Decoded: Send,
+{
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .stack_size(WORKER_STACK_BYTES)
+            .spawn_scoped(scope, work)
+            .map_err(|_| TestError::Worker)?;
+        worker.join().map_err(|_| TestError::Worker)?
+    })
 }
 
 fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
@@ -158,70 +180,83 @@ fn attempt_fragment(
     let toolchain = python_toolchain()?;
     let work = scratch_dir(label)?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0_u8; 4096];
-    let mut output = vec![0_u8; 8 * 1024 * 1024];
-    let outcome = match compile(
-        CompileRequest {
-            profile: LanguageProfile::Python(PythonVersion::Python314),
-            stage: Stage::LowerIr,
-            source,
-            toolchain: ToolchainSelection::ResolvedNative(toolchain),
-            authority: SemanticAuthorityInput::None,
-            control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(30),
-                cancelled: &cancelled,
+    let outcome = with_deep_stack(|| {
+        let mut diagnostic = [0_u8; 4096];
+        let mut output = vec![0_u8; 8 * 1024 * 1024];
+        match compile(
+            CompileRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source,
+                toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                authority: SemanticAuthorityInput::None,
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &cancelled,
+                },
             },
-        },
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: &work,
-        },
-        CompileOutput {
-            fragment_output: &mut output,
-        },
-    ) {
-        Ok(compiled) => Ok(Ok(compiled.fragment.as_ref().to_vec())),
-        Err(CompileFailure::FactRejected { rejected, .. }) => Ok(Err(rejected)),
-        Err(failure) => Err(TestError::Compile(failure_label(&failure))),
-    };
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: &work,
+            },
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        ) {
+            Ok(compiled) => Ok(Ok(compiled.fragment.as_ref().to_vec())),
+            Err(CompileFailure::FactRejected { rejected, .. }) => Ok(Err(rejected)),
+            Err(failure) => Err(TestError::Compile(failure_label(&failure))),
+        }
+    })?;
     fs::remove_dir_all(&work).map_err(|source| TestError::Io {
         operation: "remove scratch",
         source,
     })?;
-    outcome
+    Ok(outcome)
 }
 
-/// Compiles one fixture into the queryable semantic image.
-fn compile_image(source: &'static [u8], label: &'static str) -> Result<Ir, TestError> {
+/// Compiles one fixture and runs `then` against the semantic image inside
+/// the deep-stack worker (`Ir` borrows pooled `NonNull` lanes, so it never
+/// crosses the join boundary).
+fn with_image<T>(
+    source: &'static [u8],
+    label: &'static str,
+    then: impl FnOnce(&Ir) -> Result<T, TestError> + Send,
+) -> Result<T, TestError>
+where
+    T: Send,
+{
     let toolchain = python_toolchain()?;
     let work = scratch_dir(label)?;
     let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0_u8; 4096];
-    let outcome = match compile_ir(
-        CompileRequest {
-            profile: LanguageProfile::Python(PythonVersion::Python314),
-            stage: Stage::LowerIr,
-            source,
-            toolchain: ToolchainSelection::ResolvedNative(toolchain),
-            authority: SemanticAuthorityInput::None,
-            control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(30),
-                cancelled: &cancelled,
+    let outcome = with_deep_stack(|| {
+        let mut diagnostic = [0_u8; 4096];
+        match compile_ir(
+            CompileRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source,
+                toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                authority: SemanticAuthorityInput::None,
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &cancelled,
+                },
             },
-        },
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: &work,
-        },
-    ) {
-        Ok(compiled) => Ok(compiled.ir),
-        Err(failure) => Err(TestError::Compile(failure_label(&failure))),
-    };
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: &work,
+            },
+        ) {
+            Ok(compiled) => then(&compiled.ir),
+            Err(failure) => Err(TestError::Compile(failure_label(&failure))),
+        }
+    })?;
     fs::remove_dir_all(&work).map_err(|source| TestError::Io {
         operation: "remove scratch",
         source,
     })?;
-    outcome
+    Ok(outcome)
 }
 
 /// One decoded lane: entity rows, type-fact rows, and the validated view.
@@ -495,38 +530,40 @@ fn dict_result_slot_applies_base_and_arguments_in_order() -> Result<(), TestErro
 /// function row carries all ten ordered parameter children.
 #[test]
 fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError> {
-    let ir = compile_image(TEN_PARAMETERS, "ten")?;
-    let function = ir
-        .items()
-        .find(|item| item.kind() == ItemKind::Function && item.name() == b"h")
-        .ok_or(TestError::Falsified("function h absent"))?;
-    let ty = function
-        .semantic_type()
-        .ok_or(TestError::Falsified("function h is untyped"))?;
-    let TypeExpr::Concrete(ConcreteType::Function { parameters, .. }) = ir
-        .ty(ty)
-        .ok_or(TestError::Falsified("function type row absent"))?
-    else {
-        return Err(TestError::Falsified(
-            "function type is not a concrete function",
-        ));
-    };
-    let parameters = ir
-        .tuple_elements(parameters)
-        .ok_or(TestError::Falsified("parameter list absent"))?;
-    let expected: [&[u8]; 10] = [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
-    if parameters.len() != expected.len() {
-        return Err(TestError::Falsified("function row lost parameter children"));
-    }
-    for (parameter, name) in parameters.iter().zip(expected) {
-        let Some(label) = parameter.label else {
-            return Err(TestError::Falsified("parameter label absent"));
+    with_image(TEN_PARAMETERS, "ten", |ir| {
+        let function = ir
+            .items()
+            .find(|item| item.kind() == ItemKind::Function && item.name() == b"h")
+            .ok_or(TestError::Falsified("function h absent"))?;
+        let ty = function
+            .semantic_type()
+            .ok_or(TestError::Falsified("function h is untyped"))?;
+        let TypeExpr::Concrete(ConcreteType::Function { parameters, .. }) = ir
+            .ty(ty)
+            .ok_or(TestError::Falsified("function type row absent"))?
+        else {
+            return Err(TestError::Falsified(
+                "function type is not a concrete function",
+            ));
         };
-        if ir.atom(label) != Some(name) {
-            return Err(TestError::Falsified("parameter children are out of order"));
+        let parameters = ir
+            .tuple_elements(parameters)
+            .ok_or(TestError::Falsified("parameter list absent"))?;
+        let expected: [&[u8]; 10] =
+            [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
+        if parameters.len() != expected.len() {
+            return Err(TestError::Falsified("function row lost parameter children"));
         }
-    }
-    Ok(())
+        for (parameter, name) in parameters.iter().zip(expected) {
+            let Some(label) = parameter.label else {
+                return Err(TestError::Falsified("parameter label absent"));
+            };
+            if ir.atom(label) != Some(name) {
+                return Err(TestError::Falsified("parameter children are out of order"));
+            }
+        }
+        Ok(())
+    })
 }
 
 /// The raised bound stays honest: one parameter past it rejects with the
