@@ -398,6 +398,14 @@ pub enum CompileFailure<'diagnostic> {
         provisional: u32,
         atom_count: usize,
     },
+    /// Canonical admission rejected one exact emitted fact; the ordinal,
+    /// rejected name length, and full typed cause are retained by value.
+    #[error("{recipe:?} rejected emission fact {rejected:?}")]
+    FactRejected {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        rejected: crate::types::FactRejection,
+    },
     /// Rich lowering could not condense the frontend tree into canonical IR.
     #[error("could not build canonical semantic IR for {recipe:?}")]
     Build {

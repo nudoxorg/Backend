@@ -533,7 +533,7 @@ fn emit_facts<'source, 'diagnostic>(
 fn python_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: lower::python::PythonCollectError<'diagnostic>,
+    cause: lower::python::PythonCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         lower::python::PythonCollectError::Authority(cause) => CompileFailure::Authority {
@@ -576,7 +576,6 @@ fn rust_terminal<'diagnostic>(
                 cause,
             },
         },
-        lower::rust::RustCollectError::Rejected(rejected) => CompileFailure::FactRejected { source_identity, recipe, rejected },
         lower::rust::RustCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -588,7 +587,7 @@ fn rust_terminal<'diagnostic>(
 fn go_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: lower::go::GoCollectError<'diagnostic>,
+    cause: lower::go::GoCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         lower::go::GoCollectError::Image(cause) => CompileFailure::Authority {
@@ -622,7 +621,7 @@ fn go_terminal<'diagnostic>(
 fn csharp_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: lower::csharp::CSharpCollectError<'diagnostic>,
+    cause: lower::csharp::CSharpCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         lower::csharp::CSharpCollectError::Image(cause) => CompileFailure::Authority {
@@ -665,7 +664,7 @@ fn csharp_terminal<'diagnostic>(
 fn java_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: lower::java::JavaCollectError<'diagnostic>,
+    cause: lower::java::JavaCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         lower::java::JavaCollectError::Image(cause) => CompileFailure::Authority {
@@ -711,7 +710,7 @@ fn java_terminal<'diagnostic>(
 fn clang_terminal<'diagnostic>(
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: lower::clang::ClangCollectError<'diagnostic>,
+    cause: lower::clang::ClangCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         lower::clang::ClangCollectError::Authority(cause) => CompileFailure::Authority {
@@ -736,7 +735,7 @@ fn typescript_terminal<'diagnostic>(
     source: &[u8],
     source_identity: SourceIdentity,
     recipe: CompileRecipeFact,
-    cause: TypeScriptCollectError<'diagnostic>,
+    cause: TypeScriptCollectError,
 ) -> CompileFailure<'diagnostic> {
     match cause {
         TypeScriptCollectError::Utf8(cause) => CompileFailure::Authority {

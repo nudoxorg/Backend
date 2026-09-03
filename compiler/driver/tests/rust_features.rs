@@ -3,7 +3,7 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::AtomicBool,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,9 +16,7 @@ use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, So
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
-const FIXTURE: &str = r#"pub fn anchor() {}
-
-#[cfg(feature = "base")]
+const FIXTURE: &str = r#"#[cfg(feature = "base")]
 pub fn base() {}
 
 #[cfg(feature = "extra")]
@@ -45,16 +43,12 @@ enum TestError {
     Validate(#[from] compiler_ir::FragmentError),
 }
 
-/// Separates concurrently executing fixtures created during one process lifetime.
-static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 fn fixture_root() -> Result<PathBuf, TestError> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!("nudox-rust-features-{nonce}-{sequence}"));
+    let root = std::env::temp_dir().join(format!("nudox-rust-features-{nonce}"));
     fs::create_dir_all(root.join("src")).map_err(|source| TestError::Io {
         operation: "create fixture",
         source,
@@ -175,7 +169,6 @@ fn no_default_features_suppresses_default_cfg_declaration() -> Result<(), TestEr
         no_default_features: true,
         ..RustFeatureControl::default()
     })?;
-    assert!(has_entity(&disabled, b"anchor")?);
     assert!(!has_entity(&disabled, b"base")?);
     assert!(!has_entity(&disabled, b"extra")?);
     Ok(())

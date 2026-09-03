@@ -32,9 +32,10 @@ use compiler_vocabulary::{JavaRelease as ProfileRelease, LoweringUnsupported};
 use sha2::Digest;
 
 use crate::lower::{
-    EmissionExtension, FactFault, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
+    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_FACT_CHILDREN,
     MAX_REF_LIST_ELEMENTS, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
 };
+use crate::types::{FactFault, FactRejection};
 
 /// Exact rejection while lending source-bound javac declaration facts.
 #[derive(Debug)]
@@ -57,6 +58,8 @@ pub(crate) enum JavaCollectError {
     },
     /// The bounded canonical lane rejected an authority fact.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
@@ -159,7 +162,7 @@ fn push<'source>(
     facts: &mut FactSet<'source>,
     fact: SemanticFact<'source>,
 ) -> Result<u32, JavaCollectError> {
-    let ordinal = push_fact(facts, fact).map_err(JavaCollectError::Lowering)?;
+    let ordinal = push_fact(facts, fact).map_err(JavaCollectError::Rejected)?;
     u32::try_from(ordinal)
         .map_err(|_| JavaCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
 }

@@ -319,6 +319,24 @@ pub enum LoweringUnsupported {
     /// No declaration form has a compact semantic recipe in this compiler slice.
     #[error("no supported declaration form")]
     NoSupportedDeclaration,
+    /// An extension fact bound an atom coordinate the admitted lane never
+    /// carried; the bounded projection of the driver's exact terminal.
+    #[error("extension atom {provisional} at row {row} was not bound in {atom_count} atoms")]
+    ExtensionAtomUnbound {
+        /// Zero-based emission row that named the unbound atom.
+        row: u32,
+        /// Provisional atom coordinate the fact named.
+        provisional: u32,
+        /// Atoms the admitted lane actually held.
+        atom_count: u32,
+    },
+    /// Canonical admission rejected the fact at this ordinal; the bounded
+    /// projection of the driver's exact terminal.
+    #[error("fact {fact} was rejected by the canonical admission lane")]
+    FactRejected {
+        /// Zero-based ordinal the fact would have occupied.
+        fact: u32,
+    },
     /// Rust function signatures need a distinct semantic recipe and are not lowered as constants.
     #[error("Rust function recipe is not represented")]
     RustFunction,

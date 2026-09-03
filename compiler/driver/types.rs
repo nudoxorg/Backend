@@ -5,6 +5,7 @@
 
 mod authority;
 mod compile;
+mod lowering;
 mod request;
 mod terminal;
 mod toolchain;
@@ -14,6 +15,7 @@ pub use authority::{
     AuthorityProfileMismatch,
 };
 pub use compile::{compile, compile_ir};
+pub use lowering::{FactFault, FactRejection};
 pub(crate) use request::NativeRecipe;
 pub use request::{CompileControl, CompileRequest, CompileScratch, SemanticAuthorityInput};
 pub use terminal::{

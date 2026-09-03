@@ -97,9 +97,10 @@ const PARAM_FALLBACK_NAME: &[u8] = b"param";
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 ///
-/// The closed two-variant terminal is fixed by the shared driver failure
-/// match: authority faults keep their full typed cause, and every bounded-lane
-/// rejection folds onto the lane's single closed lowering terminal.
+/// The closed terminal is fixed by the shared driver failure match: authority
+/// faults keep their full typed cause, and canonical admission rejections
+/// keep their bounded typed cause (`LoweringUnsupported::FactRejected`)
+/// through the authority's frozen `Admission` boundary.
 #[derive(Debug)]
 pub(crate) enum RustCollectError {
     /// rust-analyzer could not open, resolve, or query the selected Cargo graph.
@@ -145,6 +146,19 @@ pub(crate) fn collect<'source>(
         })
 }
 
+/// Admits one fact, retaining the exact typed rejection on failure while
+/// preserving the lane ordinal on success.
+fn push<'source>(
+    facts: &mut FactSet<'source>,
+    fact: SemanticFact<'source>,
+) -> Result<usize, RustAuthorityError> {
+    push_fact(facts, fact).map_err(|cause| RustAuthorityError::Admission {
+        cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
+            fact: u32::try_from(cause.fact).unwrap_or(u32::MAX),
+        },
+    })
+}
+
 /// Folds one bounded-lane rejection onto the lane's closed terminal. The
 /// shared driver failure match owns the terminal arms and lies outside this
 /// module's ownership, so the exact rejected fact stays nameable only at this
@@ -153,15 +167,6 @@ fn admission() -> RustAuthorityError {
     RustAuthorityError::Admission {
         cause: LoweringUnsupported::NoSupportedDeclaration,
     }
-}
-
-/// Admits one fact, folding any bounded-lane rejection onto the closed
-/// terminal while preserving the lane ordinal on success.
-fn push<'source>(
-    facts: &mut FactSet<'source>,
-    fact: SemanticFact<'source>,
-) -> Result<usize, RustAuthorityError> {
-    push_fact(facts, fact).map_err(|_| admission())
 }
 
 /// Widenes one bounded lane coordinate; unreachable past the lane's fixed

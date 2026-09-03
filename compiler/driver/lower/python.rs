@@ -42,7 +42,7 @@ use compiler_vocabulary::PythonVersion;
 
 use crate::{
     lower::{EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact, push_fact},
-    types::LoweringUnsupported,
+    types::{FactRejection, LoweringUnsupported},
 };
 
 /// Exact direct-authority rejection while borrowing Ruff declarations.
@@ -57,6 +57,8 @@ pub(crate) enum PythonCollectError {
     Authority(ExtractionError),
     /// Canonical declaration admission rejected an exact borrowed fact.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
     /// Ruff returned a declaration span outside the exact caller source.
     Span { start: u32, end: u32 },
 }
@@ -271,7 +273,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 fact = fact.type_child(row, Some(key), flags);
             }
             let fact = fact.with_extension(EmissionExtension::Python(extension));
-            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             if let Ok(coordinate) = u32::try_from(ordinal) {
                 tables.classes.push((name, coordinate));
             }
@@ -601,7 +603,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 fact = fact.type_child(ordinal, None, 0);
             }
             let fact = fact.with_extension(EmissionExtension::Python(extension));
-            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             parameter_ordinals.push(Self::coordinate(parameter.name_span, ordinal)?);
         }
         let returns = self.return_annotation(declaration);
@@ -618,7 +620,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
                 .typed(lowered.record)
                 .with_extension(EmissionExtension::Python(extension));
-            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             result_ordinal = Some(Self::coordinate(declaration.name_span, ordinal)?);
         }
         let arity =
@@ -661,7 +663,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let fact = fact
             .typed(record)
             .with_extension(EmissionExtension::Python(extension));
-        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
         self.record_pushed(index, ordinal, name, declaration);
         Ok(())
     }
@@ -713,7 +715,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             fact = fact.type_child(ordinal, None, 0);
         }
         let fact = fact.with_extension(EmissionExtension::Python(extension));
-        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
         self.record_pushed(index, ordinal, name, declaration);
         Ok(())
     }
@@ -755,7 +757,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 fact = fact.type_child(ordinal, None, 0);
             }
             let fact = fact.with_extension(EmissionExtension::Python(extension));
-            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+            let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
             self.record_pushed(index, ordinal, name, declaration);
             return Ok(());
         }
@@ -763,7 +765,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let fact = SemanticFact::new(EntityKind::Alias, name, LEAF_PRODUCT)
             .typed(unknown_record(TypeReason::Unannotated))
             .with_extension(EmissionExtension::Python(extension));
-        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
+        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
         self.record_pushed(index, ordinal, name, declaration);
         Ok(())
     }

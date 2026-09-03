@@ -6,12 +6,11 @@
 //! remains owned by compiler/ir/semantic_facts.rs. Direct authorities emit
 //! declaration facts into this one canonical lane; unsupported authorities
 //! return typed terminals instead of inspecting source text here.
-use crate::types::LoweringUnsupported;
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AtomId, BuiltinType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir, IrBuilder,
     ItemKind, LanguageExtensionInput, ListSpan, NominalRef, PayloadHash, PrimitiveShape,
-    ProductChildRole, ProductChildren, ProductConstructorFault, ProductId, ProductListId,
+    ProductChildRole, ProductChildren, ProductId, ProductListId,
     ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
     TreeItemInput, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId,
@@ -258,79 +257,27 @@ impl<'source> SemanticFact<'source> {
     }
 }
 
-/// Exact emission-lane rejection cause, retaining every operand.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FactFault {
-    /// The emitted declaration name is empty.
-    EmptyName,
-    /// The bounded fact lane already holds [`MAX_EMISSION_FACTS`] facts.
-    Capacity,
-    /// The fact's child lane overflowed [`MAX_FACT_CHILDREN`].
-    ChildCapacity,
-    /// The constructor payload disagrees with the fact's child count.
-    Constructor(ProductConstructorFault),
-    /// The child role at this position differs from the constructor's closed
-    /// role lane.
-    ChildRole {
-        position: usize,
-        expected: ProductChildRole,
-        actual: ProductChildRole,
-    },
-    /// The child targets a fact ordinal outside the already-pushed set.
-    ChildTarget {
-        position: usize,
-        target: u32,
-        fact_count: usize,
-    },
-    /// The declared-type record violates the closed lattice.
-    TypeRecord(SemanticTypeFault),
-    /// One type-record child violates its tag's closed child law.
-    TypeChild {
-        position: usize,
-        fault: SemanticTypeFault,
-    },
-    /// A type-record child targets a fact ordinal that is not strictly
-    /// backward.
-    TypeChildTarget {
-        position: usize,
-        target: u32,
-        fact_count: usize,
-    },
-    /// The type-record child lane overflowed [`MAX_TYPE_CHILDREN`].
-    TypeChildCapacity,
-    /// The anonymous type-row pool overflowed [`MAX_ANONYMOUS_TYPE_ROWS`].
-    TypeRowCapacity,
-    /// An occurrence names an owner outside the pushed prefix.
-    OccurrenceOwner { owner: u32, fact_count: usize },
-    /// The bounded occurrence lane is full.
-    OccurrenceCapacity,
-    /// A doc fragment names an owner outside the pushed prefix.
-    DocOwner { owner: u32, fact_count: usize },
-    /// The bounded documentation lane is full.
-    DocCapacity,
-    /// The bounded extension-atom lane is full.
-    ExtensionAtomCapacity,
-    /// The bounded type-parameter lane is full.
-    TypeParameterCapacity,
-    /// A pooled reference lane is full.
-    RefListCapacity,
-    /// One pooled reference list overflows [`MAX_REF_LIST_ELEMENTS`].
-    RefListElements,
-    /// A pooled reference targets a fact outside the pushed prefix.
-    RefTarget {
-        lane: &'static str,
-        raw: u32,
-        fact_count: usize,
-    },
-}
+use crate::types::{FactFault, FactRejection};
 
 /// Exact rejection of one fact at admission, retaining the offending ordinal,
-/// its exact name bytes, and the typed cause.
+/// its exact name bytes, and the typed cause. The shared terminal projects
+/// this borrow into the value-typed [`FactRejection`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RejectedFact<'source> {
     pub(super) fact: usize,
     pub(super) name: &'source [u8],
     pub(super) cause: FactFault,
+}
+
+impl RejectedFact<'_> {
+    /// Value snapshot that outlives the collector arena.
+    pub(super) const fn rejection(&self) -> FactRejection {
+        FactRejection {
+            fact: self.fact,
+            name_len: self.name.len(),
+            cause: self.cause,
+        }
+    }
 }
 
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
@@ -1785,14 +1732,15 @@ const fn empty_clang_facts() -> compiler_ir::ClangFacts {
 /// whose constructors are closed constants matched to their constructed
 /// child counts, and whose targets are already-pushed ordinals; the single
 /// reachable rejection class is the bounded lane capacity. A source beyond
-/// the lane's compact-recipe capacity keeps the exact closed terminal.
+/// the lane's compact-recipe capacity keeps the exact closed terminal, and
+/// every rejection retains its full typed cause by value.
 pub(super) fn push_fact<'source>(
     facts: &mut FactSet<'source>,
     fact: SemanticFact<'source>,
-) -> Result<usize, LoweringUnsupported> {
+) -> Result<usize, FactRejection> {
     match facts.push(fact) {
         Ok(ordinal) => Ok(ordinal),
-        Err(_) => Err(LoweringUnsupported::NoSupportedDeclaration),
+        Err(rejected) => Err(rejected.rejection()),
     }
 }
 
@@ -2054,6 +2002,9 @@ pub(super) fn admit<'source, 'output>(
     let type_fact_lane = TypeFactLane {
         inputs: &type_facts[..type_row_count],
         children: &type_children[..type_pooled_cursor],
+        // The computed segment carries no rows until the dedicated computed
+        // emission lane lands; the declared plane is byte-identical either way.
+        computed: &[],
     };
 
     // Language-extension section: dense per-plane fact pools plus their row

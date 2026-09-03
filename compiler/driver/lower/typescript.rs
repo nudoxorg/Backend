@@ -20,10 +20,10 @@ use compiler_vocabulary::TypeScriptSource;
 
 use crate::{
     lower::{
-        EmissionExtension, FactFault, FactSet, FactTypeChild, LEAF_PRODUCT, MAX_EMISSION_FACTS,
+        EmissionExtension, FactSet, FactTypeChild, LEAF_PRODUCT, MAX_EMISSION_FACTS,
         MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact, push_fact,
     },
-    types::LoweringUnsupported,
+    types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
 /// Bound of one declaration's staged type-parameter rows; a source with more
@@ -52,6 +52,8 @@ pub(crate) enum TypeScriptCollectError {
     Authority(AuthorityError),
     /// The canonical bounded declaration lane cannot admit every OXC symbol.
     Lowering(LoweringUnsupported),
+    /// Canonical admission rejected one exact fact; operands retained.
+    Rejected(FactRejection),
     /// An OXC declaration span could not name a slice of the admitted source.
     Span { start: u32, end: u32 },
 }
@@ -62,8 +64,10 @@ fn lane_rejection() -> TypeScriptCollectError {
     TypeScriptCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
 
-/// Maps one typed lane rejection onto the coarse lane terminal, retaining the
-/// mandated mapping from every [`FactFault`] to [`LoweringUnsupported`].
+/// Maps one collector-internal lane rejection onto the coarse lane terminal.
+/// The declaration-lane path now retains the full [`FactFault`] through
+/// [`TypeScriptCollectError::Rejected`]; this fold remains only for the
+/// pooled-lane helpers (docs, atoms, spans) and is a recorded lane criticism.
 fn fault(_cause: FactFault) -> TypeScriptCollectError {
     lane_rejection()
 }
@@ -397,7 +401,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// type-parameter start for the checker pass.
     fn push(&mut self, fact: SemanticFact<'source>) -> Result<u32, TypeScriptCollectError> {
         let pending = self.pending_type_parameters;
-        let ordinal = push_fact(self.facts, fact).map_err(|_| lane_rejection())?;
+        let ordinal = push_fact(self.facts, fact).map_err(TypeScriptCollectError::Rejected)?;
         let ordinal = coordinate(ordinal)?;
         if let Some(slot) = self.extension_type_parameters.get_mut(ordinal as usize) {
             *slot = pending;
