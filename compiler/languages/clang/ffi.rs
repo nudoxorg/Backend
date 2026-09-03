@@ -234,6 +234,24 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getCursorReferenced(cursor) }
     }
 
+    pub(crate) fn method_virtuality(cursor: CXCursor) -> (bool, bool) {
+        // SAFETY: cursor was supplied by this live translation unit.
+        let virtual_ = unsafe { clang_sys::clang_CXXMethod_isVirtual(cursor) != 0 };
+        // SAFETY: cursor was supplied by this live translation unit.
+        let pure = unsafe { clang_sys::clang_CXXMethod_isPureVirtual(cursor) != 0 };
+        (virtual_, pure)
+    }
+
+    pub(crate) fn overridden_cursors(cursor: CXCursor) -> OverriddenCursors {
+        let mut cursors = ptr::null_mut();
+        let mut count = 0;
+        // SAFETY: output cells are local, and cursor belongs to this live translation unit.
+        unsafe {
+            clang_sys::clang_getOverriddenCursors(cursor, &raw mut cursors, &raw mut count);
+        }
+        OverriddenCursors { cursors, count }
+    }
+
     /// Returns the direct native type attached to a declaration cursor.
     pub(crate) fn cursor_type(cursor: CXCursor) -> CXType {
         // SAFETY: cursor was supplied by this live translation unit.
@@ -446,6 +464,31 @@ impl TranslationUnit {
     }
 }
 
+/// Owns libclang's returned override array until exactly one native disposal.
+pub(crate) struct OverriddenCursors {
+    cursors: *mut CXCursor,
+    count: c_uint,
+}
+
+impl OverriddenCursors {
+    pub(crate) fn as_slice(&self) -> &[CXCursor] {
+        if self.cursors.is_null() {
+            return &[];
+        }
+        // SAFETY: libclang returned `count` contiguous cursors owned by this guard.
+        unsafe { core::slice::from_raw_parts(self.cursors, self.count as usize) }
+    }
+}
+
+impl Drop for OverriddenCursors {
+    fn drop(&mut self) {
+        if !self.cursors.is_null() {
+            // SAFETY: this guard uniquely owns the array returned by libclang.
+            unsafe { clang_sys::clang_disposeOverriddenCursors(self.cursors) };
+        }
+    }
+}
+
 pub(crate) fn callback_state<State, Output>(
     data: *mut c_void,
     with: impl FnOnce(&mut State) -> Output,
@@ -559,6 +602,10 @@ impl RequiredApi {
                     && clang_sys::clang_Cursor_getSpellingNameRange::is_loaded()
                     && clang_sys::clang_getCursorSemanticParent::is_loaded()
                     && clang_sys::clang_getCursorReferenced::is_loaded()
+                    && clang_sys::clang_CXXMethod_isVirtual::is_loaded()
+                    && clang_sys::clang_CXXMethod_isPureVirtual::is_loaded()
+                    && clang_sys::clang_getOverriddenCursors::is_loaded()
+                    && clang_sys::clang_disposeOverriddenCursors::is_loaded()
                     && clang_sys::clang_Cursor_getStorageClass::is_loaded()
                     && clang_sys::clang_getCString::is_loaded()
                     && clang_sys::clang_disposeString::is_loaded()

@@ -139,6 +139,17 @@ pub enum DefinitionState {
     Definition,
 }
 
+/// The closed C++ method virtuality reported by libclang.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MethodVirtuality {
+    /// The method does not participate in virtual dispatch.
+    NonVirtual,
+    /// The method participates in virtual dispatch and is implementable.
+    Virtual,
+    /// The method participates in virtual dispatch and has no implementation.
+    PureVirtual,
+}
+
 /// One C or C++ declaration with exact source and semantic identity facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeclarationFact {
@@ -148,6 +159,8 @@ pub struct DeclarationFact {
     pub kind: DeclarationKind,
     /// Native declaration-versus-definition fact.
     pub definition: DefinitionState,
+    /// Direct C++ method virtuality; non-method declarations are non-virtual.
+    pub virtuality: MethodVirtuality,
     /// Domain-separated libclang USR identity when libclang provides one.
     pub identity: Option<SymbolIdentity>,
     /// Exact declaration extent in the main source file.
@@ -162,6 +175,15 @@ pub struct DeclarationFact {
     pub storage: StorageClass,
     /// Root recursive type fact associated with this declaration.
     pub type_root: Option<TypeId>,
+}
+
+/// One directed C++ override-authority relation reported by libclang.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OverrideFact {
+    /// The overriding declaration identity.
+    pub source: SymbolIdentity,
+    /// The declaration identity overridden by `source`.
+    pub target: SymbolIdentity,
 }
 
 /// A compact fact describing C/C++ type qualifiers.
@@ -363,4 +385,6 @@ pub struct ClangFacts<'scratch> {
     pub diagnostics: &'scratch [DiagnosticFact],
     /// Prefix of caller include slots written by libclang.
     pub includes: &'scratch [IncludeFact],
+    /// Prefix of caller override-authority slots.
+    pub overrides: &'scratch [OverrideFact],
 }

@@ -25,6 +25,9 @@ pub enum ScratchLane {
     /// Include authority fact slots.
     #[error("includes")]
     Includes,
+    /// C++ override-authority fact slots.
+    #[error("overrides")]
+    Overrides,
 }
 
 /// One exact libclang API required by this direct authority collector.

@@ -16,10 +16,10 @@ use clang_sys::{
 use crate::{
     ClangInput, ClangScratch, CollectError, ScratchLane,
     facts::{
-        BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind,
-        DefinitionState, DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact,
-        ReferenceKind, ReferenceTarget, SourceDependencyKind, StorageClass, SymbolIdentity,
-        TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
+        BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
+        DiagnosticFact, DiagnosticSeverity, IncludeFact, MethodVirtuality, OverrideFact,
+        ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind, StorageClass,
+        SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
     },
     ffi::{self, TranslationUnit},
 };
@@ -95,6 +95,7 @@ struct Collector<'unit, 'scratch> {
     references: usize,
     diagnostics: usize,
     includes: usize,
+    overrides: usize,
     cancellation: Option<&'unit AtomicBool>,
     failure: Option<CollectError>,
 }
@@ -115,6 +116,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             references: 0,
             diagnostics: 0,
             includes: 0,
+            overrides: 0,
             cancellation,
             failure: None,
         }
@@ -173,6 +175,21 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return Ok(());
         };
         let type_root = self.collect_type(TranslationUnit::cursor_type(cursor))?;
+        let virtuality = if kind == DeclarationKind::Method {
+            let (is_virtual, is_pure_virtual) = TranslationUnit::method_virtuality(cursor);
+            if is_pure_virtual {
+                MethodVirtuality::PureVirtual
+            } else if is_virtual {
+                MethodVirtuality::Virtual
+            } else {
+                MethodVirtuality::NonVirtual
+            }
+        } else {
+            MethodVirtuality::NonVirtual
+        };
+        if kind == DeclarationKind::Method {
+            self.record_overrides(cursor)?;
+        }
         let id = DeclarationId {
             raw: u32::try_from(self.declarations).map_err(|_| {
                 CollectError::SlotOrdinalTooLarge {
@@ -185,6 +202,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             id,
             kind,
             definition: definition_state(TranslationUnit::is_definition(cursor)),
+            virtuality,
             identity: TranslationUnit::cursor_identity(cursor),
             span,
             name: self.unit.name_span(cursor)?,
@@ -193,6 +211,27 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             storage: storage_class(TranslationUnit::storage_class(cursor)),
             type_root,
         })
+    }
+
+    /// Streams distinct overridden USR identities while the native array guard remains live.
+    fn record_overrides(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
+        let Some(source) = TranslationUnit::cursor_identity(cursor) else {
+            return Ok(());
+        };
+        let overridden = TranslationUnit::overridden_cursors(cursor);
+        for target_cursor in overridden.as_slice() {
+            let Some(target) = TranslationUnit::cursor_identity(*target_cursor) else {
+                continue;
+            };
+            if self.scratch.overrides[..self.overrides]
+                .iter()
+                .any(|fact| fact.source == source && fact.target == target)
+            {
+                continue;
+            }
+            self.push_override(OverrideFact { source, target })?;
+        }
+        Ok(())
     }
 
     /// Retains a direct native reference with a local, foreign, or unresolved target identity.
@@ -430,6 +469,15 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         )
     }
 
+    fn push_override(&mut self, fact: OverrideFact) -> Result<(), CollectError> {
+        push(
+            self.scratch.overrides,
+            &mut self.overrides,
+            ScratchLane::Overrides,
+            fact,
+        )
+    }
+
     /// Returns only the initialized prefixes after preserving any traversal failure exactly.
     fn finish(self) -> Result<ClangFacts<'scratch>, CollectError> {
         if let Some(failure) = self.failure {
@@ -458,6 +506,11 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 ScratchLane::Diagnostics,
             )?,
             includes: prefix(self.scratch.includes, self.includes, ScratchLane::Includes)?,
+            overrides: prefix(
+                self.scratch.overrides,
+                self.overrides,
+                ScratchLane::Overrides,
+            )?,
         })
     }
 }
@@ -667,9 +720,9 @@ const fn builtin_class(kind: CXTypeKind) -> Option<BuiltinClass> {
         clang_sys::CXType_Float | clang_sys::CXType_Double | clang_sys::CXType_LongDouble => {
             Some(BuiltinClass::Float)
         }
-        clang_sys::CXType_NullPtr
-        | clang_sys::CXType_Complex
-        | clang_sys::CXType_Vector => Some(BuiltinClass::Other),
+        clang_sys::CXType_NullPtr | clang_sys::CXType_Complex | clang_sys::CXType_Vector => {
+            Some(BuiltinClass::Other)
+        }
         _ => None,
     }
 }

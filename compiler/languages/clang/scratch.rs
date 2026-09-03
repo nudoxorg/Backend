@@ -3,7 +3,7 @@
 //! No semantic fact vector, string arena, or background cache is allocated by this crate.
 
 use crate::facts::{
-    DeclarationFact, DiagnosticFact, IncludeFact, ReferenceFact, TypeEdge, TypeFact,
+    DeclarationFact, DiagnosticFact, IncludeFact, OverrideFact, ReferenceFact, TypeEdge, TypeFact,
 };
 
 /// Typed slot arrays reserved by a caller for one collection transaction.
@@ -21,4 +21,6 @@ pub struct ClangScratch<'scratch> {
     pub diagnostics: &'scratch mut [DiagnosticFact],
     /// Destination slots for include authority facts.
     pub includes: &'scratch mut [IncludeFact],
+    /// Destination slots for C++ override-authority facts.
+    pub overrides: &'scratch mut [OverrideFact],
 }

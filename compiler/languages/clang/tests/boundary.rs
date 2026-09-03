@@ -54,6 +54,7 @@ fn nul_source_rejects_before_native_loading_or_any_scanner_fallback() -> Result<
     let mut references = [];
     let mut diagnostics = [];
     let mut includes = [];
+    let mut overrides = [];
     let input = ClangInput::C {
         file_name: c"translation.c",
         source: b"int\0main(void);",
@@ -66,6 +67,7 @@ fn nul_source_rejects_before_native_loading_or_any_scanner_fallback() -> Result<
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     };
     match collect(input, scratch) {
         Err(CollectError::SourceContainsNul) => Ok(()),
@@ -83,6 +85,7 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
     let mut references = [];
     let mut diagnostics = [];
     let mut includes = [];
+    let mut overrides = [];
     let input = ClangInput::C {
         file_name: c"translation.c",
         source: b"int main(void);",
@@ -95,6 +98,7 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     };
     match compiler_languages_clang::collect_cancellable(input, scratch, &cancellation) {
         Err(CollectError::Cancelled) => Ok(()),

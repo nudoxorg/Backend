@@ -6,9 +6,9 @@
 
 use compiler_languages_clang::{
     BuiltinClass, ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId,
-    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, ReferenceFact, ReferenceKind,
-    ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass, TypeEdge, TypeFact, TypeId,
-    collect,
+    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, MethodVirtuality, OverrideFact,
+    ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass,
+    SymbolIdentity, TypeEdge, TypeFact, TypeId, collect,
     facts::{TypeKind, TypeQualifiers},
 };
 use compiler_vocabulary::{CStandard, CxxStandard};
@@ -127,6 +127,109 @@ int caller() { Box<int> value{2}; return score(value.value); }
     })
 }
 
+#[test]
+fn cxx_authority_retains_virtuality_and_deduplicated_overrides() -> Result<(), TestError> {
+    let source = br#"
+struct Base { virtual void run() = 0; };
+struct Derived : Base { void run() override; };
+void Derived::run() {}
+"#;
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"authority.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let base = method_identity(
+            &facts,
+            source,
+            b"run",
+            b"Base",
+            MethodVirtuality::PureVirtual,
+        )?;
+        let derived = method_identity(
+            &facts,
+            source,
+            b"run",
+            b"Derived",
+            MethodVirtuality::Virtual,
+        )?;
+        assert_eq!(facts.overrides.len(), 1);
+        assert_eq!(
+            facts.overrides[0],
+            OverrideFact {
+                source: derived,
+                target: base
+            }
+        );
+
+        let mut declarations = [empty_declaration(); DECLARATION_SLOTS];
+        let mut types = [empty_type(); TYPE_SLOTS];
+        let mut type_edges = [empty_type_edge(); TYPE_EDGE_SLOTS];
+        let mut references = [empty_reference(); REFERENCE_SLOTS];
+        let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_SLOTS];
+        let mut includes = [empty_include(); DEPENDENCY_SLOTS];
+        let mut overrides = [];
+        let result = collect(
+            ClangInput::Cxx {
+                file_name: c"authority.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            ClangScratch {
+                declarations: &mut declarations,
+                types: &mut types,
+                type_edges: &mut type_edges,
+                references: &mut references,
+                diagnostics: &mut diagnostics,
+                includes: &mut includes,
+                overrides: &mut overrides,
+            },
+        );
+        match result {
+            Err(CollectError::ScratchCapacity {
+                lane: compiler_languages_clang::ScratchLane::Overrides,
+                capacity: 0,
+                required: 1,
+            }) => Ok(()),
+            Err(error) => Err(TestError::Collection(error)),
+            Ok(_) => Err(TestError::Missing(RequiredFact::OverloadIdentity)),
+        }
+    })
+}
+
+fn method_identity(
+    facts: &compiler_languages_clang::ClangFacts<'_>,
+    source: &[u8],
+    name: &[u8],
+    owner: &[u8],
+    virtuality: MethodVirtuality,
+) -> Result<SymbolIdentity, TestError> {
+    facts
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.kind == DeclarationKind::Method
+                && declaration.virtuality == virtuality
+                && declaration
+                    .name
+                    .is_some_and(|span| source_at(source, span) == name)
+                && declaration.owner.is_some_and(|identity| {
+                    facts.declarations.iter().any(|owner_declaration| {
+                        owner_declaration.identity == Some(identity)
+                            && owner_declaration
+                                .name
+                                .is_some_and(|span| source_at(source, span) == owner)
+                    })
+                })
+        })
+        .and_then(|declaration| declaration.identity)
+        .ok_or(TestError::Missing(RequiredFact::OverloadIdentity))
+}
+
 /// Builds enough caller-owned typed capacity for a small but deliberately rich native fixture.
 fn with_scratch<Output>(
     run: impl for<'scratch> FnOnce(ClangScratch<'scratch>) -> Result<Output, TestError>,
@@ -137,6 +240,7 @@ fn with_scratch<Output>(
     let mut references = [empty_reference(); REFERENCE_SLOTS];
     let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_SLOTS];
     let mut includes = [empty_include(); DEPENDENCY_SLOTS];
+    let mut overrides = [empty_override(); OVERRIDE_SLOTS];
     run(ClangScratch {
         declarations: &mut declarations,
         types: &mut types,
@@ -144,6 +248,7 @@ fn with_scratch<Output>(
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     })
 }
 
@@ -178,6 +283,7 @@ const TYPE_EDGE_SLOTS: usize = 192;
 const REFERENCE_SLOTS: usize = 64;
 const DIAGNOSTIC_SLOTS: usize = 16;
 const DEPENDENCY_SLOTS: usize = 16;
+const OVERRIDE_SLOTS: usize = 16;
 
 const fn empty_span() -> SourceSpan {
     SourceSpan { start: 0, end: 0 }
@@ -188,6 +294,7 @@ const fn empty_declaration() -> DeclarationFact {
         id: DeclarationId { raw: 0 },
         kind: DeclarationKind::Unknown,
         definition: DefinitionState::Declaration,
+        virtuality: MethodVirtuality::NonVirtual,
         identity: None,
         span: empty_span(),
         name: None,
@@ -195,6 +302,13 @@ const fn empty_declaration() -> DeclarationFact {
         documentation: None,
         storage: StorageClass::None,
         type_root: None,
+    }
+}
+
+const fn empty_override() -> OverrideFact {
+    OverrideFact {
+        source: SymbolIdentity { bytes: [0; 16] },
+        target: SymbolIdentity { bytes: [0; 16] },
     }
 }
 
