@@ -84,8 +84,12 @@ in evidence dir; integration test codifies the pipeline on a pinned subset.
 `cargo test -p compiler-driver` compiles and passes. | Weakened: deleting
 stale foreign tests or weakening assertions instead of mapping moved APIs.
 | Falsifier: full crate test target green with no `#[ignore]`, no deleted
-test, and every repaired assertion still names its law. | Crate gates green.
-| RED | W0
+test, and every repaired assertion still names its law. | State: PARTIAL —
+W0 checkpoint 6ecb63ae7 (branch go-fidelity/w0-repair) resolved all
+owned-region compile errors and migrated the go fixture to v5 (9/19 go
+tests green); 31 sibling runtime reds and 10 go reds (re-owned as W3 R0)
+remain; the full-crate gate is required green at closure on the trunk.
+| RED | W0 -> W3 R0 -> closure gate
 
 ## M11 Position non-carriage (brief law 8)
 The v5 image carries no line/column positions when they are losslessly

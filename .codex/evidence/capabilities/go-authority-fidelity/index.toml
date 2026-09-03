@@ -27,6 +27,19 @@ result_commit = ""
 retention = "active"
 
 [[workers]]
+task = "W0-baseline-repair"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "isolated worktree .local/worktrees/go-w0 (branch go-fidelity/w0-repair from aff5024a2)"
+paths = ["compiler/driver/lower/clang.rs (cfg(test) only)", "compiler/driver/lower/python.rs (cfg(test) only)", "compiler/driver/lower/rust.rs (cfg(test) only)", "compiler/driver/lower/go.rs (cfg(test) fixture v5 migration)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "6ecb63ae7"
+retention = "active"
+note = "4 worker turns; turn 1 false completion (lib-only verification) caught by manager reproduction; remaining 10 go reds re-owned by W3 R0; 31 sibling runtime reds inherited; six sibling overlay files sit uncommitted in the worktree and must never be committed"
+
+[[workers]]
 task = "W1-image-v5-wire"
 role = "luna"
 config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
