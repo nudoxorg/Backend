@@ -467,6 +467,7 @@ pub struct ConstrainedDecl<'image> {
 #[derive(Clone, Copy, Debug)]
 pub struct GoImage<'image> {
     bytes: &'image [u8],
+    module_count: usize,
     package_count: usize,
     declaration_count: usize,
     type_count: usize,
@@ -536,7 +537,7 @@ impl<'image> GoImage<'image> {
         let constraint_count = plane_count(bytes, 108, actual_body)?;
         let satisfaction_count = plane_count(bytes, 112, actual_body)?;
         let module_count = plane_count(bytes, 116, actual_body)?;
-        if module_count != 1 {
+        if module_count > 1 {
             return Err(ImageError::Header(HeaderError::ModuleCount {
                 found: module_count,
             }));
@@ -551,7 +552,7 @@ impl<'image> GoImage<'image> {
         let mut source_digest = [0; 32];
         source_digest.copy_from_slice(&bytes[20..52]);
 
-        let packages_offset = HEADER_BYTES + MODULE_BYTES;
+        let packages_offset = HEADER_BYTES + module_count * MODULE_BYTES;
         let declarations_offset = packages_offset + package_count * PACKAGE_BYTES;
         let types_offset = declarations_offset + declaration_count * DECLARATION_BYTES;
         let signature_parameters_offset = types_offset + type_count * TYPE_ROW_BYTES;
@@ -617,6 +618,7 @@ impl<'image> GoImage<'image> {
 
         let image = Self {
             bytes,
+            module_count,
             package_count,
             declaration_count,
             type_count,
@@ -1276,23 +1278,31 @@ impl<'image> GoImage<'image> {
         (0..self.satisfaction_count).map(move |index| self.satisfaction(index))
     }
 
-    /// Borrows the validated module-metadata row. The plane always holds
-    /// exactly one row; its cells are empty when the oracle resolved no
+    /// Borrows the validated module-metadata row, when the oracle resolved a
     /// module.
-    pub fn module(self) -> Result<ModuleRow<'image>, ImageError> {
+    pub fn module(self) -> Result<Option<ModuleRow<'image>>, ImageError> {
+        if self.module_count == 0 {
+            return Ok(None);
+        }
         let row = self.plane_row(HEADER_BYTES, 0, MODULE_BYTES);
-        Ok(ModuleRow {
+        Ok(Some(ModuleRow {
             path: self.atom("module", 0, u32_at(row, 0), u32_at(row, 4))?,
             directory: self.atom("module", 0, u32_at(row, 8), u32_at(row, 12))?,
             go_version: self.atom("module", 0, u32_at(row, 16), u32_at(row, 20))?,
             version: self.atom("module", 0, u32_at(row, 24), u32_at(row, 28))?,
-        })
+        }))
     }
 
     /// Number of validated package rows.
     #[must_use]
     pub const fn package_count(self) -> usize {
         self.package_count
+    }
+
+    /// Number of validated module rows (zero or one).
+    #[must_use]
+    pub const fn module_count(self) -> usize {
+        self.module_count
     }
 
     /// Borrows one validated package row.
@@ -1313,12 +1323,6 @@ impl<'image> GoImage<'image> {
             });
         }
         let name = self.atom("package", index, u32_at(row, 8), u32_at(row, 12))?;
-        if name.is_empty() {
-            return Err(ImageError::EmptyName {
-                plane: "package name",
-                index,
-            });
-        }
         let blob_bytes = u32_at(row, 20);
         let files = self.atom("package", index, u32_at(row, 16), blob_bytes)?;
         let file_count = u32_at(row, 24);
@@ -1455,6 +1459,17 @@ impl<'image> GoImage<'image> {
         })
     }
 
+    /// Borrows one complete interface method-set row.
+    pub fn interface_method_set(self, index: usize) -> Result<MethodSetRow<'image>, ImageError> {
+        self.method_set(index)
+    }
+
+    /// Number of complete interface method-set rows.
+    #[must_use]
+    pub const fn interface_method_set_count(self) -> usize {
+        self.method_set_count
+    }
+
     /// Iterates every method-set row in producer order.
     pub fn method_sets(self) -> impl Iterator<Item = Result<MethodSetRow<'image>, ImageError>> {
         (0..self.method_set_count).map(move |index| self.method_set(index))
@@ -1562,7 +1577,11 @@ impl<'image> GoImage<'image> {
     }
 
     fn validate_module(self) -> Result<(), ImageError> {
-        self.module()?;
+        if let Some(module) = self.module()? {
+            if module.path.is_empty() {
+                return Err(ImageError::ModulePath);
+            }
+        }
         Ok(())
     }
 
@@ -2306,6 +2325,9 @@ pub enum ImageError {
         "Go authority satisfaction {index} names a subject of kind {kind:?}; only named types carry satisfaction edges"
     )]
     SatisfactionSubjectKind { index: usize, kind: DeclarationKind },
+    /// A present module row has no module path.
+    #[error("Go authority module row has an empty path")]
+    ModulePath,
     /// A package row's file blob disagrees with its declared file count.
     #[error(
         "Go authority package {index} file blob of {blob_bytes} bytes does not hold {count} names"
@@ -2423,8 +2445,8 @@ pub enum HeaderError {
     /// Reserved header bytes are not all zero.
     #[error("reserved header bytes are non-zero")]
     Reserved,
-    /// The module plane does not hold exactly one row.
-    #[error("module plane holds {found} rows; exactly one is required")]
+    /// The module plane has more than its permitted optional row.
+    #[error("module plane holds {found} rows; at most one is permitted")]
     ModuleCount { found: usize },
 }
 

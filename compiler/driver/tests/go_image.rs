@@ -82,12 +82,12 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
 }
 
 /// Builds one minimal but fully valid format-v5 Go authority image: an
-/// empty module row, one package row owning the single `Brew` declaration,
+/// no module row, one package row owning the single `Brew` declaration,
 /// and no other populated plane. The source digest binds the fixture bytes.
 fn fixture(source: &[u8]) -> Vec<u8> {
     const HEADER: usize = 136;
     const MODULE_AT: usize = HEADER;
-    const PACKAGE_AT: usize = MODULE_AT + 32;
+    const PACKAGE_AT: usize = MODULE_AT;
     const DECL_AT: usize = PACKAGE_AT + 28;
     const ATOMS_AT: usize = DECL_AT + 56;
     const BODY: usize = ATOMS_AT + 8 - HEADER;
@@ -103,15 +103,15 @@ fn fixture(source: &[u8]) -> Vec<u8> {
     image[12..16].copy_from_slice(&(NAME.len() as u32).to_le_bytes());
     image[16..20].copy_from_slice(&(BODY as u32).to_le_bytes());
     image[20..52].copy_from_slice(Sha256::digest(source).as_slice());
-    image[116..120].copy_from_slice(&1_u32.to_le_bytes()); // module row
+    image[116..120].copy_from_slice(&0_u32.to_le_bytes()); // no module row
     image[120..124].copy_from_slice(&1_u32.to_le_bytes()); // package row
 
-    // Package row: import path "demo", clause "demo", no files, run 0..1.
+    // Package row: import path "demo", clause "demo", no files.
     image[PACKAGE_AT..PACKAGE_AT + 4].copy_from_slice(&0_u32.to_le_bytes());
     image[PACKAGE_AT + 4..PACKAGE_AT + 8].copy_from_slice(&4_u32.to_le_bytes());
+    image[PACKAGE_AT + 8..PACKAGE_AT + 12].copy_from_slice(&0_u32.to_le_bytes());
     image[PACKAGE_AT + 12..PACKAGE_AT + 16].copy_from_slice(&4_u32.to_le_bytes());
-    image[PACKAGE_AT + 28..PACKAGE_AT + 32].copy_from_slice(&0_u32.to_le_bytes());
-    image[PACKAGE_AT + 32..PACKAGE_AT + 36].copy_from_slice(&1_u32.to_le_bytes());
+    image[PACKAGE_AT + 24..PACKAGE_AT + 28].copy_from_slice(&0_u32.to_le_bytes());
 
     // Declaration row: exported func Brew in demo, no typed root.
     image[DECL_AT] = 3;

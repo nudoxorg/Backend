@@ -474,7 +474,10 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
     assert_eq!(image.source_digest(), expected);
 
     // Module metadata: the go.mod facts in one row.
-    let module = image.module().map_err(image_fault)?;
+    let module = image
+        .module()
+        .map_err(image_fault)?
+        .expect("fixture module metadata row");
     let json_module = output.module.as_ref().expect("fixture module metadata");
     assert_eq!(module.path, json_module.path.as_bytes());
     assert_eq!(module.directory, json_module.dir.as_bytes());
@@ -709,7 +712,11 @@ func main() {
 
     // Module row binds the temp module's path.
     assert_eq!(
-        image.module().map_err(image_fault)?.path,
+        image
+            .module()
+            .map_err(image_fault)?
+            .expect("temp module metadata row")
+            .path,
         b"example.com/params".as_slice()
     );
     // Two package rows in strict import-path order.
@@ -835,7 +842,7 @@ mod mutation_battery {
     const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\x00";
     const HEADER: usize = 136;
     const MODULE_AT: usize = HEADER;
-    const PACKAGES_AT: usize = MODULE_AT + 32;
+    const PACKAGES_AT: usize = MODULE_AT;
     const DECLS_AT: usize = PACKAGES_AT + 2 * 28;
     const TYPES_AT: usize = DECLS_AT + 2 * 56;
     const SIGPARAMS_AT: usize = TYPES_AT + 2 * 52;
@@ -916,13 +923,12 @@ mod mutation_battery {
         image[12..16].copy_from_slice(&(ATOMS.len() as u32).to_le_bytes());
         image[16..20].copy_from_slice(&(BODY as u32).to_le_bytes());
         image[84..88].copy_from_slice(&2_u32.to_le_bytes()); // types
-        image[116..120].copy_from_slice(&1_u32.to_le_bytes()); // module
+        image[116..120].copy_from_slice(&0_u32.to_le_bytes()); // no module
         image[120..124].copy_from_slice(&2_u32.to_le_bytes()); // packages
         image[124..128].copy_from_slice(&1_u32.to_le_bytes()); // signature parameters
         image[128..132].copy_from_slice(&2_u32.to_le_bytes()); // method sets
 
-        // The module row stays all-zero: empty metadata cells. Bytes
-        // 132..136 stay zero: the reserved envelope tail.
+        // Bytes 132..136 stay zero: the reserved envelope tail.
         image[PACKAGES_AT..PACKAGES_AT + 28].copy_from_slice(&package_row([0, 5], [9, 1]));
         image[PACKAGES_AT + 28..PACKAGES_AT + 56].copy_from_slice(&package_row([5, 4], [10, 1]));
 
@@ -992,13 +998,6 @@ mod mutation_battery {
         assert_eq!(
             open(&image),
             ImageError::Header(HeaderError::ModuleCount { found: 2 })
-        );
-        let mut image = build();
-        image[116..120].copy_from_slice(&0_u32.to_le_bytes());
-        reseal(&mut image);
-        assert_eq!(
-            open(&image),
-            ImageError::Header(HeaderError::ModuleCount { found: 0 })
         );
     }
 

@@ -855,6 +855,9 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 	// The single module-metadata row; every cell stays empty when the
 	// oracle resolved no module (e.g. GOPATH-mode analysis).
 	if output.Module != nil {
+		if output.Module.Path == "" {
+			return nil, fmt.Errorf("go/types emitted a module with an empty path")
+		}
 		var err error
 		if p.module.path, err = p.atom(output.Module.Path); err != nil {
 			return nil, err
@@ -1263,15 +1266,18 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 		}
 	}
 
-	module := make([]byte, authorityModuleBytes)
-	binary.LittleEndian.PutUint32(module[0:4], p.module.path.offset)
-	binary.LittleEndian.PutUint32(module[4:8], p.module.path.length)
-	binary.LittleEndian.PutUint32(module[8:12], p.module.dir.offset)
-	binary.LittleEndian.PutUint32(module[12:16], p.module.dir.length)
-	binary.LittleEndian.PutUint32(module[16:20], p.module.goVersion.offset)
-	binary.LittleEndian.PutUint32(module[20:24], p.module.goVersion.length)
-	binary.LittleEndian.PutUint32(module[24:28], p.module.version.offset)
-	binary.LittleEndian.PutUint32(module[28:32], p.module.version.length)
+	module := make([]byte, 0, authorityModuleBytes)
+	if p.module.path.length != 0 {
+		module = make([]byte, authorityModuleBytes)
+		binary.LittleEndian.PutUint32(module[0:4], p.module.path.offset)
+		binary.LittleEndian.PutUint32(module[4:8], p.module.path.length)
+		binary.LittleEndian.PutUint32(module[8:12], p.module.dir.offset)
+		binary.LittleEndian.PutUint32(module[12:16], p.module.dir.length)
+		binary.LittleEndian.PutUint32(module[16:20], p.module.goVersion.offset)
+		binary.LittleEndian.PutUint32(module[20:24], p.module.goVersion.length)
+		binary.LittleEndian.PutUint32(module[24:28], p.module.version.offset)
+		binary.LittleEndian.PutUint32(module[28:32], p.module.version.length)
+	}
 	packages := make([]byte, 0, len(p.packages)*authorityPackageBytes)
 	for _, row := range p.packages {
 		rowBytes := make([]byte, authorityPackageBytes)
@@ -1491,7 +1497,11 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 	binary.LittleEndian.PutUint32(image[104:108], uint32(len(p.docs)))
 	binary.LittleEndian.PutUint32(image[108:112], uint32(len(p.cons)))
 	binary.LittleEndian.PutUint32(image[112:116], uint32(len(p.sats)))
-	binary.LittleEndian.PutUint32(image[116:120], 1) // the module plane always holds its single row
+	moduleCount := 0
+	if len(module) != 0 {
+		moduleCount = 1
+	}
+	binary.LittleEndian.PutUint32(image[116:120], uint32(moduleCount))
 	binary.LittleEndian.PutUint32(image[120:124], uint32(len(p.packages)))
 	binary.LittleEndian.PutUint32(image[124:128], uint32(len(p.sigParams)))
 	binary.LittleEndian.PutUint32(image[128:132], uint32(len(p.methodSets)))
