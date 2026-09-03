@@ -3297,7 +3297,9 @@ mod tests {
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
         let docs = view.docs().ok_or(TestError::Missing("docs"))?;
-        if docs.count() != 4_100 {
+        // 2,050 generated lines emit one text fragment each plus one soft
+        // break between lines — the final line carries no trailing break.
+        if docs.count() != 4_099 {
             return Err(TestError::Missing("exact generated documentation count"));
         }
         Ok(())
