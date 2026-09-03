@@ -12,7 +12,9 @@ use compiler_driver::{
     SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile_ir,
 };
 use compiler_ir::{EntityId, ItemKind};
-use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{
+    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -32,6 +34,14 @@ pub trait Visitor {
     fn visit(&self, node: &Node) -> u8;
 }
 
+pub struct Counter {
+    pub seen: u8,
+}
+
+pub fn sweep<T: Clone>(items: &[T], visitor: &dyn Visitor) -> Vec<u8> {
+    visitor.visit(&items[0])
+}
+
 /// Borrows and moves parameters.
 pub fn total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64 {
     u64::from(shared.weight) + u64::from(exclusive.weight) + u64::from(moved.weight)
@@ -39,6 +49,10 @@ pub fn total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64 {
 
 pub fn apply(callback: fn(u8) -> u8, seed: u8) -> u8 {
     callback(seed)
+}
+
+fn private_total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64 {
+    total(shared, exclusive, moved)
 }
 "#;
 
@@ -52,6 +66,8 @@ const NODE_DOCS: &str = "A recursive node storing [Node](struct.Node.html) links
 const U8_TYPE: &str = "u8";
 const NEXT_TYPE: &str = "Option<Box<Node>>";
 const APPLY_SIGNATURE: &str = "pub fn apply(callback: fn(u8) -> u8, seed: u8) -> u8";
+const PRIVATE_TOTAL_SIGNATURE: &str =
+    "fn private_total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64";
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -145,6 +161,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::DeadlineExceeded { .. } => "deadline-exceeded",
         CompileFailure::DiagnosticLimit { .. } => "diagnostic-limit",
         CompileFailure::NativeRejected { .. } => "native-rejected",
+        CompileFailure::FactRejected { .. } => "fact-rejected",
     }
 }
 
@@ -177,6 +194,7 @@ fn compile_fixture() -> Result<compiler_ir::Ir, TestError> {
             authority: SemanticAuthorityInput::Rust {
                 project: &project,
                 maximum_source_bytes: SourceByteLimit::from(65_536),
+                features: RustFeatureControl::default(),
             },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(120),
@@ -334,4 +352,34 @@ fn function_pointer_parameter_signature_is_frozen() -> Result<(), TestError> {
         signature(&ir, apply, "apply")?,
         APPLY_SIGNATURE,
     )
+}
+
+#[test]
+fn rust_visibility_is_preserved_for_same_shaped_declarations() -> Result<(), TestError> {
+    let ir = compile_fixture()?;
+    let public = item(&ir, b"total", ItemKind::Function)?;
+    let private = item(&ir, b"private_total", ItemKind::Function)?;
+    assert_eq!(
+        ir.item(public)
+            .ok_or(TestError::MissingEntity {
+                name: b"public total",
+                kind: ItemKind::Function,
+            })?
+            .visibility(),
+        compiler_ir::Visibility::Public
+    );
+    assert_eq!(
+        ir.item(private)
+            .ok_or(TestError::MissingEntity {
+                name: b"private total",
+                kind: ItemKind::Function,
+            })?
+            .visibility(),
+        compiler_ir::Visibility::Private
+    );
+    assert_eq!(
+        signature(&ir, private, "private_total")?,
+        PRIVATE_TOTAL_SIGNATURE
+    );
+    Ok(())
 }
