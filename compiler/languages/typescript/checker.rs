@@ -36,6 +36,10 @@ const TRANSCRIPT_PREFIX_LIMIT: usize = 4096;
 const TRANSCRIPT_TAIL_LIMIT: usize = 4096;
 /// Exit code the vendored driver uses when `typescript` is not resolvable.
 const MODULE_MISSING_EXIT: i32 = 3;
+/// Maximum number of files copied for one package-context run.
+const PACKAGE_FILE_LIMIT: usize = 4096;
+/// Maximum total bytes copied for one package-context run.
+const PACKAGE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 
 /// The payload schema this build reads; a differing schema is typed staleness.
 pub(crate) const REQUIRED_SCHEMA_VERSION: u32 = 1;
@@ -138,6 +142,28 @@ pub enum CheckerError {
         /// The filesystem failure.
         #[source]
         source: std::io::Error,
+    },
+    /// The package staging file count exceeded its bound.
+    #[error("TypeScript checker package file limit exceeded: observed {observed}, limit {limit}")]
+    PackageFileLimit {
+        /// Number of package files observed before rejection.
+        observed: usize,
+        /// Maximum number of package files accepted.
+        limit: usize,
+    },
+    /// The package staging byte count exceeded its bound.
+    #[error("TypeScript checker package byte limit exceeded: observed {observed}, limit {limit}")]
+    PackageByteLimit {
+        /// Total package bytes observed before rejection.
+        observed: usize,
+        /// Maximum total package bytes accepted.
+        limit: usize,
+    },
+    /// Package staging did not complete before the checker deadline.
+    #[error("TypeScript checker package staging timed out after {milliseconds}ms")]
+    PackageTimeout {
+        /// Configured deadline in milliseconds.
+        milliseconds: u128,
     },
     /// A checker UTF-16 span could not bind to the exact UTF-8 source.
     #[error("TypeScript checker span {start}..{end} does not bind to the source")]
@@ -629,6 +655,62 @@ impl Checker {
         }
     }
 
+    /// Runs the checker against a read-only staged copy of a package tree.
+    ///
+    /// The source is installed as the package root's `index.ts` (or `index.tsx`)
+    /// in the staged tree. The caller's tree is only read, so module resolution
+    /// sees its relative imports and package-local `node_modules` without
+    /// granting the child write access to caller-owned files.
+    pub fn run_in_package(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+    ) -> Result<Report, CheckerError> {
+        let work = work_directory();
+        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+            phase: "prepare",
+            source: cause,
+        })?;
+        let started = Instant::now();
+        let run = (|| {
+            let staged = work.join("package");
+            let mut budget = PackageBudget::new(started, self.timeout);
+            stage_package(package_root, &staged, &mut budget)?;
+            let file = staged.join(package_entry_file(profile));
+            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                phase: "prepare",
+                source: cause,
+            })?;
+            match std::env::var("NUDOX_TYPESCRIPT_CHECKER_BIN") {
+                Ok(binary) => self.run_child(&work, Path::new(&binary), &file),
+                Err(std::env::VarError::NotPresent) => {
+                    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("checker")
+                        .join("main.cjs");
+                    let mut command = Command::new("node");
+                    command.arg(driver).arg(&file);
+                    self.run_child_prepared(&work, command, &file)
+                }
+                Err(cause) => Err(CheckerError::ToolingUnavailable {
+                    tool: "NUDOX_TYPESCRIPT_CHECKER_BIN",
+                    source: std::io::Error::other(cause),
+                }),
+            }
+        })();
+        match std::fs::remove_dir_all(&work) {
+            Ok(()) => run,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
+            Err(cause) => match run {
+                Ok(_) => Err(CheckerError::Work {
+                    phase: "cleanup",
+                    source: cause,
+                }),
+                Err(primary) => Err(primary),
+            },
+        }
+    }
+
     /// Runs the vendored checker through one explicit child program.
     ///
     /// The program receives the work source file as its single argument and
@@ -823,6 +905,131 @@ pub(crate) const fn source_file(profile: TypeScriptSource) -> &'static str {
         TypeScriptSource::TypeScript => "compiler-probe.ts",
         TypeScriptSource::Tsx => "compiler-probe.tsx",
     }
+}
+
+const fn package_entry_file(profile: TypeScriptSource) -> &'static str {
+    match profile {
+        TypeScriptSource::TypeScript => "index.ts",
+        TypeScriptSource::Tsx => "index.tsx",
+    }
+}
+
+struct PackageBudget {
+    started: Instant,
+    timeout: Duration,
+    files: usize,
+    bytes: usize,
+}
+
+impl PackageBudget {
+    fn new(started: Instant, timeout: Duration) -> Self {
+        Self {
+            started,
+            timeout,
+            files: 0,
+            bytes: 0,
+        }
+    }
+
+    fn check(&mut self, size: usize) -> Result<(), CheckerError> {
+        if self.started.elapsed() >= self.timeout {
+            return Err(CheckerError::PackageTimeout {
+                milliseconds: self.timeout.as_millis(),
+            });
+        }
+        let files = self.files.saturating_add(1);
+        if files > PACKAGE_FILE_LIMIT {
+            return Err(CheckerError::PackageFileLimit {
+                observed: files,
+                limit: PACKAGE_FILE_LIMIT,
+            });
+        }
+        let bytes = self.bytes.saturating_add(size);
+        if bytes > PACKAGE_BYTE_LIMIT {
+            return Err(CheckerError::PackageByteLimit {
+                observed: bytes,
+                limit: PACKAGE_BYTE_LIMIT,
+            });
+        }
+        self.files = files;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
+fn stage_package(
+    source: &Path,
+    destination: &Path,
+    budget: &mut PackageBudget,
+) -> Result<(), CheckerError> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|cause| CheckerError::Work {
+        phase: "stage metadata",
+        source: cause,
+    })?;
+    if !metadata.is_dir() {
+        return Err(CheckerError::Work {
+            phase: "stage root",
+            source: std::io::Error::other("package root is not a directory"),
+        });
+    }
+    std::fs::create_dir_all(destination).map_err(|cause| CheckerError::Work {
+        phase: "stage directory",
+        source: cause,
+    })?;
+    for entry in std::fs::read_dir(source).map_err(|cause| CheckerError::Work {
+        phase: "stage directory",
+        source: cause,
+    })? {
+        if budget.started.elapsed() >= budget.timeout {
+            return Err(CheckerError::PackageTimeout {
+                milliseconds: budget.timeout.as_millis(),
+            });
+        }
+        let entry = entry.map_err(|cause| CheckerError::Work {
+            phase: "stage directory",
+            source: cause,
+        })?;
+        let child = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&child).map_err(|cause| CheckerError::Work {
+            phase: "stage metadata",
+            source: cause,
+        })?;
+        if metadata.is_dir() {
+            stage_package(&child, &target, budget)?;
+        } else if metadata.is_file() {
+            let remaining = PACKAGE_BYTE_LIMIT.saturating_sub(budget.bytes);
+            let mut bytes = Vec::new();
+            std::fs::File::open(&child)
+                .map_err(|cause| CheckerError::Work {
+                    phase: "stage read",
+                    source: cause,
+                })?
+                .take(remaining.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|cause| CheckerError::Work {
+                    phase: "stage read",
+                    source: cause,
+                })?;
+            if bytes.len() > remaining {
+                return Err(CheckerError::PackageByteLimit {
+                    observed: budget.bytes.saturating_add(bytes.len()),
+                    limit: PACKAGE_BYTE_LIMIT,
+                });
+            }
+            budget.check(bytes.len())?;
+            std::fs::write(&target, bytes).map_err(|cause| CheckerError::Work {
+                phase: "stage write",
+                source: cause,
+            })?;
+        } else {
+            return Err(CheckerError::Work {
+                phase: "stage entry",
+                source: std::io::Error::other("package entry is not a regular file or directory"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn work_directory() -> PathBuf {

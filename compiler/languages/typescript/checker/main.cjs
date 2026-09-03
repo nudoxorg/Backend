@@ -53,6 +53,7 @@ const program = ts.createProgram(
     noEmit: true,
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeJs,
     jsx: isTsx ? ts.JsxEmit.Preserve : undefined,
   },
   host,
@@ -88,6 +89,24 @@ function moduleOf(fileName) {
     if (segments.length === 0) return null;
     if (segments[0].startsWith('@')) return `${segments[0]}/${segments[1] || ''}`;
     return segments[0];
+  }
+  return null;
+}
+
+/** Returns the source spelling that introduced an imported/exported symbol. */
+function moduleSpecifier(node) {
+  let parent = node.parent;
+  if (parent && ts.isExportSpecifier(parent)) {
+    const declaration = parent.parent && parent.parent.parent;
+    if (declaration && ts.isExportDeclaration(declaration) && declaration.moduleSpecifier) {
+      return declaration.moduleSpecifier.text;
+    }
+  }
+  if (parent && ts.isImportSpecifier(parent)) {
+    const declaration = parent.parent && parent.parent.parent;
+    if (declaration && ts.isImportDeclaration(declaration) && declaration.moduleSpecifier) {
+      return declaration.moduleSpecifier.text;
+    }
   }
   return null;
 }
@@ -381,8 +400,12 @@ function isDeclaredName(node) {
 
 function emitReference(node) {
   if (isDeclaredName(node)) return;
-  const symbol = checker.getSymbolAtLocation(node);
+  let symbol = checker.getSymbolAtLocation(node);
   if (!symbol) return;
+  if (symbol.flags & ts.SymbolFlags.Alias) {
+    const aliased = checker.getAliasedSymbol(symbol);
+    if (aliased) symbol = aliased;
+  }
   const declarationsOfSymbol = symbol.getDeclarations ? symbol.getDeclarations() || [] : [];
   const origin = declarationsOfSymbol[0];
   if (!origin) return;
@@ -393,7 +416,7 @@ function emitReference(node) {
     entry.targetStart = originName.getStart(sourceFile);
     entry.targetEnd = originName.getEnd();
   } else if (originFile) {
-    entry.module = moduleOf(originFile.fileName);
+    entry.module = moduleSpecifier(node) || moduleSpecifier(origin) || moduleOf(originFile.fileName);
     entry.name = originName ? originName.getText(originFile) : symbol.getName();
   } else {
     entry.module = 'typescript';
