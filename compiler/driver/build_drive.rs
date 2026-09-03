@@ -8,6 +8,8 @@
 //! paths are always below the caller's scratch directory.  The existing native child module is
 //! intentionally not reused: it couples stdin-fed frontend lowering to a compile request,
 //! whereas these children need ordinary stdout capture and exit-status observation.
+//! JSON compilation databases follow the same law: only entries with `-c` and a C/C++ source
+//! suffix are translation units; zero-argument and other entries are adapter selection.
 //!
 //! The make compiler-cell transport list is closed: `clang`, `clang++`, `cc`, `c++`, `gcc`, `g++`,
 //! `c99`, and `c11`, plus cross-toolchain names ending in `-gcc` or `-g++`.  `ccache` and `sccache`
@@ -727,6 +729,18 @@ fn read_compdb(bytes: &[u8]) -> Result<Vec<DrivenTranslationUnit>, CompdbError> 
                 required: arguments.len(),
                 capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
             });
+        }
+        // Generated databases contain link, phony, and tool-runner edges as well as compiles.
+        // As with make, only an explicit compile flag plus a source suffix admits a TU.
+        if !arguments.iter().any(|argument| argument == "-c") || !is_source(&source) {
+            reader.ws();
+            if reader.bytes.get(reader.at) == Some(&b',') {
+                reader.at += 1;
+                reader.ws();
+            } else {
+                break;
+            }
+            continue;
         }
         result.push(DrivenTranslationUnit {
             source: PathBuf::from(source),
