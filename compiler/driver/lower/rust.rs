@@ -255,8 +255,6 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
-    /// Reserved fact ordinal owning anonymous rows during one type lowering.
-    active_anchor: Option<u32>,
 }
 
 impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
@@ -279,7 +277,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
-            active_anchor: None,
         }
     }
 
@@ -1084,12 +1081,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let Some(text) = self.written_type_name(Some(bound_ty)) else {
             return Ok(None);
         };
-        let previous = self.active_anchor.replace(coordinate(self.facts.len())?);
         let row = self.host(
             Lowered::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(text))),
             Some(bound_ty),
         );
-        self.active_anchor = previous;
         row
     }
 
@@ -1189,10 +1184,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         anchor: Option<&ast::Type>,
         depth: usize,
     ) -> Result<Lowered<'source>, RustAuthorityError> {
-        let previous = self.active_anchor.replace(coordinate(self.facts.len())?);
-        let lowered = self.lower_type(semantic, anchor, depth);
-        self.active_anchor = previous;
-        lowered
+        self.lower_type(semantic, anchor, depth)
     }
 
     /// Hosts one lowered child position and returns the backward coordinate
@@ -1224,9 +1216,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     }
                 }
             }
-            let Some(anchor_row) = self.active_anchor else {
-                return Ok(None);
-            };
+            let anchor_row = coordinate(self.facts.len())?;
             let row = self
                 .facts
                 .intern_reserved_anchor_type_row(anchor_row, lowered.record)
