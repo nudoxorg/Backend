@@ -400,9 +400,15 @@ pub(crate) fn collect<'source>(
                 push_docs(facts, &names, ordinal, &declared)?;
                 ordinal
             }
-            DeclarationKind::Module | DeclarationKind::Package => {
+            DeclarationKind::Module => {
                 push_root(facts, image, &names, &declared, declaration_index)?
             }
+            DeclarationKind::Package if !declared.name.bytes.is_empty() => {
+                push_root(facts, image, &names, &declared, declaration_index)?
+            }
+            // The unnamed package cannot carry package-info annotations or
+            // documentation, so this row carries no retainable facts.
+            DeclarationKind::Package => 0,
             DeclarationKind::Field
             | DeclarationKind::EnumConstant
             | DeclarationKind::Constructor
@@ -1965,6 +1971,19 @@ mod tests {
             u32::try_from(self.declarations.len() - 1).unwrap_or(u32::MAX)
         }
 
+        fn package(&mut self, name: &[u8]) -> u32 {
+            let name = self.atom(name);
+            self.declarations.push(DeclarationRow {
+                kind: 2,
+                name,
+                owner: None,
+                documentation: None,
+                semantic_type: None,
+                symbol: None,
+            });
+            u32::try_from(self.declarations.len() - 1).unwrap_or(u32::MAX)
+        }
+
         fn extension(&mut self, declaration: usize, tag: u8, value: u32) {
             while self.extensions.len() <= declaration {
                 self.extensions.push(Vec::new());
@@ -2262,6 +2281,43 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         if view.type_facts().is_some() || view.occurrences().is_some() || view.docs().is_some() {
             return Err(TestError::Missing("absent semantic sections"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unnamed_package_row_is_skipped_but_class_facts_are_committed() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.package(b"");
+        fix.class(b"C");
+        let bytes = lower(&fix, b"class C {}")?;
+        let view = FragmentView::validate(&bytes)?;
+        let entities: Vec<_> = view.entities().collect();
+        if entities.len() != 1
+            || entities[0].kind != EntityKind::Record
+            || view
+                .atoms()
+                .nth(entities[0].name.raw as usize)
+                .map(|atom| atom.bytes)
+                != Some(b"C".as_slice())
+        {
+            return Err(TestError::Missing("unnamed package skipped"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn named_package_retains_its_annotation_atom() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.package(b"demo");
+        let annotation = fix.atom(b"Ldemo/Package;");
+        fix.extension(0, 2, u32::try_from(annotation)?);
+        let bytes = lower(&fix, b"package demo;")?;
+        let view = FragmentView::validate(&bytes)?;
+        if atom_list(&view, java_extension(&view, 0)?.annotations.raw as usize)?
+            != vec![b"Ldemo/Package;".as_slice()]
+        {
+            return Err(TestError::Missing("named package annotation"));
         }
         Ok(())
     }

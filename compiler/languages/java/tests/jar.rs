@@ -1,43 +1,66 @@
 use compiler_languages_java::jar::{Jar, JarError};
+use flate2::{Compress, Compression, FlushCompress};
 
 fn put(v: &mut Vec<u8>, n: u32) {
     v.extend(n.to_le_bytes());
 }
 fn zip(name: &[u8], body: &[u8], method: u16) -> Vec<u8> {
+    zip_entries(&[(name, body, body, method)])
+}
+fn zip_entries(entries: &[(&[u8], &[u8], &[u8], u16)]) -> Vec<u8> {
     let mut z = Vec::new();
-    let crc = crc(body);
-    let local = 0u32;
-    put(&mut z, 0x0403_4b50);
-    z.extend([20, 0, 0, 0]);
-    z.extend(method.to_le_bytes());
-    z.extend([0; 4]);
-    put(&mut z, crc);
-    put(&mut z, body.len() as u32);
-    put(&mut z, body.len() as u32);
-    z.extend((name.len() as u16).to_le_bytes());
-    z.extend([0, 0]);
-    z.extend(name);
-    z.extend(body);
+    let mut locals = Vec::new();
+    for (name, packed, unpacked, method) in entries {
+        locals.push(z.len() as u32);
+        put(&mut z, 0x0403_4b50);
+        z.extend([20, 0, 0, 0]);
+        z.extend(method.to_le_bytes());
+        z.extend([0; 4]);
+        put(&mut z, crc(unpacked));
+        put(&mut z, packed.len() as u32);
+        put(&mut z, unpacked.len() as u32);
+        z.extend((name.len() as u16).to_le_bytes());
+        z.extend([0, 0]);
+        z.extend(*name);
+        z.extend(*packed);
+    }
     let cd = z.len() as u32;
-    put(&mut z, 0x0201_4b50);
-    z.extend([20, 0, 20, 0, 0, 0]);
-    z.extend(method.to_le_bytes());
-    z.extend([0; 4]);
-    put(&mut z, crc);
-    put(&mut z, body.len() as u32);
-    put(&mut z, body.len() as u32);
-    z.extend((name.len() as u16).to_le_bytes());
-    z.extend([0; 12]);
-    put(&mut z, local);
-    z.extend(name);
+    for ((name, packed, unpacked, method), local) in entries.iter().zip(locals) {
+        put(&mut z, 0x0201_4b50);
+        z.extend([20, 0, 20, 0, 0, 0]);
+        z.extend(method.to_le_bytes());
+        z.extend([0; 4]);
+        put(&mut z, crc(unpacked));
+        put(&mut z, packed.len() as u32);
+        put(&mut z, unpacked.len() as u32);
+        z.extend((name.len() as u16).to_le_bytes());
+        z.extend([0; 12]);
+        put(&mut z, local);
+        z.extend(*name);
+    }
     put(&mut z, 0x0605_4b50);
     z.extend([0; 4]);
-    z.extend([1, 0, 1, 0]);
-    let directory_size = 46 + name.len() as u32;
+    z.extend((entries.len() as u16).to_le_bytes());
+    z.extend((entries.len() as u16).to_le_bytes());
+    let directory_size = entries
+        .iter()
+        .map(|(name, _, _, _)| 46 + name.len() as u32)
+        .sum::<u32>();
     put(&mut z, directory_size);
     put(&mut z, cd);
     z.extend([0, 0]);
     z
+}
+fn raw_deflate(body: &[u8], zlib: bool) -> Vec<u8> {
+    let mut compressor = Compress::new(Compression::default(), zlib);
+    let mut output = vec![0; body.len() + 64];
+    compressor
+        .compress(body, &mut output, FlushCompress::Finish)
+        .unwrap();
+    let written = compressor.total_out() as usize;
+    output.truncate(written);
+    assert_eq!(compressor.total_out() as usize, output.len());
+    output
 }
 fn crc(bytes: &[u8]) -> u32 {
     let mut c = !0;
@@ -95,5 +118,47 @@ fn crc_corruption_is_rejected() {
     assert!(matches!(
         entry.data(&mut Vec::new()),
         Err(JarError::CrcMismatch { .. })
+    ));
+}
+
+#[test]
+fn stored_and_raw_deflated_entries_round_trip_after_name_filtering() {
+    let raw = raw_deflate(b"raw payload", false);
+    let bytes = zip_entries(&[
+        (b"stored", b"stored payload", b"stored payload", 0),
+        (b"raw", &raw, b"raw payload", 8),
+    ]);
+    let jar = Jar::parse(&bytes).unwrap();
+    let mut output = Vec::new();
+    let entry = jar
+        .entries()
+        .map(Result::unwrap)
+        .find(|entry| entry.name() == b"raw")
+        .unwrap();
+    assert_eq!(entry.data(&mut output).unwrap().as_ref(), b"raw payload");
+}
+
+#[test]
+fn wrapped_deflate_is_a_typed_rejection() {
+    let wrapped = raw_deflate(b"payload", true);
+    let bytes = zip_entries(&[(b"payload", &wrapped, b"payload", 8)]);
+    let jar = Jar::parse(&bytes).unwrap();
+    let entry = jar.entries().next().unwrap().unwrap();
+    assert!(matches!(
+        entry.data(&mut Vec::new()),
+        Err(JarError::Deflate { .. })
+    ));
+}
+
+#[test]
+fn truncated_deflate_is_a_typed_size_rejection() {
+    let raw = raw_deflate(b"payload", false);
+    let truncated = raw[..raw.len() / 2].to_vec();
+    let bytes = zip_entries(&[(b"payload", &truncated, b"payload", 8)]);
+    let jar = Jar::parse(&bytes).unwrap();
+    let entry = jar.entries().next().unwrap().unwrap();
+    assert!(matches!(
+        entry.data(&mut Vec::new()),
+        Err(JarError::SizeMismatch { .. })
     ));
 }

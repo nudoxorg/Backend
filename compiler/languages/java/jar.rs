@@ -324,7 +324,7 @@ impl<'jar> JarEntry<'jar> {
         })?;
         output.clear();
         output.resize(target, 0);
-        let mut decoder = Decompress::new(true);
+        let mut decoder = Decompress::new(false);
         let status = decoder
             .decompress(&self.jar.bytes[begin..end], output, FlushDecompress::Finish)
             .map_err(|source| JarError::Deflate {
