@@ -5,7 +5,9 @@
 #![warn(missing_docs)]
 
 mod bound;
+pub mod central;
 mod image;
+pub mod jar;
 pub mod purl;
 pub mod repo;
 
