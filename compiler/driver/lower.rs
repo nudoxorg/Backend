@@ -1437,6 +1437,21 @@ fn live_type<'source>(
             Ok(PrimitiveShape::Builtin) if record.text == Some(b"None") => tree
                 .intern_concrete(ConcreteType::Builtin(BuiltinType::None_))?
                 .erase(),
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"list") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::List))?
+                .erase(),
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"dict") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::Dict))?
+                .erase(),
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"set") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::Set))?
+                .erase(),
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"frozenset") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::FrozenSet))?
+                .erase(),
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"bytes") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::Bytes))?
+                .erase(),
             Ok(PrimitiveShape::Float) => match record.payload1 {
                 16 => tree
                     .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
