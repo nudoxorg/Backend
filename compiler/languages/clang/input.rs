@@ -16,7 +16,7 @@ pub struct UnsupportedLanguageProfile {
 }
 
 /// Maximum number of NUL-terminated arguments retained from one compilation-database command.
-pub const MAX_DATABASE_ARGUMENTS: usize = 64;
+pub const MAX_DATABASE_ARGUMENTS: usize = 256;
 
 /// Borrowed arguments read verbatim from one compilation-database command.
 #[derive(Clone, Copy, Debug)]

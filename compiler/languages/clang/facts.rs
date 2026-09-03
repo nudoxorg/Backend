@@ -1,6 +1,33 @@
 //! Defines compact C and C++ semantic facts emitted by the direct libclang authority.
 //! All locations are exact half-open byte spans into the caller's input source slice.
 //! Recursive type structure is represented by fact and edge rows, never serialized strings.
+//!
+//! Authority lane geometry is 1024 rows: declarations and references feed the trunk's
+//! `MAX_EMISSION_FACTS` and `MAX_EMISSION_OCCURRENCES` lanes respectively. Types and type edges
+//! feed the trunk fact/type-child lanes; diagnostics feed doc fragments; includes and overrides
+//! feed the extension/occurrence lanes. A filled lane retains only its typed slots on the caller's
+//! heap: bytes below include element storage but exclude the caller's slice descriptor.
+//! The empty `ClangScratch` descriptor remains 112 bytes before and after scaling (seven
+//! caller-provided mutable slice descriptors); scaled storage is not embedded in it.
+
+use core::mem::size_of;
+
+/// Shared trunk-class row geometry for every bounded Clang authority lane.
+pub const MAX_CLANG_FACTS: usize = 1024;
+/// Declaration rows feed trunk `MAX_EMISSION_FACTS`.
+pub const MAX_CLANG_DECLARATIONS: usize = MAX_CLANG_FACTS;
+/// Recursive type rows feed trunk type facts within `MAX_EMISSION_FACTS`.
+pub const MAX_CLANG_TYPES: usize = MAX_CLANG_FACTS;
+/// Recursive type edges feed trunk type-child adjacency within `MAX_EMISSION_FACTS`.
+pub const MAX_CLANG_TYPE_EDGES: usize = MAX_CLANG_FACTS;
+/// Reference rows feed trunk `MAX_EMISSION_OCCURRENCES`.
+pub const MAX_CLANG_REFERENCES: usize = MAX_CLANG_FACTS;
+/// Diagnostic rows feed trunk `MAX_EMISSION_DOC_FRAGMENTS`.
+pub const MAX_CLANG_DIAGNOSTICS: usize = MAX_CLANG_FACTS;
+/// Include rows feed the trunk extension atom lane.
+pub const MAX_CLANG_INCLUDES: usize = MAX_CLANG_FACTS;
+/// Override rows feed trunk `MAX_EMISSION_OCCURRENCES`.
+pub const MAX_CLANG_OVERRIDES: usize = MAX_CLANG_FACTS;
 
 /// An exact half-open byte range into the caller-provided source slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -388,3 +415,27 @@ pub struct ClangFacts<'scratch> {
     /// Prefix of caller override-authority slots.
     pub overrides: &'scratch [OverrideFact],
 }
+
+/// Retained bytes for one filled declaration lane, excluding its slice descriptor.
+pub const CLANG_DECLARATION_LANE_BYTES: usize =
+    size_of::<DeclarationFact>() * MAX_CLANG_DECLARATIONS;
+/// Retained bytes for one filled type lane, excluding its slice descriptor.
+pub const CLANG_TYPE_LANE_BYTES: usize = size_of::<TypeFact>() * MAX_CLANG_TYPES;
+/// Retained bytes for one filled type-edge lane, excluding its slice descriptor.
+pub const CLANG_TYPE_EDGE_LANE_BYTES: usize = size_of::<TypeEdge>() * MAX_CLANG_TYPE_EDGES;
+/// Retained bytes for one filled reference lane, excluding its slice descriptor.
+pub const CLANG_REFERENCE_LANE_BYTES: usize = size_of::<ReferenceFact>() * MAX_CLANG_REFERENCES;
+/// Retained bytes for one filled diagnostic lane, excluding its slice descriptor.
+pub const CLANG_DIAGNOSTIC_LANE_BYTES: usize = size_of::<DiagnosticFact>() * MAX_CLANG_DIAGNOSTICS;
+/// Retained bytes for one filled include lane, excluding its slice descriptor.
+pub const CLANG_INCLUDE_LANE_BYTES: usize = size_of::<IncludeFact>() * MAX_CLANG_INCLUDES;
+/// Retained bytes for one filled override lane, excluding its slice descriptor.
+pub const CLANG_OVERRIDE_LANE_BYTES: usize = size_of::<OverrideFact>() * MAX_CLANG_OVERRIDES;
+
+const _: [(); CLANG_DECLARATION_LANE_BYTES] = [(); size_of::<DeclarationFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_TYPE_LANE_BYTES] = [(); size_of::<TypeFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_TYPE_EDGE_LANE_BYTES] = [(); size_of::<TypeEdge>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_REFERENCE_LANE_BYTES] = [(); size_of::<ReferenceFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_DIAGNOSTIC_LANE_BYTES] = [(); size_of::<DiagnosticFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_INCLUDE_LANE_BYTES] = [(); size_of::<IncludeFact>() * MAX_CLANG_FACTS];
+const _: [(); CLANG_OVERRIDE_LANE_BYTES] = [(); size_of::<OverrideFact>() * MAX_CLANG_FACTS];

@@ -13,10 +13,23 @@ use compiler_ir::{
 use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use heart_identity::{ContentId, ToolchainDomain};
 use std::{
+    mem::size_of,
     path::Path,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
+
+#[test]
+fn database_argument_borrow_array_is_pointer_sized_and_stack_safe() {
+    use compiler_languages_clang::MAX_DATABASE_ARGUMENTS;
+    use core::ffi::CStr;
+
+    assert_eq!(
+        size_of::<[&CStr; MAX_DATABASE_ARGUMENTS]>(),
+        MAX_DATABASE_ARGUMENTS * size_of::<&CStr>()
+    );
+    assert!(size_of::<[&CStr; MAX_DATABASE_ARGUMENTS]>() <= 4096);
+}
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -944,8 +957,8 @@ fn macro_definition_and_invocation_are_typed_facts() -> Result<(), TestError> {
 #[test]
 fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), TestError> {
     let mut source = String::new();
-    for ordinal in 0..256 {
-        source.push_str(&format!("int value_{ordinal};\n"));
+    for ordinal in 0..1025 {
+        source.push_str(&format!("struct value_{ordinal};\n"));
     }
     let work = std::env::temp_dir().join(format!("nudox-clang-capacity-{}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
@@ -989,7 +1002,12 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
         Err(CompileFailure::Authority {
             failure:
                 AuthorityFailure::Clang {
-                    cause: compiler_languages_clang::CollectError::ScratchCapacity { .. },
+                    cause:
+                        compiler_languages_clang::CollectError::ScratchCapacity {
+                            lane: compiler_languages_clang::ScratchLane::Declarations,
+                            capacity: 1024,
+                            required: 1025,
+                        },
                     ..
                 },
             ..

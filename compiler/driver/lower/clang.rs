@@ -64,9 +64,11 @@ use compiler_ir::{
 };
 use compiler_languages_clang::{
     ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
-    DefinitionState, IncludeFact, MethodVirtuality, OverrideFact, ReferenceFact, ReferenceKind,
-    ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge,
-    TypeFact, TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
+    DefinitionState, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
+    MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES, MAX_CLANG_TYPE_EDGES,
+    MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact, ReferenceKind, ReferenceTarget,
+    SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge, TypeFact,
+    TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
 };
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
@@ -155,19 +157,19 @@ fn push<'source>(
 const DEPTH_LIMIT: usize = 64;
 
 /// Direct libclang declaration slots reserved by the collection transaction.
-const DECLARATION_CAPACITY: usize = 128;
+const DECLARATION_CAPACITY: usize = MAX_CLANG_DECLARATIONS;
 /// Recursive type slots reserved by the collection transaction.
-const TYPE_CAPACITY: usize = 512;
+const TYPE_CAPACITY: usize = MAX_CLANG_TYPES;
 /// Recursive type edge slots reserved by the collection transaction.
-const TYPE_EDGE_CAPACITY: usize = 1_024;
+const TYPE_EDGE_CAPACITY: usize = MAX_CLANG_TYPE_EDGES;
 /// Reference slots reserved by the collection transaction.
-const REFERENCE_CAPACITY: usize = 512;
+const REFERENCE_CAPACITY: usize = MAX_CLANG_REFERENCES;
 /// Diagnostic slots reserved by the collection transaction.
-const DIAGNOSTIC_CAPACITY: usize = 128;
+const DIAGNOSTIC_CAPACITY: usize = MAX_CLANG_DIAGNOSTICS;
 /// Include slots reserved by the collection transaction.
-const INCLUDE_CAPACITY: usize = 128;
+const INCLUDE_CAPACITY: usize = MAX_CLANG_INCLUDES;
 /// C++ override-authority slots reserved by the collection transaction.
-const OVERRIDE_CAPACITY: usize = 128;
+const OVERRIDE_CAPACITY: usize = MAX_CLANG_OVERRIDES;
 
 /// `PrimitiveShape::Integer` wire cell (`repr(u32)` discriminant).
 const SHAPE_INTEGER: u32 = 0;
@@ -262,13 +264,13 @@ fn collect_input<'source>(
     cancelled: &AtomicBool,
     facts: &mut FactSet<'source>,
 ) -> Result<(), ClangCollectError> {
-    let mut declarations = [empty_declaration(); DECLARATION_CAPACITY];
-    let mut types = [empty_type(); TYPE_CAPACITY];
-    let mut type_edges = [empty_type_edge(); TYPE_EDGE_CAPACITY];
-    let mut references = [empty_reference(); REFERENCE_CAPACITY];
-    let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_CAPACITY];
-    let mut includes = [empty_include(); INCLUDE_CAPACITY];
-    let mut overrides = [empty_override(); OVERRIDE_CAPACITY];
+    let mut declarations = vec![empty_declaration(); DECLARATION_CAPACITY].into_boxed_slice();
+    let mut types = vec![empty_type(); TYPE_CAPACITY].into_boxed_slice();
+    let mut type_edges = vec![empty_type_edge(); TYPE_EDGE_CAPACITY].into_boxed_slice();
+    let mut references = vec![empty_reference(); REFERENCE_CAPACITY].into_boxed_slice();
+    let mut diagnostics = vec![empty_diagnostic(); DIAGNOSTIC_CAPACITY].into_boxed_slice();
+    let mut includes = vec![empty_include(); INCLUDE_CAPACITY].into_boxed_slice();
+    let mut overrides = vec![empty_override(); OVERRIDE_CAPACITY].into_boxed_slice();
     let authority = collect_cancellable(
         input,
         ClangScratch {

@@ -23,7 +23,9 @@ pub use collect::{collect, collect_cancellable};
 pub use error::{CollectError, DatabaseError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
 pub use facts::{
     BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-    DiagnosticFact, DiagnosticSeverity, IncludeFact, MethodVirtuality, OverrideFact, ReferenceFact,
+    DiagnosticFact, DiagnosticSeverity, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
+    MAX_CLANG_FACTS, MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES,
+    MAX_CLANG_TYPE_EDGES, MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact,
     ReferenceKind, ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan,
     StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers,
     TypeRelation,
