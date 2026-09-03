@@ -495,6 +495,40 @@ impl<'source> FactSet<'source> {
         Ok(row)
     }
 
+    /// Interns an anonymous row for a fact reserved immediately after the
+    /// current fact prefix. The owner is admitted before that fact exists;
+    /// the caller must push it next.
+    pub(super) fn intern_reserved_anchor_type_row(
+        &mut self,
+        reserved_owner: u32,
+        record: SemanticTypeRecord<'source>,
+    ) -> Result<u32, FactFault> {
+        debug_assert_eq!(reserved_owner, self.len as u32);
+        if reserved_owner != self.len as u32 {
+            return Err(FactFault::RefTarget {
+                lane: "reserved_type_rows",
+                raw: reserved_owner,
+                fact_count: self.len,
+            });
+        }
+        if self.anonymous_rows == MAX_ANONYMOUS_TYPE_ROWS {
+            return Err(FactFault::TypeRowCapacity);
+        }
+        let child_count = self.anonymous_child_pending;
+        record
+            .validate(child_count)
+            .map_err(FactFault::TypeRecord)?;
+        let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
+        let index = self.anonymous_rows;
+        self.anonymous_records[index] = record;
+        self.anonymous_owners[index] = reserved_owner;
+        self.anonymous_child_starts[index] = self.anonymous_children_total as u32;
+        self.anonymous_child_counts[index] = child_count as u8;
+        self.anonymous_rows += 1;
+        self.anonymous_child_pending = 0;
+        Ok(row)
+    }
+
     /// Appends one ordered child to the anonymous row currently being built.
     /// The target must name an already-interned anonymous row or an
     /// already-pushed fact; the lane rejects forward coordinates.

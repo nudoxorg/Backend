@@ -248,6 +248,8 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    /// Reserved fact ordinal owning anonymous rows during one type lowering.
+    active_anchor: Option<u32>,
 }
 
 impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
@@ -270,6 +272,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
+            active_anchor: None,
         }
     }
 
@@ -563,7 +566,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         } else {
             ast::RecordField::cast(declaration.syntax.clone()).and_then(|item| item.ty())
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(
             index,
             declaration,
@@ -667,7 +670,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         } else {
             ast::Impl::cast(declaration.syntax.clone()).and_then(|item| item.self_ty())
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(
             index,
             declaration,
@@ -702,7 +705,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             }
             _ => RustOwnership::Value,
         };
-        let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
         self.push_typed(index, declaration, lowered, ownership, &declaration.syntax)
     }
 
@@ -732,7 +735,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
         if let Some(receiver) = function.self_param(self.database) {
             let semantic = receiver.ty(self.database);
-            let lowered = self.lower_type(&semantic, None, MAX_TYPE_DEPTH)?;
+            let lowered = self.lower_pending_type(&semantic, None, MAX_TYPE_DEPTH)?;
             let ownership = receiver_ownership(receiver.access(self.database));
             let ordinal = self.push_parameter(SELF_NAME, lowered, ownership)?;
             parameter_ordinals.push(ordinal);
@@ -749,7 +752,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let semantic = parameter.ty().clone();
             let anchor = written.get(position).and_then(|param| param.ty());
             let name = self.parameter_name(written.get(position), parameter.name(self.database));
-            let lowered = self.lower_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+            let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
             let ordinal = self.push_parameter(name, lowered, ownership)?;
             parameter_ordinals.push(ordinal);
@@ -761,7 +764,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .as_ref()
             .and_then(|item| item.ret_type())
             .and_then(|ret| ret.ty());
-        let lowered = self.lower_type(&returns, result_anchor.as_ref(), MAX_TYPE_DEPTH)?;
+        let lowered = self.lower_pending_type(&returns, result_anchor.as_ref(), MAX_TYPE_DEPTH)?;
         let mut fact = SemanticFact::new(
             EntityKind::Parameter,
             self.name_of(declaration)?,
@@ -1119,15 +1122,17 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .map(|row| row.ordinal)
     }
 
-    /// Picks the anchor ordinal for anonymous rows: the most recently pushed
-    /// fact, which the lane law admits as a row owner. `None` only before
-    /// the fragment's first fact exists.
-    fn row_anchor(&self) -> Option<u32> {
-        if self.facts.len() == 0 {
-            None
-        } else {
-            coordinate(self.facts.len() - 1).ok()
-        }
+    /// Lowers a type against the fact ordinal that the caller will push next.
+    fn lower_pending_type(
+        &mut self,
+        semantic: &ra_ap_hir::Type<'_>,
+        anchor: Option<&ast::Type>,
+        depth: usize,
+    ) -> Result<Lowered<'source>, RustAuthorityError> {
+        let previous = self.active_anchor.replace(coordinate(self.facts.len())?);
+        let lowered = self.lower_type(semantic, anchor, depth);
+        self.active_anchor = previous;
+        lowered
     }
 
     /// Hosts one lowered child position and returns the backward coordinate
@@ -1159,12 +1164,12 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     }
                 }
             }
-            let Some(anchor_row) = self.row_anchor() else {
+            let Some(anchor_row) = self.active_anchor else {
                 return Ok(None);
             };
             let row = self
                 .facts
-                .intern_anonymous_type_row(anchor_row, lowered.record)
+                .intern_reserved_anchor_type_row(anchor_row, lowered.record)
                 .map_err(|_| admission())?;
             if lowered.record.tag == SemanticTypeTag::Unknown
                 && let Some(text) = lowered.record.text
@@ -1661,11 +1666,19 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     fn emit_occurrences(&mut self) -> Result<(), RustAuthorityError> {
         let authority = self.authority;
         let method_calls: Vec<_> = authority.method_calls().collect();
+        let mut emitted_method_spans = Vec::new();
         for call in &method_calls {
             let Some(name) = call.syntax.name_ref() else {
                 continue;
             };
-            let span = authority.span(name.syntax())?;
+            let span = match call.projected_span {
+                Some(span) => span,
+                None => authority.span(name.syntax())?,
+            };
+            if emitted_method_spans.contains(&span) {
+                continue;
+            }
+            emitted_method_spans.push(span);
             let definition = call.target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence

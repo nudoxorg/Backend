@@ -284,13 +284,60 @@ impl<'analysis> RustAuthority<'analysis> {
 
     /// Streams method calls with the actual inferred receiver/call type and resolved function.
     pub fn method_calls(&self) -> impl Iterator<Item = RustMethodCall<'analysis>> + '_ {
-        self.root.syntax().descendants().filter_map(|syntax| {
-            ast::MethodCallExpr::cast(syntax).map(|syntax| RustMethodCall {
+        let mut calls = Vec::new();
+        for syntax in self.root.syntax().descendants() {
+            let Some(syntax) = ast::MethodCallExpr::cast(syntax) else {
+                continue;
+            };
+            calls.push(RustMethodCall {
                 inferred: self.semantics.type_of_expr(&syntax.clone().into()),
                 target: self.semantics.resolve_method_call(&syntax),
                 syntax,
-            })
-        })
+                projected_span: None,
+            });
+        }
+
+        // A macro argument is parsed as a token tree in the source file. Descending
+        // each token gives us the expanded syntax node that rust-analyzer inferred;
+        // its original-range map still points at the written argument.
+        for macro_call in self.macro_calls() {
+            let Some(token_tree) = macro_call.token_tree() else {
+                continue;
+            };
+            for token in token_tree
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+            {
+                for descended in self.semantics.descend_into_macros_no_opaque(token, false) {
+                    let Some(syntax) = descended
+                        .value
+                        .parent()
+                        .and_then(|node| node.ancestors().find_map(ast::MethodCallExpr::cast))
+                    else {
+                        continue;
+                    };
+                    let Some(name) = syntax.name_ref() else {
+                        continue;
+                    };
+                    let Ok(Some(projected_span)) = self.projected_span(name.syntax()) else {
+                        continue;
+                    };
+                    if calls.iter().any(|call: &RustMethodCall<'analysis>| {
+                        call.projected_span == Some(projected_span)
+                    }) {
+                        continue;
+                    }
+                    calls.push(RustMethodCall {
+                        inferred: self.semantics.type_of_expr(&syntax.clone().into()),
+                        target: self.semantics.resolve_method_call(&syntax),
+                        syntax,
+                        projected_span: Some(projected_span),
+                    });
+                }
+            }
+        }
+        calls.into_iter()
     }
 
     /// Streams path syntax so callers can retain rust-analyzer resolution and substitutions.
@@ -878,6 +925,8 @@ pub struct RustMethodCall<'analysis> {
     pub inferred: Option<TypeInfo<'analysis>>,
     /// Concrete function selected by static method dispatch, when rust-analyzer can resolve one.
     pub target: Option<Function>,
+    /// Original-source span for a call discovered through macro expansion.
+    pub projected_span: Option<ByteSpan>,
 }
 
 /// One written field-access expression with its resolved named HIR field.
