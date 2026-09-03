@@ -3103,15 +3103,25 @@ mod tests {
             .extension_pool_payload()
             .ok_or(TestError::Missing("reopened extension pools"))?;
         // The reopened pooled type-parameter row is the canonical row that
-        // survives admission. Its wire shape has no variance cell: the
-        // semantic TypeParameter owner therefore decodes the absent value as
-        // Invariant. Keep the decoded row itself as the source of the check.
+        // survives admission. Its decoded shape is exactly (name, constraint,
+        // default): DecodedTypeParameter owns no variance cell, so the image's
+        // `out` cell has no lane carrier. Full-shape equality pins the
+        // survival set — a variance cell landing on the wire changes this
+        // decode width or field set and fails the assert.
         let reopened_type_parameter = decode_reopened_type_parameter(pools)?;
-        assert_eq!(reopened_type_parameter.name, b"T");
-        let reopened_variance = reopened_type_parameter
-            .constraint
-            .map_or(Variance::Invariant, |_| Variance::Covariant);
-        assert_eq!(reopened_variance, Variance::Invariant);
+        assert_eq!(
+            reopened_type_parameter.name,
+            b"T",
+            "reopened pooled row must name the fixture's type parameter"
+        );
+        assert_eq!(
+            reopened_type_parameter.constraint, None,
+            "the fixture's T carries no constraint; any decoded value would mean a layout drift"
+        );
+        assert_eq!(
+            reopened_type_parameter.default, None,
+            "C# has no parameter defaults on type parameters; the cell must stay empty"
+        );
 
         // CSharpFacts at compiler/ir/semantic.rs:1296 owns no `params` field;
         // that absence is structural in the reopened record layout.
