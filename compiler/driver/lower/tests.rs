@@ -393,7 +393,11 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
         })?;
     }
     for index in 0..MAX_REF_LISTS {
-        maximal.intern_atom_list(&[index as u32]).map_err(|cause| {
+        let atom_list = [
+            (index % MAX_EXTENSION_ATOMS) as u32,
+            (index / MAX_EXTENSION_ATOMS) as u32,
+        ];
+        maximal.intern_atom_list(&atom_list).map_err(|cause| {
             rejected(RejectedFact {
                 fact: 0,
                 name: b"row",

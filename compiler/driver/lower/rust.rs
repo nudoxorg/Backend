@@ -2451,7 +2451,7 @@ mod tests {
         let mut facts = FactSet::new();
         collect(
             &project,
-            SourceByteLimit::from(65_536),
+            SourceByteLimit::from(u32::MAX),
             RustFeatureControl::default(),
             &cancelled,
             source.as_bytes(),
@@ -2918,8 +2918,8 @@ mod tests {
         let outcome = lower_bytes(&source);
         match outcome {
             Err(TestError::Collection(RustCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            ))) => Ok(()),
+                compiler_vocabulary::LoweringUnsupported::FactRejected { fact },
+            ))) if fact == crate::lower::MAX_EMISSION_FACTS as u32 => Ok(()),
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),
         }

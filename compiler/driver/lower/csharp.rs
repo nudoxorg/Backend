@@ -2154,7 +2154,7 @@ mod tests {
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"csharp-authority-toolchain"),
         );
-        let mut output = vec![0xa5_u8; 131_612];
+        let mut output = vec![0xa5_u8; 4 * 1024 * 1024];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)?.len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
