@@ -128,7 +128,7 @@ impl DurablePublisher {
 
     /// Returns independently validated current publication facts, if a head is visible.
     pub fn published(&self) -> Result<Option<PublicationFacts>, PublicationOpenError> {
-        Ok(self.state.published.get().copied())
+        Ok(self.state.latest.lock().ok().and_then(|value| *value))
     }
 
     /// Closes admission, drains accepted commands, and joins the owner exactly once.
@@ -159,6 +159,7 @@ impl DurablePublisher {
             closed: AtomicBool::new(false),
             credits,
             published: OnceLock::new(),
+            latest: std::sync::Mutex::new(None),
         });
         let (sender, receiver) = sync_channel(queue_capacity);
         let (startup_sender, startup_receiver) = sync_channel(1);
@@ -204,6 +205,7 @@ impl DurablePublisher {
                     attempted,
                 }))
             })?;
+            if let Ok(mut latest) = state.latest.lock() { *latest = Some(published); }
         }
         Ok(Self {
             sender: Some(sender),
@@ -383,6 +385,7 @@ pub(super) struct PublisherState {
     pub(super) closed: AtomicBool,
     pub(super) credits: Arc<CreditPool>,
     pub(super) published: OnceLock<PublicationFacts>,
+    pub(super) latest: std::sync::Mutex<Option<PublicationFacts>>,
 }
 
 pub(super) fn conflict(

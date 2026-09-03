@@ -33,6 +33,14 @@ impl PublicationPaths {
         self.directory.join("publication.fact")
     }
 
+    pub(super) fn fact_for(&self, ordinal: u64) -> PathBuf {
+        if ordinal == 1 {
+            self.fact()
+        } else {
+            self.directory.join(format!("publication.fact.{ordinal}"))
+        }
+    }
+
     pub(super) fn head(&self) -> PathBuf {
         self.directory.join("publication.head")
     }
