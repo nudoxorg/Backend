@@ -1,0 +1,28 @@
+# index — trunk-shared-surface
+
+[capability]
+id = "trunk-shared-surface"
+lane = "TRUNK (compiler-ir / driver / publication / application shared surface)"
+baseline_commit = "4f66e3fbe"
+brief = "brief.md"
+proof_matrix = "proof-matrix.md"
+
+[custody]
+manager = "Terra (TRUNK)"
+workers = "registered nudox_luna_implementer (luna subagent)"
+reviewer = "registered nudox_terra_reviewer (reviewer subagent), read-only"
+concurrency = "shared worktree with six active language lanes; cards commit owned paths only"
+
+[cards]
+D = { paths = "compiler/driver/types, compiler/driver/lower.rs (push_fact/FactFault), compiler/driver/lower/*.rs (propagation), compiler/vocabulary/lib.rs, compiler/application/terminal, tests", state = "dispatched wave 1" }
+C = { paths = "server/journal/**, compiler/publication/**, tests", state = "dispatched wave 1" }
+A1 = { paths = "compiler/ir/** (type_facts, wire, view, prepared, cursor, tests)", state = "dispatched wave 1" }
+B = { paths = "compiler/driver/lower.rs (consts/lanes/budget), driver tests", state = "wave 2, after D" }
+A2 = { paths = "compiler/driver/lower.rs (admit/build_ir), compiler/driver/lower/typescript.rs, driver tests", state = "wave 3, after A1+B" }
+E = { paths = "compiler/ir/render.rs, compiler/ir/semantic.rs (BuiltinType), compiler/driver/lower.rs (live_type), render goldens", state = "wave 3, after A2" }
+
+[interpretation_forks]
+journal_ordinal = "Content-addressed journal has no generation counter; 'generation number' is implemented as a persisted chain ordinal (1,2,...) with parent (root,dep_set) linkage; divergence = different content claiming the same next chain position."
+render_pub = "'drop pub prefix vocabulary' = Visibility::Unknown renders an empty prefix; 'pub ' remains exclusively Rust Public truth (only the rust lane emits it). C-pure headers render bare."
+computed_edges = "Computed children may target any declared row both ways plus strictly-earlier computed rows (nested computed trees exist today); declared->computed stays forbidden; DAG proof intact."
+interface_cause = "compiler-vocabulary cannot depend on ir-vocabulary, so the interface cause is bounded (ordinal/class); full FactFault operands are retained on CompileFailure (driver public terminal)."
