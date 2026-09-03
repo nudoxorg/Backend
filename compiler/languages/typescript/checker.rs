@@ -220,7 +220,9 @@ pub enum TypeTree {
     Conditional {
         check: Box<TypeTree>,
         extends: Box<TypeTree>,
+        #[serde(rename = "thenType")]
         then_type: Box<TypeTree>,
+        #[serde(rename = "elseType")]
         else_type: Box<TypeTree>,
     },
     /// A mapped type with its key constraint and value type.

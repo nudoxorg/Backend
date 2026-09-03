@@ -115,6 +115,9 @@ const MAX_TREE_DEPTH = 16;
 
 /** Builds one structured tree for the checker's exact type. */
 function typeTree(type, depth) {
+  if (type === undefined || type === null) {
+    return { kind: 'other', text: safeText(type) };
+  }
   if (depth > MAX_TREE_DEPTH) {
     return { kind: 'other', text: safeText(type) };
   }
