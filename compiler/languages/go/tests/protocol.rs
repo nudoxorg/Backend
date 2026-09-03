@@ -1175,3 +1175,158 @@ mod mutation_battery {
         assert_eq!(open(&image), ImageError::Digest);
     }
 }
+
+/// Reference rows are ordered by source file first, then by call start.  This
+/// fixture keeps the owner checks real while making the cross-file reset
+/// explicit: the second file's first call starts before the first file's last
+/// call.
+mod reference_order {
+    use compiler_languages_go::{GoImage, ImageError};
+    use sha2::{Digest, Sha256};
+
+    const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
+    const HEADER: usize = 136;
+    const DECLS: usize = HEADER;
+    const REFS: usize = DECLS + 2 * 56;
+    const PACKAGES: usize = REFS + 3 * 48;
+    const ATOMS: usize = PACKAGES + 28;
+    const ATOM_BYTES: &[u8] = b"example.com/demo\0demo\0first.go\0second.go\0one\0two\0three\0";
+
+    fn cell(value: u32) -> [u8; 4] {
+        value.to_le_bytes()
+    }
+
+    fn atom(bytes: &[u8], needle: &[u8]) -> [u32; 2] {
+        let start = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap();
+        [start as u32, needle.len() as u32]
+    }
+
+    fn declaration(name: [u32; 2], package: [u32; 2], file: [u32; 2], span: (u32, u32)) -> Vec<u8> {
+        let mut row = Vec::with_capacity(56);
+        for value in [
+            3 | (1 << 8),
+            name[0],
+            name[1],
+            package[0],
+            package[1],
+            u32::MAX,
+            span.0,
+            span.1,
+            file[0],
+            file[1],
+            0,
+            0,
+            0,
+            0,
+        ] {
+            row.extend_from_slice(&cell(value));
+        }
+        row
+    }
+
+    fn reference(owner: usize, file: [u32; 2], start: u32, target: [u32; 2]) -> Vec<u8> {
+        let mut row = Vec::with_capacity(48);
+        for value in [
+            owner as u32,
+            target[0],
+            target[1],
+            0,
+            0,
+            start,
+            start + 1,
+            file[0],
+            file[1],
+            0,
+            0,
+            0,
+        ] {
+            row.extend_from_slice(&cell(value));
+        }
+        row
+    }
+
+    fn build(order: &[(usize, usize, u32)]) -> Vec<u8> {
+        let first = atom(ATOM_BYTES, b"first.go");
+        let second = atom(ATOM_BYTES, b"second.go");
+        let target = atom(ATOM_BYTES, b"one");
+        let package = atom(ATOM_BYTES, b"example.com/demo");
+        let package_name = atom(ATOM_BYTES, b"demo");
+        let body = 2 * 56 + 3 * 48 + 28 + ATOM_BYTES.len();
+        let mut image = vec![0; HEADER + body];
+        image[..4].copy_from_slice(b"NGAI");
+        image[4..6].copy_from_slice(&5_u16.to_le_bytes());
+        image[6..8].copy_from_slice(&(HEADER as u16).to_le_bytes());
+        image[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        image[12..16].copy_from_slice(&(ATOM_BYTES.len() as u32).to_le_bytes());
+        image[16..20].copy_from_slice(&(body as u32).to_le_bytes());
+        image[84..88].copy_from_slice(&0_u32.to_le_bytes());
+        image[88..92].copy_from_slice(&3_u32.to_le_bytes());
+        image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+
+        let declarations = [
+            declaration(atom(ATOM_BYTES, b"two"), package, first, (0, 100)),
+            declaration(atom(ATOM_BYTES, b"three"), package, second, (0, 100)),
+        ];
+        image[DECLS..DECLS + 112].copy_from_slice(&declarations.concat());
+        let rows = order
+            .iter()
+            .map(|&(owner, file, start)| {
+                reference(owner, if file == 0 { first } else { second }, start, target)
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        image[REFS..REFS + 144].copy_from_slice(&rows);
+        let mut package_row = Vec::new();
+        for value in [
+            package[0],
+            package[1],
+            package_name[0],
+            package_name[1],
+            0,
+            0,
+            0,
+        ] {
+            package_row.extend_from_slice(&cell(value));
+        }
+        image[PACKAGES..PACKAGES + 28].copy_from_slice(&package_row);
+        image[ATOMS..].copy_from_slice(ATOM_BYTES);
+        reseal(&mut image);
+        image
+    }
+
+    fn reseal(image: &mut [u8]) {
+        let mut digest = Sha256::new();
+        digest.update(DOMAIN);
+        digest.update(&image[..52]);
+        digest.update(&image[84..HEADER]);
+        digest.update(&image[HEADER..]);
+        image[52..84].copy_from_slice(digest.finalize().as_slice());
+    }
+
+    #[test]
+    fn ascending_cross_file_order_opens_with_offset_reset() {
+        let image = build(&[(0, 0, 10), (0, 0, 20), (1, 1, 5)]);
+        GoImage::open(&image).expect("canonical cross-file references must open");
+    }
+
+    #[test]
+    fn swapping_files_rejects_reference_index_two() {
+        let image = build(&[(0, 0, 10), (1, 1, 5), (0, 0, 20)]);
+        assert!(matches!(
+            GoImage::open(&image),
+            Err(ImageError::ReferenceSort { index: 2 })
+        ));
+    }
+
+    #[test]
+    fn swapping_starts_within_one_file_rejects_reference_index_one() {
+        let image = build(&[(0, 0, 20), (0, 0, 10), (1, 1, 5)]);
+        assert!(matches!(
+            GoImage::open(&image),
+            Err(ImageError::ReferenceSort { index: 1 })
+        ));
+    }
+}
