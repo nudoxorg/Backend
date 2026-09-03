@@ -176,6 +176,7 @@ pub(super) enum CompileTerminal {
     Prepare,
     Write,
     Validate,
+    FactRejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,6 +445,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
             CompileTerminal::LoweringUnsupported(*cause)
         }
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
+        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,
