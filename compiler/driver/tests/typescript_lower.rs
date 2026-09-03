@@ -18,8 +18,10 @@ use compiler_ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
+use compiler_publication::{OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled};
 use compiler_languages_typescript::{Checker, Report};
 use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 const SOURCE: &[u8] = include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
 const TRANSCRIPT: &[u8] =
@@ -670,6 +672,115 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
             .iter()
             .any(|fact| { fact.owner.raw == owner && fact.record.tag == SemanticTypeTag::Nominal })
     );
+    assert!(thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let checker = Checker::default()
+                .run(TypeScriptSource::TypeScript, SOURCE)
+                .unwrap();
+            let root = std::env::temp_dir().join(format!("nudox-typescript-forward-{}", std::process::id()));
+            let artifacts = root.join("artifacts");
+            let journal = root.join("journal");
+            std::fs::create_dir_all(&artifacts).unwrap();
+            std::fs::create_dir_all(&journal).unwrap();
+            let limits = PublicationLimits::new(
+                std::num::NonZeroUsize::MIN,
+                std::num::NonZeroUsize::MIN,
+            )
+            .unwrap();
+            let publisher = DurablePublisher::create(&PublicationPaths::in_directory(&journal), limits)
+                .unwrap();
+            let toolchain = ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                Path::new("/bin/true"),
+                b"typescript-authority-test",
+            )
+            .unwrap();
+            let mut diagnostic = vec![0_u8; 4096];
+            let mut fragment_output = vec![0_u8; 8 * 1024 * 1024];
+            let cancelled = AtomicBool::new(false);
+            let compiled = compile(
+                CompileRequest {
+                    profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                    stage: Stage::LowerIr,
+                    source: SOURCE,
+                    toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                    authority: SemanticAuthorityInput::TypeScript { report: &checker },
+                    control: CompileControl {
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        cancelled: &cancelled,
+                    },
+                },
+                CompileScratch {
+                    diagnostic_output: &mut diagnostic,
+                    native_work: Path::new("/tmp"),
+                },
+                CompileOutput {
+                    fragment_output: &mut fragment_output,
+                },
+            )
+            .unwrap();
+            let mut manifest = vec![0_u8; 1 << 20];
+            let mut manifest_facts = vec![None; 1];
+            let mut ordinals = vec![0_usize; 1];
+            let mut locality = vec![0_u8; 1 << 16];
+            let mut binding = vec![0_u8; compiler_publication::binding::COMPILATION_BINDING_BYTES];
+            publish_compiled(
+                &publisher,
+                &artifacts,
+                std::slice::from_ref(&compiled),
+                PublishControl::Continue,
+                PublicationScratch {
+                    manifest_output: &mut manifest,
+                    manifest_facts: &mut manifest_facts,
+                    ordinals: &mut ordinals,
+                    locality_output: &mut locality,
+                    binding_output: &mut binding,
+                },
+            )
+            .unwrap();
+            publisher.shutdown().unwrap();
+            let reopened_publisher = DurablePublisher::reopen(
+                &PublicationPaths::in_directory(&journal),
+                limits,
+            )
+            .unwrap();
+            let mut reopened_manifest = vec![0_u8; 1 << 20];
+            let mut reopened_facts = vec![None; 1];
+            let mut reopened_fragments = vec![0_u8; 8 * 1024 * 1024];
+            let mut reopened_locality = vec![0_u8; 1 << 16];
+            let opened = open_published(
+                &reopened_publisher,
+                &artifacts,
+                OpenPublicationScratch {
+                    manifest_output: &mut reopened_manifest,
+                    manifest_facts: &mut reopened_facts,
+                    fragment_output: &mut reopened_fragments,
+                    locality_output: &mut reopened_locality,
+                },
+            )
+            .unwrap()
+            .unwrap();
+            let reopened_fragment = opened.fragments().next().unwrap().unwrap();
+            let (a_owner, _) = named(&reopened_fragment.view, b"a");
+            let (b_owner, _) = named(&reopened_fragment.view, b"B");
+            assert_eq!(
+                facts(&reopened_fragment.view)
+                    .into_iter()
+                    .find(|fact| {
+                        fact.owner.raw == a_owner
+                            && fact.segment == compiler_ir::TypeFactSegment::Computed
+                    })
+                    .and_then(|fact| fact.record.nominal),
+                Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(b_owner))),
+            );
+            reopened_publisher.shutdown().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            true
+        })
+        .unwrap()
+        .join()
+        .unwrap());
 }
 
 #[derive(Clone, Copy)]

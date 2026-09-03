@@ -247,3 +247,27 @@ fn extensions_render() {
             .is_some_and(|parameters| parameters.len() == 1)
     }));
 }
+
+#[test]
+fn forward_nominal_render_truth_names_the_later_class() {
+    let ir = compile(b"export const a = new B(); export class B {}");
+    let a = item(&ir, "a", ItemKind::Constant);
+    let _computed = ir
+        .storage_columns()
+        .language_extensions
+        .typescript
+        .get(a)
+        .and_then(|facts| facts.computed)
+        .expect("forward nominal computed type");
+    let b = item(&ir, "B", ItemKind::Record);
+    let b_type = ir
+        .item(b)
+        .and_then(|item| item.semantic_type())
+        .expect("forward nominal class type");
+    assert_eq!(
+        ir.display_type(b_type)
+            .expect("forward nominal class display")
+            .to_string(),
+        "B"
+    );
+}
