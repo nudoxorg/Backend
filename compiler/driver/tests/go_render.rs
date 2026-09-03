@@ -9,8 +9,8 @@ use std::{
 };
 
 use compiler_driver::{
-    compile_ir, CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
 use compiler_ir::{EntityId, Ir, ItemKind};
 use compiler_languages_go::GoOracle;
