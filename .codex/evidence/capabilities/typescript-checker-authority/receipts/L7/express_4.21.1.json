@@ -1,9 +1,32 @@
 {
-  "class": "SingleShipped",
-  "defect_class": "entry-resolution",
+  "class": "SiblingTypes",
+  "computed_samples": [],
+  "decoded_entities": 105,
+  "decoded_facts": 143,
+  "exported_declarations": 32,
+  "fallbacks": [],
+  "perf": {
+    "check_ns": 331546625,
+    "fact_count": 143,
+    "lower_ns": 13771625,
+    "parse_ns": 163839250,
+    "wall_ns": 509157500
+  },
   "purl": "npm:express@4.21.1",
-  "raw_error": "package has no declaration entry; searched [\"/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-typescript-corpus-16083-10/index.d.ts\"]",
+  "render_truth": [
+    "signature",
+    "type"
+  ],
+  "resolution": "npm:@types/express@4.17.21",
+  "rubric": {
+    "computed_fidelity": 2,
+    "declaration_coverage": 2,
+    "docs_extensions": 2,
+    "references": 2,
+    "render_truth": 2,
+    "type_fidelity": 2
+  },
   "schema": 1,
   "stage": "full-lifecycle",
-  "verdict": "FAILED"
+  "verdict": "CLEAN"
 }

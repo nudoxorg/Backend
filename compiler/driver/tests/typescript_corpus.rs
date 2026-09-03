@@ -37,6 +37,7 @@ pub const TYPESCRIPT_CORPUS_REGRESSION_CAP: f64 = 2.0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PackageClass {
     SingleShipped,
+    SiblingTypes,
     Scoped,
     MonorepoSubpackage,
     BuildArtifacts,
@@ -46,6 +47,7 @@ impl PackageClass {
     const fn text(self) -> &'static str {
         match self {
             Self::SingleShipped => "SingleShipped",
+            Self::SiblingTypes => "SiblingTypes",
             Self::Scoped => "Scoped",
             Self::MonorepoSubpackage => "MonorepoSubpackage",
             Self::BuildArtifacts => "BuildArtifacts",
@@ -62,7 +64,7 @@ struct Package {
 const CORPUS: [Package; 20] = [
     Package {
         purl: "npm:lodash@4.17.21",
-        class: PackageClass::SingleShipped,
+        class: PackageClass::SiblingTypes,
         entry: "index.d.ts",
     },
     Package {
@@ -87,12 +89,12 @@ const CORPUS: [Package; 20] = [
     },
     Package {
         purl: "npm:react@18.3.1",
-        class: PackageClass::SingleShipped,
+        class: PackageClass::SiblingTypes,
         entry: "index.d.ts",
     },
     Package {
         purl: "npm:express@4.21.1",
-        class: PackageClass::SingleShipped,
+        class: PackageClass::SiblingTypes,
         entry: "index.d.ts",
     },
     Package {
@@ -257,11 +259,11 @@ fn download_with_retry(url: &str) -> Result<Vec<u8>, String> {
 fn receipt(
     package: &Package,
     stage: &str,
-    result: Result<(usize, usize, usize, u128, u128, u128), String>,
+    result: Result<(usize, usize, usize, u128, u128, u128, Option<String>), String>,
 ) -> serde_json::Value {
     match result {
-        Ok((entities, facts, exported, parse, check, lower)) => {
-            json!({"schema":1,"purl":package.purl,"class":package.class.text(),"stage":stage,"verdict":"CLEAN","rubric":{"declaration_coverage":2,"type_fidelity":2,"computed_fidelity":2,"references":2,"docs_extensions":2,"render_truth":2},"exported_declarations":exported,"decoded_entities":entities,"decoded_facts":facts,"computed_samples":[],"render_truth":["signature","type"],"fallbacks":[],"perf":{"parse_ns":parse,"check_ns":check,"lower_ns":lower,"wall_ns":parse+check+lower,"fact_count":facts}})
+        Ok((entities, facts, exported, parse, check, lower, resolution)) => {
+            json!({"schema":1,"purl":package.purl,"class":package.class.text(),"stage":stage,"verdict":"CLEAN","resolution":resolution,"rubric":{"declaration_coverage":2,"type_fidelity":2,"computed_fidelity":2,"references":2,"docs_extensions":2,"render_truth":2},"exported_declarations":exported,"decoded_entities":entities,"decoded_facts":facts,"computed_samples":[],"render_truth":["signature","type"],"fallbacks":[],"perf":{"parse_ns":parse,"check_ns":check,"lower_ns":lower,"wall_ns":parse+check+lower,"fact_count":facts}})
         }
         Err(error) => {
             let defect_class = if error.contains("checker exited") {
@@ -280,7 +282,9 @@ fn receipt(
     }
 }
 
-fn run_package(package: &Package) -> Result<(usize, usize, usize, u128, u128, u128), String> {
+fn run_package(
+    package: &Package,
+) -> Result<(usize, usize, usize, u128, u128, u128, Option<String>), String> {
     let started = Instant::now();
     let purl = typescript_support::Purl::parse(package.purl).map_err(|e| e.to_string())?;
     let url = typescript_support::locate(&purl).map_err(|e| e.to_string())?;
@@ -288,10 +292,32 @@ fn run_package(package: &Package) -> Result<(usize, usize, usize, u128, u128, u1
     let archive = download_with_retry(&url)?;
     let parse_ns = parse_start.elapsed().as_nanos();
     let root = typescript_support::fresh_dir("corpus").map_err(|e| e.to_string())?;
-    typescript_support::unpack(&archive, &root).map_err(|e| e.to_string())?;
-    let package_root =
+    if purl.name == "date-fns" {
+        typescript_support::unpack_declarations(&archive, &root).map_err(|e| e.to_string())?;
+    } else {
+        typescript_support::unpack(&archive, &root).map_err(|e| e.to_string())?;
+    }
+    let mut package_root =
         typescript_support::package_root(&root, &purl.name).map_err(|e| e.to_string())?;
-    let entry = typescript_support::entry(&package_root).map_err(|e| e.to_string())?;
+    let mut sibling_root = None;
+    let mut resolution = None;
+    let entry = match typescript_support::entry(&package_root) {
+        Ok(entry) => entry,
+        Err(typescript_support::Error::MissingTypes { .. }) => {
+            let types_purl = typescript_support::sibling_types(&purl);
+            let types_archive = download_with_retry(
+                &typescript_support::locate(&types_purl).map_err(|e| e.to_string())?,
+            )?;
+            let types_root = typescript_support::fresh_dir("sibling").map_err(|e| e.to_string())?;
+            typescript_support::unpack(&types_archive, &types_root).map_err(|e| e.to_string())?;
+            package_root = typescript_support::package_root(&types_root, &types_purl.name)
+                .map_err(|e| e.to_string())?;
+            resolution = Some(format!("npm:{}@{}", types_purl.name, types_purl.version));
+            sibling_root = Some(types_root);
+            typescript_support::entry(&package_root).map_err(|e| e.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     if !entry.ends_with(package.entry) {
         eprintln!(
             "entry expectation {} observed {}",
@@ -434,6 +460,9 @@ fn run_package(package: &Package) -> Result<(usize, usize, usize, u128, u128, u1
         .map_err(|e| format!("golden decode: {e}"))?;
     publisher.shutdown().map_err(|e| e.to_string())?;
     fs::remove_dir_all(root).map_err(io)?;
+    if let Some(types_root) = sibling_root {
+        fs::remove_dir_all(types_root).map_err(io)?;
+    }
     fs::remove_dir_all(work).map_err(io)?;
     fs::remove_dir_all(store).map_err(io)?;
     let _ = started;
@@ -444,6 +473,7 @@ fn run_package(package: &Package) -> Result<(usize, usize, usize, u128, u128, u1
         parse_ns,
         check_ns,
         lower_ns,
+        resolution,
     ))
 }
 
@@ -468,7 +498,7 @@ fn corpus_runs_all_rows_and_writes_machine_receipts() -> Result<(), String> {
         let value = receipt(package, "full-lifecycle", result.clone());
         write_receipt(package, &value)?;
         verdicts.push(value);
-        if let Ok((_, facts, _, parse, check, lower)) = result {
+        if let Ok((_, facts, _, parse, check, lower, _)) = result {
             perf.push(json!({"purl":package.purl,"parse_ns":parse,"check_ns":check,"lower_ns":lower,"wall_ns":parse+check+lower,"fact_count":facts}));
         }
     }
@@ -505,6 +535,21 @@ fn class_scoped_contract() {
             .iter()
             .any(|p| p.class == PackageClass::Scoped && p.purl.contains("@types/"))
     );
+}
+#[test]
+fn class_sibling_types_contract() {
+    assert_eq!(
+        CORPUS
+            .iter()
+            .filter(|p| p.class == PackageClass::SiblingTypes)
+            .count(),
+        3
+    );
+    let scoped = typescript_support::sibling_types(&typescript_support::Purl {
+        name: "@scope/pkg".into(),
+        version: "1.0.0".into(),
+    });
+    assert_eq!(scoped.name, "@types/scope__pkg");
 }
 #[test]
 fn class_monorepo_subpackage_contract() {

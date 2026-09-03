@@ -9,6 +9,8 @@ pub const METADATA_CAP: usize = 4 * 1024 * 1024;
 pub const ARCHIVE_CAP: usize = 32 * 1024 * 1024;
 /// Maximum total extracted bytes admitted from one archive.
 pub const UNPACKED_CAP: usize = 128 * 1024 * 1024;
+/// date-fns publishes about 4,100 files; declaration-only extraction avoids the one-file budget overrun while retaining tar-bomb bounds.
+pub const DECLARATION_FILE_EXTENSIONS: [&str; 3] = [".d.ts", ".ts", "package.json"];
 /// Global transport deadline, including response body consumption.
 pub const NETWORK_DEADLINE: Duration = Duration::from_secs(30);
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -100,6 +102,29 @@ pub fn unpack(bytes: &[u8], root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn unpack_declarations(bytes: &[u8], root: &Path) -> Result<(), Error> {
+    let mut decoder = GzDecoder::new(bytes); let mut tar = Vec::new();
+    decoder.read_to_end(&mut tar).map_err(|source| Error::Archive { source })?;
+    let mut offset = 0; let mut total: usize = 0;
+    while offset + 512 <= tar.len() {
+        let header = &tar[offset..offset + 512]; if header.iter().all(|b| *b == 0) { break; }
+        let end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
+        let name = std::str::from_utf8(&header[..end]).map_err(|_| Error::Path { path: "non-utf8".into() })?; safe(name)?;
+        let size_text = std::str::from_utf8(&header[124..136]).map_err(|_| Error::Path { path: name.into() })?;
+        let size = usize::from_str_radix(size_text.trim_matches('\0').trim(), 8).map_err(|_| Error::Path { path: name.into() })?;
+        total = total.checked_add(size).ok_or_else(|| Error::Cap { cap: UNPACKED_CAP, observed: usize::MAX })?;
+        if total > UNPACKED_CAP { return Err(Error::Cap { cap: UNPACKED_CAP, observed: total }); }
+        let payload = tar.get(offset + 512..offset + 512 + size).ok_or_else(|| Error::Path { path: name.into() })?;
+        let relative = name.trim_start_matches("package/");
+        if header[156] == b'5' || DECLARATION_FILE_EXTENSIONS.iter().any(|extension| relative.ends_with(extension)) {
+            let destination = root.join(relative); if !destination.starts_with(root) { return Err(Error::Path { path: name.into() }); }
+            match header[156] { 0 | b'0' => { if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|source| Error::Io { source })?; } std::fs::write(destination, payload).map_err(|source| Error::Io { source })?; }, b'5' => std::fs::create_dir_all(destination).map_err(|source| Error::Io { source })?, kind => return Err(Error::Entry { kind }) }
+        }
+        offset += 512 + size.div_ceil(512) * 512;
+    }
+    Ok(())
+}
+
 pub fn package_root(root: &Path, name: &str) -> Result<PathBuf, Error> {
     let wanted = format!("\"name\":\"{name}\"");
     fn walk(path: &Path, wanted: &str) -> io::Result<Option<PathBuf>> {
@@ -113,10 +138,16 @@ pub fn entry(root: &Path) -> Result<PathBuf, Error> {
     let package = root.join("package.json");
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&package).map_err(|source| Error::Io { source })?).map_err(|source| Error::Package { source })?;
     let mut searched = Vec::new();
-    for key in ["types", "typings"] { if let Some(path) = value.get(key).and_then(serde_json::Value::as_str) { let candidate = root.join(path); searched.push(candidate.display().to_string()); if candidate.is_file() { return Ok(candidate); } } }
+    for key in ["types", "typings"] { if let Some(path) = value.get(key).and_then(serde_json::Value::as_str) { let candidate = root.join(path); searched.push(candidate.display().to_string()); if candidate.is_file() && candidate.extension().is_some_and(|extension| extension == "ts") { return Ok(candidate); } } }
     if let Some(types) = value.get("typesVersions") { searched.push(format!("typesVersions:{types}")); }
     let candidate = root.join("index.d.ts"); searched.push(candidate.display().to_string()); if candidate.is_file() { return Ok(candidate); }
     Err(Error::MissingTypes { searched })
+}
+
+pub fn sibling_types(purl: &Purl) -> Purl {
+    let name = match purl.name.strip_prefix('@').and_then(|name| name.split_once('/')) { Some((scope, name)) => format!("@types/{scope}__{name}"), None => format!("@types/{}", purl.name) };
+    let version = match purl.name.as_str() { "lodash" => "4.17.16", "react" => "18.3.12", "express" => "4.17.21", _ => "latest" };
+    Purl { name, version: version.into() }
 }
 
 pub fn fresh_dir(label: &str) -> Result<PathBuf, Error> { let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed); let path = std::env::temp_dir().join(format!("nudox-typescript-{label}-{}-{sequence}", std::process::id())); std::fs::create_dir_all(&path).map_err(|source| Error::Io { source })?; Ok(path) }
