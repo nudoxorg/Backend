@@ -206,7 +206,13 @@ fn extension(
         .ok_or(TestError::Check("missing extensions"))?;
     // Schema cell of the section header: 1 rows are 24 bytes, 2 rows carry
     // the leading owner ordinal and are 28 bytes.
-    let schema = word(payload, 4)?;
+    let schema = u32::from(
+        payload
+            .get(4..6)
+            .and_then(|cell| <[u8; 2]>::try_from(cell).ok())
+            .map(u16::from_le_bytes)
+            .ok_or(TestError::Check("schema cell truncated"))?,
+    );
     let stride = match schema {
         1 => 24,
         2 => 28,
