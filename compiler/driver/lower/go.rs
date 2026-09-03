@@ -3528,7 +3528,7 @@ mod tests {
     #[test]
     fn capacity_beyond_the_lane_rejects_exactly() -> Result<(), TestError> {
         let mut fix = Fixture::new();
-        for index in 0..(crate::lower::MAX_EMISSION_FACTS + 1) {
+        for index in 0..crate::lower::MAX_EMISSION_FACTS {
             let mut spelling = b"t".to_vec();
             spelling.extend_from_slice(index.to_string().as_bytes());
             let name = fix.atom(&spelling);
@@ -3548,12 +3548,35 @@ mod tests {
                 iota: false,
             });
         }
+        let exact_image = fix.encode(b"package demo\n")?;
+        let mut exact_facts = FactSet::new();
+        collect(b"package demo\n", &exact_image, &mut exact_facts).map_err(TestError::Collect)?;
+
+        let index = crate::lower::MAX_EMISSION_FACTS;
+        let mut spelling = b"t".to_vec();
+        spelling.extend_from_slice(index.to_string().as_bytes());
+        let name = fix.atom(&spelling);
+        fix.declarations.push(DeclRow {
+            kind: KIND_TYPE,
+            name,
+            package: Cell {
+                offset: fix.atom_cell(PACKAGE).offset,
+                length: fix.atom_cell(PACKAGE).length,
+            },
+            type_root: None,
+            value: Cell {
+                offset: 0,
+                length: 0,
+            },
+            const_group: 0,
+            iota: false,
+        });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
         match collect(b"package demo\n", &image, &mut facts) {
             Err(GoCollectError::Rejected(rejection))
                 if rejection.fact == crate::lower::MAX_EMISSION_FACTS
-                    && rejection.name_len == 5
+                    && rejection.name_len == 1 + index.to_string().len()
                     && rejection.cause == FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),

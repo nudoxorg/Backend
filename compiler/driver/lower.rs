@@ -37,9 +37,10 @@ pub(crate) mod typescript;
 ///
 /// One LowerIr fragment admits at most this many provable declaration facts;
 /// a source with more declarations is a typed lane rejection, never a
-/// truncated emission. The bound also fixes every canonicalization scratch,
-/// output, and resource reservation below.
-pub(super) const MAX_EMISSION_FACTS: usize = 1024;
+/// truncated emission. The measured corpus ceiling is 16,384 facts; the
+/// bound also fixes every canonicalization scratch, output, and resource
+/// reservation below.
+pub(super) const MAX_EMISSION_FACTS: usize = 16384;
 /// Dense bound of one fact's ordered product children.
 pub(super) const MAX_FACT_CHILDREN: usize = 16;
 /// Dense bound of one fact's ordered type-record children.
@@ -59,8 +60,9 @@ pub(super) const MAX_REF_LISTS: usize = 512;
 pub(super) const MAX_REF_LIST_ELEMENTS: usize = 128;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
-/// Dense bound of anonymous type rows interned beside the fact rows.
-pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 2048;
+/// Dense bound of anonymous type rows interned beside the fact rows. The
+/// measured corpus ceiling is 8,192 rows.
+pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
 /// Dense bound of checker-computed type rows in the schema-2 segment.
 pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 1024;
 /// Total type-row budget: one record per fact plus the anonymous pool.
@@ -291,21 +293,21 @@ impl RejectedFact<'_> {
 pub(super) struct FactSet<'source> {
     len: usize,
     total_children: usize,
-    kinds: [EntityKind; MAX_EMISSION_FACTS],
+    kinds: Box<[EntityKind]>,
     names: Box<[&'source [u8]]>,
     type_records: Box<[SemanticTypeRecord<'source>]>,
     type_child_targets: Box<[u32]>,
     type_child_names: Box<[Option<&'source [u8]>]>,
     type_child_flags: Box<[u8]>,
-    type_child_counts: [u8; MAX_EMISSION_FACTS],
+    type_child_counts: Box<[u8]>,
     total_type_children: usize,
-    constructors: [SemanticProductConstructor; MAX_EMISSION_FACTS],
+    constructors: Box<[SemanticProductConstructor]>,
     child_roles: Box<[ProductChildRole]>,
     child_targets: Box<[u32]>,
-    child_counts: [u8; MAX_EMISSION_FACTS],
+    child_counts: Box<[u8]>,
     extensions: Box<[Option<EmissionExtension>; MAX_EMISSION_FACTS]>,
-    key_digests: [u64; MAX_EMISSION_FACTS],
-    visibility: [Visibility; MAX_EMISSION_FACTS],
+    key_digests: Box<[u64]>,
+    visibility: Box<[Visibility]>,
     occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
     occurrences: Box<[Occurrence<'source>]>,
     occurrence_len: usize,
@@ -357,25 +359,26 @@ impl<'source> FactSet<'source> {
         Self {
             len: 0,
             total_children: 0,
-            kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
+            kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
             names: vec![empty_name; MAX_EMISSION_FACTS].into_boxed_slice(),
             type_records: vec![opaque_record(); MAX_EMISSION_FACTS].into_boxed_slice(),
             type_child_targets: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
             type_child_names: vec![None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
             type_child_flags: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_counts: [0; MAX_EMISSION_FACTS],
+            type_child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             total_type_children: 0,
-            constructors: [SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS],
+            constructors: vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS]
+                .into_boxed_slice(),
             child_roles: vec![
                 ProductChildRole::ProductMember;
                 MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
             ]
             .into_boxed_slice(),
             child_targets: vec![0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN].into_boxed_slice(),
-            child_counts: [0; MAX_EMISSION_FACTS],
+            child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             extensions: Box::new([None; MAX_EMISSION_FACTS]),
-            key_digests: [0; MAX_EMISSION_FACTS],
-            visibility: [Visibility::Unknown; MAX_EMISSION_FACTS],
+            key_digests: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+            visibility: vec![Visibility::Unknown; MAX_EMISSION_FACTS].into_boxed_slice(),
             occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
             occurrences: vec![
                 Occurrence {
