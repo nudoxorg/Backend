@@ -241,6 +241,9 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
         (SemanticAuthorityInput::Java { .. }, profile) => {
             !matches!(profile, LanguageProfile::Java(_))
         }
+        (SemanticAuthorityInput::TypeScript { .. }, profile) => {
+            !matches!(profile, LanguageProfile::TypeScript(_))
+        }
         (SemanticAuthorityInput::None, _) => false,
     };
     if authority_profile_mismatch {
@@ -366,7 +369,30 @@ fn emit_facts<'source, 'diagnostic>(
             Ok(())
         }
         LanguageProfile::TypeScript(profile) => {
-            lower::typescript::collect(profile, source, facts).map_err(|cause| {
+            let owned_report = match authority {
+                SemanticAuthorityInput::None => Some(
+                    compiler_languages_typescript::Checker::default()
+                        .run(profile, source)
+                        .map_err(|cause| {
+                            typescript_terminal(
+                                None,
+                                source,
+                                prepared.source,
+                                prepared.recipe,
+                                TypeScriptCollectError::Authority(
+                                    compiler_languages_typescript::AuthorityError::Checker { cause },
+                                ),
+                            )
+                        })?,
+                ),
+                _ => None,
+            };
+            let report = match authority {
+                SemanticAuthorityInput::TypeScript { report } => Some(report),
+                SemanticAuthorityInput::None => owned_report.as_ref(),
+                _ => None,
+            };
+            lower::typescript::collect_with_checker(profile, source, report, facts).map_err(|cause| {
                 typescript_terminal(
                     diagnostic_output,
                     source,

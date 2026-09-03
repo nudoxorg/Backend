@@ -13,7 +13,7 @@ use compiler_ir::{
     TypeWidth,
 };
 use compiler_languages_typescript::{
-    AuthorityError, BoundReference, Checker, CheckerError, CheckerIndex, GetSpan, Origin,
+    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin,
     ReferenceFlags, Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
@@ -1338,10 +1338,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 /// the configured TypeScript checker authority as the type plane beside the
 /// in-process syntax projection.
 ///
-/// The exact TypeScript checker is spawned once for the source; when the
-/// tool or its `typescript` module is unavailable the lane proceeds at OXC
-/// fidelity with every checker-derived cell absent. A checker that RAN and
-/// violated its protocol is a typed authority rejection.
+/// The exact TypeScript checker is required once for the source. Any checker
+/// failure is a typed authority rejection; syntax projection is never used as
+/// a fallback for missing semantic facts.
 ///
 /// This accepts no reconstructed token stream. OXC contributes its distinct
 /// syntax, lexical-binding, source-coordinate, and declaration authorities.
@@ -1350,18 +1349,10 @@ pub(crate) fn collect<'source>(
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), TypeScriptCollectError> {
-    let report = match Checker::default().run(profile, source) {
-        Ok(report) => Some(report),
-        Err(CheckerError::ToolingUnavailable { .. } | CheckerError::ModuleUnavailable { .. }) => {
-            None
-        }
-        Err(cause) => {
-            return Err(TypeScriptCollectError::Authority(AuthorityError::Checker {
-                cause,
-            }));
-        }
-    };
-    collect_with_checker(profile, source, report.as_ref(), facts)
+    let report = Checker::default()
+        .run(profile, source)
+        .map_err(|cause| TypeScriptCollectError::Authority(AuthorityError::Checker { cause }))?;
+    collect_with_checker(profile, source, Some(&report), facts)
 }
 
 /// Streams the OXC projection with one caller-supplied checker report.

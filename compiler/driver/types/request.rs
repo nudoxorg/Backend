@@ -35,6 +35,11 @@ pub enum SemanticAuthorityInput<'source> {
         /// Borrowed fixed-envelope bytes emitted by the configured javac producer.
         image: &'source [u8],
     },
+    /// Borrowed TypeScript checker report bound to the exact request source.
+    TypeScript {
+        /// Validated checker facts produced for this source.
+        report: &'source compiler_languages_typescript::Report,
+    },
 }
 
 /// Deadline and cancellation facts borrowed by one bounded native invocation.
