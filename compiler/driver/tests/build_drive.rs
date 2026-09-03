@@ -88,10 +88,28 @@ fn absent_cmake_is_not_silently_skipped() -> Result<(), Box<dyn std::error::Erro
         "cmake_minimum_required(VERSION 3.0)\n",
     )?;
     let result = discover_and_drive(&root, &root, &AtomicBool::new(false));
-    assert!(matches!(
-        result,
-        Err(BuildDriveFailure::ToolAbsent { tool: "cmake" })
-    ));
+    let cmake_available = [
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/Users/mileswirht/.local/bin"),
+    ]
+    .into_iter()
+    .chain(
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>()),
+    )
+    .any(|directory| directory.join("cmake").is_file());
+    if cmake_available {
+        assert!(!matches!(
+            result,
+            Err(BuildDriveFailure::ToolAbsent { tool: "cmake" })
+        ));
+    } else {
+        assert!(matches!(
+            result,
+            Err(BuildDriveFailure::ToolAbsent { tool: "cmake" })
+        ));
+    }
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -126,6 +144,46 @@ fn ccache_compile_argv_is_transported_verbatim() -> Result<(), Box<dyn std::erro
     assert_eq!(result.translation_units[0].arguments[1], "clang");
     assert_eq!(result.translation_units[0].arguments[2], "--sysroot");
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn make_recognizes_gnu_and_posix_compiler_cells() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("gnu-compilers")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tgcc -c main.c -o main.o\n\tg++ -c main.cpp -o main.o\n\tc99 -c main.c -o main.o\n\tc11 -c main.c -o main.o\n\tx86_64-linux-gnu-gcc -c main.c -o main.o\n",
+    )?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    fs::write(root.join("main.cpp"), "int main() { return 0; }\n")?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 5);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn buck2_nested_marker_returns_query_terminal_at_cell_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(corpus) = std::env::var_os("NUDOX_CORPUS_DIR") else {
+        return Ok(());
+    };
+    let root = PathBuf::from(corpus).join("buck2-examples/examples/with_prelude");
+    if !root.is_dir() || !Path::new("/Users/mileswirht/.local/bin/buck2").is_file() {
+        return Ok(());
+    }
+    match discover_and_drive(
+        &root,
+        &root.join(".nudox-test-scratch"),
+        &AtomicBool::new(false),
+    ) {
+        Err(BuildDriveFailure::ToolPresentUndrivable { tool, evidence }) => {
+            assert_eq!(tool, "buck2");
+            assert!(!evidence.is_empty());
+            assert!(evidence.contains("compilation_database"));
+        }
+        other => return Err(format!("unexpected buck2 result: {other:?}").into()),
+    }
     Ok(())
 }
 

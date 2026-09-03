@@ -8,6 +8,10 @@
 //! paths are always below the caller's scratch directory.  The existing native child module is
 //! intentionally not reused: it couples stdin-fed frontend lowering to a compile request,
 //! whereas these children need ordinary stdout capture and exit-status observation.
+//!
+//! The make compiler-cell transport list is closed: `clang`, `clang++`, `cc`, `c++`, `gcc`, `g++`,
+//! `c99`, and `c11`, plus cross-toolchain names ending in `-gcc` or `-g++`.  `ccache` and `sccache`
+//! are transport wrappers around one of those compiler cells; flags are never used for recognition.
 
 use std::{
     env, fs,
@@ -131,12 +135,27 @@ pub fn discover_and_drive(
                     tool: system.tool(),
                 });
             }
+            let (cell_root, package) = buck_context(root)
+                .map_err(BuildDriveFailure::Io)?
+                .ok_or_else(|| BuildDriveFailure::NoBuildSystemDetected {
+                    root: root.to_path_buf(),
+                })?;
+            let package = package
+                .to_str()
+                .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
+                .filter(|path| !path.is_empty())
+                .map_or_else(|| "//...".to_owned(), |path| format!("//{path}/..."));
             let query = Command::new(system.tool())
-                .current_dir(root)
-                .args(["uquery", "kind(\"compilation_database\", //...)"])
+                .current_dir(cell_root)
+                .env("PATH", child_path().unwrap_or_default())
+                .args([
+                    "uquery",
+                    &format!("kind(\"compilation_database\", {package})"),
+                ])
                 .output()
                 .map_err(BuildDriveFailure::Io)?;
-            let evidence = String::from_utf8_lossy(&query.stdout).into_owned();
+            let mut evidence = String::from_utf8_lossy(&query.stdout).into_owned();
+            evidence.push_str(&String::from_utf8_lossy(&query.stderr));
             return Err(BuildDriveFailure::ToolPresentUndrivable {
                 tool: system.tool(),
                 evidence,
@@ -203,9 +222,42 @@ fn detect(root: &Path) -> Result<BuildSystem, BuildDriveFailure> {
             return Ok(system);
         }
     }
+    if buck_context(root).map_err(BuildDriveFailure::Io)?.is_some() {
+        return Ok(BuildSystem::Buck);
+    }
     Err(BuildDriveFailure::NoBuildSystemDetected {
         root: root.to_path_buf(),
     })
+}
+
+fn buck_context(root: &Path) -> Result<Option<(PathBuf, PathBuf)>, std::io::Error> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        if directory.join("BUCK").is_file() || directory.join("BUCK2").is_file() {
+            let mut cell_root = directory.clone();
+            while !cell_root.join(".buckconfig").is_file() {
+                let Some(parent) = cell_root.parent() else {
+                    break;
+                };
+                if parent == cell_root {
+                    break;
+                }
+                cell_root = parent.to_path_buf();
+            }
+            let package = directory
+                .strip_prefix(&cell_root)
+                .unwrap_or(directory.as_path())
+                .to_path_buf();
+            return Ok(Some((cell_root, package)));
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn available(tool: &str) -> bool {
@@ -349,7 +401,11 @@ fn recognized_compiler(argv: &[String]) -> bool {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(value);
-        name.ends_with("clang") || name.ends_with("clang++") || name == "cc" || name == "c++"
+        matches!(
+            name,
+            "clang" | "clang++" | "cc" | "c++" | "gcc" | "g++" | "c99" | "c11"
+        ) || name.ends_with("-gcc")
+            || name.ends_with("-g++")
     };
     argv.first().is_some_and(|compiler| is_compiler(compiler))
         || (argv.first().is_some_and(|wrapper| {

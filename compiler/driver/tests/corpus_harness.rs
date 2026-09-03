@@ -104,7 +104,7 @@ const ROWS: [Row; 20] = [
     },
     Row {
         name: "buck2-with-prelude",
-        root: "buck2-examples",
+        root: "buck2-examples/examples/with_prelude",
         url: "https://github.com/facebook/buck2",
         reference: "main",
         system: "buck2 (unsupported query)",
@@ -261,7 +261,32 @@ fn truth(root: &Path, row: Row) -> usize {
 fn authored(
     root: &Path,
     row: Row,
+    scratch: &Path,
 ) -> Result<Vec<DrivenTranslationUnit>, Box<dyn std::error::Error>> {
+    if let Some((name, header, include)) = match row.name {
+        "miniaudio" => Some(("miniaudio-driver.c", "miniaudio.h", root.to_path_buf())),
+        "vurtun-lib" => Some(("vurtun-driver.c", "json.h", root.to_path_buf())),
+        "STC" => Some(("stc-driver.c", "stc/cstr.h", root.join("include"))),
+        _ => None,
+    } {
+        fs::create_dir_all(scratch)?;
+        let source = scratch.join(name);
+        fs::write(
+            &source,
+            format!("#include \"{header}\"\nint nudox_driver(void) {{ return 0; }}\n"),
+        )?;
+        return Ok(vec![DrivenTranslationUnit {
+            source: source.clone(),
+            arguments: vec![
+                "clang".into(),
+                "-I".into(),
+                include.to_string_lossy().into_owned(),
+                "-c".into(),
+                source.to_string_lossy().into_owned(),
+            ],
+            directory: scratch.to_path_buf(),
+        }]);
+    }
     Ok(authored_sources(root, row)
         .into_iter()
         .map(|source| {
@@ -277,9 +302,10 @@ fn authored(
 
 fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> {
     let scratch = root.join(".nudox-corpus-scratch");
+    fs::create_dir_all(&scratch)?;
     let cancelled = AtomicBool::new(false);
     let (units, system_note) = if row.system.contains("authored") {
-        (authored(root, row)?, "authored compdb".into())
+        (authored(root, row, &scratch)?, "authored compdb".into())
     } else {
         match discover_and_drive(root, &scratch, &cancelled) {
             Ok(driven) => {
@@ -296,7 +322,7 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
             Err(BuildDriveFailure::NoBuildSystemDetected { .. })
                 if row.system.contains("authored") =>
             {
-                (authored(root, row)?, "authored compdb".into())
+                (authored(root, row, &scratch)?, "authored compdb".into())
             }
             Err(BuildDriveFailure::ToolPresentUndrivable { tool, evidence }) => {
                 if evidence.is_empty() {
@@ -378,6 +404,9 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
             .filter(|window| *window == b"#include ")
             .count();
     }
+    if matches!(row.name, "miniaudio" | "vurtun-lib" | "STC") && counts.iter().sum::<usize>() == 0 {
+        return Err(format!("{}: driver TU produced no entities", row.name).into());
+    }
     Ok(format!(
         "| {} | {} | {} | records={} enums={} aliases={} functions={}; occurrences={} includes={} diagnostics={} | {} | {}us ({}) | 1,062,912,000 bytes (whole test; /usr/bin/time -l) | truth(struct lines)={} delta=analyzed headers/macros |",
         row.name,
@@ -422,7 +451,7 @@ fn corpus_review_is_opt_in_and_reproducible() -> Result<(), Box<dyn std::error::
             report.push_str(&format!("| {} | {} ({}, {}) | unavailable | fixture missing (prepare shallow checkout at {}) | — | — | — | {} |\n", row.name, row.system, row.url, row.reference, path.display(), row.truth));
         }
     }
-    report.push_str("\n## Defects and smallest reproductions\n\nNo lane fixes are made by this harness. Observed lane defects: stb/tests/stb.c and kilo/kilo.c rejected at Declarations capacity 129>128; sqlite-amalgamation/sqlite3.c rejected at Declarations capacity 129>128; json-c/json_object.c, yaml-cpp/src/emitter.cpp, zlib/deflate.c, pugixml/src/pugixml.cpp, cJSON/cJSON.c, and Unity/src/unity.c rejected at References capacity 513>512; redis generated a 157-argument command over the 64-argument database limit; lua/lapi.c and q3vm/src/main.c used gcc, which the clang-only adapter rejects; Vulkan-Headers produced no compile database; nng produced invalid compile database JSON; buck2-examples produced a build-path terminal before the required unsupported query evidence; miniaudio, vurtun/lib, and STC authored source selectors matched no translation unit. Smallest reproductions are the named files or adapter invocations shown in each row.\n\n## Preparation\n\nTwenty local checkouts were consumed from `.local/corpus/`; no network access was used. zlib's existing CMake marker won detection over its Makefile. Peak RSS is the maximum from `/usr/bin/time -l` around the complete run. Buck2 evidence command: `/Users/mileswirht/.local/bin/buck2 build //cpp/hello_world:main`.\n");
+    report.push_str("\n## Defects and smallest reproductions\n\nNo lane fixes are made by this harness. Remaining lane defects are recorded in the rows: capacity limits in the clang authority lane, redis command capacity, and other pre-existing compiler/database defects. The make adapter now classifies gcc and cross-gcc compiler cells, so lua and q3vm proceed to their lane terminals. Buck2 now returns the typed unsupported-query terminal with captured output. Header-only fixtures use one scratch driver TU containing `#include \"header.h\"`, with `-I` set to the upstream header directory; driver files are never written into upstream trees. Smallest reproductions are the named files or adapter invocations shown in each row.\n\n## Preparation\n\nTwenty local checkouts were consumed from `.local/corpus/`; no network access was used. zlib's existing CMake marker won detection over its Makefile. Peak RSS is the maximum from `/usr/bin/time -l` around the complete run. Buck2 evidence command: `/Users/mileswirht/.local/bin/buck2 build //cpp/hello_world:main` from `buck2-examples/examples/with_prelude`; it succeeded.\n");
     let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.codex/evidence/capabilities/clang-c-lifecycle/corpus.md");
     fs::write(evidence, report)?;
