@@ -2347,7 +2347,8 @@ mod tests {
         FragmentView, Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind,
         SourceIdentity, TypeFactFault,
     };
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use compiler_languages_rust::RustToolchain;
+    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
@@ -2371,8 +2372,10 @@ mod tests {
         },
         #[error(transparent)]
         Authority(#[from] RustAuthorityError),
+        #[error("lane lowering rejected the fixture: {0:?}")]
+        Lowering(compiler_vocabulary::LoweringUnsupported),
         #[error("lane admission rejected the fact set: {0:?}")]
-        Admission(#[from] AdmissionFault),
+        Admission(AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(#[from] FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
@@ -2392,6 +2395,15 @@ mod tests {
     impl From<std::num::TryFromIntError> for TestError {
         fn from(_: std::num::TryFromIntError) -> Self {
             Self::Scalar
+        }
+    }
+
+    impl From<RustCollectError> for TestError {
+        fn from(error: RustCollectError) -> Self {
+            match error {
+                RustCollectError::Authority(cause) => Self::Authority(cause),
+                RustCollectError::Lowering(cause) => Self::Lowering(cause),
+            }
         }
     }
 
@@ -2437,18 +2449,21 @@ mod tests {
             operation: "write manifest",
             source,
         })?;
-        fs::write(root.join("src/lib.rs"), source).map_err(|source| TestError::Io {
+        let source_path = root.join("src").join("lib.rs");
+        fs::write(&source_path, source).map_err(|source| TestError::Io {
             operation: "write crate root",
             source,
         })?;
         let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
-        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)
-            .map_err(RustAuthorityError::from)?;
+        let project =
+            RustProject::open_with_source(&root, &source_path, &toolchain, RustEdition::Rust2024)
+                .map_err(RustAuthorityError::from)?;
         let cancelled = AtomicBool::new(false);
         let mut facts = FactSet::new();
         collect(
             &project,
             SourceByteLimit::from(65_536),
+            RustFeatureControl::default(),
             &cancelled,
             source.as_bytes(),
             &mut facts,
@@ -2466,7 +2481,7 @@ mod tests {
         );
         let mut output = vec![0xa5_u8; 65_536];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::from)?
+            .map_err(TestError::Admission)?
             .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
@@ -2481,7 +2496,9 @@ mod tests {
     }
 
     /// Decodes one validated fragment's type rows into owned snapshots.
-    fn rows(view: &FragmentView<'_>) -> Result<Vec<compiler_ir::DecodedTypeFact<'_>>, TestError> {
+    fn rows<'a>(
+        view: &'a FragmentView<'a>,
+    ) -> Result<Vec<compiler_ir::DecodedTypeFact<'a>>, TestError> {
         view.type_facts()
             .ok_or(TestError::Missing("type facts"))?
             .map(|fact| fact.map_err(TestError::from))
@@ -2520,7 +2537,7 @@ mod tests {
         let directory = 16 + 20 * 3;
         let row_count = word(directory + 4)?;
         let fact_count = word(directory + 8)?;
-        let base = usize::try_from(word(directory + 12))?;
+        let base = usize::try_from(word(directory + 12)?)?;
         if fact_count == 0 {
             return Ok(None);
         }
@@ -2542,7 +2559,9 @@ mod tests {
     }
 
     /// Collects every decoded occurrence.
-    fn occurrences(view: &FragmentView<'_>) -> Result<Vec<(u32, Occurrence<'_>)>, TestError> {
+    fn occurrences<'a>(
+        view: &'a FragmentView<'a>,
+    ) -> Result<Vec<(u32, Occurrence<'a>)>, TestError> {
         view.occurrences()
             .ok_or(TestError::Missing("occurrences"))?
             .map(|fact| {

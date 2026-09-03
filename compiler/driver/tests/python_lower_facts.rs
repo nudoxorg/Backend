@@ -549,8 +549,7 @@ fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError>
         let parameters = ir
             .tuple_elements(parameters)
             .ok_or(TestError::Falsified("parameter list absent"))?;
-        let expected: [&[u8]; 10] =
-            [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
+        let expected: [&[u8]; 10] = [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h2", b"i", b"j"];
         if parameters.len() != expected.len() {
             return Err(TestError::Falsified("function row lost parameter children"));
         }
