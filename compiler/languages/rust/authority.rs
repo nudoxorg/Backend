@@ -10,7 +10,7 @@ use std::{
 };
 
 use compiler_vocabulary::RustEdition;
-use ra_ap_base_db::EditionedFileId;
+use ra_ap_base_db::{EditionedFileId, all_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
@@ -186,8 +186,20 @@ impl RustProject {
                 path: source_path.clone(),
             },
         )?;
-        let source_file = EditionedFileId::current_edition(&database, file_id);
-        let observed = rust_edition(source_file.edition(&database));
+        // `all_crates` is topologically ordered, so shared roots resolve to the first
+        // crate in the loader's deterministic crate-graph order.
+        let observed_edition = all_crates(&database)
+            .iter()
+            .find_map(|krate| {
+                let root_file_id = krate.root_file_id(&database);
+                (root_file_id.file_id(&database) == file_id)
+                    .then_some(root_file_id.edition(&database))
+            })
+            .ok_or_else(|| RustAuthorityError::SourceNotLoaded {
+                path: source_path.clone(),
+            })?;
+        let source_file = EditionedFileId::new(&database, file_id, observed_edition);
+        let observed = rust_edition(observed_edition);
         if observed != self.edition {
             return Err(RustAuthorityError::EditionMismatch {
                 requested: self.edition,
