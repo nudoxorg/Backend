@@ -487,11 +487,13 @@ fn schema_two_owner_cell_and_schema_one_tail_decode() {
         ir.language_extension_common_bounds().expect("bounds"),
     )
     .expect("schema two");
+    assert_eq!(schema_two[152..156], 36_u32.to_le_bytes());
     assert_eq!(section.clang.owner(EntityId::new(0)), Ok(Some(0)));
+    assert_eq!(section.clang.identity_list(EntityId::new(0)), Ok(None));
 
     let mut schema_one = schema_two;
     schema_one[4..6].copy_from_slice(&1_u16.to_le_bytes());
-    schema_one.truncate(schema_one.len() - 4);
+    schema_one.truncate(schema_one.len() - 8);
     let schema_one_len = u32::try_from(schema_one.len()).expect("fixture length");
     schema_one[12..16].copy_from_slice(&schema_one_len.to_le_bytes());
     schema_one[152..156].copy_from_slice(&28_u32.to_le_bytes());
@@ -501,7 +503,9 @@ fn schema_two_owner_cell_and_schema_one_tail_decode() {
         ir.language_extension_common_bounds().expect("bounds"),
     )
     .expect("preserved schema one");
+    assert_eq!(schema_one[152..156], 28_u32.to_le_bytes());
     assert_eq!(reopened.clang.get(EntityId::new(0)), Ok(Some(clang)));
+    assert_eq!(reopened.clang.identity_list(EntityId::new(0)), Ok(None));
 }
 
 #[test]

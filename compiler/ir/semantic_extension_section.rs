@@ -62,7 +62,7 @@ impl LanguageExtensionDirectoryKind {
 
     const fn schema_fact_bytes(self, schema: u16) -> usize {
         if matches!(self, Self::Clang) && schema == SCHEMA {
-            28
+            32
         } else {
             self.fact_bytes()
         }
@@ -337,7 +337,8 @@ impl<'wire> ReopenedLanguageExtensionColumn<'wire, crate::ClangFacts> {
         self,
         entity: crate::EntityId,
     ) -> Result<Option<u32>, LanguageExtensionReopenError> {
-        if entity.raw >= self.layout.rows || self.layout.facts == 0 {
+        if entity.raw >= self.layout.rows || self.layout.facts == 0 || self.layout.fact_bytes != 32
+        {
             return Ok(None);
         }
         let row = entity.index();
@@ -374,6 +375,52 @@ impl<'wire> ReopenedLanguageExtensionColumn<'wire, crate::ClangFacts> {
         read_word(self.bytes, offset)
             .map(Some)
             .ok_or(LanguageExtensionReopenError::Truncated)
+    }
+
+    /// Returns the schema-2 pooled identity-list ordinal stored beside a clang fact.
+    pub fn identity_list(
+        self,
+        entity: crate::EntityId,
+    ) -> Result<Option<u32>, LanguageExtensionReopenError> {
+        if entity.raw >= self.layout.rows || self.layout.facts == 0 || self.layout.fact_bytes != 32
+        {
+            return Ok(None);
+        }
+        let ordinal = read_word(
+            self.bytes,
+            entity
+                .index()
+                .checked_mul(4)
+                .and_then(|width| self.layout.offset.checked_add(width))
+                .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                    offset: self.layout.offset,
+                })?,
+        )
+        .ok_or(LanguageExtensionReopenError::Truncated)?;
+        if ordinal == NONE {
+            return Ok(None);
+        }
+        let fact = usize::try_from(ordinal).map_err(|_| {
+            LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            }
+        })?;
+        let offset = self
+            .layout
+            .offset
+            .checked_add(self.layout.ordinal_bytes)
+            .and_then(|offset| {
+                fact.checked_mul(self.layout.fact_bytes)
+                    .and_then(|width| offset.checked_add(width))
+            })
+            .and_then(|offset| offset.checked_add(crate::ClangFacts::WIDTH + 4))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow {
+                offset: self.layout.offset,
+            })?;
+        match read_word(self.bytes, offset).ok_or(LanguageExtensionReopenError::Truncated)? {
+            NONE => Ok(None),
+            ordinal => Ok(Some(ordinal)),
+        }
     }
 }
 
@@ -724,6 +771,7 @@ where
                         u32::try_from(index)
                             .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?,
                     )?;
+                    put_u32(output, offset + crate::ClangFacts::WIDTH + 4, NONE)?;
                 }
             }
             payload = payload
