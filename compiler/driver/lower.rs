@@ -46,8 +46,8 @@ pub(super) const MAX_FACT_CHILDREN: usize = 16;
 pub(super) const MAX_TYPE_CHILDREN: usize = 16;
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
-/// Dense bound of the documentation lane committed beside the declarations.
-pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 4096;
+/// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
+pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.
 pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
 /// Dense bound of pooled type parameters.

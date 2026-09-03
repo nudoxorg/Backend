@@ -146,6 +146,16 @@ fn terminal_for(
     })
 }
 
+#[derive(Clone, Copy)]
+struct DocContext<'source> {
+    declaration: &'source [u8],
+    owner: Option<&'source [u8]>,
+}
+impl DocContext<'_> {
+    fn terminal(self, fault: ProjectionFault<'_>) -> JavaCollectError {
+        terminal_for(fault, self.declaration, self.owner)
+    }
+}
 /// Folds one bounded-lane fact rejection into the lane's closed terminal.
 fn lane_terminal(fault: FactFault) -> JavaCollectError {
     let _ = fault;
@@ -1653,6 +1663,10 @@ fn push_docs<'source>(
         return Ok(());
     };
     let doc = documentation.bytes;
+    let context = DocContext {
+        declaration: declared.name.bytes,
+        owner: declared.owner.map(|owner| owner.bytes),
+    };
     let mut line_start = 0usize;
     while line_start < doc.len() {
         let line_end = doc
@@ -1663,10 +1677,9 @@ fn push_docs<'source>(
             .map_or(doc.len(), |at| line_start + at);
         let line = doc.get(line_start..line_end).unwrap_or(&[]);
         match declared.documentation_flavor {
-            DocFlavor::Traditional => push_doc_line(facts, names, owner, line).map_err(terminal)?,
+            DocFlavor::Traditional => push_doc_line(facts, names, owner, context, line)?,
             DocFlavor::Markdown | DocFlavor::Absent => {
-                push_text(facts, owner, line)
-                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+                push_text(facts, owner, context, line)?;
             }
         }
         if line_end == doc.len() {
@@ -1674,7 +1687,7 @@ fn push_docs<'source>(
         }
         facts
             .push_doc(owner, DocFragmentInput::SoftBreak)
-            .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            .map_err(|_| context.terminal(ProjectionFault::IndexCapacity))?;
         line_start = line_end + 1;
     }
     Ok(())
@@ -1686,26 +1699,26 @@ fn push_doc_line<'source>(
     facts: &mut FactSet<'source>,
     names: &NameIndex<'source>,
     owner: u32,
+    context: DocContext<'source>,
     line: &'source [u8],
-) -> Result<(), ProjectionFault<'source>> {
+) -> Result<(), JavaCollectError> {
     let mut cursor = 0usize;
     while cursor < line.len() {
         let rest = line.get(cursor..).unwrap_or(&[]);
         match inline_tag(rest) {
             None => {
-                push_text(facts, owner, rest).map_err(|_| ProjectionFault::IndexCapacity)?;
+                push_text(facts, owner, context, rest)?;
                 break;
             }
             Some(tag) => {
                 let prose = rest.get(..tag.at).unwrap_or(&[]);
-                push_text(facts, owner, prose).map_err(|_| ProjectionFault::IndexCapacity)?;
+                push_text(facts, owner, context, prose)?;
                 if tag.link {
-                    push_link(facts, names, owner, tag.interior)
-                        .map_err(|_| ProjectionFault::IndexCapacity)?;
+                    push_link(facts, names, owner, context, tag.interior)?;
                 } else if !tag.interior.is_empty() {
                     facts
                         .push_doc(owner, DocFragmentInput::Code(tag.interior))
-                        .map_err(|_| ProjectionFault::IndexCapacity)?;
+                        .map_err(|_| context.terminal(ProjectionFault::IndexCapacity))?;
                 }
                 cursor += tag.after;
             }
@@ -1756,12 +1769,15 @@ fn inline_tag(line: &[u8]) -> Option<InlineTag<'_>> {
 fn push_text<'source>(
     facts: &mut FactSet<'source>,
     owner: u32,
+    context: DocContext<'source>,
     bytes: &'source [u8],
-) -> Result<(), FactFault> {
+) -> Result<(), JavaCollectError> {
     if bytes.is_empty() {
         return Ok(());
     }
-    facts.push_doc(owner, DocFragmentInput::Text(bytes))
+    facts
+        .push_doc(owner, DocFragmentInput::Text(bytes))
+        .map_err(|_| context.terminal(ProjectionFault::IndexCapacity))
 }
 
 /// Emits one `{@link target label}` fragment: a target matching an admitted
@@ -1771,8 +1787,9 @@ fn push_link<'source>(
     facts: &mut FactSet<'source>,
     names: &NameIndex<'source>,
     owner: u32,
+    context: DocContext<'source>,
     interior: &'source [u8],
-) -> Result<(), FactFault> {
+) -> Result<(), JavaCollectError> {
     let split = interior
         .iter()
         .position(|byte| *byte == b' ' || *byte == b'\t');
@@ -1797,7 +1814,7 @@ fn push_link<'source>(
         .and_then(|at| spelling.get(..at))
         .unwrap_or(spelling);
     if declaration.is_empty() {
-        return push_text(facts, owner, trim(interior));
+        return push_text(facts, owner, context, trim(interior));
     }
     let target = match names.lookup_link(declaration) {
         Some(ordinal) => DocLinkTarget::Local(EntityId::new(ordinal)),
@@ -1806,7 +1823,9 @@ fn push_link<'source>(
             path: declaration,
         },
     };
-    facts.push_doc(owner, DocFragmentInput::Link { label, target })
+    facts
+        .push_doc(owner, DocFragmentInput::Link { label, target })
+        .map_err(|_| context.terminal(ProjectionFault::IndexCapacity))
 }
 
 /// Trims ASCII whitespace from both borrowed ends without copying.
@@ -2212,7 +2231,7 @@ mod tests {
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"java-authority-toolchain"),
         );
-        let mut output = vec![0xa5_u8; 65_536];
+        let mut output = vec![0xa5_u8; 2_000_000];
         let length = crate::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
             .map_err(TestError::from)?
             .len();
@@ -3230,6 +3249,74 @@ mod tests {
         }
         if docs.next().is_some() {
             return Err(TestError::Missing("exact doc facts"));
+        }
+        Ok(())
+    }
+
+    fn generated_doc_fixture(lines: usize) -> Result<(Fixture, &'static [u8]), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let name = fix.atom(b"generated");
+        let documentation = (0..lines)
+            .flat_map(|line| {
+                if line + 1 == lines {
+                    b"x".as_slice()
+                } else {
+                    b"x\n".as_slice()
+                }
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        let doc = fix.atom(&documentation);
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        fix.symbols.push(SymbolRow {
+            owner: 0,
+            name,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name,
+            owner: Some(0),
+            documentation: Some(doc),
+            semantic_type: Some(void),
+            symbol: Some(0),
+        });
+        Ok((fix, b"class C { void generated() {} }"))
+    }
+
+    #[test]
+    fn generated_javadoc_above_old_bound_decodes_exactly() -> Result<(), TestError> {
+        let (fix, source) = generated_doc_fixture(2_050)?;
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let docs = view.docs().ok_or(TestError::Missing("docs"))?;
+        if docs.count() != 4_100 {
+            return Err(TestError::Missing("exact generated documentation count"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_javadoc_above_new_bound_names_method_and_owner() -> Result<(), TestError> {
+        let (fix, source) = generated_doc_fixture(8_200)?;
+        let error = match lower(&fix, source) {
+            Err(error) => error,
+            Ok(_) => return Err(TestError::Missing("documentation capacity rejection")),
+        };
+        let TestError::Collect(JavaCollectError::Lowering(cause)) = error else {
+            return Err(TestError::Missing("typed documentation capacity fault"));
+        };
+        if cause.to_string()
+            != "Java projection IndexCapacity in declaration generated, owner demo.C"
+        {
+            return Err(TestError::Missing("documentation fault context"));
         }
         Ok(())
     }
