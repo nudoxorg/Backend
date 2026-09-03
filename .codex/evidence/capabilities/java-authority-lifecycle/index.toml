@@ -193,3 +193,37 @@ card = "J9-java-lifecycle-integration"
 digest = "9ab69a6d255538c55437634c647c49774b98728ddc89831c7f198ef66deb8a4f"
 trials = "independent-reader + plausible-misreader, fresh roles, round 1 found T2 slice-to-javac loophole; narrow rewrite; round 2 reader exact, misreader loopholes closed (residual #[ignore] reading already foreclosed by card text)"
 note = "Card content bytes unchanged since digest 9ab69a6d except baseline-pointer mechanics and the budget/binding/prerequisite amendments recorded here"
+
+# ---- 2026-09-03 session 2: trunk consumption, J9 completion ----
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "trunk-consumption"
+commit = "e29d1b73"
+state = "accepted"
+note = "Merged canonical 99eb1a80d into chain f0aff7ba7: chained journal generations, 1024-fact geometry, FactRejection operand retention, schema-2 computed segment, new rendering vocabulary. lower.rs conflict resolved (both sides landed the children-first fix; trunk adds intern_reserved_anchor_type_row). Foreign quarantine reinstated worktree-only (rust/csharp cfg(test) drift persists on canonical itself)."
+
+[[dispatches]]
+task = "ses_f983a2fa7ffeKOirK3SgCWlEQp"
+role = "nudox_luna_implementer"
+card = "J9P-doclet-reference-owner"
+commit = "e3ddea99"
+state = "accepted"
+note = "CallScanner.enclosingExecutable honors only MethodTree declaration leaves, skips nameless-host methods. Live Nested.java falsifier asserts exact owner atoms for nested-call arguments and anonymous-body calls. Terra reproduced: javac_authority 2 passed, languages-java 10/10, java_image green; Pair.java lowers with zero orphans after landing."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J9-integration"
+commit = "568c7f40"
+state = "accepted"
+note = "Terra integrated the uncommitted J9 scratch: qualified-name entity assertions, maven foreign-key origin scan, live-Ir overload law (two distinct exact add signatures), plus the one-line lower.rs lazy-borrow fix (zero-child FunctionPointer underflow, trunk finding). All three lifecycle tests green sequentially; 755+192 LOC (scratch grew past the 650/550 card budget through the compile_ir proof + foreign-key scan; recorded, not silent)."
+
+[[dispatches]]
+task = "ses_f981352e6ffesLXLy5hAIV2vma"
+role = "nudox_luna_implementer"
+card = "J9Q-capacity-goldens"
+commit = "242e109c"
+state = "accepted"
+note = "Capacity tests assert Rejected(FactRejection) with exact fact/name_len/cause operands at 1024 geometry (257 fields admit; overflow folds typed via root-shaped rows — member-shaped overflow structurally unreachable, reasoning recorded). Render goldens re-pinned to trunk vocabulary with why-comments; boolean-spelling self-error caught; FINDINGs resolved against 4d1cceba9. Terra reproduced all five gates."
