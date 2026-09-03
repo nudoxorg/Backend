@@ -537,3 +537,8 @@ fn mutation_of_decoded_fact_changes_verdict() {
     let mutated = json!({"decoded_facts":9,"exported_declarations":10});
     assert_ne!(clean["decoded_facts"], mutated["decoded_facts"]);
 }
+
+#[test]
+fn regression_watch_uses_the_frozen_two_x_cap() {
+    assert_eq!(TYPESCRIPT_CORPUS_REGRESSION_CAP, 2.0);
+}
