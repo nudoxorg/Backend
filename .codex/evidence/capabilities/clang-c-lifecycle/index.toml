@@ -153,12 +153,22 @@ result_commit = "dd2166cbb"
 ingest = "Terra reproduced clang_lifecycle 11/11 twice and re-read the diff: gen-2 changes main.c (adds changed_value + struct Changed), asserts SHA(main_2)!=SHA(gen1 main) and byte-equal util fragment; gen-1 index sealed before gen-2; shutdown+reopen before opening gen-2. Phase terminals pinned: publish cancel = CancelledBeforeStorage (open_published afterwards returns None); publish capacity = BindingOutputLength{observed:8} then a successful publish on the same journal; open capacity = FragmentOutputTooSmall{required>available} then success; index = BuildAdmissionError::OutputTooSmall{region:Projections} + CompilationIndexError::ExactScratch. Worker's mutation spot-check reported at clang_lifecycle.rs:355. NOTE: L10 dispatched in parallel hit a transient compile failure — concurrent luna workers on one shared worktree are unsafe even with disjoint paths (cargo raced L9's in-flight edits); L10 re-dispatched sequentially. R10/R12 now REPRODUCED BY TERRA."
 
 [[workers]]
-task = "planned"
+task = "done (partial: T1-T3 of 4)"
 role = "nudox_luna_implementer"
 card = "L10-drive (make compound lines, buck compdb positive path, meson --wipe, R16 packaging journeys)"
 card_sha256 = "dfe918a3f3b2debcccafd6a38fbe65692a6d4ef6d01143d78e701dadb204506f"
 paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
-baseline = "post-L8"
+baseline = "post-L8 (179dbf6e0 after first parallel attempt was safely discarded)"
+result_commit = "28b385f92"
+ingest = "Terra reproduced build_drive 15/15 twice (+1 corpus-gated ignored) and re-read the diff: make compound lines split top-level on ;/&&/||/| with pure-redirection stripping and unchanged typed UnrecognizedCompileCommand law; buck positive path = uquery -> (targets? build --show-output -> read_compdb : ToolPresentUndrivable(evidence)); query/build failures = DriveFailed with combined capture; meson setup gains --wipe on existing build dir; ninja compdb now lists all rules (no c/cxx filter). Redis probe REPRODUCED BY TERRA: 234 TUs, no UnrecognizedCompileCommand. T4 packaging journeys + absent twins NOT delivered (worker reported honestly) -> one falsifier-bound repair card L10b."
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L10b-packaging (R16 journeys + tool-absent twins; completes L10 T4)"
+card_sha256 = "a94308825e04519c89f979962c74815aa87a45c8b450424351d8300622fe7d73"
+paths = ["compiler/driver/tests/build_drive.rs"]
+baseline = "post-L10 T1-T3"
 
 [[workers]]
 task = "planned"
