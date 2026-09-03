@@ -75,9 +75,11 @@ slice (fail typed naming any missing path; never substitute):
 `builder/ToStringBuilder.java`, `builder/EqualsBuilder.java`,
 `builder/HashCodeBuilder.java`, `tuple/Pair.java`, `mutable/MutableInt.java`,
 `function/Suppliers.java` (all under `org/apache/commons/lang3/`). Write the
-binary jar to the temp dir and run `Harness::image` with
-`classpath: [binary jar path]`. Then the same compile → validate → publish →
-reopen → open → index sequence as T1. Assertions on the reopened fragment:
+binary jar to the temp dir and run `Harness::image` with `sources` = ALL 12
+extracted files, each as a `JavaSource { name, bytes }` in the frozen order
+above, and `classpath: [binary jar path]`. Feeding javac fewer than all 12
+extracted sources fails P17 even if every extraction happened. Then the same
+compile → validate → publish → reopen → open → index sequence as T1. Assertions on the reopened fragment:
 entity `StringUtils` exists; ≥ 2 distinct overload signatures among
 `StringUtils` methods; ≥ 1 atom whose bytes are exactly `maven` (ecosystem
 foreign keys); occurrences lane non-empty; ≥ 1 structural compound type row
