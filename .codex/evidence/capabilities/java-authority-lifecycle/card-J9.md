@@ -8,7 +8,7 @@ product architecture, do not widen paths, do not change any proof-matrix row.
 ## Baseline and workspace
 
 - Worktree: `/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/java-lane`,
-  detached HEAD at commit `054535d92` (verify with `git rev-parse HEAD` before
+  detached HEAD at commit `0cc4d167` (verify with `git rev-parse HEAD` before
   the first edit; if it differs, STOP and report).
 - Build environment for every gate:
   `CARGO_TARGET_DIR=/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/java-gate-target`
@@ -175,11 +175,11 @@ Production code of any crate; other test files; shared driver lanes;
   validated `FragmentView` → STOP with the exact API gap.
 - Image output exceeds 16 MiB or fragment output exceeds 16 MiB → STOP with
   observed sizes.
-- `git rev-parse HEAD` ≠ `054535d92` → STOP.
+- `git rev-parse HEAD` ≠ `0cc4d167` → STOP.
 
 ## Commit and return
 
-One commit on top of `054535d92` in the worktree, message:
+One commit on top of `0cc4d167` in the worktree, message:
 `test(java): purl lifecycle from local repo and central to sealed index`.
 Stage ONLY your two paths. Return: commit hash; one-line output per gate; LOC
 count per file; the smallest remaining red row; any stop decision hit.
