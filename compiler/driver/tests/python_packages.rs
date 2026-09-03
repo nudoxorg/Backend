@@ -1367,6 +1367,7 @@ fn wcwidth_real_sdist_decodes_tables_and_signature() -> Result<(), Error> {
 #[test]
 fn oracle_assertions_are_conditional_on_pyrefly() -> Result<(), Error> {
     if !compiler_languages_python::Pyrefly::from_env().is_available() {
+        eprintln!("python package typed skip: pyrefly checker unavailable");
         return Ok(());
     }
     assert_package("six", "1.17.0").map(|_| ())
