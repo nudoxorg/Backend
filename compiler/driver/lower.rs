@@ -46,15 +46,19 @@ pub(super) const MAX_FACT_CHILDREN: usize = 16;
 /// Dense bound of one fact's ordered type-record children.
 pub(super) const MAX_TYPE_CHILDREN: usize = 16;
 /// Dense bound of the occurrence lane committed beside the declarations.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
+/// The measured x/tools corpus carries 14,903 resolved call references.
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 16384;
 /// Dense bound of the documentation lane committed beside the declarations.
-pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 4096;
+/// The measured x/tools corpus carries 6,121 declarations; soft breaks add rows.
+pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 8192;
 /// Dense bound of extension atoms admitted beside declaration names.
-pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
+/// The measured x/tools corpus carries 1,095 constants plus constraint atoms.
+pub(super) const MAX_EXTENSION_ATOMS: usize = 8192;
 /// Dense bound of pooled type parameters.
 pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
 /// Dense bound of pooled reference lists per lane kind.
-pub(super) const MAX_REF_LISTS: usize = 512;
+/// The measured x/tools corpus needs approximately 9,000 signature lists per kind.
+pub(super) const MAX_REF_LISTS: usize = 16384;
 /// Dense bound of one pooled reference list, covering measured corpus demand:
 /// zerolog's `Event` is ~70 methods and yaml.v3's emitter struct has 47 fields.
 pub(super) const MAX_REF_LIST_ELEMENTS: usize = 128;

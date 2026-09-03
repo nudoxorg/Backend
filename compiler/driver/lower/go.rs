@@ -1873,7 +1873,8 @@ fn push_doc_lines<'source>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::MAX_EMISSION_FACTS;
+    use crate::lower::{FactSet, MAX_EMISSION_FACTS, MAX_REF_LISTS};
+    use crate::types::FactFault;
     use compiler_ir::{FragmentView, LanguageExtensionWireFact, SourceIdentity};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
@@ -3751,6 +3752,39 @@ mod tests {
             .is_some_and(|mut cursor| cursor.next().is_some())
         {
             return Err(TestError::Missing("package doc projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pooled_entity_lists_admit_the_exact_measured_bound_then_reject() -> Result<(), TestError> {
+        let mut facts = FactSet::new();
+        for _ in 0..MAX_REF_LISTS - 1 {
+            if facts
+                .push(SemanticFact::new(
+                    EntityKind::Record,
+                    b"row",
+                    SemanticProductConstructor::PRODUCT,
+                ))
+                .is_err()
+            {
+                return Err(TestError::Missing("fact setup capacity"));
+            }
+        }
+
+        for index in 0..MAX_REF_LISTS - 1 {
+            if facts.intern_entity_list(&[index as u32]).is_err() {
+                return Err(TestError::Missing("pooled entity list setup"));
+            }
+        }
+        if facts.intern_entity_list(&[0, 1]).is_err() {
+            return Err(TestError::Missing("exact pooled entity-list bound"));
+        }
+        if !matches!(
+            facts.intern_entity_list(&[0, 1, 2]),
+            Err(FactFault::RefListCapacity)
+        ) {
+            return Err(TestError::Missing("pooled entity-list capacity rejection"));
         }
         Ok(())
     }
