@@ -315,12 +315,137 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
     Ok(())
 }
 
-/// The binary authority image round-trips the oracle's complete Output:
-/// constant values with const groups and iota flags, interface-satisfaction
-/// edges (local and cross-package), and the package doc comment. Skipped
-/// when no Go toolchain is available.
+/// One decoded (name, package) fact pair shared by the method-set and
+/// satisfaction differentials.
+type NamePackage = (Vec<u8>, Vec<u8>);
+
+/// One decoded transcript method-set spelling.
+type JsonMethodSet = (String, String);
+
+/// Transcript signature facts: parameter/result names and method-set
+/// spellings, in encounter order.
+type SignatureFacts = (Vec<String>, Vec<JsonMethodSet>);
+
+/// Every func-type parameter/result name and every interface method-set
+/// entry in the decoded transcript, in encounter order: the exact fact set
+/// the v5 signature-parameter and method-set planes must carry.
+fn json_signature_facts(output: &compiler_languages_go::oracle::Output) -> SignatureFacts {
+    let mut names = Vec::new();
+    let mut method_set = Vec::new();
+    fn walk(
+        t: &compiler_languages_go::oracle::Type,
+        names: &mut Vec<String>,
+        method_set: &mut Vec<JsonMethodSet>,
+    ) {
+        use compiler_languages_go::oracle::TypeKind;
+        if t.kind == TypeKind::Func {
+            for parameter in t.params.iter() {
+                names.push(parameter.name.clone());
+            }
+            for result in t.results.iter() {
+                names.push(result.name.clone());
+            }
+        }
+        if t.kind == TypeKind::Interface {
+            for method in t.all_methods.iter() {
+                method_set.push((method.name.clone(), method.pkg.clone()));
+            }
+        }
+        for argument in t.type_args.iter() {
+            walk(argument, names, method_set);
+        }
+        if let Some(elem) = t.elem.as_deref() {
+            walk(elem, names, method_set);
+        }
+        if let Some(key) = t.key.as_deref() {
+            walk(key, names, method_set);
+        }
+        if let Some(value) = t.value.as_deref() {
+            walk(value, names, method_set);
+        }
+        for parameter in t.params.iter() {
+            if let Some(parameter_type) = parameter.r#type.as_ref() {
+                walk(parameter_type, names, method_set);
+            }
+        }
+        for result in t.results.iter() {
+            if let Some(result_type) = result.r#type.as_ref() {
+                walk(result_type, names, method_set);
+            }
+        }
+        for field in t.fields.iter() {
+            if let Some(field_type) = field.r#type.as_ref() {
+                walk(field_type, names, method_set);
+            }
+        }
+        for method in t.explicit_methods.iter() {
+            if let Some(signature) = method.signature.as_ref() {
+                walk(signature, names, method_set);
+            }
+        }
+        for method in t.all_methods.iter() {
+            if let Some(signature) = method.signature.as_ref() {
+                walk(signature, names, method_set);
+            }
+        }
+        for embedded in t.embeddeds.iter() {
+            walk(embedded, names, method_set);
+        }
+        for term in t.terms.iter() {
+            if let Some(term_type) = term.r#type.as_ref() {
+                walk(term_type, names, method_set);
+            }
+        }
+        for component in t.types.iter() {
+            walk(component, names, method_set);
+        }
+    }
+    for package in output.packages.iter() {
+        for declaration in package.decls.iter() {
+            for root in [
+                declaration.underlying.as_ref(),
+                declaration.target.as_ref(),
+                declaration.signature.as_ref(),
+                declaration.r#type.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                walk(root, &mut names, &mut method_set);
+            }
+            for constraint in declaration
+                .type_params
+                .iter()
+                .filter_map(|p| p.constraint.as_ref())
+            {
+                walk(constraint, &mut names, &mut method_set);
+            }
+            for method in declaration
+                .methods
+                .iter()
+                .chain(declaration.promoted_methods.iter())
+            {
+                if let Some(signature) = method.signature.as_ref() {
+                    walk(signature, &mut names, &mut method_set);
+                }
+            }
+            for implemented in declaration.implements.iter() {
+                walk(implemented, &mut names, &mut method_set);
+            }
+        }
+    }
+    (names, method_set)
+}
+
+/// The binary authority image round-trips the decoded oracle Output:
+/// module metadata, package rows with files and declaration runs, every
+/// constant value, const group, and iota flag, the interface method sets,
+/// the satisfaction edges, and the package doc comment. Skipped when no Go
+/// toolchain is available.
 #[test]
 fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
+    use compiler_languages_go::oracle::TypeKind;
+    use compiler_languages_go::{DeclarationKind, MethodSetRow, SignatureParameterRow};
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
@@ -336,6 +461,9 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let source = fixture.join("demo.go");
+    // Both decodes come from the same oracle binary over the same module:
+    // the JSON transcript is the fact source, the image its binary twin.
+    let output = adapter().run(&fixture)?;
     let bytes = adapter().authority_image(&source, &fixture)?;
     let image = GoImage::open(&bytes).map_err(|cause| OracleError::Decode {
         message: cause.to_string(),
@@ -344,64 +472,143 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
     let expected: [u8; 32] =
         Sha256::digest(fs::read(&source).expect("fixture source bytes")).into();
     assert_eq!(image.source_digest(), expected);
-    // Declarations: constants carry exact values, const groups, and iota.
-    let mut first_group = None;
-    for index in 0..image.declaration_count() {
-        let declaration = image
-            .declaration(index)
-            .map_err(|cause| OracleError::Decode {
-                message: cause.to_string(),
-                transcript: String::new(),
-            })?;
-        match declaration.name {
-            b"First" => {
-                assert_eq!(declaration.value, b"0");
-                assert!(declaration.iota);
-                first_group = Some(declaration.const_group);
-            }
-            b"Second" => {
-                assert_eq!(declaration.value, b"1");
-                assert!(declaration.iota);
-                assert_eq!(declaration.const_group, first_group.unwrap_or(-1));
-            }
-            b"Node" | b"Ghost" => panic!("fixture module carries no such declaration"),
-            _ => {}
+
+    // Module metadata: the go.mod facts in one row.
+    let module = image.module().map_err(image_fault)?;
+    let json_module = output.module.as_ref().expect("fixture module metadata");
+    assert_eq!(module.path, json_module.path.as_bytes());
+    assert_eq!(module.directory, json_module.dir.as_bytes());
+    assert_eq!(module.go_version, json_module.go_version.as_bytes());
+    assert_eq!(module.version, json_module.version.as_bytes());
+
+    // Package rows: identity, files, and the declaration runs.
+    assert_eq!(image.package_count(), output.packages.len());
+    for (index, json_package) in output.packages.iter().enumerate() {
+        let row = image.package(index).map_err(image_fault)?;
+        assert_eq!(row.import_path, json_package.import_path.as_bytes());
+        assert_eq!(row.name, json_package.name.as_bytes());
+        let files: Vec<&[u8]> = compiler_languages_go::split_nul(row.files, row.file_count)
+            .unwrap_or_else(|| panic!("package {index} files must split"))
+            .to_vec();
+        let expected_files: Vec<&[u8]> = json_package
+            .files
+            .iter()
+            .map(|file| file.as_bytes())
+            .collect();
+        assert_eq!(files, expected_files, "package {index} files");
+        assert_eq!(
+            usize::try_from(row.declarations.1).unwrap(),
+            json_package.decls.len(),
+            "package {index} declaration count"
+        );
+        // Every declaration fact: kind, constant value, group, iota.
+        for (offset, json_decl) in json_package.decls.iter().enumerate() {
+            let declaration = image
+                .declaration(row.declarations.0 as usize + offset)
+                .map_err(image_fault)?;
+            assert_eq!(declaration.name, json_decl.name.as_bytes());
+            assert_eq!(
+                declaration.package,
+                json_package.import_path.as_bytes(),
+                "declaration {} package binding",
+                json_decl.name
+            );
+            let expected_kind = match json_decl.kind {
+                compiler_languages_go::oracle::DeclKind::Type => DeclarationKind::Type,
+                compiler_languages_go::oracle::DeclKind::Alias => DeclarationKind::Alias,
+                compiler_languages_go::oracle::DeclKind::Func => DeclarationKind::Function,
+                compiler_languages_go::oracle::DeclKind::Const => DeclarationKind::Constant,
+                compiler_languages_go::oracle::DeclKind::Var => DeclarationKind::Static,
+            };
+            assert_eq!(declaration.kind, expected_kind);
+            assert_eq!(declaration.exported, json_decl.exported);
+            assert_eq!(declaration.value, json_decl.value.as_bytes());
+            assert_eq!(declaration.const_group, json_decl.const_group);
+            assert_eq!(declaration.iota, json_decl.group_has_iota);
         }
     }
-    assert!(first_group.is_some(), "iota const group missing");
-    // Satisfaction edges: Inner and Outer both satisfy demo.Reader (local)
-    // and sub.Service (cross-package) through the promoted Read method.
-    let mut local_edges = 0_usize;
-    let mut foreign_edges = 0_usize;
-    for index in 0..image.satisfaction_count() {
-        let row = image
-            .satisfaction(index)
-            .map_err(|cause| OracleError::Decode {
-                message: cause.to_string(),
-                transcript: String::new(),
-            })?;
-        let subject = image
-            .declaration(usize::try_from(row.subject).unwrap_or(usize::MAX))
-            .map_err(|cause| OracleError::Decode {
-                message: cause.to_string(),
-                transcript: String::new(),
-            })?;
-        assert_eq!(subject.kind, compiler_languages_go::DeclarationKind::Type);
-        match row.target_package {
-            b"" if row.target == b"Reader" => local_edges += 1,
-            b"example.com/demo/sub" if row.target == b"Service" => foreign_edges += 1,
-            other => panic!("unexpected satisfaction edge {other:?} -> {:?}", row.target),
+
+    // Signature-parameter plane: one row per func parameter/result with the
+    // exact source names (empty for unnamed).
+    let (json_names, json_method_sets) = json_signature_facts(&output);
+    assert_eq!(
+        image.signature_parameter_count(),
+        json_names.len(),
+        "signature-parameter plane must hold one row per func parameter/result"
+    );
+    let image_names: Vec<&[u8]> = image
+        .signature_parameters()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?
+        .iter()
+        .map(|row: &SignatureParameterRow| row.name)
+        .collect();
+    assert_eq!(
+        image_names,
+        json_names.iter().map(String::as_bytes).collect::<Vec<_>>()
+    );
+
+    // Method-set plane: the complete post-embedding method sets.
+    let image_sets: Vec<NamePackage> = image
+        .method_sets()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?
+        .iter()
+        .map(|row: &MethodSetRow| (row.name.to_vec(), row.package.to_vec()))
+        .collect();
+    let expected_sets: Vec<NamePackage> = json_method_sets
+        .iter()
+        .map(|(name, pkg)| (name.as_bytes().to_vec(), pkg.as_bytes().to_vec()))
+        .collect();
+    assert_eq!(image_sets, expected_sets);
+    // Reader (interface{ Read() }) carries its own explicit method.
+    assert!(image_sets.contains(&(b"Read".to_vec(), b"example.com/demo".to_vec())));
+
+    // Satisfaction edges mirror the decoded Implements facts exactly.
+    let mut json_edges: Vec<NamePackage> = Vec::new();
+    for package in output.packages.iter() {
+        for declaration in package.decls.iter() {
+            for implemented in declaration.implements.iter() {
+                if implemented.kind == TypeKind::Named || implemented.kind == TypeKind::Alias {
+                    json_edges.push((
+                        implemented.name.as_bytes().to_vec(),
+                        implemented.pkg.as_bytes().to_vec(),
+                    ));
+                }
+            }
         }
     }
-    assert_eq!(local_edges, 2, "Inner and Outer satisfy demo.Reader");
-    assert_eq!(foreign_edges, 2, "Inner and Outer satisfy sub.Service");
+    json_edges.sort();
+    let mut image_edges: Vec<NamePackage> = image
+        .satisfactions()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?
+        .iter()
+        .map(|row| (row.target.to_vec(), row.target_package.to_vec()))
+        .collect();
+    image_edges.sort();
+    assert_eq!(image_edges, json_edges);
+    assert_eq!(
+        image_edges
+            .iter()
+            .filter(|(target, _)| target == b"Reader")
+            .count(),
+        2,
+        "Inner and Outer satisfy demo.Reader"
+    );
+    assert_eq!(
+        image_edges
+            .iter()
+            .filter(|(target, _)| target == b"Service")
+            .count(),
+        2,
+        "Inner and Outer satisfy sub.Service"
+    );
+
     // The package doc comment rides a Package-owned documentation row.
     let mut package_docs = 0_usize;
     for index in 0..image.doc_count() {
-        let row = image.doc(index).map_err(|cause| OracleError::Decode {
-            message: cause.to_string(),
-            transcript: String::new(),
-        })?;
+        let row = image.doc(index).map_err(image_fault)?;
         if row.owner_kind == DocOwner::Package {
             package_docs += 1;
             assert!(row.text.starts_with(b"Package demo "));
@@ -409,4 +616,575 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
     }
     assert_eq!(package_docs, 1, "doc.go's package comment missing");
     Ok(())
+}
+
+fn image_fault(cause: compiler_languages_go::ImageError) -> OracleError {
+    OracleError::Decode {
+        message: cause.to_string(),
+        transcript: String::new(),
+    }
+}
+
+/// M1 falsifier on a param-bearing module: named and unnamed parameters, a
+/// variadic final parameter, generics, and an interface embedding another
+/// package's interface — whose post-embedding method set is not locally
+/// re-derivable because embedded foreign-package references carry no body.
+/// Skipped when no Go toolchain is available.
+#[test]
+fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<(), OracleError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
+    if std::process::Command::new(&compiler)
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
+        return Ok(());
+    }
+    let root = std::env::temp_dir().join(format!("nudox-go-image-v5-{}", std::process::id()));
+    fs::create_dir_all(root.join("api")).expect("temp module directory");
+    fs::write(
+        root.join("go.mod"),
+        "module example.com/params\n\ngo 1.23\n",
+    )
+    .expect("temp go.mod");
+    fs::write(
+        root.join("api/api.go"),
+        "package api\n\ntype Base interface{ Log() string }\n",
+    )
+    .expect("temp api source");
+    fs::write(
+        root.join("main.go"),
+        r#"package main
+
+import "example.com/params/api"
+
+type Combo interface {
+	api.Base
+	Extra(i int) error
+}
+
+func Greet(name string, greeting string) (string, error) {
+	return greeting + " " + name, nil
+}
+
+func Sum(vals ...int) int {
+	total := 0
+	for _, v := range vals {
+		total += v
+	}
+	return total
+}
+
+func Unnamed(int, string) {}
+
+func Pick[K comparable, V any](m map[K]V, k K) (V, bool) {
+	v, ok := m[k]
+	return v, ok
+}
+
+func main() {
+	s, _ := Greet("x", "hi")
+	_ = s
+	_ = Sum(1)
+	_ = Unnamed
+	_, _ = Pick(map[string]int{"a": 1}, "a")
+	var _ Combo
+}
+"#,
+    )
+    .expect("temp main source");
+
+    let output = adapter().run(&root);
+    let bytes = adapter().authority_image(&root.join("main.go"), &root);
+    fs::remove_dir_all(&root).expect("temp module cleanup");
+    let output = output?;
+    let bytes = bytes?;
+    let image = GoImage::open(&bytes).map_err(image_fault)?;
+
+    // Module row binds the temp module's path.
+    assert_eq!(
+        image.module().map_err(image_fault)?.path,
+        b"example.com/params".as_slice()
+    );
+    // Two package rows in strict import-path order.
+    assert_eq!(image.package_count(), 2);
+    assert_eq!(
+        image.package(0).map_err(image_fault)?.import_path,
+        b"example.com/params".as_slice()
+    );
+    assert_eq!(
+        image.package(1).map_err(image_fault)?.import_path,
+        b"example.com/params/api".as_slice()
+    );
+
+    // Greet's func row carries [name, greeting] then two unnamed results;
+    // Sum's final variadic parameter is named vals; Unnamed's parameters
+    // are unnamed.
+    let func_row = |image: &GoImage, name: &[u8]| -> Option<u32> {
+        for index in 0..image.declaration_count() {
+            let declaration = image.declaration(index).ok()?;
+            if declaration.name == name
+                && declaration.kind == compiler_languages_go::DeclarationKind::Function
+            {
+                return declaration.type_root;
+            }
+        }
+        None
+    };
+    // The signature-parameter run of one func row starts at the cumulative
+    // child count of the func rows that precede it in type-row order, per
+    // the reader's tiling law.
+    let row_names = |image: &GoImage, root: u32| -> Option<Vec<Vec<u8>>> {
+        let row = image.type_row(root as usize).ok()?;
+        let mut start = 0_usize;
+        for index in 0..root as usize {
+            let earlier = image.type_row(index).ok()?;
+            if earlier.kind == compiler_languages_go::TypeRowKind::Func {
+                start += earlier.children.1 as usize;
+            }
+        }
+        let count = row.children.1 as usize;
+        (0..count)
+            .map(|ordinal| {
+                Some(
+                    image
+                        .signature_parameter(start + ordinal)
+                        .ok()?
+                        .name
+                        .to_vec(),
+                )
+            })
+            .collect()
+    };
+    let greet = func_row(&image, b"Greet").expect("Greet declaration");
+    assert_eq!(
+        row_names(&image, greet),
+        Some(vec![
+            b"name".to_vec(),
+            b"greeting".to_vec(),
+            Vec::new(),
+            Vec::new()
+        ])
+    );
+    let sum = func_row(&image, b"Sum").expect("Sum declaration");
+    assert_eq!(
+        row_names(&image, sum),
+        Some(vec![b"vals".to_vec(), Vec::new()])
+    );
+    let unnamed = func_row(&image, b"Unnamed").expect("Unnamed declaration");
+    assert_eq!(
+        row_names(&image, unnamed),
+        Some(vec![Vec::new(), Vec::new()])
+    );
+
+    // Combo's method set is the complete post-embedding set: the inherited
+    // foreign-package Log beside the locally declared Extra, in name order.
+    // api.Base's own row (one inherited Log of its own) precedes it, since
+    // the main package declares before the api package.
+    let combo_sets: Vec<NamePackage> = image
+        .method_sets()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?
+        .iter()
+        .map(|row| (row.name.to_vec(), row.package.to_vec()))
+        .collect();
+    assert_eq!(
+        combo_sets,
+        [
+            (b"Extra".to_vec(), b"example.com/params".to_vec()),
+            (b"Log".to_vec(), b"example.com/params/api".to_vec()),
+            (b"Log".to_vec(), b"example.com/params/api".to_vec()),
+        ]
+    );
+    // The api.Base interface itself carries exactly its own method.
+    let json_api = output
+        .packages
+        .iter()
+        .find(|package| package.import_path == "example.com/params/api")
+        .expect("api package in transcript");
+    assert_eq!(json_api.decls.len(), 1);
+    Ok(())
+}
+
+/// Minimal synthetic v5 image for the hostile mutation battery: two
+/// packages, two declarations, one func type row with a named parameter,
+/// and one interface type row with a two-method set.
+mod mutation_battery {
+    use compiler_languages_go::{GoImage, HeaderError, ImageError, TypeRowKind};
+    use sha2::{Digest, Sha256};
+
+    const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\x00";
+    const HEADER: usize = 132;
+    const MODULE_AT: usize = HEADER;
+    const PACKAGES_AT: usize = MODULE_AT + 32;
+    const DECLS_AT: usize = PACKAGES_AT + 2 * 36;
+    const TYPES_AT: usize = DECLS_AT + 2 * 56;
+    const SIGPARAMS_AT: usize = TYPES_AT + 2 * 52;
+    const METHOD_SETS_AT: usize = SIGPARAMS_AT + 16;
+    const CHILDREN_AT: usize = METHOD_SETS_AT + 2 * 24;
+    const ATOMS_AT: usize = CHILDREN_AT + 8;
+    const BODY: usize = ATOMS_AT + ATOMS.len() - HEADER;
+
+    /// Atoms: 0 "alpha" | 5 "beta" | 9 "A" | 10 "B" | 11 "p" | 12 "M1" | 14 "M2".
+    const ATOMS: &[u8] = b"alphabetaABpM1M2";
+
+    const NONE: u32 = u32::MAX;
+
+    fn cells(values: &[u32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    /// Declaration row: kind and exported flags share the first word.
+    fn decl_row(kind: u32, exported: bool, name: [u32; 2], pkg: [u32; 2], root: u32) -> Vec<u8> {
+        let mut row = cells(&[
+            kind | u32::from(exported) << 8,
+            name[0],
+            name[1],
+            pkg[0],
+            pkg[1],
+            root,
+            NONE,
+            NONE,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
+        row[48..56].copy_from_slice(&0_i64.to_le_bytes());
+        assert_eq!(row.len(), 56);
+        row
+    }
+
+    /// Type row: kind in the first byte, no name or package, length zero.
+    fn type_row(kind: u32, child_start: u32, child_count: u32, method_sets: u32) -> Vec<u8> {
+        let row = cells(&[
+            kind,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            child_start,
+            child_count,
+            0,
+            0,
+            method_sets,
+            0,
+        ]);
+        assert_eq!(row.len(), 52);
+        row
+    }
+
+    fn package_row(
+        import_path: [u32; 2],
+        name: [u32; 2],
+        decl_start: u32,
+        decl_count: u32,
+    ) -> Vec<u8> {
+        let row = cells(&[
+            import_path[0],
+            import_path[1],
+            name[0],
+            name[1],
+            0,
+            0,
+            0,
+            decl_start,
+            decl_count,
+        ]);
+        assert_eq!(row.len(), 36);
+        row
+    }
+
+    fn method_set_row(name: [u32; 2]) -> Vec<u8> {
+        let row = cells(&[1, name[0], name[1], NONE, 0, 0]);
+        assert_eq!(row.len(), 24);
+        row
+    }
+
+    /// Builds the valid fixture image.
+    fn build() -> Vec<u8> {
+        let mut image = vec![0_u8; HEADER + BODY];
+        image[..4].copy_from_slice(b"NGAI");
+        image[4..6].copy_from_slice(&5_u16.to_le_bytes());
+        image[6..8].copy_from_slice(&(HEADER as u16).to_le_bytes());
+        image[8..12].copy_from_slice(&2_u32.to_le_bytes()); // declarations
+        image[12..16].copy_from_slice(&(ATOMS.len() as u32).to_le_bytes());
+        image[16..20].copy_from_slice(&(BODY as u32).to_le_bytes());
+        image[84..88].copy_from_slice(&2_u32.to_le_bytes()); // types
+        image[116..120].copy_from_slice(&1_u32.to_le_bytes()); // module
+        image[120..124].copy_from_slice(&2_u32.to_le_bytes()); // packages
+        image[124..128].copy_from_slice(&1_u32.to_le_bytes()); // signature parameters
+        image[128..132].copy_from_slice(&2_u32.to_le_bytes()); // method sets
+
+        // The module row stays all-zero: empty metadata cells.
+        image[PACKAGES_AT..PACKAGES_AT + 36].copy_from_slice(&package_row([0, 5], [9, 1], 0, 1));
+        image[PACKAGES_AT + 36..PACKAGES_AT + 72].copy_from_slice(&package_row(
+            [5, 4],
+            [10, 1],
+            1,
+            1,
+        ));
+
+        let declarations = [
+            decl_row(3, true, [9, 1], [0, 5], 0),
+            decl_row(4, true, [10, 1], [5, 4], NONE),
+        ];
+        image[DECLS_AT..DECLS_AT + 112].copy_from_slice(declarations.concat().as_slice());
+
+        // Type row 0: func with one child (its parameter); type row 1:
+        // interface owning the two-row method set. Its empty child run
+        // starts where the func row's run ends, per the tiling law.
+        let types = [type_row(9, 0, 1, 0), type_row(11, 1, 0, 2)];
+        image[TYPES_AT..TYPES_AT + 104].copy_from_slice(types.concat().as_slice());
+
+        // Signature parameter: owner func row 0, ordinal 0, name "p".
+        image[SIGPARAMS_AT..SIGPARAMS_AT + 16].copy_from_slice(&cells(&[0, 0, 11, 1]));
+
+        // Method set: owner interface row 1, names M1 then M2.
+        image[METHOD_SETS_AT..METHOD_SETS_AT + 24].copy_from_slice(&method_set_row([12, 2]));
+        image[METHOD_SETS_AT + 24..METHOD_SETS_AT + 48].copy_from_slice(&method_set_row([14, 2]));
+
+        // The func row's one child targets the interface row.
+        image[CHILDREN_AT..CHILDREN_AT + 8].copy_from_slice(&cells(&[1, 0]));
+
+        image[ATOMS_AT..].copy_from_slice(ATOMS);
+        reseal(&mut image);
+        image
+    }
+
+    /// Re-seals the checksum after a mutation so the fault hits the plane
+    /// law instead of the digest.
+    fn reseal(image: &mut [u8]) {
+        let mut digest = Sha256::new();
+        digest.update(DOMAIN);
+        digest.update(&image[..52]);
+        digest.update(&image[84..HEADER]);
+        digest.update(&image[HEADER..]);
+        image[52..84].copy_from_slice(digest.finalize().as_slice());
+    }
+
+    fn open(image: &[u8]) -> ImageError {
+        GoImage::open(image).expect_err("mutated image must be rejected")
+    }
+
+    #[test]
+    fn fixture_is_valid() {
+        GoImage::open(&build()).expect("fixture must validate before mutation");
+    }
+
+    #[test]
+    fn version_mutation_is_rejected_with_the_found_version() {
+        let mut image = build();
+        image[4..6].copy_from_slice(&4_u16.to_le_bytes());
+        assert_eq!(
+            open(&image),
+            ImageError::Header(HeaderError::Version { found: 4 })
+        );
+    }
+
+    #[test]
+    fn module_count_mutation_is_rejected_exactly() {
+        let mut image = build();
+        image[116..120].copy_from_slice(&2_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::Header(HeaderError::ModuleCount { found: 2 })
+        );
+        let mut image = build();
+        image[116..120].copy_from_slice(&0_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::Header(HeaderError::ModuleCount { found: 0 })
+        );
+    }
+
+    #[test]
+    fn package_count_mutation_breaks_the_body_geometry() {
+        let mut image = build();
+        image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert!(matches!(
+            open(&image),
+            ImageError::Header(HeaderError::BodyLength { .. })
+        ));
+    }
+
+    #[test]
+    fn package_run_mutation_is_rejected_with_the_exact_range() {
+        let mut image = build();
+        // Package 1's run start moves onto package 0's declaration.
+        let cell = PACKAGES_AT + 36 + 28;
+        image[cell..cell + 4].copy_from_slice(&0_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::PackageDeclRange {
+                index: 1,
+                start: 0,
+                count: 1,
+                declaration_count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn package_file_count_mutation_is_rejected_exactly() {
+        let mut image = build();
+        let cell = PACKAGES_AT + 24;
+        image[cell..cell + 4].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::PackageFiles {
+                index: 0,
+                count: 1,
+                blob_bytes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn package_order_mutation_is_rejected_exactly() {
+        let mut image = build();
+        // Package 1's import path becomes equal to package 0's, leaving the
+        // declaration runs untouched so only the order law can fire.
+        image[PACKAGES_AT + 36..PACKAGES_AT + 44].copy_from_slice(&cells(&[0, 5]));
+        reseal(&mut image);
+        assert_eq!(open(&image), ImageError::PackageSort { index: 1 });
+    }
+
+    #[test]
+    fn signature_parameter_owner_mutation_names_the_expected_row() {
+        let mut image = build();
+        image[SIGPARAMS_AT..SIGPARAMS_AT + 4].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::SignatureParameterOwnerRow {
+                index: 0,
+                owner: 1,
+                expected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn signature_parameter_ordinal_mutation_is_rejected_exactly() {
+        let mut image = build();
+        image[SIGPARAMS_AT + 4..SIGPARAMS_AT + 8].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::SignatureParameterOrdinal {
+                index: 0,
+                ordinal: 1,
+                expected: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn func_row_rejects_a_declared_method_set() {
+        let mut image = build();
+        let cell = TYPES_AT + 44;
+        image[cell..cell + 4].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::TypeMethodSetCell {
+                index: 0,
+                kind: TypeRowKind::Func,
+                count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn interface_run_overflow_is_rejected_exactly() {
+        let mut image = build();
+        let cell = TYPES_AT + 52 + 44;
+        image[cell..cell + 4].copy_from_slice(&3_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::TypeMethodSetRange {
+                index: 1,
+                count: 3,
+                method_set_count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn method_set_run_gap_is_rejected_as_a_tiling_fault() {
+        let mut image = build();
+        let cell = TYPES_AT + 52 + 44;
+        image[cell..cell + 4].copy_from_slice(&1_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::MethodSetTiling {
+                declared: 1,
+                plane: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn method_set_owner_mutation_names_the_expected_row() {
+        let mut image = build();
+        image[METHOD_SETS_AT..METHOD_SETS_AT + 4].copy_from_slice(&0_u32.to_le_bytes());
+        reseal(&mut image);
+        assert_eq!(
+            open(&image),
+            ImageError::MethodSetOwnerRow {
+                index: 0,
+                owner: 0,
+                expected: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn method_set_order_mutation_is_rejected_exactly() {
+        let mut image = build();
+        image[METHOD_SETS_AT..METHOD_SETS_AT + 48].rotate_left(24);
+        reseal(&mut image);
+        assert_eq!(open(&image), ImageError::MethodSetSort { index: 1 });
+    }
+
+    #[test]
+    fn signature_parameter_atom_escape_is_rejected_exactly() {
+        let mut image = build();
+        image[SIGPARAMS_AT + 8..SIGPARAMS_AT + 12].copy_from_slice(&16_u32.to_le_bytes());
+        reseal(&mut image);
+        assert!(matches!(
+            open(&image),
+            ImageError::AtomRange {
+                plane: "signature parameter",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unresealed_body_mutation_fails_the_checksum() {
+        let mut image = build();
+        image[SIGPARAMS_AT + 8] ^= 0xff;
+        assert_eq!(open(&image), ImageError::Digest);
+    }
 }
