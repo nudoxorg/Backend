@@ -64,8 +64,12 @@ fn lane_rejection() -> TypeScriptCollectError {
 /// The declaration-lane path now retains the full [`FactFault`] through
 /// [`TypeScriptCollectError::Rejected`]; this fold remains only for the
 /// pooled-lane helpers (docs, atoms, spans) and is a recorded lane criticism.
-fn fault(_cause: FactFault) -> TypeScriptCollectError {
-    lane_rejection()
+fn fault(cause: FactFault) -> TypeScriptCollectError {
+    TypeScriptCollectError::Rejected(FactRejection {
+        fact: 0,
+        name_len: 0,
+        cause,
+    })
 }
 
 /// Maps one foreign-key rejection onto the coarse lane terminal. The path and
@@ -2724,11 +2728,15 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
         name: &[u8],
         owner: u32,
     ) -> Option<&'source [u8]> {
+        let source_end = u32::try_from(self.source.len()).ok()?;
         match domain {
-            SpellDomain::Owner => self.source_spelling_owner(name, owner),
+            SpellDomain::Owner => self
+                .source_spelling_owner(name, owner)
+                .or_else(|| self.source_spelling_in(name, 0, source_end)),
             SpellDomain::Range(start, end) => self
                 .source_spelling_in(name, start, end)
-                .or_else(|| self.source_spelling_owner(name, owner)),
+                .or_else(|| self.source_spelling_owner(name, owner))
+                .or_else(|| self.source_spelling_in(name, 0, source_end)),
         }
     }
 }
