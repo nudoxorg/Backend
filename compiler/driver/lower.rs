@@ -39,11 +39,11 @@ pub(crate) mod typescript;
 /// a source with more declarations is a typed lane rejection, never a
 /// truncated emission. The bound also fixes every canonicalization scratch,
 /// output, and resource reservation below.
-pub(super) const MAX_EMISSION_FACTS: usize = 1024;
+pub(super) const MAX_EMISSION_FACTS: usize = 2048;
 /// Dense bound of one fact's ordered product children.
-pub(super) const MAX_FACT_CHILDREN: usize = 16;
+pub(super) const MAX_FACT_CHILDREN: usize = 32;
 /// Dense bound of one fact's ordered type-record children.
-pub(super) const MAX_TYPE_CHILDREN: usize = 16;
+pub(super) const MAX_TYPE_CHILDREN: usize = 32;
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
 /// Dense bound of the documentation lane committed beside the declarations.
