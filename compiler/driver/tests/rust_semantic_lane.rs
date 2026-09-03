@@ -719,18 +719,18 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A source beyond the lane's 128-fact bound is the exact typed lowering
-/// rejection, never a truncated emission.
+/// A source beyond the lane's emission-fact bound is the exact typed
+/// lowering rejection, never a truncated emission.
 #[test]
-fn capacity_beyond_1024_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+fn capacity_beyond_2048_is_the_exact_lowering_rejection() -> Result<(), TestError> {
     let mut body = String::new();
-    for ordinal in 0..1025 {
+    for ordinal in 0..2049 {
         body.push_str(&format!("pub struct S{ordinal};\n"));
     }
     match compile_fixture(body.as_str()) {
         Err(TestError::Compile("lowering-unsupported")) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Falsified("1025 declarations were admitted")),
+        Ok(_) => Err(TestError::Falsified("2049 declarations were admitted")),
     }
 }
 
