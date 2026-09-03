@@ -1568,9 +1568,11 @@ fn live_type<'source>(
                 };
             }
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
+            // Lazy borrow: a no-parameter, no-result executable owns zero
+            // children, so the result index exists only when has_result does.
             tree.intern_concrete(ConcreteType::Function {
                 parameters,
-                result: has_result.then_some(children[child_count - 1]),
+                result: has_result.then(|| children[child_count - 1]),
                 abi: None,
                 variadic: false,
                 unsafe_: false,
