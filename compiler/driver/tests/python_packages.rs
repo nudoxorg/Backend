@@ -699,13 +699,18 @@ fn assert_package(package: &str, version: &str) -> Result<usize, Error> {
             }
         }
         "six" => {
+            // The trunk geometry decision (D2) raised the lane bound, so the
+            // historical capacity terminal can no longer fire; the corpus
+            // contract becomes the decoded declaration set itself.
             for wanted in [b"PY2".as_slice(), b"PY3", b"with_metaclass"] {
-                let _ = wanted;
+                if !entities.iter().any(|(known, _)| *known == wanted) {
+                    return Err(Error::Fact {
+                        package: package.into(),
+                        message: format!("{} missing {:?}", path.display(), wanted),
+                    });
+                }
+                assertions += 1;
             }
-            return Err(Error::Fact {
-                package: package.into(),
-                message: "capacity terminal was not observed".into(),
-            });
         }
         "wcwidth" => {
             for wanted in [b"wcwidth".as_slice()] {
