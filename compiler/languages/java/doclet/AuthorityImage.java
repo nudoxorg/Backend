@@ -47,6 +47,7 @@ import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.PackageTree;
 import com.sun.source.doctree.DocCommentTree;
 import com.sun.source.util.DocTrees;
 import com.sun.source.util.JavacTask;
@@ -110,6 +111,12 @@ private final Trees trees;
 		for (CompilationUnitTree unit : units) {
 			new TreePathScanner<Void, Void>() {
 				@Override
+				public Void visitPackage(PackageTree node, Void unused) {
+					Element element = trees.getElement(getCurrentPath());
+					if (element instanceof PackageElement pkg) emitPackage(pkg, getCurrentPath());
+					return super.visitPackage(node, unused);
+				}
+				@Override
 				public Void visitClass(ClassTree node, Void unused) {
 					Element element = trees.getElement(getCurrentPath());
 					// Anonymous classes have no qualified name and are
@@ -127,7 +134,7 @@ private final Trees trees;
 	}
 
 	private void emitType(TypeElement type, TreePath typePath) {
-		emitPackage(elements.getPackageOf(type));
+		emitPackage(elements.getPackageOf(type), null);
 		emitModule(elements.getModuleOf(type));
 		int typeDeclaration = declarations.size();
 		declarations.add(declaration(
@@ -171,10 +178,11 @@ private final Trees trees;
 		}
 	}
 
-	private void emitPackage(PackageElement pkg) {
+	private void emitPackage(PackageElement pkg, TreePath path) {
+		if (pkg.isUnnamed()) return;
 		String name = pkg.getQualifiedName().toString();
 		if (emittedPackages.putIfAbsent(name, Boolean.TRUE) == null) {
-			declarations.add(declaration(2, name, null, documentation(pkg, null), pkg, ABSENT, ABSENT));
+			declarations.add(declaration(2, name, null, documentation(pkg, path), pkg, ABSENT, ABSENT));
 		}
 	}
 

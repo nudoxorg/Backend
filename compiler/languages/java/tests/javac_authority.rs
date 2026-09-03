@@ -12,7 +12,10 @@ use std::{
 };
 
 use compiler_languages_java::{
-    BoundImageError, DeclarationExtension, DeclarationKind, JavaAuthorityImage, JavaImage, TypeKind,
+    BoundImageError, DeclarationExtension, DeclarationKind, JavaAuthorityImage, JavaImage,
+    TypeKind,
+    central::Central,
+    jar::{EntryData, Jar},
 };
 
 static TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -58,6 +61,12 @@ enum JavacTestError {
     },
     #[error("JDK output was not UTF-8")]
     OutputUtf8,
+    #[error(transparent)]
+    Fetch(#[from] compiler_languages_java::central::FetchError),
+    #[error(transparent)]
+    Jar(#[from] compiler_languages_java::jar::JarError),
+    #[error(transparent)]
+    Harness(#[from] compiler_languages_java::harness::HarnessError),
 }
 
 struct TemporaryDirectory {
@@ -240,6 +249,138 @@ fn javac_image_attributes_nested_and_anonymous_calls_to_declared_owner()
     temporary.remove()
 }
 
+#[test]
+fn javac_image_emits_annotated_package_info_declaration() -> Result<(), JavacTestError> {
+    let jdk = PathBuf::from(env::var_os("NUDOX_JDK").ok_or(JavacTestError::MissingJdk)?);
+    let temporary = TemporaryDirectory::create()?;
+    let outcome = (|| {
+        let classes = temporary.path.join("classes");
+        fs::create_dir(&classes).map_err(|source| JavacTestError::Directory {
+            path: classes.clone(),
+            source,
+        })?;
+        compile_producer(&jdk, &classes)?;
+        let output = run_producer_single(
+            &jdk,
+            &classes,
+            &temporary.path,
+            "src/annotated/package-info.java",
+        )?;
+        let bytes = read_image(&output)?;
+        let image = JavaAuthorityImage::open(&bytes)?.image;
+        let mut declaration = None;
+        for row in image.declarations() {
+            let row = row?;
+            if row.kind == DeclarationKind::Package {
+                declaration = Some(row);
+            }
+        }
+        let declaration = declaration.ok_or(JavacTestError::Missing {
+            fact: "annotated package declaration",
+        })?;
+        assert_atom(declaration.name, "annotated")?;
+        if declaration.documentation_flavor != compiler_languages_java::DocFlavor::Traditional {
+            return Err(JavacTestError::Missing {
+                fact: "package Javadoc",
+            });
+        }
+        assert_atom(
+            declaration.documentation.ok_or(JavacTestError::Missing {
+                fact: "package Javadoc atom",
+            })?,
+            "Package-level authority documentation.",
+        )?;
+        let mut extensions = image.declaration_extensions(0)?;
+        let mut annotation = None;
+        while let Some(entry) = extensions.next() {
+            if let DeclarationExtension::Annotation(atom) = entry? {
+                annotation = Some(atom);
+            }
+        }
+        let annotation = annotation.ok_or(JavacTestError::Missing {
+            fact: "package annotation atom",
+        })?;
+        assert_atom(annotation, "@java.lang.Deprecated")
+    })();
+    outcome?;
+    temporary.remove()
+}
+
+#[test]
+fn commons_lang_package_info_sources_image_without_typed_failures() -> Result<(), JavacTestError> {
+    let jdk = PathBuf::from(env::var_os("NUDOX_JDK").ok_or(JavacTestError::MissingJdk)?);
+    let coordinates = compiler_languages_java::purl::MavenCoordinates::parse(
+        "pkg:maven/org.apache.commons/commons-lang3@3.14.0",
+    )
+    .map_err(|_| JavacTestError::Missing {
+        fact: "Maven coordinates",
+    })?;
+    let central = Central::new("https://repo.maven.apache.org/maven2");
+    let temporary = TemporaryDirectory::create()?;
+    let outcome = (|| {
+        let mut binary = Vec::new();
+        central.fetch(&central.jar_url(&coordinates), &mut binary)?;
+        let binary_path = temporary.path.join("commons-lang3-3.14.0.jar");
+        fs::write(&binary_path, binary).map_err(|source| JavacTestError::Directory {
+            path: binary_path.clone(),
+            source,
+        })?;
+        let mut source_jar = Vec::new();
+        central.fetch(&central.sources_jar_url(&coordinates), &mut source_jar)?;
+        let jar = Jar::parse(&source_jar)?;
+        let mut harness = compiler_languages_java::harness::Harness::new()?;
+        let tool = compiler_languages_java::harness::JdkToolchain::new(&jdk)?;
+        harness.prepare(&tool)?;
+        let mut extraction = Vec::new();
+        let mut count = 0;
+        for entry in jar.entries() {
+            let entry = entry?;
+            if !entry.name().ends_with(b"/package-info.java") {
+                continue;
+            }
+            let name = std::str::from_utf8(entry.name()).map_err(|_| JavacTestError::OutputUtf8)?;
+            let data = entry.data(&mut extraction)?;
+            let bytes = match data {
+                EntryData::Borrowed(bytes) => bytes,
+                EntryData::Buffered(bytes) => bytes,
+            };
+            let sources = [compiler_languages_java::harness::JavaSource {
+                name: Path::new(name),
+                bytes,
+            }];
+            let mut image = Vec::new();
+            harness.image(
+                &tool,
+                compiler_languages_java::harness::HarnessRequest {
+                    sources: &sources,
+                    classpath: &[binary_path.as_path()],
+                    release: compiler_languages_java::JavaRelease::Java21,
+                },
+                &mut image,
+            )?;
+            let image = JavaAuthorityImage::open(&image)?.image;
+            let mut has_package = false;
+            for row in image.declarations() {
+                has_package |= row?.kind == DeclarationKind::Package;
+            }
+            if !has_package {
+                return Err(JavacTestError::Missing {
+                    fact: "commons package declaration",
+                });
+            }
+            count += 1;
+        }
+        if count != 18 {
+            return Err(JavacTestError::Missing {
+                fact: "18 commons package-info sources",
+            });
+        }
+        Ok(())
+    })();
+    outcome?;
+    temporary.remove()
+}
+
 fn assert_v2_extensions(image: JavaImage<'_>) -> Result<(), JavacTestError> {
     let mut audited = None;
     let mut pair = None;
@@ -373,6 +514,28 @@ fn run_producer(
             .arg(fixture("src/module-info.java"))
             .arg(fixture("src/demo/Helper.java"))
             .arg(fixture(&format!("src/demo/{cafe}"))),
+        "java",
+    )?;
+    Ok(output)
+}
+
+fn run_producer_single(
+    jdk: &Path,
+    classes: &Path,
+    temporary: &Path,
+    source: &str,
+) -> Result<PathBuf, JavacTestError> {
+    let output = temporary.join("package-info.image");
+    command(
+        Command::new(jdk.join("bin/java"))
+            .args(["--add-modules", "jdk.compiler,jdk.javadoc", "-cp"])
+            .arg(classes)
+            .arg("nudox.oracle.CompilerExtractor")
+            .args(["--release", "21", "--outfile"])
+            .arg(&output)
+            .arg("--source-binding")
+            .arg(fixture(source))
+            .arg(fixture(source)),
         "java",
     )?;
     Ok(output)
