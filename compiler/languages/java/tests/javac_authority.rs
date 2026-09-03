@@ -11,7 +11,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_languages_java::{BoundImageError, JavaAuthorityImage, JavaImage, TypeKind};
+use compiler_languages_java::{
+    BoundImageError, DeclarationExtension, DeclarationKind, JavaAuthorityImage, JavaImage, TypeKind,
+};
 
 static TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -122,6 +124,7 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
             })?,
             "A named module keeps package and cross-file authority explicit.",
         )?;
+        assert_v2_extensions(first_image)?;
 
         let second = run_producer(&jdk, &classes, &temporary.path, "CafeChanged.java")?;
         let second_bytes = read_image(&second)?;
@@ -162,6 +165,99 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
     })();
     outcome?;
     temporary.remove()
+}
+
+fn assert_v2_extensions(image: JavaImage<'_>) -> Result<(), JavacTestError> {
+    let mut audited = None;
+    let mut pair = None;
+    for (ordinal, declaration) in image.declarations().enumerate() {
+        let declaration = declaration?;
+        let name = declaration
+            .name
+            .utf8()
+            .map_err(|_| JavacTestError::OutputUtf8)?;
+        if name == "audited" {
+            audited = Some((ordinal, declaration));
+        } else if declaration.kind == DeclarationKind::Record {
+            pair = Some((ordinal, declaration));
+        }
+    }
+    let (audited_ordinal, _) = audited.ok_or(JavacTestError::Missing {
+        fact: "throws method",
+    })?;
+    let mut extensions = image.declaration_extensions(audited_ordinal)?;
+    let annotation = extensions.next().ok_or(JavacTestError::Missing {
+        fact: "Deprecated annotation",
+    })??;
+    match annotation {
+        DeclarationExtension::Annotation(atom) => assert_atom(atom, "@java.lang.Deprecated")?,
+        _ => {
+            return Err(JavacTestError::Missing {
+                fact: "annotation extension kind",
+            });
+        }
+    }
+    let throws = extensions.next().ok_or(JavacTestError::Missing {
+        fact: "IOException throws extension",
+    })??;
+    match throws {
+        DeclarationExtension::Throws(reference) => assert_atom(
+            image
+                .type_fact(reference)?
+                .spelling
+                .ok_or(JavacTestError::Missing {
+                    fact: "IOException spelling",
+                })?,
+            "java.io.IOException",
+        )?,
+        _ => {
+            return Err(JavacTestError::Missing {
+                fact: "throws extension kind",
+            });
+        }
+    }
+    if extensions.next().is_some() {
+        return Err(JavacTestError::Missing {
+            fact: "exact method extension count",
+        });
+    }
+
+    let (pair_ordinal, pair_declaration) = pair.ok_or(JavacTestError::Missing {
+        fact: "record declaration",
+    })?;
+    if pair_declaration.kind != DeclarationKind::Record {
+        return Err(JavacTestError::Missing {
+            fact: "record declaration kind",
+        });
+    }
+    let components = image
+        .declaration_extensions(pair_ordinal)?
+        .collect::<Result<Vec<_>, _>>()?;
+    if components.len() != 2 {
+        return Err(JavacTestError::Missing {
+            fact: "two record components",
+        });
+    }
+    for (extension, expected) in components.into_iter().zip(["left", "right"]) {
+        let DeclarationExtension::RecordComponent(ordinal) = extension else {
+            return Err(JavacTestError::Missing {
+                fact: "record component extension kind",
+            });
+        };
+        let declaration = image
+            .declarations()
+            .nth(ordinal)
+            .ok_or(JavacTestError::Missing {
+                fact: "record component declaration",
+            })??;
+        if declaration.kind != DeclarationKind::Field {
+            return Err(JavacTestError::Missing {
+                fact: "record component field kind",
+            });
+        }
+        assert_atom(declaration.name, expected)?;
+    }
+    Ok(())
 }
 
 fn compile_producer(jdk: &Path, classes: &Path) -> Result<(), JavacTestError> {
