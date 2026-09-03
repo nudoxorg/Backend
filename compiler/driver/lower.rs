@@ -41,9 +41,9 @@ pub(crate) mod typescript;
 /// output, and resource reservation below.
 pub(super) const MAX_EMISSION_FACTS: usize = 1024;
 /// Dense bound of one fact's ordered product children.
-pub(super) const MAX_FACT_CHILDREN: usize = 8;
+pub(super) const MAX_FACT_CHILDREN: usize = 16;
 /// Dense bound of one fact's ordered type-record children.
-pub(super) const MAX_TYPE_CHILDREN: usize = 8;
+pub(super) const MAX_TYPE_CHILDREN: usize = 16;
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
 /// Dense bound of the documentation lane committed beside the declarations.
