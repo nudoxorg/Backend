@@ -44,6 +44,7 @@
 //! owner-relative span at the owner's start.
 
 use core::str;
+use std::collections::HashMap;
 
 use compiler_ir::{
     AtomListId, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey, ForeignKeyFault,
@@ -386,12 +387,23 @@ struct Projector<'x, 'source> {
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
     names: Vec<(&'source [u8], &'source [u8], u32)>,
+    /// Image declaration coordinates by their package-qualified name.
+    declaration_indices: HashMap<(&'source [u8], &'source [u8]), usize>,
     /// Memoized anonymous-context coordinates per image type row.
     anonymous: Vec<Option<u32>>,
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
     fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>) -> Self {
+        let declaration_indices = image
+            .declarations()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                declaration
+                    .ok()
+                    .map(|declaration| ((declaration.package, declaration.name), index))
+            })
+            .collect();
         Self {
             package: image
                 .declaration(0)
@@ -404,6 +416,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             image,
             facts,
             names: Vec::new(),
+            declaration_indices,
         }
     }
 
@@ -663,16 +676,44 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn value(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
         let kind = entity_kind(declaration.kind);
         let root = self.root(declaration.type_root, TypeReason::Unannotated)?;
-        let fact = root.attach(SemanticFact::new(kind, declaration.name, constructor(kind)));
+        let (constant_value, constant_group, constant_flags) = if kind == EntityKind::Constant {
+            if declaration.value.is_empty() {
+                (AtomListId::new(0), 0, u32::from(declaration.iota))
+            } else {
+                let atom = self
+                    .facts
+                    .intern_atom(declaration.value)
+                    .map_err(lane_terminal)?;
+                let list = self
+                    .facts
+                    .intern_atom_list(core::slice::from_ref(&atom))
+                    .map_err(lane_terminal)?;
+                (list, declaration.const_group, u32::from(declaration.iota))
+            }
+        } else {
+            (AtomListId::new(0), 0, 0)
+        };
+        let fact = root
+            .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
+            .with_extension(EmissionExtension::Go(GoFacts {
+                signature: GoSignature {
+                    parameters: TypeListId::new(0),
+                    results: TypeListId::new(0),
+                    variadic: false,
+                },
+                type_parameters: TypeParameterListId::new(0),
+                fields: EntityListId::new(0),
+                method_set: EntityListId::new(0),
+                build_constraints: AtomListId::new(0),
+                constant_value,
+                constant_group,
+                constant_flags,
+            }));
         let ordinal = push(self.facts, fact)?;
         let index = self
-            .image
-            .declarations()
-            .position(|candidate| {
-                candidate.map_or(false, |candidate| {
-                    candidate.name == declaration.name && candidate.package == declaration.package
-                })
-            })
+            .declaration_indices
+            .get(&(declaration.package, declaration.name))
+            .copied()
             .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: 0 }))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
@@ -2644,7 +2685,7 @@ mod tests {
 
     /// Decodes the Go extension row of one fact: a 16-byte header, one
     /// 20-byte directory per plane (Go is the third), then the row table and
-    /// the 28-byte fact pool.
+    /// the 44-byte fact pool.
     fn go_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
@@ -2665,7 +2706,7 @@ mod tests {
             return Err(TestError::Missing("go extension row"));
         }
         let at =
-            offset + rows * 4 + usize::try_from(row_ordinal).map_err(|_| TestError::Tail)? * 28;
+            offset + rows * 4 + usize::try_from(row_ordinal).map_err(|_| TestError::Tail)? * 44;
         compiler_ir::GoFacts::decode(payload, at).ok_or(TestError::Missing("go facts"))
     }
 
@@ -3372,9 +3413,10 @@ mod tests {
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
         match collect(b"package demo\n", &image, &mut facts) {
-            Err(GoCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            Err(GoCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.name_len == 5
+                    && rejection.cause == FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }
@@ -3464,25 +3506,74 @@ mod tests {
     }
 
     #[test]
-    fn constant_values_stay_image_only_without_changing_the_projection() -> Result<(), TestError> {
+    fn projected_constant_facts_carry_exact_value_group_and_iota() -> Result<(), TestError> {
         let mut fix = Fixture::new();
         let int = fix.basic(b"int");
         fix.constant(b"First", Some(int), b"0", 1);
         let with_values = lower(&fix, b"package demo\nconst First = 0\n")?;
         let view = FragmentView::validate(&with_values)?;
-        if view
-            .docs()
-            .is_some_and(|mut cursor| cursor.next().is_some())
-        {
-            return Err(TestError::Missing("no value doc fragments"));
+        let facts = go_extension(&view, 0)?;
+        if facts.constant_group != 1 || facts.constant_flags != 1 {
+            return Err(TestError::Missing("constant group and iota"));
         }
-        // The exact constant value has no GoFacts cell: the same fact set
-        // with a different value cell must commit byte-identical fragments.
+        if facts.constant_value.raw != 1 {
+            return Err(TestError::Missing("constant value atom list"));
+        }
+        let listed = pooled_list(&view, 0, facts.constant_value.raw as usize)?;
+        if listed.len() != 1 {
+            return Err(TestError::Missing("one constant value atom"));
+        }
+        let atom = view
+            .atoms()
+            .nth(usize::try_from(listed[0]).map_err(|_| TestError::Tail)?)
+            .ok_or(TestError::Missing("constant value atom"))?;
+        if atom.bytes != b"0" {
+            return Err(TestError::Missing("exact constant value"));
+        }
+        // Falsifier: changing the image value changes the projected fragment.
         let mut mutated = fix.clone();
         mutated.declarations[0].value = mutated.atom(b"255");
         let other = lower(&mutated, b"package demo\nconst First = 0\n")?;
-        if other != with_values {
-            return Err(TestError::Missing("value-free projection"));
+        if other == with_values {
+            return Err(TestError::Missing("value-sensitive projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn constants_outside_groups_and_nonconstants_keep_zero_constant_cells() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let ungrouped_index = fix.constant(b"Ungrouped", Some(int), b"7", 0);
+        fix.declarations[ungrouped_index].iota = false;
+        fix.declaration(KIND_TYPE, b"Named", None);
+        fix.declaration(KIND_FUNC, b"run", None);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let named = go_extension(&view, 0)?;
+        if named.constant_value.raw != 0 || named.constant_group != 0 || named.constant_flags != 0 {
+            return Err(TestError::Missing("type constant cells"));
+        }
+        let function = go_extension(&view, 2)?;
+        if function.constant_value.raw != 0
+            || function.constant_group != 0
+            || function.constant_flags != 0
+        {
+            return Err(TestError::Missing("function constant cells"));
+        }
+        let ungrouped = go_extension(&view, 1)?;
+        if ungrouped.constant_value.raw != 1 {
+            return Err(TestError::Missing("ungrouped value coordinate"));
+        }
+        if ungrouped.constant_group != 0 {
+            return Err(TestError::Missing("ungrouped group"));
+        }
+        if ungrouped.constant_flags != 0 {
+            return Err(TestError::Missing("ungrouped flags"));
+        }
+        if pooled_list(&view, 0, ungrouped.constant_value.raw as usize)?.len() != 1 {
+            return Err(TestError::Missing("ungrouped value atom"));
         }
         Ok(())
     }
