@@ -3184,6 +3184,45 @@ mod tests {
     }
 
     #[test]
+    fn method_set_bound_covers_seventeen_and_rejects_thirty_three() -> Result<(), TestError> {
+        let fixture = |count: usize| {
+            let mut fix = Fixture::new();
+            let owner = fix.declaration(KIND_TYPE, b"Authority", None);
+            let authority = fix.start_row(ROW_INTERFACE);
+            fix.declarations[owner].type_root = Some(authority);
+            for index in 0..count {
+                let name = format!("M{index:02}");
+                fix.method_set(owner as u32, name.as_bytes(), None);
+            }
+            fix
+        };
+
+        let seventeen = fixture(17);
+        let bytes = lower(&seventeen, b"package demo\ntype Authority struct{}\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let facts = go_extension(&view, 0)?;
+        if pooled_list(
+            &view,
+            2,
+            usize::try_from(facts.method_set.raw).map_err(|_| TestError::Tail)?,
+        )?
+        .len()
+            != 17
+        {
+            return Err(TestError::Missing("seventeen method-set declarations"));
+        }
+
+        let thirty_three = fixture(33);
+        match lower(&thirty_three, b"package demo\ntype Authority struct{}\n") {
+            Err(TestError::Collect(GoCollectError::Lowering(
+                LoweringUnsupported::NoSupportedDeclaration,
+            ))) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(TestError::Missing("method-set capacity rejection")),
+        }
+    }
+
+    #[test]
     fn generic_named_roots_apply_base_and_arguments() -> Result<(), TestError> {
         let mut fix = Fixture::new();
         let int = fix.basic(b"int");
