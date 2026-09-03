@@ -515,7 +515,6 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"property",
             b"t.overload",
             b"contextmanager",
-            b"click.pass_context",
         ],
         expect: Some(child_lane_full_terminal(105, "click/core.py")),
     },
