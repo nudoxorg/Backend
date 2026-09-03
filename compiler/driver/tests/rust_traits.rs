@@ -14,7 +14,7 @@ use compiler_driver::{
 use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, SemanticTypeTag,
 };
-use compiler_languages_rust::{RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -112,7 +112,7 @@ fn compile_fixture(body: &str) -> Result<Vec<u8>, String> {
             authority: SemanticAuthorityInput::Rust {
                 project: &project,
                 maximum_source_bytes: SourceByteLimit::from(65_536),
-                features: &[],
+                features: RustFeatureControl::default(),
             },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(120),

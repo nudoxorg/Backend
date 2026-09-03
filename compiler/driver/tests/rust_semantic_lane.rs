@@ -20,7 +20,9 @@ use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustFacts,
     RustOwnership, SemanticTypeTag,
 };
-use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{
+    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -159,6 +161,7 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         authority: SemanticAuthorityInput::Rust {
             project: &project,
             maximum_source_bytes: SourceByteLimit::from(65_536),
+            features: RustFeatureControl::default(),
         },
         control: CompileControl {
             deadline: Instant::now() + Duration::from_secs(120),

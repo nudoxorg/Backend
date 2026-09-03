@@ -15,7 +15,9 @@ use compiler_driver::{
     compile,
 };
 use compiler_ir::EntityKind;
-use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain, SourceByteLimit};
+use compiler_languages_rust::{
+    RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 use thiserror::Error;
 
@@ -85,6 +87,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
             authority: SemanticAuthorityInput::Rust {
                 project: &project,
                 maximum_source_bytes: SourceByteLimit::from(65_536),
+                features: RustFeatureControl::default(),
             },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(30),
