@@ -125,6 +125,10 @@ pub enum BuiltinType {
     UniqueSymbol,
     Null,
     Undefined,
+    /// Python's architecture-sized signed integer.
+    Int,
+    /// Python's singleton none type; the suffix avoids colliding with `Option`-style names.
+    None_,
 }
 
 /// Why a frontend could not produce a more precise type.
@@ -872,6 +876,8 @@ mod packed_type_tests {
             BuiltinType::Object,
             BuiltinType::Any,
             BuiltinType::Unknown,
+            BuiltinType::Int,
+            BuiltinType::None_,
             BuiltinType::Void,
             BuiltinType::Number,
             BuiltinType::BigInt,
@@ -963,6 +969,8 @@ const fn builtin_from(value: u16) -> Option<BuiltinType> {
         26 => BuiltinType::UniqueSymbol,
         27 => BuiltinType::Null,
         28 => BuiltinType::Undefined,
+        29 => BuiltinType::Int,
+        30 => BuiltinType::None_,
         _ => return None,
     })
 }

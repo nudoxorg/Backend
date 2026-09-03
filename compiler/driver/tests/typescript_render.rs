@@ -112,58 +112,28 @@ fn declared_unknown_with_computed_type(ir: &Ir, name: &'static str, kind: ItemKi
 #[test]
 fn recursive_renders() {
     let ir = compile(CASES[0].1);
-    signature(
-        &ir,
-        "Node",
-        ItemKind::Trait,
-        "/* visibility unknown */ trait Node",
-    );
+    signature(&ir, "Node", ItemKind::Trait, "trait Node");
 }
 
 #[test]
 fn nominal_renders() {
     let ir = compile(CASES[1].1);
-    signature(
-        &ir,
-        "User",
-        ItemKind::Trait,
-        "/* visibility unknown */ trait User",
-    );
-    signature(
-        &ir,
-        "UserImpl",
-        ItemKind::Record,
-        "/* visibility unknown */ struct UserImpl",
-    );
+    signature(&ir, "User", ItemKind::Trait, "trait User");
+    signature(&ir, "UserImpl", ItemKind::Record, "struct UserImpl");
 }
 
 #[test]
 fn generic_renders() {
     let ir = compile(CASES[2].1);
-    signature(
-        &ir,
-        "Holder",
-        ItemKind::Trait,
-        "/* visibility unknown */ trait Holder",
-    );
-    signature(
-        &ir,
-        "Pair",
-        ItemKind::TypeAlias,
-        "/* visibility unknown */ type Pair = (K, V)",
-    );
+    signature(&ir, "Holder", ItemKind::Trait, "trait Holder");
+    signature(&ir, "Pair", ItemKind::TypeAlias, "type Pair = (K, V)");
     item(&ir, "h", ItemKind::Constant);
 }
 
 #[test]
 fn conditional_renders() {
     let ir = compile(CASES[3].1);
-    signature(
-        &ir,
-        "Cond",
-        ItemKind::TypeAlias,
-        "/* visibility unknown */ type Cond = ?unsupported",
-    );
+    signature(&ir, "Cond", ItemKind::TypeAlias, "type Cond = ?unsupported");
 }
 
 #[test]
@@ -173,7 +143,7 @@ fn mapped_renders() {
         &ir,
         "Readonlyify",
         ItemKind::TypeAlias,
-        "/* visibility unknown */ type Readonlyify = ?unsupported",
+        "type Readonlyify = ?unsupported",
     );
 }
 
@@ -184,7 +154,7 @@ fn template_renders() {
         &ir,
         "Greet",
         ItemKind::TypeAlias,
-        "/* visibility unknown */ type Greet = ?unsupported",
+        "type Greet = ?unsupported",
     );
 }
 
@@ -195,19 +165,14 @@ fn literals_render() {
         &ir,
         "Literals",
         ItemKind::TypeAlias,
-        "/* visibility unknown */ type Literals = ?unsupported | ?unsupported | ?unsupported | ?unsupported",
+        "type Literals = ?unsupported | ?unsupported | ?unsupported | ?unsupported",
     );
 }
 
 #[test]
 fn self_nominal_renders() {
     let ir = compile(CASES[7].1);
-    signature(
-        &ir,
-        "Box",
-        ItemKind::Record,
-        "/* visibility unknown */ struct Box",
-    );
+    signature(&ir, "Box", ItemKind::Record, "struct Box");
 }
 
 #[test]
@@ -219,12 +184,7 @@ fn inference_renders() {
 #[test]
 fn this_renders() {
     let ir = compile(CASES[9].1);
-    signature(
-        &ir,
-        "Cell",
-        ItemKind::Record,
-        "/* visibility unknown */ struct Cell",
-    );
+    signature(&ir, "Cell", ItemKind::Record, "struct Cell");
 }
 
 #[test]
@@ -240,7 +200,7 @@ fn jsdoc_renders() {
         &ir,
         "add",
         ItemKind::Function,
-        "/* visibility unknown */ fn add(left: f64, right: f64) -> f64",
+        "fn add(left: f64, right: f64) -> f64",
     );
     let docs = ir
         .display_docs(item(&ir, "add", ItemKind::Function))
@@ -257,31 +217,21 @@ fn jsdoc_renders() {
         )
         .expect("embedding")
         .to_string(),
-        "/* visibility unknown */ fn add(left: f64, right: f64) -> f64\n\nAdds two values. @param left first value @param right second value @returns their sum"
+        "fn add(left: f64, right: f64) -> f64\n\nAdds two values. @param left first value @param right second value @returns their sum"
     );
 }
 
 #[test]
 fn overloads_render() {
     let ir = compile(CASES[12].1);
-    signature(
-        &ir,
-        "g",
-        ItemKind::Function,
-        "/* visibility unknown */ fn g(value: f64) -> str",
-    );
+    signature(&ir, "g", ItemKind::Function, "fn g(value: f64) -> str");
     declared_unknown_with_computed_type(&ir, "a", ItemKind::Constant);
 }
 
 #[test]
 fn extensions_render() {
     let ir = compile(CASES[13].1);
-    signature(
-        &ir,
-        "Box",
-        ItemKind::Trait,
-        "/* visibility unknown */ trait Box",
-    );
+    signature(&ir, "Box", ItemKind::Trait, "trait Box");
     let plane = ir.storage_columns().language_extensions.typescript;
     assert!(plane.facts.iter().any(|fact| {
         ir.type_parameters(fact.type_parameters)

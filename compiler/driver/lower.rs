@@ -13,7 +13,7 @@ use compiler_ir::{
     ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef, SemanticAtom,
     SemanticProduct, SemanticProductChild, SemanticProductConstructor, SemanticTypeChild,
     SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput,
-    TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId, Visibility,
+    TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId, TypeWidth, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -1000,11 +1000,9 @@ impl<'source> FactSet<'source> {
                 let row = id.erase().raw as usize;
                 self.computed_records.get(row).and_then(|record| {
                     match (record.tag, PrimitiveShape::try_from(record.payload0)) {
-                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
-                            Some(tree.intern_computed(compiler_ir::ComputedType::KeyOf(
-                                TypeId::new(0),
-                            )))
-                        }
+                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => Some(
+                            tree.intern_computed(compiler_ir::ComputedType::KeyOf(TypeId::new(0))),
+                        ),
                         (SemanticTypeTag::SelfType, _) => {
                             Some(tree.intern_computed(compiler_ir::ComputedType::This))
                         }
@@ -1331,9 +1329,7 @@ fn live_type<'source>(
     } else {
         facts.anonymous_records[index - ANONYMOUS_ROW_BASE as usize]
     };
-    let top_level_excluded = index < facts.len
-        && (record.tag == SemanticTypeTag::Unknown
-            || (record.tag == SemanticTypeTag::Primitive && builtin_type(record).is_none()));
+    let top_level_excluded = index < facts.len && record.tag == SemanticTypeTag::Unknown;
     if top_level_excluded && top_level {
         return Ok(None);
     }
@@ -1391,6 +1387,9 @@ fn live_type<'source>(
                 .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
                 .erase(),
             Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
+                (TypeWidth::ARCH_FLAG, 1) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Int))?
+                    .erase(),
                 (8, 0) => tree
                     .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
                     .erase(),
@@ -1425,6 +1424,9 @@ fn live_type<'source>(
                     .intern_unknown(compiler_ir::UnknownType::Unsupported)?
                     .erase(),
             },
+            Ok(PrimitiveShape::Builtin) if record.text == Some(b"None") => tree
+                .intern_concrete(ConcreteType::Builtin(BuiltinType::None_))?
+                .erase(),
             Ok(PrimitiveShape::Float) => match record.payload1 {
                 16 => tree
                     .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
@@ -1539,8 +1541,9 @@ fn live_type<'source>(
             tree.intern_concrete(ConcreteType::Intersection(list))?
                 .erase()
         }
-        SemanticTypeTag::FunctionPointer if child_count > 0 => {
-            let has_result = record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
+        SemanticTypeTag::FunctionPointer => {
+            let has_result =
+                child_count > 0 && record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
             let parameter_count = child_count - usize::from(has_result);
             let mut elements = [TupleElement {
                 label: None,

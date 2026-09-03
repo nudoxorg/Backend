@@ -13,7 +13,7 @@ use compiler_driver::{
 };
 use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir,
-    ItemKind, OccurrenceTarget, ReferenceKind, SemanticTypeTag,
+    ItemKind, OccurrenceTarget, SemanticTypeTag,
 };
 use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
@@ -292,72 +292,42 @@ fn exact_type(ir: &Ir, name: &'static str, expected: &str) -> Result<(), TestErr
 #[test]
 fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
     let ir = compile_fixture()?;
-    exact_signature(
-        &ir,
-        "Plain",
-        ItemKind::Record,
-        "/* visibility unknown */ struct Plain",
-    )?;
-    exact_signature(
-        &ir,
-        "Mapping",
-        ItemKind::Record,
-        "/* visibility unknown */ struct Mapping",
-    )?;
-    exact_signature(
-        &ir,
-        "Reader",
-        ItemKind::Record,
-        "/* visibility unknown */ struct Reader",
-    )?;
+    exact_signature(&ir, "Plain", ItemKind::Record, "struct Plain")?;
+    exact_signature(&ir, "Mapping", ItemKind::Record, "struct Mapping")?;
+    exact_signature(&ir, "Reader", ItemKind::Record, "struct Reader")?;
     exact_signature(
         &ir,
         "overloaded",
         ItemKind::Function,
-        "/* visibility unknown */ fn overloaded(value: ?unsupported) -> str",
+        "fn overloaded(value: int) -> str",
     )?;
     exact_signature(
         &ir,
         "calls",
         ItemKind::Function,
-        "/* visibility unknown */ fn calls(value: ?unsupported, enabled: bool) -> str",
+        "fn calls(value: int, enabled: bool) -> str",
     )?;
-    exact_signature(
-        &ir,
-        "answer",
-        ItemKind::Static,
-        "/* visibility unknown */ static answer: ?unsupported | ?unsupported",
-    )?;
+    exact_signature(&ir, "answer", ItemKind::Static, "static answer: int | None")?;
     exact_signature(
         &ir,
         "items",
         ItemKind::Static,
-        "/* visibility unknown */ static items: ?unsupported<?unsupported>",
+        "static items: ?unsupported<int>",
     )?;
     exact_signature(
         &ir,
         "lookup",
         ItemKind::Static,
-        "/* visibility unknown */ static lookup: ?unsupported<str, ?unsupported>",
+        "static lookup: ?unsupported<str, int>",
     )?;
     exact_signature(
         &ir,
         "callback",
         ItemKind::Static,
-        "/* visibility unknown */ static callback: fn(?unsupported) -> str",
+        "static callback: fn(int) -> str",
     )?;
-    exact_signature(
-        &ir,
-        "maybe",
-        ItemKind::Static,
-        "/* visibility unknown */ static maybe: ?unsupported | ?unsupported",
-    )?;
-    exact_signature(
-        &ir,
-        "choice",
-        ItemKind::Static,
-        "/* visibility unknown */ static choice: str",
-    )?;
+    exact_signature(&ir, "maybe", ItemKind::Static, "static maybe: int | None")?;
+    exact_signature(&ir, "choice", ItemKind::Static, "static choice: str")?;
     let plain = entity(&ir, "Plain", ItemKind::Record)?;
     let docs = ir
         .display_docs(plain)
@@ -374,10 +344,10 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         .embedding_text(plain, compiler_ir::EmbeddingProfile::DOCUMENTED)
         .ok_or(TestError::Falsified("embedding unavailable"))?
         .to_string();
-    if embedding != "/* visibility unknown */ struct Plain\n\nPlain documentation." {
+    if embedding != "struct Plain\n\nPlain documentation." {
         return Err(TestError::Mismatch {
             name: "Plain embedding",
-            expected: "/* visibility unknown */ struct Plain\n\nPlain documentation.".to_owned(),
+            expected: "struct Plain\n\nPlain documentation.".to_owned(),
             actual: embedding,
         });
     }
@@ -407,22 +377,14 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
     if first_text != second_text {
         return Err(TestError::Falsified("independent renders differ"));
     }
-    exact_type(&first, "items", "?unsupported<?unsupported>")?;
-    exact_type(&first, "lookup", "?unsupported<str, ?unsupported>")?;
-    exact_type(&first, "callback", "fn(?unsupported) -> str")?;
-    exact_type(&first, "answer", "?unsupported | ?unsupported")?;
-    exact_type(&first, "maybe", "?unsupported | ?unsupported")?;
+    exact_type(&first, "items", "?unsupported<int>")?;
+    exact_type(&first, "lookup", "?unsupported<str, int>")?;
+    exact_type(&first, "callback", "fn(int) -> str")?;
+    exact_type(&first, "answer", "int | None")?;
+    exact_type(&first, "maybe", "int | None")?;
     let alternate = compile_source(b"left: int\nright: str\n")?;
-    let left = entity(&alternate, "left", ItemKind::Static)?;
-    if alternate
-        .item(left)
-        .and_then(|item| item.semantic_type())
-        .is_some()
-    {
-        return Err(TestError::Falsified(
-            "python arch-signed integer leaked into the live IR type DAG",
-        ));
-    }
+    entity(&alternate, "left", ItemKind::Static)?;
+    exact_type(&alternate, "left", "int")?;
     exact_type(&alternate, "right", "str")?;
     exact_type(&first, "choice", "str")?;
     Ok(())

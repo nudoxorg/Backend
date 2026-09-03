@@ -215,7 +215,7 @@ impl fmt::Display for DocsDisplay<'_> {
 
 fn write_visibility(output: &mut impl fmt::Write, visibility: Visibility) -> fmt::Result {
     match visibility {
-        Visibility::Unknown => output.write_str("/* visibility unknown */ "),
+        Visibility::Unknown => Ok(()),
         Visibility::Private => Ok(()),
         Visibility::Restricted => output.write_str("pub(restricted) "),
         Visibility::Package => output.write_str("pub(crate) "),
@@ -800,6 +800,8 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::Object => "object",
         BuiltinType::Any => "any",
         BuiltinType::Unknown => "unknown",
+        BuiltinType::Int => "int",
+        BuiltinType::None_ => "None",
         BuiltinType::Void => "void",
         BuiltinType::Number => "number",
         BuiltinType::BigInt => "bigint",
