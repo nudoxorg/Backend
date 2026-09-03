@@ -11,7 +11,7 @@ use std::{
 
 use server_workflow::{
     Recovery, ReductionError, ReplayError, WorkflowEvent, WorkflowRecord, WorkflowState, reduce,
-    replay_stream,
+    reduce_chained, replay_stream,
 };
 use thiserror::Error;
 use zerocopy::IntoBytes;
@@ -127,7 +127,11 @@ impl FileJournal {
         self.append_group_using(events, frames, persist_group, false)
     }
 
-    pub(crate) fn append_publication_group(&mut self, events: &[WorkflowEvent], frames: &mut [u8]) -> Result<GroupReceipt, GroupCommitError> {
+    pub(crate) fn append_publication_group(
+        &mut self,
+        events: &[WorkflowEvent],
+        frames: &mut [u8],
+    ) -> Result<GroupReceipt, GroupCommitError> {
         self.append_group_using(events, frames, persist_group, true)
     }
 
@@ -164,21 +168,16 @@ impl FileJournal {
         let mut reduced_state = self.state;
         for (index, event) in events.iter().copied().enumerate() {
             let attempted = WorkflowRecord::from(event);
-            reduced_state = reduce(reduced_state, event)
-                .or_else(|error| if allow_chain && matches!(event.kind, server_workflow::EventKind::Requested) {
-                    match reduced_state {
-                        WorkflowState::Keyed { .. } => match reduce(WorkflowState::New, event) {
-                            Ok(value) => Ok(value),
-                            Err(_) => Err(error),
-                        },
-                        WorkflowState::New => Err(error),
-                    }
-                } else { Err(error) })
-                .map_err(|source| GroupCommitError::Reduction {
-                    attempted: Arc::new(attempted),
-                    source,
-                })?
-                .state;
+            reduced_state = if allow_chain {
+                reduce_chained(reduced_state, event)
+            } else {
+                reduce(reduced_state, event)
+            }
+            .map_err(|source| GroupCommitError::Reduction {
+                attempted: Arc::new(attempted),
+                source,
+            })?
+            .state;
             let sequence = match first_sequence
                 .value
                 .checked_add(u64::try_from(index).map_err(|source| {

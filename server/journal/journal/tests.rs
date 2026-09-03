@@ -440,18 +440,23 @@ fn grouped_append_reduces_before_one_write_and_one_sync() -> Result<(), Box<dyn 
     let mut frames = vec![0xA5; JOURNAL_FRAME_BYTES * events.len()];
     let mut writes = 0;
     let mut syncs = 0;
-    let receipt = journal.append_group_using(&events, &mut frames, |file, bytes| {
-        writes += 1;
-        file.seek(SeekFrom::End(0))
-            .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
-        file.write_all(bytes)
-            .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
-        syncs += 1;
-        file.sync_all().map_err(|source| PersistFailure {
-            step: CommitIoStep::SyncFrame,
-            source,
-        })
-    }, false)?;
+    let receipt = journal.append_group_using(
+        &events,
+        &mut frames,
+        |file, bytes| {
+            writes += 1;
+            file.seek(SeekFrom::End(0))
+                .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
+            file.write_all(bytes)
+                .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
+            syncs += 1;
+            file.sync_all().map_err(|source| PersistFailure {
+                step: CommitIoStep::SyncFrame,
+                source,
+            })
+        },
+        false,
+    )?;
     assert_eq!(writes, 1);
     assert_eq!(syncs, 1);
     assert_eq!(
@@ -474,6 +479,24 @@ fn grouped_append_reduces_before_one_write_and_one_sync() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn plain_group_append_preserves_original_mismatched_key_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new("plain-group-key-mismatch");
+    let mut journal = FileJournal::create(fixture.path())?;
+    let expected = requested(41).key;
+    let observed = requested(42).key;
+    let events = [requested(41), requested(42)];
+    let mut frames = vec![0; JOURNAL_FRAME_BYTES * events.len()];
+    assert!(matches!(
+        journal.append_group(&events, &mut frames),
+        Err(GroupCommitError::Reduction { source, .. })
+            if source == server_workflow::ReductionError::StageKeyMismatch { expected, observed }
+    ));
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
 fn grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     for prefix in 0..=(JOURNAL_FRAME_BYTES * 2) {
@@ -482,16 +505,21 @@ fn grouped_append_fault_retains_attempt_and_reopens_to_durable_prefix()
         let events = [requested(31), admitted(31)];
         let attempted = WorkflowRecord::from(events[0]);
         let mut frames = vec![0; JOURNAL_FRAME_BYTES * events.len()];
-        let result = journal.append_group_using(&events, &mut frames, |file, bytes| {
-            file.seek(SeekFrom::End(0))
-                .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
-            file.write_all(&bytes[..prefix])
-                .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
-            Err(PersistFailure {
-                step: CommitIoStep::SyncFrame,
-                source: injected(InjectedFault::FrameSync),
-            })
-        }, false);
+        let result = journal.append_group_using(
+            &events,
+            &mut frames,
+            |file, bytes| {
+                file.seek(SeekFrom::End(0))
+                    .map_err(|source| persist_failure(CommitIoStep::Position, source))?;
+                file.write_all(&bytes[..prefix])
+                    .map_err(|source| persist_failure(CommitIoStep::WriteFrame, source))?;
+                Err(PersistFailure {
+                    step: CommitIoStep::SyncFrame,
+                    source: injected(InjectedFault::FrameSync),
+                })
+            },
+            false,
+        );
         match result {
             Err(GroupCommitError::OutcomeUnknown {
                 attempted: observed,

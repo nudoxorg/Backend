@@ -386,15 +386,7 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-// This pins the current trunk defect: live chaining is implemented by
-// `server/journal/journal.rs::append_group_using`, while
-// `server/workflow/durable.rs::replay_stream` replays without that fallback.
-// The two lifecycle precedents are `rust_purl_lifecycle.rs` (which does not
-// reopen after generation two) and `python_purl_lifecycle.rs` (one generation
-// only). Flipping this test to successful reopen is the intended signal once
-// trunk heals replay; artifact-store reads remain independently covered above.
-fn reopening_a_chained_journal_is_red_until_trunk_heals_replay()
--> Result<(), Box<dyn std::error::Error>> {
+fn chained_journal_reopens_after_shutdown() -> Result<(), Box<dyn std::error::Error>> {
     let root = fresh("reopen-defect")?;
     write_database(&root, &["src/main.c", "src/util.c"])?;
     fs::write(root.join("src/main.c"), b"int first;\n")?;
@@ -424,24 +416,55 @@ fn reopening_a_chained_journal_is_red_until_trunk_heals_replay()
         &mut second_output,
     )?;
     let _ = publish(&journal, &artifacts, &[first])?;
+    let first_facts = {
+        let mut manifest = vec![0; 4 << 20];
+        let mut manifest_facts = vec![None; 1];
+        let mut fragments = vec![0; 4 << 20];
+        let mut locality = vec![0; 1 << 20];
+        let opened = open_published(
+            &journal,
+            &artifacts,
+            OpenPublicationScratch {
+                manifest_output: &mut manifest,
+                manifest_facts: &mut manifest_facts,
+                fragment_output: &mut fragments,
+                locality_output: &mut locality,
+            },
+        )?
+        .ok_or("generation one was not published")?;
+        opened
+            .manifest
+            .fragments()
+            .next()
+            .ok_or("generation one had no fragment")?
+    };
     let _ = publish(&journal, &artifacts, &[second])?;
     journal.shutdown()?;
 
-    let error =
-        match DurablePublisher::reopen(&PublicationPaths::in_directory(&journal_path), limits()?) {
-            Err(error) => error,
-            Ok(publisher) => {
-                publisher.shutdown()?;
-                return Err("a chained journal unexpectedly reopened".into());
-            }
-        };
-    assert!(matches!(
-        error,
-        server_journal::PublicationOpenError::Journal(server_journal::JournalError::Reduction(_))
-    ));
-    let observed = format!("{error:?}");
-    assert!(observed.starts_with("Journal(Reduction(StageKeyMismatch { expected: StageKey("));
-    assert!(observed.ends_with(" }))"));
+    let reopened =
+        DurablePublisher::reopen(&PublicationPaths::in_directory(&journal_path), limits()?)?;
+    let mut manifest = vec![0; 4 << 20];
+    let mut manifest_facts = vec![None; 1];
+    let mut fragments = vec![0; 4 << 20];
+    let mut locality = vec![0; 1 << 20];
+    let opened = open_published(
+        &reopened,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut manifest_facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    )?
+    .ok_or("reopened journal had no publication")?;
+    assert_eq!(*opened.publication.stable.sequence, 1);
+    let reopened_fragment = opened.fragments().next().ok_or("missing fragment")??;
+    FragmentView::validate(reopened_fragment.view.as_ref())?;
+    let mut old_output = vec![0; 4 << 20];
+    let old = ImmutableArtifactStore::new(&artifacts)?.open(first_facts, &mut old_output)?;
+    FragmentView::validate(old.as_ref())?;
+    reopened.shutdown()?;
     remove_native(&root)?;
     remove_native(&store)
 }

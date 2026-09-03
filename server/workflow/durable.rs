@@ -288,7 +288,13 @@ where
     for record in records {
         let event = WorkflowEvent::try_from(&record.map_err(ReplayError::Source)?)
             .map_err(ReplayError::Decode)?;
-        state = reduce(state, event).map_err(ReplayError::Reduction)?.state;
+        // Publication groups were admitted under the chained rule, while plain groups were
+        // admitted strictly. Strict success implies chained success, and a stream rejected by
+        // the chained reducer could never have been committed. Boundaries are absent on wire
+        // frames, so this unconditional rule is the faithful inverse for committed history.
+        state = crate::reduce_chained(state, event)
+            .map_err(ReplayError::Reduction)?
+            .state;
     }
     Ok(Recovery::from_state(state))
 }
