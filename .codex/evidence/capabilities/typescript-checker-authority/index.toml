@@ -1,0 +1,68 @@
+schema = 1
+capability_id = "typescript-checker-authority"
+state = "phase0"
+baseline_commit = "67cdc911981905431642bfe0cfb7ce5d33cb757c"
+baseline_tree = "67cdc9119 + uncommitted typescript lane working set; frozen per-file baseline below"
+candidate_commit = ""
+candidate_tree = ""
+testing_path = ""
+testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
+
+# Frozen per-file formatted LOC + sha256 at phase0 (independent of git status)
+[baseline.files]
+"compiler/languages/typescript/lib.rs" = { loc = 23, sha256 = "cb2c34af0967399de3eb79ac8f79fff2924676df252460835c8d4a3363e9d735" }
+"compiler/languages/typescript/authority.rs" = { loc = 166, sha256 = "787bef30b6a749d68915cfc16bd3dd6d656c9ee80cff90caab7e20ab9080d791" }
+"compiler/languages/typescript/checker.rs" = { loc = 907, sha256 = "9f71a96749a28941c87370dac5e8483a3c50fec877b13b652d8e8de6f9f0812e" }
+"compiler/languages/typescript/coordinate.rs" = { loc = 272, sha256 = "825ed05418daba2e6341ef2e33a4e46ac427f915f77d3a42d399e4264d0b8df4" }
+"compiler/languages/typescript/error.rs" = { loc = 60, sha256 = "925843f6f6c05db67f8acd571a09af9935c860ea6e72fa0136e6ab065581bad7" }
+"compiler/languages/typescript/checker/main.cjs" = { loc = 434, sha256 = "03b70c661e54c9ea1429164d20b23a474c59da5abe07d08b86a8e56dab445c71" }
+"compiler/languages/typescript/Cargo.toml" = { loc = 32, sha256 = "b490323e0355aed84716e3d7328bf655e8d2538cdf12e1e9e2e253558b9f7108" }
+"compiler/languages/typescript/tests/checker_protocol.rs" = { loc = 467, sha256 = "8e4407783ec319289a3c564d2477522edfa014caaad96402d7099e13172a300d" }
+"compiler/languages/typescript/tests/semantic_authority.rs" = { loc = 137, sha256 = "af8cfe4b610930b608de402b03b4d87c07979be5540989ed3f8d46073ab561dc" }
+"compiler/languages/typescript/tests/fixtures/source.ts" = { loc = 21, sha256 = "06014986b132c9502e78f2ee3221263d29b4a417f8a3b13a9ad5959361e9288e" }
+"compiler/languages/typescript/tests/transcripts/golden.json" = { loc = 1, sha256 = "f91967d5b2da9a37d38a570f8b31a7c8fdbef0e62559266ffe81c76975707e90" }
+"compiler/driver/lower/typescript.rs" = { loc = 4273, sha256 = "874500e3f84470d8aa64094d44d0f767e4124fedea3ad516d0912300b7061578" }
+"compiler/driver/native/typescript.rs" = { loc = 76, sha256 = "0fc3147921507a1d07b893dafc216d7bc9a74a1dc0727bd2e9b960a796520cf8" }
+
+[artifacts]
+brief = { path = ".codex/evidence/capabilities/typescript-checker-authority/brief.md", sha256 = "aa3b6ee5a237c00b114df22624b64f158036e51f228644c7586efed21bc81e48" }
+matrix = { path = ".codex/evidence/capabilities/typescript-checker-authority/proof-matrix.md", sha256 = "9f5cd181abe69e3b6a6e4c2d7ed2aa9f9def0b27d7f6a6c04be8d41bcc247719" }
+research = { path = ".codex/evidence/capabilities/typescript-checker-authority/research.md", sha256 = "a5cce831766abf5dafcbe15b29b73c2fbdbfe95ac6b7d0591ae93588e5b44fdb" }
+closure = { path = ".codex/evidence/capabilities/typescript-checker-authority/closure.md", sha256 = "" }
+
+# Environment adaptation, recorded honestly (matches sibling lanes): this
+# runtime dispatches the registered `luna` implementer and read-only
+# `reviewer` subagents through the opencode task tool; sidecar codex parents
+# are unavailable. Compensating custody: reviewer is read-only by
+# construction; Terra reproduces every accepted finding; worker cards carry
+# exact owned paths + card digests; returned commits are recorded per
+# dispatch below.
+
+[[workers]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "L0-lane-green"
+paths = ["compiler/driver/lower/typescript.rs (inline tests only)"]
+state = "planned"
+
+[[workers]]
+task = "pending"
+role = "nudox_luna_implementer"
+card = "L1-checker-first-class"
+paths = ["compiler/languages/typescript/", "compiler/driver/lower/typescript.rs", "compiler/driver/types/request.rs", "compiler/driver/types/compile.rs", "compiler/driver/tests/typescript_authority.rs"]
+state = "planned"
+
+[[reviews]]
+boundary = "pre-edit"
+role = "nudox_terra_reviewer"
+state = "planned"
+
+[[reviews]]
+boundary = "first-candidate"
+role = "nudox_terra_reviewer"
+state = "planned"
+
+[[reviews]]
+boundary = "closure"
+role = "nudox_terra_reviewer"
+state = "planned"
