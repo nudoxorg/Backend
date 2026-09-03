@@ -129,6 +129,14 @@ pub enum BuiltinType {
     Int,
     /// Python's singleton none type; the suffix avoids colliding with `Option`-style names.
     None_,
+    /// Python's heterogeneous growable sequence.
+    List,
+    /// Python's associative mapping from keys to values.
+    Dict,
+    /// Python's unordered mutable collection of distinct values.
+    Set,
+    /// Python's immutable set.
+    FrozenSet,
 }
 
 /// Why a frontend could not produce a more precise type.
@@ -878,6 +886,10 @@ mod packed_type_tests {
             BuiltinType::Unknown,
             BuiltinType::Int,
             BuiltinType::None_,
+            BuiltinType::List,
+            BuiltinType::Dict,
+            BuiltinType::Set,
+            BuiltinType::FrozenSet,
             BuiltinType::Void,
             BuiltinType::Number,
             BuiltinType::BigInt,
@@ -971,6 +983,10 @@ const fn builtin_from(value: u16) -> Option<BuiltinType> {
         28 => BuiltinType::Undefined,
         29 => BuiltinType::Int,
         30 => BuiltinType::None_,
+        31 => BuiltinType::List,
+        32 => BuiltinType::Dict,
+        33 => BuiltinType::Set,
+        34 => BuiltinType::FrozenSet,
         _ => return None,
     })
 }

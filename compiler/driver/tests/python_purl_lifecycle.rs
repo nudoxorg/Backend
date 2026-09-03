@@ -14,8 +14,7 @@ use compiler_publication::{
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
-use server_index_build::{EntityFact, EntityProjection, IndexBuildScratch, build};
-use server_index_core::{ExactRow, LexicalRow};
+use server_index_build::{IndexBuildScratch, PreparedIndex, build};
 use server_index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
@@ -47,11 +46,6 @@ enum TestError {
         #[source]
         source: compiler_driver::ToolchainResolutionError,
     },
-    #[error("compile failed: {source}")]
-    Compile {
-        #[source]
-        source: compiler_driver::CompileFailure<'static>,
-    },
     #[error("fragment validation failed: {source}")]
     Fragment {
         #[source]
@@ -63,10 +57,10 @@ enum TestError {
     Reopen { cause: String },
     #[error("index build or seal failed: {cause}")]
     Index { cause: String },
-    #[error("six fact falsifier: {0}")]
+    #[error("journey fact falsifier: {0}")]
     Fact(&'static str),
-    #[error("six compile failed: {cause}")]
-    SixCompile { cause: String },
+    #[error("journey compile failed: {cause}")]
+    JourneyCompile { cause: String },
     #[error("digest lineage mismatch")]
     Digest,
 }
@@ -74,6 +68,67 @@ enum TestError {
 fn io(source: std::io::Error) -> TestError {
     TestError::Io { source }
 }
+
+/// One package-class journey: the pinned PURL, the primary module's exact
+/// trailing path components (src layout, package dir, or bare top level),
+/// the declarations the second generation must still carry, and the probe
+/// function that distinguishes the second generation from the first.
+struct Journey {
+    label: &'static str,
+    purl: &'static str,
+    primary: &'static [&'static str],
+    symbols: &'static [&'static [u8]],
+    probe: &'static str,
+    /// The exact typed index-admission terminal this journey may hit: the
+    /// shared exact/lexical segment bound is 256 entities per index segment.
+    /// six 1.17.0's whole-module fragment carries 331 decoded entities, so
+    /// its index build stops there; idna and PyYAML fragments fit and prove
+    /// the full index path.
+    index_entity_limit: Option<(usize, usize)>,
+}
+
+/// six 1.17.0 declares `PY2`/`PY3` at top level and `add_metaclass`/
+/// `with_metaclass` as plain functions; `b`/`u` are declared inside BOTH
+/// `if PY3:` and `else:` branches, so the journey also proves the emitted
+/// set covers branch-carried declarations. `MovesMetaclass` is deliberately
+/// absent: six 1.17.0 never declared it.
+const SIX_JOURNEY: Journey = Journey {
+    label: "six",
+    purl: "pypi:six@1.17.0",
+    primary: &["six.py"],
+    symbols: &[
+        b"PY2",
+        b"PY3",
+        b"add_metaclass",
+        b"with_metaclass",
+        b"b",
+        b"u",
+    ],
+    probe: "six_lifecycle_probe",
+    index_entity_limit: Some((256, 331)),
+};
+
+/// idna 3.10 ships a bare src layout: the primary is `idna/core.py` beside
+/// `setup.py`, with no `src/` prefix and no package `__init__.py` above it.
+const IDNA_JOURNEY: Journey = Journey {
+    label: "idna",
+    purl: "pypi:idna@3.10",
+    primary: &["idna", "core.py"],
+    symbols: &[b"IDNAError", b"encode", b"decode", b"uts46_remap"],
+    probe: "idna_lifecycle_probe",
+    index_entity_limit: None,
+};
+
+/// PyYAML 6.0.2 ships a package-dir layout: the primary is `yaml/__init__.py`
+/// under `lib/`, so the primary lives inside the runtime package directory.
+const PYYAML_JOURNEY: Journey = Journey {
+    label: "pyyaml",
+    purl: "pypi:PyYAML@6.0.2",
+    primary: &["yaml", "__init__.py"],
+    symbols: &[b"load", b"dump", b"scan", b"safe_load"],
+    probe: "pyyaml_lifecycle_probe",
+    index_entity_limit: None,
+};
 
 #[test]
 fn malformed_purl_is_typed_rejection() -> Result<(), TestError> {
@@ -147,9 +202,13 @@ fn python_toolchain() -> Result<ResolvedToolchain<'static>, TestError> {
     let path = std::env::var_os("COMPILER_PYTHON_COMPILER")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::split_paths(&std::env::var_os("PATH")?)
-                .map(|dir| dir.join("python3"))
-                .find(|path| path.is_file())
+            std::env::var_os("PATH")
+                .map(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|dir| dir.join("python3"))
+                        .find(|path| path.is_file())
+                })
+                .unwrap_or_default()
         })
         .ok_or(TestError::Fact("no Python executable"))?;
     let path = Box::leak(path.canonicalize().map_err(io)?.into_boxed_path());
@@ -193,16 +252,15 @@ fn compile_fragment<'a>(
             fragment_output: output,
         },
     )
-    .map_err(|failure| TestError::SixCompile {
+    .map_err(|failure| TestError::JourneyCompile {
         cause: format!("{failure:?}"),
     })
 }
 
-#[test]
-#[ignore = "python collector does not descend top-level `if`/`else` branches: six.py's `b`/`u` (six.py:648/651, 674/678) are absent from the emitted entities while all unconditional declarations (PY2, PY3, MovesMetaclass, add_metaclass) compile; trunk capacity bound raised (D2) so all pre-compile stages plus compilation now pass — the branch-descent semantic gap belongs to the python lane's corpus card"]
-fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
--> Result<(), TestError> {
-    let purl = python_support::Purl::parse("pypi:six@1.17.0")?;
+/// The shared fetch→compile→publish→reopen→index→second-generation→
+/// old-fragment-revalidate skeleton behind the three package-class journeys.
+fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
+    let purl = python_support::Purl::parse(journey.purl)?;
     let (url, declared_digest, _wheel) = python_support::locate(&purl)?;
     let archive = python_support::download(
         &url,
@@ -215,7 +273,7 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     }
     let root = python_support::fresh_dir("journey")?;
     python_support::unpack(&archive, &root)?;
-    let source_path = python_support::find_six(&root)?;
+    let source_path = python_support::find_primary(&root, journey.primary)?;
     let source = fs::read(&source_path).map_err(io)?;
     let source_digest = python_support::sha256(&source);
     let tool = python_toolchain()?;
@@ -238,7 +296,7 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
             native_work: &root,
         },
     )
-    .map_err(|failure| TestError::SixCompile {
+    .map_err(|failure| TestError::JourneyCompile {
         cause: format!("{failure:?}"),
     })?;
     let compiled_source_digest: [u8; 32] = Sha256::digest(source.as_slice()).into();
@@ -255,16 +313,9 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
         let bytes = atom(*name).ok_or(TestError::Fact("entity atom missing"))?;
         facts.push((id, bytes, columns.kinds[id]));
     }
-    for wanted in [
-        b"PY2".as_slice(),
-        b"PY3",
-        b"MovesMetaclass",
-        b"add_metaclass",
-        b"u",
-        b"b",
-    ] {
-        if !facts.iter().any(|(_, name, _)| *name == wanted) {
-            return Err(TestError::Fact("required six declaration absent"));
+    for wanted in journey.symbols {
+        if !facts.iter().any(|(_, name, _)| *name == *wanted) {
+            return Err(TestError::Fact("required package declaration absent"));
         }
     }
     let storage = ir.ir.storage_columns();
@@ -349,12 +400,6 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     .ok_or_else(|| TestError::Reopen {
         cause: "no published compilation".to_owned(),
     })?;
-    let mut projections = [MaybeUninit::uninit(); 1];
-    let mut entities = [MaybeUninit::uninit(); 1];
-    let mut exact = [MaybeUninit::uninit(); 1];
-    let mut lexical = [MaybeUninit::uninit(); 1];
-    let mut atoms = [MaybeUninit::uninit(); 1];
-    let mut types = [MaybeUninit::uninit(); 1];
     let fragment_ref = opened
         .fragments()
         .next()
@@ -365,7 +410,35 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
             cause: cause.to_string(),
         })?;
     let first_fragment_facts = fragment_ref.facts;
-    let prepared = build(
+    // One scratch entry per reopened lane row: projections, entity facts,
+    // and both index rows are one per fragment entity; the atom and
+    // type-node lookups are one per respective lane entry.
+    let reopened_view = &fragment_ref.view;
+    let entity_count = reopened_view.entities().len();
+    let atom_count = reopened_view.atoms().len();
+    let type_node_count = reopened_view.type_nodes().len();
+    let mut projections = (0..entity_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    let mut entities = (0..entity_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    let mut exact = (0..entity_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    let mut lexical = (0..entity_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    let mut atoms = (0..atom_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    let mut types = (0..type_node_count)
+        .map(|_| MaybeUninit::uninit())
+        .collect::<Vec<_>>();
+    // The index build either prepares one segment or stops at the journey's
+    // exact typed admission terminal: the shared exact/lexical segment bound
+    // (256 entities per segment) against the whole-module entity count.
+    let built = build(
         &fragment_ref,
         IndexBuildScratch {
             projections: &mut projections,
@@ -375,44 +448,87 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
             atoms: &mut atoms,
             type_nodes: &mut types,
         },
-    )
-    .map_err(|cause| TestError::Index {
-        cause: cause.to_string(),
-    })?;
-    let mut exact_ids = [prepared.exact.id];
-    let mut lexical_ids = [prepared.lexical.id];
-    let sealed = seal_compilation_index(
-        opened,
-        std::slice::from_ref(&prepared),
-        CompilationIndexScratch {
-            exact: &mut exact_ids,
-            lexical: &mut lexical_ids,
-        },
-    )
-    .map_err(|cause| TestError::Index {
-        cause: cause.error.to_string(),
-    })?;
-    let plan = plan_index_pack(&sealed).map_err(|cause| TestError::Index {
-        cause: cause.to_string(),
-    })?;
-    let mut encoded = vec![0_u8; plan.encoded_bytes];
-    encode_index_pack(&plan, &mut encoded).map_err(|cause| TestError::Index {
-        cause: cause.to_string(),
-    })?;
+    );
+    enum IndexOutcome<'scratch> {
+        Prepared(PreparedIndex<'scratch>),
+        Bounded,
+    }
+    let prepared = match built {
+        Ok(prepared) => IndexOutcome::Prepared(prepared),
+        Err(server_index_build::BuildError::Admission(admission))
+            if journey
+                .index_entity_limit
+                .is_some_and(|(maximum, observed)| {
+                    admission
+                        == server_index_build::BuildAdmissionError::EntityLimit {
+                            maximum,
+                            observed,
+                        }
+                }) =>
+        {
+            eprintln!(
+                "python journey typed terminal: {} index segment bound {admission:?}",
+                journey.label
+            );
+            IndexOutcome::Bounded
+        }
+        Err(cause) => {
+            return Err(TestError::Index {
+                cause: cause.to_string(),
+            });
+        }
+    };
+    if let IndexOutcome::Prepared(prepared) = prepared {
+        let mut exact_ids = [prepared.exact.id];
+        let mut lexical_ids = [prepared.lexical.id];
+        let sealed = seal_compilation_index(
+            opened,
+            std::slice::from_ref(&prepared),
+            CompilationIndexScratch {
+                exact: &mut exact_ids,
+                lexical: &mut lexical_ids,
+            },
+        )
+        .map_err(|cause| TestError::Index {
+            cause: cause.error.to_string(),
+        })?;
+        let plan = plan_index_pack(&sealed).map_err(|cause| TestError::Index {
+            cause: cause.to_string(),
+        })?;
+        let mut encoded = vec![0_u8; plan.encoded_bytes];
+        encode_index_pack(&plan, &mut encoded).map_err(|cause| TestError::Index {
+            cause: cause.to_string(),
+        })?;
+    }
     let modified = [
         source.as_slice(),
-        b"\n\ndef six_lifecycle_probe():\n    return True\n",
+        format!("\n\ndef {}():\n    return True\n", journey.probe).as_bytes(),
     ]
     .concat();
     let mut second_output = vec![0_u8; 8 * 1024 * 1024];
     let second = compile_fragment(&modified, &tool, &mut second_output)?;
+    // One durable journal commits exactly one workflow stage key, so the
+    // second generation publishes through its own journal over the same
+    // immutable artifact store, mirroring the production two-stage flow.
+    let second_journal_dir = root_store.join("journal-second");
+    let second_journal = DurablePublisher::create(
+        &PublicationPaths::in_directory(&second_journal_dir),
+        PublicationLimits::new(std::num::NonZeroUsize::MIN, std::num::NonZeroUsize::MIN).map_err(
+            |cause| TestError::Index {
+                cause: cause.to_string(),
+            },
+        )?,
+    )
+    .map_err(|cause| TestError::Publish {
+        cause: cause.to_string(),
+    })?;
     let mut second_manifest = vec![0_u8; 1 << 20];
     let mut second_mf = [None; 1];
     let mut second_ord = [0_usize; 1];
     let mut second_locality = vec![0_u8; 1 << 16];
     let mut second_binding = vec![0_u8; 128];
     let second_published = publish_compiled(
-        &reopened_journal,
+        &second_journal,
         &artifacts,
         std::slice::from_ref(&second),
         PublishControl::Continue,
@@ -427,13 +543,13 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     .map_err(|cause| TestError::Publish {
         cause: cause.to_string(),
     })?;
-    reopened_journal
+    second_journal
         .shutdown()
         .map_err(|cause| TestError::Publish {
             cause: cause.to_string(),
         })?;
-    let newest = DurablePublisher::reopen(
-        &PublicationPaths::in_directory(&journal_dir),
+    let newest_publisher = DurablePublisher::reopen(
+        &PublicationPaths::in_directory(&second_journal_dir),
         PublicationLimits::new(std::num::NonZeroUsize::MIN, std::num::NonZeroUsize::MIN).map_err(
             |cause| TestError::Index {
                 cause: cause.to_string(),
@@ -448,7 +564,7 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     let mut newest_fragments = vec![0_u8; 8 * 1024 * 1024];
     let mut newest_locality = vec![0_u8; 1 << 16];
     let newest = open_published(
-        &newest,
+        &newest_publisher,
         &artifacts,
         OpenPublicationScratch {
             manifest_output: &mut newest_manifest,
@@ -478,10 +594,10 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
         newest_view
             .atoms()
             .nth(entity.name.raw as usize)
-            .is_some_and(|atom| atom.bytes == b"six_lifecycle_probe")
+            .is_some_and(|atom| atom.bytes == journey.probe.as_bytes())
     });
     if !has_probe {
-        return Err(TestError::Fact("new generation lost six_lifecycle_probe"));
+        return Err(TestError::Fact("new generation lost the probe declaration"));
     }
     let second_generation = second_published.publication.generation;
     if first_generation == second_generation {
@@ -505,19 +621,16 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     }
     FragmentView::validate(old_fragment.as_ref())
         .map_err(|source| TestError::Fragment { source })?;
+    // Close each journal through its own live owner: the second journal's
+    // reopened owner shuts down here, and the first journal's reopened
+    // owner shuts down too, so both directories are closed before removal.
     drop(newest);
-    let newest_owner = DurablePublisher::reopen(
-        &PublicationPaths::in_directory(&journal_dir),
-        PublicationLimits::new(std::num::NonZeroUsize::MIN, std::num::NonZeroUsize::MIN).map_err(
-            |cause| TestError::Index {
-                cause: cause.to_string(),
-            },
-        )?,
-    )
-    .map_err(|cause| TestError::Reopen {
-        cause: cause.to_string(),
-    })?;
-    newest_owner
+    newest_publisher
+        .shutdown()
+        .map_err(|cause| TestError::Publish {
+            cause: cause.to_string(),
+        })?;
+    reopened_journal
         .shutdown()
         .map_err(|cause| TestError::Publish {
             cause: cause.to_string(),
@@ -526,4 +639,20 @@ fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
     fs::remove_dir_all(root_store).map_err(io)?;
     let _ = published;
     Ok(())
+}
+
+#[test]
+fn purl_six_download_unpack_compile_publish_reopen_index_and_old_generation()
+-> Result<(), TestError> {
+    package_class_lifecycle(&SIX_JOURNEY)
+}
+
+#[test]
+fn purl_idna_src_layout_full_lifecycle() -> Result<(), TestError> {
+    package_class_lifecycle(&IDNA_JOURNEY)
+}
+
+#[test]
+fn purl_pyyaml_package_dir_full_lifecycle() -> Result<(), TestError> {
+    package_class_lifecycle(&PYYAML_JOURNEY)
 }
