@@ -2,7 +2,6 @@
 //! This crate describes requests and failures but deliberately performs no compilation or I/O.
 //! Stable numeric conversions belong here because those values participate in canonical identities.
 #![no_std]
-
 use heart_identity::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -373,6 +372,97 @@ pub enum LoweringUnsupported {
     /// Java lacks the closed top-level type or class-member recipe required for compact IR.
     #[error("Java declaration form is not represented")]
     JavaDeclarationForm,
+    /// A Java image projection failed after retaining its exact declaration context.
+    #[error("Java projection {class} in declaration {declaration}, owner {owner}")]
+    JavaProjection {
+        /// Closed projection-fault class.
+        class: JavaProjectionFaultClass,
+        /// Exact declaration atom text.
+        declaration: JavaProjectionText,
+        /// Exact owner atom text, or the typed absent-owner fact.
+        owner: JavaProjectionOwner,
+    },
+}
+
+/// Closed projection-fault classes emitted by the Java lowering lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaProjectionFaultClass {
+    Image,
+    Depth,
+    Malformed,
+    Primitive,
+    Utf8,
+    SourceUtf8,
+    Utf16,
+    OrphanOwner,
+    ForeignKey,
+    SiblingCapacity,
+    IndexCapacity,
+}
+
+impl core::fmt::Display for JavaProjectionFaultClass {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match self {
+            Self::Image => "Image",
+            Self::Depth => "Depth",
+            Self::Malformed => "Malformed",
+            Self::Primitive => "Primitive",
+            Self::Utf8 => "Utf8",
+            Self::SourceUtf8 => "SourceUtf8",
+            Self::Utf16 => "Utf16",
+            Self::OrphanOwner => "OrphanOwner",
+            Self::ForeignKey => "ForeignKey",
+            Self::SiblingCapacity => "SiblingCapacity",
+            Self::IndexCapacity => "IndexCapacity",
+        };
+        formatter.write_str(name)
+    }
+}
+
+/// Owned UTF-8 atom text retained by a Java projection diagnostic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JavaProjectionText {
+    /// Exact retained atom bytes.
+    bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
+    /// Number of meaningful bytes in `bytes`.
+    byte_len: usize,
+}
+
+impl JavaProjectionText {
+    /// Retains an already image-validated atom without changing its bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut retained = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+        let byte_len = bytes.len().min(MAX_NATIVE_DIAGNOSTIC_BYTES);
+        retained[..byte_len].copy_from_slice(&bytes[..byte_len]);
+        Self {
+            bytes: retained,
+            byte_len,
+        }
+    }
+}
+
+impl core::fmt::Display for JavaProjectionText {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text =
+            core::str::from_utf8(&self.bytes[..self.byte_len]).map_err(|_| core::fmt::Error)?;
+        formatter.write_str(text)
+    }
+}
+
+/// Owner atom fact for a Java declaration, including an honest unnamed owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaProjectionOwner {
+    Named(JavaProjectionText),
+    Absent,
+}
+
+impl core::fmt::Display for JavaProjectionOwner {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Named(text) => text.fmt(formatter),
+            Self::Absent => formatter.write_str("<absent>"),
+        }
+    }
 }
 
 /// Copyable canonical recipe facts retained by compact compiler artifacts.

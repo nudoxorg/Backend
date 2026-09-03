@@ -29,7 +29,10 @@ use compiler_languages_java::{
     BoundImageError, Declaration, DeclarationExtension, DeclarationKind, DocFlavor, ImageError,
     JavaAuthorityImage, JavaImage, JavaRelease, Reference, SymbolRef, TypeFact, TypeKind, TypeRef,
 };
-use compiler_vocabulary::{JavaRelease as ProfileRelease, LoweringUnsupported};
+use compiler_vocabulary::{
+    JavaProjectionFaultClass, JavaProjectionOwner, JavaProjectionText,
+    JavaRelease as ProfileRelease, LoweringUnsupported,
+};
 use sha2::Digest;
 
 use crate::lower::{
@@ -64,19 +67,12 @@ pub(crate) enum JavaCollectError {
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
-/// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership, so every fault
-/// class folds to the same closed terminal as bounded-lane capacity; the
-/// operands remain named here so the collapse site stays typed.
+/// the lane's closed terminal.
 #[derive(Debug)]
 enum ProjectionFault<'image> {
     /// A validated image plane rejected a coordinate during projection.
     Image(
         /// The exact image-plane rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         ImageError,
     ),
     /// The recursive type graph exceeded the producer's documented depth budget.
@@ -84,19 +80,11 @@ enum ProjectionFault<'image> {
     /// A fixed row layout promise was violated: a required atom or child was absent.
     Malformed {
         /// The image type row that broke its closed layout.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         kind: TypeKind,
     },
     /// A primitive spelling outside javac's closed kind vocabulary.
     Primitive {
         /// The rejected spelling bytes.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         spelling: &'image [u8],
     },
     /// An image atom was not valid UTF-8 although the image validated its planes.
@@ -107,34 +95,18 @@ enum ProjectionFault<'image> {
     /// A javac UTF-16 coordinate has no byte offset in the bound source.
     Utf16 {
         /// The requested UTF-16 unit offset.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         units: u32,
         /// The bound source's total UTF-16 length.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         utf16_len: u32,
     },
     /// A reference owner names no executable admitted by this image.
     OrphanOwner {
         /// The unresolved owner symbol coordinate.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         owner: SymbolRef,
     },
     /// A foreign key could not be built for a resolved external target.
     ForeignKey(
         /// The exact foreign-key rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         ForeignKeyFault,
     ),
     /// The bounded overload sibling list overflowed its pooled width.
@@ -143,13 +115,35 @@ enum ProjectionFault<'image> {
     IndexCapacity,
 }
 
-/// Folds one projection fault into the lane's closed terminal. The shared
-/// driver failure match owns the terminal arms and is outside this module's
-/// ownership, so operand-preserving Java terminals stay folded here; adding a
-/// terminal arm is recorded as a lane criticism in the module's review notes.
 fn terminal(fault: ProjectionFault<'_>) -> JavaCollectError {
-    let _ = fault;
-    JavaCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+    terminal_for(fault, &[], None)
+}
+
+fn terminal_for(
+    fault: ProjectionFault<'_>,
+    declaration: &[u8],
+    owner: Option<&[u8]>,
+) -> JavaCollectError {
+    let class = match fault {
+        ProjectionFault::Image(_) => JavaProjectionFaultClass::Image,
+        ProjectionFault::Depth => JavaProjectionFaultClass::Depth,
+        ProjectionFault::Malformed { .. } => JavaProjectionFaultClass::Malformed,
+        ProjectionFault::Primitive { .. } => JavaProjectionFaultClass::Primitive,
+        ProjectionFault::Utf8 => JavaProjectionFaultClass::Utf8,
+        ProjectionFault::SourceUtf8 => JavaProjectionFaultClass::SourceUtf8,
+        ProjectionFault::Utf16 { .. } => JavaProjectionFaultClass::Utf16,
+        ProjectionFault::OrphanOwner { .. } => JavaProjectionFaultClass::OrphanOwner,
+        ProjectionFault::ForeignKey(_) => JavaProjectionFaultClass::ForeignKey,
+        ProjectionFault::SiblingCapacity => JavaProjectionFaultClass::SiblingCapacity,
+        ProjectionFault::IndexCapacity => JavaProjectionFaultClass::IndexCapacity,
+    };
+    JavaCollectError::Lowering(LoweringUnsupported::JavaProjection {
+        class,
+        declaration: JavaProjectionText::from_bytes(declaration),
+        owner: owner.map_or(JavaProjectionOwner::Absent, |bytes| {
+            JavaProjectionOwner::Named(JavaProjectionText::from_bytes(bytes))
+        }),
+    })
 }
 
 /// Folds one bounded-lane fact rejection into the lane's closed terminal.
@@ -1336,7 +1330,13 @@ fn push_member<'source>(
         })?;
     let projected = match declared.semantic_type {
         Some(reference) => {
-            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(terminal)?
+            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(|fault| {
+                terminal_for(
+                    fault,
+                    declared.name.bytes,
+                    declared.owner.map(|owner| owner.bytes),
+                )
+            })?
         }
         None => ProjectedType::leaf(unknown_record(TypeReason::Unannotated, None), None),
     };
@@ -1376,9 +1376,13 @@ fn push_executable<'source>(
         .owner
         .and_then(|owner| names.lookup(owner.bytes))
         .ok_or_else(|| {
-            terminal(ProjectionFault::OrphanOwner {
-                owner: symbol_reference,
-            })
+            terminal_for(
+                ProjectionFault::OrphanOwner {
+                    owner: symbol_reference,
+                },
+                declared.name.bytes,
+                declared.owner.map(|owner| owner.bytes),
+            )
         })?;
 
     // Parameter carriers first so every executable target stays backward.
@@ -1388,7 +1392,13 @@ fn push_executable<'source>(
     let mut signature_count = 0usize;
     for parameter in symbol.parameters {
         let projected =
-            project(facts, image, names, parameter, DEPTH_LIMIT, anchor).map_err(terminal)?;
+            project(facts, image, names, parameter, DEPTH_LIMIT, anchor).map_err(|fault| {
+                terminal_for(
+                    fault,
+                    declared.name.bytes,
+                    declared.owner.map(|owner| owner.bytes),
+                )
+            })?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 kind: TypeKind::None,
@@ -1411,7 +1421,13 @@ fn push_executable<'source>(
     let mut result_ordinal = None;
     if !is_constructor && let Some(return_type) = declared.semantic_type {
         let projected =
-            project(facts, image, names, return_type, DEPTH_LIMIT, anchor).map_err(terminal)?;
+            project(facts, image, names, return_type, DEPTH_LIMIT, anchor).map_err(|fault| {
+                terminal_for(
+                    fault,
+                    declared.name.bytes,
+                    declared.owner.map(|owner| owner.bytes),
+                )
+            })?;
         if !projected.void {
             let name = projected.spelling.ok_or_else(|| {
                 terminal(ProjectionFault::Malformed {
@@ -1442,7 +1458,13 @@ fn push_executable<'source>(
             continue;
         };
         let projected =
-            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(terminal)?;
+            project(facts, image, names, reference, DEPTH_LIMIT, anchor).map_err(|fault| {
+                terminal_for(
+                    fault,
+                    declared.name.bytes,
+                    declared.owner.map(|owner| owner.bytes),
+                )
+            })?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 kind: TypeKind::None,
@@ -1472,7 +1494,13 @@ fn push_executable<'source>(
             declared.name.bytes,
             &mut siblings,
         )
-        .map_err(terminal)?;
+        .map_err(|fault| {
+            terminal_for(
+                fault,
+                declared.name.bytes,
+                declared.owner.map(|owner| owner.bytes),
+            )
+        })?;
     let Some(sibling_ordinals) = siblings.get(..sibling_count) else {
         return Err(terminal(ProjectionFault::IndexCapacity));
     };
@@ -3509,6 +3537,88 @@ mod tests {
     }
 
     #[test]
+    fn orphan_owner_retains_fault_class_declaration_and_owner_atoms() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let owner = fix.atom(b"missing.Owner");
+        let name = fix.atom(b"lost");
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        fix.symbols.push(SymbolRow {
+            owner,
+            name,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name,
+            owner: Some(owner),
+            documentation: None,
+            semantic_type: Some(void),
+            symbol: Some(0),
+        });
+        let error = match lower(&fix, b"class C { void lost() {} }") {
+            Err(error) => error,
+            Ok(_) => return Err(TestError::Missing("orphan owner rejection")),
+        };
+        let TestError::Collect(JavaCollectError::Lowering(cause)) = error else {
+            return Err(TestError::Missing("typed orphan-owner lowering fault"));
+        };
+        assert_eq!(
+            cause.to_string(),
+            "Java projection OrphanOwner in declaration lost, owner missing.Owner"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_capacity_retains_fault_class_declaration_and_owner_atoms() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let name = fix.atom(b"overloaded");
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        for _ in 0..=MAX_REF_LIST_ELEMENTS + 1 {
+            let symbol = u32::try_from(fix.symbols.len())?;
+            fix.symbols.push(SymbolRow {
+                owner: 0,
+                name,
+                parameters: Vec::new(),
+            });
+            fix.declarations.push(DeclarationRow {
+                kind: 11,
+                name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(void),
+                symbol: Some(symbol),
+            });
+        }
+        let error = match lower(&fix, b"class C { void overloaded() {} }") {
+            Err(error) => error,
+            Ok(_) => return Err(TestError::Missing("sibling capacity rejection")),
+        };
+        let TestError::Collect(JavaCollectError::Lowering(cause)) = error else {
+            return Err(TestError::Missing("typed sibling-capacity lowering fault"));
+        };
+        assert_eq!(
+            cause.to_string(),
+            "Java projection SiblingCapacity in declaration overloaded, owner demo.C"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn generic_application_depth_sixty_four_succeeds_and_sixty_five_folds() -> Result<(), TestError>
     {
         let mut fix = Fixture::default();
@@ -3565,8 +3675,12 @@ mod tests {
         deeper.declarations[1].semantic_type = Some(next);
         match lower(&deeper, source) {
             Err(TestError::Collect(JavaCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            ))) => Ok(()),
+                compiler_vocabulary::LoweringUnsupported::JavaProjection {
+                    class: compiler_vocabulary::JavaProjectionFaultClass::Depth,
+                    declaration,
+                    owner: compiler_vocabulary::JavaProjectionOwner::Named(owner),
+                },
+            ))) if declaration.to_string() == "value" && owner.to_string() == "demo.C" => Ok(()),
             Err(error) => Err(error),
             Ok(_) => Err(TestError::Missing("depth sixty-five rejection")),
         }
