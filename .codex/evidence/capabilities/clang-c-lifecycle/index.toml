@@ -163,12 +163,22 @@ result_commit = "28b385f92"
 ingest = "Terra reproduced build_drive 15/15 twice (+1 corpus-gated ignored) and re-read the diff: make compound lines split top-level on ;/&&/||/| with pure-redirection stripping and unchanged typed UnrecognizedCompileCommand law; buck positive path = uquery -> (targets? build --show-output -> read_compdb : ToolPresentUndrivable(evidence)); query/build failures = DriveFailed with combined capture; meson setup gains --wipe on existing build dir; ninja compdb now lists all rules (no c/cxx filter). Redis probe REPRODUCED BY TERRA: 234 TUs, no UnrecognizedCompileCommand. T4 packaging journeys + absent twins NOT delivered (worker reported honestly) -> one falsifier-bound repair card L10b."
 
 [[workers]]
-task = "planned"
+task = "stopped (honest) — product seam found"
 role = "nudox_luna_implementer"
 card = "L10b-packaging (R16 journeys + tool-absent twins; completes L10 T4)"
 card_sha256 = "a94308825e04519c89f979962c74815aa87a45c8b450424351d8300622fe7d73"
 paths = ["compiler/driver/tests/build_drive.rs"]
-baseline = "post-L10 T1-T3"
+baseline = "post-L10 T1-T3 (b142fb136)"
+result_commit = "none — owned path restored; no commit"
+ingest = "Worker stopped honestly: meson packaging journey dies at compile_build_command with Authority('libclang rejected the database translation unit'). TERRA ROOT-CAUSED: L10's bare `ninja -t compdb` emits entries for EVERY edge (link edges file=*.o without -c, phony edges 'meson-internal__test' with empty command, tool-runner edges); read_compdb admits them all as TUs and libclang rejects an object file as C source. Reproduced by Terra with a real meson+ninja probe. Repair card L10c folds the module header's non-compile-selection law into compdb entry admission + finishes L10b J3/J4."
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L10c-compdb (compile-command selection law for compdb entries; repairs L10 ninja regression; delivers meson journey + absent twins)"
+card_sha256 = "ffbbeff5110972170285d6564a1a6cf746af6834e5d4a987fa5040facfe147bd"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
+baseline = "b142fb136"
 
 [[workers]]
 task = "planned"
