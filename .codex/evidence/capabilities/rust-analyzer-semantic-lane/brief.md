@@ -161,3 +161,86 @@ O(rows × occurrences) `owner_of` linear scan; `foreign_rows` dedup cap 64
 (shared MAX_TYPE_CHILDREN bound); type walk depth 16 fold. Each retained
 bound must name its folded reason in closure (R16).
 
+## Wave-4 addendum (mandate 2026-09-03): finish perfect — computed segment, corpus lifecycle, bounded walk
+
+Chief adjudications consumed by this wave (Terra, live tree at commit
+`309acc8f1`):
+
+- **R15 fork RESOLVED by parent**: the schema-2 computed type segment is
+  approved for Rust inferred expression types. The segment is
+  fragment-global (`FactSet::intern_computed_type_row` +
+  `computed_type_child`; `TypeFactLane.computed` in `build_ir`), so no
+  Rust wire-cell change is needed and old fragments keep validating.
+  Precedent: TypeScript mints `ComputedType::TypeOf(TypeQuery::…)` rows
+  owned by fact ordinals with source-spelled children.
+- **Geometry 1024 LANDED**: `MAX_EMISSION_FACTS = 1024`,
+  `MAX_COMPUTED_TYPE_ROWS = 1024` (compiler/driver/lower.rs:42,64). The
+  capacity falsifier is re-bound (`capacity_beyond_1024_…`, 1025
+  declarations → typed rejection); only its doc comment still says "128"
+  (cosmetic; consumed by the shortcut card).
+- **Journal multi-generation + exact terminals LANDED and consumed**:
+  `rust_purl_lifecycle` chains two generations through `DurablePublisher`
+  (`PublicationFacts.generation`, pinned-root change asserted) and seals
+  the index; lane terminals stay `CompileFailure`/`NativeWorkPrimary`.
+
+Terra diagnostics this session (temporary harness, deleted after
+measurement; tree left clean):
+
+- log@0.4.34 `compile_ir` completes in 195–252 s (debug profile) with 333
+  items. Decomposition: rust-analyzer workspace **load ≈ 1.8 s; the lane's
+  own HIR walk ≈ 193 s**. The corpus failure was therefore compound: (a)
+  the deadline is enforced only at driver phase boundaries, never inside
+  the in-process authority walk (bounded-work law hole); (b) the corpus
+  row ran `compile_ir` **and** `compile` — two full analyses — under one
+  180 s deadline; (c) the walk itself is slow on macro-heavy files
+  (`method_calls` descends every token of every macro token tree through
+  `descend_into_macros_no_opaque` + per-result `type_of_expr`;
+  per-path `resolve_path_with_subst`; per-line `span_of_text` windows
+  scans).
+- serde@1.0.229 source truth: lib.rs is a 285-line facade (3 cfg modules,
+  2 macro_rules!, 1 `pub use serde_derive::{…}`). The near-empty IR
+  (entities=1) is honest root-file truth under the lane's wire laws
+  (macro definitions carry no row kind by wire law) **except** the
+  `pub use` re-export chain: `EntityKind::Reexport = 11` exists on the
+  wire and the lane never emits it. Wave-4 adds re-export emission as a
+  lane law (falsifier: serde's `Serialize`/`Deserialize` re-exports
+  decode as Reexport entities).
+
+### Wave-4 laws (non-negotiable, additive to the earlier lists)
+
+- Inferred expression types are emitted **only** when rust-analyzer
+  proves them; unresolved inference produces no computed row (no
+  fabrication, no fallback shape). Computed rows are owned by a pushed
+  fact ordinal; computed children target declared rows or strictly
+  earlier computed rows; capacity bound is the landed 1024 with the
+  exact typed `ComputedRowCapacity` rejection.
+- The authority walk is bounded: the compile request's deadline is
+  enforced at every lane phase boundary inside the walk; exceeding it
+  surfaces the exact typed `DeadlineExceeded` terminal and no partial
+  facts are published.
+- The corpus is 20 real crates: serde + thiserror + ≥17 niche crates
+  chosen by a deterministic blind stride over the local registry cache
+  index (not hand-picked for success), ≥2 workspace members by PURL, ≥1
+  non-standard layout, editions 2015–2024. Every crate chains
+  PURL → locate (kind asserted) → feature unification → authority →
+  compile → validate → publish → journal reopen → index seal → next
+  generation; per-crate wall time is recorded; decoded IR is reviewed
+  against source truth per crate family.
+- Shortcut hunt: every eliminated degradation carries a falsifier
+  (before/after on the same fixture, identical lane counts, time
+  recorded); every retained fold names its exact typed reason; no
+  `#[ignore]` remains in lane tests; the corpus absorbs only the typed
+  `lowering-unsupported` terminal as a recorded outcome.
+
+### Worker sequencing (one builder on `lower/rust.rs` at a time)
+
+1. CARD-W4-DEADLINE: bounded walk + corpus per-call deadlines + 128→1024
+   doc-comment truth. (authority.rs, lower/rust.rs, compile.rs one-line
+   thread, rust_semantic_lane.rs doc, rust_corpus.rs deadline split)
+2. CARD-W4-COMPUTED: inferred expression types → computed segment +
+   re-export emission. (authority.rs, lower/rust.rs, new rust_computed.rs)
+3. CARD-W4-SHORTCUT: perf laws + fold accounting + ignored-test hunt.
+   (lower/rust.rs, authority.rs, new rust_shortcuts.rs)
+4. CARD-W4-CORPUS: full-lifecycle 20-crate corpus + deep review + profile.
+   (rust_corpus.rs + evidence)
+
