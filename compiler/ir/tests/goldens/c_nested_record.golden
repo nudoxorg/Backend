@@ -1,0 +1,4 @@
+// provenance: IrBuilder::reserve_tree/TreeBuilder::commit, Outer with nominal Inner member reference
+pub struct Outer {
+    struct Inner inner;
+};

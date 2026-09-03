@@ -1,0 +1,4 @@
+// provenance: IrBuilder::reserve_tree/TreeBuilder::commit, Callback with int-returning function pointer
+pub struct Callback {
+    int (*callback)(int, void *);
+};

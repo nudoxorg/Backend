@@ -1,0 +1,5 @@
+// provenance: IrBuilder::reserve_tree/TreeBuilder::commit, Color enum with RED and GREEN enumerators
+pub enum Color {
+    RED,
+    GREEN,
+};

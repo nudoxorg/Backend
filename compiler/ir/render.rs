@@ -115,6 +115,12 @@ impl fmt::Display for SignatureDisplay<'_> {
             ItemKind::Namespace => formatter.write_str("namespace ")?,
         }
         write_atom(formatter, self.item.name())?;
+        if matches!(self.item.kind(), ItemKind::Record | ItemKind::Enum)
+            && !self.item.members().is_empty()
+        {
+            write_c_body(formatter, self.ir, self.item)?;
+            return Ok(());
+        }
         if let Some(ty) = self.item.semantic_type() {
             match (self.item.kind(), self.ir.ty(ty)) {
                 (
@@ -150,6 +156,174 @@ impl fmt::Display for SignatureDisplay<'_> {
             }
         }
         Ok(())
+    }
+}
+
+fn write_c_body(output: &mut impl fmt::Write, ir: &Ir, item: ItemView<'_>) -> fmt::Result {
+    output.write_str(" {")?;
+    for member_id in item.members() {
+        let Some(member) = ir.item(*member_id) else {
+            continue;
+        };
+        output.write_str("\n    ")?;
+        if item.kind() == ItemKind::Enum {
+            write_atom(output, member.name())?;
+            output.write_str(",")?;
+        } else if let Some(ty) = member.semantic_type() {
+            write_c_declaration(output, ir, ty, member.name(), 0)?;
+            output.write_str(";")?;
+        }
+    }
+    output.write_str("\n};")
+}
+
+fn write_c_declaration(
+    output: &mut impl fmt::Write,
+    ir: &Ir,
+    id: TypeId,
+    name: &[u8],
+    depth: u8,
+) -> fmt::Result {
+    if depth >= MAX_TYPE_DEPTH {
+        return output.write_str("… ");
+    }
+    let Some(TypeExpr::Concrete(ty)) = ir.ty(id) else {
+        write_c_type(output, ir, id, depth)?;
+        output.write_str(" ")?;
+        return write_atom(output, name);
+    };
+    match ty {
+        ConcreteType::Pointer { target, mutability } => {
+            if mutability == Mutability::Immutable {
+                output.write_str("const ")?;
+            }
+            write_c_type(output, ir, target, depth + 1)?;
+            output.write_str(" *")?;
+            write_atom(output, name)
+        }
+        ConcreteType::Function {
+            parameters,
+            result,
+            variadic,
+            ..
+        } => {
+            if let Some(result) = result {
+                write_c_type(output, ir, result, depth + 1)?;
+            } else {
+                output.write_str("void")?;
+            }
+            output.write_str(" (*")?;
+            write_atom(output, name)?;
+            output.write_str(")(")?;
+            write_c_parameters(output, ir, parameters, variadic, depth + 1)?;
+            output.write_str(")")
+        }
+        ConcreteType::Array { element, length } => {
+            write_c_type(output, ir, element, depth + 1)?;
+            output.write_str(" ")?;
+            write_atom(output, name)?;
+            output.write_str("[")?;
+            if let Some(length) = length {
+                write_atom(output, ir.atom(length).unwrap_or(b"?"))?;
+            }
+            output.write_str("]")
+        }
+        _ => {
+            write_c_type(output, ir, id, depth + 1)?;
+            output.write_str(" ")?;
+            write_atom(output, name)
+        }
+    }
+}
+
+fn write_c_parameters(
+    output: &mut impl fmt::Write,
+    ir: &Ir,
+    parameters: crate::TupleElementListId,
+    variadic: bool,
+    depth: u8,
+) -> fmt::Result {
+    for (index, parameter) in ir
+        .tuple_elements(parameters)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+    {
+        if index != 0 {
+            output.write_str(", ")?;
+        }
+        write_c_type(output, ir, parameter.ty, depth)?;
+    }
+    if variadic {
+        if !ir.tuple_elements(parameters).unwrap_or(&[]).is_empty() {
+            output.write_str(", ")?;
+        }
+        output.write_str("...")?;
+    }
+    Ok(())
+}
+
+fn write_c_type(output: &mut impl fmt::Write, ir: &Ir, id: TypeId, depth: u8) -> fmt::Result {
+    if depth >= MAX_TYPE_DEPTH {
+        return output.write_str("…");
+    }
+    let Some(ty) = ir.ty(id) else {
+        return output.write_str("?");
+    };
+    match ty {
+        TypeExpr::Concrete(ConcreteType::Builtin(builtin)) => {
+            output.write_str(c_builtin_name(builtin))
+        }
+        TypeExpr::Concrete(ConcreteType::Nominal(entity)) => match ir.item(entity) {
+            Some(item) => {
+                output.write_str(match item.kind() {
+                    ItemKind::Record => "struct ",
+                    ItemKind::Enum => "enum ",
+                    _ => "",
+                })?;
+                write_atom(output, item.name())
+            }
+            None => output.write_str("?"),
+        },
+        TypeExpr::Concrete(ConcreteType::Pointer { target, mutability }) => {
+            if mutability == Mutability::Immutable {
+                output.write_str("const ")?;
+            }
+            write_c_type(output, ir, target, depth + 1)?;
+            output.write_str(" *")
+        }
+        TypeExpr::Concrete(ConcreteType::Function { result, .. }) => {
+            if let Some(result) = result {
+                write_c_type(output, ir, result, depth + 1)
+            } else {
+                output.write_str("void")
+            }
+        }
+        TypeExpr::Concrete(ConcreteType::Array { element, .. }) => {
+            write_c_type(output, ir, element, depth + 1)
+        }
+        _ => write_type(output, ir, id, depth),
+    }
+}
+
+const fn c_builtin_name(builtin: BuiltinType) -> &'static str {
+    match builtin {
+        BuiltinType::Void | BuiltinType::Unit => "void",
+        BuiltinType::Bool => "bool",
+        BuiltinType::Char => "char",
+        BuiltinType::I8 => "signed char",
+        BuiltinType::I16 => "short",
+        BuiltinType::I32 => "int",
+        BuiltinType::I64 => "long long",
+        BuiltinType::I128 => "__int128",
+        BuiltinType::U8 => "unsigned char",
+        BuiltinType::U16 => "unsigned short",
+        BuiltinType::U32 => "unsigned int",
+        BuiltinType::U64 => "unsigned long long",
+        BuiltinType::U128 => "unsigned __int128",
+        BuiltinType::F32 => "float",
+        BuiltinType::F64 => "double",
+        _ => "unknown",
     }
 }
 
