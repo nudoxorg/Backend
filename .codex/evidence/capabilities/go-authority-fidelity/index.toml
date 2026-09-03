@@ -113,3 +113,99 @@ state = "planned"
 # read-only by construction; the manager reproduces every accepted finding
 # before adoption; worker checkouts run in dedicated git worktrees; card
 # digests and returned commits are recorded here per dispatch.
+
+[[workers]]
+task = "W8-constants-projection"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/lower/go.rs (value + tests)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "41d1820a + Terra review 1684cf4c (const-group verbatim)"
+retention = "integrated"
+
+[[workers]]
+task = "W9-trunk-recalibration"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/lower/{go,java,csharp,tests}.rs (test modules only)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "82b5e939"
+retention = "integrated"
+
+[[workers]]
+task = "W9b-method-set-merge"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/lower/go.rs (type_family/interface_methods + fixture)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "aff04f47"
+retention = "integrated"
+
+[[workers]]
+task = "W10-render-goldens"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/tests/go_render.rs"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "2533417a + Terra fmt 84d5b916"
+retention = "integrated"
+
+[[workers]]
+task = "W11c-oracle-owner-resolution"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/languages/go/oracle/image.go", "tests fixtures/protocol"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "7ec4890c"
+retention = "integrated"
+
+[[workers]]
+task = "W11d-reader-reference-order"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/languages/go/image.rs (validate_references)", "tests/protocol.rs"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "e6799ed2"
+retention = "integrated"
+
+[[workers]]
+task = "W11e-alias-registration"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/lower/go.rs (alias/collect + tests)"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "dd1eb38a"
+retention = "integrated"
+
+[[workers]]
+task = "W11-purl-lifecycle"
+role = "luna"
+config_path = ".opencode/skills/implement-rust-checkpoint/SKILL.md"
+model = "glm-5.3-flash"
+effort = "max"
+sandbox = "workspace (shared repo, owned paths below)"
+paths = ["compiler/driver/tests/go_purl_lifecycle.rs", "compiler/driver/tests/go_support/"]
+card_sha256 = "recorded-at-dispatch"
+result_commit = "ad0b90ed + 00f9b1fa (three-module journeys)"
+retention = "integrated"
