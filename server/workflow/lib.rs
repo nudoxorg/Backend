@@ -28,7 +28,7 @@ pub use recovery::Recovery;
 pub use reduce::{
     Effect, EffectAction, Phase, PhaseName, PriorFacts, Reduction, ReductionError,
     WorkflowDisposition, WorkflowProbeEvent, WorkflowRejection, WorkflowState, reduce,
-    reduce_with_probe,
+    reduce_chained, reduce_with_probe,
 };
 
 #[cfg(test)]

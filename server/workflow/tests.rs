@@ -10,8 +10,8 @@ use thiserror::Error;
 use crate::{
     CapabilityDomain, CommitError, ConfigurationDomain, Effect, EffectAction, EventKind, EventName,
     FailureCode, LogConfigError, MemoryWorkflowLog, Phase, PhaseName, PriorFacts, Reduction,
-    ReductionError, StageId, StageInput, StageKey, WorkflowEvent, WorkflowState, WorkflowVersion,
-    reduce,
+    ReductionError, ReplayError, StageId, StageInput, StageKey, WorkflowEvent, WorkflowRecord,
+    WorkflowState, WorkflowVersion, reduce, replay_stream,
 };
 
 #[derive(Debug, Error)]
@@ -306,6 +306,52 @@ fn foreign_key_and_version_are_rejected_exactly() {
             observed: WorkflowVersion::from(2),
         })
     );
+}
+
+#[test]
+fn replay_accepts_two_committed_chained_generations() {
+    let first_key = key();
+    let second_key = StageKey::from([0x55; 32]);
+    let first_output = ContentId::<ObjectDomain>::from_digest([9; 32]);
+    let second_output = ContentId::<ObjectDomain>::from_digest([10; 32]);
+    let kinds = |key, output| {
+        [
+            event(key, EventKind::Requested),
+            event(key, EventKind::Admitted),
+            event(key, EventKind::Staged { output }),
+            event(key, EventKind::Verified { output }),
+            event(key, EventKind::PublicationStarted { output }),
+            event(key, EventKind::Published { output }),
+        ]
+        .map(WorkflowRecord::from)
+    };
+    let records = kinds(first_key, first_output)
+        .into_iter()
+        .chain(kinds(second_key, second_output))
+        .map(Ok::<_, core::convert::Infallible>);
+    assert!(matches!(
+        replay_stream(records),
+        Ok(recovery) if recovery.state == keyed(second_key, Phase::Published(second_output))
+    ));
+}
+
+#[test]
+fn replay_rejects_non_requested_mismatched_key_exactly() {
+    let expected = key();
+    let observed = StageKey::from([0x55; 32]);
+    let records = [
+        WorkflowRecord::from(event(expected, EventKind::Requested)),
+        WorkflowRecord::from(event(observed, EventKind::Admitted)),
+    ]
+    .into_iter()
+    .map(Ok::<_, core::convert::Infallible>);
+    assert!(matches!(
+        replay_stream(records),
+        Err(ReplayError::Reduction(ReductionError::StageKeyMismatch {
+            expected: actual_expected,
+            observed: actual_observed,
+        })) if actual_expected == expected && actual_observed == observed
+    ));
 }
 
 fn assert_cases(key: StageKey, cases: impl IntoIterator<Item = ReductionCase>) {

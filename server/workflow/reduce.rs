@@ -225,6 +225,27 @@ pub fn reduce(state: WorkflowState, event: WorkflowEvent) -> Result<Reduction, R
     }
 }
 
+/// Applies the publication chaining rule: a `Requested` event on a still-keyed
+/// state opens the next generation chain.
+pub fn reduce_chained(
+    state: WorkflowState,
+    event: WorkflowEvent,
+) -> Result<Reduction, ReductionError> {
+    match reduce(state, event) {
+        Ok(reduction) => Ok(reduction),
+        Err(error)
+            if matches!(event.kind, EventKind::Requested)
+                && matches!(state, WorkflowState::Keyed { .. }) =>
+        {
+            match reduce(WorkflowState::New, event) {
+                Ok(reduction) => Ok(reduction),
+                Err(_) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Applies one event and lazily records its low-cardinality transition classification.
 pub fn reduce_with_probe<Observation>(
     state: WorkflowState,
