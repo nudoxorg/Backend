@@ -7,8 +7,6 @@ use std::{
 };
 use thiserror::Error;
 
-pub const VERSION: &str = "1.17.0";
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("malformed PURL: {input}")]
@@ -39,7 +37,7 @@ pub enum Error {
     Entry { kind: u8 },
     #[error("tar path rejected: {path}")]
     Path { path: String },
-    #[error("required six.py was not found")]
+    #[error("required primary module was not found")]
     MissingSource,
     #[error("fixture filesystem operation failed: {source}")]
     Io {
@@ -68,7 +66,7 @@ impl Purl {
                 input: input.into(),
             });
         };
-        if parts.next().is_some() || version != VERSION {
+        if parts.next().is_some() || version.is_empty() {
             return Err(Error::Purl {
                 input: input.into(),
             });
@@ -131,17 +129,16 @@ pub fn locate(purl: &Purl) -> Result<(String, [u8; 32], String), Error> {
             source,
         })?;
     let marker = format!("https://files.pythonhosted.org/packages/");
+    let needle = format!("{}-{}", purl.name, purl.version).to_ascii_lowercase();
     let mut sdist = None;
     let mut sdist_digest = None;
     let mut wheel = None;
     for quoted in text.split('"') {
-        if quoted.starts_with(&marker)
-            && quoted.ends_with(".tar.gz")
-            && quoted.contains("six-1.17.0")
-        {
+        let lowered = quoted.to_ascii_lowercase();
+        if quoted.starts_with(&marker) && quoted.ends_with(".tar.gz") && lowered.contains(&needle) {
             sdist = Some(quoted.to_owned());
         }
-        if quoted.ends_with(".whl") && quoted.contains("six-1.17.0") {
+        if quoted.ends_with(".whl") && lowered.contains(&needle) {
             wheel = Some(quoted.to_owned());
         }
     }
@@ -365,23 +362,32 @@ fn pax_path_override(payload: &[u8]) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-pub fn find_six(root: &Path) -> Result<PathBuf, Error> {
-    fn walk(path: &Path) -> io::Result<Option<PathBuf>> {
+/// Locates one primary module by the exact trailing path components
+/// (`["six.py"]`, `["idna", "core.py"]`, `["yaml", "__init__.py"]`), so
+/// src-layout and package-dir sdists both resolve without guessing.
+pub fn find_primary(root: &Path, suffix: &[&str]) -> Result<PathBuf, Error> {
+    fn walk(path: &Path, suffix: &[&str]) -> io::Result<Option<PathBuf>> {
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
-            if path.file_name().and_then(|n| n.to_str()) == Some("six.py") {
+            let matches = path
+                .components()
+                .rev()
+                .zip(suffix.iter().rev())
+                .all(|(component, wanted)| component.as_os_str() == *wanted)
+                && path.components().count() >= suffix.len();
+            if matches {
                 return Ok(Some(path));
             }
-            if path.is_dir() {
-                if let Some(found) = walk(&path)? {
-                    return Ok(Some(found));
-                }
+            if path.is_dir()
+                && let Some(found) = walk(&path, suffix)?
+            {
+                return Ok(Some(found));
             }
         }
         Ok(None)
     }
-    walk(root)
+    walk(root, suffix)
         .map_err(|source| Error::Io { source })?
         .ok_or(Error::MissingSource)
 }
@@ -405,7 +411,6 @@ mod tests {
     use super::{Error, unpack};
     use flate2::Compression;
     use flate2::write::GzEncoder;
-    use std::path::Path;
 
     /// Wraps one crafted tar stream in the gzip envelope `unpack` requires.
     fn gz(tar: &[u8]) -> Vec<u8> {
