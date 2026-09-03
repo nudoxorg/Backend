@@ -5,13 +5,13 @@
 //! boundary as the smaller lifecycle tests; it is not a second compiler driver.
 
 use compiler_driver::{
-    compile_build_command, discover_and_drive, BuildDriveFailure, DrivenTranslationUnit,
-    ResolvedToolchain,
+    BuildDriveFailure, DrivenTranslationUnit, ResolvedToolchain, compile_build_command,
+    discover_and_drive,
 };
 use compiler_ir::{EntityKind, FragmentView};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
-    open_published, publish_compiled, OpenPublicationScratch, PublicationScratch, PublishControl,
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use heart_identity::ContentId;
@@ -460,7 +460,13 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
                     .current_dir(root)
                     .args(["build", "//cpp/hello_world:main"])
                     .output()?;
-                return Ok(format!("| {} | {} | 0 | ToolPresentUndrivable({tool}), evidence bytes={} | — | — | buck2 build success={} |",row.name,row.system,evidence.len(),build.status.success()));
+                return Ok(format!(
+                    "| {} | {} | 0 | ToolPresentUndrivable({tool}), evidence bytes={} | — | — | buck2 build success={} |",
+                    row.name,
+                    row.system,
+                    evidence.len(),
+                    build.status.success()
+                ));
             }
             Err(e) => return Err(format!("{}: {e}", row.name).into()),
         }
@@ -517,9 +523,11 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
     assert_ne!(first[driver_index].bytes, second[driver_index].bytes);
     publish(&second, &reopened, &artifacts)?;
     let final_bytes = opened(&reopened, &artifacts, second.len())?;
-    assert!(final_bytes
-        .iter()
-        .all(|b| FragmentView::validate(b).is_ok()));
+    assert!(
+        final_bytes
+            .iter()
+            .all(|b| FragmentView::validate(b).is_ok())
+    );
     let mut old = vec![0; 32 << 20];
     let old_store = ImmutableArtifactStore::new(&artifacts)?;
     old_store.open(old_fact, &mut old)?;
@@ -558,7 +566,23 @@ fn run_row(root: &Path, row: Row) -> Result<String, Box<dyn std::error::Error>> 
     let _ = slow2;
     let _ = includes;
     let _ = reopened.shutdown();
-    Ok(format!("| {} | {} | {} | records={} enums={} aliases={} functions={}; occurrences={} includes=decoded diagnostics=unavailable | {} | {}us ({}) | row={}us | truth({})={} delta=main-file decoded |",row.name,row.system,second.len(),counts[0],counts[1],counts[2],counts[3],occ,facts,slow.1,slow.0.display(),total, row.truth,truth(root)?))
+    Ok(format!(
+        "| {} | {} | {} | records={} enums={} aliases={} functions={}; occurrences={} includes=decoded diagnostics=unavailable | {} | {}us ({}) | row={}us | truth({})={} delta=main-file decoded |",
+        row.name,
+        row.system,
+        second.len(),
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3],
+        occ,
+        facts,
+        slow.1,
+        slow.0.display(),
+        total,
+        row.truth,
+        truth(root)?
+    ))
 }
 
 #[test]
@@ -567,7 +591,9 @@ fn corpus_review_is_opt_in_and_reproducible() -> Result<(), Box<dyn std::error::
         println!("corpus harness disabled: set NUDOX_CORPUS_DIR to run the twenty rows");
         return Ok(());
     };
-    let mut report=String::from("# Clang corpus review\n\n| project | build system | TUs | decoded facts | type facts | slowest TU | row wall time | source truth / delta |\n|---|---|---:|---|---:|---|---:|---|\n");
+    let mut report = String::from(
+        "# Clang corpus review\n\n| project | build system | TUs | decoded facts | type facts | slowest TU | row wall time | source truth / delta |\n|---|---|---:|---|---:|---|---:|---|\n",
+    );
     for row in ROWS {
         let path = root.join(row.root);
         let line = if path.is_dir() {

@@ -1263,3 +1263,77 @@ fn foreign_virtual_override_is_recorded_schema_two_deferral() -> Result<(), Test
     drop(view);
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }
+
+/// A translation unit whose include spellings exceed the shared emission
+/// lane's pooled-list element bound must fail with the exact typed rejection
+/// (ordinal, cause `RefListElements`), never the cause-erased unsupported
+/// declaration terminal.  Sixteen includes stay representable; seventeen
+/// cross the pooled row and name the wall precisely.
+#[test]
+fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), TestError> {
+    use compiler_driver::{DatabaseCompileFailure, compile_database_translation_unit};
+    use std::path::Path;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{nonce}-{serial}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(work.join("include"))
+        .map_err(|_| TestError::Check("create include dir"))?;
+    for index in 0..17u32 {
+        std::fs::write(
+            work.join("include").join(format!("header_{index}.h")),
+            format!("int included_{index};\n"),
+        )
+        .map_err(|_| TestError::Check("write header"))?;
+    }
+    let mut source = String::new();
+    for index in 0..17u32 {
+        source.push_str(&format!("#include \"header_{index}.h\"\n"));
+    }
+    source.push_str("int included_total;\n");
+    let source = source.into_bytes();
+    std::fs::write(work.join("src.c"), &source).map_err(|_| TestError::Check("write source"))?;
+    let arguments = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"src.c\",\"arguments\":[\"clang\",\"-I\",\"include\",\"-c\",\"src.c\"]}}]",
+        work.display()
+    );
+    std::fs::write(work.join("compile_commands.json"), arguments)
+        .map_err(|_| TestError::Check("write database"))?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0xa5_u8; 4 << 20];
+    let toolchain = ResolvedToolchain::from_identity(
+        NativeTool::Clang,
+        Path::new("/usr/bin/clang"),
+        ContentId::from_canonical_bytes(b"clang-lane-pooled-bound"),
+    )
+    .map_err(|_| TestError::Check("toolchain"))?;
+    let result = compile_database_translation_unit(
+        &work,
+        Path::new("src.c"),
+        LanguageProfile::C(CStandard::C23),
+        Stage::LowerIr,
+        &source,
+        toolchain,
+        &cancelled,
+        &mut output,
+    );
+    match result {
+        Err(DatabaseCompileFailure::Rejected { rejected, .. }) => {
+            if rejected.cause != compiler_driver::FactFault::RefListElements {
+                return Err(TestError::Check("wrong pooled-bound cause"));
+            }
+        }
+        Err(other) => return Err(TestError::Check("wrong pooled-bound terminal")),
+        Ok(_) => return Err(TestError::Check("pooled-bound wall admitted")),
+    }
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestError::Check("rejected compile touched the output"));
+    }
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
+}

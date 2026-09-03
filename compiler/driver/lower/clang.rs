@@ -136,10 +136,18 @@ fn terminal(fault: ProjectionFault) -> ClangCollectError {
     ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
 
-/// Folds one bounded-lane fact rejection into the lane's closed terminal.
-fn lane_terminal(fault: FactFault) -> ClangCollectError {
-    let _ = fault;
-    ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+/// Folds one bounded-lane fact rejection into the exact typed rejection. The
+/// snapshot preserves the ordinal the fact would have occupied, the rejected
+/// name's byte length when the fold site knows it (zero when the rejected
+/// object carries no name), and the full typed cause — the same operands the
+/// shared lane retains for direct fact rejections. A cause-erased terminal
+/// here would misreport a capacity wall as an unsupported declaration.
+fn lane_terminal(facts: &FactSet, name_len: usize, fault: FactFault) -> ClangCollectError {
+    ClangCollectError::Rejected(FactRejection {
+        fact: facts.len(),
+        name_len,
+        cause: fault,
+    })
 }
 
 /// Admits one fact and returns its proven backward ordinal.
@@ -822,7 +830,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             };
             self.facts
                 .push_type_parameter(name, None, None)
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(&self.facts, name.len(), fault))?;
             if let Some(identity) = declaration.identity {
                 self.template_parameters.push((identity, name));
             }
@@ -1598,10 +1606,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Some(spelling) = include_spelling(self.source, include) else {
                 continue;
             };
-            let atom = self.facts.intern_atom(spelling).map_err(lane_terminal)?;
+            let atom = self
+                .facts
+                .intern_atom(spelling)
+                .map_err(|fault| lane_terminal(&self.facts, spelling.len(), fault))?;
             atoms.push(atom);
         }
-        let interned = self.facts.intern_atom_list(&atoms).map_err(lane_terminal)?;
+        let interned = self
+            .facts
+            .intern_atom_list(&atoms)
+            .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
         self.includes = Some(interned);
         Ok(interned)
     }
@@ -1655,7 +1669,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         span,
                     },
                 )
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
         }
         // Schema 1 has no identity-keyed foreign occurrence target.  A
         // foreign override is therefore deliberately deferred to the
@@ -1696,7 +1710,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         span,
                     },
                 )
-                .map_err(lane_terminal)?;
+                .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
         }
         Ok(())
     }
@@ -1777,7 +1791,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 };
                 self.facts
                     .push_doc(ordinal, fragment)
-                    .map_err(lane_terminal)?;
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
             }
         }
         Ok(())
