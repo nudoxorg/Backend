@@ -495,6 +495,40 @@ impl<'source> FactSet<'source> {
         Ok(row)
     }
 
+    /// Interns an anonymous row for a fact reserved immediately after the
+    /// current fact prefix. The owner is admitted before that fact exists;
+    /// the caller must push it next.
+    pub(super) fn intern_reserved_anchor_type_row(
+        &mut self,
+        reserved_owner: u32,
+        record: SemanticTypeRecord<'source>,
+    ) -> Result<u32, FactFault> {
+        debug_assert_eq!(reserved_owner, self.len as u32);
+        if reserved_owner != self.len as u32 {
+            return Err(FactFault::RefTarget {
+                lane: "reserved_type_rows",
+                raw: reserved_owner,
+                fact_count: self.len,
+            });
+        }
+        if self.anonymous_rows == MAX_ANONYMOUS_TYPE_ROWS {
+            return Err(FactFault::TypeRowCapacity);
+        }
+        let child_count = self.anonymous_child_pending;
+        record
+            .validate(child_count)
+            .map_err(FactFault::TypeRecord)?;
+        let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
+        let index = self.anonymous_rows;
+        self.anonymous_records[index] = record;
+        self.anonymous_owners[index] = reserved_owner;
+        self.anonymous_child_starts[index] = self.anonymous_children_total as u32;
+        self.anonymous_child_counts[index] = child_count as u8;
+        self.anonymous_rows += 1;
+        self.anonymous_child_pending = 0;
+        Ok(row)
+    }
+
     /// Appends one ordered child to the anonymous row currently being built.
     /// The target must name an already-interned anonymous row or an
     /// already-pushed fact; the lane rejects forward coordinates.
@@ -695,7 +729,10 @@ impl<'source> FactSet<'source> {
         default: Option<u32>,
     ) -> Result<u32, FactFault> {
         for raw in constraint.iter().chain(default.iter()) {
-            if *raw >= self.len as u32 {
+            let fact = *raw < self.len as u32;
+            let anonymous = *raw >= ANONYMOUS_ROW_BASE
+                && *raw - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32;
+            if !fact && !anonymous {
                 return Err(FactFault::RefTarget {
                     lane: "type_parameters",
                     raw: *raw,
@@ -1461,6 +1498,11 @@ pub(super) fn admit<'source, 'output>(
             target + anonymous_rows as u32
         }
     };
+    let mut type_parameters = facts.type_parameters;
+    for parameter in type_parameters[..facts.type_parameter_len].iter_mut() {
+        parameter.constraint = parameter.constraint.map(&mut remap);
+        parameter.default = parameter.default.map(&mut remap);
+    }
     let mut type_pooled_cursor = 0_usize;
     for (index, record) in facts.anonymous_records[..anonymous_rows].iter().enumerate() {
         let child_count = usize::from(facts.anonymous_child_counts[index]);
@@ -1676,7 +1718,7 @@ pub(super) fn admit<'source, 'output>(
         };
     }
     let extension_pools = ExtensionPoolsLane {
-        type_parameters: &facts.type_parameters[..facts.type_parameter_len],
+        type_parameters: &type_parameters[..facts.type_parameter_len],
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],
         type_lists: &pooled_type_lists[..facts.type_list_len],
         entity_lists: &pooled_entity_lists[..facts.entity_list_len],
