@@ -42,6 +42,11 @@ pub enum SemanticAuthorityInput<'source> {
         /// Validated checker facts produced for this source.
         report: &'source compiler_languages_typescript::Report,
     },
+    /// Borrowed Python checker report bound to the exact request source.
+    Python {
+        /// Validated checker facts produced for this source.
+        report: &'source compiler_languages_python::CheckerReport,
+    },
 }
 
 /// Deadline and cancellation facts borrowed by one bounded native invocation.
