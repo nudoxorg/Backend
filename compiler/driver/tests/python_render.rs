@@ -433,7 +433,6 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
 }
 
 #[test]
-#[ignore = "blocked by trunk ForwardReference in lower.rs for multi-structural-class modules; cross-lane counterexample recorded in .codex/evidence/capabilities/python-type-authority/"]
 fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError> {
     let executable = std::env::var_os("PATH")
         .and_then(|path| {
@@ -590,7 +589,6 @@ fn checker_inference_is_rendered_when_pyrefly_is_available() -> Result<(), TestE
 }
 
 #[test]
-#[ignore = "blocked by trunk ForwardReference in lower.rs for multi-structural-class modules; cross-lane counterexample recorded in .codex/evidence/capabilities/python-type-authority/"]
 fn python_fragment_forward_reference_structural_rows_validate() -> Result<(), TestError> {
     let bytes = compile_fragment(FORWARD_REFERENCE_SOURCE)?;
     let decoded = FragmentView::validate(&bytes).map_err(|_| TestError::Compile("validate"))?;

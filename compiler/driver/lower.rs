@@ -488,7 +488,8 @@ impl<'source> FactSet<'source> {
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
         self.anonymous_owners[index] = owner;
-        self.anonymous_child_starts[index] = self.anonymous_children_total as u32;
+        self.anonymous_child_starts[index] =
+            (self.anonymous_children_total - child_count as usize) as u32;
         self.anonymous_child_counts[index] = child_count as u8;
         self.anonymous_rows += 1;
         self.anonymous_child_pending = 0;
@@ -522,7 +523,8 @@ impl<'source> FactSet<'source> {
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
         self.anonymous_owners[index] = reserved_owner;
-        self.anonymous_child_starts[index] = self.anonymous_children_total as u32;
+        self.anonymous_child_starts[index] =
+            (self.anonymous_children_total - child_count as usize) as u32;
         self.anonymous_child_counts[index] = child_count as u8;
         self.anonymous_rows += 1;
         self.anonymous_child_pending = 0;
