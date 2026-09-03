@@ -674,18 +674,23 @@ fn array<'image>(
             .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
     }
     let component = project(facts, image, names, cursor, depth - 1, anchor)?;
-    let nominal = match component.record.nominal {
-        Some(NominalRef::Local(target)) => Some(target.raw),
-        _ => None,
-    };
-    let committed = ARITY_SPELLINGS
-        .get(arity.saturating_sub(1))
-        .zip(nominal)
-        .and_then(|(spelling, ordinal)| {
-            ProjectedType::leaf(array_record(spelling), component.spelling).child(ordinal)
-        });
-    if let Some(projected) = committed {
-        return Ok(projected);
+    if component.record.nominal.is_some() {
+        if let Some(spelling) = ARITY_SPELLINGS.get(arity.saturating_sub(1)) {
+            let target = intern_row(
+                facts,
+                anchor,
+                ProjectedType::leaf(
+                    unknown_record(TypeReason::NoIrRepresentation, component.spelling),
+                    component.spelling,
+                ),
+            )?;
+            let projected = ProjectedType::leaf(array_record(spelling), component.spelling)
+                .child(target)
+                .ok_or(ProjectionFault::Malformed {
+                    kind: TypeKind::Array,
+                })?;
+            return Ok(projected);
+        }
     }
     let spelling = ARITY_SPELLINGS
         .get(arity - 1)
@@ -2454,9 +2459,10 @@ mod tests {
         )?;
         let view = FragmentView::validate(&bytes)?;
         // Anonymous wire rows: 0 outer-base List, 1 bound-base List,
-        // 2 String, 3 bound Apply, 4 covariant Wildcard over the Apply;
-        // the outer List Apply rides the value fact. Facts 5 Cafe, 6 value,
-        // 7 Node, 8 both (Intersection over the Node array row and Node).
+        // 2 String, 3 bound Apply, 4 covariant Wildcard over the Apply,
+        // 5 Node nominal, and 6 its Array wrapper. The outer List Apply
+        // rides the value fact. Facts 7 Cafe, 8 Node, 9 value, 10 both
+        // (Intersection over the Node array row and Node).
         let wildcard = row(&view, 4)?;
         if wildcard.record.tag != SemanticTypeTag::Wildcard
             || wildcard.record.payload0 != VARIANCE_COVARIANT
@@ -2465,10 +2471,10 @@ mod tests {
         {
             return Err(TestError::Missing("wildcard structural bound"));
         }
-        let intersection = row(&view, 8)?;
+        let intersection = row(&view, 10)?;
         if intersection.record.tag != SemanticTypeTag::Intersection
             || intersection.record.children.length != 2
-            || row(&view, 7)?.record.tag != SemanticTypeTag::Array
+            || row(&view, 6)?.record.tag != SemanticTypeTag::Array
         {
             return Err(TestError::Missing("intersection structural member"));
         }
@@ -2739,22 +2745,23 @@ mod tests {
             b"class Cafe { Cafe<Node> pair; Node[] many; String named; }",
         )?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 Cafe, 1 Node, 2 pair, 3 many, 4 named.
-        let pair_row = row(&view, 2)?;
+        // Anonymous rows: 0 Node nominal, 1 Node array. Facts: 2 Cafe,
+        // 3 Node, 4 pair, 5 many, 6 named.
+        let pair_row = row(&view, 3)?;
         if pair_row.record.tag != SemanticTypeTag::Apply
             || pair_row.record.children.length != 2
             || pair_row.record.children.start != 0
         {
             return Err(TestError::Missing("generic application row"));
         }
-        let array = row(&view, 3)?;
+        let array = row(&view, 4)?;
         if array.record.tag != SemanticTypeTag::Array
             || array.record.text != Some(b"[]".as_slice())
             || array.record.children.length != 1
         {
             return Err(TestError::Missing("array arity row"));
         }
-        let foreign_row = row(&view, 4)?;
+        let foreign_row = row(&view, 5)?;
         if foreign_row.record.tag != SemanticTypeTag::Unknown
             || foreign_row.record.text != Some(b"java.lang.String".as_slice())
         {
