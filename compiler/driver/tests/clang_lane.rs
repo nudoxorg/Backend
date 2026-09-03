@@ -2,9 +2,8 @@
 //! interleave, so these assertions locate rows by their decoded content.
 
 use compiler_driver::{
-    AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
-    CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
-    compile_ir,
+    compile, compile_ir, AuthorityFailure, CompileControl, CompileFailure, CompileOutput,
+    CompileRequest, CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
 };
 use compiler_ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
@@ -106,13 +105,22 @@ fn skip_name(bytes: &[u8], at: &mut usize) -> Result<(), TestError> {
     Ok(())
 }
 
+fn type_fact_rows(bytes: &[u8]) -> Result<usize, TestError> {
+    let declared = usize::try_from(word(bytes, 0)?)
+        .map_err(|_| TestError::Check("declared row count overflow"))?;
+    let computed = usize::try_from(word(bytes, 4)?)
+        .map_err(|_| TestError::Check("computed row count overflow"))?;
+    declared
+        .checked_add(computed)
+        .ok_or(TestError::Check("row count overflow"))
+}
+
 fn child_target(view: &FragmentView<'_>) -> Result<u32, TestError> {
     let payload = view
         .type_fact_payload()
         .ok_or(TestError::Check("missing type facts"))?;
-    let count =
-        usize::try_from(word(payload, 0)?).map_err(|_| TestError::Check("row count overflow"))?;
-    let mut at = 4_usize;
+    let count = type_fact_rows(payload)?;
+    let mut at = 8_usize;
     for _ in 0..count {
         at = at
             .checked_add(13)
@@ -129,7 +137,8 @@ fn child_target(view: &FragmentView<'_>) -> Result<u32, TestError> {
             .checked_add(8)
             .ok_or(TestError::Check("offset overflow"))?;
     }
-    if word(payload, at)? == 0 {
+    let child_count = word(payload, at)?;
+    if child_count == 0 {
         return Err(TestError::Check("missing child"));
     }
     at += 4;
@@ -364,9 +373,8 @@ fn children<'a>(
     let payload = view
         .type_fact_payload()
         .ok_or(TestError::Check("missing type payload"))?;
-    let count =
-        usize::try_from(word(payload, 0)?).map_err(|_| TestError::Check("row count overflow"))?;
-    let mut at = 4;
+    let count = type_fact_rows(payload)?;
+    let mut at = 8;
     for _ in 0..count {
         at += 13;
         skip_name(payload, &mut at)?;
@@ -378,7 +386,9 @@ fn children<'a>(
             _ => return Err(TestError::Check("invalid nominal cell")),
         } + 8;
     }
-    let child_base = at + 4;
+    let child_base = at
+        .checked_add(4)
+        .ok_or(TestError::Check("offset overflow"))?;
     let start = usize::try_from(row.record.children.start)
         .map_err(|_| TestError::Check("child start overflow"))?;
     let length = usize::try_from(row.record.children.length)
@@ -454,9 +464,9 @@ fn empty_source_is_a_typed_no_declaration_terminal() -> Result<(), TestError> {
     }
     removed.map_err(|_| TestError::Check("remove native work"))?;
     match outcome {
-        Err(TestError::Lowering(compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration)) => {
-            Ok(())
-        }
+        Err(TestError::Lowering(
+            compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+        )) => Ok(()),
         Err(other) => Err(other),
         Ok(_) => Err(TestError::Check("empty source was admitted as a fragment")),
     }
@@ -490,12 +500,21 @@ fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<()
         for (owner, target_name) in [(2, &b"B"[..]), (3, &b"A"[..])] {
             let row = facts
                 .iter()
-                .find(|row| row.owner.raw == owner && row.record.children.length == 1)
+                .find(|row| {
+                    row.owner.raw == owner
+                        && row.record.tag == SemanticTypeTag::Primitive
+                        && row.record.payload0 == u32::from(PrimitiveShape::MutPointer)
+                        && row.record.payload1 == 0
+                        && row.record.children.length == 1
+                })
                 .ok_or(TestError::Check("pointer row"))?;
             let child = children(view, row)?
                 .into_iter()
                 .next()
                 .ok_or(TestError::Check("pointer child"))?;
+            if !child.2.is_empty() {
+                return Err(TestError::Check("pointer child name"));
+            }
             let target = got
                 .iter()
                 .position(|(name, _)| *name == target_name)
@@ -761,6 +780,7 @@ fn anonymous_struct_names_its_field_child() -> Result<(), TestError> {
             .ok_or(TestError::Check("anonymous row"))?;
         if row.record.tag != SemanticTypeTag::AnonymousRecord
             || row.record.payload0 != 0
+            || row.record.payload1 != 0
             || row.record.children.length != 1
         {
             return Err(TestError::Check("anonymous record"));
@@ -991,6 +1011,9 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
             .collect();
         if pointers.len() != 1 {
             return Err(TestError::Check("mutable pointer row count"));
+        }
+        if pointers[0].record.payload1 != 0 {
+            return Err(TestError::Check("mutable pointer payload"));
         }
         let target = child_target(&view)?;
         let anchor = rows
