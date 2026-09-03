@@ -10,6 +10,8 @@
 //! whereas these children need ordinary stdout capture and exit-status observation.
 //! JSON compilation databases follow the same law: only entries with `-c` and a C/C++ source
 //! suffix are translation units; zero-argument and other entries are adapter selection.
+//! JSON strings preserve raw UTF-8 by validating the accumulated bytes once; `\uXXXX` escapes
+//! remain a typed JSON rejection rather than being decoded or approximated.
 //!
 //! The make compiler-cell transport list is closed: `clang`, `clang++`, `cc`, `c++`, `gcc`, `g++`,
 //! `c99`, and `c11`, plus cross-toolchain names ending in `-gcc` or `-g++`.  `ccache` and `sccache`
@@ -459,42 +461,55 @@ fn parse_make(bytes: &[u8], root: &Path) -> Result<Vec<DrivenTranslationUnit>, B
     // directory` around every sub-make; the commands a sub-make echoes are
     // relative to that directory. Tracking the announced directory is part
     // of transporting make's own output, not interpreting the build.
-    let mut directory = root.to_path_buf();
+    let mut directories = vec![root.to_path_buf()];
     for line in text.lines() {
         if let Some(entered) = entering_directory(line) {
-            directory = PathBuf::from(entered);
+            directories.push(PathBuf::from(entered));
             continue;
         }
         if line.contains(": Leaving directory") {
-            directory = root.to_path_buf();
+            if directories.len() > 1 {
+                directories.pop();
+            }
             continue;
         }
         for command in shell_commands(line) {
-            let argv = shell_words(&command)
-                .into_iter()
-                .filter(|arg| !is_pure_redirection(arg))
-                .collect::<Vec<_>>();
+            let words = shell_words(&command);
+            let mut argv = Vec::with_capacity(words.len());
+            let mut words = words.into_iter();
+            while let Some(arg) = words.next() {
+                if is_pure_redirection(&arg) {
+                    if matches!(arg.as_str(), ">" | "2>" | "<" | "1>") {
+                        let _ = words.next();
+                    }
+                } else {
+                    argv.push(arg);
+                }
+            }
+            let has_compile = argv.iter().any(|arg| arg == "-c");
+            let source = argv.iter().find(|arg| is_source(arg));
+            if !has_compile || source.is_none() {
+                continue;
+            }
+            if !recognized_compiler(&argv) {
+                return Err(BuildDriveFailure::UnrecognizedCompileCommand { line: command });
+            }
             if argv.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
                 return Err(BuildDriveFailure::CommandCapacity {
                     required: argv.len(),
                     capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
                 });
             }
-            let has_compile = argv.iter().any(|arg| arg == "-c");
-            let source = argv.iter().find(|arg| is_source(arg));
-            if !has_compile {
-                continue;
-            }
             let Some(source) = source else {
                 continue;
             };
-            if !recognized_compiler(&argv) {
-                return Err(BuildDriveFailure::UnrecognizedCompileCommand { line: command });
-            }
             result.push(DrivenTranslationUnit {
                 source: PathBuf::from(source),
                 arguments: argv,
-                directory: directory.clone(),
+                directory: directories
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| root.to_path_buf()),
             });
         }
     }
@@ -658,11 +673,16 @@ impl<'a> JsonReader<'a> {
             return Err(CompdbError::Json { offset: self.at });
         }
         self.at += 1;
-        let mut out = String::new();
+        let string_start = self.at - 1;
+        let mut out = Vec::new();
         while let Some(&byte) = self.bytes.get(self.at) {
             self.at += 1;
             match byte {
-                b'"' => return Ok(out),
+                b'"' => {
+                    return String::from_utf8(out).map_err(|_| CompdbError::Json {
+                        offset: string_start,
+                    });
+                }
                 b'\\' => {
                     let escaped = *self
                         .bytes
@@ -670,14 +690,14 @@ impl<'a> JsonReader<'a> {
                         .ok_or(CompdbError::Json { offset: self.at })?;
                     self.at += 1;
                     let value = match escaped {
-                        b'"' => '"',
-                        b'\\' => '\\',
-                        b'/' => '/',
-                        b'b' => '\u{8}',
-                        b'f' => '\u{c}',
-                        b'n' => '\n',
-                        b'r' => '\r',
-                        b't' => '\t',
+                        b'"' => b'"',
+                        b'\\' => b'\\',
+                        b'/' => b'/',
+                        b'b' => 8,
+                        b'f' => 12,
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
                         _ => {
                             return Err(CompdbError::Json {
                                 offset: self.at - 1,
@@ -691,7 +711,7 @@ impl<'a> JsonReader<'a> {
                         offset: self.at - 1,
                     });
                 }
-                byte => out.push(byte as char),
+                byte => out.push(byte),
             }
         }
         Err(CompdbError::Json { offset: self.at })
@@ -723,12 +743,6 @@ fn read_compdb(bytes: &[u8]) -> Result<Vec<DrivenTranslationUnit>, CompdbError> 
                     reader.ws();
                     while reader.bytes.get(reader.at) != Some(&b']') {
                         values.push(reader.string()?);
-                        if values.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
-                            return Err(CompdbError::Capacity {
-                                required: values.len(),
-                                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
-                            });
-                        }
                         reader.ws();
                         if reader.bytes.get(reader.at) == Some(&b',') {
                             reader.at += 1;
@@ -761,12 +775,6 @@ fn read_compdb(bytes: &[u8]) -> Result<Vec<DrivenTranslationUnit>, CompdbError> 
             (None, Some(value)) => shell_words(&value),
             _ => return Err(CompdbError::MissingCommand { offset: entry_at }),
         };
-        if arguments.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
-            return Err(CompdbError::Capacity {
-                required: arguments.len(),
-                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
-            });
-        }
         // Generated databases contain link, phony, and tool-runner edges as well as compiles.
         // As with make, only an explicit compile flag plus a source suffix admits a TU.
         if !arguments.iter().any(|argument| argument == "-c") || !is_source(&source) {
@@ -778,6 +786,12 @@ fn read_compdb(bytes: &[u8]) -> Result<Vec<DrivenTranslationUnit>, CompdbError> 
                 break;
             }
             continue;
+        }
+        if arguments.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
+            return Err(CompdbError::Capacity {
+                required: arguments.len(),
+                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
+            });
         }
         result.push(DrivenTranslationUnit {
             source: PathBuf::from(source),

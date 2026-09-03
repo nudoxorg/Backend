@@ -5,7 +5,9 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use compiler_ir::{FragmentError, FragmentView, SourceIdentity};
+use compiler_ir::{
+    CanonicalDataError, FragmentError, FragmentView, PrepareError, SourceIdentity, WriteError,
+};
 use compiler_languages_clang::{
     ClangInput, CompilationDatabase, DatabaseArgumentError, DatabaseError, MAX_DATABASE_ARGUMENTS,
 };
@@ -38,6 +40,35 @@ pub enum DatabaseCompileFailure<'source> {
     Cancelled { input: &'source [u8] },
     #[error("database translation unit could not be lowered")]
     Lowering(#[source] compiler_vocabulary::LoweringUnsupported),
+    #[error("database translation unit could not canonicalize its facts")]
+    Canonical {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        #[source]
+        cause: CanonicalDataError,
+    },
+    #[error("database translation unit could not prepare its fragment")]
+    Prepare {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        #[source]
+        cause: PrepareError,
+    },
+    #[error("database translation unit could not write its fragment")]
+    Write {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        #[source]
+        cause: WriteError,
+    },
+    #[error("database translation unit referenced an unbound extension atom")]
+    ExtensionAtomUnbound {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        row: usize,
+        provisional: u32,
+        atom_count: usize,
+    },
     #[error("database translation unit fragment was invalid")]
     Fragment(#[source] FragmentError),
     #[error("source is too large for its identity")]
@@ -132,6 +163,9 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
             rejected,
         },
         lower::clang::ClangCollectError::Lowering(cause) => DatabaseCompileFailure::Lowering(cause),
+        lower::clang::ClangCollectError::Admission(cause) => {
+            admission_failure(source_identity, recipe, cause)
+        }
     })?;
     let fragment = FragmentView::validate(bytes).map_err(DatabaseCompileFailure::Fragment)?;
     Ok(CompiledFragment {
@@ -242,6 +276,9 @@ fn compile_input<'input, 'source, 'toolchain, 'cancel, 'output>(
             rejected,
         },
         lower::clang::ClangCollectError::Lowering(cause) => DatabaseCompileFailure::Lowering(cause),
+        lower::clang::ClangCollectError::Admission(cause) => {
+            admission_failure(source_identity, recipe, cause)
+        }
     })?;
     let fragment = FragmentView::validate(bytes).map_err(DatabaseCompileFailure::Fragment)?;
     Ok(CompiledFragment {
@@ -249,4 +286,39 @@ fn compile_input<'input, 'source, 'toolchain, 'cancel, 'output>(
         recipe,
         fragment,
     })
+}
+
+fn admission_failure(
+    source_identity: SourceIdentity,
+    recipe: CompileRecipeFact,
+    cause: lower::AdmissionFault,
+) -> DatabaseCompileFailure<'static> {
+    match cause {
+        lower::AdmissionFault::Canonical(cause) => DatabaseCompileFailure::Canonical {
+            source_identity,
+            recipe,
+            cause,
+        },
+        lower::AdmissionFault::Prepare(cause) => DatabaseCompileFailure::Prepare {
+            source_identity,
+            recipe,
+            cause,
+        },
+        lower::AdmissionFault::Write(cause) => DatabaseCompileFailure::Write {
+            source_identity,
+            recipe,
+            cause,
+        },
+        lower::AdmissionFault::ExtensionAtom {
+            row,
+            provisional,
+            atom_count,
+        } => DatabaseCompileFailure::ExtensionAtomUnbound {
+            source_identity,
+            recipe,
+            row,
+            provisional,
+            atom_count,
+        },
+    }
 }

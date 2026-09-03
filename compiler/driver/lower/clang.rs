@@ -25,8 +25,8 @@
 //!   matched `CXCursor_ParamDecl`) and its non-void result carrier are
 //!   pushed immediately before it, and its `FunctionPointer` row names
 //!   exactly those rows. Signature positions beyond the lane's fixed
-//!   child width are omitted from the constructor payload — never
-//!   silently truncated: the constructor and child counts always agree.
+//!   child width are rejected with the exact capacity cause, never silently
+//!   truncated.
 //! - Qualifiers, storage, measured layout, template parameters, and the
 //!   translation unit's include spellings travel only in the per-fact
 //!   `ClangFacts` extension row; layout cells stay empty whenever
@@ -73,8 +73,8 @@ use compiler_languages_clang::{
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::lower::{
-    EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN, SemanticFact,
-    push_fact,
+    AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
+    SemanticFact, push_fact,
 };
 use crate::types::{FactFault, FactRejection};
 
@@ -93,13 +93,15 @@ pub(crate) enum ClangCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
+    /// Canonical admission rejected the completed fact image; its cause is retained.
+    Admission(AdmissionFault),
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
 /// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership, so every fault
-/// class folds to the same closed terminal as bounded-lane capacity; the
-/// operands remain named here so the collapse site stays typed.
+/// terminal arms and lies outside this module's ownership. Admission faults
+/// are preserved as typed terminals; projection faults retain their operands
+/// here while folding to the existing closed terminal.
 #[derive(Debug)]
 enum ProjectionFault {
     /// An authority span had no exact byte range inside the bound source.
@@ -263,7 +265,7 @@ pub(crate) fn lower_database<'source, 'output>(
     let mut facts = FactSet::new();
     collect_input(input, source, cancelled, &mut facts)?;
     super::admit(&facts, source_identity, recipe, profile, output)
-        .map_err(|_| ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
+        .map_err(ClangCollectError::Admission)
 }
 
 fn collect_input<'source>(
@@ -1096,9 +1098,15 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             result_ordinal = Some(ordinal);
         }
 
-        // The lane's fixed child width bounds the constructor payload.
-        let kept = signature_children.len().min(MAX_FACT_CHILDREN);
-        let kept_children: Vec<u32> = signature_children[..kept].to_vec();
+        // The lane's fixed child width is an exact invariant, not a truncation policy.
+        if signature_children.len() > MAX_FACT_CHILDREN {
+            return Err(lane_terminal(
+                self.facts,
+                name.len(),
+                FactFault::ChildCapacity,
+            ));
+        }
+        let kept_children = signature_children;
         let kept_parameters = usize::from(result_ordinal.is_some());
         let kept_parameters = kept_children.len().saturating_sub(kept_parameters);
         let mut fact = SemanticFact::new(
