@@ -2,10 +2,10 @@ use compiler_ir::{
     BuildError, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
     CSharpReferenceKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, Confidence,
     EntityId, EntityVersion, GoFacts, GoSignature, Ir, IrBuilder, Item, ItemKind, JavaFacts,
-    LanguageExtensionInput, LanguageExtensionReopenError, LanguageProfile, PayloadHash,
-    PythonFacts, PythonParameterKind, RustFacts, RustOwnership, StableEntityId, TreeItemInput,
-    TypeScriptFacts, Visibility, encode_language_extension_section, language_extension_section_len,
-    reopen_language_extension_section,
+    LanguageExtensionInput, LanguageExtensionReopenError, LanguageExtensionWireFact,
+    LanguageProfile, PayloadHash, PythonFacts, PythonParameterKind, RustFacts, RustOwnership,
+    StableEntityId, TreeItemInput, TypeScriptFacts, Visibility, encode_language_extension_section,
+    language_extension_section_len, reopen_language_extension_section,
 };
 
 fn version() -> EntityVersion {
@@ -42,6 +42,21 @@ fn encode(ir: &Ir) -> Vec<u8> {
     );
     bytes
 }
+
+/// A Go fact literal must spell every constant cell so producers cannot omit it.
+///
+/// ```compile_fail
+/// use compiler_ir::GoFacts;
+/// let _: GoFacts = GoFacts {
+///     signature: todo!(),
+///     type_parameters: todo!(),
+///     fields: todo!(),
+///     method_set: todo!(),
+///     build_constraints: todo!(),
+/// };
+/// ```
+#[test]
+fn go_facts_are_exhaustive() {}
 
 macro_rules! assert_typed_round_trip {
     ($ir:expr, $plane:ident, $facts:expr) => {{
@@ -248,6 +263,9 @@ fn every_language_plane_round_trips_through_its_typed_column() {
         fields: empty_entities,
         method_set: empty_entities,
         build_constraints: builder.intern_attributes(&[]).expect("constraints"),
+        constant_value: builder.intern_attributes(&[]).expect("constant value"),
+        constant_group: 0,
+        constant_flags: 0,
     };
     add_extension(&mut builder, LanguageExtensionInput::Go(&go));
     assert_typed_round_trip!(builder.finish().expect("Go IR"), go, go);
@@ -314,6 +332,90 @@ fn every_language_plane_round_trips_through_its_typed_column() {
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     assert_typed_round_trip!(builder.finish().expect("Clang IR"), clang, clang);
+}
+
+#[test]
+fn go_constant_cells_pin_wire_layout_and_reopen_mutations() {
+    let mut builder = IrBuilder::new();
+    builder
+        .set_language_profile(LanguageProfile::Go(compiler_ir::GoVersion::Go125))
+        .expect("Go profile");
+    let empty_types = builder.intern_types(&[]).expect("types");
+    let empty_entities = builder.intern_members(&[]).expect("entities");
+    let value = builder.intern_atom(b"-0x9").expect("constant value atom");
+    let go = GoFacts {
+        signature: GoSignature {
+            parameters: empty_types,
+            results: empty_types,
+            variadic: false,
+        },
+        type_parameters: builder.intern_type_parameters(&[]).expect("parameters"),
+        fields: empty_entities,
+        method_set: empty_entities,
+        build_constraints: builder.intern_attributes(&[]).expect("constraints"),
+        constant_value: builder.intern_attributes(&[value]).expect("constant value"),
+        constant_group: -9,
+        constant_flags: 1,
+    };
+    let ir = {
+        add_extension(&mut builder, LanguageExtensionInput::Go(&go));
+        builder.finish().expect("Go IR")
+    };
+    assert_eq!(<GoFacts as LanguageExtensionWireFact>::WIDTH, 44);
+    let canonical = encode(&ir);
+    let go_directory = 16 + 20 * 2;
+    let fact_base = u32::from_le_bytes(
+        canonical[go_directory + 12..go_directory + 16]
+            .try_into()
+            .expect("directory payload"),
+    ) as usize
+        + 4;
+    assert_eq!(
+        &canonical[fact_base + 28..fact_base + 44],
+        &[
+            go.constant_value.raw.to_le_bytes(),
+            0xffff_fff7_u32.to_le_bytes(),
+            0xffff_ffff_u32.to_le_bytes(),
+            1_u32.to_le_bytes(),
+        ]
+        .concat()
+    );
+    let bounds = ir.language_extension_common_bounds().expect("bounds");
+    let section =
+        reopen_language_extension_section(&canonical, ir.storage_columns().authority, bounds)
+            .expect("canonical section");
+    assert_eq!(section.go.get(EntityId::new(0)), Ok(Some(go)));
+
+    let mut truncated = canonical.clone();
+    truncated.truncate(truncated.len() - 4);
+    assert!(matches!(
+        reopen_language_extension_section(&truncated, ir.storage_columns().authority, bounds),
+        Err(LanguageExtensionReopenError::Length { .. })
+    ));
+
+    let mut reserved_flags = canonical.clone();
+    reserved_flags[fact_base + 40..fact_base + 44].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(matches!(
+        reopen_language_extension_section(&reserved_flags, ir.storage_columns().authority, bounds),
+        Err(LanguageExtensionReopenError::FactEncoding {
+            kind: compiler_ir::LanguageExtensionDirectoryKind::Go,
+            fact: 0,
+            word: 10,
+            observed: 2,
+        })
+    ));
+
+    let mut invalid_value = canonical;
+    invalid_value[fact_base + 28..fact_base + 32].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        reopen_language_extension_section(&invalid_value, ir.storage_columns().authority, bounds),
+        Err(LanguageExtensionReopenError::SharedReference {
+            kind: compiler_ir::LanguageExtensionDirectoryKind::Go,
+            fact: 0,
+            raw: u32::MAX,
+            ..
+        })
+    ));
 }
 
 #[test]

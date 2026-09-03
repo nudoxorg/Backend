@@ -1319,6 +1319,9 @@ pub struct GoFacts {
     pub fields: EntityListId,
     pub method_set: EntityListId,
     pub build_constraints: AtomListId,
+    pub constant_value: AtomListId,
+    pub constant_group: i64,
+    pub constant_flags: u32,
 }
 
 /// Rust ownership fact attached to one declaration or parameter.
@@ -2030,6 +2033,7 @@ impl LanguageExtensions {
             validate_entity_list(builder, facts.fields)?;
             validate_entity_list(builder, facts.method_set)?;
             validate_atom_list(builder, facts.build_constraints)?;
+            validate_atom_list(builder, facts.constant_value)?;
         }
         if let Some(facts) = self.rust.get(entity).copied() {
             validate_atom_list(builder, facts.lifetimes)?;

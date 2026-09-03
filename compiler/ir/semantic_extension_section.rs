@@ -51,7 +51,7 @@ impl LanguageExtensionDirectoryKind {
         match self {
             Self::TypeScript => 12,
             Self::CSharp => 36,
-            Self::Go => 28,
+            Self::Go => 44,
             Self::Rust => 16,
             Self::Python => 12,
             Self::Java => 16,
@@ -63,7 +63,7 @@ impl LanguageExtensionDirectoryKind {
         match self {
             Self::TypeScript | Self::Python => 12,
             Self::CSharp => 36,
-            Self::Go => 28,
+            Self::Go => 44,
             Self::Rust | Self::Java => 16,
             Self::Clang => 24,
         }
@@ -1021,8 +1021,14 @@ impl LanguageExtensionWireFact for crate::CSharpFacts {
 impl wire_fact_sealed::Sealed for crate::CSharpFacts {}
 
 impl LanguageExtensionWireFact for crate::GoFacts {
-    const WIDTH: usize = 28;
+    const WIDTH: usize = 44;
     fn decode(bytes: &[u8], offset: usize) -> Option<Self> {
+        let constant_flags = read_word(bytes, offset + 40)?;
+        if constant_flags & !1 != 0 {
+            return None;
+        }
+        let constant_group = u64::from(read_word(bytes, offset + 36)?) << 32
+            | u64::from(read_word(bytes, offset + 32)?);
         Some(Self {
             signature: crate::GoSignature {
                 parameters: crate::TypeListId::new(read_word(bytes, offset)?),
@@ -1037,6 +1043,9 @@ impl LanguageExtensionWireFact for crate::GoFacts {
             fields: crate::EntityListId::new(read_word(bytes, offset + 16)?),
             method_set: crate::EntityListId::new(read_word(bytes, offset + 20)?),
             build_constraints: crate::AtomListId::new(read_word(bytes, offset + 24)?),
+            constant_value: crate::AtomListId::new(read_word(bytes, offset + 28)?),
+            constant_group: i64::from_le_bytes(constant_group.to_le_bytes()),
+            constant_flags,
         })
     }
 }
@@ -1426,7 +1435,22 @@ fn encode_go(
     word(output, base, 3, facts.type_parameters.raw)?;
     word(output, base, 4, facts.fields.raw)?;
     word(output, base, 5, facts.method_set.raw)?;
-    word(output, base, 6, facts.build_constraints.raw)
+    word(output, base, 6, facts.build_constraints.raw)?;
+    word(output, base, 7, facts.constant_value.raw)?;
+    let group = facts.constant_group.to_le_bytes();
+    word(
+        output,
+        base,
+        8,
+        u32::from_le_bytes([group[0], group[1], group[2], group[3]]),
+    )?;
+    word(
+        output,
+        base,
+        9,
+        u32::from_le_bytes([group[4], group[5], group[6], group[7]]),
+    )?;
+    word(output, base, 10, facts.constant_flags)
 }
 fn encode_rust(
     output: &mut [u8],
@@ -1573,6 +1597,7 @@ fn validate_fact(
                 check(x, n.entity_lists)?;
             }
             check(w(6)?, n.atom_lists)?;
+            check(w(7)?, n.atom_lists)?;
         }
         LanguageExtensionDirectoryKind::Rust => {
             check(w(1)?, n.atom_lists)?;
@@ -1662,6 +1687,10 @@ fn validate_fact_encoding(
             let variadic = word(2)?;
             if variadic > 1 {
                 return reject(2, variadic);
+            }
+            let constant_flags = word(10)?;
+            if constant_flags & !1 != 0 {
+                return reject(10, constant_flags);
             }
         }
         LanguageExtensionDirectoryKind::Rust => {
