@@ -44,11 +44,20 @@ role = "nudox_terra_reviewer"
 state = "planned"
 
 [[dispatches]]
-task = "pending"
+task = "d5-emission-geometry"
 role = "nudox_luna_implementer"
-card = "card-purl-compile-repair.md"
-paths = ["compiler/driver/tests/python_support/mod.rs", "compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_packages.rs"]
-state = "planned"
+card = "card-d5-emission-geometry.md"
+baseline = "202b42aa2; lower.rs 2448LOC e0e1831ea2b1a1dc; lower/python.rs 2139LOC d2c31634f17d44f2; lower/tests.rs 486LOC eb47acff6445d16d"
+paths = ["compiler/driver/lower.rs", "compiler/driver/lower/python.rs", "compiler/driver/lower/tests.rs"]
+state = "dispatched"
+
+[[dispatches]]
+task = "d7-journey-classes"
+role = "nudox_luna_implementer"
+card = "card-d7-journey-classes.md"
+baseline = "202b42aa2; python_purl_lifecycle.rs 658LOC 49d8984f97b7bf2e; python_support/mod.rs 495LOC a2e608296a1963d1"
+paths = ["compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_support/mod.rs"]
+state = "dispatched"
 
 [[reviews]]
 boundary = "closure"
