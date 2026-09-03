@@ -68,7 +68,10 @@ impl<'url> RustPackageUrl<'url> {
                 path: workspace_root.to_path_buf(),
                 source: RustAuthorityError::ProjectRoot {
                     path: workspace_root.to_path_buf(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "root is not absolute"),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "root is not absolute",
+                    ),
                 },
             });
         }
@@ -91,12 +94,11 @@ impl<'url> RustPackageUrl<'url> {
                         .ok_or_else(|| RustPurlError::InvalidManifestPath {
                             path: package.manifest.clone(),
                         })?;
-                    let project =
-                        RustProject::open(&package_root, toolchain, RustEdition::Rust2024)
-                            .map_err(|source| RustPurlError::Project {
-                                path: package_root,
-                                source,
-                            })?;
+                    let project = RustProject::open(&package_root, toolchain, package.edition)
+                        .map_err(|source| RustPurlError::Project {
+                            path: package_root,
+                            source,
+                        })?;
                     return Ok(RustLocatedPackage {
                         project,
                         from_workspace: true,
@@ -126,12 +128,13 @@ impl<'url> RustPackageUrl<'url> {
                 searched_root: root,
             });
         };
-        let project = RustProject::open(&package_root, toolchain, RustEdition::Rust2024).map_err(
-            |source| RustPurlError::Project {
+        let edition = registry_edition(&package_root)?;
+        let project = RustProject::open(&package_root, toolchain, edition).map_err(|source| {
+            RustPurlError::Project {
                 path: package_root,
                 source,
-            },
-        )?;
+            }
+        })?;
         Ok(RustLocatedPackage {
             project,
             from_workspace: false,
@@ -191,6 +194,7 @@ struct MetadataPackage {
     name: String,
     version: String,
     manifest: PathBuf,
+    edition: RustEdition,
 }
 
 fn metadata<'url>(
@@ -253,13 +257,74 @@ fn metadata<'url>(
                 .ok_or(RustPurlError::MissingPackageField {
                     field: "manifest_path",
                 })?;
+            let edition = match package.get("edition") {
+                None => RustEdition::Rust2015,
+                Some(value) => match value.as_str() {
+                    Some(spelling) => parse_edition(spelling)?,
+                    None => {
+                        return Err(RustPurlError::UnknownEdition {
+                            spelling: value.to_string(),
+                        });
+                    }
+                },
+            };
             Ok(MetadataPackage {
                 name: name.to_owned(),
                 version: version.to_owned(),
                 manifest: PathBuf::from(manifest),
+                edition,
             })
         })
         .collect()
+}
+
+fn parse_edition<'url>(spelling: &str) -> Result<RustEdition, RustPurlError<'url>> {
+    match spelling {
+        "2015" => Ok(RustEdition::Rust2015),
+        "2018" => Ok(RustEdition::Rust2018),
+        "2021" => Ok(RustEdition::Rust2021),
+        "2024" => Ok(RustEdition::Rust2024),
+        _ => Err(RustPurlError::UnknownEdition {
+            spelling: spelling.to_owned(),
+        }),
+    }
+}
+
+fn registry_edition<'url>(package_root: &Path) -> Result<RustEdition, RustPurlError<'url>> {
+    let manifest = package_root.join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest).map_err(|source| RustPurlError::ManifestIo {
+        path: manifest.clone(),
+        source,
+    })?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key != "edition" && key != "edition.workspace" {
+            continue;
+        }
+        let value = value.trim();
+        let Some(spelling) = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            return Err(RustPurlError::UnknownEdition {
+                spelling: value.to_owned(),
+            });
+        };
+        return parse_edition(spelling);
+    }
+    Ok(RustEdition::Rust2015)
 }
 
 /// Exact parse or location failures; rejected PURLs are retained on parse errors.
@@ -312,4 +377,12 @@ pub enum RustPurlError<'url> {
     MissingPackages,
     #[error("cargo metadata package omitted {field}")]
     MissingPackageField { field: &'static str },
+    #[error("package declares unsupported Rust edition {spelling}")]
+    UnknownEdition { spelling: String },
+    #[error("cannot read package manifest at {path}: {source}")]
+    ManifestIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
