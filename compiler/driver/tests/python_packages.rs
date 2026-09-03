@@ -9,8 +9,8 @@ use compiler_driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_ir::{
-    DecodedOccurrence, EntityKind, ForeignOrigin, FragmentView, LanguageExtensionWireFact,
-    OccurrenceTarget, PythonFacts, SECTION_NONE,
+    DecodedOccurrence, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
+    LanguageExtensionWireFact, OccurrenceTarget, PythonFacts, PythonParameterKind, SECTION_NONE,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use std::{
@@ -354,6 +354,18 @@ enum SpotCheck {
         symbol: &'static str,
         kind: EntityKind,
     },
+    ParameterKinds {
+        symbol: &'static str,
+        kinds: &'static [PythonParameterKind],
+    },
+    DecoratorSequence {
+        symbol: &'static str,
+        decorators: &'static [&'static [u8]],
+    },
+    DocstringPrefix {
+        symbol: &'static str,
+        prefix: &'static [u8],
+    },
 }
 
 /// One pinned corpus row, with an exact decoded entity spot check.
@@ -384,9 +396,15 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "IDNAError",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "encode",
+            kinds: &[
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+            ],
         },
     },
     PackageFacts {
@@ -403,9 +421,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[],
         class: LayoutClass::FlatPackageDir,
-        spot: SpotCheck::Entity {
+        spot: SpotCheck::ParameterKinds {
             symbol: "where",
-            kind: EntityKind::Function,
+            kinds: &[],
         },
     },
     PackageFacts {
@@ -422,9 +440,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: false,
         decorators: &[],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
+        spot: SpotCheck::DecoratorSequence {
             symbol: "__title__",
-            kind: EntityKind::Static,
+            decorators: &[],
         },
     },
     PackageFacts {
@@ -441,9 +459,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"staticmethod", b"property", b"classmethod"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "__compat__",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "enable_diag",
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
         },
     },
     PackageFacts {
@@ -460,9 +478,12 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"overload"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "SectionWrapper",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "lineof",
+            kinds: &[
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+            ],
         },
     },
     PackageFacts {
@@ -479,9 +500,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: false,
         decorators: &[b"final", b"property", b"overload"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "HookCaller",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "varnames",
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
         },
     },
     PackageFacts {
@@ -498,9 +519,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"property", b"t.overload", b"contextmanager"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
+        spot: SpotCheck::DecoratorSequence {
             symbol: "Command",
-            kind: EntityKind::Record,
+            decorators: &[],
         },
     },
     PackageFacts {
@@ -517,9 +538,12 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"t.overload", b"property"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "Serializer",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "dumps",
+            kinds: &[
+                PythonParameterKind::PositionalOnly,
+                PythonParameterKind::PositionalOnly,
+            ],
         },
     },
     PackageFacts {
@@ -541,9 +565,9 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"typing.overload",
         ],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "Environment",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "create_cache",
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
         },
     },
     PackageFacts {
@@ -560,9 +584,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"classmethod"],
         class: LayoutClass::SrcLayout,
-        spot: SpotCheck::Entity {
-            symbol: "Markup",
-            kind: EntityKind::Record,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "escape",
+            kinds: &[PythonParameterKind::PositionalOnly],
         },
     },
     PackageFacts {
@@ -866,18 +890,109 @@ fn assert_spot(
     package: &str,
     source_text: &str,
     entities: &[(&[u8], EntityKind)],
+    view: &FragmentView<'_>,
     spot: SpotCheck,
 ) -> Result<(), Error> {
-    let SpotCheck::Entity { symbol, kind } = spot;
-    if !source_declares(source_text, symbol)
-        || !entities
-            .iter()
-            .any(|(known, actual)| *known == symbol.as_bytes() && *actual == kind)
-    {
-        return Err(Error::Fact {
-            package: package.into(),
-            message: format!("spot check {symbol}/{kind:?} absent from source or entities"),
-        });
+    let fact = |message: String| Error::Fact {
+        package: package.into(),
+        message,
+    };
+    match spot {
+        SpotCheck::Entity { symbol, kind } => {
+            if !source_declares(source_text, symbol)
+                || !entities
+                    .iter()
+                    .any(|(known, actual)| *known == symbol.as_bytes() && *actual == kind)
+            {
+                return Err(fact(format!(
+                    "spot check {symbol}/{kind:?} absent from source or entities"
+                )));
+            }
+        }
+        SpotCheck::DecoratorSequence { symbol, decorators } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))?;
+            let payload = view
+                .language_extension_payload()
+                .ok_or_else(|| fact("extension section absent".into()))?;
+            let pool = view
+                .extension_pool_payload()
+                .ok_or_else(|| fact("extension pool absent".into()))?;
+            let row = python_extension_row(package, payload, ordinal)?
+                .ok_or_else(|| fact(format!("spot extension row {symbol} absent")))?;
+            let actual = pooled_atom_list(package, pool, row.decorators.raw)?;
+            let atoms: Vec<&[u8]> = actual
+                .into_iter()
+                .map(|raw| {
+                    usize::try_from(raw)
+                        .ok()
+                        .and_then(|n| view.atoms().nth(n).map(|a| a.bytes))
+                        .unwrap_or(&[])
+                })
+                .collect();
+            if atoms.as_slice() != decorators {
+                return Err(fact(format!(
+                    "spot decorator sequence {symbol} decoded {atoms:?}, expected {decorators:?}"
+                )));
+            }
+        }
+        SpotCheck::ParameterKinds { symbol, kinds } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))?;
+            let payload = view
+                .language_extension_payload()
+                .ok_or_else(|| fact("extension section absent".into()))?;
+            let mut actual = Vec::new();
+            let mut cursor = ordinal;
+            while cursor > 0 {
+                cursor -= 1;
+                if entities[cursor].1 != EntityKind::Parameter {
+                    break;
+                }
+                if let Some(row) = python_extension_row(package, payload, cursor)? {
+                    actual.push(row.parameter_kind);
+                }
+            }
+            actual.reverse();
+            if actual.as_slice() != kinds {
+                return Err(fact(format!(
+                    "spot parameter kinds {symbol} decoded {actual:?}, expected {kinds:?}"
+                )));
+            }
+        }
+        SpotCheck::DocstringPrefix { symbol, prefix } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))? as u32;
+            let mut found = false;
+            let mut cursor = view
+                .docs()
+                .ok_or_else(|| fact("docs section absent".into()))?;
+            for row in cursor.by_ref() {
+                let row =
+                    row.map_err(|cause| fact(format!("docs row failed to decode: {cause}")))?;
+                if row.owner.raw == ordinal {
+                    if let DocFragmentInput::Text(bytes) = row.fragment {
+                        if bytes.starts_with(prefix) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+            if !found {
+                return Err(fact(format!(
+                    "spot docstring prefix {symbol} absent or mismatched"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -1021,7 +1136,7 @@ fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
         }
         assertions += 1;
     }
-    assert_spot(spec.package, source_text, &entities, spec.spot)?;
+    assert_spot(spec.package, source_text, &entities, &view, spec.spot)?;
     assertions += 1;
     assertions += assert_lanes(
         spec.package,
@@ -1206,7 +1321,7 @@ fn assert_package(package: &'static str, version: &'static str) -> Result<usize,
         }
         _ => {}
     }
-    assert_spot(package, source_text, &entities, facts.spot)?;
+    assert_spot(package, source_text, &entities, &view, facts.spot)?;
     assertions += 1;
     assertions += assert_lanes(
         package,
