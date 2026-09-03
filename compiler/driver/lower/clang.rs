@@ -845,8 +845,21 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if let Some(slot) = self.ordinals.get_mut(index) {
             *slot = Some(ordinal);
         }
+        let parent = declaration
+            .owner
+            .and_then(|identity| self.ordinal_of(identity));
+        self.facts.set_parent(ordinal, parent);
         if let Some(identity) = declaration.identity {
             self.identities.push((identity, ordinal));
+            let foreign_target = self
+                .authority
+                .overrides
+                .iter()
+                .find(|override_fact| override_fact.source == identity)
+                .map(|override_fact| override_fact.target)
+                .filter(|target| self.ordinal_of(*target).is_none())
+                .map(|target| target.bytes);
+            self.facts.set_identity_list(ordinal, foreign_target);
         }
     }
 

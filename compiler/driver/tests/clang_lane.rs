@@ -4,6 +4,7 @@
 use compiler_driver::{
     AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
     CompileScratch, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    compile_ir,
 };
 use compiler_ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
@@ -171,6 +172,53 @@ where
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
 }
 
+fn inspect_ir<F>(source: &[u8], check: F) -> Result<(), TestError>
+where
+    F: FnOnce(&compiler_ir::Ir) -> Result<(), TestError>,
+{
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!("nudox-clang-ir-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let cancelled = AtomicBool::new(false);
+    let toolchain = ToolchainSelection::ResolvedNative(
+        ResolvedToolchain::from_identity(
+            NativeTool::Clang,
+            Path::new("/usr/bin/clang"),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"clang-semantic-lane-toolchain"),
+        )
+        .map_err(|_| TestError::Check("toolchain path was rejected"))?,
+    );
+    let mut diagnostic_output = [0_u8; 4096];
+    let result = compile_ir(
+        CompileRequest {
+            profile: LanguageProfile::C(CStandard::C23),
+            stage: Stage::LowerIr,
+            source,
+            toolchain,
+            authority: SemanticAuthorityInput::None,
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(60),
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic_output,
+            native_work: &work,
+        },
+    )
+    .map_err(|_| TestError::Compile)
+    .and_then(|compiled| check(&compiled.ir));
+    let removed = std::fs::remove_dir_all(&work).or_else(|error| {
+        (error.kind() == std::io::ErrorKind::NotFound)
+            .then_some(())
+            .ok_or(error)
+    });
+    result.and(removed.map_err(|_| TestError::Check("remove native work")))
+}
+
 fn override_occurrences<'a>(
     view: &'a FragmentView<'a>,
 ) -> Result<Vec<compiler_ir::DecodedOccurrence<'a>>, TestError> {
@@ -242,6 +290,64 @@ fn extension(
         + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * stride;
     compiler_ir::ClangFacts::decode(payload, at)
         .ok_or(TestError::Check("extension row undecodable"))
+}
+
+fn override_identity(
+    view: &FragmentView<'_>,
+    ordinal: usize,
+) -> Result<Option<[u8; 16]>, TestError> {
+    let payload = view
+        .language_extension_payload()
+        .ok_or(TestError::Check("missing extensions"))?;
+    let directory = 16 + 6 * 20;
+    let rows = usize::try_from(word(payload, directory + 4)?)
+        .map_err(|_| TestError::Check("row count overflow"))?;
+    let offset = usize::try_from(word(payload, directory + 12)?)
+        .map_err(|_| TestError::Check("fact offset overflow"))?;
+    let fact = usize::try_from(word(payload, offset + ordinal * 4)?)
+        .map_err(|_| TestError::Check("fact index overflow"))?;
+    if fact == usize::try_from(u32::MAX).unwrap_or(usize::MAX) {
+        return Ok(None);
+    }
+    let identity_ordinal = word(payload, offset + rows * 4 + fact * 32 + 28)?;
+    if identity_ordinal == u32::MAX {
+        return Ok(None);
+    }
+    let pool = view
+        .extension_pool_payload()
+        .ok_or(TestError::Check("missing extension pool"))?;
+    let mut at = 4;
+    let parameter_count = usize::try_from(word(pool, 0)?)
+        .map_err(|_| TestError::Check("parameter count overflow"))?;
+    for _ in 0..parameter_count {
+        let length = usize::try_from(word(pool, at + 1)?)
+            .map_err(|_| TestError::Check("parameter length overflow"))?;
+        at += 5 + length + 10;
+    }
+    for _ in 0..3 {
+        let list_count = usize::try_from(word(pool, at)?)
+            .map_err(|_| TestError::Check("list count overflow"))?;
+        at += 4;
+        for _ in 0..list_count {
+            let length = usize::try_from(word(pool, at)?)
+                .map_err(|_| TestError::Check("list length overflow"))?;
+            at += 4 + length * 4;
+        }
+    }
+    let count = usize::try_from(word(pool, at)?)
+        .map_err(|_| TestError::Check("identity count overflow"))?;
+    let identity_index = usize::try_from(identity_ordinal)
+        .map_err(|_| TestError::Check("identity index overflow"))?;
+    if identity_index >= count {
+        return Err(TestError::Check("identity index outside pool"));
+    }
+    let start = at + 4 + identity_index * 16;
+    let bytes = pool
+        .get(start..start + 16)
+        .ok_or(TestError::Check("identity cell truncated"))?;
+    let identity =
+        <[u8; 16]>::try_from(bytes).map_err(|_| TestError::Check("identity cell width"))?;
+    Ok((identity != [0; 16]).then_some(identity))
 }
 
 fn children<'a>(
@@ -375,6 +481,33 @@ fn mutual_recursion_collapses_forwards_and_names_pointer_children() -> Result<()
             if child.0 != 0 || child.1 != target_row.owner.raw {
                 return Err(TestError::Check("pointer target"));
             }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn build_ir_preserves_authority_members_and_parents() -> Result<(), TestError> {
+    inspect_ir(b"struct Pair { int left; int right; };", |ir| {
+        let pair = ir
+            .items()
+            .find(|item| item.name() == b"Pair")
+            .ok_or(TestError::Check("Pair item"))?;
+        let members = pair.members();
+        if members.len() != 2
+            || members[0].index() >= ir.entity_count()
+            || members[1].index() >= ir.entity_count()
+        {
+            return Err(TestError::Check("Pair members"));
+        }
+        let left = ir.item(members[0]).ok_or(TestError::Check("left item"))?;
+        let right = ir.item(members[1]).ok_or(TestError::Check("right item"))?;
+        if left.name() != b"left"
+            || right.name() != b"right"
+            || left.parent() != Some(pair.id())
+            || right.parent() != Some(pair.id())
+        {
+            return Err(TestError::Check("member parents/order"));
         }
         Ok(())
     })
@@ -947,6 +1080,13 @@ fn virtual_override_absence_and_plain_shadowing_are_distinct_bytes() -> Result<(
             &mut plain_bytes,
             &work,
         )?;
+        let plain_method = entities(&view)
+            .iter()
+            .rposition(|(name, kind)| *name == b"f" && *kind == EntityKind::Function)
+            .ok_or(TestError::Check("plain method"))?;
+        if override_identity(&view, plain_method)?.is_some() {
+            return Err(TestError::Check("plain override identity"));
+        }
         (
             !override_occurrences(&view)?.is_empty(),
             view.as_ref().to_vec(),
@@ -991,6 +1131,13 @@ fn foreign_virtual_override_is_recorded_schema_two_deferral() -> Result<(), Test
         &mut output,
         &work,
     )?;
+    let method = entities(&view)
+        .iter()
+        .rposition(|(name, kind)| *name == b"f" && *kind == EntityKind::Function)
+        .ok_or(TestError::Check("foreign method"))?;
+    if override_identity(&view, method)?.is_none() {
+        return Err(TestError::Check("foreign identity pool"));
+    }
     if !override_occurrences(&view)?.is_empty() {
         return Err(TestError::Check("foreign override fabricated"));
     }

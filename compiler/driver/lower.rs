@@ -22,7 +22,6 @@ use compiler_ir::{
     ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter, Occurrence,
     OccurrenceInput, OccurrenceLane, PrepareError, PreparedFragment, RecipeFact, SourceIdentity,
     TypeFactInput, TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
-    encode_fragment_extension_section, fragment_extension_section_len,
 };
 
 pub(crate) mod clang;
@@ -341,6 +340,8 @@ pub(super) struct FactSet<'source> {
     child_targets: [u32; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
     child_counts: [u8; MAX_EMISSION_FACTS],
     extensions: [Option<EmissionExtension>; MAX_EMISSION_FACTS],
+    parents: [Option<u32>; MAX_EMISSION_FACTS],
+    identity_lists: [[u8; 16]; MAX_EMISSION_FACTS],
     key_digests: [u64; MAX_EMISSION_FACTS],
     occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
     occurrences: Box<[Occurrence<'source>; MAX_EMISSION_OCCURRENCES]>,
@@ -390,6 +391,8 @@ impl<'source> FactSet<'source> {
             child_targets: [0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN],
             child_counts: [0; MAX_EMISSION_FACTS],
             extensions: [None; MAX_EMISSION_FACTS],
+            parents: [None; MAX_EMISSION_FACTS],
+            identity_lists: [[0; 16]; MAX_EMISSION_FACTS],
             key_digests: [0; MAX_EMISSION_FACTS],
             occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
             occurrences: Box::new(
@@ -582,6 +585,22 @@ impl<'source> FactSet<'source> {
         }
         self.extensions[ordinal] = Some(extension);
         Ok(())
+    }
+
+    /// Records the authority owner of one admitted declaration. Missing owners
+    /// remain absent rather than being inferred from spelling or position.
+    pub(super) fn set_parent(&mut self, ordinal: u32, parent: Option<u32>) {
+        if let Some(slot) = self.parents.get_mut(ordinal as usize) {
+            *slot = parent;
+        }
+    }
+
+    /// Records one foreign override identity in the fact's dense Clang pool
+    /// slot. All-zero is the pool's landed empty sentinel.
+    pub(super) fn set_identity_list(&mut self, ordinal: u32, identity: Option<[u8; 16]>) {
+        if let Some(slot) = self.identity_lists.get_mut(ordinal as usize) {
+            *slot = identity.unwrap_or([0; 16]);
+        }
     }
 
     /// First pooled position of one fact's type-record children.
@@ -859,14 +878,37 @@ impl<'source> FactSet<'source> {
             extension: None,
         };
         let mut items = [empty_item; MAX_EMISSION_FACTS];
+        let mut parents = [None; MAX_EMISSION_FACTS];
+        let mut member_ids =
+            [compiler_ir::TreeEntityId::new(0); MAX_EMISSION_FACTS * MAX_EMISSION_FACTS];
+        let mut member_counts = [0_usize; MAX_EMISSION_FACTS];
+        for ordinal in 0..fact_count {
+            parents[ordinal] = self.parents[ordinal].map(compiler_ir::TreeEntityId::new);
+            let is_container = matches!(
+                self.kinds[ordinal],
+                EntityKind::Record | EntityKind::Enum | EntityKind::Module
+            );
+            if !is_container {
+                continue;
+            }
+            for member in 0..fact_count {
+                if self.parents[member] == Some(ordinal as u32) {
+                    let base = ordinal * MAX_EMISSION_FACTS;
+                    member_ids[base + member_counts[ordinal]] =
+                        compiler_ir::TreeEntityId::new(member as u32);
+                    member_counts[ordinal] += 1;
+                }
+            }
+        }
         for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
+            let base = ordinal * MAX_EMISSION_FACTS;
             *item = TreeItemInput {
                 name: self.names[ordinal],
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: Visibility::Unknown,
-                parent: None,
+                parent: parents[ordinal],
                 semantic_type: semantic_types[ordinal],
-                members: &[],
+                members: &member_ids[base..base + member_counts[ordinal]],
                 docs: &[],
                 attributes: &[],
                 source: None,
@@ -1567,6 +1609,7 @@ pub(super) fn admit<'source, 'output>(
     let mut python_pool = [empty_python_facts(); MAX_EMISSION_FACTS];
     let mut java_pool = [empty_java_facts(); MAX_EMISSION_FACTS];
     let mut clang_pool = [empty_clang_facts(); MAX_EMISSION_FACTS];
+    let mut identity_lists = [[0_u8; 16]; MAX_EMISSION_FACTS];
     let mut typescript_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
     let mut csharp_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
     let mut go_rows = [SECTION_NONE; MAX_EMISSION_FACTS];
@@ -1583,7 +1626,6 @@ pub(super) fn admit<'source, 'output>(
     let mut clang_len = 0_usize;
     let any_extension = facts.extensions[..fact_count].iter().any(Option::is_some);
     for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
-        let row = ordinal as u32;
         match extension {
             Some(EmissionExtension::TypeScript(value)) => {
                 typescript_pool[typescript_len] = *value;
@@ -1631,6 +1673,7 @@ pub(super) fn admit<'source, 'output>(
             }
             Some(EmissionExtension::Clang(value)) => {
                 clang_pool[clang_len] = *value;
+                identity_lists[clang_len] = facts.identity_lists[ordinal];
                 clang_rows[ordinal] = clang_len as u32;
                 clang_len += 1;
             }
@@ -1722,7 +1765,7 @@ pub(super) fn admit<'source, 'output>(
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],
         type_lists: &pooled_type_lists[..facts.type_list_len],
         entity_lists: &pooled_entity_lists[..facts.entity_list_len],
-        identity_lists: &[],
+        identity_lists: &identity_lists[..clang_len],
     };
 
     let extension_section = (any_extension).then(|| ExtensionSectionInput {
