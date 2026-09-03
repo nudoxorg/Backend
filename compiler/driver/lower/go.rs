@@ -425,7 +425,13 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
         u32::try_from(self.facts.len())
             .ok()
-            .and_then(|len| len.checked_sub(1))
+            .and_then(|len| {
+                if len == 0 {
+                    Some(0)
+                } else {
+                    len.checked_sub(1)
+                }
+            })
             .ok_or(ProjectionFault::Anchor)
     }
 
