@@ -162,6 +162,20 @@ where
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
 }
 
+fn override_occurrences<'a>(
+    view: &'a FragmentView<'a>,
+) -> Result<Vec<compiler_ir::DecodedOccurrence<'a>>, TestError> {
+    view.occurrences()
+        .ok_or(TestError::Check("occurrences"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map(|rows| {
+            rows.into_iter()
+                .filter(|row| row.occurrence.kind == compiler_ir::ReferenceKind::Overrides)
+                .collect()
+        })
+        .map_err(|_| TestError::Check("occurrence decode"))
+}
+
 fn entities<'a>(view: &'a FragmentView<'a>) -> Vec<(&'a [u8], EntityKind)> {
     let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
     view.entities()
@@ -835,4 +849,116 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
         return Err(TestError::Check("mutation did not change bytes"));
     }
     Ok(())
+}
+
+#[test]
+fn local_virtual_override_is_backward_oracle_occurrence() -> Result<(), TestError> {
+    inspect_cxx(
+        b"struct Base { virtual int f(); };\nstruct Derived : Base { int f() override; };\n",
+        |view| {
+            let rows = override_occurrences(view)?;
+            if rows.len() != 1 {
+                return Err(TestError::Check("local override count"));
+            }
+            let row = &rows[0];
+            let derived = row.owner.raw;
+            let compiler_ir::OccurrenceTarget::Local(base_entity) = row.occurrence.target else {
+                return Err(TestError::Check("local override target"));
+            };
+            let base = base_entity.raw;
+            let entities = entities(view);
+            let derived_index = usize::try_from(derived)
+                .map_err(|_| TestError::Check("derived ordinal overflow"))?;
+            let base_index =
+                usize::try_from(base).map_err(|_| TestError::Check("base ordinal overflow"))?;
+            if entities.get(derived_index) != Some(&(&b"f"[..], EntityKind::Function))
+                || entities.get(base_index) != Some(&(&b"f"[..], EntityKind::Function))
+            {
+                return Err(TestError::Check("override method owners"));
+            }
+            if row.owner.raw != derived
+                || base >= derived
+                || row.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
+                || row.occurrence.span.start >= row.occurrence.span.end
+            {
+                return Err(TestError::Check("local override content"));
+            }
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn virtual_override_absence_and_plain_shadowing_are_distinct_bytes() -> Result<(), TestError> {
+    let virtual_source =
+        b"struct Base { virtual int f(); };\nstruct Derived : Base { int f() override; };\n";
+    let plain_source = b"struct Base { int f(); };\nstruct Derived : Base { int f(); };\n";
+    let mut virtual_bytes = vec![0xa5; 65_536];
+    let mut plain_bytes = vec![0xa5; 65_536];
+    let work = std::env::temp_dir().join(format!("nudox-clang-overrides-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let (virtual_has_override, virtual_snapshot) = {
+        let view = lower_with(
+            LanguageProfile::Cxx(CxxStandard::Cxx23),
+            virtual_source,
+            &mut virtual_bytes,
+            &work,
+        )?;
+        (
+            !override_occurrences(&view)?.is_empty(),
+            view.as_ref().to_vec(),
+        )
+    };
+    let (plain_has_override, plain_snapshot) = {
+        let view = lower_with(
+            LanguageProfile::Cxx(CxxStandard::Cxx23),
+            plain_source,
+            &mut plain_bytes,
+            &work,
+        )?;
+        (
+            !override_occurrences(&view)?.is_empty(),
+            view.as_ref().to_vec(),
+        )
+    };
+    if plain_has_override || virtual_snapshot == plain_snapshot {
+        return Err(TestError::Check("virtual mutation falsifier"));
+    }
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))?;
+    if !virtual_has_override {
+        return Err(TestError::Check("virtual override absent"));
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_virtual_override_is_recorded_schema_two_deferral() -> Result<(), TestError> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-foreign-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let header = work.join("base.h");
+    std::fs::write(&header, b"struct Base { virtual int f(); };\n")
+        .map_err(|_| TestError::Check("write base header"))?;
+    let source = format!(
+        "#include \"{}\"\nstruct Derived : Base {{ int f() override; }};\n",
+        header.display()
+    );
+    let mut output = vec![0xa5; 65_536];
+    let view = lower_with(
+        LanguageProfile::Cxx(CxxStandard::Cxx23),
+        source.as_bytes(),
+        &mut output,
+        &work,
+    )?;
+    if !override_occurrences(&view)?.is_empty() {
+        return Err(TestError::Check("foreign override fabricated"));
+    }
+    drop(view);
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }

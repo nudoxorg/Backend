@@ -42,10 +42,16 @@
 //!   and `@ref`/`\ref` links; targets naming a pushed declaration link
 //!   locally and every other target links to the `c` ecosystem.
 //! - Positions the consumed authority surface cannot prove — typedef
-//!   underlying spellings, default arguments, virtual overrides,
-//!   bit-field widths, and inline assembly bodies — stay absent or fold
+//!   underlying spellings, default arguments, bit-field widths, and inline
+//!   assembly bodies — stay absent or fold
 //!   to typed `Unknown` rows. Never recovers C facts by scanning source
 //!   text or a native parser fallback.
+//! - Local C++ virtual override edges are emitted as occurrence kind 7,
+//!   owned by the pushed overriding declaration and targeting its backward
+//!   local base row. Foreign override edges have no honest schema-1 path
+//!   representation: they are explicitly deferred to the authorized schema-2
+//!   identity-cell packet rather than fabricating a path or silently dropping
+//!   the edge.
 
 use core::sync::atomic::AtomicBool;
 
@@ -90,7 +96,7 @@ pub(crate) enum ClangCollectError {
 /// class folds to the same closed terminal as bounded-lane capacity; the
 /// operands remain named here so the collapse site stays typed.
 #[derive(Debug)]
-enum ProjectionFault<'source> {
+enum ProjectionFault {
     /// An authority span had no exact byte range inside the bound source.
     Span {
         /// The rejected authority span.
@@ -110,35 +116,17 @@ enum ProjectionFault<'source> {
         )]
         declaration: DeclarationId,
     },
-    /// The recursive type graph exceeded the projection's depth budget.
-    Depth {
-        /// The authority type row where recursion stopped.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        type_id: AuthorityTypeId,
-    },
     /// An anonymous type row had no already-pushed owner fact to anchor it.
     Anchor,
     /// A bounded projection index overflowed its lane width.
     IndexCapacity,
-    /// A foreign key could not be built for one written reference spelling.
-    Key {
-        /// The written spelling that failed foreign-key validation.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        spelling: &'source [u8],
-    },
 }
 
 /// Folds one projection fault into the lane's closed terminal. The shared
 /// driver failure match owns the terminal arms and is outside this module's
 /// ownership, so operand-preserving Clang terminals stay folded here; adding
 /// a terminal arm is recorded as a lane criticism in the module's review notes.
-fn terminal(fault: ProjectionFault<'_>) -> ClangCollectError {
+fn terminal(fault: ProjectionFault) -> ClangCollectError {
     let _ = fault;
     ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
@@ -500,8 +488,6 @@ struct Projector<'authority, 'scratch, 'source> {
     identities: Vec<(SymbolIdentity, u32)>,
     /// Anonymous record identity to its authority declaration index.
     anonymous: Vec<(SymbolIdentity, usize)>,
-    /// Anonymous record declaration index to its interned nested row.
-    anonymous_rows: Vec<(usize, u32)>,
     /// Template parameter identity to its borrowed spelling, for `TypeVar`
     /// rows at use sites.
     template_parameters: Vec<(SymbolIdentity, &'source [u8])>,
@@ -528,7 +514,6 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             ordinals: vec![None; declaration_count],
             identities: Vec::new(),
             anonymous: Vec::new(),
-            anonymous_rows: Vec::new(),
             template_parameters: Vec::new(),
             includes: None,
             edge_order: Vec::new(),
@@ -537,7 +522,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     }
 
     /// Borrows an exact source range, or fails with the typed span terminal.
-    fn slice(&self, span: SourceSpan) -> Result<&'source [u8], ProjectionFault<'source>> {
+    fn slice(&self, span: SourceSpan) -> Result<&'source [u8], ProjectionFault> {
         let start = usize::try_from(span.start).map_err(|_| ProjectionFault::Span { span })?;
         let end = usize::try_from(span.end).map_err(|_| ProjectionFault::Span { span })?;
         self.source
@@ -546,10 +531,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     }
 
     /// Borrows one declaration's exact declared-name bytes.
-    fn name_of(
-        &self,
-        declaration: &DeclarationFact,
-    ) -> Result<&'source [u8], ProjectionFault<'source>> {
+    fn name_of(&self, declaration: &DeclarationFact) -> Result<&'source [u8], ProjectionFault> {
         let span = declaration.name.ok_or(ProjectionFault::Nameless {
             declaration: declaration.id,
         })?;
@@ -572,11 +554,6 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         self.authority.types.get(id.raw as usize)
     }
 
-    /// The authority type rows borrowed once per pass.
-    fn types(&self) -> &'scratch [TypeFact] {
-        self.authority.types
-    }
-
     /// Resolves one pushed declaration ordinal by libclang USR identity.
     fn ordinal_of(&self, identity: SymbolIdentity) -> Option<u32> {
         self.identities
@@ -595,7 +572,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// The last already-pushed fact, the owner of anonymous rows interned
     /// for the fact currently being built.
-    fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
+    fn anchor(&self) -> Result<u32, ProjectionFault> {
         u32::try_from(self.facts.len())
             .ok()
             .and_then(|len| len.checked_sub(1))
@@ -604,7 +581,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Builds the type-edge adjacency index: edges grouped by source row in
     /// authority order behind a prefix-sum start table.
-    fn index_edges(&mut self) -> Result<(), ProjectionFault<'source>> {
+    fn index_edges(&mut self) -> Result<(), ProjectionFault> {
         let edge_count = self.authority.type_edges.len();
         let type_count = self.authority.types.len();
         let mut starts = vec![0_usize; type_count + 1];
@@ -1631,6 +1608,47 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         target,
                         kind: lane_reference_kind(reference.kind),
                         confidence,
+                        span,
+                    },
+                )
+                .map_err(lane_terminal)?;
+        }
+        // Schema 1 has no identity-keyed foreign occurrence target.  A
+        // foreign override is therefore deliberately deferred to the
+        // schema-2 identity-cell packet; only edges whose two identities are
+        // both pushed in this image can be represented honestly here.
+        for override_fact in self.authority.overrides {
+            let Some(owner) = self.ordinal_of(override_fact.source) else {
+                continue;
+            };
+            let Some(target) = self.ordinal_of(override_fact.target) else {
+                continue;
+            };
+            let Some(declaration) = self
+                .authority
+                .declarations
+                .iter()
+                .find(|declaration| declaration.identity == Some(override_fact.source))
+            else {
+                continue;
+            };
+            let Some(owner_span) = self.owner_span(owner) else {
+                continue;
+            };
+            let span = declaration
+                .name
+                .and_then(|name| owner_relative_span(owner_span, name))
+                .or_else(|| owner_relative_span(owner_span, declaration.span));
+            let Some(span) = span else {
+                continue;
+            };
+            self.facts
+                .push_occurrence(
+                    owner,
+                    Occurrence {
+                        target: OccurrenceTarget::Local(EntityId::new(target)),
+                        kind: LaneReferenceKind::Overrides,
+                        confidence: OccurrenceConfidence::Oracle,
                         span,
                     },
                 )
