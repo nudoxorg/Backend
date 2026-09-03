@@ -22,9 +22,10 @@ mod support;
 
 use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment,
-    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{EntityKind, FragmentView};
+use compiler_ir::{EntityKind, FragmentView, ItemKind};
+use compiler_languages_java::{DeclarationKind, JavaAuthorityImage};
 use compiler_languages_java::{
     JavaRelease as HarnessRelease,
     central::{Central, FetchError},
@@ -53,8 +54,8 @@ use std::{
     time::{Duration, Instant},
 };
 use support::{
-    ANNOTATIONS_ROW, CENTRAL_HOST, CORPUS, Error as FixtureError, PUBLICATION_ROW, TempDir,
-    qualified_name, write_file,
+    ANNOTATIONS_ROW, CENTRAL_HOST, CORPUS, Error as FixtureError, TempDir, qualified_name,
+    write_file,
 };
 use thiserror::Error;
 
@@ -62,7 +63,6 @@ const MAX_IMAGE_BYTES: usize = 16 << 20;
 const MAX_FRAGMENT_BYTES: usize = 4 << 20;
 /// The frozen commons-csv row freezes exactly two entries, and the publication
 /// leg publishes both fragments of that exact compilation.
-const PUBLICATION_ENTRY_COUNT: usize = 2;
 const COMPILE_DEADLINE: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Error)]
@@ -93,15 +93,12 @@ enum TestError {
     #[error("index failed: {0}")]
     Index(String),
     #[error("frozen entry {path} missing from the sources jar of {purl}")]
-    MissingEntry {
-        purl: &'static str,
-        path: &'static str,
-    },
+    MissingEntry { purl: &'static str, path: String },
     #[error("corpus law failed for {purl} {path}: {cause}")]
     Law {
         purl: &'static str,
-        path: &'static str,
-        cause: &'static str,
+        path: String,
+        cause: String,
     },
     #[error("assertion failed: {0}")]
     Fact(&'static str),
@@ -211,17 +208,201 @@ fn function_named(view: &FragmentView<'_>, wanted: &[u8]) -> bool {
     })
 }
 
+fn entity_kind(kind: DeclarationKind) -> EntityKind {
+    match kind {
+        DeclarationKind::Module | DeclarationKind::Package => EntityKind::Module,
+        DeclarationKind::Class => EntityKind::Record,
+        DeclarationKind::Interface | DeclarationKind::Annotation => EntityKind::Trait,
+        DeclarationKind::Record => EntityKind::Record,
+        DeclarationKind::Enum => EntityKind::Enum,
+        DeclarationKind::Field => EntityKind::Field,
+        DeclarationKind::EnumConstant => EntityKind::Variant,
+        DeclarationKind::Constructor | DeclarationKind::Method => EntityKind::Function,
+    }
+}
+
+fn deep_review(
+    purl: &'static str,
+    path: &str,
+    source: &[u8],
+    image: &[u8],
+    view: &FragmentView<'_>,
+) -> Result<(usize, usize), TestError> {
+    let authority = JavaAuthorityImage::open(image).map_err(|error| TestError::Law {
+        purl,
+        path: path.to_owned(),
+        cause: format!("image decode: {error}"),
+    })?;
+    let declarations: Vec<_> = authority
+        .image
+        .declarations()
+        .collect::<Result<_, _>>()
+        .map_err(|error| TestError::Law {
+            purl,
+            path: path.to_owned(),
+            cause: format!("declaration decode: {error}"),
+        })?;
+    for (ordinal, declaration) in declarations.iter().enumerate() {
+        let expected = declarations
+            .iter()
+            .filter(|candidate| {
+                candidate.name.bytes == declaration.name.bytes
+                    && entity_kind(candidate.kind) == entity_kind(declaration.kind)
+            })
+            .count();
+        let found = view
+            .entities()
+            .filter(|entity| {
+                view.atoms()
+                    .nth(entity.name.raw as usize)
+                    .is_some_and(|atom| atom.bytes == declaration.name.bytes)
+                    && entity.kind == entity_kind(declaration.kind)
+            })
+            .count();
+        if found != expected {
+            return Err(TestError::Law {
+                purl,
+                path: path.to_owned(),
+                cause: format!(
+                    "image declaration {:?} {:?} expected {expected}, admitted {found} entities",
+                    declaration.name.bytes, declaration.kind
+                ),
+            });
+        }
+        let mut extensions = authority
+            .image
+            .declaration_extensions(ordinal)
+            .map_err(|error| TestError::Law {
+                purl,
+                path: path.to_owned(),
+                cause: format!("extension decode: {error}"),
+            })?;
+        let mut extension_count = 0;
+        while let Some(extension) = extensions.next() {
+            extension.map_err(|error| TestError::Law {
+                purl,
+                path: path.to_owned(),
+                cause: format!("extension entry: {error}"),
+            })?;
+            extension_count += 1;
+        }
+        if extension_count > 0 && view.language_extension_payload().is_none() {
+            return Err(TestError::Law {
+                purl,
+                path: path.to_owned(),
+                cause: "image extensions absent from fragment".into(),
+            });
+        }
+    }
+    let references = authority.image.references().count();
+    let mut occurrences = 0;
+    if let Some(rows) = view.occurrences() {
+        for row in rows {
+            let row = row.map_err(|error| TestError::Law {
+                purl,
+                path: path.to_owned(),
+                cause: format!("occurrence decode: {error}"),
+            })?;
+            if usize::try_from(row.occurrence.span.end)
+                .ok()
+                .is_none_or(|end| end > source.len())
+            {
+                return Err(TestError::Law {
+                    purl,
+                    path: path.to_owned(),
+                    cause: format!(
+                        "occurrence span ends outside source: {:?}",
+                        row.occurrence.span
+                    ),
+                });
+            }
+            occurrences += 1;
+        }
+    }
+    if occurrences != references {
+        return Err(TestError::Law {
+            purl,
+            path: path.to_owned(),
+            cause: format!("image references {references}, fragment occurrences {occurrences}"),
+        });
+    }
+    Ok((declarations.len(), occurrences))
+}
+
+fn render_review(
+    purl: &'static str,
+    path: &str,
+    source: &[u8],
+    image: &[u8],
+    work: &Path,
+) -> Result<(), TestError> {
+    let tool = ResolvedToolchain::from_version(
+        NativeTool::JavaCompiler,
+        Path::new("/usr/bin/true"),
+        b"fixture",
+    )
+    .map_err(|error| TestError::Compile(error.to_string()))?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [0; 64 * 1024];
+    let built = compile_ir(
+        CompileRequest {
+            profile: LanguageProfile::Java(JavaRelease::Java21),
+            stage: Stage::LowerIr,
+            source,
+            toolchain: ToolchainSelection::ResolvedNative(tool),
+            authority: SemanticAuthorityInput::Java { image },
+            control: CompileControl {
+                deadline: Instant::now() + COMPILE_DEADLINE,
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: work,
+        },
+    )
+    .map_err(|error| TestError::Compile(format!("{purl} {path}: {error}")))?;
+    let simple = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(".java"))
+        .ok_or_else(|| TestError::Law {
+            purl,
+            path: path.to_owned(),
+            cause: "primary declaration has no simple name".into(),
+        })?;
+    let rendered = built
+        .ir
+        .items()
+        .find(|item| item.kind() != ItemKind::Function && item.name() == simple.as_bytes())
+        .and_then(|item| built.ir.signature(item.id()))
+        .map(|signature| signature.to_string())
+        .ok_or_else(|| TestError::Law {
+            purl,
+            path: path.to_owned(),
+            cause: "primary entity signature was not renderable".into(),
+        })?;
+    if !rendered.contains(simple) {
+        return Err(TestError::Law {
+            purl,
+            path: path.to_owned(),
+            cause: format!("rendered signature omitted simple name {simple}"),
+        });
+    }
+    Ok(())
+}
+
 struct OpenBuffers {
     manifest: Vec<u8>,
-    facts: [Option<StoredFragmentFacts>; PUBLICATION_ENTRY_COUNT],
+    facts: Vec<Option<StoredFragmentFacts>>,
     fragment: Vec<u8>,
     locality: Vec<u8>,
 }
 impl OpenBuffers {
-    fn new() -> Self {
+    fn new(entry_count: usize) -> Self {
         Self {
             manifest: vec![0; 1 << 20],
-            facts: [None; PUBLICATION_ENTRY_COUNT],
+            facts: vec![None; entry_count],
             fragment: vec![0; 16 << 20],
             locality: vec![0; 1 << 16],
         }
@@ -230,19 +411,19 @@ impl OpenBuffers {
 
 struct PublishBuffers {
     manifest: Vec<u8>,
-    facts: [Option<StoredFragmentFacts>; PUBLICATION_ENTRY_COUNT],
-    ordinals: [usize; PUBLICATION_ENTRY_COUNT],
+    facts: Vec<Option<StoredFragmentFacts>>,
+    ordinals: Vec<usize>,
     locality: Vec<u8>,
     binding: Vec<u8>,
 }
 impl PublishBuffers {
-    fn new() -> Self {
+    fn new(entry_count: usize) -> Self {
         Self {
             manifest: vec![0; 1 << 20],
-            facts: [None; PUBLICATION_ENTRY_COUNT],
-            ordinals: [0; PUBLICATION_ENTRY_COUNT],
+            facts: vec![None; entry_count],
+            ordinals: vec![0; entry_count],
             locality: vec![0; 1 << 16],
-            binding: vec![0; 128 * PUBLICATION_ENTRY_COUNT],
+            binding: vec![0; 128 * entry_count],
         }
     }
 }
@@ -292,10 +473,9 @@ fn index(
     compilation: compiler_publication::OpenedCompilation<'_, '_>,
     wanted: &[u8],
 ) -> Result<(), TestError> {
-    let mut scratch: Vec<_> = (0..PUBLICATION_ENTRY_COUNT)
-        .map(|_| IndexScratch::new())
-        .collect();
-    let mut prepared = Vec::with_capacity(PUBLICATION_ENTRY_COUNT);
+    let fragment_count = compilation.fragments().count();
+    let mut scratch: Vec<_> = (0..fragment_count).map(|_| IndexScratch::new()).collect();
+    let mut prepared = Vec::with_capacity(fragment_count);
     for (slots, fragment) in scratch.iter_mut().zip(compilation.fragments()) {
         let fragment = fragment.map_err(|e| TestError::Index(e.to_string()))?;
         let built = build(
@@ -324,8 +504,8 @@ fn index(
             "required name absent from built index rows",
         ));
     }
-    let mut exact_ids = [prepared[0].exact.id; PUBLICATION_ENTRY_COUNT];
-    let mut lexical_ids = [prepared[0].lexical.id; PUBLICATION_ENTRY_COUNT];
+    let mut exact_ids = vec![prepared[0].exact.id; prepared.len()];
+    let mut lexical_ids = vec![prepared[0].lexical.id; prepared.len()];
     let sealed = seal_compilation_index(
         compilation,
         &prepared,
@@ -348,11 +528,14 @@ struct FileLaws {
     fragment_bytes: usize,
     occurrence_present: bool,
     occurrence_absent: bool,
+    fragment: Vec<u8>,
+    declarations: usize,
+    references: usize,
 }
 
 fn lower_frozen_file(
     purl: &'static str,
-    path: &'static str,
+    path: &str,
     source: &[u8],
     classpath: &[&Path],
     work: &Path,
@@ -369,8 +552,8 @@ fn lower_frozen_file(
     if image_bytes.len() > MAX_IMAGE_BYTES {
         return Err(TestError::Law {
             purl,
-            path,
-            cause: "image exceeded 16 MiB",
+            path: path.to_owned(),
+            cause: "image exceeded 16 MiB".into(),
         });
     }
     let mut fragment_output = vec![0; MAX_FRAGMENT_BYTES];
@@ -379,25 +562,27 @@ fn lower_frozen_file(
     if fragment.fragment.as_ref().len() > MAX_FRAGMENT_BYTES {
         return Err(TestError::Law {
             purl,
-            path,
-            cause: "fragment exceeded 4 MiB",
+            path: path.to_owned(),
+            cause: "fragment exceeded 4 MiB".into(),
         });
     }
     let view = FragmentView::validate(fragment.fragment.as_ref())
         .map_err(|error| TestError::Fragment(format!("{purl} {path}: {error}")))?;
+    let (declarations, references) = deep_review(purl, path, source, &image_bytes, &view)?;
+    render_review(purl, path, source, &image_bytes, work)?;
     let qualified = qualified_name(path);
     if !entity_present(&view, qualified.as_bytes()) {
         return Err(TestError::Law {
             purl,
-            path,
-            cause: "declared entity missing by qualified name",
+            path: path.to_owned(),
+            cause: "declared entity missing by qualified name".into(),
         });
     }
     if view.language_extension_payload().is_none() || view.type_facts().is_none() {
         return Err(TestError::Law {
             purl,
-            path,
-            cause: "Java extension payload or type facts absent",
+            path: path.to_owned(),
+            cause: "Java extension payload or type facts absent".into(),
         });
     }
     let occurrence_present = view
@@ -409,6 +594,9 @@ fn lower_frozen_file(
         fragment_bytes: fragment.fragment.as_ref().len(),
         occurrence_present,
         occurrence_absent,
+        fragment: fragment.fragment.as_ref().to_vec(),
+        declarations,
+        references,
     })
 }
 
@@ -457,12 +645,13 @@ fn journey_row(
     let parsed = Jar::parse(&source_bytes)
         .map_err(|error| TestError::Jar(format!("{}: {error}", row.purl)))?;
     let mut found: Vec<(String, Vec<u8>)> = Vec::new();
+    let whole_artifact = row_index == 0;
     let mut scratch = Vec::new();
     for entry in parsed.entries() {
         let entry = entry.map_err(|error| TestError::Jar(format!("{}: {error}", row.purl)))?;
         let name = std::str::from_utf8(entry.name())
             .map_err(|_| TestError::Jar(format!("{}: non-UTF8 entry name", row.purl)))?;
-        if row.entries.contains(&name) {
+        if (whole_artifact && name.ends_with(".java")) || row.entries.contains(&name) {
             if !entry.is_safe_relative_path() {
                 return Err(TestError::Jar(format!(
                     "{}: unsafe frozen entry path {name}",
@@ -475,79 +664,105 @@ fn journey_row(
             found.push((name.to_owned(), data.to_vec()));
         }
     }
-    let mut extracted: Vec<(String, Vec<u8>)> = Vec::with_capacity(row.entries.len());
-    for wanted in row.entries {
-        let at =
-            found
-                .iter()
-                .position(|(name, _)| name == wanted)
-                .ok_or(TestError::MissingEntry {
+    let mut extracted = if whole_artifact {
+        found
+    } else {
+        let mut selected = Vec::with_capacity(row.entries.len());
+        for wanted in row.entries {
+            let at = found.iter().position(|(name, _)| name == wanted).ok_or(
+                TestError::MissingEntry {
                     purl: row.purl,
-                    path: wanted,
-                })?;
-        extracted.push(found.swap_remove(at));
+                    path: (*wanted).to_owned(),
+                },
+            )?;
+            selected.push(found.remove(at));
+        }
+        selected
+    };
+    if extracted.is_empty() {
+        return Err(TestError::Law {
+            purl: row.purl,
+            path: "<sources.jar>".into(),
+            cause: "artifact contained no Java entries".into(),
+        });
+    }
+    if whole_artifact {
+        extracted.sort_by(|left, right| left.0.cmp(&right.0));
     }
 
     let mut total_image_bytes = 0;
     let mut total_fragment_bytes = 0;
     let mut occurrence_present = false;
     let mut occurrence_absent = true;
-    for (position, (_, bytes)) in extracted.iter().enumerate() {
-        let laws = lower_frozen_file(
-            row.purl,
-            row.entries[position],
-            bytes,
-            &classpath,
-            &temp.path,
-            bench,
-        )?;
+    let mut fragments = Vec::with_capacity(extracted.len());
+    for (name, bytes) in &extracted {
+        let laws = lower_frozen_file(row.purl, name, bytes, &classpath, &temp.path, bench)?;
         total_image_bytes += laws.image_bytes;
         total_fragment_bytes += laws.fragment_bytes;
         occurrence_present |= laws.occurrence_present;
         occurrence_absent &= laws.occurrence_absent;
+        let declarations = laws.declarations;
+        let references = laws.references;
+        println!(
+            "CORPUS|{}|{}|{}|{}|{}",
+            row.purl,
+            name,
+            laws.image_bytes,
+            laws.fragment_bytes,
+            started.elapsed().as_millis()
+        );
+        fragments.push(laws.fragment);
+        let _ = (declarations, references);
     }
     if row_index == ANNOTATIONS_ROW {
         if occurrence_present || !occurrence_absent {
             return Err(TestError::Law {
                 purl: row.purl,
-                path: row.entries[0],
-                cause: "annotation-only row did not assert the typed occurrence absence",
+                path: extracted[0].0.clone(),
+                cause: "annotation-only row did not assert the typed occurrence absence".into(),
             });
         }
     } else if !occurrence_present {
         return Err(TestError::Law {
             purl: row.purl,
-            path: row.entries[0],
-            cause: "row carried no occurrence row",
+            path: extracted[0].0.clone(),
+            cause: "row carried no occurrence row".into(),
         });
     }
     println!(
-        "CORPUS|{}|{}|{}|{}|{}",
+        "CORPUS|{}|{}|{}|{}|{}|{}|{}",
         row.purl,
         extracted.len(),
         total_image_bytes,
         total_fragment_bytes,
-        started.elapsed().as_millis()
+        started.elapsed().as_millis(),
+        fragments
+            .iter()
+            .map(|bytes| FragmentView::validate(bytes)
+                .map(|view| view.entities().count())
+                .unwrap_or(0))
+            .sum::<usize>(),
+        fragments
+            .iter()
+            .map(|bytes| FragmentView::validate(bytes)
+                .ok()
+                .and_then(|view| view.occurrences().map(|rows| rows.count()))
+                .unwrap_or(0))
+            .sum::<usize>()
     );
-    if row_index == PUBLICATION_ROW {
-        publication_leg(temp, &extracted, &classpath, bench)?;
-    }
+    publication_leg(row, temp, &extracted, &classpath, bench)?;
     Ok(())
 }
 
-/// The frozen commons-csv leg: publish every fragment, reopen, index, then the
-/// CSVParser generation-2 publication with first-generation digest equality.
+/// Publish every fragment, reopen, index, then append a generation-2 method to
+/// the row's final source with first-generation digest equality.
 fn publication_leg(
+    row: &support::CorpusRow,
     temp: &TempDir,
     extracted: &[(String, Vec<u8>)],
     classpath: &[&Path],
     bench: &mut Bench,
 ) -> Result<(), TestError> {
-    if extracted.len() != PUBLICATION_ENTRY_COUNT {
-        return Err(TestError::Fact(
-            "frozen publication row does not freeze two entries",
-        ));
-    }
     let mut images: Vec<Vec<u8>> = Vec::with_capacity(extracted.len());
     for (position, (_, bytes)) in extracted.iter().enumerate() {
         let sources = [JavaSource {
@@ -558,42 +773,29 @@ fn publication_leg(
         bench
             .image(&sources, classpath, &mut image_bytes)
             .map_err(|error| {
-                TestError::Image(format!(
-                    "{} {}: {error}",
-                    CORPUS[PUBLICATION_ROW].purl, extracted[position].0
-                ))
+                TestError::Image(format!("{} {}: {error}", row.purl, extracted[position].0))
             })?;
         if image_bytes.len() > MAX_IMAGE_BYTES {
             return Err(TestError::Fact("image exceeded 16 MiB"));
         }
         images.push(image_bytes);
     }
-    let mut outputs: Vec<Vec<u8>> = (0..PUBLICATION_ENTRY_COUNT)
+    let mut outputs: Vec<Vec<u8>> = (0..extracted.len())
         .map(|_| vec![0; MAX_FRAGMENT_BYTES])
         .collect();
-    let [format_output, parser_output] = outputs.as_mut_slice() else {
-        return Err(TestError::Fact("publication output slots diverged"));
-    };
-    let format_source = &extracted[0].1;
-    let parser_source = &extracted[1].1;
-    let format_fragment = compile_fragment(format_source, &images[0], format_output, &temp.path)
-        .map_err(|error| {
-            TestError::Compile(format!(
-                "{} CSVFormat.java: {error}",
-                CORPUS[PUBLICATION_ROW].purl
-            ))
-        })?;
-    let parser_fragment = compile_fragment(parser_source, &images[1], parser_output, &temp.path)
-        .map_err(|error| {
-            TestError::Compile(format!(
-                "{} CSVParser.java: {error}",
-                CORPUS[PUBLICATION_ROW].purl
-            ))
-        })?;
-    let first_bytes = [
-        format_fragment.fragment.as_ref().to_vec(),
-        parser_fragment.fragment.as_ref().to_vec(),
-    ];
+    let mut compiled = Vec::with_capacity(extracted.len());
+    for ((name, source), (image, output)) in
+        extracted.iter().zip(images.iter().zip(outputs.iter_mut()))
+    {
+        compiled.push(
+            compile_fragment(source, image, output, &temp.path)
+                .map_err(|error| TestError::Compile(format!("{} {name}: {error}", row.purl)))?,
+        );
+    }
+    let first_bytes: Vec<Vec<u8>> = compiled
+        .iter()
+        .map(|fragment| fragment.fragment.as_ref().to_vec())
+        .collect();
 
     let store = temp.path.join("published");
     fs::create_dir_all(&store).map_err(io)?;
@@ -602,11 +804,11 @@ fn publication_leg(
     let journal =
         DurablePublisher::create(&PublicationPaths::in_directory(&journal_path), limits()?)
             .map_err(|e| TestError::Publish(e.to_string()))?;
-    let mut publish_buffers = PublishBuffers::new();
+    let mut publish_buffers = PublishBuffers::new(compiled.len());
     let published = publish_compiled(
         &journal,
         &artifacts,
-        &[format_fragment, parser_fragment],
+        &compiled,
         PublishControl::Continue,
         PublicationScratch {
             manifest_output: &mut publish_buffers.manifest,
@@ -625,7 +827,7 @@ fn publication_leg(
     let reopened =
         DurablePublisher::reopen(&PublicationPaths::in_directory(&journal_path), limits()?)
             .map_err(|e| TestError::Publish(e.to_string()))?;
-    let mut open_buffers = OpenBuffers::new();
+    let mut open_buffers = OpenBuffers::new(compiled.len());
     let opened = open_one(&reopened, &artifacts, &mut open_buffers)?;
     let mut format_present = false;
     let mut parser_present = false;
@@ -633,16 +835,21 @@ fn publication_leg(
         let fragment = fragment.map_err(|e| TestError::Publish(e.to_string()))?;
         let view = FragmentView::validate(fragment.view.as_ref())
             .map_err(|e| TestError::Fragment(e.to_string()))?;
-        format_present |= entity_present(&view, b"org.apache.commons.csv.CSVFormat");
-        parser_present |= entity_present(&view, b"org.apache.commons.csv.CSVParser");
+        format_present |= entity_present(&view, qualified_name(&extracted[0].0).as_bytes());
+        parser_present |= entity_present(
+            &view,
+            qualified_name(&extracted[1.min(extracted.len() - 1)].0).as_bytes(),
+        );
     }
     if !format_present || !parser_present {
         return Err(TestError::Fact(
             "reopened fragments missing the CSV qualified names",
         ));
     }
-    index(opened, b"org.apache.commons.csv.CSVFormat")?;
+    index(opened, qualified_name(&extracted[0].0).as_bytes())?;
 
+    let last = extracted.len() - 1;
+    let parser_source = &extracted[last].1;
     let closing = parser_source
         .iter()
         .rposition(|byte| *byte == b'}')
@@ -652,31 +859,21 @@ fn publication_leg(
     let mut modified = parser_source[..closing].to_vec();
     modified.extend_from_slice(b"  public void added() {}\n}\n");
     let gen2_sources = [JavaSource {
-        name: Path::new(extracted[1].0.as_str()),
+        name: Path::new(extracted[last].0.as_str()),
         bytes: &modified,
     }];
     let mut gen2_image = Vec::new();
     bench
         .image(&gen2_sources, classpath, &mut gen2_image)
-        .map_err(|error| {
-            TestError::Image(format!(
-                "{} CSVParser.java gen-2: {error}",
-                CORPUS[PUBLICATION_ROW].purl
-            ))
-        })?;
+        .map_err(|error| TestError::Image(format!("{} CSVParser.java gen-2: {error}", row.purl)))?;
     if gen2_image.len() > MAX_IMAGE_BYTES {
         return Err(TestError::Fact("image exceeded 16 MiB"));
     }
     let mut gen2_output = vec![0; MAX_FRAGMENT_BYTES];
     let second = compile_fragment(&modified, &gen2_image, &mut gen2_output, &temp.path).map_err(
-        |error| {
-            TestError::Compile(format!(
-                "{} CSVParser.java gen-2: {error}",
-                CORPUS[PUBLICATION_ROW].purl
-            ))
-        },
+        |error| TestError::Compile(format!("{} CSVParser.java gen-2: {error}", row.purl)),
     )?;
-    let mut gen2_buffers = PublishBuffers::new();
+    let mut gen2_buffers = PublishBuffers::new(1);
     let second_published = publish_compiled(
         &reopened,
         &artifacts,
@@ -716,7 +913,7 @@ fn publication_leg(
         .map_err(|e| TestError::Publish(e.to_string()))?;
 
     let mut old_manifest = vec![0; 1 << 20];
-    let mut old_facts = [None; PUBLICATION_ENTRY_COUNT];
+    let mut old_facts = vec![None; first_bytes.len()];
     let old = ImmutableManifestStore::new(&artifacts)
         .map_err(|e| TestError::Publish(e.to_string()))?
         .open(first_identity, &mut old_manifest, &mut old_facts)
@@ -742,6 +939,7 @@ fn publication_leg(
 #[test]
 fn real_maven_corpus_lowers_and_publishes() -> Result<(), TestError> {
     let central = Central::new(CENTRAL_HOST);
+    let started = Instant::now();
     let mut bench = Bench::new()?;
     for row_index in 0..CORPUS.len() {
         run_row(row_index, &central, &mut bench)?;
@@ -749,6 +947,11 @@ fn real_maven_corpus_lowers_and_publishes() -> Result<(), TestError> {
     if let Some(error) = bench.harness.take_cleanup_error() {
         return Err(TestError::Io { source: error });
     }
+    println!(
+        "CORPUS|TOTAL|{}|{}",
+        started.elapsed().as_millis(),
+        CORPUS.len()
+    );
     Ok(())
 }
 
