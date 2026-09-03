@@ -3314,7 +3314,7 @@ mod tests {
             let plain = FragmentView::validate(&without).map_err(TestError::Validate)?;
             let checked = FragmentView::validate(&with_bytes).map_err(TestError::Validate)?;
             // Without the checker the computed cell is absent for every fact.
-            let (n, _, _) = fact_named(&plain, b"n")?;
+            let (n, _) = fact_named(&plain, b"n")?;
             let (_, _, computed) = typescript_cell(&plain, n)?;
             assert_eq!(computed, NONE);
             // With the checker the cell names the computed row.
@@ -3361,7 +3361,7 @@ mod tests {
             // module, and the closed lattice has no foreign-nominal row, so
             // the record names the resolved spelling for the backlog instead
             // of claiming it is genuinely unresolvable.
-            let (table, _, _) = fact_named(&checked, b"table")?;
+            let (table, _) = fact_named(&checked, b"table")?;
             let declared = type_fact(&checked, table)?;
             expect_tag(&declared, SemanticTypeTag::Unknown)?;
             assert_eq!(
@@ -3425,6 +3425,8 @@ mod tests {
                 .filter_map(|occurrence| match occurrence.occurrence.target {
                     OccurrenceTarget::Local(entity) => Some(entity.raw),
                     OccurrenceTarget::Foreign(_) => None,
+                    // Stable references are cross-fragment; same-file targets are Local by construction.
+                    OccurrenceTarget::Stable(_) => None,
                 })
                 .filter(|target| {
                     entities(&checked)
@@ -3441,6 +3443,8 @@ mod tests {
                 .filter_map(|occurrence| match occurrence.occurrence.target {
                     OccurrenceTarget::Local(entity) => Some(entity.raw),
                     OccurrenceTarget::Foreign(_) => None,
+                    // Stable references are cross-fragment; same-file targets are Local by construction.
+                    OccurrenceTarget::Stable(_) => None,
                 })
                 .find(|target| {
                     entities(&checked)
@@ -3518,14 +3522,14 @@ mod tests {
                 start: 22,
                 end: 42,
                 r#type: Some(compiler_languages_typescript::TypeTree::Object {
-                    members: Box::new([compiler_languages_typescript::ObjectMember {
+                    members: vec![compiler_languages_typescript::ObjectMember {
                         name: "alpha".to_owned(),
                         optional: false,
                         readonly: false,
                         member_type: compiler_languages_typescript::TypeTree::Primitive {
                             name: "number".to_owned(),
                         },
-                    }]),
+                    }],
                 }),
             }]);
             let bytes = fragment_with_checker(source, Some(&report))?;
@@ -3549,14 +3553,14 @@ mod tests {
                 start: 22,
                 end: 42,
                 r#type: Some(compiler_languages_typescript::TypeTree::Object {
-                    members: Box::new([compiler_languages_typescript::ObjectMember {
+                    members: vec![compiler_languages_typescript::ObjectMember {
                         name: "beta".to_owned(),
                         optional: false,
                         readonly: false,
                         member_type: compiler_languages_typescript::TypeTree::Primitive {
                             name: "number".to_owned(),
                         },
-                    }]),
+                    }],
                 }),
             }]);
             let failure = fragment_with_checker(source, Some(&renamed))
@@ -3692,7 +3696,7 @@ mod tests {
             let source: &[u8] = b"export const q: TotallyMissing = 1;\n";
             let bytes = fragment(source)?;
             let plain = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (q, _, _) = fact_named(&plain, b"q")?;
+            let (q, _) = fact_named(&plain, b"q")?;
             let declared = type_fact(&plain, q)?;
             assert_eq!(
                 declared.record.payload0,
@@ -3716,7 +3720,7 @@ mod tests {
             }]);
             let bytes = fragment_with_checker(source, Some(&report))?;
             let checked = FragmentView::validate(&bytes).map_err(TestError::Validate)?;
-            let (q_checked, _, _) = fact_named(&checked, b"q")?;
+            let (q_checked, _) = fact_named(&checked, b"q")?;
             let resolved = type_fact(&checked, q_checked)?;
             assert_eq!(
                 resolved.record.payload0,
