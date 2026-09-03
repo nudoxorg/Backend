@@ -277,7 +277,7 @@ pub(crate) fn collect<'source>(
                 ordinal
             }
             DeclarationKind::Module | DeclarationKind::Package => {
-                push_root(facts, &names, &declared)?
+                push_root(facts, image, &names, &declared, declaration_index)?
             }
             DeclarationKind::Field
             | DeclarationKind::EnumConstant
@@ -1102,11 +1102,16 @@ impl<'image> Executables<'image> {
 /// Pushes one module or package root with its honestly unknown declared type.
 fn push_root<'source>(
     facts: &mut FactSet<'source>,
+    image: JavaImage<'source>,
     names: &NameIndex<'source>,
     declared: &Declaration<'source>,
+    declaration_index: usize,
 ) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
-    let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind));
+    let inputs = declaration_extensions(image, declaration_index).map_err(terminal)?;
+    let extension = java_facts(facts, &[], &[], &inputs, &[]).map_err(lane_terminal)?;
+    let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind))
+        .with_extension(EmissionExtension::Java(extension));
     let ordinal = push(facts, fact)?;
     push_docs(facts, names, ordinal, declared)?;
     Ok(ordinal)
@@ -1707,15 +1712,17 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use compiler_ir::{DocFactFault, OccurrenceFault};
-    use compiler_ir::{FragmentView, SourceIdentity, TypeFactFault};
+    use compiler_ir::{FragmentView, LanguageExtensionWireFact, SourceIdentity, TypeFactFault};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::Sha256;
 
     const HEADER_BYTES: usize = 176;
+    const V2_HEADER_BYTES: usize = 208;
     const DIRECTORY_OFFSET: usize = 48;
     const DIRECTORY_ENTRY_BYTES: usize = 16;
     const IMAGE_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v1\0";
+    const V2_IMAGE_DOMAIN: &[u8] = b"nudox.java.authority.image.sha256.v2\0";
     const BOUND_DOMAIN: &[u8] = b"nudox.java.bound.authority.image.sha256.v1\0";
     const ABSENT: u32 = u32::MAX;
 
@@ -1817,6 +1824,12 @@ mod tests {
         end: u32,
     }
 
+    #[derive(Clone, Copy)]
+    struct ExtensionRow {
+        tag: u8,
+        value: u32,
+    }
+
     /// One javac authority image under construction, encoded exactly like the
     /// vendored doclet writer: canonical planes, fixed directory, domain
     /// separated checksums, and the source-bound outer envelope.
@@ -1827,6 +1840,9 @@ mod tests {
         symbols: Vec<SymbolRow>,
         declarations: Vec<DeclarationRow>,
         references: Vec<ReferenceRow>,
+        /// Emits v2 only when this per-declaration extension table is non-empty;
+        /// otherwise the original v1 fixture bytes remain the compatibility oracle.
+        extensions: Vec<Vec<ExtensionRow>>,
     }
 
     impl Fixture {
@@ -1858,6 +1874,13 @@ mod tests {
                 symbol: None,
             });
             u32::try_from(self.declarations.len() - 1).unwrap_or(u32::MAX)
+        }
+
+        fn extension(&mut self, declaration: usize, tag: u8, value: u32) {
+            while self.extensions.len() <= declaration {
+                self.extensions.push(Vec::new());
+            }
+            self.extensions[declaration].push(ExtensionRow { tag, value });
         }
 
         fn bind(&self, source: &[u8]) -> Result<Vec<u8>, TestError> {
@@ -1948,26 +1971,64 @@ mod tests {
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
             }
-            let sections = [
-                atoms,
-                atom_bytes,
-                types,
-                type_children,
-                symbols,
-                symbol_parameters,
-                declarations,
-                references,
-            ];
-            let row_bytes = [8_u16, 1, 16, 4, 16, 4, 32, 20];
-            let mut image = vec![0_u8; HEADER_BYTES];
+            let mut declaration_extensions = Vec::new();
+            let mut extension_entries = Vec::new();
+            for index in 0..self.declarations.len() {
+                let rows = self.extensions.get(index).map_or(&[][..], Vec::as_slice);
+                let start = if rows.is_empty() {
+                    0
+                } else {
+                    u32::try_from(extension_entries.len() / 8)?
+                };
+                declaration_extensions.extend_from_slice(&start.to_le_bytes());
+                declaration_extensions.extend_from_slice(&u32::try_from(rows.len())?.to_le_bytes());
+                for row in rows {
+                    extension_entries.push(row.tag);
+                    extension_entries.extend_from_slice(&[0; 3]);
+                    extension_entries.extend_from_slice(&row.value.to_le_bytes());
+                }
+            }
+            let v2 = !extension_entries.is_empty();
+            let sections = if v2 {
+                vec![
+                    atoms,
+                    atom_bytes,
+                    types,
+                    type_children,
+                    symbols,
+                    symbol_parameters,
+                    declarations,
+                    references,
+                    declaration_extensions,
+                    extension_entries,
+                ]
+            } else {
+                vec![
+                    atoms,
+                    atom_bytes,
+                    types,
+                    type_children,
+                    symbols,
+                    symbol_parameters,
+                    declarations,
+                    references,
+                ]
+            };
+            let row_bytes = if v2 {
+                vec![8_u16, 1, 16, 4, 16, 4, 32, 20, 8, 8]
+            } else {
+                vec![8_u16, 1, 16, 4, 16, 4, 32, 20]
+            };
+            let header_bytes = if v2 { V2_HEADER_BYTES } else { HEADER_BYTES };
+            let mut image = vec![0_u8; header_bytes];
             image[..4].copy_from_slice(b"NJAI");
-            image[4..6].copy_from_slice(&1_u16.to_le_bytes());
-            image[6..8].copy_from_slice(&u16::try_from(HEADER_BYTES)?.to_le_bytes());
+            image[4..6].copy_from_slice(&(if v2 { 2_u16 } else { 1_u16 }).to_le_bytes());
+            image[6..8].copy_from_slice(&u16::try_from(header_bytes)?.to_le_bytes());
             image[8..10].copy_from_slice(&21_u16.to_le_bytes());
-            image[10..12].copy_from_slice(&8_u16.to_le_bytes());
+            image[10..12].copy_from_slice(&u16::try_from(sections.len())?.to_le_bytes());
             let body = sections.iter().map(Vec::len).sum::<usize>();
             image[12..16].copy_from_slice(&u32::try_from(body)?.to_le_bytes());
-            let mut offset = HEADER_BYTES;
+            let mut offset = header_bytes;
             for (index, section) in sections.iter().enumerate() {
                 let entry = DIRECTORY_OFFSET + index * DIRECTORY_ENTRY_BYTES;
                 image[entry..entry + 2].copy_from_slice(&u16::try_from(index + 1)?.to_le_bytes());
@@ -1980,9 +2041,9 @@ mod tests {
                 offset += section.len();
             }
             let mut digest = Sha256::new();
-            digest.update(IMAGE_DOMAIN);
+            digest.update(if v2 { V2_IMAGE_DOMAIN } else { IMAGE_DOMAIN });
             digest.update(&image[..16]);
-            digest.update(&image[DIRECTORY_OFFSET..HEADER_BYTES]);
+            digest.update(&image[DIRECTORY_OFFSET..header_bytes]);
             for section in &sections {
                 digest.update(section);
             }
@@ -2032,6 +2093,76 @@ mod tests {
             .nth(ordinal)
             .ok_or(TestError::Missing("type row"))?
             .map_err(TestError::from)
+    }
+
+    fn java_extension(view: &FragmentView<'_>, ordinal: usize) -> Result<JavaFacts, TestError> {
+        let payload = view
+            .language_extension_payload()
+            .ok_or(TestError::Missing("extension section"))?;
+        let word = |at: usize| -> Result<u32, TestError> {
+            let bytes: [u8; 4] = payload
+                .get(at..at + 4)
+                .ok_or(TestError::Missing("extension word"))?
+                .try_into()
+                .map_err(|_| TestError::Missing("extension word"))?;
+            Ok(u32::from_le_bytes(bytes))
+        };
+        let directory = 16 + 5 * 20;
+        let rows = usize::try_from(word(directory + 4)?)?;
+        let offset = usize::try_from(word(directory + 12)?)?;
+        let fact = word(offset + ordinal * 4)?;
+        if fact == ABSENT {
+            return Err(TestError::Missing("extension row"));
+        }
+        JavaFacts::decode(payload, offset + rows * 4 + usize::try_from(fact)? * 16)
+            .ok_or(TestError::Missing("java extension decode"))
+    }
+
+    fn pool_list(pools: &[u8], lane: usize, ordinal: usize) -> Result<Vec<u32>, TestError> {
+        let word = |at: usize| -> Result<u32, TestError> {
+            let bytes: [u8; 4] = pools
+                .get(at..at + 4)
+                .ok_or(TestError::Missing("pool word"))?
+                .try_into()
+                .map_err(|_| TestError::Missing("pool word"))?;
+            Ok(u32::from_le_bytes(bytes))
+        };
+        let mut cursor = 4;
+        for current_lane in 0..3 {
+            let count = usize::try_from(word(cursor)?)?;
+            cursor += 4;
+            for current in 0..count {
+                let length = usize::try_from(word(cursor)?)?;
+                if current_lane == lane && current == ordinal {
+                    return (0..length)
+                        .map(|index| word(cursor + 4 + index * 4))
+                        .collect();
+                }
+                cursor += 4 + length * 4;
+            }
+        }
+        Err(TestError::Missing("pooled list"))
+    }
+
+    fn atom_list<'a>(
+        view: &'a FragmentView<'a>,
+        ordinal: usize,
+    ) -> Result<Vec<&'a [u8]>, TestError> {
+        let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+        pool_list(
+            view.extension_pool_payload()
+                .ok_or(TestError::Missing("pools"))?,
+            0,
+            ordinal,
+        )?
+        .into_iter()
+        .map(|index| {
+            atoms
+                .get(usize::try_from(index)?)
+                .copied()
+                .ok_or(TestError::Missing("atom ordinal"))
+        })
+        .collect()
     }
 
     #[test]
@@ -2937,5 +3068,278 @@ mod tests {
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }
         Ok(())
+    }
+
+    #[test]
+    fn throws_entries_create_parameter_carriers_and_an_ordered_type_list() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let first = fix.declared(b"java.io.IOException");
+        let second = fix.declared(b"java.sql.SQLException");
+        let name = fix.atom(b"run");
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        fix.symbols.push(SymbolRow {
+            owner: 0,
+            name,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(void),
+            symbol: Some(0),
+        });
+        fix.extension(1, 1, first);
+        fix.extension(1, 1, second);
+        let bytes = lower(
+            &fix,
+            b"class C { void run() throws IOException, SQLException {} }",
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        if view
+            .entities()
+            .nth(1)
+            .ok_or(TestError::Missing("first carrier"))?
+            .kind
+            != EntityKind::Parameter
+            || view
+                .entities()
+                .nth(2)
+                .ok_or(TestError::Missing("second carrier"))?
+                .kind
+                != EntityKind::Parameter
+        {
+            return Err(TestError::Missing("throws carriers"));
+        }
+        let extension = java_extension(&view, 3)?;
+        let throws = pool_list(
+            view.extension_pool_payload()
+                .ok_or(TestError::Missing("pools"))?,
+            1,
+            extension.throws.raw as usize,
+        )?;
+        if throws != vec![1, 2] {
+            return Err(TestError::Missing("throws image order"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn annotations_decode_the_exact_interned_atom_bytes_for_class_and_method()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let name = fix.atom(b"run");
+        let void = u32::try_from(fix.types.len())?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            flags: 0,
+            atom: None,
+            children: Vec::new(),
+        });
+        fix.symbols.push(SymbolRow {
+            owner: 0,
+            name,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(void),
+            symbol: Some(0),
+        });
+        let class_atom = fix.atom(b"Ldemo/Class;");
+        let method_atom = fix.atom(b"Ldemo/Method;");
+        fix.extension(0, 2, u32::try_from(class_atom)?);
+        fix.extension(1, 2, u32::try_from(method_atom)?);
+        let bytes = lower(&fix, b"class C { void run() {} }")?;
+        let view = FragmentView::validate(&bytes)?;
+        if atom_list(&view, java_extension(&view, 0)?.annotations.raw as usize)?
+            != vec![b"Ldemo/Class;".as_slice()]
+            || atom_list(&view, java_extension(&view, 1)?.annotations.raw as usize)?
+                != vec![b"Ldemo/Method;".as_slice()]
+        {
+            return Err(TestError::Missing("exact annotation atoms"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn record_components_attach_after_fields_and_retain_record_annotations() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::default();
+        let record = fix.atom(b"demo.R");
+        let ty = fix.declared(b"demo.R");
+        fix.declarations.push(DeclarationRow {
+            kind: 5,
+            name: record,
+            owner: None,
+            documentation: None,
+            semantic_type: Some(ty),
+            symbol: None,
+        });
+        let one = fix.atom(b"one");
+        let two = fix.atom(b"two");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: one,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(ty),
+            symbol: None,
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: two,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(ty),
+            symbol: None,
+        });
+        let annotation = fix.atom(b"Ldemo/Record;");
+        fix.extension(0, 2, u32::try_from(annotation)?);
+        fix.extension(0, 3, 1);
+        fix.extension(0, 3, 2);
+        let bytes = lower(&fix, b"record R(int one, int two) {}")?;
+        let view = FragmentView::validate(&bytes)?;
+        let extension = java_extension(&view, 0)?;
+        let components = pool_list(
+            view.extension_pool_payload()
+                .ok_or(TestError::Missing("pools"))?,
+            2,
+            extension.record_components.raw as usize,
+        )?;
+        if components != vec![1, 2]
+            || atom_list(&view, extension.annotations.raw as usize)?
+                != vec![b"Ldemo/Record;".as_slice()]
+        {
+            return Err(TestError::Missing("attached record extension"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_annotations_are_not_dropped_by_root_projection() -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        let module = fix.atom(b"demo.module");
+        fix.declarations.push(DeclarationRow {
+            kind: 1,
+            name: module,
+            owner: None,
+            documentation: None,
+            semantic_type: None,
+            symbol: None,
+        });
+        let annotation = fix.atom(b"Ldemo/Module;");
+        fix.extension(0, 2, u32::try_from(annotation)?);
+        let bytes = lower(&fix, b"module demo.module;")?;
+        let view = FragmentView::validate(&bytes)?;
+        if atom_list(&view, java_extension(&view, 0)?.annotations.raw as usize)?
+            != vec![b"Ldemo/Module;".as_slice()]
+        {
+            return Err(TestError::Missing("module annotation"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn two_hundred_fifty_seven_programmatic_fields_fold_through_typed_capacity()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let ty = fix.declared(b"foreign.T");
+        for index in 0..257 {
+            let name = fix.atom(index.to_string().as_bytes());
+            fix.declarations.push(DeclarationRow {
+                kind: 8,
+                name,
+                owner: Some(0),
+                documentation: None,
+                semantic_type: Some(ty),
+                symbol: None,
+            });
+        }
+        match lower(&fix, b"class C {}") {
+            Err(TestError::Collect(JavaCollectError::Lowering(
+                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            ))) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(TestError::Missing("capacity rejection")),
+        }
+    }
+
+    #[test]
+    fn generic_application_depth_sixty_four_succeeds_and_sixty_five_folds() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::default();
+        fix.class(b"demo.C");
+        let mut root = fix.declared(b"T0");
+        for depth in 1..=63 {
+            let atom = fix.atom(format!("T{depth}").as_bytes());
+            let next = u32::try_from(fix.types.len())?;
+            fix.types.push(TypeRow {
+                kind: 3,
+                flags: 0,
+                atom: Some(atom),
+                children: vec![root],
+            });
+            root = next;
+        }
+        let field = fix.atom(b"value");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: field,
+            owner: Some(0),
+            documentation: None,
+            semantic_type: Some(root),
+            symbol: None,
+        });
+        let source = b"class C { T63 value; }";
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let apply_rows = view
+            .type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .map(|fact| fact.map(|fact| usize::from(fact.record.tag == SemanticTypeTag::Apply)))
+            .try_fold(0usize, |count, fact| Ok::<_, TypeFactFault>(count + fact?))?;
+        if apply_rows != 63 {
+            return Err(TestError::Missing("depth sixty-four apply"));
+        }
+        let mut deeper = fix.clone();
+        let atom = deeper.atom(b"T64");
+        let intermediate = u32::try_from(deeper.types.len())?;
+        deeper.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(atom),
+            children: vec![root],
+        });
+        let atom = deeper.atom(b"T65");
+        let next = u32::try_from(deeper.types.len())?;
+        deeper.types.push(TypeRow {
+            kind: 3,
+            flags: 0,
+            atom: Some(atom),
+            children: vec![intermediate],
+        });
+        deeper.declarations[1].semantic_type = Some(next);
+        match lower(&deeper, source) {
+            Err(TestError::Collect(JavaCollectError::Lowering(
+                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            ))) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(TestError::Missing("depth sixty-five rejection")),
+        }
     }
 }
