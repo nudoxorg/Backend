@@ -14,9 +14,7 @@ use compiler_driver::{
 use compiler_ir::{
     DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, SemanticTypeTag,
 };
-use compiler_languages_rust::{
-    RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
-};
+use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
 use compiler_vocabulary::{LanguageProfile, RustEdition, Stage};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
