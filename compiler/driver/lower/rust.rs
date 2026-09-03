@@ -68,7 +68,7 @@ use compiler_languages_rust::{
 };
 use ra_ap_syntax::{
     AstNode, SyntaxNode,
-    ast::{self, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds},
+    ast::{self, HasGenericArgs, HasGenericParams, HasName, HasTypeBounds, HasVisibility},
 };
 
 use crate::{
@@ -512,6 +512,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 self.name_of(declaration)?,
                 constructor(kind)?,
             )
+            .with_visibility(self.declaration_visibility(declaration))
             .with_extension(EmissionExtension::Rust(extension));
             if kind != SemanticKind::Module {
                 let own_ordinal = coordinate(self.facts.len())?;
@@ -770,6 +771,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.name_of(declaration)?,
             LEAF_PRODUCT,
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(lowered.record)
         .with_extension(EmissionExtension::Rust(
             self.empty_extension(RustOwnership::Value)?,
@@ -793,6 +795,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.name_of(declaration)?,
             SemanticProductConstructor::function(arity, 1),
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(record)
         .with_extension(EmissionExtension::Rust(extension));
         for ordinal in &parameter_ordinals {
@@ -853,6 +856,28 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         PARAM_FALLBACK_NAME
     }
 
+    /// Captures only the written visibility prefix; omitted visibility is Rust-private.
+    fn declaration_visibility(&self, declaration: &Decl<'source>) -> compiler_ir::Visibility {
+        let Some(visibility) = ast::AnyHasVisibility::cast(declaration.syntax.clone())
+            .and_then(|item| item.visibility())
+        else {
+            return compiler_ir::Visibility::Private;
+        };
+        let range = visibility.syntax().text_range();
+        let start = u32::from(range.start()) as usize;
+        let end = u32::from(range.end()) as usize;
+        let Some(bytes) = self.source.get(start..end) else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        if bytes == b"pub(crate)" {
+            compiler_ir::Visibility::Package
+        } else if bytes.starts_with(b"pub(") {
+            compiler_ir::Visibility::Restricted
+        } else {
+            compiler_ir::Visibility::Public
+        }
+    }
+
     /// Pushes one member fact with a projected record and its base Rust
     /// extension row, then registers the row.
     fn push_typed(
@@ -869,6 +894,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             self.name_of(declaration)?,
             constructor(declaration.kind)?,
         )
+        .with_visibility(self.declaration_visibility(declaration))
         .typed(lowered.record)
         .with_extension(EmissionExtension::Rust(extension));
         for target in lowered.children {

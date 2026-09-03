@@ -41,11 +41,12 @@ pub fn total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64 {
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const NODE_SIGNATURE: &str = "pub struct Node";
-const VISIT_SIGNATURE: &str = "fn visit(&self, node: Node) -> u8";
+const VISIT_SIGNATURE: &str = "fn visit(self: &Self, node: &Node) -> u8";
 const TOTAL_SIGNATURE: &str =
     "pub fn total(shared: &Node, exclusive: &mut Node, moved: Node) -> u64";
 const NODE_DOCS: &str = "A recursive node storing [Node](struct.Node.html) links.";
 const U8_TYPE: &str = "u8";
+const NEXT_TYPE: &str = "Option<Box<Node>>";
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -293,5 +294,28 @@ fn u8_type_render_is_frozen() -> Result<(), TestError> {
                 kind: ItemKind::Field,
             })?,
         U8_TYPE,
+    )
+}
+
+#[test]
+fn next_type_preserves_foreign_apply_spellings() -> Result<(), TestError> {
+    let ir = compile_fixture()?;
+    let next = item(&ir, b"next", ItemKind::Field)?;
+    let ty =
+        ir.item(next)
+            .and_then(|item| item.semantic_type())
+            .ok_or(TestError::MissingEntity {
+                name: b"next type",
+                kind: ItemKind::Field,
+            })?;
+    assert_golden(
+        "next type",
+        ir.display_type(ty)
+            .map(|display| display.to_string())
+            .ok_or(TestError::MissingEntity {
+                name: b"next type",
+                kind: ItemKind::Field,
+            })?,
+        NEXT_TYPE,
     )
 }
