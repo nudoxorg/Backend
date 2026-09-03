@@ -9,7 +9,7 @@ use compiler_ir::{
     EntityKind, FragmentView, LanguageExtensionWireFact, NominalRef, PrimitiveShape,
     SemanticTypeTag,
 };
-use compiler_vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
+use compiler_vocabulary::{CStandard, CxxStandard, LanguageProfile, NativeTool, Stage};
 use heart_identity::{ContentId, ToolchainDomain};
 use std::{
     path::Path,
@@ -26,7 +26,8 @@ enum TestError {
     Check(&'static str),
 }
 
-fn lower<'output>(
+fn lower_with<'output>(
+    profile: LanguageProfile,
     source: &[u8],
     output: &'output mut [u8],
     native_work: &Path,
@@ -44,7 +45,7 @@ fn lower<'output>(
     );
     let compiled = compile(
         CompileRequest {
-            profile: LanguageProfile::C(CStandard::C23),
+            profile,
             stage: Stage::LowerIr,
             source,
             toolchain,
@@ -134,6 +135,20 @@ fn inspect<F>(source: &[u8], check: F) -> Result<(), TestError>
 where
     F: FnOnce(&FragmentView<'_>) -> Result<(), TestError>,
 {
+    inspect_with(LanguageProfile::C(CStandard::C23), source, check)
+}
+
+fn inspect_cxx<F>(source: &[u8], check: F) -> Result<(), TestError>
+where
+    F: FnOnce(&FragmentView<'_>) -> Result<(), TestError>,
+{
+    inspect_with(LanguageProfile::Cxx(CxxStandard::Cxx23), source, check)
+}
+
+fn inspect_with<F>(profile: LanguageProfile, source: &[u8], check: F) -> Result<(), TestError>
+where
+    F: FnOnce(&FragmentView<'_>) -> Result<(), TestError>,
+{
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TestError::Check("clock before epoch"))?
@@ -142,7 +157,7 @@ where
         std::env::temp_dir().join(format!("nudox-clang-lane-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
-    let result = lower(source, &mut output, &work).and_then(|view| check(&view));
+    let result = lower_with(profile, source, &mut output, &work).and_then(|view| check(&view));
     let removed = std::fs::remove_dir_all(&work);
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
 }
@@ -376,14 +391,23 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             .into_iter()
             .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::FunctionCall)
             .ok_or(TestError::Check("call"))?;
+        // The call is the last `add` spelling in the fixture; the occurrence
+        // span is relative to the owner's extent start.
         let call_offset = source
             .windows(3)
-            .position(|window| window == b"add")
+            .rposition(|window| window == b"add")
             .ok_or(TestError::Check("call spelling"))?;
+        let use_start = source
+            .windows(7)
+            .position(|window| window == b"int use")
+            .ok_or(TestError::Check("owner extent"))?;
+        let relative = call_offset
+            .checked_sub(use_start)
+            .ok_or(TestError::Check("span underflow"))?;
         if call.owner.raw != use_ordinal
             || call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
             || call.occurrence.span.start
-                != u32::try_from(call_offset).map_err(|_| TestError::Check("span overflow"))?
+                != u32::try_from(relative).map_err(|_| TestError::Check("span overflow"))?
         {
             return Err(TestError::Check("call ownership/span"));
         }
@@ -443,7 +467,7 @@ fn qualifiers_storage_and_incomplete_layout_are_extension_facts() -> Result<(), 
 fn template_parameter_is_pooled_and_field_is_typevar() -> Result<(), TestError> {
     let source =
         b"template<typename T> struct Box { T value; };\nstruct User { struct Box<int> box; };\n";
-    inspect(source, |view| {
+    inspect_cxx(source, |view| {
         let got = entities(view);
         if got.iter().any(|(name, _)| *name == b"T") {
             return Err(TestError::Check("T became entity"));
@@ -698,7 +722,12 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let committed = {
-        let view = lower(b"struct Node { struct Node *next; };", &mut output, &work)?;
+        let view = lower_with(
+            LanguageProfile::C(CStandard::C23),
+            b"struct Node { struct Node *next; };",
+            &mut output,
+            &work,
+        )?;
         let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
         let mut entities = Vec::new();
         for entity in view.entities() {
@@ -756,7 +785,8 @@ fn recursive_pointer_rows_are_content_addressed_and_mutation_changes_shape() -> 
     };
     output.fill(0xa5);
     let mutated = {
-        let view = lower(
+        let view = lower_with(
+            LanguageProfile::C(CStandard::C23),
             b"struct Node { const struct Node *next; };",
             &mut output,
             &work,
