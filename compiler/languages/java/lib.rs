@@ -13,8 +13,8 @@ pub mod repo;
 
 pub use bound::{BoundHeaderError, BoundImageError, JavaAuthorityImage};
 pub use image::{
-    Atom, AtomError, AtomIter, Declaration, DeclarationIter, DeclarationKind, DocFlavor,
-    HeaderError, ImageError, ImagePlane, JavaImage, JavaRelease, Modifiers, Origin, Reference,
-    ReferenceIter, SectionError, Symbol, SymbolIter, SymbolRef, TypeChildren, TypeFact, TypeIter,
-    TypeKind, TypeRef,
+    Atom, AtomError, AtomIter, Declaration, DeclarationExtension, DeclarationIter, DeclarationKind,
+    DocFlavor, HeaderError, ImageError, ImagePlane, JavaImage, JavaRelease, Modifiers, Origin,
+    Reference, ReferenceIter, SectionError, Symbol, SymbolIter, SymbolRef, TypeChildren, TypeFact,
+    TypeIter, TypeKind, TypeRef,
 };

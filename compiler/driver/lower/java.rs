@@ -863,14 +863,16 @@ fn intern_row<'image>(
         .record
         .validate(count)
         .map_err(|_| ProjectionFault::IndexCapacity)?;
-    let row = facts
-        .intern_anonymous_type_row(anchor, projected.record)
-        .map_err(|_| ProjectionFault::IndexCapacity)?;
+    // Children append first so the intern consumes them as this row's own
+    // pending range; every target is already interned and strictly backward.
     for target in projected.children.iter().take(projected.child_count) {
         facts
             .anonymous_type_child(*target, None, 0)
             .map_err(|_| ProjectionFault::IndexCapacity)?;
     }
+    let row = facts
+        .intern_anonymous_type_row(anchor, projected.record)
+        .map_err(|fault| ProjectionFault::IndexCapacity)?;
     Ok(row)
 }
 
@@ -2257,13 +2259,14 @@ mod tests {
             semantic_type: Some(outer_row),
             symbol: None,
         });
-        let view =
-            FragmentView::validate(&lower(&fix, b"class Cafe { List<List<String>> grid; }")?)?;
-        // Anonymous rows precede the field: List, List, String, inner Apply;
-        // the field then owns the outer Apply.
+        let bytes = lower(&fix, b"class Cafe { List<List<String>> grid; }")?;
+        let view = FragmentView::validate(&bytes)?;
+        // Anonymous wire rows: 0 outer-base List, 1 inner-base List,
+        // 2 String, 3 inner Apply; the outer Apply is the field fact's own
+        // record. Facts 4 Cafe, 5 grid.
         let list = row(&view, 1)?;
-        let string = row(&view, 3)?;
-        let inner = row(&view, 4)?;
+        let string = row(&view, 2)?;
+        let inner = row(&view, 3)?;
         let field = row(&view, 5)?;
         if list.record.tag != SemanticTypeTag::Unknown
             || list.record.payload0 != reason_cell(TypeReason::UnresolvedExternal)
@@ -2330,14 +2333,14 @@ mod tests {
             kind: 4,
             flags: 0,
             atom: None,
-            children: vec![int_array + 1],
+            children: vec![int],
         });
         let int_array_2 = u32::try_from(fix.types.len())?;
         fix.types.push(TypeRow {
             kind: 4,
             flags: 0,
             atom: None,
-            children: vec![int],
+            children: vec![int_array],
         });
         let numbers = fix.atom(b"numbers");
         fix.declarations.push(DeclarationRow {
@@ -2348,15 +2351,19 @@ mod tests {
             semantic_type: Some(int_array_2),
             symbol: None,
         });
-        let view = FragmentView::validate(&lower(
+        let bytes = lower(
             &fix,
             b"class Cafe { List<String[]> rows; int[][] numbers; }",
-        )?)?;
-        let rows = row(&view, 4)?;
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        // Anonymous wire rows: 0 List leaf, 1 String leaf, 2 [']' over the
+        // String leaf, 3 int primitive; the List Apply and the numbers Array
+        // ride their field facts. Facts 4 Cafe, 5 rows, 6 numbers.
+        let rows = row(&view, 5)?;
         if rows.record.tag != SemanticTypeTag::Apply || rows.record.children.length != 2 {
             return Err(TestError::Missing("array generic argument"));
         }
-        let array = row(&view, 3)?;
+        let array = row(&view, 2)?;
         if array.record.tag != SemanticTypeTag::Array
             || array.record.text != Some(b"[]".as_slice())
             || array.record.children.length != 1
@@ -2395,7 +2402,7 @@ mod tests {
         });
         let wildcard = u32::try_from(fix.types.len())?;
         fix.types.push(TypeRow {
-            kind: 5,
+            kind: 6,
             flags: 1,
             atom: None,
             children: vec![bound],
@@ -2441,22 +2448,27 @@ mod tests {
             semantic_type: Some(intersection),
             symbol: None,
         });
-        let view = FragmentView::validate(&lower(
+        let bytes = lower(
             &fix,
             b"class Cafe { List<? extends List<String>> value; } class Node {}",
-        )?)?;
-        let wildcard = row(&view, 5)?;
+        )?;
+        let view = FragmentView::validate(&bytes)?;
+        // Anonymous wire rows: 0 outer-base List, 1 bound-base List,
+        // 2 String, 3 bound Apply, 4 covariant Wildcard over the Apply;
+        // the outer List Apply rides the value fact. Facts 5 Cafe, 6 value,
+        // 7 Node, 8 both (Intersection over the Node array row and Node).
+        let wildcard = row(&view, 4)?;
         if wildcard.record.tag != SemanticTypeTag::Wildcard
             || wildcard.record.payload0 != VARIANCE_COVARIANT
             || wildcard.record.children.length != 1
-            || row(&view, 4)?.record.tag != SemanticTypeTag::Apply
+            || row(&view, 3)?.record.tag != SemanticTypeTag::Apply
         {
             return Err(TestError::Missing("wildcard structural bound"));
         }
-        let intersection = row(&view, 9)?;
+        let intersection = row(&view, 8)?;
         if intersection.record.tag != SemanticTypeTag::Intersection
             || intersection.record.children.length != 2
-            || row(&view, 8)?.record.tag != SemanticTypeTag::Array
+            || row(&view, 7)?.record.tag != SemanticTypeTag::Array
         {
             return Err(TestError::Missing("intersection structural member"));
         }

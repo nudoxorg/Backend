@@ -627,7 +627,9 @@ fn java_phase(cause: &compiler_languages_java::ImageError) -> AuthorityPhase {
         | compiler_languages_java::ImageError::ChildRange { .. }
         | compiler_languages_java::ImageError::ReferenceRange { .. }
         | compiler_languages_java::ImageError::DocumentationPresence
-        | compiler_languages_java::ImageError::ModifierBits { .. } => AuthorityPhase::Project,
+        | compiler_languages_java::ImageError::ModifierBits { .. }
+        | compiler_languages_java::ImageError::RecordComponentKind { .. }
+        | compiler_languages_java::ImageError::ExtensionReserved => AuthorityPhase::Project,
     }
 }
 
