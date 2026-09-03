@@ -1,6 +1,6 @@
 schema = 1
 capability_id = "go-authority-fidelity"
-state = "phase0"
+state = "phase0-review"
 baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
 baseline_tree = "2c0b26f86 + uncommitted go-lane v4-image working set (committed as baseline checkpoint before any v5 edit)"
 candidate_commit = ""
@@ -35,7 +35,7 @@ effort = "max"
 sandbox = "workspace (shared repo, owned paths below)"
 paths = ["compiler/languages/go/oracle/image.go", "compiler/languages/go/image.rs", "compiler/languages/go/lib.rs (exports only)", "compiler/languages/go/tests/protocol.rs", "compiler/driver/tests/go_image.rs (fixture format only)"]
 card_sha256 = "recorded-at-dispatch"
-result_commit = ""
+result_commit = "3178de64c (chain a358683ce -> 4201c2744 -> 98711b363 -> 3178de64c)"
 retention = "active"
 
 [[reviews]]

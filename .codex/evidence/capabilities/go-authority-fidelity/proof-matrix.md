@@ -66,13 +66,18 @@ pinned): PURL -> fragment ids -> publish -> reopen -> index projection;
 then reopen a pre-v5 fragment (fixture committed at baseline format) and
 assert it still validates. | Green with raw output retained. | RED | W5
 
-## M9 Real-module decoded-output analysis
-Real modules (niche + broad) produce decoded facts matching their sources.
-| Weakened: only the synthetic fixture module runs. | Falsifier: run the
-full pipeline on (a) a small real util module, (b) a real broadly-used
-module; decode fragments; assert representative decoded outputs (declarations,
-docs, satisfaction edges, references) against known source facts; every
-mismatch becomes a Luna card row. | Raw decoded summaries in evidence dir.
+## M9 Real-module corpus proof
+Twenty mostly-random REAL modules (broadly-known + stdlib-adjacent + 17+
+niche, including multi-module repositories) produce decoded fragments whose
+facts match their sources. | Weakened: only one or two curated modules run,
+or assertions check only that the pipeline did not fail. | Falsifier: for
+every corpus module, run the full lifecycle (proxy locate/fetch, workspace
+assembly, oracle, admission, publish, reopen, index); decode each fragment
+and assert representative declarations, signatures with parameter names,
+docs, references, and satisfaction edges against manually read source
+truth; every mismatch becomes a Luna card row; per-module wall/oracle
+timings retained. | Corpus table + raw decoded summaries + timing profiles
+in evidence dir; integration test codifies the pipeline on a pinned subset.
 | RED | W6
 
 ## M10 Baseline repair

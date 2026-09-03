@@ -21,8 +21,10 @@ use thiserror::Error;
 enum TestError {
     #[error(transparent)]
     Toolchain(#[from] ToolchainResolutionError),
-    #[error("configured Go authority image did not compile through the direct admission lane")]
-    Compile,
+    #[error(
+        "configured Go authority image did not compile through the direct admission lane: {cause}"
+    )]
+    Compile { cause: String },
     #[error("validated entity atom coordinate could not fit this platform")]
     AtomCoordinate(#[source] std::num::TryFromIntError),
     #[error("validated entity referenced a missing compact atom")]
@@ -64,7 +66,11 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
         },
     ) {
         Ok(compiled) => compiled,
-        Err(_) => return Err(TestError::Compile),
+        Err(failure) => {
+            return Err(TestError::Compile {
+                cause: format!("{failure:?}"),
+            });
+        }
     };
     for entity in compiled.fragment.entities() {
         if entity.kind != EntityKind::Function {
