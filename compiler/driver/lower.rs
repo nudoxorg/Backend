@@ -10,11 +10,12 @@ use crate::types::LoweringUnsupported;
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AtomId, BuiltinType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir, IrBuilder,
-    ItemKind, ListSpan, NominalRef, PayloadHash, PrimitiveShape, ProductChildRole, ProductChildren,
-    ProductConstructorFault, ProductId, ProductListId, ProductRef, SemanticAtom, SemanticProduct,
-    SemanticProductChild, SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput, TreeLinkTarget,
-    TupleElement, TupleElementKind, TypeChildTarget, TypeId, Visibility,
+    ItemKind, LanguageExtensionInput, ListSpan, NominalRef, PayloadHash, PrimitiveShape,
+    ProductChildRole, ProductChildren, ProductConstructorFault, ProductId, ProductListId,
+    ProductRef, SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
+    TreeItemInput, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId,
+    Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -888,6 +889,111 @@ impl<'source> FactSet<'source> {
             }
             doc_ranges[ordinal] = (start, count);
         }
+        // Rewrite FactSet-local TypeScript parameter starts into live list ids
+        // before the tree commits its extension plane.
+        let mut rewritten_typescript = [empty_typescript_facts(); MAX_EMISSION_FACTS];
+        for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
+            let Some(EmissionExtension::TypeScript(value)) = extension else {
+                continue;
+            };
+            let start = value.type_parameters.raw as usize;
+            let end = self.extensions[..fact_count]
+                .iter()
+                .filter_map(|extension| match extension {
+                    Some(EmissionExtension::TypeScript(value)) => {
+                        let candidate = value.type_parameters.raw as usize;
+                        (candidate > start).then_some(candidate)
+                    }
+                    _ => None,
+                })
+                .min()
+                .unwrap_or(self.type_parameter_len);
+            let parameters =
+                self.type_parameters
+                    .get(start..end)
+                    .ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::TypeParameters,
+                        raw: value.type_parameters.raw,
+                    })?;
+            let mut live_parameters = [compiler_ir::TypeParameter {
+                name: AtomId::new(0),
+                constraint: None,
+                default: None,
+                variance: compiler_ir::Variance::Invariant,
+                is_const: false,
+            }; MAX_TYPE_PARAMETERS];
+            for (index, parameter) in parameters.iter().enumerate() {
+                live_parameters[index] = compiler_ir::TypeParameter {
+                    name: tree.intern_atom(parameter.name)?,
+                    constraint: parameter
+                        .constraint
+                        .map(|row| {
+                            live_type(&mut tree, self, row, &mut type_ids, &mut type_seen, false)
+                        })
+                        .transpose()?
+                        .flatten(),
+                    default: parameter
+                        .default
+                        .map(|row| {
+                            live_type(&mut tree, self, row, &mut type_ids, &mut type_seen, false)
+                        })
+                        .transpose()?
+                        .flatten(),
+                    variance: compiler_ir::Variance::Invariant,
+                    is_const: false,
+                };
+            }
+            let computed = value
+                .computed
+                .map(|id| {
+                    let target = id.erase().raw;
+                    ANONYMOUS_ROW_BASE.checked_add(target).ok_or(
+                        compiler_ir::BuildError::Dangling {
+                            space: compiler_ir::SemanticSpace::Type,
+                            raw: target,
+                        },
+                    )?;
+                    let record = self.anonymous_records.get(target as usize).ok_or(
+                        compiler_ir::BuildError::Dangling {
+                            space: compiler_ir::SemanticSpace::Type,
+                            raw: target,
+                        },
+                    )?;
+                    value.declared.ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: target,
+                    })?;
+                    let computed = match (record.tag, PrimitiveShape::try_from(record.payload0)) {
+                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => {
+                            tree.intern_computed(compiler_ir::ComputedType::KeyOf(TypeId::new(0)))?
+                        }
+                        _ => tree.intern_computed(compiler_ir::ComputedType::This)?,
+                    };
+                    Ok::<_, compiler_ir::BuildError>(computed)
+                })
+                .transpose()?;
+            let declared = value
+                .declared
+                .map(|id| {
+                    live_type(
+                        &mut tree,
+                        self,
+                        id.raw,
+                        &mut type_ids,
+                        &mut type_seen,
+                        false,
+                    )
+                })
+                .transpose()?
+                .flatten();
+            rewritten_typescript[ordinal] = compiler_ir::TypeScriptFacts {
+                type_parameters: tree
+                    .intern_type_parameters(&live_parameters[..parameters.len()])?,
+                declared,
+                computed,
+                ..*value
+            };
+        }
         let empty_item = TreeItemInput {
             name: b"",
             kind: ItemKind::Function,
@@ -902,6 +1008,13 @@ impl<'source> FactSet<'source> {
         };
         let mut items = [empty_item; MAX_EMISSION_FACTS];
         for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
+            let extension = match self.extensions[ordinal].as_ref() {
+                Some(EmissionExtension::TypeScript(_)) => Some(LanguageExtensionInput::TypeScript(
+                    &rewritten_typescript[ordinal],
+                )),
+                // Other lanes retain provisional atom coordinates until fragment admission.
+                Some(_) | None => None,
+            };
             *item = TreeItemInput {
                 name: self.names[ordinal],
                 kind: item_kind(self.kinds[ordinal]),
@@ -912,7 +1025,7 @@ impl<'source> FactSet<'source> {
                 docs: &docs[doc_ranges[ordinal].0..doc_ranges[ordinal].0 + doc_ranges[ordinal].1],
                 attributes: &[],
                 source: None,
-                extension: None,
+                extension,
             };
         }
         tree.commit(&items[..fact_count], &[])?;
@@ -1971,7 +2084,6 @@ pub(super) fn admit<'source, 'output>(
     let mut clang_len = 0_usize;
     let any_extension = facts.extensions[..fact_count].iter().any(Option::is_some);
     for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
-        let row = ordinal as u32;
         match extension {
             Some(EmissionExtension::TypeScript(value)) => {
                 typescript_pool[typescript_len] = *value;

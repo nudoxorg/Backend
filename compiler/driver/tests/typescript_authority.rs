@@ -21,6 +21,9 @@ use compiler_languages_typescript::{
 use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 
 const SIMPLE_SOURCE: &[u8] = b"export const n: number = 1;";
+const GOLDEN_SOURCE: &[u8] = include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
+const GOLDEN_TRANSCRIPT: &[u8] =
+    include_bytes!("../../languages/typescript/tests/transcripts/golden.json");
 
 fn empty_report(source: &[u8]) -> Report {
     let digest = source_digest(source);
@@ -275,12 +278,25 @@ fn compile_report<'diagnostic>(
 }
 
 #[test]
-fn mutated_computed_report_changes_the_corresponding_ir_cell() -> Result<(), CheckerError> {
-    let source = SIMPLE_SOURCE;
-    let transcript = include_bytes!("../../languages/typescript/tests/transcripts/golden.json");
-    let golden = Checker::default().decode(transcript)?;
-    let report = Checker::default().run(TypeScriptSource::TypeScript, source)?;
-    assert_eq!(golden.schema_version, report.schema_version);
+fn build_ir_populates_the_typescript_extension_plane() -> Result<(), CheckerError> {
+    let report = Checker::default().decode(GOLDEN_TRANSCRIPT)?;
+    let mut diagnostic = [0; 1024];
+    let ir = compile_report(GOLDEN_SOURCE, &report, &mut diagnostic).map_err(|error| {
+        CheckerError::Decode {
+            message: format!("golden report did not lower: {error:?}"),
+            transcript: String::new(),
+        }
+    })?;
+    let plane = ir.ir.storage_columns().language_extensions.typescript;
+    assert!(!plane.facts.is_empty());
+    assert!(plane.facts.iter().any(|facts| facts.computed.is_some()));
+    assert!(plane.ids.row_count() > 0);
+    Ok(())
+}
+
+#[test]
+fn mutated_computed_report_changes_the_ir_extension_plane() -> Result<(), CheckerError> {
+    let report = Checker::default().decode(GOLDEN_TRANSCRIPT)?;
     let mut mutated = report.clone();
     let declaration = mutated
         .declarations
@@ -293,27 +309,35 @@ fn mutated_computed_report_changes_the_corresponding_ir_cell() -> Result<(), Che
     declaration.r#type = Some(TypeTree::Primitive {
         name: "string".to_owned(),
     });
-    mutated.source_digest = source_digest(source)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-
     let mut original_diagnostic = [0; 1024];
-    let original = compile_report(source, &report, &mut original_diagnostic).map_err(|error| {
-        CheckerError::Decode {
-            message: format!("golden report did not lower: {error:?}"),
-            transcript: String::new(),
-        }
-    })?;
+    let original =
+        compile_report(GOLDEN_SOURCE, &report, &mut original_diagnostic).map_err(|error| {
+            CheckerError::Decode {
+                message: format!("golden report did not lower: {error:?}"),
+                transcript: String::new(),
+            }
+        })?;
     let mut changed_diagnostic = [0; 1024];
-    let changed = compile_report(source, &mutated, &mut changed_diagnostic).map_err(|error| {
-        CheckerError::Decode {
-            message: format!("mutated report did not lower: {error:?}"),
-            transcript: String::new(),
-        }
-    })?;
-    let original_cell = original.ir.storage_columns().types.headers;
-    let changed_cell = changed.ir.storage_columns().types.headers;
-    assert_ne!(original_cell, changed_cell);
+    let changed =
+        compile_report(GOLDEN_SOURCE, &mutated, &mut changed_diagnostic).map_err(|error| {
+            CheckerError::Decode {
+                message: format!("mutated report did not lower: {error:?}"),
+                transcript: String::new(),
+            }
+        })?;
+    let original_plane = original.ir.storage_columns().language_extensions.typescript;
+    let changed_plane = changed.ir.storage_columns().language_extensions.typescript;
+    assert_eq!(
+        original_plane.ids.row_count(),
+        changed_plane.ids.row_count()
+    );
+    let differing_rows: Vec<_> = (0..original_plane.ids.row_count())
+        .filter_map(|row| {
+            (original_plane.get(compiler_ir::EntityId::new(row as u32))
+                != changed_plane.get(compiler_ir::EntityId::new(row as u32)))
+            .then_some(row)
+        })
+        .collect();
+    assert!(!differing_rows.is_empty());
     Ok(())
 }

@@ -13,8 +13,8 @@ use compiler_ir::{
     TypeWidth,
 };
 use compiler_languages_typescript::{
-    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin,
-    ReferenceFlags, Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
+    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
+    Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -2691,7 +2691,7 @@ fn intern_computed_tree<'source>(
             )?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
             record.text = Some(&b"[]"[..]);
-            intern_computed_row(facts, record, owner, &children)
+            intern_computed_row(facts, record, owner, &children[..1])
         }
         TypeTree::Function { parameters, result } => {
             let mut children = [0_u32; MAX_TYPE_CHILDREN];
