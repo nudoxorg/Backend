@@ -46,6 +46,7 @@ import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
+import com.sun.source.tree.MethodTree;
 import com.sun.source.doctree.DocCommentTree;
 import com.sun.source.util.DocTrees;
 import com.sun.source.util.JavacTask;
@@ -281,8 +282,18 @@ private final Trees trees;
 		}
 		private ExecutableElement enclosingExecutable(TreePath path) {
 			for (TreePath current = path.getParentPath(); current != null; current = current.getParentPath()) {
+				// Only a declared executable lexically owns an invocation: a
+				// MethodInvocationTree node resolves to its callee, so honoring
+				// bare ExecutableElements would attribute argument-nested calls
+				// to a foreign callee.
+				if (!(current.getLeaf() instanceof MethodTree)) continue;
 				Element element = trees.getElement(current);
-				if (element instanceof ExecutableElement executable) return executable;
+				if (!(element instanceof ExecutableElement executable)) continue;
+				// Anonymous classes emit no declaration rows; their methods are
+				// not owners. Walk past them to the enclosing declared executable.
+				Element host = executable.getEnclosingElement();
+				if (host instanceof TypeElement type && type.getSimpleName().isEmpty()) continue;
+				return executable;
 			}
 			return null;
 		}

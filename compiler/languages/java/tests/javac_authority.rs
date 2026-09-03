@@ -167,6 +167,79 @@ fn javac_image_preserves_overload_docs_module_and_diagnostics() -> Result<(), Ja
     temporary.remove()
 }
 
+/// One resolved reference row with the exact expected owner and target atoms.
+/// The owner must be the enclosing declared executable, never a resolved callee
+/// and never a nameless anonymous-class executable.
+struct AttributedCall {
+    target_owner: &'static str,
+    target_name: &'static str,
+    owner_owner: &'static str,
+    owner_name: &'static str,
+}
+
+/// Canonical reference order of `src/demo/Nested.java`: the outer and nested
+/// argument calls of `composed`, then the anonymous-body call of `delayed`.
+const ATTRIBUTED_CALLS: [AttributedCall; 3] = [
+    AttributedCall {
+        target_owner: "demo.Helper",
+        target_name: "render",
+        owner_owner: "demo.Nested",
+        owner_name: "composed",
+    },
+    AttributedCall {
+        target_owner: "java.lang.String",
+        target_name: "valueOf",
+        owner_owner: "demo.Nested",
+        owner_name: "composed",
+    },
+    AttributedCall {
+        target_owner: "java.lang.Integer",
+        target_name: "bitCount",
+        owner_owner: "demo.Nested",
+        owner_name: "delayed",
+    },
+];
+
+#[test]
+fn javac_image_attributes_nested_and_anonymous_calls_to_declared_owner()
+-> Result<(), JavacTestError> {
+    let jdk = PathBuf::from(env::var_os("NUDOX_JDK").ok_or(JavacTestError::MissingJdk)?);
+    let temporary = TemporaryDirectory::create()?;
+    let outcome = (|| {
+        let classes = temporary.path.join("classes");
+        fs::create_dir(&classes).map_err(|source| JavacTestError::Directory {
+            path: classes.clone(),
+            source,
+        })?;
+        compile_producer(&jdk, &classes)?;
+        let bytes = read_image(&run_producer(
+            &jdk,
+            &classes,
+            &temporary.path,
+            "Nested.java",
+        )?)?;
+        let image = JavaAuthorityImage::open(&bytes)?.image;
+        let mut references = image.references();
+        for (reference, expected) in references.by_ref().zip(ATTRIBUTED_CALLS) {
+            let reference = reference?;
+            let target = image.symbol(reference.target)?;
+            let owner = image.symbol(reference.owner)?;
+            assert_atom(target.owner, expected.target_owner)?;
+            assert_atom(target.name, expected.target_name)?;
+            assert_atom(owner.owner, expected.owner_owner)?;
+            assert_atom(owner.name, expected.owner_name)?;
+        }
+        if references.next().is_some() {
+            return Err(JavacTestError::Missing {
+                fact: "exact nested-call reference count",
+            });
+        }
+        Ok(())
+    })();
+    outcome?;
+    temporary.remove()
+}
+
 fn assert_v2_extensions(image: JavaImage<'_>) -> Result<(), JavacTestError> {
     let mut audited = None;
     let mut pair = None;
