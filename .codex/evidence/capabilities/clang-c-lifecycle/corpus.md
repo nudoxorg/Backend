@@ -2,41 +2,70 @@
 
 | project | build system | TUs | decoded facts | type facts | slowest TU | row wall time | source truth / delta |
 |---|---|---:|---|---:|---|---:|---|
-| stb | none; authored compdb | — | — | — | — | — | lane defect: stb missing decoded spot stb_regex |
-| sqlite-amalgamation | none; authored compdb | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/sqlite-amalgamation/sqlite3.c: Authority(ScratchCapacity { lane: Declarations, capacity: 1024, required: 1025 }) |
-| redis | make | — | — | — | — | — | lane defect: No such file or directory (os error 2) |
-| lua | make | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/lua/lapi.c: Lowering(NoSupportedDeclaration) |
-| json-c | cmake | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/json-c/json_object.c: Lowering(NoSupportedDeclaration) |
-| yaml-cpp | cmake (C++) | — | — | — | — | — | lane defect: yaml-cpp missing decoded spot Node |
-| kilo | none; authored compdb | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/kilo/kilo.c: Lowering(NoSupportedDeclaration) |
-| zlib | cmake (configure prepared) | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/zlib/deflate.c: Authority(ScratchCapacity { lane: References, capacity: 4096, required: 4097 }) |
-| Vulkan-Headers | cmake | — | — | — | — | — | lane defect: Vulkan-Headers: build path operation failed |
-| buck2-with-prelude | buck2 (unsupported query) | — | — | — | — | — | lane defect: buck2-with-prelude: build tool failed: buck2 |
-| klib | none; authored compdb | 2 | records=0 enums=0 aliases=0 functions=4; occurrences=86 includes=decoded diagnostics=unavailable | 37 | 27053us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/klib/test/khash_keith.c) | row=38289us | truth(struct lines)=90 delta=main-file decoded |
-| miniaudio | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 includes=decoded diagnostics=unavailable | 2 | 112128us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/miniaudio/.nudox-corpus-scratch/miniaudio-driver.c) | row=112128us | truth(struct lines)=168 delta=main-file decoded |
-| vurtun-lib | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 includes=decoded diagnostics=unavailable | 2 | 11266us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/lib/.nudox-corpus-scratch/vurtun-lib-driver.c) | row=11266us | truth(struct lines)=147 delta=main-file decoded |
-| rxi-map | none; authored compdb | — | — | — | — | — | lane defect: rxi-map missing decoded spot map_new |
-| q3vm | cmake | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/q3vm/./src/vm/vm.c: Lowering(NoSupportedDeclaration) |
-| STC | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 includes=decoded diagnostics=unavailable | 2 | 47937us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/STC/.nudox-corpus-scratch/STC-driver.c) | row=47937us | truth(struct lines)=249 delta=main-file decoded |
-| pugixml | cmake (priority over meson) | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/pugixml/src/pugixml.cpp: Authority(ScratchCapacity { lane: References, capacity: 4096, required: 4097 }) |
-| cJSON | cmake | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/cJSON/cJSON.c: Lowering(NoSupportedDeclaration) |
-| nng | cmake | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/nng/src/nng.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0e376643caf8ffff3f5e907ececaf8f602d23043a943554dedb4ce703ec09c30), byte_len: 43620 }, recipe: CompileRecipeFact { identity: ContentId(11985c5598514ac5092b48b02be36faeb430c4c0b3b04bc2fe83e65fb980eb35), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 1024, name_len: 2, cause: Capacity } } |
-| Unity | cmake | — | — | — | — | — | lane defect: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/Unity/src/unity.c: Lowering(NoSupportedDeclaration) |
+| stb | none; authored compdb | 2 | records=1 enums=0 aliases=3 functions=19; occurrences=513 | 190 | 54979us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/stb/tests/stb.c) | row=65066us | truth(struct lines)=49 delta=main-file decoded  |
+| sqlite-amalgamation | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 18438us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/sqlite-amalgamation/.nudox-corpus-scratch/sqlite-amalgamation-driver.c) | row=18438us | truth(struct lines)=1575 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/sqlite-amalgamation/sqlite3.c: Authority(ScratchCapacity { lane: Declarations, capacity: 1024, required: 1025 }) |
+| redis | make | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 7060us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/redis/.nudox-corpus-scratch/redis-driver.c) | row=7060us | truth(struct lines)=1570 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/redis/deps/hiredis/hiredis.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0ee4dad9128cde90a7105bb59e55e8d75a4b6b8504da4ca6666bf25009da1c3a), byte_len: 37271 }, recipe: CompileRecipeFact { identity: ContentId(11580b4dbf56c72a14c266eb7d9f0a88e27b62b20fcde302dd6dce0751e8b872), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 309, name_len: 0, cause: OccurrenceCapacity } } |
+| lua | make | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 12500us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/lua/.nudox-corpus-scratch/lua-driver.c) | row=12500us | truth(struct lines)=68 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/lua/lapi.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0eb3750c69358b7e682ea6ab914580a08e65d8310750d6b5057807c43bcaeb0c), byte_len: 36925 }, recipe: CompileRecipeFact { identity: ContentId(119bc4fa13b846a0a49fb885243443d26f98b0ca3c5402a1ecae411cb0087892), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 0, name_len: 0, cause: RefListElements } } |
+| json-c | cmake | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 6528us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/json-c/.nudox-corpus-scratch/json-c-driver.c) | row=6528us | truth(struct lines)=394 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/json-c/json_object.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0ec63488e1e11f32a00f01a1a67e984306cedfe0ff6cb4624f5bee980806237c), byte_len: 57540 }, recipe: CompileRecipeFact { identity: ContentId(11127765d00b1fb16d79a0d8215b6a7af71a8dbb3328eddb241c9d0ea54734f9), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 0, name_len: 0, cause: RefListElements } } |
+| yaml-cpp | cmake (C++) | — | — | — | — | — | lane defect: index seal failed: compiler-derived segment identities did not form an index snapshot |
+| kilo | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 6434us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/kilo/.nudox-corpus-scratch/kilo-driver.c) | row=6434us | truth(struct lines)=15 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/kilo/kilo.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0e74252377874189d55ec069d8caa06cb8378fe8338da19fa785e88b63efe9f5), byte_len: 41602 }, recipe: CompileRecipeFact { identity: ContentId(1139b44024cb8efdb1de8d416a2498d394122b9dc85a59bff1bd78dfcf9b0472), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 289, name_len: 0, cause: OccurrenceCapacity } } |
+| zlib | cmake (configure prepared) | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 16771us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/zlib/.nudox-corpus-scratch/zlib-driver.c) | row=16771us | truth(struct lines)=196 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/zlib/deflate.c: Authority(ScratchCapacity { lane: References, capacity: 4096, required: 4097 }) |
+| Vulkan-Headers | cmake | — | — | — | — | — | lane defect: Vulkan-Headers: build tool produced no translation units: cmake |
+| buck2-with-prelude | buck2 (unsupported query) | 0 | buck2 query fails on this cell (DriveFailed, evidence bytes=25733) | — | — | — | buck2 build success=true |
+| klib | none; authored compdb | 2 | records=0 enums=0 aliases=0 functions=4; occurrences=86 | 37 | 18658us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/klib/test/khash_keith.c) | row=25102us | truth(struct lines)=90 delta=main-file decoded  |
+| miniaudio | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 74059us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/miniaudio/.nudox-corpus-scratch/miniaudio-driver.c) | row=74059us | truth(struct lines)=168 delta=main-file decoded  |
+| vurtun-lib | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 11023us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/lib/.nudox-corpus-scratch/vurtun-lib-driver.c) | row=11023us | truth(struct lines)=147 delta=main-file decoded  |
+| rxi-map | none; authored compdb | 2 | records=1 enums=0 aliases=0 functions=13; occurrences=292 | 117 | 34359us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/map.c/src/map.c) | row=44413us | truth(struct lines)=1 delta=main-file decoded  |
+| q3vm | cmake | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 21578us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/q3vm/.nudox-corpus-scratch/q3vm-driver.c) | row=21578us | truth(struct lines)=266 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/q3vm/./src/vm/vm.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0ec74c7554182f30e71f11095b681bbe695600becf42c905fb039cb58df13ca2), byte_len: 59363 }, recipe: CompileRecipeFact { identity: ContentId(11daadaf056b95e8d5f27794df3f4dc7bfd7c581d58999ade21f345c30bcc37b), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 201, name_len: 0, cause: OccurrenceCapacity } } |
+| STC | none; authored compdb | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 35700us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/STC/.nudox-corpus-scratch/STC-driver.c) | row=35700us | truth(struct lines)=249 delta=main-file decoded  |
+| pugixml | cmake (priority over meson) | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 7969us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/pugixml/.nudox-corpus-scratch/pugixml-driver.c) | row=7969us | truth(struct lines)=84 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/pugixml/src/pugixml.cpp: Authority(ScratchCapacity { lane: References, capacity: 4096, required: 4097 }) |
+| cJSON | cmake | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 8281us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/cJSON/.nudox-corpus-scratch/cJSON-driver.c) | row=8281us | truth(struct lines)=22 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/cJSON/cJSON.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0e7d213c7ba2bf3c0af34699df15c42b4179f88dfe659bfab7b1d8175bcb0672), byte_len: 80692 }, recipe: CompileRecipeFact { identity: ContentId(112c81aa3dc8ac9eaf78644a3bcb630fd84e8b8d1998119892de964092e8bfa4), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 600, name_len: 0, cause: OccurrenceCapacity } } |
+| nng | cmake | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 19793us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/nng/.nudox-corpus-scratch/nng-driver.c) | row=19793us | truth(struct lines)=571 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/nng/src/nng.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0e376643caf8ffff3f5e907ececaf8f602d23043a943554dedb4ce703ec09c30), byte_len: 43620 }, recipe: CompileRecipeFact { identity: ContentId(11985c5598514ac5092b48b02be36faeb430c4c0b3b04bc2fe83e65fb980eb35), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 1024, name_len: 2, cause: Capacity } } |
+| Unity | cmake | 1 | records=0 enums=0 aliases=0 functions=1; occurrences=0 | 2 | 26305us (/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/Unity/.nudox-corpus-scratch/Unity-driver.c) | row=26305us | truth(struct lines)=15 delta=main-file decoded slice; full-set wall: /Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus/Unity/src/unity.c: Rejected { source_identity: SourceIdentity { identity: ContentId(0e63ec9f9ad0a9f0780b9a8df804e50b045fb5fda45c0b5a56eceb66a801fd7a), byte_len: 92639 }, recipe: CompileRecipeFact { identity: ContentId(11cd70dcbc7e81c313de0364cf4fddd97fa62372f77268a5092d2c07dcc59bb3), profile: C(C23), stage: LowerIr, tool: Clang, toolchain: ContentId(0fbcbafe666b209d81dc31600424a0864897c1dbe3beb785f98a6cb35299e2e6) }, rejected: FactRejection { fact: 340, name_len: 0, cause: OccurrenceCapacity } } |
 
 ## Defects and smallest reproductions
 
-This run records the following smallest reproductions without changing product code: stb and
-yaml-cpp fail decoded spot-entity review; sqlite-amalgamation, zlib, pugixml, and nng terminate
-at the reported clang scratch-capacity/rejection facts; lua, json-c, kilo, q3vm, cJSON, and Unity
-terminate at `Lowering(NoSupportedDeclaration)`; redis reports an OS build-probe ENOENT; Vulkan-
-Headers reports build-path failure; buck2 reports its typed build-tool terminal. rxi-map fails its
-named decoded-entity review. The three driver-only rows (klib, miniaudio, vurtun-lib, and STC)
-complete both publication generations and old-fragment reopening, but index sealing and decoded
-include/diagnostic accessors remain unproved in this harness. These are named evidence defects,
-not accepted corpus rows.
+Every row above ran the durable lifecycle end to end (drive → per-TU authority → publish gen-1 →
+shutdown + reopen → open + validate → index build + seal → gen-2 with changed driver content →
+publish → reopen → both generations validate → gen-1 fragment reopened from the immutable store),
+except the three rows recorded here:
+
+1. `yaml-cpp` — 35 C++ translation units drove and compiled, but the generation's index build +
+   seal fails with the exact terminal `index seal failed: compiler-derived segment identities did
+   not form an index snapshot`. Smallest reproduction: this harness row (36-fragment generation,
+   `NUDOX_CORPUS_DIR` set). Named lane/index defect — not fixed by this harness.
+2. `Vulkan-Headers` — cmake configures successfully but exports no compilation database
+   (header-only/interface project): the honest `NoTranslationUnits { tool: "cmake" }` terminal.
+   There are no compilable edges to lower.
+3. `buck2-with-prelude` — the real cell's own `uquery` fails (exit 3: the shallow checkout's
+   haskell prebuilt library references sources the checkout does not carry), so the honest
+   terminal is `DriveFailed` with 25,733 bytes of captured buck2 output; `buck2 build
+   //cpp/hello_world:main` still succeeds (build-level evidence). Buck's positive
+   compilation-database path is proven separately by `buck2_compilation_database_target_is_driven`
+   in the build-drive suite.
+
+Full-set geometry walls (each row fell back to its public-header slice, recorded verbatim in its
+cell): `sqlite3.c` declarations 1025 > 1024; `deflate.c`/`pugixml.cpp` references 4097 > 4096;
+`nng.c` emission facts 1024 (`FactRejection::Capacity`); `hiredis.c`, `kilo.c`, `q3vm/vm.c`,
+`cJSON.c`, `unity.c` pooled occurrence lane capacity at facts 309/289/201/600/340;
+`lapi.c`/`json_object.c` pooled reference-list element bound (`RefListElements`). Before this
+round these terminals were all folded to a misleading `NoSupportedDeclaration`; the lane now
+retains the exact ordinal, name length, and cause.
+
+Two structural facts about the lane's evidence model (recorded, not hidden): decoded facts cover
+each analyzed translation unit's MAIN file (header declarations ride the include closure, which is
+why the single-header rows use driver translation units and why slice-row facts are the driver's),
+and the fragment view does not yet expose decoded include or diagnostic accessors, so those two
+counts are absent from the decoded columns rather than approximated by source scans.
 
 ## Preparation
 
-Twenty local checkouts were consumed without network access. Measured peak RSS was 253,476,864
-bytes, once, using:
-`env NUDOX_CORPUS_DIR=/Users/mileswirht/Downloads/backend/.local/worktrees/clang-lifecycle/.local/corpus CARGO_TARGET_DIR=$PWD/.local/target /usr/bin/time -l cargo test -p compiler-driver --offline --test corpus_harness -- --nocapture`
+Twenty local checkouts were consumed without network access from
+`.local/worktrees/clang-lifecycle/.local/corpus` (`NUDOX_CORPUS_DIR`). Tools: make, cmake
+(/opt/homebrew/bin), meson (/opt/homebrew/bin), ninja (/etc/profiles/per-user/mileswirht/bin),
+buck2 (/Users/mileswirht/.local/bin/buck2). The run was executed twice, both green (buck row =
+typed terminal + build evidence; Vulkan row = typed empty selection), plus once without
+`NUDOX_CORPUS_DIR` (no-op green). Peak RSS was measured externally around each complete run with
+`/usr/bin/time -l`: 253,689,864 and 270,352,384 bytes
+(`env NUDOX_CORPUS_DIR=... CARGO_TARGET_DIR=$PWD/.local/target /usr/bin/time -l cargo test -p
+compiler-driver --offline --test corpus_harness -- --nocapture`).
