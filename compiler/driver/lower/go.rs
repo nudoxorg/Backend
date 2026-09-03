@@ -678,7 +678,11 @@ impl<'x, 'source> Projector<'x, 'source> {
         let root = self.root(declaration.type_root, TypeReason::Unannotated)?;
         let (constant_value, constant_group, constant_flags) = if kind == EntityKind::Constant {
             if declaration.value.is_empty() {
-                (AtomListId::new(0), 0, u32::from(declaration.iota))
+                (
+                    AtomListId::new(0),
+                    declaration.const_group,
+                    u32::from(declaration.iota),
+                )
             } else {
                 let atom = self
                     .facts
