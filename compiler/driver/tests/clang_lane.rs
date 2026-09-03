@@ -158,7 +158,16 @@ where
     std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
     let mut output = vec![0xa5_u8; 65_536];
     let result = lower_with(profile, source, &mut output, &work).and_then(|view| check(&view));
-    let removed = std::fs::remove_dir_all(&work);
+    // libclang may still hold the native work dir's files briefly after the
+    // authority is dropped; retry the bounded removal before failing.
+    let mut removed = std::fs::remove_dir_all(&work);
+    for _ in 0..3 {
+        if removed.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        removed = std::fs::remove_dir_all(&work);
+    }
     result.and(removed.map_err(|_| TestError::Check("remove native work")))
 }
 
