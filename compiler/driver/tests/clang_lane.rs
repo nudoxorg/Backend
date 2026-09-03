@@ -204,6 +204,14 @@ fn extension(
     let payload = view
         .language_extension_payload()
         .ok_or(TestError::Check("missing extensions"))?;
+    // Schema cell of the section header: 1 rows are 24 bytes, 2 rows carry
+    // the leading owner ordinal and are 28 bytes.
+    let schema = word(payload, 4)?;
+    let stride = match schema {
+        1 => 24,
+        2 => 28,
+        _ => return Err(TestError::Check("unknown extension schema")),
+    };
     let directory = 16 + 6 * 20;
     let row_count = usize::try_from(word(payload, directory + 4)?)
         .map_err(|_| TestError::Check("row count overflow"))?;
@@ -216,7 +224,7 @@ fn extension(
     }
     let at = offset
         + row_count * 4
-        + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * 24;
+        + usize::try_from(index).map_err(|_| TestError::Check("fact index overflow"))? * stride;
     compiler_ir::ClangFacts::decode(payload, at)
         .ok_or(TestError::Check("extension row undecodable"))
 }
