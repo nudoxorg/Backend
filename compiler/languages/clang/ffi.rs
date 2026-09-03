@@ -748,11 +748,9 @@ fn parse_arguments(
 ) -> Result<([*const c_char; crate::MAX_DATABASE_ARGUMENTS + 2], usize), CollectError> {
     let mut arguments = [ptr::null(); crate::MAX_DATABASE_ARGUMENTS + 2];
     let values = if let Some(values) = input.database_arguments() {
-        values
-            .get(1..values.len().saturating_sub(1))
-            .ok_or(CollectError::Parse {
-                failure: ParseFailure::InvalidArguments,
-            })?
+        values.get(1..).ok_or(CollectError::Parse {
+            failure: ParseFailure::InvalidArguments,
+        })?
     } else {
         &[
             c"-x",
@@ -780,10 +778,24 @@ fn parse_arguments(
         arguments[count + 1] = directory.as_ptr();
         count += 2;
     }
-    for (slot, value) in arguments[count..].iter_mut().zip(values) {
-        *slot = value.as_ptr();
+    // Database callers must provide the true `file` cell.  libclang's database view can
+    // report the output cell after `-o` as the file name, so identity is removed by exact
+    // value rather than by position.
+    let file_name = input.file_name().to_bytes();
+    for value in values {
+        if value.to_bytes() == file_name {
+            continue;
+        }
+        if count == arguments.len() {
+            return Err(CollectError::ScratchCapacity {
+                lane: crate::ScratchLane::Arguments,
+                capacity: arguments.len(),
+                required: count + 1,
+            });
+        }
+        arguments[count] = value.as_ptr();
+        count += 1;
     }
-    count += values.len();
     Ok((arguments, count))
 }
 

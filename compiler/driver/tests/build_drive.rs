@@ -1,9 +1,27 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use compiler_driver::{BuildDriveFailure, discover_and_drive};
+use compiler_driver::{
+    BuildDriveFailure, DrivenTranslationUnit, ResolvedToolchain, compile_build_command,
+    discover_and_drive,
+};
+use compiler_ir::FragmentView;
+use compiler_publication::immutable::ImmutableArtifactStore;
+use compiler_publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
+use compiler_vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
+use heart_identity::ContentId;
+use server_index_build::{IndexBuildScratch, build};
+use server_index_publish::{
+    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+};
+use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
+    mem::MaybeUninit,
+    path::Path,
     path::PathBuf,
     sync::atomic::AtomicBool,
     time::{SystemTime, UNIX_EPOCH},
@@ -14,6 +32,40 @@ fn directory(name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join(format!("nudox-build-drive-{name}-{nonce}"));
     fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+fn toolchain() -> Result<ResolvedToolchain<'static>, Box<dyn std::error::Error>> {
+    Ok(ResolvedToolchain::from_identity(
+        NativeTool::Clang,
+        Path::new("/usr/bin/clang"),
+        ContentId::from_canonical_bytes(b"clang-build-drive-toolchain"),
+    )?)
+}
+
+fn compile_unit<'source>(
+    _database: &Path,
+    unit: &DrivenTranslationUnit,
+    source: &'source [u8],
+    cancelled: &AtomicBool,
+    output: &'source mut [u8],
+) -> Result<compiler_driver::CompiledFragment<'source>, String> {
+    compile_build_command(
+        unit,
+        source,
+        LanguageProfile::C(CStandard::C23),
+        Stage::LowerIr,
+        toolchain().map_err(|error| error.to_string())?,
+        cancelled,
+        output,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn limits() -> Result<PublicationLimits, Box<dyn std::error::Error>> {
+    Ok(PublicationLimits::new(
+        std::num::NonZeroUsize::MIN,
+        std::num::NonZeroUsize::MIN,
+    )?)
 }
 
 #[test]
@@ -70,8 +122,9 @@ fn ccache_compile_argv_is_transported_verbatim() -> Result<(), Box<dyn std::erro
     )?;
     fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
     let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
-    assert_eq!(result.translation_units[0].arguments[0], "clang");
-    assert_eq!(result.translation_units[0].arguments[1], "--sysroot");
+    assert_eq!(result.translation_units[0].arguments[0], "ccache");
+    assert_eq!(result.translation_units[0].arguments[1], "clang");
+    assert_eq!(result.translation_units[0].arguments[2], "--sysroot");
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -82,7 +135,8 @@ fn unknown_compile_command_is_a_typed_terminal() -> Result<(), Box<dyn std::erro
     fs::write(
         root.join("Makefile"),
         "all:\n\tmystery-cc -c main.c -o main.o\n",
-    )?;
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
     let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false));
     assert!(matches!(
@@ -98,9 +152,278 @@ fn cancellation_before_drive_prevents_spawn() -> Result<(), Box<dyn std::error::
     let root = directory("cancel")?;
     fs::write(root.join("Makefile"), "all:\n\tfalse\n")?;
     let cancelled = AtomicBool::new(true);
-    let result = discover_and_drive(&root, &root, &cancelled);
+    let scratch = root.join("scratch");
+    let result = discover_and_drive(&root, &scratch, &cancelled);
     assert!(matches!(result, Err(BuildDriveFailure::Cancelled)));
+    assert!(!scratch.join("build-drive/compile_commands.json").exists());
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn make_failure_retains_typed_capture() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("make-failure")?;
+    fs::write(root.join("Makefile"), "all:\n\t$(error drive failed)\n")
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    match discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false)) {
+        Err(BuildDriveFailure::DriveFailed { tool, captured }) => {
+            assert_eq!(tool, "make");
+            assert!(!captured.bytes.is_empty());
+        }
+        other => return Err(format!("unexpected make result: {other:?}").into()),
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn make_drive_compiles_and_publishes_two_generations() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("make-publish")?;
+    fs::create_dir(root.join("include"))?;
+    fs::write(root.join("include/required.h"), "#define REQUIRED 7\n")?;
+    fs::write(
+        root.join("one.c"),
+        "#include <required.h>\nstruct Main { int main_field; };\nint main_value(struct Main *value) { return value->main_field + REQUIRED; }\n",
+    )?;
+    fs::write(
+        root.join("two.c"),
+        "#include <required.h>\nstruct Util { int util_field; };\nint util_value(struct Util *value) { return value->util_field + REQUIRED; }\n",
+    )?;
+    fs::write(
+        root.join("Makefile"),
+        "all: one.o two.o\none.o:\n\tclang -Iinclude -c one.c -o one.o\ntwo.o:\n\tclang -Iinclude -c two.c -o two.o\n",
+    )?;
+    let cancelled = AtomicBool::new(false);
+    let first_drive = discover_and_drive(&root, &root.join("scratch-1"), &cancelled)?;
+    assert_eq!(first_drive.translation_units.len(), 2);
+    assert!(first_drive.translation_units.iter().all(|unit| {
+        unit.arguments
+            .windows(2)
+            .any(|args| args == ["-Iinclude", "-c"])
+    }));
+    let one_source = fs::read(root.join("one.c"))?;
+    let two_source = fs::read(root.join("two.c"))?;
+    let mut one_output = vec![0; 4 << 20];
+    let mut two_output = vec![0; 4 << 20];
+    let one = compile_unit(
+        &first_drive.database_directory,
+        &first_drive.translation_units[0],
+        &one_source,
+        &cancelled,
+        &mut one_output,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let two = compile_unit(
+        &first_drive.database_directory,
+        &first_drive.translation_units[1],
+        &two_source,
+        &cancelled,
+        &mut two_output,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    assert!(!one.fragment.as_ref().is_empty());
+    assert!(!two.fragment.as_ref().is_empty());
+    FragmentView::validate(one.fragment.as_ref())?;
+    FragmentView::validate(two.fragment.as_ref())?;
+    let first_bytes = [
+        one.fragment.as_ref().to_vec(),
+        two.fragment.as_ref().to_vec(),
+    ];
+    let store = directory("make-publish-store")?;
+    let artifacts = store.join("artifacts");
+    let journal = DurablePublisher::create(
+        &PublicationPaths::in_directory(&store.join("journal")),
+        limits()?,
+    )?;
+    let publish = |fragments: &[compiler_driver::CompiledFragment<'_>]| {
+        let mut manifest = vec![0; 4 << 20];
+        let mut facts = vec![None; fragments.len()];
+        let mut ordinals = vec![0; fragments.len()];
+        let mut locality = vec![0; 1 << 20];
+        let mut binding = vec![0; 128];
+        publish_compiled(
+            &journal,
+            &artifacts,
+            fragments,
+            PublishControl::Continue,
+            PublicationScratch {
+                manifest_output: &mut manifest,
+                manifest_facts: &mut facts,
+                ordinals: &mut ordinals,
+                locality_output: &mut locality,
+                binding_output: &mut binding,
+            },
+        )
+    };
+    let first = publish(&[one, two])?;
+    let first_generation = first.publication.generation;
+    let mut manifest = vec![0; 4 << 20];
+    let mut facts = vec![None; 2];
+    let mut fragments = vec![0; 8 << 20];
+    let mut locality = vec![0; 1 << 20];
+    let opened_first = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    )?
+    .ok_or("gen-1 was not published")?;
+    let first_facts = opened_first
+        .fragments()
+        .next()
+        .ok_or("gen-1 had no fragment")??
+        .facts;
+
+    fs::write(
+        root.join("three.c"),
+        "#include <required.h>\nstruct Extra { int extra_field; };\nint extra_value(struct Extra *value) { return value->extra_field + REQUIRED; }\n",
+    )?;
+    fs::write(
+        root.join("Makefile"),
+        "all: one.o two.o three.o\none.o:\n\tclang -Iinclude -c one.c -o one.o\ntwo.o:\n\tclang -Iinclude -c two.c -o two.o\nthree.o:\n\tclang -Iinclude -c three.c -o three.o\n",
+    )?;
+    let second_drive = discover_and_drive(&root, &root.join("scratch-2"), &cancelled)?;
+    assert_eq!(second_drive.translation_units.len(), 3);
+    let three_source = fs::read(root.join("three.c"))?;
+    let mut three_output = vec![0; 4 << 20];
+    let mut one_output_2 = vec![0; 4 << 20];
+    let mut two_output_2 = vec![0; 4 << 20];
+    let one_2 = compile_unit(
+        &second_drive.database_directory,
+        &second_drive.translation_units[0],
+        &one_source,
+        &cancelled,
+        &mut one_output_2,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let two_2 = compile_unit(
+        &second_drive.database_directory,
+        &second_drive.translation_units[1],
+        &two_source,
+        &cancelled,
+        &mut two_output_2,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let three = compile_unit(
+        &second_drive.database_directory,
+        &second_drive.translation_units[2],
+        &three_source,
+        &cancelled,
+        &mut three_output,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let second = publish(&[one_2, two_2, three])?;
+    assert_ne!(first_generation, second.publication.generation);
+    assert_ne!(
+        first_generation.pinned_root,
+        second.publication.generation.pinned_root
+    );
+
+    let mut manifest = vec![0; 4 << 20];
+    let mut facts = vec![None; 3];
+    let mut fragments = vec![0; 12 << 20];
+    let mut locality = vec![0; 1 << 20];
+    let opened = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    )?
+    .ok_or("live publisher had no publication")?;
+    let opened_fragments = opened.fragments().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(opened_fragments.len(), 3);
+    for fragment in &opened_fragments {
+        FragmentView::validate(fragment.view.as_ref())?;
+    }
+    let mut projections = vec![MaybeUninit::uninit(); 4096];
+    let mut entities = vec![MaybeUninit::uninit(); 4096];
+    let mut exact_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut lexical_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut atoms = vec![MaybeUninit::uninit(); 4096];
+    let mut type_nodes = vec![MaybeUninit::uninit(); 4096];
+    let mut projections_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut entities_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut exact_rows_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut lexical_rows_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut atoms_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut type_nodes_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut projections_3 = vec![MaybeUninit::uninit(); 4096];
+    let mut entities_3 = vec![MaybeUninit::uninit(); 4096];
+    let mut exact_rows_3 = vec![MaybeUninit::uninit(); 4096];
+    let mut lexical_rows_3 = vec![MaybeUninit::uninit(); 4096];
+    let mut atoms_3 = vec![MaybeUninit::uninit(); 4096];
+    let mut type_nodes_3 = vec![MaybeUninit::uninit(); 4096];
+    let prepared = [
+        build(
+            &opened_fragments[0],
+            IndexBuildScratch {
+                projections: &mut projections,
+                entities: &mut entities,
+                exact_rows: &mut exact_rows,
+                lexical_rows: &mut lexical_rows,
+                atoms: &mut atoms,
+                type_nodes: &mut type_nodes,
+            },
+        ),
+        build(
+            &opened_fragments[1],
+            IndexBuildScratch {
+                projections: &mut projections_2,
+                entities: &mut entities_2,
+                exact_rows: &mut exact_rows_2,
+                lexical_rows: &mut lexical_rows_2,
+                atoms: &mut atoms_2,
+                type_nodes: &mut type_nodes_2,
+            },
+        ),
+        build(
+            &opened_fragments[2],
+            IndexBuildScratch {
+                projections: &mut projections_3,
+                entities: &mut entities_3,
+                exact_rows: &mut exact_rows_3,
+                lexical_rows: &mut lexical_rows_3,
+                atoms: &mut atoms_3,
+                type_nodes: &mut type_nodes_3,
+            },
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|error| error.to_string())?;
+    let mut exact = prepared.iter().map(|p| p.exact.id).collect::<Vec<_>>();
+    let mut lexical = prepared.iter().map(|p| p.lexical.id).collect::<Vec<_>>();
+    let sealed = seal_compilation_index(
+        opened,
+        &prepared,
+        CompilationIndexScratch {
+            exact: &mut exact,
+            lexical: &mut lexical,
+        },
+    )
+    .map_err(|error| error.error.to_string())?;
+    let plan = plan_index_pack(&sealed)?;
+    let mut encoded = vec![0; plan.encoded_bytes];
+    encode_index_pack(&plan, &mut encoded)?;
+    let mut old_output = vec![0; 4 << 20];
+    let old = ImmutableArtifactStore::new(&artifacts)?.open(first_facts, &mut old_output)?;
+    assert!(
+        first_bytes
+            .iter()
+            .any(|bytes| Sha256::digest(bytes) == Sha256::digest(old.as_ref()))
+    );
+    FragmentView::validate(old.as_ref())?;
+    journal.shutdown()?;
+    fs::remove_dir_all(root)?;
+    fs::remove_dir_all(store)?;
     Ok(())
 }
 
@@ -125,12 +448,6 @@ fn make_dry_run_retains_compiler_arguments_and_database_location()
             .arguments
             .iter()
             .any(|arg| arg == "-Iinclude")
-    );
-    assert!(
-        result
-            .database_directory
-            .join("compile_commands.json")
-            .is_file()
     );
     fs::remove_dir_all(root)?;
     Ok(())

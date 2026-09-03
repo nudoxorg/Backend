@@ -16,7 +16,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use compiler_languages_clang::CompilationDatabase;
 use thiserror::Error;
 
 const CAPTURE_BYTES: usize = 64 * 1024;
@@ -72,7 +71,10 @@ pub enum BuildDriveFailure {
     #[error("compile command has an unrecognized compiler: {line}")]
     UnrecognizedCompileCommand { line: String },
     #[error("build tool is present but its drive protocol is unsupported: {tool}")]
-    ToolPresentUndrivable { tool: &'static str },
+    ToolPresentUndrivable {
+        tool: &'static str,
+        evidence: String,
+    },
     #[error("no build system marker under {root}")]
     NoBuildSystemDetected { root: PathBuf },
     #[error("build drive was cancelled")]
@@ -81,6 +83,8 @@ pub enum BuildDriveFailure {
     Io(#[source] std::io::Error),
     #[error("generated compilation database was rejected")]
     Database(#[source] compiler_languages_clang::DatabaseError),
+    #[error("compilation database JSON was rejected")]
+    CompilationDatabase(#[source] CompdbError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,8 +131,14 @@ pub fn discover_and_drive(
                     tool: system.tool(),
                 });
             }
+            let query = Command::new(system.tool())
+                .args(["uquery", "kind(\"compilation_database\", //...)"])
+                .output()
+                .map_err(BuildDriveFailure::Io)?;
+            let evidence = String::from_utf8_lossy(&query.stdout).into_owned();
             return Err(BuildDriveFailure::ToolPresentUndrivable {
                 tool: system.tool(),
+                evidence,
             });
         }
     };
@@ -153,34 +163,24 @@ pub fn discover_and_drive(
                 tool: system.tool(),
             });
         }
-        write_database(&database_directory, &commands).map_err(BuildDriveFailure::Io)?;
-    } else if system == BuildSystem::Meson {
-        fs::write(
-            database_directory.join("compile_commands.json"),
-            &output.stdout,
-        )
-        .map_err(BuildDriveFailure::Io)?;
+        return Ok(DrivenCompilation {
+            build_system: system,
+            database_directory,
+            translation_units: commands,
+        });
     }
-    let database = CompilationDatabase::from_directory(&database_directory)
-        .map_err(BuildDriveFailure::Database)?;
-    if database.commands().is_empty() {
+    let database_bytes = if system == BuildSystem::CMake {
+        fs::read(build.join("compile_commands.json")).map_err(BuildDriveFailure::Io)?
+    } else {
+        output.stdout
+    };
+    let translation_units =
+        read_compdb(&database_bytes).map_err(BuildDriveFailure::CompilationDatabase)?;
+    if translation_units.is_empty() {
         return Err(BuildDriveFailure::NoTranslationUnits {
             tool: system.tool(),
         });
     }
-    let translation_units = database
-        .commands()
-        .iter()
-        .map(|command| DrivenTranslationUnit {
-            source: PathBuf::from(command.file_name().to_string_lossy().into_owned()),
-            arguments: command
-                .arguments()
-                .iter()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect(),
-            directory: PathBuf::from(command.directory().to_string_lossy().into_owned()),
-        })
-        .collect();
     Ok(DrivenCompilation {
         build_system: system,
         database_directory,
@@ -369,32 +369,173 @@ fn shell_words(line: &str) -> Vec<String> {
     words
 }
 
-fn json(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+#[derive(Debug, Error)]
+pub enum CompdbError {
+    #[error("invalid compilation database JSON at byte {offset}")]
+    Json { offset: usize },
+    #[error("compilation database entry at byte {offset} is missing file")]
+    MissingFile { offset: usize },
+    #[error("compilation database entry at byte {offset} has neither arguments nor command")]
+    MissingCommand { offset: usize },
+    #[error("compilation database command has {required} arguments, capacity is {capacity}")]
+    Capacity { required: usize, capacity: usize },
 }
 
-fn write_database(
-    directory: &Path,
-    commands: &[DrivenTranslationUnit],
-) -> Result<(), std::io::Error> {
-    let mut text = String::from("[");
-    for (index, command) in commands.iter().enumerate() {
-        if index != 0 {
-            text.push(',');
-        }
-        text.push_str("{\"directory\":");
-        text.push_str(&json(&command.directory.to_string_lossy()));
-        text.push_str(",\"file\":");
-        text.push_str(&json(&command.source.to_string_lossy()));
-        text.push_str(",\"arguments\":[");
-        for (arg, value) in command.arguments.iter().enumerate() {
-            if arg != 0 {
-                text.push(',');
-            }
-            text.push_str(&json(value));
-        }
-        text.push_str("]}");
+struct JsonReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> JsonReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
     }
-    text.push(']');
-    fs::write(directory.join("compile_commands.json"), text)
+    fn ws(&mut self) {
+        while self.bytes.get(self.at).is_some_and(u8::is_ascii_whitespace) {
+            self.at += 1;
+        }
+    }
+    fn take(&mut self, byte: u8) -> Result<(), CompdbError> {
+        self.ws();
+        if self.bytes.get(self.at) == Some(&byte) {
+            self.at += 1;
+            Ok(())
+        } else {
+            Err(CompdbError::Json { offset: self.at })
+        }
+    }
+    fn string(&mut self) -> Result<String, CompdbError> {
+        self.ws();
+        if self.bytes.get(self.at) != Some(&b'"') {
+            return Err(CompdbError::Json { offset: self.at });
+        }
+        self.at += 1;
+        let mut out = String::new();
+        while let Some(&byte) = self.bytes.get(self.at) {
+            self.at += 1;
+            match byte {
+                b'"' => return Ok(out),
+                b'\\' => {
+                    let escaped = *self
+                        .bytes
+                        .get(self.at)
+                        .ok_or(CompdbError::Json { offset: self.at })?;
+                    self.at += 1;
+                    let value = match escaped {
+                        b'"' => '"',
+                        b'\\' => '\\',
+                        b'/' => '/',
+                        b'b' => '\u{8}',
+                        b'f' => '\u{c}',
+                        b'n' => '\n',
+                        b'r' => '\r',
+                        b't' => '\t',
+                        _ => {
+                            return Err(CompdbError::Json {
+                                offset: self.at - 1,
+                            });
+                        }
+                    };
+                    out.push(value);
+                }
+                byte if byte.is_ascii() && byte < 0x20 => {
+                    return Err(CompdbError::Json {
+                        offset: self.at - 1,
+                    });
+                }
+                byte => out.push(byte as char),
+            }
+        }
+        Err(CompdbError::Json { offset: self.at })
+    }
+}
+
+fn read_compdb(bytes: &[u8]) -> Result<Vec<DrivenTranslationUnit>, CompdbError> {
+    let mut reader = JsonReader::new(bytes);
+    reader.take(b'[')?;
+    let mut result = Vec::new();
+    reader.ws();
+    while reader.bytes.get(reader.at) != Some(&b']') {
+        let entry_at = reader.at;
+        reader.take(b'{')?;
+        let mut directory = None;
+        let mut file = None;
+        let mut arguments = None;
+        let mut command = None;
+        reader.ws();
+        while reader.bytes.get(reader.at) != Some(&b'}') {
+            let key = reader.string()?;
+            reader.take(b':')?;
+            match key.as_str() {
+                "directory" => directory = Some(reader.string()?),
+                "file" => file = Some(reader.string()?),
+                "arguments" => {
+                    reader.take(b'[')?;
+                    let mut values = Vec::new();
+                    reader.ws();
+                    while reader.bytes.get(reader.at) != Some(&b']') {
+                        values.push(reader.string()?);
+                        if values.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
+                            return Err(CompdbError::Capacity {
+                                required: values.len(),
+                                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
+                            });
+                        }
+                        reader.ws();
+                        if reader.bytes.get(reader.at) == Some(&b',') {
+                            reader.at += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    reader.take(b']')?;
+                    arguments = Some(values);
+                }
+                "command" => command = Some(reader.string()?),
+                "output" => {
+                    let _ = reader.string()?;
+                }
+                _ => return Err(CompdbError::Json { offset: reader.at }),
+            }
+            reader.ws();
+            if reader.bytes.get(reader.at) == Some(&b',') {
+                reader.at += 1;
+                reader.ws();
+            } else {
+                break;
+            }
+        }
+        reader.take(b'}')?;
+        let source = file.ok_or(CompdbError::MissingFile { offset: entry_at })?;
+        let directory = directory.ok_or(CompdbError::Json { offset: entry_at })?;
+        let arguments = match (arguments, command) {
+            (Some(values), None) => values,
+            (None, Some(value)) => shell_words(&value),
+            _ => return Err(CompdbError::MissingCommand { offset: entry_at }),
+        };
+        if arguments.len() > compiler_languages_clang::MAX_DATABASE_ARGUMENTS {
+            return Err(CompdbError::Capacity {
+                required: arguments.len(),
+                capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
+            });
+        }
+        result.push(DrivenTranslationUnit {
+            source: PathBuf::from(source),
+            arguments,
+            directory: PathBuf::from(directory),
+        });
+        reader.ws();
+        if reader.bytes.get(reader.at) == Some(&b',') {
+            reader.at += 1;
+            reader.ws();
+        } else {
+            break;
+        }
+    }
+    reader.take(b']')?;
+    reader.ws();
+    if reader.at != bytes.len() {
+        return Err(CompdbError::Json { offset: reader.at });
+    }
+    Ok(result)
 }

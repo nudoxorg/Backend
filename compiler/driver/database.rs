@@ -24,6 +24,8 @@ pub enum DatabaseCompileFailure<'source> {
     TranslationUnitAbsent,
     #[error("database arguments were rejected")]
     Arguments(#[source] DatabaseArgumentError),
+    #[error("command cell {index} contains an interior NUL: {value:?}")]
+    ArgumentContainsNul { index: usize, value: String },
     #[error("libclang rejected the database translation unit")]
     Authority(#[source] compiler_languages_clang::CollectError),
     #[error("database translation unit fact was rejected by canonical admission")]
@@ -47,6 +49,10 @@ pub enum DatabaseCompileFailure<'source> {
 }
 
 /// Compiles the exact source of one command selected from `compile_commands.json`.
+///
+/// This legacy entry intentionally retains libclang database selection semantics.  Build
+/// adapters should use [`compile_build_command`] so the adapter's `file` cell remains the
+/// source identity.
 /// The source and fragment remain caller-owned; database arguments are borrowed
 /// only for the native collection transaction.
 pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
@@ -120,13 +126,121 @@ pub fn compile_database_translation_unit<'source, 'toolchain, 'cancel, 'output>(
         lower::clang::ClangCollectError::Authority(cause) => {
             DatabaseCompileFailure::Authority(cause)
         }
-        lower::clang::ClangCollectError::Rejected(rejected) => {
-            DatabaseCompileFailure::Rejected {
-                source_identity,
-                recipe,
-                rejected,
+        lower::clang::ClangCollectError::Rejected(rejected) => DatabaseCompileFailure::Rejected {
+            source_identity,
+            recipe,
+            rejected,
+        },
+        lower::clang::ClangCollectError::Lowering(cause) => DatabaseCompileFailure::Lowering(cause),
+    })?;
+    let fragment = FragmentView::validate(bytes).map_err(DatabaseCompileFailure::Fragment)?;
+    Ok(CompiledFragment {
+        source: source_identity,
+        recipe,
+        fragment,
+    })
+}
+
+/// Compiles one verbatim command supplied by a build adapter.
+pub fn compile_build_command<'source, 'toolchain, 'cancel, 'output>(
+    command: &'_ crate::DrivenTranslationUnit,
+    source: &'source [u8],
+    profile: LanguageProfile,
+    stage: Stage,
+    toolchain: ResolvedToolchain<'toolchain>,
+    cancelled: &'cancel AtomicBool,
+    output: &'output mut [u8],
+) -> Result<CompiledFragment<'output>, DatabaseCompileFailure<'source>> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(DatabaseCompileFailure::Cancelled { input: source });
+    }
+    let file_name =
+        std::ffi::CString::new(command.source.to_string_lossy().as_bytes()).map_err(|_| {
+            DatabaseCompileFailure::ArgumentContainsNul {
+                index: usize::MAX,
+                value: command.source.to_string_lossy().into_owned(),
             }
+        })?;
+    let directory = std::ffi::CString::new(command.directory.to_string_lossy().as_bytes())
+        .map_err(|_| DatabaseCompileFailure::ArgumentContainsNul {
+            index: usize::MAX,
+            value: command.directory.to_string_lossy().into_owned(),
+        })?;
+    if command.arguments.len() > MAX_DATABASE_ARGUMENTS {
+        return Err(DatabaseCompileFailure::Arguments(DatabaseArgumentError {
+            required: command.arguments.len(),
+            capacity: MAX_DATABASE_ARGUMENTS,
+        }));
+    }
+    let arguments = command
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            std::ffi::CString::new(value.as_bytes()).map_err(|_| {
+                DatabaseCompileFailure::ArgumentContainsNul {
+                    index,
+                    value: value.clone(),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut borrowed = [c""; MAX_DATABASE_ARGUMENTS];
+    for (slot, argument) in borrowed.iter_mut().zip(&arguments) {
+        *slot = argument.as_c_str();
+    }
+    let input =
+        ClangInput::from_database(&file_name, source, &borrowed[..arguments.len()], &directory)
+            .map_err(DatabaseCompileFailure::Arguments)?;
+    compile_input(input, profile, stage, source, toolchain, cancelled, output)
+}
+
+fn compile_input<'input, 'source, 'toolchain, 'cancel, 'output>(
+    input: ClangInput<'input>,
+    profile: LanguageProfile,
+    stage: Stage,
+    source: &'source [u8],
+    toolchain: ResolvedToolchain<'toolchain>,
+    cancelled: &'cancel AtomicBool,
+    output: &'output mut [u8],
+) -> Result<CompiledFragment<'output>, DatabaseCompileFailure<'source>> {
+    let byte_len =
+        u32::try_from(source.len()).map_err(|cause| DatabaseCompileFailure::SourceLength {
+            actual: source.len(),
+            cause,
+        })?;
+    let source_identity = SourceIdentity {
+        identity: heart_identity::ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+        byte_len,
+    };
+    let recipe = CompileRecipeFact::derive(
+        profile,
+        stage,
+        NativeTool::Clang,
+        source_identity.identity,
+        toolchain.identity,
+    );
+    let bytes = lower::clang::lower_database(
+        input,
+        source,
+        source_identity,
+        recipe,
+        profile,
+        cancelled,
+        output,
+    )
+    .map_err(|cause| match cause {
+        lower::clang::ClangCollectError::Authority(
+            compiler_languages_clang::CollectError::Cancelled,
+        ) => DatabaseCompileFailure::Cancelled { input: source },
+        lower::clang::ClangCollectError::Authority(cause) => {
+            DatabaseCompileFailure::Authority(cause)
         }
+        lower::clang::ClangCollectError::Rejected(rejected) => DatabaseCompileFailure::Rejected {
+            source_identity,
+            recipe,
+            rejected,
+        },
         lower::clang::ClangCollectError::Lowering(cause) => DatabaseCompileFailure::Lowering(cause),
     })?;
     let fragment = FragmentView::validate(bytes).map_err(DatabaseCompileFailure::Fragment)?;

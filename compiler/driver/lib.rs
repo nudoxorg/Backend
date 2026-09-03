@@ -14,11 +14,13 @@ mod native;
 mod types;
 
 pub use build_drive::{
-    BuildDriveFailure, BuildSystem, CapturedOutput, DrivenCompilation, DrivenTranslationUnit,
-    discover_and_drive,
+    BuildDriveFailure, BuildSystem, CapturedOutput, CompdbError, DrivenCompilation,
+    DrivenTranslationUnit, discover_and_drive,
 };
 pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
-pub use database::{DatabaseCompileFailure, compile_database_translation_unit};
+pub use database::{
+    DatabaseCompileFailure, compile_build_command, compile_database_translation_unit,
+};
 pub use types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch, CompileControl, CompileFailure, CompileOutput, CompileRecipeFact,
