@@ -426,17 +426,36 @@ pub struct JavaProjectionText {
     bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
     /// Number of meaningful bytes in `bytes`.
     byte_len: usize,
+    /// Whether the source atom exceeded the bounded diagnostic width.
+    truncated: bool,
 }
 
 impl JavaProjectionText {
     /// Retains an already image-validated atom without changing its bytes.
+    ///
+    /// Atoms wider than the diagnostic bound keep their leading characters
+    /// and are marked truncated, so the rendered cause never presents a cut
+    /// name as the complete declaration or splits a UTF-8 character.
     pub fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES {
+            let mut retained = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
+            retained[..bytes.len()].copy_from_slice(bytes);
+            return Self {
+                bytes: retained,
+                byte_len: bytes.len(),
+                truncated: false,
+            };
+        }
+        let mut end = MAX_NATIVE_DIAGNOSTIC_BYTES;
+        while end > 0 && (bytes[end] & 0xC0) == 0x80 {
+            end -= 1;
+        }
         let mut retained = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
-        let byte_len = bytes.len().min(MAX_NATIVE_DIAGNOSTIC_BYTES);
-        retained[..byte_len].copy_from_slice(&bytes[..byte_len]);
+        retained[..end].copy_from_slice(&bytes[..end]);
         Self {
             bytes: retained,
-            byte_len,
+            byte_len: end,
+            truncated: true,
         }
     }
 }
@@ -445,7 +464,11 @@ impl core::fmt::Display for JavaProjectionText {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let text =
             core::str::from_utf8(&self.bytes[..self.byte_len]).map_err(|_| core::fmt::Error)?;
-        formatter.write_str(text)
+        formatter.write_str(text)?;
+        if self.truncated {
+            formatter.write_str("…")?;
+        }
+        Ok(())
     }
 }
 
