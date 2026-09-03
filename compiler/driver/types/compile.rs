@@ -443,6 +443,7 @@ fn emit_facts<'source, 'diagnostic>(
             let SemanticAuthorityInput::Rust {
                 project,
                 maximum_source_bytes,
+                features,
             } = authority
             else {
                 return Err(CompileFailure::AuthorityInputRequired {
@@ -451,8 +452,15 @@ fn emit_facts<'source, 'diagnostic>(
                     profile: LanguageProfile::Rust(profile),
                 });
             };
-            lower::rust::collect(project, maximum_source_bytes, cancelled, source, facts)
-                .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
+            lower::rust::collect(
+                project,
+                maximum_source_bytes,
+                features,
+                cancelled,
+                source,
+                facts,
+            )
+            .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
             if facts.len() == 0 {
                 return Err(CompileFailure::LoweringUnsupported {
                     source_identity: prepared.source,

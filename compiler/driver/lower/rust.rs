@@ -63,8 +63,8 @@ use compiler_ir::{
 };
 use compiler_languages_rust::{
     ByteSpan, ModuleDeclaration, RustAnalysisControl, RustAuthority, RustAuthorityError,
-    RustDeclaration, RustDefinition, RustFieldAccess, RustProject, SemanticKind, SourceByteLimit,
-    SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
+    RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustProject,
+    SemanticKind, SourceByteLimit, SourceOrigin, ra_ap_hir, ra_ap_ide_db, ra_ap_syntax,
 };
 use ra_ap_syntax::{
     AstNode, SyntaxNode,
@@ -117,15 +117,20 @@ pub(crate) enum RustCollectError {
 pub(crate) fn collect<'source>(
     project: &RustProject,
     maximum_source_bytes: SourceByteLimit,
+    features: &'source [&'source str],
     cancelled: &AtomicBool,
     source: &'source [u8],
     facts: &mut FactSet<'source>,
 ) -> Result<(), RustCollectError> {
     project
-        .analyze(
+        .analyze_with_features(
             RustAnalysisControl {
                 cancelled,
                 maximum_source_bytes,
+            },
+            RustFeatureControl {
+                features,
+                ..RustFeatureControl::default()
             },
             |authority| {
                 if authority.source != source {
