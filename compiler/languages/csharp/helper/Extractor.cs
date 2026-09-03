@@ -78,14 +78,18 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
     /// (`Annotations.cs`, which starts with a UTF-8 BOM) sliced three bytes
     /// short of the identifier its own location claimed.
     /// </remarks>
-    private static int[] BuildByteOffsets(SyntaxTree tree)
+    internal static int[] BuildByteOffsets(SyntaxTree tree)
+        => BuildByteOffsets(tree, BomLength(tree.FilePath));
+
+    /// <summary>Builds the same table when the caller already owns raw bytes.</summary>
+    internal static int[] BuildByteOffsets(SyntaxTree tree, int bomLength)
     {
         var text = tree.GetText().ToString();
 
         // One extra slot: offsets[text.Length] is the file's total UTF-8
         // byte count, needed for a span whose end is end-of-file.
         var offsets = new int[text.Length + 1];
-        var byteCount = BomLength(tree.FilePath);
+        var byteCount = bomLength;
         var i = 0;
 
         while (i < text.Length)

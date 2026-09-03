@@ -26,7 +26,9 @@ internal static class AuthorityImage
         if (tree is null)
             throw new OracleFailure("C# authority source binding is absent from the Roslyn compilation");
         var source = File.ReadAllBytes(binding);
-        var offsets = Offsets(tree, source);
+        var offsets = Extractor.BuildByteOffsets(
+            tree,
+            source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0);
         var image = new Builder(loaded.Compilation, tree, offsets).Build(source);
         destination.Write(image);
     }
@@ -49,16 +51,15 @@ internal static class AuthorityImage
         private readonly List<byte[]> references = [];
         private readonly List<DeclarationInfo> infos = [];
         private readonly Dictionary<ISymbol, uint> declarationMap = new(SymbolEqualityComparer.Default);
+        private readonly Dictionary<SyntaxNode, uint> syntaxMap = new();
         private readonly Dictionary<ITypeSymbol, uint> typeMap = new(SymbolEqualityComparer.Default);
         private readonly HashSet<ITypeSymbol> typeInProgress = new(SymbolEqualityComparer.Default);
-        private readonly Dictionary<SyntaxTree, int[]> offsetCache = new();
 
         public Builder(CSharpCompilation compilation, SyntaxTree tree, int[] offsets)
         {
             this.compilation = compilation;
             this.tree = tree;
             this.offsets = offsets;
-            offsetCache[tree] = offsets;
         }
 
         public byte[] Build(byte[] source)
@@ -67,12 +68,34 @@ internal static class AuthorityImage
             foreach (var node in tree.GetRoot().DescendantNodesAndSelf())
             {
                 var symbol = DeclaredSymbol(model, node);
-                if (symbol is null || !IsEmittable(node, symbol) || declarationMap.ContainsKey(symbol))
+                if (symbol is null || !IsEmittable(node, symbol) || syntaxMap.ContainsKey(node))
                     continue;
                 var row = declarations.Count;
-                declarationMap.Add(symbol, checked((uint)row));
-                infos.Add(new DeclarationInfo(symbol, node));
+                declarationMap.TryAdd(symbol, checked((uint)row));
+                syntaxMap.Add(node, checked((uint)row));
+                infos.Add(new DeclarationInfo(symbol, node, null, null));
                 declarations.Add(new byte[48]);
+            }
+            // Roslyn exposes record primary-constructor properties as symbols but
+            // there is no property declaration node to visit. Preserve the
+            // source-site identity by adding one row for each positional
+            // parameter, owned by the record declaration.
+            foreach (var info in infos.Where(i => i.Symbol is INamedTypeSymbol n && n.IsRecord).ToArray())
+            {
+                var record = (INamedTypeSymbol)info.Symbol;
+                var declaration = info.Node as RecordDeclarationSyntax;
+                if (declaration is null) continue;
+                foreach (var parameter in declaration.ParameterList?.Parameters ?? [])
+                {
+                    var property = record.GetMembers(parameter.Identifier.ValueText)
+                        .OfType<IPropertySymbol>().FirstOrDefault();
+                    if (property is null || declarationMap.ContainsKey(property)) continue;
+                    var row = declarations.Count;
+                    declarationMap.Add(property, checked((uint)row));
+                    infos.Add(new DeclarationInfo(property, declaration,
+                        declaration.ParameterList!.Span, parameter.Identifier.Span));
+                    declarations.Add(new byte[48]);
+                }
             }
             // Named type rows are made before any member rows; all later type uses
             // therefore resolve to the same qualified spelling and stable ordinal.
@@ -116,16 +139,18 @@ internal static class AuthorityImage
         {
             var row = declarations[index];
             var symbol = info.Symbol;
-            var span = Span(info.Node);
-            var name = Atom(symbol.Name);
+            var span = Span(info.Span);
+            var nameSpan = info.NameSpan;
+            var name = Atom(SourceSlice(nameSpan));
             Put(row, 0, Kind(symbol)); row[1] = Flags(symbol, info.Node);
-            row[2] = Partial(symbol, tree); row[3] = RefKind(symbol);
+            row[2] = Partial(symbol, tree, info.Node); row[3] = RefKind(symbol);
             Put(row, 4, name); Put(row, 8, symbol is INamedTypeSymbol n ? Atom(Fqn(n)) : Absent);
             Put(row, 12, Owner(symbol));
             Put(row, 16, DeclaredType(symbol));
-            Put(row, 20, span.Start); Put(row, 24, NameStart(info.Node)); Put(row, 28, NameEnd(info.Node));
+            Put(row, 20, span.Start); Put(row, 24, U(offsets[nameSpan.Start])); Put(row, 28, U(offsets[nameSpan.End]));
             var ps = parameters.Count; var gs = typeParameters.Count;
-            if (symbol is IMethodSymbol m) WriteParameters(m.Parameters);
+            if (symbol is INamedTypeSymbol delegateType && delegateType.TypeKind == TypeKind.Delegate && delegateType.DelegateInvokeMethod is { } invoke) WriteParameters(invoke.Parameters);
+            else if (symbol is IMethodSymbol m) WriteParameters(m.Parameters);
             else if (symbol is IPropertySymbol p) WriteParameters(p.Parameters);
             Put(row, 32, checked((uint)ps)); BinaryPrimitives.WriteUInt16LittleEndian(row.AsSpan(36), checked((ushort)(parameters.Count - ps)));
             if (symbol is INamedTypeSymbol nt) WriteTypeParameters(nt.TypeParameters);
@@ -226,7 +251,15 @@ internal static class AuthorityImage
             var owner = declarationMap[info.Symbol];
             foreach (var attribute in info.Symbol.GetAttributes()) { var row = new byte[8]; Put(row, 0, owner); Put(row, 4, Atom(AttributeText(attribute))); attributes.Add(row); }
             var xml = info.Symbol.GetDocumentationCommentXml(expandIncludes: true);
-            if (!string.IsNullOrWhiteSpace(xml)) { var row = new byte[20]; Put(row, 0, owner); Put(row, 4, Atom(tree.FilePath)); var s = Span(info.Node); Put(row, 8, s.Start); Put(row, 12, s.End); Put(row, 16, Atom(xml)); declarations[(int)owner][44] = 0; Put(declarations[(int)owner], 44, checked((uint)docs.Count)); docs.Add(row); }
+            if (!string.IsNullOrWhiteSpace(xml))
+            {
+                var row = new byte[20];
+                Put(row, 0, owner); Put(row, 4, Atom(tree.FilePath));
+                var comment = DocumentationSpan(info.Node);
+                Put(row, 8, U(offsets[comment.Start])); Put(row, 12, U(offsets[comment.End]));
+                Put(row, 16, Atom(xml));
+                Put(declarations[(int)owner], 44, checked((uint)docs.Count)); docs.Add(row);
+            }
         }
 
         private void WriteReferences(SemanticModel model)
@@ -241,24 +274,43 @@ internal static class AuthorityImage
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()) AddReference(model, node, 1, node.Expression);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>()) AddReference(model, node, 3, node.Name);
-            foreach (var member in infos.Select(i => i.Symbol).OfType<IMethodSymbol>()) foreach (var target in member.ExplicitInterfaceImplementations) if (declarationMap.TryGetValue(member, out var owner) && declarationMap.TryGetValue(target, out var targetRow)) { var row = new byte[28]; Put(row, 0, owner); Put(row, 4, targetRow); Put(row, 8, Atom(target.Name)); Put(row, 12, Atom(tree.FilePath)); Put(row, 16, 0); Put(row, 20, 0); row[24] = 5; references.Add(row); }
+            foreach (var info in infos)
+            {
+                var targets = info.Symbol switch
+                {
+                    IMethodSymbol method => method.ExplicitInterfaceImplementations.Cast<ISymbol>(),
+                    IPropertySymbol property => property.ExplicitInterfaceImplementations.Cast<ISymbol>(),
+                    IEventSymbol evt => evt.ExplicitInterfaceImplementations.Cast<ISymbol>(),
+                    _ => []
+                };
+                if (!syntaxMap.TryGetValue(info.Node, out var owner)) continue;
+                foreach (var target in targets)
+                {
+                    if (!declarationMap.TryGetValue(target, out var targetRow)) continue;
+                    var span = Span(info.Span);
+                    var nameEnd = U(offsets[info.NameSpan.End]);
+                    var row = new byte[28]; Put(row, 0, owner); Put(row, 4, targetRow);
+                    Put(row, 8, Atom(target.Name)); Put(row, 12, Atom(tree.FilePath));
+                    Put(row, 16, span.Start); Put(row, 20, nameEnd); row[24] = 5; references.Add(row);
+                }
+            }
         }
 
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
         {
-            var ownerNode = node.Ancestors().FirstOrDefault(n => DeclaredSymbol(model, n) is IMethodSymbol);
-            if (ownerNode is null || DeclaredSymbol(model, ownerNode) is not { } owner || !declarationMap.TryGetValue(owner, out var ownerRow)) return;
+            var ownerNode = node.Ancestors().FirstOrDefault(n => DeclaredSymbol(model, n) is not null && syntaxMap.ContainsKey(n));
+            if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
             var symbol = model.GetSymbolInfo(node).Symbol; var target = symbol is null ? Absent : declarationMap.GetValueOrDefault(symbol, Absent);
             var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, Atom(tree.FilePath)); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
         }
 
-        private uint DocRow(ISymbol symbol) => Absent; // documentation rows are retained and independently iterable
+        private uint DocRow(ISymbol symbol) => Absent; // populated after docs are written
         private uint Owner(ISymbol symbol) => symbol.ContainingSymbol is { } parent && declarationMap.TryGetValue(parent, out var row) ? row : Absent;
         private byte Kind(ISymbol s) => s switch { INamedTypeSymbol n when n.TypeKind == TypeKind.Class && n.IsRecord => 6, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct && n.IsRecord => 7, INamedTypeSymbol n when n.TypeKind == TypeKind.Class => 1, INamedTypeSymbol n when n.TypeKind == TypeKind.Struct => 2, INamedTypeSymbol n when n.TypeKind == TypeKind.Interface => 3, INamedTypeSymbol n when n.TypeKind == TypeKind.Enum => 4, INamedTypeSymbol n when n.TypeKind == TypeKind.Delegate => 5, INamespaceSymbol => 8, IFieldSymbol f when f.ContainingType?.TypeKind == TypeKind.Enum => 10, IFieldSymbol => 9, IPropertySymbol p when p.IsIndexer => 12, IPropertySymbol => 11, IEventSymbol => 13, IMethodSymbol m when m.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor => 14, IMethodSymbol m when m.MethodKind == MethodKind.UserDefinedOperator => 16, IMethodSymbol m when m.MethodKind == MethodKind.Conversion => 17, IMethodSymbol => 15, _ => throw new OracleFailure("Roslyn emitted unsupported declaration kind") };
         private static byte RefKind(ISymbol s) => s is IMethodSymbol method ? RefKind(method.RefKind) : s is IPropertySymbol property && property.ReturnsByRefReadonly ? (byte)4 : s is IPropertySymbol property2 && property2.ReturnsByRef ? (byte)2 : (byte)0;
         private static byte RefKind(RefKind k) => k switch { Microsoft.CodeAnalysis.RefKind.In => 1, Microsoft.CodeAnalysis.RefKind.Ref => 2, Microsoft.CodeAnalysis.RefKind.Out => 3, Microsoft.CodeAnalysis.RefKind.RefReadOnlyParameter => 4, _ => 0 };
-        private static byte Flags(ISymbol s, SyntaxNode n) => (byte)((s is IMethodSymbol method && method.IsExtensionMethod ? 1 : 0) | (s is IMethodSymbol asyncMethod && asyncMethod.IsAsync ? 2 : 0) | (s is IMethodSymbol iterator && HasYield(n) ? 4 : 0) | (s is IFieldSymbol field && field.IsConst ? 8 : 0) | (s is IMethodSymbol explicitMethod && explicitMethod.ExplicitInterfaceImplementations.Length > 0 ? 16 : 0));
-        private static byte Partial(ISymbol s, SyntaxTree t) => s is IMethodSymbol m && m.PartialDefinitionPart is not null && m.Locations.Any(l => l.SourceTree == t) ? (byte)1 : s is IMethodSymbol m2 && m2.PartialImplementationPart is not null ? (byte)2 : s is INamedTypeSymbol n && n.DeclaringSyntaxReferences.Length > 1 ? (byte)1 : (byte)0;
+        private static byte Flags(ISymbol s, SyntaxNode n) => (byte)((s is IMethodSymbol method && method.IsExtensionMethod ? 1 : 0) | (s is IMethodSymbol asyncMethod && asyncMethod.IsAsync ? 2 : 0) | (s is IMethodSymbol iterator && HasYield(n) ? 4 : 0) | (s is IFieldSymbol field && field.IsConst ? 8 : 0) | (s switch { IMethodSymbol m => m.ExplicitInterfaceImplementations.Length > 0, IPropertySymbol p => p.ExplicitInterfaceImplementations.Length > 0, IEventSymbol e => e.ExplicitInterfaceImplementations.Length > 0, _ => false } ? 16 : 0));
+        private static byte Partial(ISymbol s, SyntaxTree t, SyntaxNode node) => s is INamedTypeSymbol n && n.DeclaringSyntaxReferences.Length > 1 ? (byte)1 : s is IMethodSymbol m && (m.PartialDefinitionPart is not null || m.PartialImplementationPart is not null) ? (byte)(m.PartialDefinitionPart is null || Matches(m.PartialImplementationPart, node) ? 2 : Matches(m.PartialDefinitionPart, node) ? 1 : 0) : (byte)0;
         private static byte Nullable(ITypeSymbol t) => t.NullableAnnotation switch { NullableAnnotation.Annotated => 1, NullableAnnotation.NotAnnotated when t.IsReferenceType || t.TypeKind == TypeKind.TypeParameter => 2, _ => 0 };
         private static bool HasDefault(IParameterSymbol p) { try { return p.HasExplicitDefaultValue; } catch (InvalidOperationException) { return false; } }
         private static bool AllowsRefLike(ITypeParameterSymbol p) => typeof(ITypeParameterSymbol).GetProperty("AllowsRefLikeType")?.GetValue(p) is true;
@@ -267,11 +319,13 @@ internal static class AuthorityImage
         private static string AttributeText(AttributeData a) => a.ToString() ?? "";
         private static string Format(object? value) => value is null ? "null" : SymbolDisplay.FormatPrimitive(value, true, false) ?? "null";
         private uint Atom(string value) => Atom(Encoding.UTF8.GetBytes(value));
-        private uint Atom(byte[] value) { var key = Convert.ToBase64String(value); if (atomMap.TryGetValue(key, out var i)) return i; i = checked((uint)atomMap.Count); atomMap.Add(key, i); atomBytes.AddRange(value); return i; }
-        private (uint Start, uint End) Span(SyntaxNode n) => (U(offsets[n.SpanStart]), U(offsets[n.Span.End]));
-        private uint NameStart(SyntaxNode n) => U(offsets[NameSpan(n).Start]);
-        private uint NameEnd(SyntaxNode n) => U(offsets[NameSpan(n).End]);
-        private static TextSpan NameSpan(SyntaxNode n) => n switch { BaseNamespaceDeclarationSyntax x => x.Name.Span, BaseTypeDeclarationSyntax x => x.Identifier.Span, DelegateDeclarationSyntax x => x.Identifier.Span, EventFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span, BaseFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span, EnumMemberDeclarationSyntax x => x.Identifier.Span, PropertyDeclarationSyntax x => x.Identifier.Span, IndexerDeclarationSyntax x => x.ThisKeyword.Span, EventDeclarationSyntax x => x.Identifier.Span, ConstructorDeclarationSyntax x => x.Identifier.Span, MethodDeclarationSyntax x => x.Identifier.Span, OperatorDeclarationSyntax x => x.OperatorToken.Span, ConversionOperatorDeclarationSyntax x => x.Type.Span, _ => n.Span };
+        private uint Atom(byte[] value) { if (value.Length == 0) throw new OracleFailure("C# authority atom cannot be empty"); var key = Convert.ToBase64String(value); if (atomMap.TryGetValue(key, out var i)) return i; i = checked((uint)atomMap.Count); atomMap.Add(key, i); atomBytes.AddRange(value); return i; }
+        private (uint Start, uint End) Span(TextSpan span) => (U(offsets[span.Start]), U(offsets[span.End]));
+        private (uint Start, uint End) Span(SyntaxNode n) => Span(n.Span);
+        private TextSpan NameSpan(SyntaxNode n) => n switch { BaseNamespaceDeclarationSyntax x => x.Name.Span, BaseTypeDeclarationSyntax x => x.Identifier.Span, DelegateDeclarationSyntax x => x.Identifier.Span, EventFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span, BaseFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span, EnumMemberDeclarationSyntax x => x.Identifier.Span, PropertyDeclarationSyntax x => x.Identifier.Span, IndexerDeclarationSyntax x => x.ThisKeyword.Span, EventDeclarationSyntax x => x.Identifier.Span, ConstructorDeclarationSyntax x => x.Identifier.Span, MethodDeclarationSyntax x => x.Identifier.Span, OperatorDeclarationSyntax x => x.OperatorToken.Span, ConversionOperatorDeclarationSyntax x => x.Type.Span, _ => n.Span };
+        private byte[] SourceSlice(TextSpan span) => Encoding.UTF8.GetBytes(tree.GetText().ToString(span));
+        private static TextSpan DocumentationSpan(SyntaxNode n) => n.GetLeadingTrivia().Where(t => t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) || t.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia)).Select(t => t.FullSpan).LastOrDefault();
+        private static bool Matches(ISymbol? symbol, SyntaxNode node) => symbol?.DeclaringSyntaxReferences.Any(reference => reference.Span == node.Span && reference.SyntaxTree == node.SyntaxTree) == true;
         private static uint U(int value) => checked((uint)value);
         private static void Put(byte[] row, int offset, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(row.AsSpan(offset, 4), value);
         private static byte[] Rows(List<byte[]> rows) { var output = new byte[rows.Sum(r => r.Length)]; var at = 0; foreach (var row in rows) { row.CopyTo(output, at); at += row.Length; } return output; }
@@ -284,6 +338,25 @@ internal static class AuthorityImage
         }
     }
 
-    private sealed record DeclarationInfo(ISymbol Symbol, SyntaxNode Node);
-    private static int[] Offsets(SyntaxTree tree, byte[] source) { var text = tree.GetText().ToString(); var values = new int[text.Length + 1]; var at = source.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? 3 : 0; for (var i = 0; i < text.Length; i++) { values[i] = at; at += Encoding.UTF8.GetByteCount(text.AsSpan(i, 1)); } values[^1] = at; return values; }
+    private sealed record DeclarationInfo(ISymbol Symbol, SyntaxNode Node, TextSpan? DeclarationSpan, TextSpan? ExplicitNameSpan)
+    {
+        public TextSpan Span => DeclarationSpan ?? Node.Span;
+        public TextSpan NameSpan => ExplicitNameSpan ?? Node switch
+        {
+            BaseNamespaceDeclarationSyntax x => x.Name.Span,
+            BaseTypeDeclarationSyntax x => x.Identifier.Span,
+            DelegateDeclarationSyntax x => x.Identifier.Span,
+            EventFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span,
+            BaseFieldDeclarationSyntax x => x.Declaration.Variables[0].Identifier.Span,
+            EnumMemberDeclarationSyntax x => x.Identifier.Span,
+            PropertyDeclarationSyntax x => x.Identifier.Span,
+            IndexerDeclarationSyntax x => x.ThisKeyword.Span,
+            EventDeclarationSyntax x => x.Identifier.Span,
+            ConstructorDeclarationSyntax x => x.Identifier.Span,
+            MethodDeclarationSyntax x => x.Identifier.Span,
+            OperatorDeclarationSyntax x => x.OperatorToken.Span,
+            ConversionOperatorDeclarationSyntax x => x.Type.Span,
+            _ => Node.Span
+        };
+    }
 }
