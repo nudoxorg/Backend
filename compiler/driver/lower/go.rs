@@ -532,6 +532,10 @@ impl<'x, 'source> Projector<'x, 'source> {
             method_names.push(method.name);
             self.method_ordinals[method_index] = Some(ordinal);
         }
+        for (ordinal, name) in interface_methods {
+            methods.push(ordinal);
+            method_names.push(name);
+        }
         for method_set_index in 0..self.image.method_set_count() {
             let method_set = self
                 .image
@@ -640,7 +644,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn interface_methods(
         &mut self,
         row: &compiler_languages_go::TypeRow<'source>,
-        methods: &mut Vec<u32>,
+        methods: &mut Vec<(u32, &'source [u8])>,
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -652,7 +656,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             let start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
             let ordinal = self.executable(member.name, member.type_root, start)?;
-            methods.push(ordinal);
+            methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
         }
         Ok(())
@@ -1982,6 +1986,7 @@ mod tests {
         methods: Vec<MethodF>,
         parameters: Vec<ParameterF>,
         members: Vec<MemberF>,
+        method_sets: Vec<MethodSetF>,
         docs: Vec<DocF>,
         references: Vec<RefF>,
         constraints: Vec<ConstraintF>,
@@ -2035,6 +2040,14 @@ mod tests {
         kind: u8,
         name: Cell,
         type_root: Option<u32>,
+    }
+
+    #[derive(Clone)]
+    struct MethodSetF {
+        owner: u32,
+        name: Cell,
+        type_root: Option<u32>,
+        package: Cell,
     }
 
     #[derive(Clone)]
@@ -2240,6 +2253,17 @@ mod tests {
                     type_root,
                 },
             );
+        }
+
+        fn method_set(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            let name = self.atom(name);
+            let package = self.atom(PACKAGE);
+            self.method_sets.push(MethodSetF {
+                owner,
+                name,
+                type_root,
+                package,
+            });
         }
 
         fn declaration(&mut self, kind: u8, name: &[u8], type_root: Option<u32>) -> usize {
@@ -2546,26 +2570,40 @@ mod tests {
             }
 
             let mut method_sets = Vec::new();
-            for (owner, row) in self.types.iter().enumerate() {
-                if row.kind != ROW_INTERFACE {
-                    continue;
-                }
-                let start = usize::try_from(row.members.0).map_err(TestError::from)?;
-                let end = start
-                    .checked_add(usize::try_from(row.members.1).map_err(TestError::from)?)
-                    .ok_or(TestError::Tail)?;
-                for member in self.members.get(start..end).ok_or(TestError::Tail)? {
-                    if member.kind != 1 {
+            if self.method_sets.is_empty() {
+                for (owner, row) in self.types.iter().enumerate() {
+                    if row.kind != ROW_INTERFACE {
                         continue;
                     }
-                    let (name, name_len) = cell(member.name);
-                    method_sets.extend_from_slice(
-                        &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
-                    );
+                    let start = usize::try_from(row.members.0).map_err(TestError::from)?;
+                    let end = start
+                        .checked_add(usize::try_from(row.members.1).map_err(TestError::from)?)
+                        .ok_or(TestError::Tail)?;
+                    for member in self.members.get(start..end).ok_or(TestError::Tail)? {
+                        if member.kind != 1 {
+                            continue;
+                        }
+                        let (name, name_len) = cell(member.name);
+                        method_sets.extend_from_slice(
+                            &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
+                        );
+                        method_sets.extend_from_slice(&name);
+                        method_sets.extend_from_slice(&name_len);
+                        method_sets
+                            .extend_from_slice(&member.type_root.unwrap_or(NONE).to_le_bytes());
+                        let package = self.atom_cell(PACKAGE);
+                        method_sets.extend_from_slice(&package.offset.to_le_bytes());
+                        method_sets.extend_from_slice(&package.length.to_le_bytes());
+                    }
+                }
+            } else {
+                for row in &self.method_sets {
+                    let (name, name_len) = cell(row.name);
+                    method_sets.extend_from_slice(&row.owner.to_le_bytes());
                     method_sets.extend_from_slice(&name);
                     method_sets.extend_from_slice(&name_len);
-                    method_sets.extend_from_slice(&member.type_root.unwrap_or(NONE).to_le_bytes());
-                    let package = self.atom_cell(PACKAGE);
+                    method_sets.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
+                    let package = row.package;
                     method_sets.extend_from_slice(&package.offset.to_le_bytes());
                     method_sets.extend_from_slice(&package.length.to_le_bytes());
                 }
@@ -3114,6 +3152,11 @@ mod tests {
         let store_facts = go_extension(&view, 1)?;
         if store_facts.method_set.raw != 3 || pooled_list(&view, 2, 3)? != vec![9] {
             return Err(TestError::Missing("store method set"));
+        }
+        let mut with_plane_row = fix.clone();
+        with_plane_row.method_set(iface_row, b"Put", Some(put));
+        if lower(&with_plane_row, b"package demo\n")? != bytes {
+            return Err(TestError::Missing("method-set duplicate"));
         }
         let get_row = row(&view, 6)?;
         if get_row.record.tag != SemanticTypeTag::FunctionPointer
