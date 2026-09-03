@@ -14,7 +14,8 @@ use compiler_vocabulary::{CStandard, LanguageProfile, NativeTool, Stage};
 use heart_identity::ContentId;
 use server_index_build::{IndexBuildScratch, build};
 use server_index_publish::{
-    CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
+    CompilationIndexError, CompilationIndexScratch, encode_index_pack, plan_index_pack,
+    seal_compilation_index,
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
@@ -122,16 +123,26 @@ fn publish<'a>(
     artifacts: &Path,
     fragments: &[compiler_driver::CompiledFragment<'a>],
 ) -> Result<compiler_publication::PublishedCompilation, Box<dyn std::error::Error>> {
+    publish_control(journal, artifacts, fragments, PublishControl::Continue, 128)
+}
+
+fn publish_control<'a>(
+    journal: &DurablePublisher,
+    artifacts: &Path,
+    fragments: &[compiler_driver::CompiledFragment<'a>],
+    control: PublishControl<'_>,
+    binding_bytes: usize,
+) -> Result<compiler_publication::PublishedCompilation, Box<dyn std::error::Error>> {
     let mut manifest = vec![0; 4 << 20];
     let mut facts = vec![None; fragments.len()];
     let mut ordinals = vec![0; fragments.len()];
     let mut locality = vec![0; 1 << 20];
-    let mut binding = vec![0; 128];
+    let mut binding = vec![0; binding_bytes];
     Ok(publish_compiled(
         journal,
         artifacts,
         fragments,
-        PublishControl::Continue,
+        control,
         PublicationScratch {
             manifest_output: &mut manifest,
             manifest_facts: &mut facts,
@@ -230,11 +241,92 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
             .ok_or("generation one had no fragment")?
     };
 
+    // Seal generation one's index before admitting generation two.
+    let mut first_manifest = vec![0; 4 << 20];
+    let mut first_manifest_facts = vec![None; 2];
+    let mut first_fragment_output = vec![0; 8 << 20];
+    let mut first_locality = vec![0; 1 << 20];
+    let first_index_open = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut first_manifest,
+            manifest_facts: &mut first_manifest_facts,
+            fragment_output: &mut first_fragment_output,
+            locality_output: &mut first_locality,
+        },
+    )?
+    .ok_or("generation one disappeared before index seal")?;
+    let first_fragments = first_index_open
+        .fragments()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut first_projections = vec![MaybeUninit::uninit(); 4096];
+    let mut first_entities = vec![MaybeUninit::uninit(); 4096];
+    let mut first_exact = vec![MaybeUninit::uninit(); 4096];
+    let mut first_lexical = vec![MaybeUninit::uninit(); 4096];
+    let mut first_atoms = vec![MaybeUninit::uninit(); 4096];
+    let mut first_types = vec![MaybeUninit::uninit(); 4096];
+    let mut first_projections_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut first_entities_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut first_exact_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut first_lexical_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut first_atoms_2 = vec![MaybeUninit::uninit(); 4096];
+    let mut first_types_2 = vec![MaybeUninit::uninit(); 4096];
+    let first_prepared = [
+        build(
+            &first_fragments[0],
+            IndexBuildScratch {
+                projections: &mut first_projections,
+                entities: &mut first_entities,
+                exact_rows: &mut first_exact,
+                lexical_rows: &mut first_lexical,
+                atoms: &mut first_atoms,
+                type_nodes: &mut first_types,
+            },
+        )
+        .map_err(|error| format!("generation one index build failed: {error}"))?,
+        build(
+            &first_fragments[1],
+            IndexBuildScratch {
+                projections: &mut first_projections_2,
+                entities: &mut first_entities_2,
+                exact_rows: &mut first_exact_2,
+                lexical_rows: &mut first_lexical_2,
+                atoms: &mut first_atoms_2,
+                type_nodes: &mut first_types_2,
+            },
+        )
+        .map_err(|error| format!("generation one index build failed: {error}"))?,
+    ];
+    let mut first_exact_ids = first_prepared
+        .iter()
+        .map(|p| p.exact.id)
+        .collect::<Vec<_>>();
+    let mut first_lexical_ids = first_prepared
+        .iter()
+        .map(|p| p.lexical.id)
+        .collect::<Vec<_>>();
+    let first_sealed = seal_compilation_index(
+        first_index_open,
+        &first_prepared,
+        CompilationIndexScratch {
+            exact: &mut first_exact_ids,
+            lexical: &mut first_lexical_ids,
+        },
+    )
+    .map_err(|error| format!("generation one index seal failed: {}", error.error))?;
+    assert_eq!(first_sealed.indexes.len(), 2);
+
     fs::write(
         root.join("src/extra.c"),
         b"#include \"base.h\"\nint extra_value;\n",
     )?;
+    fs::write(
+        root.join("src/main.c"),
+        b"#include \"base.h\"\n#include <only_sysroot.h>\nint main_value;\nint changed_value;\nstruct Changed { int field; };\n",
+    )?;
     write_database(&root, &["src/main.c", "src/util.c", "src/extra.c"])?;
+    let main_source_2 = fs::read(root.join("src/main.c"))?;
     let extra_source = fs::read(root.join("src/extra.c"))?;
     let mut extra_output = vec![0xa5; 4 << 20];
     let mut main_output_2 = vec![0xa5; 4 << 20];
@@ -242,7 +334,7 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
     let main_2 = compile_one(
         &root,
         "src/main.c",
-        &main_source,
+        &main_source_2,
         &cancelled,
         &mut main_output_2,
     )?;
@@ -260,6 +352,11 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
         &cancelled,
         &mut extra_output,
     )?;
+    assert_ne!(
+        Sha256::digest(main_2.fragment.as_ref()),
+        Sha256::digest(&first_bytes[0])
+    );
+    assert_eq!(util_2.fragment.as_ref(), first_bytes[1].as_slice());
     let second = publish(&journal, &artifacts, &[main_2, util_2, extra])
         .map_err(|error| format!("second publish: {error:?}"))?;
     assert_eq!(*second.publication.stable.sequence, 1);
@@ -267,12 +364,15 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
         first_generation.generation.pinned_root,
         second.publication.generation.pinned_root
     );
+    journal.shutdown()?;
+    let reopened =
+        DurablePublisher::reopen(&PublicationPaths::in_directory(&journal_path), limits()?)?;
     let mut manifest = vec![0; 4 << 20];
     let mut manifest_facts = vec![None; 3];
     let mut fragments = vec![0; 12 << 20];
     let mut locality = vec![0; 1 << 20];
     let opened = open_published(
-        &journal,
+        &reopened,
         &artifacts,
         OpenPublicationScratch {
             manifest_output: &mut manifest,
@@ -379,6 +479,266 @@ fn clang_database_whole_tu_generation_journey() -> Result<(), Box<dyn std::error
             ordinal: 0,
             fault: compiler_ir::DirectoryFault::RequiredUnknown { kind: 254 },
         })
+    ));
+    reopened.shutdown()?;
+    remove_native(&root)?;
+    remove_native(&store)
+}
+
+#[test]
+fn publish_cancellation_has_typed_pre_storage_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fresh("publish-cancel")?;
+    write_database(&root, &["src/main.c"])?;
+    let source = b"int cancelled_publish;\n";
+    fs::write(root.join("src/main.c"), source)?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0; 4 << 20];
+    let fragment = compile_one(&root, "src/main.c", source, &cancelled, &mut output)?;
+    let store = fresh("publish-cancel-store")?;
+    let journal = DurablePublisher::create(
+        &PublicationPaths::in_directory(&store.join("journal")),
+        limits()?,
+    )?;
+    // CancelBeforeStorage is the deterministic pre-admission terminal: no immutable bytes exist.
+    let error = publish_control(
+        &journal,
+        &store.join("artifacts"),
+        std::slice::from_ref(&fragment),
+        PublishControl::CancelBeforeStorage,
+        128,
+    )
+    .expect_err("cancelled publication was admitted");
+    assert!(matches!(
+        error.downcast_ref::<compiler_publication::PublishCompiledError>(),
+        Some(compiler_publication::PublishCompiledError::CancelledBeforeStorage)
+    ));
+    let mut manifest = vec![0; 4 << 20];
+    let mut facts = vec![None; 1];
+    let mut fragments = vec![0; 4 << 20];
+    let mut locality = vec![0; 1 << 20];
+    assert!(
+        open_published(
+            &journal,
+            &store.join("artifacts"),
+            OpenPublicationScratch {
+                manifest_output: &mut manifest,
+                manifest_facts: &mut facts,
+                fragment_output: &mut fragments,
+                locality_output: &mut locality,
+            },
+        )?
+        .is_none()
+    );
+    journal.shutdown()?;
+    remove_native(&root)?;
+    remove_native(&store)
+}
+
+#[test]
+fn publish_binding_scratch_has_typed_capacity_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fresh("publish-capacity")?;
+    write_database(&root, &["src/main.c"])?;
+    let source = b"int binding_capacity;\n";
+    fs::write(root.join("src/main.c"), source)?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0; 4 << 20];
+    let fragment = compile_one(&root, "src/main.c", source, &cancelled, &mut output)?;
+    let store = fresh("publish-capacity-store")?;
+    let journal = DurablePublisher::create(
+        &PublicationPaths::in_directory(&store.join("journal")),
+        limits()?,
+    )?;
+    let error = publish_control(
+        &journal,
+        &store.join("artifacts"),
+        std::slice::from_ref(&fragment),
+        PublishControl::Continue,
+        8,
+    )
+    .expect_err("undersized binding scratch was accepted");
+    match error.downcast_ref::<compiler_publication::PublishCompiledError>() {
+        Some(compiler_publication::PublishCompiledError::BindingOutputLength { observed }) => {
+            assert_eq!(*observed, 8)
+        }
+        _ => return Err(format!("wrong binding terminal: {error}").into()),
+    }
+    let published = publish(
+        &journal,
+        &store.join("artifacts"),
+        std::slice::from_ref(&fragment),
+    )?;
+    assert_eq!(*published.publication.stable.sequence, 0);
+    journal.shutdown()?;
+    remove_native(&root)?;
+    remove_native(&store)
+}
+
+#[test]
+fn reopen_fragment_scratch_has_typed_capacity_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fresh("open-capacity")?;
+    write_database(&root, &["src/main.c"])?;
+    let source = b"int open_capacity;\n";
+    fs::write(root.join("src/main.c"), source)?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0; 4 << 20];
+    let fragment = compile_one(&root, "src/main.c", source, &cancelled, &mut output)?;
+    let store = fresh("open-capacity-store")?;
+    let journal_path = store.join("journal");
+    let artifacts = store.join("artifacts");
+    let journal =
+        DurablePublisher::create(&PublicationPaths::in_directory(&journal_path), limits()?)?;
+    publish(&journal, &artifacts, &[fragment])?;
+    let mut manifest = vec![0; 4 << 20];
+    let mut facts = vec![None; 1];
+    let mut fragments = vec![0; 1];
+    let mut locality = vec![0; 1 << 20];
+    let result = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => return Err("undersized fragment scratch was accepted".into()),
+    };
+    match error {
+        compiler_publication::OpenPublishedError::FragmentOutputTooSmall {
+            required,
+            available,
+        } => {
+            assert!(required > available);
+            assert_eq!(available, 1);
+        }
+        other => return Err(format!("wrong reopen terminal: {other:?}").into()),
+    }
+    let mut fragments = vec![0; 4 << 20];
+    let opened = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    )?
+    .ok_or("publication disappeared after capacity rejection")?;
+    assert_eq!(opened.fragments().count(), 1);
+    journal.shutdown()?;
+    remove_native(&root)?;
+    remove_native(&store)
+}
+
+#[test]
+fn index_scratch_terminals_are_typed_and_non_mutating() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fresh("index-capacity")?;
+    write_database(&root, &["src/main.c"])?;
+    let source = b"int index_capacity;\n";
+    fs::write(root.join("src/main.c"), source)?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0; 4 << 20];
+    let fragment = compile_one(&root, "src/main.c", source, &cancelled, &mut output)?;
+    let store = fresh("index-capacity-store")?;
+    let artifacts = store.join("artifacts");
+    let journal = DurablePublisher::create(
+        &PublicationPaths::in_directory(&store.join("journal")),
+        limits()?,
+    )?;
+    publish(&journal, &artifacts, &[fragment])?;
+    let mut manifest = vec![0; 4 << 20];
+    let mut facts = vec![None; 1];
+    let mut fragments = vec![0; 4 << 20];
+    let mut locality = vec![0; 1 << 20];
+    let opened = open_published(
+        &journal,
+        &artifacts,
+        OpenPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            fragment_output: &mut fragments,
+            locality_output: &mut locality,
+        },
+    )?
+    .ok_or("publication disappeared before index capacity test")?;
+    let fragment = opened
+        .fragments()
+        .next()
+        .ok_or("missing indexed fragment")??;
+    let mut projections = vec![MaybeUninit::uninit(); 0];
+    let mut entities = vec![MaybeUninit::uninit(); 4096];
+    let mut exact_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut lexical_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut atoms = vec![MaybeUninit::uninit(); 4096];
+    let mut types = vec![MaybeUninit::uninit(); 4096];
+    let result = build(
+        &fragment,
+        IndexBuildScratch {
+            projections: &mut projections,
+            entities: &mut entities,
+            exact_rows: &mut exact_rows,
+            lexical_rows: &mut lexical_rows,
+            atoms: &mut atoms,
+            type_nodes: &mut types,
+        },
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => return Err("undersized projections scratch was accepted".into()),
+    };
+    assert!(matches!(
+        error,
+        server_index_build::BuildError::Admission(
+            server_index_build::BuildAdmissionError::OutputTooSmall {
+                region: server_index_build::BuildRegion::Projections,
+                ..
+            }
+        )
+    ));
+    // The short exact list is rejected before any identity is written.
+    let mut projections = vec![MaybeUninit::uninit(); 4096];
+    let mut entities = vec![MaybeUninit::uninit(); 4096];
+    let mut exact_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut lexical_rows = vec![MaybeUninit::uninit(); 4096];
+    let mut atoms = vec![MaybeUninit::uninit(); 4096];
+    let mut types = vec![MaybeUninit::uninit(); 4096];
+    let prepared = build(
+        &fragment,
+        IndexBuildScratch {
+            projections: &mut projections,
+            entities: &mut entities,
+            exact_rows: &mut exact_rows,
+            lexical_rows: &mut lexical_rows,
+            atoms: &mut atoms,
+            type_nodes: &mut types,
+        },
+    )
+    .map_err(|error| format!("index build failed: {error}"))?;
+    let mut exact = Vec::new();
+    let mut lexical = vec![prepared.lexical.id];
+    let prepared_indexes = [prepared];
+    let result = seal_compilation_index(
+        opened,
+        &prepared_indexes,
+        CompilationIndexScratch {
+            exact: &mut exact,
+            lexical: &mut lexical,
+        },
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => return Err("short exact identity scratch was accepted".into()),
+    };
+    assert!(matches!(
+        error.error,
+        CompilationIndexError::ExactScratch {
+            required: 1,
+            available: 0
+        }
     ));
     journal.shutdown()?;
     remove_native(&root)?;
