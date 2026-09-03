@@ -1705,13 +1705,18 @@ fn fact_version(
 /// Exact canonicalization, preparation, or write failure of the emission
 /// lane. Every fact-level invariant is already proven by [`FactSet::push`],
 /// so the remaining terminals carry exact typed causes without fact operands.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+// card C4: test-support boundary needs Error for the typed #[from]
 pub(super) enum AdmissionFault {
+    #[error(transparent)]
     Canonical(CanonicalDataError),
+    #[error(transparent)]
     Prepare(PrepareError),
+    #[error(transparent)]
     Write(WriteError),
     /// One extension fact named a provisional atom outside the admitted
     /// extension-atom lane.
+    #[error("extension row {row} provisional atom {provisional} outside atom count {atom_count}")]
     ExtensionAtom {
         row: usize,
         provisional: u32,

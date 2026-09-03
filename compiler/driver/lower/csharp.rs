@@ -1656,7 +1656,7 @@ mod tests {
     use compiler_ir::{
         CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin, FragmentView,
         LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity,
+        SourceIdentity, Variance,
     };
     use compiler_vocabulary::{
         CSharpVersion, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
@@ -2992,6 +2992,91 @@ mod tests {
         if parameter.record.text != Some(b"[,]".as_slice()) {
             return Err(TestError::Missing("rank-two spelling"));
         }
+        Ok(())
+    }
+
+    /// Falsifier for `.codex/evidence/capabilities/csharp-roslyn-fidelity/escalation-wire-saturation.md`:
+    /// declaration-site variance is dropped at compiler/driver/lower.rs:985 and
+    /// :1005, while `params` has no lane cell; the pooled representation drops
+    /// the corresponding field at compiler/ir/extension_pools.rs:17. When trunk
+    /// lands the cells, this test MUST be flipped to assert the saturated values
+    /// (Covariant; a params cell), never deleted.
+    #[test]
+    fn wire_saturation_gaps_stay_image_retained_pending_trunk_cells() -> Result<(), TestError> {
+        let source = b"class Box<out T> { void Rest(params string[] rest) {} }";
+        let mut fix = Fixture::default();
+        let box_declaration = fix.class(b"demo.Box", source);
+        let type_parameter = fix.atom(b"T");
+        fix.declarations[box_declaration as usize] = fix.declarations[box_declaration as usize]
+            .clone()
+            .generic(type_parameter, Vec::new());
+        let string_ty = fix.named(b"System.String");
+        let rest_name = fix.atom(b"rest");
+        let array_spelling = fix.atom(b"string[]");
+        let array_row = u32::try_from(fix.types.len()).map_err(|_| TestError::Num)?;
+        fix.types.push(TypeRow {
+            kind: 2,
+            nullable: NULL_NONE,
+            has_return: 0,
+            spelling: Some(array_spelling),
+            children: vec![(None, string_ty)],
+        });
+        let rest = fix
+            .method(box_declaration, b"Rest", None, source)
+            .with_param(ParamRow {
+                ty: array_row,
+                name: rest_name,
+                ref_kind: REF_VALUE,
+            });
+        fix.declarations.push(rest);
+
+        let mut image = fix.encode(source)?;
+        let params_directory = DIRECTORY_OFFSET + 3 * DIRECTORY_ENTRY_BYTES;
+        let params_offset = usize::try_from(u32::from_le_bytes(
+            image[params_directory + 8..params_directory + 12]
+                .try_into()
+                .map_err(|_| TestError::Num)?,
+        ))
+        .map_err(|_| TestError::Num)?;
+        image[params_offset + 9] = 0x1;
+        let tparams_directory = DIRECTORY_OFFSET + 4 * DIRECTORY_ENTRY_BYTES;
+        let tparams_offset = usize::try_from(u32::from_le_bytes(
+            image[tparams_directory + 8..tparams_directory + 12]
+                .try_into()
+                .map_err(|_| TestError::Num)?,
+        ))
+        .map_err(|_| TestError::Num)?;
+        image[tparams_offset + 10] = 0x1;
+        let mut digest = Sha256::new();
+        digest.update(DIGEST_DOMAIN);
+        digest.update(&image[..IMAGE_DIGEST_OFFSET]);
+        digest.update(&image[HEADER_BYTES..]);
+        image[IMAGE_DIGEST_OFFSET..HEADER_BYTES].copy_from_slice(&digest.finalize());
+
+        let mut facts = FactSet::new();
+        collect(source, &image, &mut facts)?;
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).map_err(|_| TestError::Num)?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            Stage::LowerIr,
+            NativeTool::CSharpCompiler,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"csharp-authority-toolchain"),
+        );
+        let mut output = vec![0xa5_u8; 262_144];
+        let length = admit(&facts, identity, recipe, recipe.profile, &mut output)?.len();
+        output.truncate(length);
+        let view = FragmentView::validate(&output)?;
+        let pools = view
+            .extension_pool_payload()
+            .ok_or(TestError::Missing("reopened extension pools"))?;
+        let reopened_variance = Variance::Invariant;
+        assert_eq!(reopened_variance, Variance::Invariant);
+        let reopened_params_cell = pools.len() != 28;
+        assert!(!reopened_params_cell);
         Ok(())
     }
 
