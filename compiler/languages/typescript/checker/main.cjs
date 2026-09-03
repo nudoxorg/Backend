@@ -9,7 +9,11 @@
  *     `computed` (checker inference) origins;
  *   - one `references` entry per resolved identifier use with its
  *     same-file declaration target or foreign module origin, plus the
- *     exact chosen overload index at resolved call sites.
+ *     exact chosen overload index at resolved call sites;
+ *   - one optional `narrowings` entry per plain `target = value`
+ *     assignment, binding the checker's control-flow-sensitive type of
+ *     the assigned value at that exact site to the target's same-file
+ *     declaration name span.
  *
  * Every offset is a UTF-16 code-unit offset into the exact source text,
  * which is the native coordinate of the TypeScript compiler API.
@@ -231,6 +235,7 @@ function declaredName(node) {
 
 const declarations = [];
 const references = [];
+const narrowings = [];
 
 function emitVariableLike(node, annotation) {
   const name = declaredName(node);
@@ -312,8 +317,36 @@ function visit(node) {
     }
   } else if (ts.isIdentifier(node)) {
     emitReference(node);
+  } else if (ts.isAssignmentExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    emitNarrowing(node);
   }
   node.forEachChild(visit);
+}
+
+/**
+ * Emits one control-flow narrowing entry for a plain `target = value`
+ * assignment whose target is an identifier declared in this same file.
+ * The entry binds the checker's type of the assigned value at this exact
+ * program point (the fact the syntax plane cannot see) to the target's
+ * declaration-name span, so the consumer can own the row by the declared
+ * fact instead of by an ambiguous spelling.
+ */
+function emitNarrowing(node) {
+  if (!ts.isIdentifier(node.left)) return;
+  const symbol = checker.getSymbolAtLocation(node.left);
+  if (!symbol) return;
+  const declarationsOfSymbol = symbol.getDeclarations ? symbol.getDeclarations() || [] : [];
+  const origin = declarationsOfSymbol[0];
+  const originFile = origin && origin.getSourceFile ? origin.getSourceFile() : null;
+  const originName = origin ? declaredName(origin) : null;
+  if (originFile !== sourceFile || !originName || !ts.isIdentifier(originName)) return;
+  narrowings.push({
+    nameStart: originName.getStart(sourceFile),
+    nameEnd: originName.getEnd(),
+    start: node.left.getStart(sourceFile),
+    end: node.getEnd(),
+    type: typeTree(checker.getTypeAtLocation(node.right), 0),
+  });
 }
 
 /** Whether this identifier is the declared name of its parent declaration. */
@@ -397,4 +430,5 @@ process.stdout.write(JSON.stringify({
   diagnostics,
   declarations,
   references,
+  narrowings,
 }));
