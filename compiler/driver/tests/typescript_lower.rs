@@ -6,12 +6,13 @@
 use std::{
     path::Path,
     sync::atomic::AtomicBool,
+    thread,
     time::{Duration, Instant},
 };
 
 use compiler_driver::{
-    compile, compile_ir, CompileControl, CompileFailure, CompileOutput, CompileRequest,
-    CompileScratch, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
@@ -273,14 +274,18 @@ fn references_resolve_local_import_and_unresolved_targets() {
     let v=view(b"import { foreign } from 'pkg'; export interface Shape { area(): number; } export const s: Shape = foreign(); export const broken = missingGlobal;",None);
     let (_, k) = named(&v, b"foreign");
     assert_eq!(k, EntityKind::Reexport);
-    assert!(occurrences(&v)
-        .iter()
-        .any(|o| o.occurrence.kind == ReferenceKind::Import
-            && o.occurrence.confidence == OccurrenceConfidence::Import));
+    assert!(
+        occurrences(&v)
+            .iter()
+            .any(|o| o.occurrence.kind == ReferenceKind::Import
+                && o.occurrence.confidence == OccurrenceConfidence::Import)
+    );
     let (s, _) = named(&v, b"s");
-    assert!(occurrences(&v)
-        .iter()
-        .any(|o| o.owner.raw == s && o.occurrence.confidence == OccurrenceConfidence::Index));
+    assert!(
+        occurrences(&v)
+            .iter()
+            .any(|o| o.owner.raw == s && o.occurrence.confidence == OccurrenceConfidence::Index)
+    );
 }
 #[test]
 fn jsdoc_commits_text_code_and_local_link_fragments() {
@@ -326,12 +331,63 @@ fn single_declaration_owns_its_annotation_without_synthetic_rows() {
     );
 }
 #[test]
-fn foreign_generic_reference_is_unknown_with_its_qualified_spelling() {
+fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
     let v = view(b"export const m: Map<string, number> = new Map();", None);
     let f = fact(&v, named(&v, b"m").0);
     assert_eq!(f.record.tag, SemanticTypeTag::Unknown);
     assert_eq!(f.record.payload0, u32::from(TypeReason::UnresolvedExternal));
     assert_eq!(f.record.text, Some(&b"Map"[..]));
+}
+
+#[test]
+fn self_referential_alias_is_bounded_on_a_small_stack() {
+    const SOURCE: &[u8] = b"export type A = A | false; export const x: A = false;";
+    let join = thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let checker = Checker::default()
+                .run(TypeScriptSource::TypeScript, SOURCE)
+                .unwrap();
+            let view = view(SOURCE, Some(&checker));
+            let record = fact(&view, named(&view, b"x").0);
+            assert_eq!(record.record.tag, SemanticTypeTag::Nominal);
+            assert_eq!(record.record.payload0, 0);
+            (
+                record.record.tag,
+                TypeReason::try_from(record.record.payload0).ok(),
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(join.0, SemanticTypeTag::Nominal);
+}
+
+#[test]
+fn plugin_union_keeps_all_forty_literal_members_reachable() {
+    const SOURCE: &[u8] = b"export const Plugin = null;";
+    let mut checker = report(SOURCE);
+    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 19,
+        origin: compiler_languages_typescript::Origin::Computed,
+        overload_index: None,
+        r#type: Some(compiler_languages_typescript::TypeTree::Union {
+            members: (0..40)
+                .map(|index| compiler_languages_typescript::TypeTree::Literal {
+                    base: compiler_languages_typescript::LiteralBase::String,
+                    text: index.to_string(),
+                })
+                .collect(),
+        }),
+    }]);
+    let view = view(SOURCE, Some(&checker));
+    let literals = facts(&view)
+        .into_iter()
+        .filter(|record| record.segment == compiler_ir::TypeFactSegment::Computed)
+        .filter(|record| record.record.tag == SemanticTypeTag::Primitive)
+        .count();
+    assert_eq!(literals, 40);
 }
 #[test]
 fn empty_source_admits_the_schema1_fragment_without_semantic_data() {
@@ -434,30 +490,38 @@ fn narrowing_object_members_bind_spellings_at_the_assignment_site() {
         }),
     }]);
     let v = view(b"let wide: number = 0;\nwide = { alpha: 1 };", Some(&r));
-    assert!(facts(&v)
-        .iter()
-        .any(|f| f.record.tag == SemanticTypeTag::AnonymousRecord));
+    assert!(
+        facts(&v)
+            .iter()
+            .any(|f| f.record.tag == SemanticTypeTag::AnonymousRecord)
+    );
 }
 #[test]
 fn checker_resolved_global_reaches_an_oracle_universe_key() {
     let v = view(b"export const term = console;", None);
-    assert!(occurrences(&v)
-        .iter()
-        .any(|o| matches!(o.occurrence.target, OccurrenceTarget::Foreign(_))));
+    assert!(
+        occurrences(&v)
+            .iter()
+            .any(|o| matches!(o.occurrence.target, OccurrenceTarget::Foreign(_)))
+    );
 }
 #[test]
 fn package_module_bases_stay_honestly_syntactic() {
     let v = view(b"export const q = missing;", None);
-    assert!(occurrences(&v)
-        .iter()
-        .any(|o| o.occurrence.confidence == OccurrenceConfidence::Syntactic));
+    assert!(
+        occurrences(&v)
+            .iter()
+            .any(|o| o.occurrence.confidence == OccurrenceConfidence::Syntactic)
+    );
 }
 #[test]
 fn checker_only_property_call_targets_the_exact_member() {
     let v=view(b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();",None);
-    assert!(occurrences(&v)
-        .iter()
-        .any(|o| o.occurrence.kind == ReferenceKind::FunctionCall));
+    assert!(
+        occurrences(&v)
+            .iter()
+            .any(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+    );
 }
 #[test]
 fn genuinely_unresolvable_names_stay_honestly_external() {
@@ -558,9 +622,11 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
     );
     let decoded = view(SOURCE, Some(&checker));
     let (owner, _) = named(&decoded, b"a");
-    assert!(facts(&decoded)
-        .iter()
-        .any(|fact| { fact.owner.raw == owner && fact.record.tag == SemanticTypeTag::Nominal }));
+    assert!(
+        facts(&decoded)
+            .iter()
+            .any(|fact| { fact.owner.raw == owner && fact.record.tag == SemanticTypeTag::Nominal })
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -611,7 +677,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
         Frozen {
             name: b"table",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Unknown,
+            declared: SemanticTypeTag::Apply,
             computed: SemanticTypeTag::Apply,
             shape: 3,
             has_computed: true,
@@ -692,7 +758,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             name: b"term",
             kind: EntityKind::Constant,
             declared: SemanticTypeTag::Unknown,
-            computed: SemanticTypeTag::Unknown,
+            computed: SemanticTypeTag::Nominal,
             shape: 0,
             has_computed: true,
         },
