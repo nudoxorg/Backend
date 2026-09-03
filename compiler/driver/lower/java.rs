@@ -212,6 +212,138 @@ const ARITY_SPELLINGS: [&[u8]; 8] = [
     b"[][][][][][][][]",
 ];
 
+/// Maximum non-ASCII character boundaries retained by one source basis.
+/// This inline table is bounded; exceeding it returns `IndexCapacity` rather
+/// than falling back to repeated source scans.
+const MAX_UTF16_BOUNDARIES: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct SpanBoundary {
+    units: u32,
+    bytes: u32,
+    utf16_width: u32,
+    byte_width: u32,
+}
+
+enum SpanBasis {
+    Ascii {
+        utf16_len: u32,
+    },
+    Sparse {
+        utf16_len: u32,
+        boundaries: [SpanBoundary; MAX_UTF16_BOUNDARIES],
+        length: usize,
+    },
+}
+
+impl SpanBasis {
+    /// Computes the UTF-16 length and sparse projection index in one pass.
+    fn prepare(source: &str) -> Result<Self, ProjectionFault<'static>> {
+        let mut utf16_len = 0_u32;
+        let mut boundaries = [SpanBoundary {
+            units: 0,
+            bytes: 0,
+            utf16_width: 0,
+            byte_width: 0,
+        }; MAX_UTF16_BOUNDARIES];
+        let mut length = 0;
+        let mut ascii = true;
+        for (offset, character) in source.char_indices() {
+            let utf16_width =
+                u32::try_from(character.len_utf16()).map_err(|_| ProjectionFault::Utf16 {
+                    units: u32::MAX,
+                    utf16_len: u32::MAX,
+                })?;
+            let byte_width =
+                u32::try_from(character.len_utf8()).map_err(|_| ProjectionFault::Utf16 {
+                    units: u32::MAX,
+                    utf16_len: u32::MAX,
+                })?;
+            if !character.is_ascii() {
+                ascii = false;
+                let boundary = boundaries
+                    .get_mut(length)
+                    .ok_or(ProjectionFault::IndexCapacity)?;
+                *boundary = SpanBoundary {
+                    units: utf16_len,
+                    bytes: u32::try_from(offset).map_err(|_| ProjectionFault::Utf16 {
+                        units: u32::MAX,
+                        utf16_len: u32::MAX,
+                    })?,
+                    utf16_width,
+                    byte_width,
+                };
+                length += 1;
+            }
+            utf16_len = utf16_len
+                .checked_add(utf16_width)
+                .ok_or(ProjectionFault::Utf16 {
+                    units: u32::MAX,
+                    utf16_len: u32::MAX,
+                })?;
+        }
+        if ascii {
+            Ok(Self::Ascii { utf16_len })
+        } else {
+            Ok(Self::Sparse {
+                utf16_len,
+                boundaries,
+                length,
+            })
+        }
+    }
+
+    fn utf16_len(&self) -> u32 {
+        match self {
+            Self::Ascii { utf16_len } | Self::Sparse { utf16_len, .. } => *utf16_len,
+        }
+    }
+
+    /// Binary-searches the preceding non-ASCII boundary. A coordinate inside
+    /// an astral surrogate pair retains the prior typed UTF-16 rejection.
+    fn byte_offset(&self, units: u32) -> Result<u32, ProjectionFault<'static>> {
+        let utf16_len = self.utf16_len();
+        if units > utf16_len {
+            return Err(ProjectionFault::Utf16 { units, utf16_len });
+        }
+        let (boundaries, length) = match self {
+            Self::Ascii { .. } => return Ok(units),
+            Self::Sparse {
+                boundaries, length, ..
+            } => (boundaries, *length),
+        };
+        let mut low = 0;
+        let mut high = length;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if boundaries[middle].units <= units {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if low == 0 {
+            return Ok(units);
+        }
+        let boundary = boundaries[low - 1];
+        if units == boundary.units {
+            return Ok(boundary.bytes);
+        }
+        let end_units = boundary
+            .units
+            .checked_add(boundary.utf16_width)
+            .ok_or(ProjectionFault::Utf16 { units, utf16_len })?;
+        if units < end_units {
+            return Err(ProjectionFault::Utf16 { units, utf16_len });
+        }
+        boundary
+            .bytes
+            .checked_add(boundary.byte_width)
+            .and_then(|bytes| bytes.checked_add(units - end_units))
+            .ok_or(ProjectionFault::Utf16 { units, utf16_len })
+    }
+}
+
 /// Wildcard variance cell for an unbounded `<?>`.
 const VARIANCE_INVARIANT: u32 = 0;
 /// Wildcard variance cell for `? extends T`.
@@ -246,15 +378,7 @@ pub(crate) fn collect<'source>(
     }
     let image = authority.image;
     let source_text = str::from_utf8(source).map_err(|_| terminal(ProjectionFault::SourceUtf8))?;
-    let utf16_len = match utf16_length(source_text) {
-        Some(length) => length,
-        None => {
-            return Err(terminal(ProjectionFault::Utf16 {
-                units: u32::MAX,
-                utf16_len: u32::MAX,
-            }));
-        }
-    };
+    let span_basis = SpanBasis::prepare(source_text).map_err(terminal)?;
 
     let mut names = NameIndex::new();
     // Pass one: module, package, and type declarations. Type declarations
@@ -356,8 +480,7 @@ pub(crate) fn collect<'source>(
     for reference in image.references() {
         let reference =
             reference.map_err(|cause| JavaCollectError::Image(BoundImageError::Image(cause)))?;
-        push_occurrence(facts, image, &symbols, source_text, utf16_len, &reference)
-            .map_err(terminal)?;
+        push_occurrence(facts, image, &symbols, &span_basis, &reference).map_err(terminal)?;
     }
     Ok(())
 }
@@ -1426,8 +1549,7 @@ fn push_occurrence<'source>(
     facts: &mut FactSet<'source>,
     image: JavaImage<'source>,
     symbols: &SymbolIndex,
-    source_text: &'source str,
-    utf16_len: u32,
+    span_basis: &SpanBasis,
     reference: &Reference<'source>,
 ) -> Result<(), ProjectionFault<'source>> {
     let owner = symbols
@@ -1459,8 +1581,9 @@ fn push_occurrence<'source>(
             OccurrenceTarget::Foreign(key)
         }
     };
-    let start = utf16_byte_offset(source_text, reference.start, utf16_len)?;
-    let end = utf16_byte_offset(source_text, reference.end, utf16_len)?;
+    let start = span_basis.byte_offset(reference.start)?;
+    let end = span_basis.byte_offset(reference.end)?;
+    let utf16_len = span_basis.utf16_len();
     let span = RelSpan::new(start, end).map_err(|_| ProjectionFault::Utf16 {
         units: reference.start,
         utf16_len,
@@ -1477,40 +1600,6 @@ fn push_occurrence<'source>(
         )
         .map_err(|_| ProjectionFault::IndexCapacity)?;
     Ok(())
-}
-
-/// Projects one javac UTF-16 coordinate onto the bound source's byte domain.
-fn utf16_byte_offset(source: &str, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault<'_>> {
-    let mut seen = 0_u32;
-    for (offset, character) in source.char_indices() {
-        if seen == units {
-            return u32::try_from(offset).map_err(|_| ProjectionFault::Utf16 { units, utf16_len });
-        }
-        let Ok(width) = u32::try_from(character.len_utf16()) else {
-            return Err(ProjectionFault::Utf16 { units, utf16_len });
-        };
-        seen = match seen.checked_add(width) {
-            Some(seen) => seen,
-            None => return Err(ProjectionFault::Utf16 { units, utf16_len }),
-        };
-    }
-    if seen == units {
-        return u32::try_from(source.len())
-            .map_err(|_| ProjectionFault::Utf16 { units, utf16_len });
-    }
-    Err(ProjectionFault::Utf16 { units, utf16_len })
-}
-
-/// The bound source's total UTF-16 length, or `None` when it cannot fit a u32.
-fn utf16_length(source: &str) -> Option<u32> {
-    let mut total = 0_u32;
-    for character in source.chars() {
-        let Ok(width) = u32::try_from(character.len_utf16()) else {
-            return None;
-        };
-        total = total.checked_add(width)?;
-    }
-    Some(total)
 }
 
 /// Streams one declaration's Javadoc atom into the documentation lane as text
@@ -2749,6 +2838,56 @@ mod tests {
             || row(&view, 6)?.record.tag != SemanticTypeTag::Array
         {
             return Err(TestError::Missing("intersection structural member"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn span_basis_projects_ascii_mixed_boundaries_and_rejects_hostile_units()
+    -> Result<(), TestError> {
+        let ascii = SpanBasis::prepare("abc").map_err(|_| TestError::Missing("ASCII basis"))?;
+        if !matches!(&ascii, SpanBasis::Ascii { utf16_len: 3 })
+            || ascii
+                .byte_offset(0)
+                .map_err(|_| TestError::Missing("ASCII identity projection"))?
+                != 0
+            || ascii
+                .byte_offset(3)
+                .map_err(|_| TestError::Missing("ASCII identity projection"))?
+                != 3
+        {
+            return Err(TestError::Missing("ASCII identity projection"));
+        }
+
+        let source = "a😀éz😀b";
+        let basis = SpanBasis::prepare(source).map_err(|_| TestError::Missing("mixed basis"))?;
+        let exact = [(0, 0), (1, 1), (3, 5), (4, 7), (5, 8), (7, 12), (8, 13)];
+        for (units, expected) in exact {
+            if basis
+                .byte_offset(units)
+                .map_err(|_| TestError::Missing("mixed UTF-16 boundary"))?
+                != expected
+            {
+                return Err(TestError::Missing("mixed UTF-16 boundary"));
+            }
+        }
+        for units in [2, 6, 9] {
+            match basis.byte_offset(units) {
+                Err(ProjectionFault::Utf16 {
+                    units: actual,
+                    utf16_len: 8,
+                }) if actual == units => {}
+                _ => return Err(TestError::Missing("surrogate or beyond-end fault")),
+            }
+        }
+
+        let empty = SpanBasis::prepare("").map_err(|_| TestError::Missing("empty basis"))?;
+        if empty
+            .byte_offset(0)
+            .map_err(|_| TestError::Missing("zero-length reference"))?
+            != 0
+        {
+            return Err(TestError::Missing("zero-length reference"));
         }
         Ok(())
     }
