@@ -3123,9 +3123,13 @@ mod tests {
         let image = over.encode(&source)?;
         let mut facts = FactSet::new();
         match collect(&source, &image, &mut facts) {
-            Err(CSharpCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            // The trunk's exact terminals retain the rejected fact's ordinal,
+            // name length, and Capacity cause by value.
+            Err(CSharpCollectError::Rejected(crate::types::FactRejection {
+                fact: 1024,
+                name_len: 4,
+                cause: crate::types::FactFault::Capacity,
+            })) => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }
