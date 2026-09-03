@@ -2962,16 +2962,16 @@ mod tests {
                 return Err(TestError::Missing("carrier row"));
             }
         }
-        let error_carrier = row(&view, 3)?;
+        let error_carrier = row(&view, 4)?;
         if error_carrier.record.tag != SemanticTypeTag::Unknown
             || error_carrier.record.text != Some(b"error".as_slice())
         {
             return Err(TestError::Missing("universe error fold"));
         }
-        let brew = row(&view, 4)?;
+        let brew = row(&view, 5)?;
         if brew.record.tag != SemanticTypeTag::FunctionPointer
             || brew.record.payload1 != SemanticTypeRecord::RESULT_FLAG
-            || field_children(&view, &brew)? != vec![0, 1, 2, 3]
+            || field_children(&view, &brew)? != vec![1, 2, 3, 4]
         {
             return Err(TestError::Missing("brew function pointer"));
         }
@@ -2982,7 +2982,7 @@ mod tests {
         {
             return Err(TestError::Missing("brew signature lists"));
         }
-        let variadic_row = row(&view, 6)?;
+        let variadic_row = row(&view, 7)?;
         if variadic_row.record.payload1 != 0 {
             return Err(TestError::Missing("void variadic result flag"));
         }
