@@ -150,6 +150,8 @@ struct Emitter<'a, 'source> {
     pushed: Vec<Pushed<'source>>,
     /// The pyrefly authority report, when the checker answered.
     checker: Option<&'a CheckerReport>,
+    /// Reserved owner while the first structural class is being lowered.
+    reserved_anchor: Option<u32>,
 }
 
 /// The interned name tables annotation lowering resolves against.
@@ -188,6 +190,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             ordinals,
             pushed: Vec::new(),
             checker,
+            reserved_anchor: None,
         }
     }
 
@@ -237,8 +240,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             // The self-nominal names the row being pushed: the one closed
             // diagonal case the lane's backward law admits.
             let own_ordinal = Self::coordinate(declaration.name_span, self.facts.len())?;
+            let anchor = own_ordinal;
+            self.reserved_anchor = Some(anchor);
             let (record, members, tier) =
-                match self.structural_class_members(declaration, &mut tables)? {
+                match self.structural_class_members(declaration, &mut tables, anchor)? {
                     Some((record, members)) => (record, members, Confidence::Indexed),
                     None => (
                         SemanticTypeRecord {
@@ -254,6 +259,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         Confidence::Syntactic,
                     ),
                 };
+            self.reserved_anchor = None;
             let extension = self.python_extension(&declaration.decorator_spans, None, tier)?;
             let mut fact = SemanticFact::new(
                 EntityKind::Record,
@@ -284,13 +290,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
         &mut self,
         declaration: &DeclarationFact,
         tables: &mut TypeTables<'source>,
+        anchor: u32,
     ) -> Result<
         Option<(SemanticTypeRecord<'source>, Vec<(&'source [u8], u32, u8)>)>,
         PythonCollectError,
     > {
-        let Some(anchor) = self.anchor() else {
-            return Ok(None);
-        };
         let form = match declaration.class_form {
             Some(ClassForm::TypedDict) => AnonRecordForm::Struct,
             Some(ClassForm::Protocol) => AnonRecordForm::Interface,
@@ -460,7 +464,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None => return Ok(None),
                 }
             };
-            children.push(row);
+            let name = self.slice(parameter.name_span)?;
+            children.push((row, Some(name)));
         }
         let mut payload1 = 0;
         if let Some(annotation) = self.return_annotation(member) {
@@ -471,13 +476,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 anchor,
             )? {
                 Some(row) => {
-                    children.push(row);
+                    children.push((row, None));
                     payload1 = SemanticTypeRecord::RESULT_FLAG;
                 }
                 None => return Ok(None),
             }
         }
-        self.parent_row(function_pointer_record(payload1), &children, anchor)
+        for (row, name) in children {
+            if self.facts.anonymous_type_child(row, name, 0).is_err() {
+                return Ok(None);
+            }
+        }
+        self.intern_row(function_pointer_record(payload1), anchor)
     }
 
     /// The module-level `TypeVar(...)` binding names annotations resolve
@@ -705,8 +715,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
         };
         let extension = self.python_extension(&[], None, tier)?;
         let mut fact = SemanticFact::new(kind, name, LEAF_PRODUCT).typed(lowered_record);
-        for ordinal in children {
-            fact = fact.type_child(ordinal, None, 0);
+        let result_index = if lowered_record.tag == SemanticTypeTag::FunctionPointer
+            && lowered_record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0
+        {
+            children.len().checked_sub(1)
+        } else {
+            None
+        };
+        for (index, ordinal) in children.into_iter().enumerate() {
+            let child_name = (Some(index) != result_index).then_some(b"param" as &'source [u8]);
+            fact = fact.type_child(ordinal, child_name, 0);
         }
         let fact = fact.with_extension(EmissionExtension::Python(extension));
         let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Lowering)?;
@@ -1135,6 +1153,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             }
             Annotation::Generic { .. } => match self.compound_root(annotation, spelling, tables)? {
+                Some((record, children)) if record.tag == SemanticTypeTag::FunctionPointer => {
+                    self.parent_row_named(record, &children, anchor)
+                }
                 Some((record, children)) => self.parent_row(record, &children, anchor),
                 None => Ok(None),
             },
@@ -1158,6 +1179,26 @@ impl<'a, 'source> Emitter<'a, 'source> {
         self.intern_row(record, anchor)
     }
 
+    fn parent_row_named(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        children: &[u32],
+        anchor: u32,
+    ) -> Result<Option<u32>, PythonCollectError> {
+        let result_index = if record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0 {
+            children.len().checked_sub(1)
+        } else {
+            None
+        };
+        for (index, child) in children.iter().enumerate() {
+            let name = (Some(index) != result_index).then_some(b"param" as &'source [u8]);
+            if self.facts.anonymous_type_child(*child, name, 0).is_err() {
+                return Ok(None);
+            }
+        }
+        self.intern_row(record, anchor)
+    }
+
     /// Interns one anonymous leaf row with no children.
     fn leaf_row(
         &mut self,
@@ -1174,13 +1215,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
         record: SemanticTypeRecord<'source>,
         anchor: u32,
     ) -> Result<Option<u32>, PythonCollectError> {
-        Ok(self.facts.intern_anonymous_type_row(anchor, record).ok())
+        let row = match self.reserved_anchor {
+            Some(owner) => self.facts.intern_reserved_anchor_type_row(owner, record),
+            None => self.facts.intern_anonymous_type_row(anchor, record),
+        };
+        Ok(row.ok())
     }
 
-    /// The anchor fact for this declaration's anonymous type rows: the first
-    /// already-pushed declaration, per the established lane convention that
-    /// the pooled row lane only admits already-pushed owners. `None` means
-    /// nothing is pushed yet, so no compound can be hosted for this fact.
+    /// The anchor fact for rows emitted after the first declaration.
     fn anchor(&self) -> Option<u32> {
         self.pushed.first().map(|row| row.ordinal)
     }
@@ -3171,36 +3213,6 @@ mod tests {
         Ok(())
     }
 
-    /// TEMPORARY diagnostic: dumps the decoded type-fact rows of the
-    /// `list[int]` fixture.
-    #[test]
-    fn zz_debug_list_fixture_rows() -> Result<(), TestError> {
-        let source = b"value = 0\nitems: list[int] = 1\n";
-        let bytes = write(source)?;
-        let view = view_of(&bytes)?;
-        let rows = type_facts(&view)?;
-        eprintln!("row count: {}", rows.len());
-        for (index, row) in rows.iter().enumerate() {
-            eprintln!(
-                "row {index}: tag={:?} p0={} p1={} children={}:{}",
-                row.record.tag,
-                row.record.payload0,
-                row.record.payload1,
-                row.record.children.start,
-                row.record.children.length
-            );
-        }
-        eprintln!(
-            "type_fact_payload present: {}",
-            view.type_fact_payload().is_some()
-        );
-        if let Some(payload) = view.type_fact_payload() {
-            eprintln!("payload len: {}", payload.len());
-            eprintln!("payload[0..20]: {:?}", payload.get(..20.min(payload.len())));
-        }
-        Ok(())
-    }
-
     /// A written `Literal["a"]` widens to the string primitive row at the
     /// indexed tier, and `Literal[1, 2]` widens to a union over the
     /// distinct widened members — the same widening law the type authority
@@ -3398,8 +3410,8 @@ mod tests {
         }
         // `note` is explicitly NotRequired, so it stays optional even under
         // a total=False class; `tag` is optional only through total=False.
-        if loose_members[0].1.as_deref() != Some(b"tag"[..].as_slice())
-            || loose_members[1].1.as_deref() != Some(b"note"[..].as_slice())
+        if loose_members[0].1.as_deref() != Some(&b"tag"[..])
+            || loose_members[1].1.as_deref() != Some(&b"note"[..])
         {
             return Err(TestError::Entity {
                 ordinal: loose_index,
@@ -3448,7 +3460,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .find(|(index, row)| {
-                    *index != 3 && row.record.children.length > 0 && *target as usize == index
+                    *index != 3 && row.record.children.length > 0 && *target as usize == *index
                 })
                 .map(|(_, row)| row)
                 .ok_or(TestError::Tail)?;
@@ -3475,7 +3487,7 @@ mod tests {
         if entities.len() != 2 || entities[1].1 != EntityKind::Alias {
             return Err(TestError::Entity { ordinal: 1 });
         }
-        if entities[1].0 != b"Vector"[..].as_slice() {
+        if entities[1].0 != &b"Vector"[..] {
             return Err(TestError::Entity { ordinal: 1 });
         }
         let rows = type_facts(&view)?;
@@ -3503,17 +3515,15 @@ mod tests {
         Ok(())
     }
 
-    /// A structural class pushed before any other declaration has no
-    /// anchor row for its member rows, so it keeps the legal diagonal
-    /// self-nominal — the documented degradation, never an invented member.
+    /// A structural class pushed before any other declaration reserves its
+    /// own ordinal so its member rows remain owned by the class fact.
     #[test]
-    fn first_declaration_typed_dict_degrades_to_the_self_nominal() -> Result<(), TestError> {
+    fn first_declaration_typed_dict_hosts_its_members() -> Result<(), TestError> {
         let source = b"class Movie(TypedDict):\n    title: str\n";
         let bytes = write(source)?;
         let view = view_of(&bytes)?;
         let rows = type_facts(&view)?;
-        // Rows: the str leaf, the Movie fact. The record is the
-        // self-nominal, and its nominal target is the class row itself.
+        // Rows: the str leaf, the Movie fact. The record owns one child.
         if rows.len() != 2 {
             return Err(TestError::Count {
                 expected: 2,
@@ -3521,11 +3531,27 @@ mod tests {
             });
         }
         let movie = &rows[1].record;
-        let expected = Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
-            1,
-        )));
-        if movie.tag != SemanticTypeTag::Nominal || movie.nominal != expected {
+        if movie.tag != SemanticTypeTag::AnonymousRecord
+            || movie.children.length != 1
+            || movie.nominal.is_some()
+        {
             return Err(TestError::Entity { ordinal: 1 });
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typed_dict_degrades_for_an_unhostable_member() -> Result<(), TestError> {
+        let source = b"class Movie(TypedDict):\n    title: list[int]\n";
+        let bytes = write(source)?;
+        let view = view_of(&bytes)?;
+        let rows = type_facts(&view)?;
+        let movie = rows.last().ok_or(TestError::Tail)?;
+        let expected = Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(
+            0,
+        )));
+        if movie.record.tag != SemanticTypeTag::Nominal || movie.record.nominal != expected {
+            return Err(TestError::Entity { ordinal: 0 });
         }
         Ok(())
     }

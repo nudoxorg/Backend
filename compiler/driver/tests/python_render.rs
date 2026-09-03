@@ -313,43 +313,43 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         &ir,
         "overloaded",
         ItemKind::Function,
-        "/* visibility unknown */ fn overloaded",
+        "/* visibility unknown */ fn overloaded(value: ?unsupported) -> str",
     )?;
     exact_signature(
         &ir,
         "calls",
         ItemKind::Function,
-        "/* visibility unknown */ fn calls",
+        "/* visibility unknown */ fn calls(value: ?unsupported, enabled: bool) -> str",
     )?;
     exact_signature(
         &ir,
         "answer",
         ItemKind::Static,
-        "/* visibility unknown */ static answer",
+        "/* visibility unknown */ static answer: ?unsupported | ?unsupported",
     )?;
     exact_signature(
         &ir,
         "items",
         ItemKind::Static,
-        "/* visibility unknown */ static items",
+        "/* visibility unknown */ static items: ?unsupported<?unsupported>",
     )?;
     exact_signature(
         &ir,
         "lookup",
         ItemKind::Static,
-        "/* visibility unknown */ static lookup",
+        "/* visibility unknown */ static lookup: ?unsupported<str, ?unsupported>",
     )?;
     exact_signature(
         &ir,
         "callback",
         ItemKind::Static,
-        "/* visibility unknown */ static callback",
+        "/* visibility unknown */ static callback: fn(param: ?unsupported) -> str",
     )?;
     exact_signature(
         &ir,
         "maybe",
         ItemKind::Static,
-        "/* visibility unknown */ static maybe",
+        "/* visibility unknown */ static maybe: ?unsupported | ?unsupported",
     )?;
     exact_signature(
         &ir,
@@ -362,10 +362,10 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         .display_docs(plain)
         .ok_or(TestError::Falsified("docs unavailable"))?
         .to_string();
-    if !docs.is_empty() {
+    if docs != "Plain documentation." {
         return Err(TestError::Mismatch {
             name: "Plain docs",
-            expected: String::new(),
+            expected: "Plain documentation.".to_owned(),
             actual: docs,
         });
     }
@@ -373,10 +373,10 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         .embedding_text(plain, compiler_ir::EmbeddingProfile::DOCUMENTED)
         .ok_or(TestError::Falsified("embedding unavailable"))?
         .to_string();
-    if embedding != "/* visibility unknown */ struct Plain" {
+    if embedding != "/* visibility unknown */ struct Plain\n\nPlain documentation." {
         return Err(TestError::Mismatch {
             name: "Plain embedding",
-            expected: "/* visibility unknown */ struct Plain".to_owned(),
+            expected: "/* visibility unknown */ struct Plain\n\nPlain documentation.".to_owned(),
             actual: embedding,
         });
     }
@@ -406,27 +406,13 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
     if first_text != second_text {
         return Err(TestError::Falsified("independent renders differ"));
     }
-    for name in ["items", "lookup", "callback", "answer", "maybe"] {
-        let id = entity(&first, name, ItemKind::Static)?;
-        if first
-            .item(id)
-            .and_then(|item| item.semantic_type())
-            .is_some()
-        {
-            return Err(TestError::Falsified("compound type leaked into live IR"));
-        }
-    }
+    exact_type(&first, "items", "?unsupported<?unsupported>")?;
+    exact_type(&first, "lookup", "?unsupported<str, ?unsupported>")?;
+    exact_type(&first, "callback", "fn(param: ?unsupported) -> str")?;
+    exact_type(&first, "answer", "?unsupported | ?unsupported")?;
+    exact_type(&first, "maybe", "?unsupported | ?unsupported")?;
     let alternate = compile_source(b"left: int\nright: str\n")?;
-    let left = entity(&alternate, "left", ItemKind::Static)?;
-    if alternate
-        .item(left)
-        .and_then(|item| item.semantic_type())
-        .is_some()
-    {
-        return Err(TestError::Falsified(
-            "python arch-signed integer leaked into the live IR type DAG",
-        ));
-    }
+    exact_type(&alternate, "left", "?unsupported")?;
     exact_type(&alternate, "right", "str")?;
     exact_type(&first, "choice", "str")?;
     Ok(())
@@ -523,7 +509,7 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
             types.push(row.map_err(|_| TestError::Falsified("type fact decode"))?);
         }
     }
-    for name in ["items", "lookup", "callback"] {
+    for name in ["items", "lookup"] {
         let owner = entities
             .iter()
             .position(|(known, kind)| *known == name.as_bytes() && *kind == EntityKind::Static)
@@ -535,6 +521,18 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
                 "compound type fact absent from fragment lane",
             ));
         }
+    }
+    let callback_owner = entities
+        .iter()
+        .position(|(known, kind)| *known == b"callback" && *kind == EntityKind::Static)
+        .ok_or(TestError::MissingEntity { name: "callback" })?;
+    if !types.iter().any(|fact| {
+        fact.owner.raw as usize == callback_owner
+            && fact.record.tag == SemanticTypeTag::FunctionPointer
+    }) {
+        return Err(TestError::Falsified(
+            "callback function-pointer fact absent from fragment lane",
+        ));
     }
 
     let mut occurrences: Vec<DecodedOccurrence<'_>> = Vec::new();
