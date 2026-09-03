@@ -59,7 +59,7 @@ use compiler_ir::{
 use compiler_languages_clang::{
     ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
     DefinitionState, IncludeFact, MethodVirtuality, OverrideFact, ReferenceFact, ReferenceKind,
-    ReferenceTarget, SourceSpan, StorageClass, SymbolIdentity, SYMBOL_IDENTITY_BYTES, TypeEdge,
+    ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceSpan, StorageClass, SymbolIdentity, TypeEdge,
     TypeFact, TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
 };
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
@@ -653,10 +653,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     fn edge_of(&self, source: AuthorityTypeId, relation: TypeRelation) -> Option<AuthorityTypeId> {
         let begin = self.edge_starts.get(source.raw as usize).copied()?;
         let end = self.edge_starts.get(source.raw as usize + 1).copied()?;
-        self.authority
-            .type_edges
+        self.edge_order
             .get(begin..end)?
             .iter()
+            .filter_map(|position| self.authority.type_edges.get(*position))
             .find(|edge| edge.relation == relation)
             .map(|edge| edge.target)
     }
@@ -760,6 +760,23 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .with_extension(EmissionExtension::Clang(extension));
             let ordinal = push(self.facts, fact)?;
             self.record_pushed(index, ordinal, declaration);
+            if declaration.kind == DeclarationKind::Enumeration {
+                for candidate in 0..declarations.len() {
+                    if self.representative.get(candidate).copied().flatten() != Some(candidate) {
+                        continue;
+                    }
+                    let Some(enumerator) = declarations.get(candidate) else {
+                        continue;
+                    };
+                    if enumerator.kind == DeclarationKind::Enumerator
+                        && enumerator.owner == declaration.identity
+                        && enumerator.owner.is_some()
+                        && span_contains(declaration.span, enumerator.span)
+                    {
+                        self.push_enumerator(candidate)?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -896,7 +913,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             return Ok(());
         };
         let projected = match declaration.type_root {
-            Some(root) => self.project_root(root)?,
+            Some(root) => self
+                .project_dependent(root, declaration.owner)
+                .unwrap_or(self.project_root(root)?),
             None => Projected::leaf(unknown_record(TypeReason::Unannotated, None)),
         };
         let extension = self.extension(declaration, 0)?;
@@ -906,6 +925,31 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
         Ok(())
+    }
+
+    /// Projects a dependent field type when the authority preserves the
+    /// template owner but leaves the dependent type root opaque.
+    fn project_dependent(
+        &self,
+        type_id: AuthorityTypeId,
+        owner: Option<SymbolIdentity>,
+    ) -> Option<Projected<'source>> {
+        if self.type_row(type_id)?.kind != TypeKind::Unknown {
+            return None;
+        }
+        let mut parameters = self.authority.declarations.iter().filter(|declaration| {
+            declaration.kind == DeclarationKind::TemplateParameter
+                && declaration.owner == owner
+                && owner.is_some()
+        });
+        let parameter = parameters.next()?;
+        if parameters.next().is_some() {
+            return None;
+        }
+        let spelling = self.name_of(parameter).ok()?;
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
+        record.text = Some(spelling);
+        Some(Projected::leaf(record))
     }
 
     /// Pushes one macro definition as a constant with the honest unwritten
@@ -1199,6 +1243,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             record.text = Some(spelling);
             return Ok(Projected::leaf(record));
         }
+        if let Some(parameter) = self.authority.declarations.iter().find(|declaration| {
+            declaration.kind == DeclarationKind::TemplateParameter
+                && declaration.identity == Some(identity)
+        }) {
+            if let Ok(spelling) = self.name_of(parameter) {
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
+                record.text = Some(spelling);
+                return Ok(Projected::leaf(record));
+            }
+        }
         if let Some(anonymous_index) = self.anonymous_declaration(identity) {
             return self.project_anonymous_record(anonymous_index, depth);
         }
@@ -1330,10 +1384,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     ) -> Option<TypeRelation> {
         let begin = self.edge_starts.get(source.raw as usize).copied()?;
         let end = self.edge_starts.get(source.raw as usize + 1).copied()?;
-        self.authority
-            .type_edges
+        self.edge_order
             .get(begin..end)?
             .iter()
+            .filter_map(|position| self.authority.type_edges.get(*position))
             .find(|edge| edge.source == source && edge.target == target)
             .map(|edge| edge.relation)
     }
@@ -1348,6 +1402,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         depth: usize,
     ) -> Result<u32, ClangCollectError> {
         let projected = self.project_type(type_id, depth)?;
+        if let Some(NominalRef::Local(entity)) = projected.record.nominal {
+            return Ok(entity.raw);
+        }
         self.intern_row(projected)
     }
 
@@ -1536,7 +1593,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     fn push_occurrences(&mut self) -> Result<(), ClangCollectError> {
         let references = self.authority.references;
         for reference in references {
-            let Some(owner) = reference.owner.and_then(|owner| self.ordinal_of(owner)) else {
+            let Some(owner) = self.reference_owner(reference) else {
                 continue;
             };
             let Ok(written) = self.slice(reference.span) else {
@@ -1561,18 +1618,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Some((target, confidence)) = target else {
                 continue;
             };
-            let Some(owner_span) = self
-                .identities
-                .iter()
-                .find(|(_, ordinal)| *ordinal == owner)
-                .and_then(|(identity, _)| {
-                    self.authority
-                        .declarations
-                        .iter()
-                        .find(|declaration| declaration.identity == Some(*identity))
-                        .map(|declaration| declaration.span)
-                })
-            else {
+            let Some(owner_span) = self.owner_span(owner) else {
                 continue;
             };
             let Some(span) = owner_relative_span(owner_span, reference.span) else {
@@ -1591,6 +1637,44 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .map_err(lane_terminal)?;
         }
         Ok(())
+    }
+
+    /// Resolves an authority owner, falling back to the innermost pushed
+    /// declaration containing a reference whose authority owner is absent.
+    fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
+        if let Some(owner) = reference
+            .owner
+            .and_then(|identity| self.ordinal_of(identity))
+        {
+            return Some(owner);
+        }
+        self.identities
+            .iter()
+            .filter_map(|(identity, ordinal)| {
+                let declaration = self
+                    .authority
+                    .declarations
+                    .iter()
+                    .find(|declaration| declaration.identity == Some(*identity))?;
+                span_contains(declaration.span, reference.span)
+                    .then_some((declaration.span, *ordinal))
+            })
+            .min_by_key(|(span, _)| (span.end - span.start, span.start))
+            .map(|(_, ordinal)| ordinal)
+    }
+
+    /// Retrieves the exact source extent for a pushed owner ordinal.
+    fn owner_span(&self, owner: u32) -> Option<SourceSpan> {
+        self.identities
+            .iter()
+            .find(|(_, ordinal)| *ordinal == owner)
+            .and_then(|(identity, _)| {
+                self.authority
+                    .declarations
+                    .iter()
+                    .find(|declaration| declaration.identity == Some(*identity))
+                    .map(|declaration| declaration.span)
+            })
     }
 
     /// Streams every declaration's raw doxygen comment into the
@@ -1614,6 +1698,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             for fragment in comment_fragments(raw) {
                 let fragment = match fragment {
                     CommentFragment::Text(bytes) => DocFragmentInput::Text(bytes),
+                    CommentFragment::SoftBreak => DocFragmentInput::SoftBreak,
                     CommentFragment::Link { target, label } => {
                         let resolved = match self.link_target(target) {
                             Some(ordinal) => DocLinkTarget::Local(EntityId::new(ordinal)),
@@ -1678,14 +1763,20 @@ fn include_spelling<'source>(
     let start = usize::try_from(include.span.start).ok()?;
     let end = usize::try_from(include.span.end).ok()?;
     let bytes = source.get(start..end)?;
-    let open = *bytes.first()?;
+    let open_at = bytes
+        .iter()
+        .position(|byte| *byte == b'<' || *byte == b'"')?;
+    let open = *bytes.get(open_at)?;
     let (_opener, closer) = match open {
         b'<' => (open, b'>'),
         b'"' => (open, b'"'),
         _ => return None,
     };
-    let relative = bytes[1..].iter().position(|byte| *byte == closer)?;
-    let spelling = bytes.get(1..1 + relative)?;
+    let relative = bytes
+        .get(open_at + 1..)?
+        .iter()
+        .position(|byte| *byte == closer)?;
+    let spelling = bytes.get(open_at + 1..open_at + 1 + relative)?;
     (!spelling.is_empty()).then_some(spelling)
 }
 
@@ -1757,6 +1848,8 @@ fn underlying_integer_record(size_bits: Option<u32>) -> SemanticTypeRecord<'stat
 enum CommentFragment<'source> {
     /// A prose run.
     Text(&'source [u8]),
+    /// A soft line break between retained comment lines.
+    SoftBreak,
     /// An inline reference command: the written target and its label.
     Link {
         /// The referenced spelling.
@@ -1779,7 +1872,7 @@ fn comment_fragments(raw: &[u8]) -> Vec<CommentFragment<'_>> {
             continue;
         }
         if any_line {
-            fragments.push(CommentFragment::Text(b""));
+            fragments.push(CommentFragment::SoftBreak);
         }
         any_line = true;
         inline_refs(cleaned, &mut fragments);
@@ -1811,14 +1904,13 @@ fn inline_refs<'line>(line: &'line [u8], fragments: &mut Vec<CommentFragment<'li
             .position(|byte| byte.is_ascii_whitespace())
             .unwrap_or(tail.len());
         let target = tail.get(..target_end).unwrap_or(&[]);
-        let label = trim_ascii(tail.get(target_end..).unwrap_or(&[]));
         if !target.is_empty() {
             fragments.push(CommentFragment::Link {
                 target,
-                label: if label.is_empty() { target } else { label },
+                label: target,
             });
         }
-        cursor += after + target_end + label.len();
+        cursor += after + target_end;
     }
 }
 

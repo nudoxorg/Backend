@@ -233,23 +233,48 @@ fn children<'a>(
         .map_err(|_| TestError::Check("child start overflow"))?;
     let length = usize::try_from(row.record.children.length)
         .map_err(|_| TestError::Check("child length overflow"))?;
+    // Child cells are variable-width on the wire: one target tag (local =
+    // 1+4, external = 1+16+4, text = 1), then the optional name cell
+    // (absent = 1, present = 1+4+len), then one flags byte.
+    let mut cursor = child_base;
     let mut result = Vec::new();
-    for index in 0..length {
-        let cell = child_base + (start + index) * 9;
-        let target = word(payload, cell + 1)?;
-        let name_at = cell + 5;
-        let name = match payload.get(name_at).copied() {
-            Some(0) => &[][..],
+    for position in 0..(start + length) {
+        let tag = payload
+            .get(cursor)
+            .copied()
+            .ok_or(TestError::Check("child tag truncated"))?;
+        let target = match tag {
+            0 => word(payload, cursor + 1)?,
+            1 => word(payload, cursor + 1 + 16)?,
+            2 => 0,
+            _ => return Err(TestError::Check("invalid child tag")),
+        };
+        cursor += match tag {
+            0 => 5,
+            1 => 21,
+            2 => 1,
+            _ => 0,
+        };
+        let name = match payload.get(cursor).copied() {
+            Some(0) => {
+                cursor += 1;
+                &[][..]
+            }
             Some(1) => {
-                let len = usize::try_from(word(payload, name_at + 1)?)
+                let len = usize::try_from(word(payload, cursor + 1)?)
                     .map_err(|_| TestError::Check("child name overflow"))?;
-                payload
-                    .get(name_at + 5..name_at + 5 + len)
-                    .ok_or(TestError::Check("child name truncated"))?
+                let bytes = payload
+                    .get(cursor + 5..cursor + 5 + len)
+                    .ok_or(TestError::Check("child name truncated"))?;
+                cursor += 5 + len;
+                bytes
             }
             _ => return Err(TestError::Check("invalid child name")),
         };
-        result.push((payload[cell], target, name));
+        cursor += 1; // flags
+        if position >= start {
+            result.push((tag, target, name));
+        }
     }
     Ok(result)
 }
