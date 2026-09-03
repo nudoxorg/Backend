@@ -1592,7 +1592,7 @@ fn live_type<'source>(
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
             tree.intern_concrete(ConcreteType::Function {
                 parameters,
-                result: has_result.then_some(children[child_count - 1]),
+                result: has_result.then(|| children[child_count - 1]),
                 abi: None,
                 variadic: false,
                 unsafe_: false,
