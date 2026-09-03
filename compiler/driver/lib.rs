@@ -7,11 +7,16 @@
     reason = "CompileFailure preserves public source, recipe, bounded diagnostic, and concrete I/O causes; boxing that terminal would add a default allocation to every compiler error path."
 )]
 
+mod build_drive;
 mod database;
 mod lower;
 mod native;
 mod types;
 
+pub use build_drive::{
+    BuildDriveFailure, BuildSystem, CapturedOutput, DrivenCompilation, DrivenTranslationUnit,
+    discover_and_drive,
+};
 pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWorkPhase};
 pub use database::{DatabaseCompileFailure, compile_database_translation_unit};
 pub use types::{
