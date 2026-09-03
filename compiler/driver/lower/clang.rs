@@ -58,9 +58,9 @@ use compiler_ir::{
 };
 use compiler_languages_clang::{
     ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId, DeclarationKind,
-    DefinitionState, IncludeFact, ReferenceFact, ReferenceKind, ReferenceTarget, SourceSpan,
-    StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId as AuthorityTypeId, TypeKind,
-    TypeRelation, collect_cancellable,
+    DefinitionState, IncludeFact, MethodVirtuality, OverrideFact, ReferenceFact, ReferenceKind,
+    ReferenceTarget, SourceSpan, StorageClass, SymbolIdentity, SYMBOL_IDENTITY_BYTES, TypeEdge,
+    TypeFact, TypeId as AuthorityTypeId, TypeKind, TypeRelation, collect_cancellable,
 };
 use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
@@ -175,6 +175,8 @@ const REFERENCE_CAPACITY: usize = 512;
 const DIAGNOSTIC_CAPACITY: usize = 128;
 /// Include slots reserved by the collection transaction.
 const INCLUDE_CAPACITY: usize = 128;
+/// C++ override-authority slots reserved by the collection transaction.
+const OVERRIDE_CAPACITY: usize = 128;
 
 /// `PrimitiveShape::Integer` wire cell (`repr(u32)` discriminant).
 const SHAPE_INTEGER: u32 = 0;
@@ -249,6 +251,7 @@ pub(crate) fn collect<'source>(
     let mut references = [empty_reference(); REFERENCE_CAPACITY];
     let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_CAPACITY];
     let mut includes = [empty_include(); INCLUDE_CAPACITY];
+    let mut overrides = [empty_override(); OVERRIDE_CAPACITY];
     let authority = collect_cancellable(
         input,
         ClangScratch {
@@ -258,6 +261,7 @@ pub(crate) fn collect<'source>(
             references: &mut references,
             diagnostics: &mut diagnostics,
             includes: &mut includes,
+            overrides: &mut overrides,
         },
         cancelled,
     )
@@ -280,6 +284,7 @@ const fn empty_declaration() -> DeclarationFact {
         id: DeclarationId { raw: 0 },
         kind: DeclarationKind::Unknown,
         definition: DefinitionState::Declaration,
+        virtuality: MethodVirtuality::NonVirtual,
         identity: None,
         span: empty_span(),
         name: None,
@@ -338,6 +343,17 @@ const fn empty_include() -> IncludeFact {
         kind: compiler_languages_clang::SourceDependencyKind::Include,
         span: empty_span(),
         resolved: None,
+    }
+}
+
+const fn empty_override() -> OverrideFact {
+    OverrideFact {
+        source: SymbolIdentity {
+            bytes: [0; SYMBOL_IDENTITY_BYTES],
+        },
+        target: SymbolIdentity {
+            bytes: [0; SYMBOL_IDENTITY_BYTES],
+        },
     }
 }
 
