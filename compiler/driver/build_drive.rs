@@ -2,8 +2,9 @@
 //!
 //! The marker is only adapter selection: flags are copied from the build output without
 //! interpretation.  `make -n` is split on shell quoting solely to transport its already
-//! printed argv.  Child output is retained in caller-independent storage, capped at 64 KiB;
-//! excess bytes are discarded and `truncated` records that fact.  Build and generated database
+//! printed argv.  The command stream is product data and is bounded separately from the 64 KiB
+//! retained stderr diagnostics. Non-compile lines (`mkdir`, `ar`, `echo`, and link commands) are
+//! adapter selection, not translation units. Build and generated database
 //! paths are always below the caller's scratch directory.  The existing native child module is
 //! intentionally not reused: it couples stdin-fed frontend lowering to a compile request,
 //! whereas these children need ordinary stdout capture and exit-status observation.
@@ -19,6 +20,8 @@ use compiler_languages_clang::CompilationDatabase;
 use thiserror::Error;
 
 const CAPTURE_BYTES: usize = 64 * 1024;
+/// Generous product bound for `make -n` stdout (the command stream).
+const COMMAND_STREAM_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildSystem {
@@ -58,6 +61,18 @@ pub enum BuildDriveFailure {
     NoTranslationUnits { tool: &'static str },
     #[error("build command needs {required} arguments, capacity is {capacity}")]
     CommandCapacity { required: usize, capacity: usize },
+    #[error(
+        "build tool command stream is too large: {tool} produced {bytes} bytes (limit {limit})"
+    )]
+    CommandStreamTooLarge {
+        tool: &'static str,
+        bytes: usize,
+        limit: usize,
+    },
+    #[error("compile command has an unrecognized compiler: {line}")]
+    UnrecognizedCompileCommand { line: String },
+    #[error("build tool is present but its drive protocol is unsupported: {tool}")]
+    ToolPresentUndrivable { tool: &'static str },
     #[error("no build system marker under {root}")]
     NoBuildSystemDetected { root: PathBuf },
     #[error("build drive was cancelled")]
@@ -107,7 +122,12 @@ pub fn discover_and_drive(
             run_ninja(&build, cancelled)?
         }
         BuildSystem::Buck => {
-            return Err(BuildDriveFailure::ToolAbsent {
+            if !available(system.tool()) {
+                return Err(BuildDriveFailure::ToolAbsent {
+                    tool: system.tool(),
+                });
+            }
+            return Err(BuildDriveFailure::ToolPresentUndrivable {
                 tool: system.tool(),
             });
         }
@@ -119,10 +139,11 @@ pub fn discover_and_drive(
         });
     }
     let database_directory = build.clone();
-    if output.stdout.len() > CAPTURE_BYTES || output.stderr.len() > CAPTURE_BYTES {
-        return Err(BuildDriveFailure::DriveFailed {
+    if output.stdout.len() > COMMAND_STREAM_BYTES {
+        return Err(BuildDriveFailure::CommandStreamTooLarge {
             tool: system.tool(),
-            captured: capture(&output.stderr),
+            bytes: output.stdout.len(),
+            limit: COMMAND_STREAM_BYTES,
         });
     }
     if system == BuildSystem::Make {
@@ -215,7 +236,7 @@ fn run_one(
             .arg(build)
             .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON");
     } else {
-        command.arg("setup").arg(build);
+        command.current_dir(root).arg("setup").arg(build);
     }
     command
         .output()
@@ -278,25 +299,45 @@ fn parse_make(bytes: &[u8], root: &Path) -> Result<Vec<DrivenTranslationUnit>, B
                 capacity: compiler_languages_clang::MAX_DATABASE_ARGUMENTS,
             });
         }
-        let compiler = argv.first().map(String::as_str).unwrap_or("");
         let has_compile = argv.iter().any(|arg| arg == "-c");
         let source = argv.iter().find(|arg| is_source(arg));
-        if has_compile
-            && (compiler.ends_with("clang")
-                || compiler.ends_with("clang++")
-                || compiler.ends_with("cc")
-                || compiler.ends_with("c++"))
-        {
-            if let Some(source) = source {
-                result.push(DrivenTranslationUnit {
-                    source: PathBuf::from(source),
-                    arguments: argv,
-                    directory: root.to_path_buf(),
-                });
-            }
+        if !has_compile {
+            continue;
         }
+        let Some(source) = source else {
+            continue;
+        };
+        if !recognized_compiler(&argv) {
+            return Err(BuildDriveFailure::UnrecognizedCompileCommand {
+                line: line.to_owned(),
+            });
+        }
+        result.push(DrivenTranslationUnit {
+            source: PathBuf::from(source),
+            arguments: argv,
+            directory: root.to_path_buf(),
+        });
     }
     Ok(result)
+}
+
+fn recognized_compiler(argv: &[String]) -> bool {
+    let is_compiler = |value: &str| {
+        let name = Path::new(value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(value);
+        name.ends_with("clang") || name.ends_with("clang++") || name == "cc" || name == "c++"
+    };
+    argv.first().is_some_and(|compiler| is_compiler(compiler))
+        || (argv.first().is_some_and(|wrapper| {
+            matches!(
+                Path::new(wrapper)
+                    .file_name()
+                    .and_then(|name| name.to_str()),
+                Some("ccache" | "sccache")
+            )
+        }) && argv.get(1).is_some_and(|compiler| is_compiler(compiler)))
 }
 
 fn is_source(value: &str) -> bool {

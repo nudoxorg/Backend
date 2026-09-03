@@ -45,6 +45,55 @@ fn absent_cmake_is_not_silently_skipped() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn make_command_stream_is_not_capped_at_diagnostic_limit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("large-stream")?;
+    let mut makefile = String::from("all:\n");
+    for _ in 0..10_000 {
+        makefile.push_str("\techo filler\n");
+    }
+    makefile.push_str("\tclang -c main.c -o main.o\n");
+    fs::write(root.join("Makefile"), makefile)?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(result.translation_units.len(), 1);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn ccache_compile_argv_is_transported_verbatim() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("ccache")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tccache clang --sysroot /sdk -c main.c -o main.o\n",
+    )?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(result.translation_units[0].arguments[0], "clang");
+    assert_eq!(result.translation_units[0].arguments[1], "--sysroot");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn unknown_compile_command_is_a_typed_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("unknown-compiler")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tmystery-cc -c main.c -o main.o\n",
+    )?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false));
+    assert!(matches!(
+        result,
+        Err(BuildDriveFailure::UnrecognizedCompileCommand { .. })
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn cancellation_before_drive_prevents_spawn() -> Result<(), Box<dyn std::error::Error>> {
     let root = directory("cancel")?;
     fs::write(root.join("Makefile"), "all:\n\tfalse\n")?;
