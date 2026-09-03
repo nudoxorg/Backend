@@ -1,28 +1,120 @@
 schema = 1
 capability_id = "clang-c-lifecycle"
-state = "phase0"
+state = "phase-rendering-and-lifecycle-landed-corpus-open"
 baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
-baseline_tree = "working-tree state frozen by per-file digests in brief.md (uncommitted lane work included deliberately)"
-candidate_commit = ""
-candidate_tree = ""
+baseline_tree = "per-file digests in brief.md (pre-worktree-protocol freeze)"
+candidate_commit = "9159ed7a5"
+candidate_tree = "luna/clang-lifecycle worktree; lane-owned surfaces committed, other lanes' in-flight work preserved uncommitted"
 testing_path = ""
 testing_sha256 = ""
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/clang-c-lifecycle/brief.md", sha256 = "3d24e957cb22cbb1eecd92212cecece98af5b11cd72d65ce9e59feb4ec41d048" }
-matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "1cb622c04e0f5e75ffd0ef31f3578d23a2df37d48aab63507b9e00a70ea5fdf4" }
-research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "c39d4f348436aae61bb06d0ff594be064b61508e808ebec4f1bda1c3da6fe1ec" }
+matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "updated 2026-09-02, see git history 849eb5f3c+" }
+research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "updated 2026-09-02, see git history" }
 closure = { path = ".codex/evidence/capabilities/clang-c-lifecycle/closure.md", sha256 = "" }
 
+# Worker custody is recorded per card in cards/*.md; digests at dispatch time are in
+# the git history of this file. Environment: shared lane worktree
+# .local/worktrees/clang-lifecycle, CARGO_TARGET_DIR=$PWD/.local/target, live libclang at
+# /Library/Developer/CommandLineTools/usr/lib/libclang.dylib.
+
 [[workers]]
-task_id = "pending"
+task_id = "A2-repair attempt 1 (stopped: authority dishonesty, verified)"
 role = "luna"
-config_path = ".opencode/agents/luna.md"
-model = "openai/gpt-5.6-luna"
-effort = "max"
-sandbox = "workspace-write"
-baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
-checkout = "shared worktree, disjoint owned paths per card"
-card_sha256 = "recorded at dispatch"
-result_commit = ""
-retention = "active"
+result_commit = "none — stop decision, evidence in research.md"
+
+[[workers]]
+task_id = "A-auth (authority honesty)"
+role = "luna"
+result_commit = "d7e770e47"
+
+[[workers]]
+task_id = "A-auth2 (definition-preference repair)"
+role = "luna"
+result_commit = "80291db98"
+
+[[workers]]
+task_id = "A2-repair v3 (stopped: harness/law contradictions, ruled by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "A2-repair v4 (integrated by Terra after worker stop on the child decoder)"
+role = "luna"
+result_commit = "51331fb31"
+
+[[workers]]
+task_id = "A3-overrides v1 (stopped: lifetime wall, ruled by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "A3-overrides v2"
+role = "luna"
+result_commit = "fe47d3806"
+
+[[workers]]
+task_id = "B-ir1 v1 (stopped: lane helper geometry, resolved by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir1 v2 (schema 2 + owner cell)"
+role = "luna"
+result_commit = "f53c0958a"
+
+[[workers]]
+task_id = "B-ir2 (identity-list cell, 32-byte schema-2)"
+role = "luna"
+result_commit = "ed7088593"
+
+[[workers]]
+task_id = "B-lane v1 (stopped: missing ir API)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir3 v1 (stopped: forbidden struct literal)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir3 v2 (identity pool input)"
+role = "luna"
+result_commit = "09f6c96f7"
+
+[[workers]]
+task_id = "B-lane v3 (identity pool end-to-end + build_ir members)"
+role = "luna"
+result_commit = "be31d5ef"
+
+[[workers]]
+task_id = "B-ir4 (render C bodies + goldens)"
+role = "luna"
+result_commit = "deebd3342"
+
+[[workers]]
+task_id = "C1-lifecycle (PURL + database input)"
+role = "luna"
+result_commit = "308b0c264"
+
+[[workers]]
+task_id = "C1b v1 (stopped: seam outside card)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "C1b v2 (additive per-TU entry + terminals)"
+role = "luna"
+result_commit = "2fd221a07"
+
+[[workers]]
+task_id = "C1c-repair (real database parse)"
+role = "luna"
+result_commit = "4921f60f"
+
+[[workers]]
+task_id = "C1d-journey v1+v2 (stopped: journal second-generation Conflict)"
+role = "luna"
+result_commit = "none — trunk blocker recorded in proof matrix R10"
