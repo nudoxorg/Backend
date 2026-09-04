@@ -55,8 +55,16 @@
 //! - Computed rows carry no name cell. Let-binding names and method-call
 //!   spellings therefore remain on declaration and occurrence planes; computed
 //!   rows are the positional type plane within their owning declaration.
+//!
+//! Fold accounting (each bounded fold has one typed reason):
+//! | bound | typed reason | behavior at overflow |
+//! | depth 16 | `TruncatedAtDepthLimit` | retain an honest unknown row |
+//! | children > 8 | `MAX_TYPE_CHILDREN` gap | retain the bounded gap row |
+//! | foreign dedup 64 | memory-only | stop deduplication at 65; correctness is unchanged |
+//! | tuple names 16 | >15 positional-name fold | omit the unrepresentable tuple field |
+//! | computed rows 1024 | `ComputedRowCapacity` | reject canonical admission |
 
-use std::{sync::atomic::AtomicBool, time::Instant, vec::Vec};
+use std::{collections::HashMap, sync::atomic::AtomicBool, time::Instant, vec::Vec};
 
 use compiler_ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
@@ -221,6 +229,20 @@ struct MacroSite<'source> {
     resolved: bool,
 }
 
+struct OwnerRange {
+    start: u32,
+    end: u32,
+    ordinal: u32,
+    parent: Option<usize>,
+}
+
+#[derive(Clone)]
+struct Reexport {
+    item: ast::Use,
+    name: SyntaxNode,
+    resolved: bool,
+}
+
 /// One lowered type position: the lattice record plus the already-interned
 /// backward coordinates its record needs as pooled children.
 struct Lowered<'source> {
@@ -263,6 +285,9 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    method_calls: Vec<compiler_languages_rust::RustMethodCall<'analysis>>,
+    reexports: Vec<Reexport>,
+    owner_ranges: Vec<OwnerRange>,
     computed_owner: Option<u32>,
     deadline: Instant,
 }
@@ -288,6 +313,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
+            method_calls: Vec::new(),
+            reexports: Vec::new(),
+            owner_ranges: Vec::new(),
             computed_owner: None,
             deadline,
         }
@@ -303,7 +331,19 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.check_deadline()?;
         self.emit_members(&declarations)?;
         self.check_deadline()?;
+        self.reexports = self
+            .authority
+            .reexports()
+            .into_iter()
+            .map(|reexport| Reexport {
+                item: reexport.item,
+                name: reexport.name,
+                resolved: reexport.resolved,
+            })
+            .collect();
+        self.method_calls = self.authority.method_calls().collect();
         self.emit_reexports()?;
+        self.rebuild_owner_ranges();
         self.check_deadline()?;
         self.emit_computed()?;
         self.check_deadline()?;
@@ -353,8 +393,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             return None;
         }
         self.source
-            .windows(needle.len())
-            .position(|window| window == needle)
+            .iter()
+            .enumerate()
+            .filter(|(_, byte)| **byte == needle[0])
+            .find_map(|(start, _)| {
+                let window = self.source.get(start..start.checked_add(needle.len())?)?;
+                (window == needle).then_some(start)
+            })
             .and_then(|start| {
                 let start = u32::try_from(start).ok()?;
                 let end = start.checked_add(u32::try_from(needle.len()).ok()?)?;
@@ -1206,11 +1251,46 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Picks the innermost pushed row whose span contains `span`.
     fn owner_of(&self, span: ByteSpan) -> Option<u32> {
-        self.rows
+        let at = self
+            .owner_ranges
+            .partition_point(|range| range.start <= span.start)
+            .checked_sub(1)?;
+        let mut candidate = Some(at);
+        while let Some(index) = candidate {
+            let range = self.owner_ranges.get(index)?;
+            if span.end <= range.end {
+                return Some(range.ordinal);
+            }
+            candidate = range.parent;
+        }
+        None
+    }
+
+    fn rebuild_owner_ranges(&mut self) {
+        let mut ordered: Vec<(u32, u32, u32)> = self
+            .rows
             .iter()
-            .filter(|row| row.span.start <= span.start && span.end <= row.span.end)
-            .max_by_key(|row| row.span.start)
-            .map(|row| row.ordinal)
+            .map(|row| (row.span.start, row.span.end, row.ordinal))
+            .collect();
+        ordered.sort_unstable_by_key(|(start, _, _)| *start);
+        let mut stack: Vec<usize> = Vec::new();
+        self.owner_ranges.clear();
+        for (start, end, ordinal) in ordered {
+            while stack
+                .last()
+                .is_some_and(|index| self.owner_ranges[*index].end <= start)
+            {
+                stack.pop();
+            }
+            let parent = stack.last().copied();
+            self.owner_ranges.push(OwnerRange {
+                start,
+                end,
+                ordinal,
+                parent,
+            });
+            stack.push(self.owner_ranges.len() - 1);
+        }
     }
 
     /// Lowers a type against the fact ordinal that the caller will push next.
@@ -1695,7 +1775,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// Emits source-level `use` bindings as declaration rows, retaining only
     /// paths rust-analyzer resolved and preserving each written local name.
     fn emit_reexports(&mut self) -> Result<(), RustAuthorityError> {
-        for reexport in self.authority.reexports() {
+        for index in 0..self.reexports.len() {
+            let reexport = self.reexports[index].clone();
             if !reexport.resolved {
                 continue;
             }
@@ -1726,19 +1807,20 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .inferred
                 .filter(|inferred| !inferred.original.is_unknown())
             {
-                expressions.push((span, inferred.original, None));
+                expressions.push((span, inferred.original.clone(), None));
             }
         }
-        for call in self.authority.method_calls() {
+        for call in &self.method_calls {
             let span = match call.projected_span {
                 Some(span) => span,
                 None => self.authority.span(call.syntax.syntax())?,
             };
             if let Some(inferred) = call
                 .inferred
+                .as_ref()
                 .filter(|inferred| !inferred.original.is_unknown())
             {
-                expressions.push((span, inferred.original, None));
+                expressions.push((span, inferred.original.clone(), None));
             }
         }
         expressions.sort_by_key(|(span, _, _)| span.start);
@@ -1775,31 +1857,34 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         let mut owners: Vec<u32> = Vec::new();
         let mut owned_atoms: Vec<Vec<u32>> = Vec::new();
-        let mut spellings: Vec<(&'source [u8], u32)> = Vec::new();
+        let mut spellings: HashMap<&'source [u8], u32> = HashMap::new();
+        let mut owner_positions: HashMap<u32, usize> = HashMap::new();
         for site in &self.macro_sites {
             let Some(owner) = self.owner_of(site.span) else {
                 continue;
             };
-            let interned = match spellings.iter().find(|(known, _)| *known == site.spelling) {
-                Some((_, atom)) => *atom,
+            let interned = match spellings.get(site.spelling) {
+                Some(atom) => *atom,
                 None => {
                     let atom = self
                         .facts
                         .intern_atom(site.spelling)
                         .map_err(|_| admission())?;
-                    spellings.push((site.spelling, atom));
+                    spellings.insert(site.spelling, atom);
                     atom
                 }
             };
-            match owners.iter().position(|known| *known == owner) {
+            match owner_positions.get(&owner).copied() {
                 Some(position) => {
                     if let Some(atoms) = owned_atoms.get_mut(position) {
                         atoms.push(interned);
                     }
                 }
                 None => {
+                    let position = owners.len();
                     owners.push(owner);
                     owned_atoms.push(vec![interned]);
+                    owner_positions.insert(owner, position);
                 }
             }
         }
@@ -1811,7 +1896,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .facts
                 .intern_atom_list(atoms)
                 .map_err(|_| admission())?;
-            let Some(row) = self.rows.iter_mut().find(|row| row.ordinal == *owner) else {
+            let Ok(row_position) = self.rows.binary_search_by_key(owner, |row| row.ordinal) else {
+                continue;
+            };
+            let Some(row) = self.rows.get_mut(row_position) else {
                 continue;
             };
             row.extension.macros = list;
@@ -1829,13 +1917,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// containing declaration and measured relative to that owner.
     fn emit_occurrences(&mut self) -> Result<(), RustAuthorityError> {
         let authority = self.authority;
-        let method_calls: Vec<_> = authority.method_calls().collect();
         let mut emitted_method_spans = Vec::new();
-        for call in &method_calls {
-            let Some(name) = call.syntax.name_ref() else {
+        for index in 0..self.method_calls.len() {
+            let (syntax, target, projected_span) = {
+                let call = &self.method_calls[index];
+                (call.syntax.clone(), call.target, call.projected_span)
+            };
+            let Some(name) = syntax.name_ref() else {
                 continue;
             };
-            let span = match call.projected_span {
+            let span = match projected_span {
                 Some(span) => span,
                 None => authority.span(name.syntax())?,
             };
@@ -1843,11 +1934,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_method_spans.push(span);
-            let definition = call.target.map(ra_ap_hir::ModuleDef::from);
+            let definition = target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence
             // with its written spelling as a foreign key.
-            let confidence = occurrence_confidence(call.target.is_some());
+            let confidence = occurrence_confidence(target.is_some());
             self.emit_one_occurrence(
                 span,
                 ReferenceKind::MethodCall,
@@ -1969,7 +2060,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Pushes documentation belonging to each emitted re-export declaration.
     fn emit_reexport_docs(&mut self) -> Result<(), RustAuthorityError> {
-        for reexport in self.authority.reexports() {
+        for index in 0..self.reexports.len() {
+            let reexport = self.reexports[index].clone();
             if !reexport.resolved {
                 continue;
             }

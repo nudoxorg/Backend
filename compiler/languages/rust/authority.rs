@@ -3,6 +3,7 @@
 //! Never renders, copies, or serializes semantic facts before the shared IR lowerer consumes them.
 
 use std::{
+    collections::HashSet,
     fs,
     ops::Deref,
     path::{Path, PathBuf},
@@ -369,6 +370,7 @@ impl<'analysis> RustAuthority<'analysis> {
     /// Streams method calls with the actual inferred receiver/call type and resolved function.
     pub fn method_calls(&self) -> impl Iterator<Item = RustMethodCall<'analysis>> + '_ {
         let mut calls = Vec::new();
+        let mut projected_spans = HashSet::new();
         for syntax in self.root.syntax().descendants() {
             let Some(syntax) = ast::MethodCallExpr::cast(syntax) else {
                 continue;
@@ -407,9 +409,7 @@ impl<'analysis> RustAuthority<'analysis> {
                     let Ok(Some(projected_span)) = self.projected_span(name.syntax()) else {
                         continue;
                     };
-                    if calls.iter().any(|call: &RustMethodCall<'analysis>| {
-                        call.projected_span == Some(projected_span)
-                    }) {
+                    if !projected_spans.insert(projected_span) {
                         continue;
                     }
                     calls.push(RustMethodCall {
@@ -879,7 +879,7 @@ impl<'analysis> RustAuthority<'analysis> {
 }
 
 /// Source-coordinate fact carried as bytes, never characters or UTF-16 columns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ByteSpan {
     /// First included original source byte.
     pub start: u32,
