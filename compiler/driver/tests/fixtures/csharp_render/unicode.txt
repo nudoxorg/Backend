@@ -1,0 +1,6 @@
+mod Fïdelity
+struct Café
+docs: Non-ASCII 😀 identifier.
+type: Café
+Привет: str
+type: str

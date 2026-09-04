@@ -1,0 +1,154 @@
+mod Fidelity
+trait IProperties
+type: IProperties
+trait IContract
+docs: Documented contract with a[Widget.Run](Widget.Run).
+type: IContract
+struct Widget
+type: Widget
+struct Widget
+type: Widget
+enum Color
+type: Color
+struct RecordClass
+type: RecordClass
+struct RecordStruct
+type: RecordStruct
+struct Pair
+type: Pair
+trait IVariance
+type: IVariance
+struct AllConstraints
+type: AllConstraints
+struct NotNullConstraint
+type: NotNullConstraint
+value: i32
+type: i32
+other: i32
+type: i32
+rest: [i32; []]
+type: [i32; []]
+int: i32
+type: i32
+fn Compute(value: i32, other: i32, rest: [i32; []]) -> i32
+type: fn(value: i32, other: i32, rest: [i32; []]) -> i32
+Number: i32
+type: i32
+Happened
+value: str
+type: str
+fn Run(value: str)
+type: fn(value: str)
+const Answer: i32
+type: i32
+Shared: i32
+type: i32
+Name: str
+type: str
+Changed
+Number: i32
+type: i32
+Happened
+fn Widget()
+type: fn()
+value: str
+type: str
+fn Run(value: str)
+type: fn(value: str)
+Fidelity.Widget: Widget
+type: Widget
+fn Create() -> Widget
+type: fn() -> Widget
+index: i32
+type: i32
+this: i32
+type: i32
+left: Widget
+type: Widget
+right: Widget
+type: Widget
+Fidelity.Widget: Widget
+type: Widget
+fn +(left: Widget, right: Widget) -> Widget
+type: fn(left: Widget, right: Widget) -> Widget
+value: Widget
+type: Widget
+int: i32
+type: i32
+fn int(value: Widget) -> i32
+type: fn(value: Widget) -> i32
+value: i32
+type: i32
+Fidelity.Widget: Widget
+type: Widget
+fn Widget(value: i32) -> Widget
+type: fn(value: i32) -> Widget
+input: i32
+type: i32
+values: [i32; []]
+type: [i32; []]
+System.Threading.Tasks.Task
+fn Async(input: i32, values: [i32; []]) -> System.Threading.Tasks.Task
+type: fn(input: i32, values: [i32; []]) -> System.Threading.Tasks.Task
+input: i32
+type: i32
+output: i32
+type: i32
+result: i32
+type: i32
+view: i32
+type: i32
+value: i32
+type: i32
+fn References(input: i32, output: i32, result: i32, view: i32, value: i32)
+type: fn(input: i32, output: i32, result: i32, view: i32, value: i32)
+System.Collections.Generic.IEnumerable<int>
+fn Iterate() -> System.Collections.Generic.IEnumerable<int>
+type: fn() -> System.Collections.Generic.IEnumerable<int>
+fn Call()
+type: fn()
+values: [i32; []]
+type: [i32; []]
+matrix: [i32; [,]]
+type: [i32; [,]]
+jagged: [[i32; []]; []]
+type: [[i32; []]; []]
+int*: *mut i32
+type: *mut i32
+fn Pointer(values: [i32; []], matrix: [i32; [,]], jagged: [[i32; []]; []]) -> *mut i32
+type: fn(values: [i32; []], matrix: [i32; [,]], jagged: [[i32; []]; []]) -> *mut i32
+tuple: ?unsupported
+type: ?unsupported
+nullable: [i32; [,]]
+type: [i32; [,]]
+map
+value
+missing
+fn Types(tuple: ?unsupported, nullable: [i32; [,]], map: System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>, value: ?unsupported, missing: ?unsupported)
+type: fn(tuple: ?unsupported, nullable: [i32; [,]], map: System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<int[]>>, value: ?unsupported, missing: ?unsupported)
+managed: fn(i32)
+type: fn(i32)
+native: fn(i32) -> i32
+type: fn(i32) -> i32
+fn FunctionPointers(managed: fn(i32), native: fn(i32) -> i32)
+type: fn(managed: fn(i32), native: fn(i32) -> i32)
+value: i32
+type: i32
+fn Half(value: i32)
+type: fn(value: i32)
+value: i32
+type: i32
+fn Half(value: i32)
+type: fn(value: i32)
+Number: i32
+type: i32
+Red: Color
+type: Color
+Blue: Color
+type: Color
+Value: T
+type: T
+Value: i32
+type: i32
+Value: i32
+type: i32
