@@ -723,14 +723,17 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
 /// rejection, never a truncated emission.
 #[test]
 fn capacity_beyond_1024_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+    // The landed emission geometry is MAX_EMISSION_FACTS = 16384; one
+    // unit struct per declaration means bound + 1 is the exact first
+    // overflow. The law is unchanged: the rejection is typed and exact.
     let mut body = String::new();
-    for ordinal in 0..1025 {
+    for ordinal in 0..16_385 {
         body.push_str(&format!("pub struct S{ordinal};\n"));
     }
     match compile_fixture(body.as_str()) {
         Err(TestError::Compile("lowering-unsupported")) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Falsified("1025 declarations were admitted")),
+        Ok(_) => Err(TestError::Falsified("16385 declarations were admitted")),
     }
 }
 
