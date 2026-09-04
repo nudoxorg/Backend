@@ -14,14 +14,15 @@ pub(super) const SCHEMA: u16 = 1;
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
 pub(super) const HEADER_BYTES: usize = 176;
+pub(super) const HEADER_BYTES_U32: u32 = 176;
 pub(super) const DIRECTORY_BYTES: usize = 16;
 pub(super) const NONE: u32 = u32::MAX;
 pub(super) const ATOM_ROW_BYTES: usize = 8;
 pub(super) const ENTITY_ROW_BYTES: usize = 136;
-pub(super) const TYPED_NODE_ROW_BYTES: usize = 12;
+pub(super) const TYPED_NODE_ROW_BYTES: usize = 16;
 pub(super) const TYPED_EDGE_ROW_BYTES: usize = 20;
 pub(super) const RANGE_ROW_BYTES: usize = 8;
-pub(super) const EXTERNAL_ROW_BYTES: usize = 80;
+pub(super) const EXTERNAL_ROW_BYTES: usize = 96;
 pub(super) const LINK_ROW_BYTES: usize = 28;
 pub(super) const OCCURRENCE_ROW_BYTES: usize = 24;
 pub(super) const SPARSE_BINDING_ROW_BYTES: usize = 8;
@@ -169,6 +170,8 @@ impl fmt::Display for FullDirectoryKind {
 pub(super) struct FullDirectoryEntry {
     pub(super) offset: usize,
     pub(super) length: usize,
+    pub(super) offset_wire: u32,
+    pub(super) length_wire: u32,
     pub(super) count: u32,
 }
 

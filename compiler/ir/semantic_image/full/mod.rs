@@ -21,7 +21,7 @@ use crate::Ir;
 use super::typed::TypedDependencyPlan;
 use super::full_wire::FullTypedPlan;
 
-pub(super) use model::FullPlanError;
+pub(super) use model::{ExtensionBinding, ExtensionPlanePlan, FullPlanError};
 
 use graph::GraphPlanBuildError;
 use lists::CoreTerminalError;

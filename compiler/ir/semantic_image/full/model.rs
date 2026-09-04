@@ -130,10 +130,10 @@ impl From<ExtensionPlanFault> for FullPlanError {
 
 /// Flat, domain-framed key arena for one terminal pooled-list space.
 pub(super) struct TerminalPoolPlan {
-    pub(super) order: Vec<u32>,
+    pub(in crate::semantic_image) order: Vec<u32>,
     remap: Vec<u32>,
-    key_bytes: Vec<u8>,
-    key_ranges: Vec<ArenaRange>,
+    pub(in crate::semantic_image) key_bytes: Vec<u8>,
+    pub(in crate::semantic_image) key_ranges: Vec<ArenaRange>,
 }
 
 impl TerminalPoolPlan {
@@ -252,56 +252,56 @@ fn key_after_validation<'a>(bytes: &'a [u8], ranges: &[ArenaRange], raw: u32) ->
 /// row key for future full wire validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct FullEntityRow {
-    pub(super) entity: EntityId,
+    pub(in crate::semantic_image) entity: EntityId,
     /// Canonical core entity coordinate, whose ordering is the exact
     /// declaration identity order retained by the common image plan.
-    pub(super) canonical_entity: u32,
-    pub(super) semantic_type: Option<u32>,
-    pub(super) members: u32,
-    pub(super) docs: u32,
-    pub(super) attributes: u32,
+    pub(in crate::semantic_image) canonical_entity: u32,
+    pub(in crate::semantic_image) semantic_type: Option<u32>,
+    pub(in crate::semantic_image) members: u32,
+    pub(in crate::semantic_image) docs: u32,
+    pub(in crate::semantic_image) attributes: u32,
 }
 
 pub(super) struct FullEntityPlan {
-    pub(super) rows: Vec<FullEntityRow>,
-    pub(super) key_bytes: Vec<u8>,
-    pub(super) key_ranges: Vec<ArenaRange>,
+    pub(in crate::semantic_image) rows: Vec<FullEntityRow>,
+    pub(in crate::semantic_image) key_bytes: Vec<u8>,
+    pub(in crate::semantic_image) key_ranges: Vec<ArenaRange>,
 }
 
 /// Canonical relation rows, plus only the raw-to-canonical map necessary for
 /// occurrence evidence. Identical occurrence evidence has no map because its
 /// independent multiplicity is deliberately retained.
 pub(super) struct GraphPlan {
-    pub(super) relations: Vec<LinkId>,
-    pub(super) relation_remap: Vec<u32>,
-    pub(super) occurrences: Vec<LinkOccurrenceId>,
+    pub(in crate::semantic_image) relations: Vec<LinkId>,
+    pub(in crate::semantic_image) relation_remap: Vec<u32>,
+    pub(in crate::semantic_image) occurrences: Vec<LinkOccurrenceId>,
 }
 
 /// One entity-to-canonical-fact sparse binding. Both coordinates are already
 /// canonical image lanes, never builder/interner ordinals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ExtensionBinding {
-    pub(super) entity: u32,
-    pub(super) fact: u32,
+    pub(in crate::semantic_image) entity: u32,
+    pub(in crate::semantic_image) fact: u32,
 }
 
 /// Flat canonical facts and sparse entity bindings for one named language
 /// plane. Keys are retained only for later explicit wire rows/validation;
 /// facts remain typed values in the owned IR and are never serialized here.
 pub(super) struct ExtensionPlanePlan {
-    pub(super) order: Vec<u32>,
-    pub(super) bindings: Vec<ExtensionBinding>,
-    pub(super) key_bytes: Vec<u8>,
-    pub(super) key_ranges: Vec<ArenaRange>,
+    pub(in crate::semantic_image) order: Vec<u32>,
+    pub(in crate::semantic_image) bindings: Vec<ExtensionBinding>,
+    pub(in crate::semantic_image) key_bytes: Vec<u8>,
+    pub(in crate::semantic_image) key_ranges: Vec<ArenaRange>,
 }
 
 /// Seven named plans, intentionally not an erased per-row payload union.
 pub(super) struct ExtensionPlans {
-    pub(super) typescript: ExtensionPlanePlan,
-    pub(super) csharp: ExtensionPlanePlan,
-    pub(super) go: ExtensionPlanePlan,
-    pub(super) rust: ExtensionPlanePlan,
-    pub(super) python: ExtensionPlanePlan,
-    pub(super) java: ExtensionPlanePlan,
-    pub(super) clang: ExtensionPlanePlan,
+    pub(in crate::semantic_image) typescript: ExtensionPlanePlan,
+    pub(in crate::semantic_image) csharp: ExtensionPlanePlan,
+    pub(in crate::semantic_image) go: ExtensionPlanePlan,
+    pub(in crate::semantic_image) rust: ExtensionPlanePlan,
+    pub(in crate::semantic_image) python: ExtensionPlanePlan,
+    pub(in crate::semantic_image) java: ExtensionPlanePlan,
+    pub(in crate::semantic_image) clang: ExtensionPlanePlan,
 }

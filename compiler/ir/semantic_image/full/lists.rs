@@ -12,8 +12,8 @@ use super::super::{canonical::CanonicalFullPlan, fault::CoreSemanticImageFault};
 use super::model::{TerminalPoolDomain, TerminalPoolFault, TerminalPoolPlan};
 
 pub(super) struct TerminalPools {
-    pub(super) members: TerminalPoolPlan,
-    pub(super) docs: TerminalPoolPlan,
+    pub(in crate::semantic_image) members: TerminalPoolPlan,
+    pub(in crate::semantic_image) docs: TerminalPoolPlan,
 }
 
 impl TerminalPools {
