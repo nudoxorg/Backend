@@ -10,8 +10,9 @@
 pub use super::errors::{
     ArtifactName, CancelError, PublicationConflict, PublicationError, PublicationFailure,
     PublicationGenerationError, PublicationIoStep, PublicationLimitError, PublicationOpenError,
+    PublicationOwnerPanic, PublicationOwnerPanicClass, PublicationOwnerPanicMessage,
     PublicationSnapshotError, PublicationStateConflict, SharedCommitError,
-    SharedPublicationFailure, ShutdownError, SubmitError,
+    SharedPublicationFailure, ShutdownError, SubmitError, MAX_PUBLICATION_OWNER_PANIC_BYTES,
 };
 pub use super::facts::{
     ImmutablePublicationIdentity, PublicationFacts, PublicationHeadIdentity, PublicationLimits,

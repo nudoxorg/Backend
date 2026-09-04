@@ -17,6 +17,89 @@ use thiserror::Error;
 use super::facts::PublicationFacts;
 use crate::{CommitError, FrameSequence, JournalError, format::CHECKSUM_BYTES};
 
+/// Maximum UTF-8 prefix retained from a publication-owner panic payload.
+pub const MAX_PUBLICATION_OWNER_PANIC_BYTES: usize = 96;
+
+/// Closed class of payload recovered from a publication-owner thread panic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicationOwnerPanicClass {
+    /// The thread panicked with a borrowed static message.
+    StaticMessage,
+    /// The thread panicked with an owned string message.
+    OwnedMessage,
+    /// The opaque payload was neither supported message representation.
+    Opaque,
+}
+
+/// Bounded message facts recovered from a publication-owner panic payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationOwnerPanicMessage {
+    /// Retained message prefix, zero-filled after `byte_len`.
+    pub bytes: [u8; MAX_PUBLICATION_OWNER_PANIC_BYTES],
+    /// Number of meaningful bytes in `bytes`.
+    pub byte_len: usize,
+    /// Whether the original message continued beyond the retained prefix.
+    pub truncated: bool,
+}
+
+/// Exact supported facts recovered when the exclusive publication owner panics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationOwnerPanic {
+    /// Concrete representation carried by the original panic payload.
+    pub class: PublicationOwnerPanicClass,
+    /// Bounded original message facts.
+    pub message: PublicationOwnerPanicMessage,
+}
+
+impl PublicationOwnerPanic {
+    pub(crate) fn capture(payload: &(dyn core::any::Any + Send)) -> Self {
+        let (class, message) = if let Some(message) = payload.downcast_ref::<&'static str>() {
+            (PublicationOwnerPanicClass::StaticMessage, *message)
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            (PublicationOwnerPanicClass::OwnedMessage, message.as_str())
+        } else {
+            (PublicationOwnerPanicClass::Opaque, "")
+        };
+        let mut retained = message.len().min(MAX_PUBLICATION_OWNER_PANIC_BYTES);
+        while !message.is_char_boundary(retained) {
+            retained -= 1;
+        }
+        let mut bytes = [0_u8; MAX_PUBLICATION_OWNER_PANIC_BYTES];
+        bytes[..retained].copy_from_slice(&message.as_bytes()[..retained]);
+        Self {
+            class,
+            message: PublicationOwnerPanicMessage {
+                bytes,
+                byte_len: retained,
+                truncated: message.len() > retained,
+            },
+        }
+    }
+}
+
+impl core::fmt::Display for PublicationOwnerPanic {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "publication owner panicked with {:?} payload",
+            self.class
+        )?;
+        if let Some(bytes) = self.message.bytes.get(..self.message.byte_len) {
+            if let Ok(message) = core::str::from_utf8(bytes) {
+                if !message.is_empty() {
+                    write!(formatter, ": {message}")?;
+                }
+            }
+        }
+        if self.message.truncated {
+            formatter.write_str(" (truncated)")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for PublicationOwnerPanic {}
+
 /// Rejection while restoring one typed generation identity from a journal fact.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -380,7 +463,14 @@ pub enum PublicationOpenError {
     Generation(#[source] PublicationGenerationError),
     /// The owner could not return its startup result.
     #[error("publication owner exited before startup completed")]
-    OwnerStartupLost,
+    OwnerStartupLost {
+        /// Exact startup-channel disconnection.
+        #[source]
+        source: RecvError,
+    },
+    /// The owner panicked before it could return its startup result.
+    #[error("publication owner panicked before startup completed")]
+    OwnerStartupPanic(#[source] PublicationOwnerPanic),
     /// Startup attempted to replace an already initialized publication fact.
     #[error("publication startup write-once state already contains a terminal fact")]
     PublishedStateConflict(Arc<PublicationStateConflict>),
@@ -398,7 +488,7 @@ pub enum ShutdownError {
     Owner(#[source] PublicationFailure),
     /// The owner thread panicked before returning a typed terminal.
     #[error("publication owner thread could not be joined")]
-    Join,
+    Join(#[source] PublicationOwnerPanic),
 }
 
 /// A rejected nonblocking submission retaining its exact verified witness.

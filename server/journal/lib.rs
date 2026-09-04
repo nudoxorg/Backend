@@ -16,9 +16,10 @@ pub use publication::{
     ArtifactName, CancelError, DurablePublisher, ImmutablePublicationIdentity, PendingPublication,
     PublicationConflict, PublicationError, PublicationFacts, PublicationFailure,
     PublicationGenerationError, PublicationHeadIdentity, PublicationIoStep, PublicationLimitError,
-    PublicationLimits, PublicationOpenError, PublicationPaths, PublicationSnapshotError,
-    PublicationStateConflict,
-    PublishedGeneration, SharedCommitError, SharedPublicationFailure, ShutdownError, SubmitError,
+    PublicationLimits, PublicationOpenError, PublicationOwnerPanic, PublicationOwnerPanicClass,
+    PublicationOwnerPanicMessage, PublicationPaths, PublicationSnapshotError,
+    PublicationStateConflict, PublishedGeneration, SharedCommitError, SharedPublicationFailure,
+    ShutdownError, SubmitError, MAX_PUBLICATION_OWNER_PANIC_BYTES,
 };
 
 /// Physical ordinal of a committed journal frame.

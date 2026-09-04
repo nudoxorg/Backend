@@ -149,7 +149,9 @@ impl DurablePublisher {
         match owner.join() {
             Ok(OwnerExit::Clean) => Ok(()),
             Ok(OwnerExit::Failed(source)) => Err(ShutdownError::Owner(source)),
-            Err(_) => Err(ShutdownError::Join),
+            Err(payload) => Err(ShutdownError::Join(
+                super::errors::PublicationOwnerPanic::capture(payload.as_ref()),
+            )),
         }
     }
 
@@ -192,10 +194,14 @@ impl DurablePublisher {
             })?;
         let startup = match startup_receiver.recv() {
             Ok(startup) => startup,
-            Err(_) => {
+            Err(source) => {
                 drop(sender);
-                drop(owner.join());
-                return Err(PublicationOpenError::OwnerStartupLost);
+                return match owner.join() {
+                    Ok(_) => Err(PublicationOpenError::OwnerStartupLost { source }),
+                    Err(payload) => Err(PublicationOpenError::OwnerStartupPanic(
+                        super::errors::PublicationOwnerPanic::capture(payload.as_ref()),
+                    )),
+                };
             }
         };
         let initial = match startup {

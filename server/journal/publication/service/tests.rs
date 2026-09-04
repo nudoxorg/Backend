@@ -127,3 +127,37 @@ fn drop_joins_a_panicked_owner_as_last_resort_cleanup() -> io::Result<()> {
     assert!(completed.load(Ordering::Acquire));
     Ok(())
 }
+
+#[test]
+fn shutdown_retains_owner_panic_class_and_utf8_bounded_payload() -> io::Result<()> {
+    let message = "x".repeat(MAX_PUBLICATION_OWNER_PANIC_BYTES - 1) + "é";
+    let owner = thread::spawn(move || -> OwnerExit { std::panic::panic_any(message) });
+    let state = Arc::new(PublisherState {
+        closed: AtomicBool::new(false),
+        credits: CreditPool::new(1),
+        published: OnceLock::new(),
+        latest: super::LatestPublication::empty(),
+    });
+    let publisher = DurablePublisher {
+        sender: None,
+        owner: Some(owner),
+        state,
+    };
+
+    let source = match publisher.shutdown() {
+        Err(ShutdownError::Join(source)) => source,
+        Err(error) => return Err(io::Error::other(format!("wrong shutdown source: {error:?}"))),
+        Ok(()) => return Err(io::Error::other("panicked owner shut down cleanly")),
+    };
+    assert_eq!(source.class, PublicationOwnerPanicClass::OwnedMessage);
+    assert_eq!(
+        source.message.byte_len,
+        MAX_PUBLICATION_OWNER_PANIC_BYTES - 1
+    );
+    assert!(source.message.truncated);
+    assert!(matches!(
+        source.message.bytes.get(..source.message.byte_len),
+        Some(bytes) if core::str::from_utf8(bytes).is_ok()
+    ));
+    Ok(())
+}
