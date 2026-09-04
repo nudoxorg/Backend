@@ -889,6 +889,9 @@ pub(super) fn digest_authority_unavailable(value: AuthorityUnavailableCause) -> 
                 SourceUnavailableKind::RepositoryFixtureMissing => 3_u8,
                 SourceUnavailableKind::ReadFailure => 4_u8,
                 SourceUnavailableKind::SourceTooLarge => 5_u8,
+                SourceUnavailableKind::SourceTreeTooDeep => 6_u8,
+                SourceUnavailableKind::SourceDirectoryEntryCountExceeded => 7_u8,
+                SourceUnavailableKind::SourceFileCountExceeded => 8_u8,
             };
             kind.hash(&mut hasher);
         }

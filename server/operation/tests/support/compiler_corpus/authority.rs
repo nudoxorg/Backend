@@ -49,6 +49,9 @@ pub(super) enum SourceUnavailableKind {
     RepositoryFixtureMissing,
     ReadFailure,
     SourceTooLarge,
+    SourceTreeTooDeep,
+    SourceDirectoryEntryCountExceeded,
+    SourceFileCountExceeded,
 }
 
 #[derive(Debug, Error)]
