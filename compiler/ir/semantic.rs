@@ -5868,6 +5868,30 @@ impl Ir {
             version: *self.items.versions.get(index)?,
         })
     }
+
+    /// Projects only the self-contained portable declaration facts.
+    ///
+    /// Unlike [`Self::semantic_entity`], this deliberately carries no pooled
+    /// coordinate.  A subordinate core image can therefore expose identity,
+    /// authority, and source truth without claiming its omitted type/list,
+    /// documentation, graph, or extension planes exist.
+    pub(crate) fn core_semantic_entity(
+        &self,
+        id: EntityId,
+    ) -> Option<crate::CoreSemanticEntity> {
+        let item = self.item(id)?;
+        let authority = self.authority_facts.facts(id.index())?;
+        Some(crate::CoreSemanticEntity {
+            id,
+            name: item.name(),
+            kind: item.kind(),
+            visibility: item.visibility(),
+            parent: item.parent(),
+            authority,
+            source: item.source(),
+            version: item.version(),
+        })
+    }
     /// Binary-searches the exact canonical declaration-instance index.
     #[must_use]
     pub fn find_declaration(&self, identity: DeclarationIdentity) -> Option<ItemView<'_>> {

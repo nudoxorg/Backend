@@ -34,6 +34,7 @@ mod semantic_render;
 mod semantic_data_view;
 mod semantic_extension_section;
 mod semantic_facts;
+mod semantic_image;
 mod type_facts;
 mod vcs;
 mod view;
@@ -116,8 +117,8 @@ pub use range::{
     VerifiedFragmentRangeView,
 };
 pub use reader::{
-    IrCanonicalEntities, IrExtensionRows, SemanticCursor, SemanticEntity, SemanticImageFacts,
-    SemanticReader,
+    CoreSemanticEntity, IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows,
+    SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
 };
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{

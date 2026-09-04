@@ -55,12 +55,57 @@ pub struct SemanticImageFacts {
     pub provenance: ImageProvenance,
 }
 
+/// Immutable declaration facts available in every portable core semantic
+/// image.  It deliberately omits all pooled coordinates: a core image cannot
+/// accidentally expose a type/list/document ID whose backing plane was not
+/// admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CoreSemanticEntity {
+    pub id: EntityId,
+    pub name: AtomId,
+    pub kind: crate::ItemKind,
+    pub visibility: crate::Visibility,
+    /// Canonical local containment coordinate when the image retained one.
+    /// The authority row separately proves whether this relationship is root,
+    /// bound, unrepresented, or unavailable.
+    pub parent: Option<EntityId>,
+    pub authority: EntityAuthorityFacts,
+    pub source: Option<SourceSpan>,
+    pub version: EntityVersion,
+}
+
 /// Sealed, allocation-free access to one finalized semantic image.
 ///
 /// All traversal is static through GAT cursors. `StorageColumns` remains an
 /// `Ir`-specific performance view; it is intentionally not required here
 /// because a durable reader must not expose native enum padding or pointers.
-pub trait SemanticReader: sealed::Sealed {
+/// The portable, allocation-free core of a finalized semantic image.
+///
+/// A core reader covers only facts whose representation is present in the
+/// portable core directory.  It is intentionally a separate capability from
+/// [`SemanticReader`]: callers cannot obtain dangling pooled coordinates from
+/// a partial image and must ask for the full capability before traversing
+/// types, lists, externals, graph rows, or language extensions.
+pub trait SemanticCoreReader: sealed::Sealed {
+    type CanonicalCoreEntities<'image>: ExactSizeIterator<Item = CoreSemanticEntity> + FusedIterator
+    where
+        Self: 'image;
+
+    fn image_facts(&self) -> SemanticImageFacts;
+    fn core_entity(&self, id: EntityId) -> Option<CoreSemanticEntity>;
+    fn core_entity_by_identity(&self, identity: DeclarationIdentity) -> Option<CoreSemanticEntity>;
+    fn atom(&self, id: AtomId) -> Option<&[u8]>;
+    fn text(&self, id: crate::TextId) -> Option<&str>;
+    fn canonical_core_entities(&self) -> Self::CanonicalCoreEntities<'_>;
+}
+
+/// Complete static semantic image access.
+///
+/// This capability extends [`SemanticCoreReader`] only once every typed pool,
+/// external target, graph row, occurrence fact, and sparse extension plane is
+/// available.  A partial portable image therefore cannot silently substitute
+/// an empty lane for unavailable semantic truth.
+pub trait SemanticReader: SemanticCoreReader {
     type CanonicalEntities<'image>: ExactSizeIterator<Item = SemanticEntity> + FusedIterator
     where
         Self: 'image;
@@ -120,15 +165,12 @@ pub trait SemanticReader: sealed::Sealed {
     where
         Self: 'image;
 
-    fn image_facts(&self) -> SemanticImageFacts;
     fn entity(&self, id: EntityId) -> Option<SemanticEntity>;
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity>;
     fn external(&self, id: ExternalId) -> Option<ExternalTarget>;
     fn link(&self, id: LinkId) -> Option<Link>;
     fn occurrence_authority(&self, id: LinkOccurrenceId) -> Option<OccurrenceAuthorityFacts>;
 
-    fn atom(&self, id: AtomId) -> Option<&[u8]>;
-    fn text(&self, id: crate::TextId) -> Option<&str>;
     fn ty(&self, id: TypeId) -> Option<TypeExpr>;
     fn types(&self, id: TypeListId) -> Option<Self::Types<'_>>;
     fn atom_list(&self, id: AtomListId) -> Option<Self::Atoms<'_>>;
@@ -160,6 +202,25 @@ pub struct IrCanonicalEntities<'image> {
     ir: &'image Ir,
     items: crate::ItemIdIter<'image>,
 }
+
+/// Exact-size canonical core iterator backed by `Ir`'s declaration index.
+pub struct IrCanonicalCoreEntities<'image> {
+    ir: &'image Ir,
+    items: crate::ItemIdIter<'image>,
+}
+
+impl Iterator for IrCanonicalCoreEntities<'_> {
+    type Item = CoreSemanticEntity;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.items.next()?.id();
+        self.ir.core_semantic_entity(id)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) { self.items.size_hint() }
+}
+impl ExactSizeIterator for IrCanonicalCoreEntities<'_> {}
+impl FusedIterator for IrCanonicalCoreEntities<'_> {}
 
 impl Iterator for IrCanonicalEntities<'_> {
     type Item = SemanticEntity;
@@ -220,6 +281,32 @@ impl<Facts: Copy, Space> FusedIterator for IrExtensionRows<'_, Facts, Space> {}
 
 impl sealed::Sealed for Ir {}
 
+impl SemanticCoreReader for Ir {
+    type CanonicalCoreEntities<'image> = IrCanonicalCoreEntities<'image>;
+
+    fn image_facts(&self) -> SemanticImageFacts {
+        SemanticImageFacts {
+            authority: self.storage_columns().authority,
+            provenance: self.image_provenance(),
+        }
+    }
+
+    fn core_entity(&self, id: EntityId) -> Option<CoreSemanticEntity> {
+        Ir::core_semantic_entity(self, id)
+    }
+
+    fn core_entity_by_identity(&self, identity: DeclarationIdentity) -> Option<CoreSemanticEntity> {
+        Ir::find_declaration(self, identity)
+            .and_then(|item| Ir::core_semantic_entity(self, item.id()))
+    }
+
+    fn atom(&self, id: AtomId) -> Option<&[u8]> { Ir::atom(self, id) }
+    fn text(&self, id: crate::TextId) -> Option<&str> { Ir::text(self, id) }
+    fn canonical_core_entities(&self) -> Self::CanonicalCoreEntities<'_> {
+        IrCanonicalCoreEntities { ir: self, items: Ir::canonical_items(self) }
+    }
+}
+
 impl SemanticReader for Ir {
     type CanonicalEntities<'image> = IrCanonicalEntities<'image>;
     type Links<'image> = LinkIter<'image>;
@@ -241,12 +328,6 @@ impl SemanticReader for Ir {
     type TypeParameters<'image> = SemanticCursor<'image, TypeParameter>;
     type TypeParameterBounds<'image> = SemanticCursor<'image, TypeParameterBound>;
 
-    fn image_facts(&self) -> SemanticImageFacts {
-        SemanticImageFacts {
-            authority: self.storage_columns().authority,
-            provenance: self.image_provenance(),
-        }
-    }
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> { Ir::semantic_entity(self, id) }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
         Ir::find_declaration(self, identity).and_then(|item| Ir::semantic_entity(self, item.id()))
@@ -258,8 +339,6 @@ impl SemanticReader for Ir {
             .map(|source| OccurrenceAuthorityFacts { source })
     }
 
-    fn atom(&self, id: AtomId) -> Option<&[u8]> { Ir::atom(self, id) }
-    fn text(&self, id: crate::TextId) -> Option<&str> { Ir::text(self, id) }
     fn ty(&self, id: TypeId) -> Option<TypeExpr> { Ir::ty(self, id) }
     fn types(&self, id: TypeListId) -> Option<Self::Types<'_>> { Ir::types(self, id).map(|rows| rows.iter().copied()) }
     fn atom_list(&self, id: AtomListId) -> Option<Self::Atoms<'_>> { Ir::atom_list(self, id).map(|rows| rows.iter().copied()) }

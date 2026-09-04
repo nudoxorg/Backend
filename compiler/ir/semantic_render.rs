@@ -1,4 +1,4 @@
-//! Static, loss-aware rendering over [`crate::SemanticReader`].
+//! Static, loss-aware rendering over [`crate::SemanticCoreReader`].
 //!
 //! Neutral rendering owns an unambiguous declaration descriptor and name.
 //! Language declaration syntax, type suffixes, and C-family declarators are
@@ -9,7 +9,10 @@ use core::{fmt, marker::PhantomData, ops::Deref, str};
 
 use thiserror::Error;
 
-use crate::{EntityId, ItemKind, LanguageProfile, SemanticEntity, SemanticReader, Visibility};
+use crate::{
+    CoreSemanticEntity, EntityId, FactAvailability, ItemKind, LanguageProfile,
+    SemanticCoreReader, Visibility,
+};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
@@ -18,8 +21,8 @@ pub(crate) mod sealed {
 /// The precise semantic stage which has no lossless renderer yet.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum UnsupportedSemanticStage {
-    #[error("neutral declaration rendering cannot place type suffix {ty:?} for entity {entity:?}")]
-    NeutralTypeSuffix { entity: EntityId, ty: crate::TypeId },
+    #[error("neutral declaration rendering cannot place a captured semantic type for entity {entity:?}")]
+    NeutralTypeSuffix { entity: EntityId },
     #[error("profile {profile:?} requires a language declaration syntax renderer for entity {entity:?}")]
     LanguageDeclarationSyntax { profile: LanguageProfile, entity: EntityId },
     #[error("C-family profile {profile:?} requires prefix/declarator/suffix ownership for entity {entity:?}")]
@@ -62,7 +65,7 @@ pub enum RenderFailure {
 /// Public immutable facts promised by one prepared neutral rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreparedNeutralView {
-    pub entity: SemanticEntity,
+    pub entity: CoreSemanticEntity,
     pub encoded_len: usize,
 }
 
@@ -71,19 +74,19 @@ pub struct PreparedNeutralView {
 /// Preparing does not mutate caller storage. Writing is a separate linear
 /// step into a caller-owned byte buffer or formatter. The borrowed atom proof
 /// stays private; public inspection uses the immutable [`PreparedNeutralView`].
-pub struct PreparedNeutral<'image, R: SemanticReader + ?Sized> {
+pub struct PreparedNeutral<'image, R: SemanticCoreReader + ?Sized> {
     view: PreparedNeutralView,
     name: &'image [u8],
     _reader: PhantomData<&'image R>,
 }
 
-impl<R: SemanticReader + ?Sized> Deref for PreparedNeutral<'_, R> {
+impl<R: SemanticCoreReader + ?Sized> Deref for PreparedNeutral<'_, R> {
     type Target = PreparedNeutralView;
 
     fn deref(&self) -> &Self::Target { &self.view }
 }
 
-impl<'image, R: SemanticReader + ?Sized> PreparedNeutral<'image, R> {
+impl<'image, R: SemanticCoreReader + ?Sized> PreparedNeutral<'image, R> {
 
     /// Writes the prepared neutral prefix/name rendering into caller storage.
     pub fn write_into<'output>(
@@ -118,15 +121,14 @@ impl<'image, R: SemanticReader + ?Sized> PreparedNeutral<'image, R> {
 }
 
 /// Prepares lossless neutral prefix/name rendering through any static reader.
-pub fn prepare_neutral<'image, R: SemanticReader + ?Sized>(
+pub fn prepare_neutral<'image, R: SemanticCoreReader + ?Sized>(
     reader: &'image R,
     entity: EntityId,
 ) -> Result<PreparedNeutral<'image, R>, RenderFailure> {
-    let entity = reader.entity(entity).ok_or(RenderFailure::MissingEntity { entity })?;
-    if let Some(ty) = entity.semantic_type {
+    let entity = reader.core_entity(entity).ok_or(RenderFailure::MissingEntity { entity })?;
+    if entity.authority.semantic_type == FactAvailability::Captured {
         return Err(UnsupportedSemanticStage::NeutralTypeSuffix {
             entity: entity.id,
-            ty,
         }
         .into());
     }
@@ -146,7 +148,7 @@ pub fn prepare_neutral<'image, R: SemanticReader + ?Sized>(
 /// Sealed static language-rendering policy. No runtime trait object can hide
 /// which dialect owns a declarator or type suffix.
 pub trait RenderDialect: sealed::Sealed {
-    fn prepare<'image, R: SemanticReader + ?Sized>(
+    fn prepare<'image, R: SemanticCoreReader + ?Sized>(
         profile: LanguageProfile,
         reader: &'image R,
         entity: EntityId,
@@ -157,7 +159,7 @@ pub trait RenderDialect: sealed::Sealed {
 pub struct NeutralDialect;
 impl sealed::Sealed for NeutralDialect {}
 impl RenderDialect for NeutralDialect {
-    fn prepare<'image, R: SemanticReader + ?Sized>(
+    fn prepare<'image, R: SemanticCoreReader + ?Sized>(
         _profile: LanguageProfile,
         reader: &'image R,
         entity: EntityId,
@@ -169,7 +171,7 @@ impl RenderDialect for NeutralDialect {
 struct LanguageDialect;
 impl sealed::Sealed for LanguageDialect {}
 impl RenderDialect for LanguageDialect {
-    fn prepare<'image, R: SemanticReader + ?Sized>(
+    fn prepare<'image, R: SemanticCoreReader + ?Sized>(
         profile: LanguageProfile,
         _reader: &'image R,
         entity: EntityId,
@@ -181,7 +183,7 @@ impl RenderDialect for LanguageDialect {
 struct CFamilyDialect;
 impl sealed::Sealed for CFamilyDialect {}
 impl RenderDialect for CFamilyDialect {
-    fn prepare<'image, R: SemanticReader + ?Sized>(
+    fn prepare<'image, R: SemanticCoreReader + ?Sized>(
         profile: LanguageProfile,
         _reader: &'image R,
         entity: EntityId,
@@ -195,7 +197,7 @@ impl RenderDialect for CFamilyDialect {
 /// Existing language renderers intentionally do not route through neutral
 /// suffix syntax; until they own the full declaration grammar this returns an
 /// exact unsupported terminal.
-pub fn prepare_profile<'image, R: SemanticReader + ?Sized>(
+pub fn prepare_profile<'image, R: SemanticCoreReader + ?Sized>(
     profile: LanguageProfile,
     reader: &'image R,
     entity: EntityId,
@@ -215,7 +217,7 @@ pub fn prepare_profile<'image, R: SemanticReader + ?Sized>(
 
 fn write_neutral(
     output: &mut impl fmt::Write,
-    entity: SemanticEntity,
+    entity: CoreSemanticEntity,
     name: &[u8],
 ) -> fmt::Result {
     output.write_str("entity(kind=")?;
@@ -228,7 +230,7 @@ fn write_neutral(
     write_atom(output, name)
 }
 
-fn neutral_len(entity: SemanticEntity, name: &[u8]) -> Option<usize> {
+fn neutral_len(entity: CoreSemanticEntity, name: &[u8]) -> Option<usize> {
     "entity(kind=".len()
         .checked_add(kind_name(entity.kind).len())?
         .checked_add(",visibility=".len())?
