@@ -16,6 +16,7 @@ pub enum Error {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayoutClass {
     FlatSingleModule,
+    FlatPackageDir,
     SrcLayout,
     LibPackageDir,
 }
@@ -190,6 +191,10 @@ pub fn find_primary(root: &Path, class: LayoutClass, suffix: &[&str]) -> Result<
             .map(|c| c.as_os_str());
         let valid = match class {
             LayoutClass::FlatSingleModule => suffix.len() == 1 && components.len() == 2,
+            LayoutClass::FlatPackageDir => {
+                components.len() == suffix.len() + 1
+                    && marker.is_some_and(|x| x != "src" && x != "lib")
+            }
             LayoutClass::SrcLayout => {
                 marker.is_some_and(|x| x == "src") || components.len() == suffix.len() + 1
             }
@@ -208,57 +213,68 @@ pub fn find_primary(root: &Path, class: LayoutClass, suffix: &[&str]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::{Error, LayoutClass, find_primary};
-    fn archive(path: &str) -> Vec<u8> {
+    fn archive(path: &str) -> Result<Vec<u8>, super::super::python_support::Error> {
         use super::super::python_support::tests as f;
         let mut tar = f::entry(&f::make_name(path), b"primary");
         tar.extend_from_slice(&f::entry(&f::make_name("decoy.py"), b"decoy"));
         tar.extend_from_slice(&[0_u8; 1024]);
         f::gz(&tar)
     }
-    fn positive(class: LayoutClass, path: &str, suffix: &[&str]) {
-        let root = super::super::python_support::fresh_dir("layout").expect("root");
-        super::super::python_support::unpack(&archive(path), &root).expect("archive");
-        assert!(find_primary(&root, class, suffix).is_ok());
-        std::fs::remove_dir_all(root).expect("cleanup");
+    fn positive(class: LayoutClass, path: &str, suffix: &[&str]) -> Result<(), Error> {
+        let root = super::super::python_support::fresh_dir("layout")?;
+        super::super::python_support::unpack(&archive(path)?, &root)?;
+        if find_primary(&root, class, suffix).is_err() {
+            return Err(Error::MissingSource {
+                suffix: suffix.join("/"),
+            });
+        }
+        std::fs::remove_dir_all(root)
+            .map_err(|source| Error::Support(super::super::python_support::Error::Io { source }))?;
+        Ok(())
     }
-    fn negative(class: LayoutClass, suffix: &[&str]) {
-        let root = super::super::python_support::fresh_dir("layout").expect("root");
-        super::super::python_support::unpack(&archive("package/decoy.py"), &root).expect("archive");
-        assert!(
-            matches!(find_primary(&root, class, suffix), Err(Error::MissingSource { suffix: ref actual }) if *actual == suffix.join("/"))
-        );
-        std::fs::remove_dir_all(root).expect("cleanup");
+    fn negative(class: LayoutClass, suffix: &[&str]) -> Result<(), Error> {
+        let root = super::super::python_support::fresh_dir("layout")?;
+        super::super::python_support::unpack(&archive("package/decoy.py")?, &root)?;
+        if !matches!(find_primary(&root, class, suffix), Err(Error::MissingSource { suffix: ref actual }) if *actual == suffix.join("/"))
+        {
+            return Err(Error::MissingSource {
+                suffix: suffix.join("/"),
+            });
+        }
+        std::fs::remove_dir_all(root)
+            .map_err(|source| Error::Support(super::super::python_support::Error::Io { source }))?;
+        Ok(())
     }
     #[test]
-    fn flat_positive() {
-        positive(LayoutClass::FlatSingleModule, "package/six.py", &["six.py"]);
+    fn flat_positive() -> Result<(), Error> {
+        positive(LayoutClass::FlatSingleModule, "package/six.py", &["six.py"])
     }
     #[test]
-    fn flat_absent_rejects_decoy() {
-        negative(LayoutClass::FlatSingleModule, &["six.py"]);
+    fn flat_absent_rejects_decoy() -> Result<(), Error> {
+        negative(LayoutClass::FlatSingleModule, &["six.py"])
     }
     #[test]
-    fn src_positive() {
+    fn src_positive() -> Result<(), Error> {
         positive(
             LayoutClass::SrcLayout,
             "package/src/idna/core.py",
             &["idna", "core.py"],
-        );
+        )
     }
     #[test]
-    fn src_absent_rejects_decoy() {
-        negative(LayoutClass::SrcLayout, &["idna", "core.py"]);
+    fn src_absent_rejects_decoy() -> Result<(), Error> {
+        negative(LayoutClass::SrcLayout, &["idna", "core.py"])
     }
     #[test]
-    fn lib_positive() {
+    fn lib_positive() -> Result<(), Error> {
         positive(
             LayoutClass::LibPackageDir,
             "package/lib/yaml/__init__.py",
             &["yaml", "__init__.py"],
-        );
+        )
     }
     #[test]
-    fn lib_absent_rejects_decoy() {
-        negative(LayoutClass::LibPackageDir, &["yaml", "__init__.py"]);
+    fn lib_absent_rejects_decoy() -> Result<(), Error> {
+        negative(LayoutClass::LibPackageDir, &["yaml", "__init__.py"])
     }
 }

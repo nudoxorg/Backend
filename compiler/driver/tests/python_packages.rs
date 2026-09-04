@@ -161,7 +161,12 @@ fn sdist(name: &str, version: &str) -> Result<Vec<u8>, Error> {
         package: name.into(),
         message: "malformed sdist sha256".into(),
     })?;
-    let expected = &after[quote + 1..quote + 65];
+    let expected = after
+        .get(quote + 1..quote + 65)
+        .ok_or_else(|| Error::Fact {
+            package: name.into(),
+            message: "truncated sdist sha256".into(),
+        })?;
     let archive = python_support::download(url, CAP, Instant::now() + Duration::from_secs(60))?;
     let actual = python_support::sha256(&archive);
     let actual = actual
@@ -340,14 +345,6 @@ fn eligible(package: &str, path: &Path) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum LayoutClass {
-    FlatSingleModule,
-    FlatPackageDir,
-    SrcLayout,
-    LibRootedPackageDir,
-}
-
 #[derive(Clone, Copy)]
 enum SpotCheck {
     Entity {
@@ -377,7 +374,6 @@ struct PackageFacts {
     docs: bool,
     foreign_pypi: bool,
     decorators: &'static [&'static [u8]],
-    class: LayoutClass,
     spot: SpotCheck,
 }
 
@@ -395,7 +391,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "encode",
             kinds: &[
@@ -420,10 +415,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[],
-        class: LayoutClass::FlatPackageDir,
-        spot: SpotCheck::ParameterKinds {
-            symbol: "contents",
-            kinds: &[],
+        spot: SpotCheck::Entity {
+            symbol: "_CACERT_PATH",
+            kind: EntityKind::Static,
         },
     },
     PackageFacts {
@@ -439,7 +433,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: false,
         decorators: &[],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "__title__",
             kind: EntityKind::Static,
@@ -458,7 +451,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"staticmethod", b"property", b"classmethod"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "enable_diag",
             kinds: &[PythonParameterKind::PositionalOrKeyword],
@@ -477,7 +469,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[b"overload"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "lineof",
             kinds: &[
@@ -499,7 +490,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[b"final", b"property", b"overload"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::DecoratorSequence {
             symbol: "HookspecMarker",
             decorators: &[b"final"],
@@ -518,7 +508,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"property", b"t.overload", b"contextmanager"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "Command",
             kind: EntityKind::Record,
@@ -537,7 +526,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"t.overload", b"property"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "dumps",
             kinds: &[
@@ -564,7 +552,6 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"classmethod",
             b"typing.overload",
         ],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "create_cache",
             kinds: &[PythonParameterKind::PositionalOrKeyword],
@@ -583,7 +570,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"classmethod"],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::ParameterKinds {
             symbol: "escape",
             kinds: &[PythonParameterKind::PositionalOnly],
@@ -607,7 +593,6 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"property",
             b"classmethod",
         ],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "Request",
             kind: EntityKind::Record,
@@ -626,7 +611,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[b"property"],
-        class: LayoutClass::FlatPackageDir,
         spot: SpotCheck::Entity {
             symbol: "AnsiToWin32",
             kind: EntityKind::Record,
@@ -645,7 +629,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[b"classmethod"],
-        class: LayoutClass::LibRootedPackageDir,
         spot: SpotCheck::Entity {
             symbol: "load",
             kind: EntityKind::Function,
@@ -664,7 +647,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[],
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::DocstringPrefix {
             symbol: "TOMLDecodeError",
             prefix: b"An error raised if a document is not valid TOML.",
@@ -683,7 +665,6 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[],
-        class: LayoutClass::FlatPackageDir,
         spot: SpotCheck::DocstringPrefix {
             symbol: "Encoding",
             prefix: b"Reresents a character encoding such as UTF-8,",
@@ -695,7 +676,6 @@ const ADDITIONS: [PackageFacts; 15] = [
 /// full-fidelity lane assertions. The version stays in the test invocations.
 struct PrimaryFacts {
     package: &'static str,
-    class: LayoutClass,
     spot: SpotCheck,
     annotated: bool,
     docs: bool,
@@ -706,7 +686,6 @@ struct PrimaryFacts {
 const PRIMARIES: [PrimaryFacts; 5] = [
     PrimaryFacts {
         package: "requests",
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "Request",
             kind: EntityKind::Record,
@@ -718,7 +697,6 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "attrs",
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "attrib",
             kind: EntityKind::Function,
@@ -730,7 +708,6 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "flask",
-        class: LayoutClass::SrcLayout,
         spot: SpotCheck::Entity {
             symbol: "Flask",
             kind: EntityKind::Record,
@@ -742,7 +719,6 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "six",
-        class: LayoutClass::FlatSingleModule,
         spot: SpotCheck::Entity {
             symbol: "add_metaclass",
             kind: EntityKind::Function,
@@ -754,7 +730,6 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "wcwidth",
-        class: LayoutClass::FlatPackageDir,
         spot: SpotCheck::Entity {
             symbol: "wcwidth",
             kind: EntityKind::Function,
@@ -1148,10 +1123,9 @@ fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
         spec.decorators,
     )?;
     eprintln!(
-        "python corpus: {}@{} class={:?} entities={} assertions={}",
+        "python corpus: {}@{} entities={} assertions={}",
         spec.package,
         spec.version,
-        spec.class,
         entities.len(),
         assertions
     );
@@ -1333,10 +1307,9 @@ fn assert_package(package: &'static str, version: &'static str) -> Result<usize,
         facts.decorators,
     )?;
     eprintln!(
-        "python corpus: {}@{} class={:?} entities={} assertions={}",
+        "python corpus: {}@{} entities={} assertions={}",
         package,
         version,
-        facts.class,
         entities.len(),
         assertions
     );

@@ -243,10 +243,10 @@ pub(crate) mod tests {
     use flate2::write::GzEncoder;
 
     /// Wraps one crafted tar stream in the gzip envelope `unpack` requires.
-    pub(crate) fn gz(tar: &[u8]) -> Vec<u8> {
+    pub(crate) fn gz(tar: &[u8]) -> Result<Vec<u8>, Error> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::new(6));
-        std::io::Write::write_all(&mut encoder, tar).expect("fixture tar writes into memory");
-        encoder.finish().expect("fixture gzip finish")
+        std::io::Write::write_all(&mut encoder, tar).map_err(|source| Error::Io { source })?;
+        encoder.finish().map_err(|source| Error::Io { source })
     }
 
     /// Writes one 512-byte ustar header: `name`, octal `size`, kind.
@@ -271,50 +271,53 @@ pub(crate) mod tests {
 
     /// A `..` member name must be rejected, never written outside root.
     #[test]
-    fn traversal_member_is_typed_rejection() {
+    fn traversal_member_is_typed_rejection() -> Result<(), Error> {
         let mut tar = entry(&make_name("../pwned.txt"), b"hostile");
         tar.extend_from_slice(&[0_u8; 1024]);
-        let archive = gz(&tar);
+        let archive = gz(&tar)?;
         let root = std::env::temp_dir().join("nudox-traversal-root");
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&root).map_err(|source| Error::Io { source })?;
         let outcome = unpack(&archive, &root);
         assert!(matches!(outcome, Err(Error::Path { .. })));
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root).map_err(|source| Error::Io { source })?;
+        Ok(())
     }
 
     /// A pax `path=` record renames the next regular entry.
     #[test]
-    fn pax_path_override_renames_next_entry() {
+    fn pax_path_override_renames_next_entry() -> Result<(), Error> {
         let mut tar = header(&make_name("pax"), 26, b'x').to_vec();
         let record = b"26 path=renamed/module.py\n";
         tar.extend_from_slice(record);
         tar.resize(tar.len() + 512 - record.len(), 0);
         tar.extend_from_slice(&entry(&make_name("orig.py"), b"content"));
         tar.extend_from_slice(&[0_u8; 1024]);
-        let archive = gz(&tar);
+        let archive = gz(&tar)?;
         let root = std::env::temp_dir().join("nudox-pax-root");
-        std::fs::create_dir_all(&root).expect("root");
-        unpack(&archive, &root).expect("unpack");
+        std::fs::create_dir_all(&root).map_err(|source| Error::Io { source })?;
+        unpack(&archive, &root)?;
         assert!(root.join("renamed/module.py").is_file());
         assert!(!root.join("orig.py").exists());
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root).map_err(|source| Error::Io { source })?;
+        Ok(())
     }
 
     /// A pax `path=` override may not escape the root either.
     #[test]
-    fn pax_path_override_traversal_is_typed_rejection() {
+    fn pax_path_override_traversal_is_typed_rejection() -> Result<(), Error> {
         let mut tar = header(&make_name("pax"), 31, b'x').to_vec();
         let record = b"31 path=../../escaped/pwned.py\n";
         tar.extend_from_slice(record);
         tar.resize(tar.len() + 512 - record.len(), 0);
         tar.extend_from_slice(&entry(&make_name("orig.py"), b"content"));
         tar.extend_from_slice(&[0_u8; 1024]);
-        let archive = gz(&tar);
+        let archive = gz(&tar)?;
         let root = std::env::temp_dir().join("nudox-pax-escape-root");
-        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&root).map_err(|source| Error::Io { source })?;
         let outcome = unpack(&archive, &root);
         assert!(matches!(outcome, Err(Error::Path { .. })));
-        drop(std::fs::remove_dir_all(&root));
+        std::fs::remove_dir_all(&root).map_err(|source| Error::Io { source })?;
+        Ok(())
     }
 
     pub(crate) fn make_name(name: &str) -> [u8; 100] {

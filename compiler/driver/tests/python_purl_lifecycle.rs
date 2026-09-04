@@ -25,7 +25,6 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     mem::MaybeUninit,
-    path::Path,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
@@ -114,19 +113,19 @@ const SIX_JOURNEY: Journey = Journey {
     index_entity_limit: Some((256, 331)),
 };
 
-/// idna 3.10 ships a bare src layout: the primary is `idna/core.py` beside
-/// `setup.py`, with no `src/` prefix and no package `__init__.py` above it.
+/// idna 3.10 ships its package directory at the archive root: the primary is
+/// `idna/core.py` beside `setup.py`, with no `src/` prefix.
 const IDNA_JOURNEY: Journey = Journey {
     label: "idna",
     purl: "pypi:idna@3.10",
     primary: &["idna", "core.py"],
     symbols: &[b"IDNAError", b"encode", b"decode", b"uts46_remap"],
     probe: "idna_lifecycle_probe",
-    layout: journey_support::LayoutClass::SrcLayout,
+    layout: journey_support::LayoutClass::FlatPackageDir,
     index_entity_limit: None,
 };
 
-/// PyYAML 6.0.2 ships a package-dir layout: the primary is `yaml/__init__.py`
+/// PyYAML 6.0.2 ships a lib-rooted package-dir layout: the primary is `yaml/__init__.py`
 /// under `lib/`, so the primary lives inside the runtime package directory.
 const PYYAML_JOURNEY: Journey = Journey {
     label: "pyyaml",
@@ -144,7 +143,7 @@ const WEBENCODINGS_JOURNEY: Journey = Journey {
     primary: &["webencodings", "__init__.py"],
     symbols: &[b"Encoding", b"decode", b"lookup", b"ascii_lower"],
     probe: "webencodings_lifecycle_probe",
-    layout: journey_support::LayoutClass::SrcLayout,
+    layout: journey_support::LayoutClass::FlatPackageDir,
     index_entity_limit: None,
 };
 
@@ -250,7 +249,8 @@ fn compile_fragment<'a>(
 ) -> Result<compiler_driver::CompiledFragment<'a>, TestError> {
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
-    compile(
+    let work = python_support::fresh_dir("fragment")?;
+    let result = compile(
         CompileRequest {
             profile: PROFILE,
             stage: STAGE,
@@ -264,15 +264,21 @@ fn compile_fragment<'a>(
         },
         CompileScratch {
             diagnostic_output: &mut diagnostic,
-            native_work: Path::new("/tmp"),
+            native_work: &work,
         },
         CompileOutput {
             fragment_output: output,
         },
-    )
-    .map_err(|failure| TestError::JourneyCompile {
+    );
+    let cleanup = fs::remove_dir_all(&work).map_err(io);
+    let result = result.map_err(|failure| TestError::JourneyCompile {
         cause: format!("{failure:?}"),
-    })
+    });
+    match (result, cleanup) {
+        (Ok(compiled), Ok(())) => Ok(compiled),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
 }
 
 /// The shared fetch→compile→publish→reopen→index→second-generation→
@@ -614,13 +620,22 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
         })?;
     let newest_view = FragmentView::validate(newest_fragment.view.as_ref())
         .map_err(|source| TestError::Fragment { source })?;
-    let has_probe = newest_view.entities().any(|entity| {
-        newest_view
-            .atoms()
-            .nth(entity.name.raw as usize)
-            .is_some_and(|atom| atom.bytes == journey.probe.as_bytes())
-    });
-    if !has_probe {
+    let has_symbol = |wanted: &[u8]| {
+        newest_view.entities().any(|entity| {
+            newest_view
+                .atoms()
+                .nth(entity.name.raw as usize)
+                .is_some_and(|atom| atom.bytes == wanted)
+        })
+    };
+    for wanted in journey.symbols {
+        if !has_symbol(wanted) {
+            return Err(TestError::Fact(
+                "new generation lost a pre-existing declaration",
+            ));
+        }
+    }
+    if !has_symbol(journey.probe.as_bytes()) {
         return Err(TestError::Fact("new generation lost the probe declaration"));
     }
     let second_generation = second_published.publication.generation;
