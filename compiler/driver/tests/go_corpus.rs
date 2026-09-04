@@ -260,6 +260,7 @@ fn row(
         profile: PROFILE,
         stage: STAGE,
         source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
         authority: SemanticAuthorityInput::Go {
             image: &image_bytes,

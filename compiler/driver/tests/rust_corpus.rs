@@ -295,6 +295,7 @@ fn compile_row(
         profile: LanguageProfile::Rust(located.project().edition),
         stage: Stage::LowerIr,
         source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(*tool),
         authority: SemanticAuthorityInput::Rust {
             project: located.project(),
@@ -456,6 +457,7 @@ fn twenty_real_crates_compile_with_decoded_lanes() -> Result<(), TestError> {
                 profile: LanguageProfile::Rust(located.project().edition),
                 stage: Stage::LowerIr,
                 source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(resolved),
                 authority: SemanticAuthorityInput::Rust {
                     project: located.project(),

@@ -469,6 +469,7 @@ fn python_authority_rejects_a_non_python_profile() -> Result<(), TestError> {
                 profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 stage: Stage::LowerIr,
                 source: SOURCE,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(toolchain),
                 authority: SemanticAuthorityInput::Python { report: &report },
                 control: CompileControl {

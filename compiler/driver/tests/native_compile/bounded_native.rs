@@ -278,6 +278,7 @@ fn parse_stage_is_a_pre_spawn_typed_terminal_and_never_lends_ir() -> Result<(), 
             profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::Parse,
             source: b"pub const alpha: bool = true;",
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: compiler_driver::SemanticAuthorityInput::None,
             control: CompileControl {

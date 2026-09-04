@@ -622,6 +622,7 @@ fn central_commons_lang3_slice_journey() -> Result<(), TestError> {
                 profile: LanguageProfile::Java(JavaRelease::Java21),
                 stage: Stage::LowerIr,
                 source: &source_bytes[1],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(
                     ResolvedToolchain::from_version(
                         NativeTool::JavaCompiler,

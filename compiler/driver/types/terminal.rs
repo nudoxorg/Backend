@@ -172,19 +172,51 @@ pub enum RichCapture {
     Unavailable,
 }
 
-/// Availability rows aligned with [`Ir`] entity/edge order.
+/// Availability rows aligned with [`Ir`] entity order and the source
+/// occurrence lane, respectively.  An owned `Ir` may deduplicate identical
+/// links, so the latter deliberately is not described as an edge index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RichIrCapture {
     pub entities: Box<[RichEntityCapture]>,
-    pub links: Box<[RichCapture]>,
+    pub occurrences: Box<[RichCapture]>,
+}
+
+/// An authority's exact containment result for an emitted declaration.
+///
+/// `UnrepresentedAuthorityOwner` is intentionally not folded into `Root`:
+/// a native image may prove an owner whose declaration was filtered or has
+/// no representable canonical row.  The sixteen bytes are the authority's
+/// opaque identity cell, retained for diagnosis rather than reinterpreted as
+/// a fragment coordinate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RichParentageCapture {
+    Unavailable,
+    Root,
+    Bound,
+    UnrepresentedAuthorityOwner { identity: [u8; 16] },
 }
 
 /// Availability of optional item fields for one entity ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RichEntityCapture {
-    pub parentage: RichCapture,
+    pub parentage: RichParentageCapture,
     pub source: RichCapture,
+    /// Whether the authority supplied the primary-file identity for `source`.
+    pub source_file: RichCapture,
+    /// Whether membership was supplied as an authority relation rather than
+    /// inferred from a renderer or declaration order.
+    pub members: RichCapture,
+    /// Whether the semantic type is authority-backed (including an explicit
+    /// `Unknown` reason) rather than absent from the source image.
+    pub semantic_type: RichCapture,
+    /// Whether documentation was captured for this row. `Unavailable` never
+    /// means an empty documentation list.
+    pub documentation: RichCapture,
+    /// Whether the visibility value is an authority observation.
+    pub visibility: RichCapture,
     pub attributes: RichCapture,
+    /// Whether the language extension plane was supplied for this row.
+    pub extension: RichCapture,
 }
 
 /// Exact compile terminal with source-bearing native causes and bounded diagnostic facts.

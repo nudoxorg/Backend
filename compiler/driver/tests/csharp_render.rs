@@ -117,6 +117,7 @@ fn compile_fixture(
 
 fn compile_fragment(
     source: &'static [u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     image: &'static [u8],
     label: &str,
 ) -> Result<Vec<u8>, TestError> {

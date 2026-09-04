@@ -314,6 +314,7 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
             profile: PROFILE,
             stage: STAGE,
             source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

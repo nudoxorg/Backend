@@ -21,10 +21,10 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     scratch: CompileScratch<'diagnostic, 'work>,
     output: CompileOutput<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::with_plan(lower::ResourcePlan::for_source(
+    let mut facts = lower::FactSet::with_primary_source(lower::ResourcePlan::for_source(
         request.profile,
         request.source.len(),
-    ));
+    ), u32::try_from(request.source.len()).unwrap_or(u32::MAX));
     let prepared = match prepare(request)? {
         PreparedRoute::Direct(prepared) => {
             emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
@@ -98,10 +98,10 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::with_plan(lower::ResourcePlan::for_source(
+    let mut facts = lower::FactSet::with_primary_source(lower::ResourcePlan::for_source(
         request.profile,
         request.source.len(),
-    ));
+    ), u32::try_from(request.source.len()).unwrap_or(u32::MAX));
     let prepared = match prepare(request)? {
         PreparedRoute::Direct(prepared) => {
             emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
@@ -123,7 +123,7 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         }
     };
     let ir = facts
-        .build_ir(request.profile, prepared.source)
+        .build_ir(request.profile, prepared.source, request.declaration_scope)
         .map_err(|cause| CompileFailure::Build {
             source_identity: prepared.source,
             recipe: prepared.recipe,
@@ -184,6 +184,211 @@ enum EnteredAuthority<'source> {
         profile: compiler_vocabulary::CSharpVersion,
         image: &'source [u8],
     },
+}
+
+/// The one post-entry language contract.  `EnteredAuthority` is the only
+/// closed dynamic dispatch; each arm below immediately selects one static
+/// implementation with its real authority shape and extension fact type.
+/// Lowerers therefore cannot receive a profile/input mismatch or inspect a
+/// foreign language's authority bytes.
+mod language_spec_seal {
+    pub trait Sealed {}
+}
+
+trait LanguageSpec: language_spec_seal::Sealed {
+    type Authority<'source>
+    where
+        Self: 'source;
+    type Extension: Copy;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        authority: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        diagnostic_output: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>>;
+}
+
+struct ClangSpec;
+struct TypeScriptSpec;
+struct PythonSpec;
+struct RustSpec;
+struct GoSpec;
+struct JavaSpec;
+struct CSharpSpec;
+
+macro_rules! seal_specs {
+    ($($spec:ty),+ $(,)?) => { $(impl language_spec_seal::Sealed for $spec {})+ };
+}
+seal_specs!(ClangSpec, TypeScriptSpec, PythonSpec, RustSpec, GoSpec, JavaSpec, CSharpSpec);
+
+impl LanguageSpec for ClangSpec {
+    type Authority<'source> = LanguageProfile;
+    type Extension = compiler_ir::ClangFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        profile: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        lower::clang::collect(*profile, prepared.lease.bytes(), prepared.permit.cancelled(), facts)
+            .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))
+    }
+}
+
+impl LanguageSpec for TypeScriptSpec {
+    type Authority<'source> = (
+        compiler_vocabulary::TypeScriptSource,
+        Option<&'source compiler_languages_typescript::Report>,
+    );
+    type Extension = compiler_ir::TypeScriptFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        authority: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        diagnostic_output: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        let source = prepared.lease.bytes();
+        let owned = if authority.1.is_none() {
+            Some(
+                compiler_languages_typescript::Checker::default()
+                    .run(authority.0, source)
+                    .map_err(|cause| {
+                        typescript_terminal(
+                            None,
+                            source,
+                            prepared.source,
+                            prepared.recipe,
+                            TypeScriptCollectError::Authority(
+                                compiler_languages_typescript::AuthorityError::Checker { cause },
+                            ),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        lower::typescript::collect_with_checker(
+            authority.0,
+            source,
+            authority.1.or(owned.as_ref()),
+            facts,
+        )
+        .map_err(|cause| {
+            typescript_terminal(
+                diagnostic_output,
+                source,
+                prepared.source,
+                prepared.recipe,
+                cause,
+            )
+        })
+    }
+}
+
+impl LanguageSpec for PythonSpec {
+    type Authority<'source> = (
+        compiler_vocabulary::PythonVersion,
+        Option<&'source compiler_languages_python::CheckerReport>,
+    );
+    type Extension = compiler_ir::PythonFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        authority: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        let source = prepared.lease.bytes();
+        match authority.1 {
+            None => lower::python::collect(authority.0, source, facts)
+                .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause)),
+            Some(report) => {
+                let module = compiler_languages_python::extract(source, authority.0).map_err(|cause| {
+                    python_terminal(
+                        prepared.source,
+                        prepared.recipe,
+                        lower::python::PythonCollectError::Authority(cause),
+                    )
+                })?;
+                lower::python::collect_with_checker(&module, source, facts, Some(report))
+                    .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))
+            }
+        }
+    }
+}
+
+impl LanguageSpec for RustSpec {
+    type Authority<'source> = (
+        &'source compiler_languages_rust::RustProject,
+        compiler_languages_rust::SourceByteLimit,
+        compiler_languages_rust::RustFeatureControl<'source>,
+    );
+    type Extension = compiler_ir::RustFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        authority: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        lower::rust::collect(
+            authority.0,
+            authority.1,
+            authority.2,
+            prepared.permit.cancelled(),
+            prepared.lease.bytes(),
+            facts,
+        )
+        .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))
+    }
+}
+
+impl LanguageSpec for GoSpec {
+    type Authority<'source> = &'source [u8];
+    type Extension = compiler_ir::GoFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        image: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        lower::go::collect(prepared.lease.bytes(), image, facts)
+            .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))
+    }
+}
+
+impl LanguageSpec for JavaSpec {
+    type Authority<'source> = (compiler_vocabulary::JavaRelease, &'source [u8]);
+    type Extension = compiler_ir::JavaFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        authority: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        lower::java::collect(authority.0, prepared.lease.bytes(), authority.1, facts)
+            .map_err(|cause| java_terminal(prepared.source, prepared.recipe, cause))
+    }
+}
+
+impl LanguageSpec for CSharpSpec {
+    type Authority<'source> = &'source [u8];
+    type Extension = compiler_ir::CSharpFacts;
+
+    fn collect<'source, 'cancel, 'diagnostic>(
+        image: &Self::Authority<'source>,
+        prepared: &PreparedCompile<'source, 'cancel>,
+        _: Option<&'diagnostic mut [u8]>,
+        facts: &mut lower::FactSet<'source>,
+    ) -> Result<(), CompileFailure<'diagnostic>> {
+        lower::csharp::collect(prepared.lease.bytes(), image, facts)
+            .map_err(|cause| csharp_terminal(prepared.source, prepared.recipe, cause))
+    }
 }
 
 fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
@@ -387,81 +592,30 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
     facts: &mut lower::FactSet<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
     checkpoint(prepared.permit, prepared.recipe)?;
-    let source = prepared.lease.bytes();
     match &prepared.authority {
-        EnteredAuthority::Clang { profile } => {
-            lower::clang::collect(*profile, source, prepared.permit.cancelled(), facts)
-                .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))?;
-        }
+        EnteredAuthority::Clang { profile } => ClangSpec::collect(profile, prepared, None, facts)?,
         EnteredAuthority::TypeScript { profile, report } => {
-            let owned = if report.is_none() {
-                Some(
-                    compiler_languages_typescript::Checker::default()
-                        .run(*profile, source)
-                        .map_err(|cause| {
-                            typescript_terminal(
-                                None,
-                                source,
-                                prepared.source,
-                                prepared.recipe,
-                                TypeScriptCollectError::Authority(
-                                    compiler_languages_typescript::AuthorityError::Checker {
-                                        cause,
-                                    },
-                                ),
-                            )
-                        })?,
-                )
-            } else {
-                None
-            };
-            lower::typescript::collect_with_checker(*profile, source, report.or(owned.as_ref()), facts)
-                .map_err(|cause| {
-                    typescript_terminal(
-                        diagnostic_output,
-                        source,
-                        prepared.source,
-                        prepared.recipe,
-                        cause,
-                    )
-                })?;
+            TypeScriptSpec::collect(&(*profile, *report), prepared, diagnostic_output, facts)?;
         }
-        EnteredAuthority::Python { profile, report } => match report {
-            None => lower::python::collect(*profile, source, facts)
-                .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))?,
-            Some(report) => {
-                let module = compiler_languages_python::extract(source, *profile).map_err(|cause| {
-                    python_terminal(
-                        prepared.source,
-                        prepared.recipe,
-                        lower::python::PythonCollectError::Authority(cause),
-                    )
-                })?;
-                lower::python::collect_with_checker(&module, source, facts, Some(report)).map_err(
-                    |cause| python_terminal(prepared.source, prepared.recipe, cause),
-                )?;
-            }
-        },
+        EnteredAuthority::Python { profile, report } => {
+            PythonSpec::collect(&(*profile, *report), prepared, None, facts)?;
+        }
         EnteredAuthority::Rust {
             project,
             maximum_source_bytes,
             features,
             ..
-        } => lower::rust::collect(
-            project,
-            *maximum_source_bytes,
-            *features,
-            prepared.permit.cancelled(),
-            source,
+        } => RustSpec::collect(
+            &(*project, *maximum_source_bytes, *features),
+            prepared,
+            None,
             facts,
-        )
-        .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?,
-        EnteredAuthority::Go { image, .. } => lower::go::collect(source, image, facts)
-            .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?,
-        EnteredAuthority::Java { profile, image } => lower::java::collect(*profile, source, image, facts)
-            .map_err(|cause| java_terminal(prepared.source, prepared.recipe, cause))?,
-        EnteredAuthority::CSharp { image, .. } => lower::csharp::collect(source, image, facts)
-            .map_err(|cause| csharp_terminal(prepared.source, prepared.recipe, cause))?,
+        )?,
+        EnteredAuthority::Go { image, .. } => GoSpec::collect(image, prepared, None, facts)?,
+        EnteredAuthority::Java { profile, image } => {
+            JavaSpec::collect(&(*profile, *image), prepared, None, facts)?;
+        }
+        EnteredAuthority::CSharp { image, .. } => CSharpSpec::collect(image, prepared, None, facts)?,
     }
     checkpoint(prepared.permit, prepared.recipe)?;
     require_facts(prepared.source, prepared.recipe, facts)

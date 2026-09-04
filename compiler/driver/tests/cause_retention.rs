@@ -94,6 +94,7 @@ fn overflowing_the_emission_lane_retains_the_exact_rejection_operands() -> Resul
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source: &source_bytes,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

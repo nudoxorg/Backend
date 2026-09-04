@@ -191,6 +191,7 @@ fn compile_fixture() -> Result<compiler_ir::Ir, TestError> {
             profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
             source: FIXTURE_BODY.as_bytes(),
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: &project,

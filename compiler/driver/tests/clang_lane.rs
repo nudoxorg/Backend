@@ -987,6 +987,7 @@ fn capacity_terminal_preserves_clang_scratch_capacity_cause() -> Result<(), Test
             profile: LanguageProfile::C(CStandard::C23),
             stage: Stage::LowerIr,
             source: source.as_bytes(),
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain,
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

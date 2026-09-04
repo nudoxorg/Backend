@@ -83,6 +83,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
             profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
             source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: &project,

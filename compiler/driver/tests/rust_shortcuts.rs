@@ -51,6 +51,7 @@ fn fixture(source: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
             source: source.as_bytes(),
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: &project,
@@ -136,6 +137,7 @@ fn registry_log_compiles_within_the_corpus_deadline() -> Result<(), Box<dyn std:
             profile: LanguageProfile::Rust(located.project().edition),
             stage: Stage::LowerIr,
             source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: located.project(),

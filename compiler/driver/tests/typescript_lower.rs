@@ -719,6 +719,7 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
                         profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                         stage: Stage::LowerIr,
                         source: SOURCE,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
                         toolchain: ToolchainSelection::ResolvedNative(toolchain),
                         authority: SemanticAuthorityInput::TypeScript { report: &checker },
                         control: CompileControl {

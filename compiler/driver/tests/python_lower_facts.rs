@@ -233,6 +233,7 @@ fn attempt_fragment(
 /// crosses the join boundary).
 fn with_image<T>(
     source: &'static [u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     label: &'static str,
     then: impl FnOnce(&Ir) -> Result<T, TestError> + Send,
 ) -> Result<T, TestError>

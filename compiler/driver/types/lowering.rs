@@ -97,6 +97,18 @@ pub enum FactFault {
         /// Ordinals admitted in that lane.
         fact_count: usize,
     },
+    /// An authority span escaped the entered primary-source lease.  A
+    /// foreign-file coordinate requires its own typed provenance instead of
+    /// being silently treated as a primary-source offset.
+    SourceSpan {
+        /// Entity whose provenance row was being attached.
+        entity: u32,
+        /// Observed half-open source range.
+        start: u32,
+        end: u32,
+        /// Exact entered primary source length.
+        source_len: u32,
+    },
 }
 
 /// Exact rejection of one emitted fact, retained by value at the shared

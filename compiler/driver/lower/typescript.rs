@@ -2065,7 +2065,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 observed: Some(TypeId::new(row)),
             });
             self.facts
-                .attach_extension(owner_index, extension)
+                .attach_extension_with_type_parameters(
+                    owner_index,
+                    extension,
+                    self.facts
+                        .captured_type_parameter_range(owner_index)
+                        .map_err(fault)?,
+                )
                 .map_err(fault)?;
         }
         Ok(())

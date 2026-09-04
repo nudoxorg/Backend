@@ -422,6 +422,7 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source: SOURCE,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

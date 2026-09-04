@@ -66,6 +66,7 @@ fn registry_log_walk_returns_the_exact_deadline_terminal() -> Result<(), Box<dyn
         profile: LanguageProfile::Rust(located.project().edition),
         stage: Stage::LowerIr,
         source: &source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(resolved),
         authority: SemanticAuthorityInput::Rust {
             project: located.project(),

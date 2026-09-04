@@ -8,10 +8,52 @@ use std::{
     time::Instant,
 };
 
+use compiler_ir::{DeclarationKey, DeclarationKeyFault, EntityKind, PackageLineage};
 use compiler_vocabulary::{LanguageProfile, Stage};
 use heart_identity::{ContentId, SourceFactDomain};
 
 use super::{ResolvedToolchain, SourceIdentity, ToolchainSelection};
+
+/// Typed package/file scope required to mint cross-generation declaration
+/// identities.  Source content, row order, and byte spans are deliberately
+/// absent: they are version payload/provenance, never declaration identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeclarationScope<'source> {
+    lineage: PackageLineage<'source>,
+    path: &'source str,
+}
+
+impl<'source> DeclarationScope<'source> {
+    /// Enters one producer-proved package lineage and package-relative path.
+    pub const fn new(lineage: PackageLineage<'source>, path: &'source str) -> Result<Self, DeclarationKeyFault> {
+        match DeclarationKey::new(lineage, path, EntityKind::Module, b"_") {
+            Ok(_) => Ok(Self { lineage, path }),
+            Err(cause) => Err(cause),
+        }
+    }
+
+    pub(crate) const fn lineage(self) -> PackageLineage<'source> {
+        self.lineage
+    }
+
+    pub(crate) const fn path(self) -> &'source str {
+        self.path
+    }
+
+    /// A deliberately obvious in-memory fixture scope.  This is exposed only
+    /// so corpus fixtures can exercise the mandatory production field; real
+    /// callers must enter their package lineage and source path with `new`.
+    #[doc(hidden)]
+    pub const fn fixture() -> DeclarationScope<'static> {
+        DeclarationScope {
+            lineage: PackageLineage {
+                ecosystem: "fixture",
+                name: "fixture",
+            },
+            path: "fixture/source",
+        }
+    }
+}
 
 /// An entered source buffer.  Its byte slice and durable identity enter the
 /// pipeline together, so no later authority or lowerer can accidentally
@@ -154,6 +196,9 @@ pub struct CompileRequest<'source, 'toolchain, 'cancel> {
     pub stage: Stage,
     /// Exact UTF-8-or-binary source bytes whose identity is persisted only on native lowering.
     pub source: &'source [u8],
+    /// Producer-proved package/file scope used for stable declaration keys.
+    /// Unlike source identity, this survives an edit of the file's contents.
+    pub declaration_scope: DeclarationScope<'source>,
     /// Resolved native authority or explicit unavailable tool fact, never an ambient lookup.
     pub toolchain: ToolchainSelection<'toolchain>,
     /// Typed project authority required by profiles with semantic package context.

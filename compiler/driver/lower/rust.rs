@@ -1747,7 +1747,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let updated = row.extension;
             let ordinal = usize::try_from(owner).map_err(|_| admission())?;
             self.facts
-                .attach_extension(ordinal, EmissionExtension::Rust(updated))
+                .attach_extension_with_type_parameters(
+                    ordinal,
+                    EmissionExtension::Rust(updated),
+                    self.facts
+                        .captured_type_parameter_range(ordinal)
+                        .map_err(|_| admission())?,
+                )
                 .map_err(|_| admission())?;
         }
         Ok(())

@@ -52,6 +52,7 @@ fn compile_fixture(body: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             profile: LanguageProfile::Rust(RustEdition::Rust2024),
             stage: Stage::LowerIr,
             source: body.as_bytes(),
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Rust {
                 project: &project,

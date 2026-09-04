@@ -18,10 +18,10 @@ pub use compile::{compile, compile_ir};
 pub(crate) use lowering::CSharpProjectionFault;
 pub use lowering::{FactFault, FactRejection};
 pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
-pub use request::{CompileControl, CompileRequest, CompileScratch, SemanticAuthorityInput};
+pub use request::{CompileControl, CompileRequest, CompileScratch, DeclarationScope, SemanticAuthorityInput};
 pub use terminal::{
     CompileFailure, CompileOutput, CompiledFragment, CompiledIr, NativeDiagnostic, NativeWorkError,
-    NativeWorkPrimary, RichCapture, RichEntityCapture, RichIrCapture,
+    NativeWorkPrimary, RichCapture, RichEntityCapture, RichIrCapture, RichParentageCapture,
 };
 pub use toolchain::{
     ResolvedToolchain, ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection,

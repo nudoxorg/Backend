@@ -541,6 +541,15 @@ struct Projector<'authority, 'scratch, 'source> {
     edge_starts: Vec<usize>,
 }
 
+// Keeps the native topology decision typed until it reaches the common
+// transaction staging plane; `Option<u32>` cannot distinguish root from a
+// skipped authority owner.
+enum ClangParentage {
+    Root,
+    Bound(u32),
+    Unrepresented(SymbolIdentity),
+}
+
 impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     fn new(
         source: &'source [u8],
@@ -906,18 +915,35 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .ok_or_else(|| terminal(ProjectionFault::Span {
                     span: declaration.span,
                 }))?;
-            let parent = declaration.owner.and_then(|owner| self.ordinal_of(owner));
-            bindings.push((child, parent.filter(|parent| *parent != child), span));
+            let parentage = match declaration.owner {
+                None => ClangParentage::Root,
+                Some(owner) => match self.ordinal_of(owner) {
+                    Some(parent) if parent != child => ClangParentage::Bound(parent),
+                    // A self owner is not a root claim.  Retain the exact
+                    // authority cell as an unrepresentable containment fact.
+                    Some(_) | None => ClangParentage::Unrepresented(owner),
+                },
+            };
+            bindings.push((child, parentage, span));
         }
-        for (child, parent, span) in bindings {
+        for (child, parentage, span) in bindings {
+            match parentage {
+                ClangParentage::Root => self
+                    .facts
+                    .mark_parentage_root(child)
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?,
+                ClangParentage::Bound(parent) => self
+                    .facts
+                    .attach_parent(child, parent)
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?,
+                ClangParentage::Unrepresented(owner) => self
+                    .facts
+                    .mark_unrepresented_parent(child, owner.bytes)
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?,
+            }
             self.facts
                 .attach_source_span(child, span)
                 .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
-            if let Some(parent) = parent {
-                self.facts
-                    .attach_parent(child, parent)
-                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
-            }
         }
         Ok(())
     }
@@ -1668,13 +1694,12 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     )),
                     None => None,
                 },
-                ReferenceTarget::Foreign(_) | ReferenceTarget::Unresolved => {
-                    let confidence = match reference.target {
-                        ReferenceTarget::Foreign(_) => OccurrenceConfidence::Oracle,
-                        _ => OccurrenceConfidence::Index,
-                    };
-                    foreign_universe(written, reference.kind).map(|target| (target, confidence))
-                }
+                ReferenceTarget::Foreign(identity) => Some((
+                    foreign_symbol(identity),
+                    OccurrenceConfidence::Oracle,
+                )),
+                ReferenceTarget::Unresolved => foreign_universe(written, reference.kind)
+                    .map(|target| (target, OccurrenceConfidence::Index)),
             };
             let Some((target, confidence)) = target else {
                 continue;
@@ -1697,15 +1722,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 )
                 .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
         }
-        // Schema 1 has no identity-keyed foreign occurrence target.  A
-        // foreign override is therefore deliberately deferred to the
-        // schema-2 identity-cell packet; only edges whose two identities are
-        // both pushed in this image can be represented honestly here.
         for override_fact in self.authority.overrides {
             let Some(owner) = self.ordinal_of(override_fact.source) else {
-                continue;
-            };
-            let Some(target) = self.ordinal_of(override_fact.target) else {
                 continue;
             };
             let Some(declaration) = self
@@ -1730,7 +1748,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .push_occurrence(
                     owner,
                     Occurrence {
-                        target: OccurrenceTarget::Local(EntityId::new(target)),
+                        target: self
+                            .ordinal_of(override_fact.target)
+                            .map(|target| OccurrenceTarget::Local(EntityId::new(target)))
+                            .unwrap_or_else(|| foreign_symbol(override_fact.target)),
                         kind: LaneReferenceKind::Overrides,
                         confidence: OccurrenceConfidence::Oracle,
                         span,
@@ -1741,28 +1762,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
-    /// Resolves an authority owner, falling back to the innermost pushed
-    /// declaration containing a reference whose authority owner is absent.
+    /// Resolves only an authority-proved owner.  Containment is not ownership:
+    /// attaching an unowned libclang reference to the innermost declaration
+    /// would fabricate a relation and an invalid relative span.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
-        if let Some(owner) = reference
-            .owner
-            .and_then(|identity| self.ordinal_of(identity))
-        {
-            return Some(owner);
-        }
-        self.identities
-            .iter()
-            .filter_map(|(identity, ordinal)| {
-                let declaration = self
-                    .authority
-                    .declarations
-                    .iter()
-                    .find(|declaration| declaration.identity == Some(*identity))?;
-                span_contains(declaration.span, reference.span)
-                    .then_some((declaration.span, *ordinal))
-            })
-            .min_by_key(|(span, _)| (span.end - span.start, span.start))
-            .map(|(_, ordinal)| ordinal)
+        reference.owner.and_then(|identity| self.ordinal_of(identity))
     }
 
     /// Retrieves the exact source extent for a pushed owner ordinal.
@@ -1928,6 +1932,24 @@ fn foreign_universe<'source>(
     )
     .ok()?;
     Some(OccurrenceTarget::Foreign(key))
+}
+
+/// Binds a resolved native foreign USR to both cells of the canonical stable
+/// target.  The source spelling remains presentation-only; overload identity
+/// and foreign overrides are carried by the authority identity instead.
+fn foreign_symbol(identity: SymbolIdentity) -> OccurrenceTarget<'static> {
+    let mut fragment = [0_u8; 32];
+    fragment[..b"clang.usr.fragment.v1".len()].copy_from_slice(b"clang.usr.fragment.v1");
+    let mut entity = [0_u8; 32];
+    entity[..b"clang.usr.entity.v1".len()].copy_from_slice(b"clang.usr.entity.v1");
+    for (offset, byte) in identity.bytes.iter().copied().enumerate() {
+        fragment[16 + offset] ^= byte;
+        entity[16 + offset] ^= byte;
+    }
+    OccurrenceTarget::Stable(compiler_ir::StableRef {
+        fragment: compiler_ir::ExternalFragmentId::from_canonical_bytes(&fragment),
+        entity: heart_identity::ContentId::from_canonical_bytes(&entity),
+    })
 }
 
 /// The underlying-integer row of one enumeration: the measured width of the

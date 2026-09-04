@@ -739,6 +739,7 @@ fn compile_request<'source, 'toolchain, 'cancel>(
 /// the caller-owned output buffer the fragment borrows.
 fn compile_fragment<'source, 'output>(
     source: &'source [u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     tool: ResolvedToolchain<'_>,
     image: &'source [u8],
     work: &Path,

@@ -15,7 +15,7 @@ pub use compiler_vocabulary::{LoweringUnsupported, NativeArtifactRole, NativeWor
 pub use types::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch, CompileControl, CompileFailure, CompileOutput, CompileRecipeFact,
-    CompileRequest, CompileScratch, CompiledFragment, CompiledIr, FactFault, FactRejection,
+    CompileRequest, CompileScratch, CompiledFragment, CompiledIr, DeclarationScope, FactFault, FactRejection,
     InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES, NativeDiagnostic, NativeTool, NativeWorkError,
     NativeWorkPrimary, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
     NativeWorkerPanicMessage, ResolvedToolchain, ResolvedToolchainView, SemanticAuthorityInput,

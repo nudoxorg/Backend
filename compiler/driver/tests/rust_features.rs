@@ -110,6 +110,7 @@ fn compile_fixture(features: RustFeatureControl<'_>) -> Result<Vec<u8>, TestErro
                 profile: LanguageProfile::Rust(RustEdition::Rust2024),
                 stage: Stage::LowerIr,
                 source: FIXTURE.as_bytes(),
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(resolved),
                 authority: SemanticAuthorityInput::Rust {
                     project: &project,

@@ -225,6 +225,7 @@ fn deep_review(
     purl: &'static str,
     path: &str,
     source: &[u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     image: &[u8],
     view: &FragmentView<'_>,
 ) -> Result<(usize, usize), TestError> {
@@ -543,6 +544,7 @@ fn lower_frozen_file(
     purl: &'static str,
     path: &str,
     source: &[u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     classpath: &[&Path],
     work: &Path,
     bench: &mut Bench,

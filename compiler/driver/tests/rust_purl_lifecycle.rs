@@ -127,6 +127,7 @@ fn compile_one<'source>(
 
 fn compile_ir_one(
     source: &[u8],
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     project: &compiler_languages_rust::RustProject,
     tool: &ResolvedToolchain<'_>,
 ) -> Result<compiler_driver::CompiledIr, TestError> {
