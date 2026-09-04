@@ -6,12 +6,35 @@
 //! never by borrow. Name bytes stay inspectable at the collector boundary
 //! that produced them.
 
-use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticTypeFault};
+use compiler_ir::{EntityId, ProductChildRole, ProductConstructorFault, SemanticTypeFault};
 use compiler_languages_clang::{
     DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
     TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
 };
 use compiler_languages_csharp::{ImageError, TypeRef as CSharpTypeRef};
+
+/// One closed authority-backed containment state for an emitted entity.
+///
+/// The staging lane may receive the same proven relationship through several
+/// passes, but contradictory authority claims must remain a typed failure
+/// rather than silently replacing an earlier relation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParentageState {
+    /// The authority did not expose containment for this entity.
+    Unavailable,
+    /// The authority proved the entity has no local parent.
+    Root,
+    /// The authority proved one already-emitted local parent.
+    Bound {
+        /// Durable ordinal of the local parent declaration.
+        parent: EntityId,
+    },
+    /// The authority proved an owner whose declaration has no emitted row.
+    UnrepresentedAuthorityOwner {
+        /// Opaque native identity retained without fabricating a local parent.
+        identity: [u8; 16],
+    },
+}
 
 /// Exact cause for rejecting one emitted fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +140,16 @@ pub enum FactFault {
         end: u32,
         /// Exact entered primary source length.
         source_len: u32,
+    },
+    /// Two authority passes made incompatible containment claims for one
+    /// emitted entity. Repeating an identical proved state is idempotent.
+    ConflictingParentage {
+        /// Entity whose staging relation was already established.
+        entity: EntityId,
+        /// Previously retained closed parentage state.
+        existing: ParentageState,
+        /// New incompatible authority claim.
+        requested: ParentageState,
     },
 }
 

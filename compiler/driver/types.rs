@@ -15,7 +15,9 @@ pub use authority::{
     AuthorityProfileMismatch,
 };
 pub use compile::{compile, compile_ir};
-pub use lowering::{CSharpProjectionFault, ClangProjectionFault, FactFault, FactRejection};
+pub use lowering::{
+    CSharpProjectionFault, ClangProjectionFault, FactFault, FactRejection, ParentageState,
+};
 pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
 pub use request::{CompileControl, CompileRequest, CompileScratch, DeclarationScope, SemanticAuthorityInput};
 pub use terminal::{

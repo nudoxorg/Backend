@@ -1684,12 +1684,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Streams every declaration docstring as borrowed doc fragments.
     fn emit_docs(&mut self) -> Result<(), PythonCollectError> {
         for (index, declaration) in self.module.declarations.iter().enumerate() {
-            let Some(docstring) = &declaration.docstring else {
-                continue;
-            };
             let Some(ordinal) = self.ordinals[index] else {
                 // The module row is not a lane fact; its documentation has
                 // no honest owner and is never synthesized onto another row.
+                continue;
+            };
+            // Ruff's declaration row owns an explicit docstring field; `None`
+            // is an authority-backed empty documentation value for this row.
+            self.facts
+                .mark_documentation_captured(ordinal)
+                .map_err(lane_rejected)?;
+            let Some(docstring) = &declaration.docstring else {
                 continue;
             };
             for fragment in doc_fragments(self.source, docstring, &self.pushed)? {

@@ -277,6 +277,11 @@ pub(crate) fn collect<'source>(
             })
         })?;
         facts.attach_source_span(ordinal, span).map_err(lane_terminal)?;
+        // The Roslyn image owns this declaration's XML-doc plane even when
+        // the corresponding summary is absent or empty.
+        facts
+            .mark_documentation_captured(ordinal)
+            .map_err(lane_terminal)?;
         match declared.owner {
             None => facts.mark_parentage_root(ordinal).map_err(lane_terminal)?,
             Some(owner) => {

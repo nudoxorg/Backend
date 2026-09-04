@@ -1953,6 +1953,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let Some(Some(owner)) = self.ordinals.get(index).copied() else {
                 continue;
             };
+            // The RA declaration visitor owns the Rustdoc plane even when it
+            // lends no lines for this declaration.
+            self.facts
+                .mark_documentation_captured(owner)
+                .map_err(|_| admission())?;
             let declaration = &declarations[index];
             let mut lines: Vec<&'source [u8]> = Vec::new();
             {

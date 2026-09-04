@@ -1953,6 +1953,12 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Some(ordinal) = self.ordinals.get(index).copied().flatten() else {
                 continue;
             };
+            // libclang supplied the documentation cell on every declaration
+            // row; an absent comment is captured empty documentation, not an
+            // unavailable plane.
+            self.facts
+                .mark_documentation_captured(ordinal)
+                .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
             let Some(declaration) = declarations.get(index) else {
                 continue;
             };

@@ -795,6 +795,21 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// doc rows have no lane owner — the fact lane owns no package entity —
     /// so they stay image-only facts like the receiver spellings.
     fn docs(&mut self) -> Result<(), GoCollectError> {
+        // The validated image owns the complete declaration/method/member
+        // documentation plane. Mark every source declaration before rows are
+        // decoded so an empty doc list remains captured truth, while callable
+        // carrier facts stay outside this source-declaration relation.
+        for owner in self
+            .declaration_ordinals
+            .iter()
+            .chain(self.method_ordinals.iter())
+            .chain(self.member_ordinals.iter())
+            .filter_map(|ordinal| *ordinal)
+        {
+            self.facts
+                .mark_documentation_captured(owner)
+                .map_err(lane_terminal)?;
+        }
         for index in 0..self.image.doc_count() {
             let row = self.image.doc(index).map_err(GoCollectError::Image)?;
             let owner = match row.owner_kind {

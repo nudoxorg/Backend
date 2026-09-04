@@ -2586,6 +2586,18 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// the next declared fact, split into text lines, inline code spans, and
     /// `{@link ...}` targets resolved against the published facts.
     fn pass_docs(&mut self) -> Result<(), TypeScriptCollectError> {
+        // OXC provides the documentation-comment plane for registered source
+        // declarations. Synthetic type-expression facts have no declaration
+        // comment authority and deliberately remain unmarked.
+        let fact_count = coordinate(self.facts.len())?;
+        for owner in 0..fact_count {
+            let index = usize::try_from(owner).map_err(|_| lane_rejection())?;
+            if self.decl_starts.get(index).copied() != Some(UNSET) {
+                self.facts
+                    .mark_documentation_captured(owner)
+                    .map_err(fault)?;
+            }
+        }
         let comments = self.semantic.comments();
         let bytes = self.source.as_bytes();
         for comment in comments.iter() {

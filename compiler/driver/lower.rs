@@ -225,6 +225,10 @@ pub(super) struct SemanticFact<'source> {
     truncated: bool,
     extension: Option<EmissionExtension>,
     visibility: Visibility,
+    /// Explicit producer-bound visibility-plane capture. An `Unknown`
+    /// visibility value can be authority truth, so value inspection cannot
+    /// establish this bit after admission.
+    visibility_captured: bool,
 }
 
 /// One per-language extension fact committed beside a declaration.
@@ -278,6 +282,7 @@ impl<'source> SemanticFact<'source> {
             truncated: false,
             extension: None,
             visibility: Visibility::Unknown,
+            visibility_captured: false,
         }
     }
 
@@ -292,6 +297,7 @@ impl<'source> SemanticFact<'source> {
     #[must_use]
     pub(super) const fn with_visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
+        self.visibility_captured = true;
         self
     }
 
@@ -369,7 +375,7 @@ impl<'source> SemanticFact<'source> {
     }
 }
 
-use crate::types::{FactFault, FactRejection};
+use crate::types::{FactFault, FactRejection, ParentageState};
 
 /// Exact rejection of one fact at admission, retaining the offending ordinal,
 /// its exact name bytes, and the typed cause. The shared terminal projects
@@ -416,7 +422,8 @@ pub(super) struct FactSet<'source> {
     extensions: Box<[Option<EmissionExtension>]>,
     key_digests: Box<[PayloadHash]>,
     visibility: Box<[Visibility]>,
-    parents: Box<[Option<u32>]>,
+    visibility_captured: Box<[bool]>,
+    documentation_captured: Box<[bool]>,
     parentage: Box<[StagedParentage]>,
     source_spans: Box<[Option<StagedSourceSpan>]>,
     occurrence_owners: Box<[u32]>,
@@ -480,15 +487,20 @@ pub(super) struct StagedTypeParameterRange {
     length: u32,
 }
 
-/// The staging-only authority result for containment.  It keeps a native
-/// owner that could not be emitted distinct from a verified root, so optional
-/// `TreeItemInput::parent` never lies by omission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StagedParentage {
-    Unavailable,
-    Root,
-    Bound,
-    UnrepresentedAuthorityOwner([u8; 16]),
+/// Staging uses the public closed transition state directly so a fact
+/// rejection can retain both conflicting authority claims without erasure.
+type StagedParentage = ParentageState;
+
+/// Extracts the one local parent representable in the owned/compact views.
+/// Root, unavailable, and unrepresented native ownership deliberately never
+/// fabricate an entity coordinate.
+const fn local_parent(parentage: StagedParentage) -> Option<compiler_ir::EntityId> {
+    match parentage {
+        StagedParentage::Bound { parent } => Some(parent),
+        StagedParentage::Unavailable
+        | StagedParentage::Root
+        | StagedParentage::UnrepresentedAuthorityOwner { .. } => None,
+    }
 }
 
 impl StagedSourceSpan {
@@ -671,7 +683,8 @@ impl<'source> FactSet<'source> {
             extensions: vec![None; plan.facts].into_boxed_slice(),
             key_digests: vec![PayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
             visibility: vec![Visibility::Unknown; plan.facts].into_boxed_slice(),
-            parents: vec![None; plan.facts].into_boxed_slice(),
+            visibility_captured: vec![false; plan.facts].into_boxed_slice(),
+            documentation_captured: vec![false; plan.facts].into_boxed_slice(),
             parentage: vec![StagedParentage::Unavailable; plan.facts].into_boxed_slice(),
             source_spans: vec![None; plan.facts].into_boxed_slice(),
             occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
@@ -774,6 +787,13 @@ impl<'source> FactSet<'source> {
     /// A `None` inside `Ir` is never promoted to proof that the source lacked
     /// that fact: this sidecar names which authority planes were unavailable.
     pub(super) fn rich_capture(&self) -> crate::types::RichIrCapture {
+        let capture = |captured| {
+            if captured {
+                crate::types::RichCapture::Captured
+            } else {
+                crate::types::RichCapture::Unavailable
+            }
+        };
         let entities = (0..self.len)
             .map(|ordinal| {
                 let source = self.source_spans[ordinal].is_some();
@@ -787,8 +807,8 @@ impl<'source> FactSet<'source> {
                             crate::types::RichParentageCapture::Unavailable
                         }
                         StagedParentage::Root => crate::types::RichParentageCapture::Root,
-                        StagedParentage::Bound => crate::types::RichParentageCapture::Bound,
-                        StagedParentage::UnrepresentedAuthorityOwner(identity) => {
+                        StagedParentage::Bound { .. } => crate::types::RichParentageCapture::Bound,
+                        StagedParentage::UnrepresentedAuthorityOwner { identity } => {
                             crate::types::RichParentageCapture::UnrepresentedAuthorityOwner {
                                 identity,
                             }
@@ -804,7 +824,10 @@ impl<'source> FactSet<'source> {
                     } else {
                         crate::types::RichCapture::Unavailable
                     },
-                    members: if matches!(self.parentage[ordinal], StagedParentage::Root | StagedParentage::Bound) {
+                    members: if matches!(
+                        self.parentage[ordinal],
+                        StagedParentage::Root | StagedParentage::Bound { .. }
+                    ) {
                         crate::types::RichCapture::Captured
                     } else {
                         crate::types::RichCapture::Unavailable
@@ -812,13 +835,8 @@ impl<'source> FactSet<'source> {
                     // Every admitted semantic fact has a closed type record;
                     // an explicit `Unknown` record is truth, not absence.
                     semantic_type: crate::types::RichCapture::Captured,
-                    // No adapter has yet called an explicit doc-plane capture
-                    // marker for an empty row. Retain this as unavailable
-                    // rather than misreporting `docs: []` as authoritative.
-                    documentation: crate::types::RichCapture::Unavailable,
-                    // `Visibility::Unknown` may be either an observed
-                    // language value or an authority gap, so do not infer.
-                    visibility: crate::types::RichCapture::Unavailable,
+                    documentation: capture(self.documentation_captured[ordinal]),
+                    visibility: capture(self.visibility_captured[ordinal]),
                     attributes: if attributes {
                         crate::types::RichCapture::Captured
                     } else {
@@ -1211,6 +1229,30 @@ impl<'source> FactSet<'source> {
         }))
     }
 
+    /// Performs the one legal parentage transition for an admitted entity.
+    /// Identical repeated authority observations are idempotent; any other
+    /// second claim retains both states as an exact fact fault.
+    fn transition_parentage(
+        &mut self,
+        entity: u32,
+        requested: StagedParentage,
+    ) -> Result<(), FactFault> {
+        let ordinal = entity as usize;
+        let existing = self.parentage[ordinal];
+        if existing == StagedParentage::Unavailable {
+            self.parentage[ordinal] = requested;
+            return Ok(());
+        }
+        if existing == requested {
+            return Ok(());
+        }
+        Err(FactFault::ConflictingParentage {
+            entity: compiler_ir::EntityId::new(entity),
+            existing,
+            requested,
+        })
+    }
+
     /// Binds a child declaration to an already admitted parent.  Parentage
     /// stays in the transaction staging lane, so the compact and owned views
     /// derive their relation from one authority fact rather than a renderer
@@ -1223,9 +1265,12 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        self.parents[child as usize] = Some(parent);
-        self.parentage[child as usize] = StagedParentage::Bound;
-        Ok(())
+        self.transition_parentage(
+            child,
+            StagedParentage::Bound {
+                parent: compiler_ir::EntityId::new(parent),
+            },
+        )
     }
 
     /// Marks that an authority considered parentage for this row even when it
@@ -1238,8 +1283,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        self.parentage[entity as usize] = StagedParentage::Root;
-        Ok(())
+        self.transition_parentage(entity, StagedParentage::Root)
     }
 
     /// Retains an authoritative native owner which has no emitted row.  It
@@ -1256,9 +1300,12 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        self.parentage[entity as usize] =
-            StagedParentage::UnrepresentedAuthorityOwner(authority_identity);
-        Ok(())
+        self.transition_parentage(
+            entity,
+            StagedParentage::UnrepresentedAuthorityOwner {
+                identity: authority_identity,
+            },
+        )
     }
 
     /// Binds one authority-captured declaration span without giving a raw
@@ -1623,11 +1670,26 @@ impl<'source> FactSet<'source> {
         if self.doc_len == self.plan.docs {
             return Err(FactFault::DocCapacity);
         }
+        self.documentation_captured[owner as usize] = true;
         self.doc_facts[self.doc_len] = DocFactInput {
             owner: compiler_ir::EntityId::new(owner),
             fragment,
         };
         self.doc_len += 1;
+        Ok(())
+    }
+
+    /// Marks an authority-owned documentation plane for one emitted source
+    /// declaration, including the semantically real empty-documentation
+    /// case. Synthetic carrier rows must never call this marker.
+    pub(super) fn mark_documentation_captured(&mut self, owner: u32) -> Result<(), FactFault> {
+        if owner >= self.len as u32 {
+            return Err(FactFault::DocOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        self.documentation_captured[owner as usize] = true;
         Ok(())
     }
 
@@ -1936,11 +1998,15 @@ impl<'source> FactSet<'source> {
         // into a compact child pool, preserving declaration order and making
         // the `parent` and `members` projections mutual inverses.
         let mut member_counts = vec![0_usize; fact_count];
-        for parent in self.parents[..fact_count].iter().flatten() {
-            let Some(count) = member_counts.get_mut(*parent as usize) else {
+        for parent in self.parentage[..fact_count]
+            .iter()
+            .copied()
+            .filter_map(local_parent)
+        {
+            let Some(count) = member_counts.get_mut(parent.raw as usize) else {
                 return Err(compiler_ir::BuildError::Dangling {
                     space: compiler_ir::SemanticSpace::Entity,
-                    raw: *parent,
+                    raw: parent.raw,
                 });
             };
             *count += 1;
@@ -1953,11 +2019,13 @@ impl<'source> FactSet<'source> {
         }
         let mut member_cursors = member_ranges.iter().map(|range| range.0).collect::<Vec<_>>();
         let mut members = vec![compiler_ir::TreeEntityId::new(0); member_total];
-        for (child, parent) in self.parents[..fact_count].iter().enumerate() {
-            let Some(parent) = parent else { continue };
-            let slot = member_cursors[*parent as usize];
+        for (child, parentage) in self.parentage[..fact_count].iter().copied().enumerate() {
+            let Some(parent) = local_parent(parentage) else {
+                continue;
+            };
+            let slot = member_cursors[parent.raw as usize];
             members[slot] = compiler_ir::TreeEntityId::new(child as u32);
-            member_cursors[*parent as usize] += 1;
+            member_cursors[parent.raw as usize] += 1;
         }
         let source_file = self.source_spans[..fact_count]
             .iter()
@@ -2041,7 +2109,8 @@ impl<'source> FactSet<'source> {
                 name: self.names[ordinal],
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: self.visibility[ordinal],
-                parent: self.parents[ordinal].map(compiler_ir::TreeEntityId::new),
+                parent: local_parent(self.parentage[ordinal])
+                    .map(|parent| compiler_ir::TreeEntityId::new(parent.raw)),
                 semantic_type: semantic_types[ordinal],
                 members: &members[member_ranges[ordinal].0
                     ..member_ranges[ordinal].0 + member_ranges[ordinal].1],
@@ -2180,6 +2249,17 @@ impl<'source> FactSet<'source> {
             }
         }
 
+        // Every fallible admission rule must close before the first staging
+        // write. In particular, a generic extension's pool start is a
+        // producer-provided coordinate, not a best-effort attachment after
+        // kind/type rows and pooled cursors have moved.
+        let type_parameter_range = match fact.extension.as_ref() {
+            Some(extension) => self
+                .capture_type_parameter_range(extension)
+                .map_err(rejected)?,
+            None => None,
+        };
+
         self.kinds[fact_ordinal] = fact.kind;
         self.names[fact_ordinal] = fact.name;
         self.type_records[fact_ordinal] = fact.type_record;
@@ -2201,14 +2281,10 @@ impl<'source> FactSet<'source> {
         self.type_child_counts[fact_ordinal] = fact.type_child_count;
         self.constructors[fact_ordinal] = fact.constructor;
         self.child_counts[fact_ordinal] = fact.child_count;
-        self.type_parameter_ranges[fact_ordinal] = match fact.extension.as_ref() {
-            Some(extension) => self
-                .capture_type_parameter_range(extension)
-                .map_err(rejected)?,
-            None => None,
-        };
+        self.type_parameter_ranges[fact_ordinal] = type_parameter_range;
         self.extensions[fact_ordinal] = fact.extension;
         self.visibility[fact_ordinal] = fact.visibility;
+        self.visibility_captured[fact_ordinal] = fact.visibility_captured;
         self.key_digests[fact_ordinal] = fact_key_digest(&fact);
         let pooled_start = self.total_children;
         for (offset, child) in fact
@@ -3690,10 +3766,11 @@ fn scoped_fact_key(
         });
     }
     visiting[ordinal] = true;
-    let parent = facts.parents.get(ordinal).copied().flatten();
-    let parent_key = match (parent, facts.parentage.get(ordinal).copied()) {
-        (Some(parent), _) => scoped_fact_key(facts, parent as usize, cache, visiting)?,
-        (None, Some(StagedParentage::UnrepresentedAuthorityOwner(identity))) => {
+    let parentage = facts.parentage.get(ordinal).copied();
+    let parent = parentage.and_then(local_parent);
+    let parent_key = match (parent, parentage) {
+        (Some(parent), _) => scoped_fact_key(facts, parent.raw as usize, cache, visiting)?,
+        (None, Some(StagedParentage::UnrepresentedAuthorityOwner { identity })) => {
             let mut preimage = [0_u8; 48];
             preimage[..32].copy_from_slice(b"compiler.unrepresented-parent.v1");
             preimage[32..].copy_from_slice(&identity);
@@ -3703,7 +3780,7 @@ fn scoped_fact_key(
             PayloadHash::from_raw([0; 16])
         }
         // `Bound` is written atomically with a concrete parent row.
-        (None, Some(StagedParentage::Bound)) => {
+        (None, Some(StagedParentage::Bound { .. })) => {
             return Err(compiler_ir::BuildError::Dangling {
                 space: compiler_ir::SemanticSpace::Entity,
                 raw: ordinal as u32,

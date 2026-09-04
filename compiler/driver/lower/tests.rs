@@ -4,9 +4,9 @@
 //! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
     AtomListId, BuildError, ConcreteType, EntityId, EntityKind, FragmentView, Occurrence,
-    PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts, RustOwnership,
-    SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr, TypeParameterListId,
-    VariadicForm,
+    PayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
+    RustOwnership, SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr,
+    TypeParameterListId, VariadicForm, Visibility,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
@@ -18,6 +18,7 @@ use super::{
     MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
     EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
+use crate::types::{ParentageState, RichCapture};
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 512;
@@ -72,6 +73,92 @@ fn rejected(failure: RejectedFact<'_>) -> TestError {
         fact: failure.fact,
         name_len: failure.name.len(),
         cause: failure.cause,
+    }
+}
+
+/// Exact storage and cursors which `FactSet::push` owns. A failed push must
+/// preserve even unopened future slots, then produce the same state and bytes
+/// as a lane that never saw the rejected fact.
+#[derive(Debug, Eq, PartialEq)]
+struct FactTransactionState<'source> {
+    len: usize,
+    total_children: usize,
+    total_type_children: usize,
+    occurrence_len: usize,
+    doc_len: usize,
+    extension_atom_len: usize,
+    type_parameter_len: usize,
+    type_parameter_bound_len: usize,
+    atom_list_len: usize,
+    type_list_len: usize,
+    entity_list_len: usize,
+    anonymous_rows: usize,
+    anonymous_children_total: usize,
+    anonymous_child_pending: u32,
+    computed_rows: usize,
+    computed_children_total: usize,
+    computed_child_pending: u32,
+    kinds: Vec<EntityKind>,
+    names: Vec<&'source [u8]>,
+    type_records: Vec<SemanticTypeRecord<'source>>,
+    type_child_targets: Vec<u32>,
+    type_child_names: Vec<Option<&'source [u8]>>,
+    type_child_flags: Vec<u8>,
+    type_child_counts: Vec<u8>,
+    type_child_starts: Vec<u32>,
+    constructors: Vec<SemanticProductConstructor>,
+    child_roles: Vec<ProductChildRole>,
+    child_targets: Vec<u32>,
+    child_counts: Vec<u8>,
+    child_starts: Vec<u32>,
+    extensions: Vec<Option<EmissionExtension>>,
+    key_digests: Vec<PayloadHash>,
+    visibility: Vec<Visibility>,
+    visibility_captured: Vec<bool>,
+    documentation_captured: Vec<bool>,
+    parentage: Vec<ParentageState>,
+    type_parameter_ranges: Vec<Option<super::StagedTypeParameterRange>>,
+}
+
+fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<'source> {
+    FactTransactionState {
+        len: facts.len,
+        total_children: facts.total_children,
+        total_type_children: facts.total_type_children,
+        occurrence_len: facts.occurrence_len,
+        doc_len: facts.doc_len,
+        extension_atom_len: facts.extension_atom_len,
+        type_parameter_len: facts.type_parameter_len,
+        type_parameter_bound_len: facts.type_parameter_bound_len,
+        atom_list_len: facts.atom_list_len,
+        type_list_len: facts.type_list_len,
+        entity_list_len: facts.entity_list_len,
+        anonymous_rows: facts.anonymous_rows,
+        anonymous_children_total: facts.anonymous_children_total,
+        anonymous_child_pending: facts.anonymous_child_pending,
+        computed_rows: facts.computed_rows,
+        computed_children_total: facts.computed_children_total,
+        computed_child_pending: facts.computed_child_pending,
+        kinds: facts.kinds.to_vec(),
+        names: facts.names.to_vec(),
+        type_records: facts.type_records.to_vec(),
+        type_child_targets: facts.type_child_targets.to_vec(),
+        type_child_names: facts.type_child_names.to_vec(),
+        type_child_flags: facts.type_child_flags.to_vec(),
+        type_child_counts: facts.type_child_counts.to_vec(),
+        type_child_starts: facts.type_child_starts.to_vec(),
+        constructors: facts.constructors.to_vec(),
+        child_roles: facts.child_roles.to_vec(),
+        child_targets: facts.child_targets.to_vec(),
+        child_counts: facts.child_counts.to_vec(),
+        child_starts: facts.child_starts.to_vec(),
+        extensions: facts.extensions.to_vec(),
+        key_digests: facts.key_digests.to_vec(),
+        visibility: facts.visibility.to_vec(),
+        visibility_captured: facts.visibility_captured.to_vec(),
+        documentation_captured: facts.documentation_captured.to_vec(),
+        parentage: facts.parentage.to_vec(),
+        type_parameter_ranges: facts.type_parameter_ranges.to_vec(),
     }
 }
 
@@ -792,6 +879,210 @@ fn admitted_generic_extensions_reopen_exact_empty_and_nonempty_ranges() -> Resul
             return Err(TestError::Tail);
         }
     } else {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_generic_fact_is_byte_for_byte_transactional_before_a_valid_push(
+) -> Result<(), TestError> {
+    let rust_extension = |parameter_start| {
+        EmissionExtension::Rust(RustFacts {
+            ownership: RustOwnership::Value,
+            lifetimes: AtomListId::new(0),
+            where_clauses: TypeParameterListId::new(parameter_start),
+            macros: AtomListId::new(0),
+        })
+    };
+    let seed = || {
+        SemanticFact::new(
+            EntityKind::Constant,
+            b"seed",
+            SemanticProductConstructor::PRODUCT,
+        )
+    };
+    let accepted = || {
+        SemanticFact::new(
+            EntityKind::Alias,
+            b"accepted",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .child(ProductChildRole::ProductMember, 0)
+        .with_extension(rust_extension(0))
+    };
+
+    let mut candidate = FactSet::new();
+    candidate.push(seed()).map_err(rejected)?;
+    let before = transaction_state(&candidate);
+    // This would write the kind/name/type prefixes and advance the type-child
+    // cursor before discovering its invalid generic-list start in the former
+    // push ordering. A legal product child proves the rejection is not merely
+    // a front-loaded constructor failure.
+    let invalid = SemanticFact::new(
+        EntityKind::Alias,
+        b"rejected",
+        SemanticProductConstructor::PRODUCT,
+    )
+    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+    .type_child(0, Some(b"member"), 0)
+    .child(ProductChildRole::ProductMember, 0)
+    .with_extension(rust_extension(1));
+    match candidate.push(invalid) {
+        Err(RejectedFact {
+            fact: 1,
+            name: b"rejected",
+            cause:
+                FactFault::RefTarget {
+                    lane: "type_parameter_ranges",
+                    raw: 1,
+                    fact_count: 0,
+                },
+        }) => {}
+        Err(failure) => return Err(rejected(failure)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    if transaction_state(&candidate) != before {
+        return Err(TestError::Tail);
+    }
+
+    let mut control = FactSet::new();
+    control.push(seed()).map_err(rejected)?;
+    candidate.push(accepted()).map_err(rejected)?;
+    control.push(accepted()).map_err(rejected)?;
+    if transaction_state(&candidate) != transaction_state(&control)
+        || write(&candidate)? != write(&control)?
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn parentage_transitions_are_closed_typed_and_idempotent() -> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    for name in [b"first".as_slice(), b"second", b"child", b"root"] {
+        facts
+            .push(SemanticFact::new(
+                EntityKind::Constant,
+                name,
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+    }
+
+    facts.attach_parent(2, 0).map_err(|cause| TestError::Rejected {
+        fact: 2,
+        name_len: b"child".len(),
+        cause,
+    })?;
+    // A repeated authority observation is the sole legal no-op transition.
+    facts.attach_parent(2, 0).map_err(|cause| TestError::Rejected {
+        fact: 2,
+        name_len: b"child".len(),
+        cause,
+    })?;
+    match facts.attach_parent(2, 1) {
+        Err(FactFault::ConflictingParentage {
+            entity,
+            existing: ParentageState::Bound { parent },
+            requested: ParentageState::Bound {
+                parent: requested_parent,
+            },
+        }) if entity == EntityId::new(2)
+            && parent == EntityId::new(0)
+            && requested_parent == EntityId::new(1) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    match facts.mark_parentage_root(2) {
+        Err(FactFault::ConflictingParentage {
+            entity,
+            existing: ParentageState::Bound { parent },
+            requested: ParentageState::Root,
+        }) if entity == EntityId::new(2) && parent == EntityId::new(0) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+
+    facts.mark_parentage_root(3).map_err(|cause| TestError::Rejected {
+        fact: 3,
+        name_len: b"root".len(),
+        cause,
+    })?;
+    facts.mark_parentage_root(3).map_err(|cause| TestError::Rejected {
+        fact: 3,
+        name_len: b"root".len(),
+        cause,
+    })?;
+    match facts.attach_parent(3, 0) {
+        Err(FactFault::ConflictingParentage {
+            entity,
+            existing: ParentageState::Root,
+            requested: ParentageState::Bound { parent },
+        }) if entity == EntityId::new(3) && parent == EntityId::new(0) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    let authority_identity = [0x5a; 16];
+    facts
+        .mark_unrepresented_parent(1, authority_identity)
+        .map_err(|cause| TestError::Rejected {
+            fact: 1,
+            name_len: b"second".len(),
+            cause,
+        })?;
+    match facts.mark_parentage_root(1) {
+        Err(FactFault::ConflictingParentage {
+            entity,
+            existing: ParentageState::UnrepresentedAuthorityOwner { identity },
+            requested: ParentageState::Root,
+        }) if entity == EntityId::new(1) && identity == authority_identity => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    Ok(())
+}
+
+#[test]
+fn rich_capture_marks_empty_documentation_and_private_visibility_when_supplied(
+) -> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Constant,
+                b"documented",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .with_visibility(Visibility::Private),
+        )
+        .map_err(rejected)?;
+    facts.mark_documentation_captured(0).map_err(|cause| TestError::Rejected {
+        fact: 0,
+        name_len: b"documented".len(),
+        cause,
+    })?;
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Constant,
+            b"unavailable",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+
+    let capture = facts.rich_capture();
+    let Some(documented) = capture.entities.first() else {
+        return Err(TestError::Tail);
+    };
+    let Some(unavailable) = capture.entities.get(1) else {
+        return Err(TestError::Tail);
+    };
+    if documented.documentation != RichCapture::Captured
+        || documented.visibility != RichCapture::Captured
+        || unavailable.documentation != RichCapture::Unavailable
+        || unavailable.visibility != RichCapture::Unavailable
+    {
         return Err(TestError::Tail);
     }
     Ok(())

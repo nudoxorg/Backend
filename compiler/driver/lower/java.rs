@@ -1270,6 +1270,11 @@ fn push_docs<'source>(
     owner: u32,
     declared: &Declaration<'source>,
 ) -> Result<(), JavaCollectError> {
+    // The validated javac declaration row owns its documentation field even
+    // when it is absent, so `docs: []` is not an authority gap.
+    facts
+        .mark_documentation_captured(owner)
+        .map_err(lane_terminal)?;
     let Some(documentation) = declared.documentation else {
         return Ok(());
     };
