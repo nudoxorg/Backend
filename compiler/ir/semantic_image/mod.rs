@@ -5,6 +5,7 @@
 //! reader capability makes every omitted pooled/type/graph/extension plane
 //! unrepresentable rather than treating absent bytes as semantic emptiness.
 
+mod canonical;
 mod encode;
 mod decode;
 mod fault;
