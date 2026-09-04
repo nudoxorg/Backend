@@ -2098,7 +2098,7 @@ fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants(
 #[test]
 fn recursive_signature_components_are_reorder_stable_without_row_tokens(
 ) -> Result<(), TestError> {
-    fn versions(reversed: bool) -> Result<Box<[EntityVersion]>, TestError> {
+    fn versions(reversed: bool) -> Result<Vec<EntityVersion>, TestError> {
         let names = if reversed {
             [b"right".as_slice(), b"left"]
         } else {
@@ -2140,7 +2140,7 @@ fn recursive_signature_components_are_reorder_stable_without_row_tokens(
 #[test]
 fn recursive_signature_edges_retain_labelled_scc_topology(
 ) -> Result<(), TestError> {
-    fn versions(edges: [u32; 3]) -> Result<Box<[EntityVersion]>, TestError> {
+    fn versions(edges: [u32; 3]) -> Result<Vec<EntityVersion>, TestError> {
         let mut facts = FactSet::new();
         for name in [b"alpha".as_slice(), b"beta", b"gamma"] {
             facts

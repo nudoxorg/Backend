@@ -20,7 +20,9 @@ use compiler_driver::{
     CompiledFragment, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
     compile_ir,
 };
-use compiler_ir::{DocFragmentInput, EntityKind, FragmentView, OccurrenceTarget, ReferenceKind};
+use compiler_ir::{
+    DocFragmentInput, EntityKind, FragmentView, ImageProvenance, OccurrenceTarget, ReferenceKind,
+};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -726,6 +728,7 @@ fn compile_request<'source, 'toolchain, 'cancel>(
         profile: PROFILE,
         stage: STAGE,
         source,
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(tool),
         authority: SemanticAuthorityInput::CSharp { image },
         control: CompileControl {
@@ -739,7 +742,6 @@ fn compile_request<'source, 'toolchain, 'cancel>(
 /// the caller-owned output buffer the fragment borrows.
 fn compile_fragment<'source, 'output>(
     source: &'source [u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     tool: ResolvedToolchain<'_>,
     image: &'source [u8],
     work: &Path,
@@ -981,7 +983,14 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
         cause: format!("{failure:?}"),
     })?;
     // Identity law: the persisted source ContentId is the primary bytes' digest.
-    if ir.source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source) {
+    let ImageProvenance::Captured {
+        source: image_source,
+        ..
+    } = ir.ir.image_provenance()
+    else {
+        return Err(TestError::Digest);
+    };
+    if image_source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source) {
         return Err(TestError::Digest);
     }
 

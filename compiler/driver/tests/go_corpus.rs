@@ -7,7 +7,7 @@ use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::FragmentView;
+use compiler_ir::{FragmentView, ImageProvenance};
 use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
@@ -306,7 +306,14 @@ fn row(
             )));
         }
     }
-    if ir.source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source) {
+    let ImageProvenance::Captured {
+        source: image_source,
+        ..
+    } = ir.ir.image_provenance()
+    else {
+        return Err(Error::Failure("semantic image provenance unavailable".into()));
+    };
+    if image_source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source) {
         return Err(Error::Failure("source identity mismatch".into()));
     }
     let mut output = vec![0; 32 * 1024 * 1024];

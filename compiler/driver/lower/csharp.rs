@@ -1862,10 +1862,11 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use compiler_ir::{
-        CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin, FragmentView,
-        LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity,
+        AnnotationKind, CSharpFacts, DocFragmentInput, DocLinkTarget, EntityKind, ForeignOrigin,
+        FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
+        SemanticTypeTag, SourceIdentity,
     };
+    use compiler_languages_csharp::VarianceTag;
     use compiler_vocabulary::{
         CSharpVersion, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
     };

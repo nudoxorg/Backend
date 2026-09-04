@@ -106,6 +106,7 @@ fn compile_source<'a>(
             profile: PROFILE,
             stage: STAGE,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

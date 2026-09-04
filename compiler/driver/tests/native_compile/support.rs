@@ -504,6 +504,7 @@ pub(super) fn request<'source, 'path, 'cancel>(
         profile: fixture_profile(language),
         stage: Stage::LowerIr,
         source,
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain,
         authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {

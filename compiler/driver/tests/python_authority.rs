@@ -168,6 +168,7 @@ fn compile_fragment<'source>(
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority,
             control: CompileControl {

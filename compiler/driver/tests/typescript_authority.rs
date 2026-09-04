@@ -48,6 +48,7 @@ fn request<'source, 'toolchain>(
         profile,
         stage: Stage::LowerIr,
         source,
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain),
         authority,
         control: CompileControl {
@@ -260,7 +261,6 @@ fn checker_invalid_unicode_configuration_is_a_public_authority_terminal() {
 
 fn compile_report<'diagnostic>(
     source: &'static [u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     report: &Report,
     diagnostic: &'diagnostic mut [u8],
 ) -> Result<compiler_driver::CompiledIr, CompileFailure<'diagnostic>> {

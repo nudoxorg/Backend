@@ -121,6 +121,7 @@ fn compile_fragment<'a>(
             profile: LanguageProfile::Java(JavaRelease::Java21),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::Java { image },
             control: CompileControl {

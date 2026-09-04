@@ -44,6 +44,7 @@ fn compile(source: &'static [u8]) -> Ir {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

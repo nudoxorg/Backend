@@ -219,6 +219,7 @@ fn compile_module(
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

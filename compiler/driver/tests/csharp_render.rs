@@ -94,6 +94,7 @@ fn compile_fixture(
             profile: PROFILE,
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
             authority: SemanticAuthorityInput::CSharp { image },
             control: CompileControl {
@@ -117,7 +118,6 @@ fn compile_fixture(
 
 fn compile_fragment(
     source: &'static [u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     image: &'static [u8],
     label: &str,
 ) -> Result<Vec<u8>, TestError> {
@@ -130,6 +130,7 @@ fn compile_fragment(
             profile: PROFILE,
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
             authority: SemanticAuthorityInput::CSharp { image },
             control: CompileControl {

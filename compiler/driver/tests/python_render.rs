@@ -169,6 +169,7 @@ fn compile_source(source: &'static [u8]) -> Result<Ir, TestError> {
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {
@@ -221,6 +222,7 @@ fn compile_fragment(source: &'static [u8]) -> Result<Vec<u8>, TestError> {
             profile: LanguageProfile::Python(PythonVersion::Python314),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

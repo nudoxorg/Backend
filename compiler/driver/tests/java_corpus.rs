@@ -172,6 +172,7 @@ fn compile_fragment<'a>(
             profile: LanguageProfile::Java(JavaRelease::Java21),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::Java { image },
             control: CompileControl {
@@ -225,7 +226,6 @@ fn deep_review(
     purl: &'static str,
     path: &str,
     source: &[u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     image: &[u8],
     view: &FragmentView<'_>,
 ) -> Result<(usize, usize), TestError> {
@@ -350,6 +350,7 @@ fn render_review(
             profile: LanguageProfile::Java(JavaRelease::Java21),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(tool),
             authority: SemanticAuthorityInput::Java { image },
             control: CompileControl {
@@ -544,7 +545,6 @@ fn lower_frozen_file(
     purl: &'static str,
     path: &str,
     source: &[u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     classpath: &[&Path],
     work: &Path,
     bench: &mut Bench,

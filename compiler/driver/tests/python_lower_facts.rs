@@ -209,6 +209,7 @@ fn attempt_fragment(
                 profile: LanguageProfile::Python(PythonVersion::Python314),
                 stage: Stage::LowerIr,
                 source,
+                declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(toolchain),
                 authority: SemanticAuthorityInput::None,
                 control: CompileControl {
@@ -241,7 +242,6 @@ fn attempt_fragment(
 /// crosses the join boundary).
 fn with_image<T>(
     source: &'static [u8],
-    declaration_scope: compiler_driver::DeclarationScope::fixture(),
     label: &'static str,
     then: impl FnOnce(&Ir) -> Result<T, TestError> + Send,
 ) -> Result<T, TestError>
@@ -258,6 +258,7 @@ where
                 profile: LanguageProfile::Python(PythonVersion::Python314),
                 stage: Stage::LowerIr,
                 source,
+                declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(toolchain),
                 authority: SemanticAuthorityInput::None,
                 control: CompileControl {

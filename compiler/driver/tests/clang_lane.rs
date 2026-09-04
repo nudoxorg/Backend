@@ -67,6 +67,7 @@ fn lower_with<'output>(
             profile,
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain,
             authority: SemanticAuthorityInput::None,
             control: CompileControl {
@@ -233,6 +234,7 @@ where
             profile: LanguageProfile::C(CStandard::C23),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain,
             authority: SemanticAuthorityInput::None,
             control: CompileControl {

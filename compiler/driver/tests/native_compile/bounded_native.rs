@@ -103,6 +103,7 @@ fn request<'source, 'path, 'cancel>(
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source,
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain,
         authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {

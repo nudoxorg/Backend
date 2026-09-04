@@ -7,7 +7,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::FragmentView;
+use compiler_ir::{FragmentView, ImageProvenance};
 use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
@@ -153,6 +153,7 @@ fn compile_fragment<'a>(
             profile: PROFILE,
             stage: STAGE,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::Go { image },
             control: CompileControl {
@@ -259,7 +260,14 @@ fn lifecycle(
         }
     }
     let source_digest: [u8; 32] = Sha256::digest(&source).into();
-    if ir.source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source)
+    let ImageProvenance::Captured {
+        source: image_source,
+        ..
+    } = ir.ir.image_provenance()
+    else {
+        return Err(TestError::Fact("semantic image provenance unavailable"));
+    };
+    if image_source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source)
         || source_digest != go_support::sha256(&source)
     {
         return Err(TestError::Fact("IR source identity mismatch"));

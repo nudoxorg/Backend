@@ -9,7 +9,7 @@ use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::FragmentView;
+use compiler_ir::{FragmentView, ImageProvenance};
 use compiler_publication::immutable::ImmutableArtifactStore;
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -255,6 +255,7 @@ fn compile_fragment<'a>(
             profile: PROFILE,
             stage: STAGE,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::None,
             control: CompileControl {
@@ -331,7 +332,14 @@ fn package_class_lifecycle(journey: &Journey) -> Result<(), TestError> {
         cause: format!("{failure:?}"),
     })?;
     let compiled_source_digest: [u8; 32] = Sha256::digest(source.as_slice()).into();
-    if ir.source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source)
+    let ImageProvenance::Captured {
+        source: image_source,
+        ..
+    } = ir.ir.image_provenance()
+    else {
+        return Err(TestError::Digest);
+    };
+    if image_source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source)
         || compiled_source_digest != source_digest
     {
         return Err(TestError::Digest);

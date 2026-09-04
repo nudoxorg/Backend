@@ -63,6 +63,7 @@ fn try_lower(
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: authority.map_or(SemanticAuthorityInput::None, |report| {
                 SemanticAuthorityInput::TypeScript { report }
@@ -93,6 +94,7 @@ fn fragment(source: &'static [u8], authority: Option<&Report>) -> FragmentView<'
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: authority.map_or(SemanticAuthorityInput::None, |report| {
                 SemanticAuthorityInput::TypeScript { report }

@@ -48,6 +48,7 @@ fn configured_roslyn_image_admits_source_bound_interface() -> Result<(), TestErr
             profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::CSharp { image: &image },
             control: CompileControl {

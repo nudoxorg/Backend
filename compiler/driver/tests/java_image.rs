@@ -48,6 +48,7 @@ fn configured_javac_image_admits_source_bound_interface() -> Result<(), TestErro
             profile: LanguageProfile::Java(JavaRelease::Java21),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Java { image: &image },
             control: CompileControl {

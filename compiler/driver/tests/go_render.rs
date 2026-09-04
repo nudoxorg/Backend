@@ -140,6 +140,7 @@ fn compile_source(source: &[u8]) -> Result<Ir, TestError> {
             profile: LanguageProfile::Go(GoVersion::Go125),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority: SemanticAuthorityInput::Go { image: &image },
             control: CompileControl {

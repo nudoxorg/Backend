@@ -103,6 +103,7 @@ fn compile_one<'source>(
             profile: LanguageProfile::Rust(project.edition),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::Rust {
                 project,
@@ -127,7 +128,6 @@ fn compile_one<'source>(
 
 fn compile_ir_one(
     source: &[u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
     project: &compiler_languages_rust::RustProject,
     tool: &ResolvedToolchain<'_>,
 ) -> Result<compiler_driver::CompiledIr, TestError> {
@@ -138,6 +138,7 @@ fn compile_ir_one(
             profile: LanguageProfile::Rust(project.edition),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(*tool),
             authority: SemanticAuthorityInput::Rust {
                 project,
