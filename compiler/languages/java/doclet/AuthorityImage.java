@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 import javax.lang.model.element.Element;
+import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
@@ -30,6 +31,7 @@ import javax.lang.model.element.ModuleElement;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.IntersectionType;
@@ -44,6 +46,8 @@ import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
+import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.PackageTree;
 import com.sun.source.doctree.DocCommentTree;
 import com.sun.source.util.DocTrees;
 import com.sun.source.util.JavacTask;
@@ -55,11 +59,11 @@ import com.sun.source.util.Trees;
 /** Emits the immutable Java authority image from one attributed compiler task. */
 final class AuthorityImage {
 	private static final byte[] MAGIC = { 'N', 'J', 'A', 'I' };
-	private static final byte[] DOMAIN = "nudox.java.authority.image.sha256.v1\0".getBytes(StandardCharsets.US_ASCII);
+	private static final byte[] DOMAIN = "nudox.java.authority.image.sha256.v2\0".getBytes(StandardCharsets.US_ASCII);
 	private static final byte[] BOUND_MAGIC = { 'N', 'J', 'A', 'B' };
 	private static final byte[] BOUND_DOMAIN = "nudox.java.bound.authority.image.sha256.v1\0".getBytes(StandardCharsets.US_ASCII);
-	private static final int VERSION = 1;
-	private static final int SECTION_COUNT = 8;
+	private static final int VERSION = 2;
+	private static final int SECTION_COUNT = 10;
 	private static final int HEADER_BYTES = 48 + SECTION_COUNT * 16;
 	private static final int BOUND_HEADER_BYTES = 80;
 	private static final int ABSENT = -1;
@@ -85,6 +89,7 @@ private final Trees trees;
 	private final TypePool types = new TypePool();
 	private final SymbolPool symbols = new SymbolPool();
 	private final List<DeclarationRow> declarations = new ArrayList<>();
+	private final List<List<ExtensionEntry>> extensions = new ArrayList<>();
 	private final List<ReferenceRow> references = new ArrayList<>();
 	private final Map<String, Boolean> emittedPackages = new LinkedHashMap<>();
 	private final Map<String, Boolean> emittedModules = new LinkedHashMap<>();
@@ -106,9 +111,21 @@ private final Trees trees;
 		for (CompilationUnitTree unit : units) {
 			new TreePathScanner<Void, Void>() {
 				@Override
+				public Void visitPackage(PackageTree node, Void unused) {
+					Element element = trees.getElement(getCurrentPath());
+					if (element instanceof PackageElement pkg) emitPackage(pkg, getCurrentPath());
+					return super.visitPackage(node, unused);
+				}
+				@Override
 				public Void visitClass(ClassTree node, Void unused) {
 					Element element = trees.getElement(getCurrentPath());
-					if (element instanceof TypeElement type) emitType(type, getCurrentPath());
+					// Anonymous classes have no qualified name and are
+					// method-body implementation artifacts: they carry no
+					// declaration rows, and their bodies' invocations
+					// attribute to the enclosing declared executable.
+					if (element instanceof TypeElement type && !type.getSimpleName().isEmpty()) {
+						emitType(type, getCurrentPath());
+					}
 					return super.visitClass(node, unused);
 				}
 			}.scan(unit, null);
@@ -117,8 +134,9 @@ private final Trees trees;
 	}
 
 	private void emitType(TypeElement type, TreePath typePath) {
-		emitPackage(elements.getPackageOf(type));
+		emitPackage(elements.getPackageOf(type), null);
 		emitModule(elements.getModuleOf(type));
+		int typeDeclaration = declarations.size();
 		declarations.add(declaration(
 			declarationKind(type.getKind()),
 			type.getQualifiedName().toString(),
@@ -148,12 +166,23 @@ private final Trees trees;
 				default -> { }
 			}
 		}
+		if (type.getRecordComponents() != null) {
+			for (RecordComponentElement component : type.getRecordComponents()) {
+				for (int index = typeDeclaration + 1; index < declarations.size(); index++) {
+					DeclarationRow row = declarations.get(index);
+					if (row.kind == 8 && row.name == atoms.intern(component.getSimpleName().toString())) {
+						extensions.get(typeDeclaration).add(new ExtensionEntry(3, index)); break;
+					}
+				}
+			}
+		}
 	}
 
-	private void emitPackage(PackageElement pkg) {
+	private void emitPackage(PackageElement pkg, TreePath path) {
+		if (pkg.isUnnamed()) return;
 		String name = pkg.getQualifiedName().toString();
 		if (emittedPackages.putIfAbsent(name, Boolean.TRUE) == null) {
-			declarations.add(declaration(2, name, null, documentation(pkg, null), pkg, ABSENT, ABSENT));
+			declarations.add(declaration(2, name, null, documentation(pkg, path), pkg, ABSENT, ABSENT));
 		}
 	}
 
@@ -166,6 +195,10 @@ private final Trees trees;
 	}
 
 	private DeclarationRow declaration(int kind, String name, String owner, Documentation doc, Element element, int type, int symbol) {
+		List<ExtensionEntry> facts = new ArrayList<>();
+		for (AnnotationMirror annotation : element.getAnnotationMirrors()) facts.add(new ExtensionEntry(2, atoms.intern(annotation.toString())));
+		if (element instanceof ExecutableElement executable) for (TypeMirror thrown : executable.getThrownTypes()) facts.add(new ExtensionEntry(1, types.intern(thrown)));
+		extensions.add(facts);
 		return new DeclarationRow(kind, origin(element), doc.flavor, modifierMask(element.getModifiers()),
 			atoms.intern(name), atoms.optional(owner), atoms.optional(doc.text), type, symbol);
 	}
@@ -257,17 +290,27 @@ private final Trees trees;
 		}
 		private ExecutableElement enclosingExecutable(TreePath path) {
 			for (TreePath current = path.getParentPath(); current != null; current = current.getParentPath()) {
+				// Only a declared executable lexically owns an invocation: a
+				// MethodInvocationTree node resolves to its callee, so honoring
+				// bare ExecutableElements would attribute argument-nested calls
+				// to a foreign callee.
+				if (!(current.getLeaf() instanceof MethodTree)) continue;
 				Element element = trees.getElement(current);
-				if (element instanceof ExecutableElement executable) return executable;
+				if (!(element instanceof ExecutableElement executable)) continue;
+				// Anonymous classes emit no declaration rows; their methods are
+				// not owners. Walk past them to the enclosing declared executable.
+				Element host = executable.getEnclosingElement();
+				if (host instanceof TypeElement type && type.getSimpleName().isEmpty()) continue;
+				return executable;
 			}
 			return null;
 		}
 	}
 
 	private void write(int release, Path sourceBinding, Path output) throws IOException {
-		byte[][] sections = { atoms.directory(), atoms.bytes(), types.rows(), types.edges(), symbols.rows(), symbols.parameters(), declarations(), references() };
-		int[] records = { 8, 1, 16, 4, 16, 4, 32, 20 };
-		int[] counts = { atoms.count(), atoms.byteCount(), types.count(), types.edgeCount(), symbols.count(), symbols.parameterCount(), declarations.size(), references.size() };
+		byte[][] sections = { atoms.directory(), atoms.bytes(), types.rows(), types.edges(), symbols.rows(), symbols.parameters(), declarations(), references(), declarationExtensions(), extensionEntries() };
+		int[] records = { 8, 1, 16, 4, 16, 4, 32, 20, 8, 8 };
+		int[] counts = { atoms.count(), atoms.byteCount(), types.count(), types.edgeCount(), symbols.count(), symbols.parameterCount(), declarations.size(), references.size(), declarations.size(), extensionCount() };
 		int bodyBytes = 0;
 		for (byte[] section : sections) bodyBytes = Math.addExact(bodyBytes, section.length);
 		byte[] header = header(release, bodyBytes, records, counts, sections);
@@ -292,7 +335,7 @@ private final Trees trees;
 
 	private static byte[] bound(byte[] source, byte[] inner) throws IOException {
 		byte[] header = ByteBuffer.allocate(BOUND_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
-			.put(BOUND_MAGIC).putShort((short) VERSION).putShort((short) BOUND_HEADER_BYTES).putInt(inner.length).array();
+			.put(BOUND_MAGIC).putShort((short) 1).putShort((short) BOUND_HEADER_BYTES).putInt(inner.length).array();
 		try {
 			MessageDigest digest = MessageDigest.getInstance("SHA-256");
 			System.arraycopy(digest.digest(source), 0, header, 12, 32);
@@ -383,9 +426,13 @@ private final Trees trees;
 
 	private byte[] declarations() { ByteBuffer out = ByteBuffer.allocate(declarations.size() * 32).order(ByteOrder.LITTLE_ENDIAN); for (DeclarationRow row : declarations) out.put((byte) row.kind).put((byte) row.origin).put((byte) row.docFlavor).put((byte) 0).putInt(row.modifiers).putInt(row.name).putInt(row.owner).putInt(row.doc).putInt(ABSENT).putInt(row.type).putInt(row.symbol); return out.array(); }
 	private byte[] references() { ByteBuffer out = ByteBuffer.allocate(references.size() * 20).order(ByteOrder.LITTLE_ENDIAN); for (ReferenceRow row : references) out.putInt(row.owner).putInt(row.target).putInt(row.file).putInt(row.start).putInt(row.end); return out.array(); }
+	private byte[] declarationExtensions() { ByteBuffer out = ByteBuffer.allocate(declarations.size() * 8).order(ByteOrder.LITTLE_ENDIAN); int start = 0; for (List<ExtensionEntry> facts : extensions) { out.putInt(facts.isEmpty() ? 0 : start).putInt(facts.size()); start += facts.size(); } return out.array(); }
+	private int extensionCount() { return extensions.stream().mapToInt(List::size).sum(); }
+	private byte[] extensionEntries() { ByteBuffer out = ByteBuffer.allocate(extensionCount() * 8).order(ByteOrder.LITTLE_ENDIAN); for (List<ExtensionEntry> facts : extensions) for (ExtensionEntry entry : facts) out.put((byte) entry.tag).put(new byte[3]).putInt(entry.value); return out.array(); }
 	private record Documentation(int flavor, String text) { }
 	private record TypeRow(int tag, int flags, int atom, int start, int children) { }
 	private record SymbolRow(int owner, int name, int start, int count) { }
 	private record DeclarationRow(int kind, int origin, int docFlavor, int modifiers, int name, int owner, int doc, int type, int symbol) { }
 	private record ReferenceRow(int owner, int target, int file, int start, int end) { }
+	private record ExtensionEntry(int tag, int value) { }
 }

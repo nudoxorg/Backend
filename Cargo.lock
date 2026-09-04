@@ -1371,8 +1371,10 @@ dependencies = [
 name = "compiler-languages-java"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "sha2",
  "thiserror 2.0.20",
+ "ureq",
 ]
 
 [[package]]

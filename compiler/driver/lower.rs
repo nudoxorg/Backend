@@ -51,8 +51,8 @@ pub(super) const MAX_FACT_CHILDREN: usize = 64;
 pub(super) const MAX_TYPE_CHILDREN: usize = 64;
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
-/// Dense bound of the documentation lane committed beside the declarations.
-pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 4096;
+/// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
+pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.
 pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
 /// Dense bound of pooled type parameters.
@@ -60,7 +60,9 @@ pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
 /// Dense bound of pooled reference lists per lane kind.
 pub(super) const MAX_REF_LISTS: usize = 512;
 /// Dense bound of one pooled reference list.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
+/// The measured corpus maximum is 46 (`ToStringBuilder.append`).
+/// 64 is the next dense bound, preserving the old geometry for lists up to 16.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 64;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
@@ -505,6 +507,9 @@ impl<'source> FactSet<'source> {
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
         self.anonymous_owners[index] = owner;
+        // The row's own children were appended before this intern (the go-lane
+        // order): they occupy the trailing `child_count` slots, so the recorded
+        // start is the range begin, not the post-append total.
         self.anonymous_child_starts[index] =
             (self.anonymous_children_total - child_count as usize) as u32;
         self.anonymous_child_counts[index] = child_count as u8;
@@ -1662,9 +1667,11 @@ fn live_type<'source>(
                 };
             }
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
+            // Lazy borrow: a no-parameter, no-result executable owns zero
+            // children, so the result index exists only when has_result does.
             tree.intern_concrete(ConcreteType::Function {
                 parameters,
-                result: has_result.then_some(children[child_count - 1]),
+                result: has_result.then(|| children[child_count - 1]),
                 abi: None,
                 variadic: false,
                 unsafe_: false,

@@ -168,6 +168,7 @@ pub(super) enum CompileTerminal {
     DeadlineExceeded,
     DiagnosticLimit,
     NativeRejected,
+    FactRejected,
     Authority,
     AuthorityInputRequired,
     AuthorityInputProfileMismatch,
@@ -437,6 +438,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::DeadlineExceeded { .. } => CompileTerminal::DeadlineExceeded,
         CompileFailure::DiagnosticLimit { .. } => CompileTerminal::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminal::NativeRejected,
+        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::Authority { .. } => CompileTerminal::Authority,
         CompileFailure::AuthorityInputRequired { .. } => CompileTerminal::AuthorityInputRequired,
         CompileFailure::AuthorityInputProfileMismatch { .. } => {

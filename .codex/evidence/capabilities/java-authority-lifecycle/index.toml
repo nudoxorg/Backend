@@ -109,7 +109,121 @@ commit = "1993755"
 state = "accepted"
 note = "T1-T6 (+418 test LOC), push_root package-annotation gap closed; 20/20 java lowering tests"
 
+[[dispatches]]
+task = "session-id-unrecorded"
+role = "nudox_luna_implementer"
+card = "J4-java-utf16-span-basis"
+commit = "889bf75e"
+state = "accepted"
+note = "Chain tip 2026-09-03. Worker session id was not recorded before handoff; Terra reproduced the commit's gates directly (all six green 2026-09-03) and reviewed the diff against P10 (one-pass basis, ASCII identity, sparse boundary table, binary-search lookup, typed Utf16/IndexCapacity faults, no per-reference rescan). Custody = commit on this chain; treat session-id as lost, not as role ambiguity."
+
 [[reviews]]
 boundary = "closure"
 role = "nudox_terra_reviewer"
 state = "planned"
+
+# ---- 2026-09-03 session: J9/J10 phase, corpus proof ----
+
+[[dispatches]]
+task = "ses_f9a93be8fffeQAMhiLUTME6pQk"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped"
+note = "Correctly stopped: card baseline 054535d92 was stale (Terra committed the calibration amendment after freezing). Terra process error, not worker error."
+
+[[dispatches]]
+task = "ses_f9a9295dbffebSzPsSla58i1bY"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped"
+note = "Correctly stopped on the same stale-baseline class after the baseline repoint moved the tip again. Terra repaired structurally: card pins the java-content baseline and instructs an explicit detached checkout; the active card lives outside the repo (digest be71ebbf)."
+
+[[dispatches]]
+task = "ses_f9a9147f9ffeA5eNpMwEqKtoiY"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration"
+commit = "none"
+state = "stopped-honest-reds"
+note = "Stop 1: LOC budget 450 exceeded at 540 (Terra miscalibrated the per-file split; total 735 was within budget — split raised to 650/550). Stops 2-3 were real reds Terra reproduced and root-caused: (a) real jars use RAW deflate, jar.rs used zlib mode and no test exercised deflate — P14 FALSIFIED, repair card J7R; (b) default-package sources make javac report a Package row with an empty name; push_root pushed it, FactSet rejected EmptyName, and shared-lane push_fact erased the cause into NoSupportedDeclaration — repair card J7R row B. Worker scratch (java_lifecycle.rs + java_lifecycle/) left uncommitted in the worktree for the J9 resume; Terra's temporary probes reverted. ESCALATION: shared-lane push_fact error-cause erasure (lower.rs) — Sol review required."
+
+[[dispatches]]
+task = "ses_f9a7af161ffestMy8GfxbvLqBb"
+role = "nudox_luna_implementer"
+card = "J7R-jar-deflate-unnamed-package"
+commit = "adf39372"
+state = "accepted"
+note = "Raw deflate one-flag fix + stored/deflate/zlib-rejection/truncation tests; unnamed-package skip + two law tests. Terra reproduced all gates."
+
+[[dispatches]]
+task = "ses_f9a53bcd0ffeZvDMkWP7zN3gCo"
+role = "nudox_luna_implementer"
+card = "J2R-declared-owner-occurrences"
+commit = "none"
+state = "stopped-correctly"
+note = "Scoped stop: ImageError::OrphanOwner left shared types/authority.rs match non-exhaustive (outside owned paths). Work left on disk."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J2R-declared-owner-occurrences"
+commit = "95c012b4"
+state = "accepted"
+note = "Terra integrated the worker's on-disk work: validator two-pass O(R+D) owner check (worker's find_map was O(R*D)), mechanical authority.rs phase arm, then root-caused the residual Pair.java orphan (member references and anonymous classes defeat tree-shape walking) and replaced the mechanism with declared-owner marking in the doclet symbol pool + isDeclared gating. Occurrences.java live test expectation corrected to the declared-owner law."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J2R amendment"
+commit = "02a640bb"
+state = "accepted"
+note = "Anonymous classes carry no declaration rows; invocations attribute to the enclosing declared executable. javac occurrences live test green (calls,calls,calls)."
+
+[[dispatches]]
+task = "ses_f9a72d6e8ffe..ses_f9a637818ffe / ses_f9a391368ffe"
+role = "nudox_luna_implementer"
+card = "J9-java-lifecycle-integration (resumes)"
+commit = "none"
+state = "stopped-honest-reds"
+note = "Three resume attempts; scratch iterated to T1-through-index and 5-file T2 slice. Remaining reds Terra-diagnosed: (1) T1 second-generation publication conflicts with the journal single head when source content changes (python lifecycle precedent implies otherwise; journal semantics = Sol question); (2) T2 fully green except files exceeding the 256-doc-fragment budget (CharUtils measured case); (3) scratch LOC 706 vs 700 budget (worker stop). Scratch remains uncommitted in the worktree."
+
+[[calibration]]
+card = "J9-java-lifecycle-integration"
+digest = "9ab69a6d255538c55437634c647c49774b98728ddc89831c7f198ef66deb8a4f"
+trials = "independent-reader + plausible-misreader, fresh roles, round 1 found T2 slice-to-javac loophole; narrow rewrite; round 2 reader exact, misreader loopholes closed (residual #[ignore] reading already foreclosed by card text)"
+note = "Card content bytes unchanged since digest 9ab69a6d except baseline-pointer mechanics and the budget/binding/prerequisite amendments recorded here"
+
+# ---- 2026-09-03 session 2: trunk consumption, J9 completion ----
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "trunk-consumption"
+commit = "e29d1b73"
+state = "accepted"
+note = "Merged canonical 99eb1a80d into chain f0aff7ba7: chained journal generations, 1024-fact geometry, FactRejection operand retention, schema-2 computed segment, new rendering vocabulary. lower.rs conflict resolved (both sides landed the children-first fix; trunk adds intern_reserved_anchor_type_row). Foreign quarantine reinstated worktree-only (rust/csharp cfg(test) drift persists on canonical itself)."
+
+[[dispatches]]
+task = "ses_f983a2fa7ffeKOirK3SgCWlEQp"
+role = "nudox_luna_implementer"
+card = "J9P-doclet-reference-owner"
+commit = "e3ddea99"
+state = "accepted"
+note = "CallScanner.enclosingExecutable honors only MethodTree declaration leaves, skips nameless-host methods. Live Nested.java falsifier asserts exact owner atoms for nested-call arguments and anonymous-body calls. Terra reproduced: javac_authority 2 passed, languages-java 10/10, java_image green; Pair.java lowers with zero orphans after landing."
+
+[[dispatches]]
+task = "terra-direct"
+role = "terra"
+card = "J9-integration"
+commit = "568c7f40"
+state = "accepted"
+note = "Terra integrated the uncommitted J9 scratch: qualified-name entity assertions, maven foreign-key origin scan, live-Ir overload law (two distinct exact add signatures), plus the one-line lower.rs lazy-borrow fix (zero-child FunctionPointer underflow, trunk finding). All three lifecycle tests green sequentially; 755+192 LOC (scratch grew past the 650/550 card budget through the compile_ir proof + foreign-key scan; recorded, not silent)."
+
+[[dispatches]]
+task = "ses_f981352e6ffesLXLy5hAIV2vma"
+role = "nudox_luna_implementer"
+card = "J9Q-capacity-goldens"
+commit = "242e109c"
+state = "accepted"
+note = "Capacity tests assert Rejected(FactRejection) with exact fact/name_len/cause operands at 1024 geometry (257 fields admit; overflow folds typed via root-shaped rows — member-shaped overflow structurally unreachable, reasoning recorded). Render goldens re-pinned to trunk vocabulary with why-comments; boolean-spelling self-error caught; FINDINGs resolved against 4d1cceba9. Terra reproduced all five gates."
