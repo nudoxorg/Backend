@@ -116,7 +116,8 @@ protocol_registry!(
         (DeclarationFamilyDomain, DeclarationFamily, 21, b"heart.declfam.v1"),
         (DeclarationVariantDomain, DeclarationVariant, 22, b"heart.declvar.v1"),
         (ForeignDeclarationDomain, ForeignDeclaration, 23, b"heart.foreign.v1"),
-        (SemanticScopeDomain, SemanticScope, 24, b"heart.scopeid.v1")
+        (SemanticScopeDomain, SemanticScope, 24, b"heart.scopeid.v1"),
+        (IrSemanticImageDomain, IrSemanticImage, 25, b"heart.semir.v1\0\0")
     }
     encodings {
         (FrameEncoding, Frame, 1, b"heart.frame.v1\0\0"),
@@ -126,7 +127,8 @@ protocol_registry!(
         (IrManifestEncoding, IrManifest, 5, b"heart.irmani.w1\0"),
         (CompilePublicationEncoding, CompilePublication, 6, b"heart.publish.w1"),
         (IrFragmentRangeEncoding, IrFragmentRange, 7, b"heart.irrange.w1"),
-        (IndexPackEncoding, IndexPack, 8, b"heart.idxpack.w1")
+        (IndexPackEncoding, IndexPack, 8, b"heart.idxpack.w1"),
+        (IrSemanticImageEncoding, IrSemanticImage, 9, b"heart.semir.w1\0\0")
     }
 );
 
@@ -141,7 +143,8 @@ mod tests {
         IrManifestEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
         OperationDomain, RootDomain, SourceFactDomain, StageKeyDomain, ToolchainDomain,
         DeclarationKeyDomain, DeclarationFamilyDomain, DeclarationVariantDomain,
-        ForeignDeclarationDomain, SemanticScopeDomain,
+        ForeignDeclarationDomain, IrSemanticImageDomain, IrSemanticImageEncoding,
+        SemanticScopeDomain,
     };
 
     #[test]
@@ -172,6 +175,7 @@ mod tests {
             DeclarationVariantDomain::TAG,
             ForeignDeclarationDomain::TAG,
             SemanticScopeDomain::TAG,
+            IrSemanticImageDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {
@@ -187,6 +191,7 @@ mod tests {
             CompilePublicationEncoding::TAG,
             IrFragmentRangeEncoding::TAG,
             IndexPackEncoding::TAG,
+            IrSemanticImageEncoding::TAG,
         ];
         for (index, encoding) in encodings.iter().enumerate() {
             for other in encodings.iter().skip(index + 1) {
