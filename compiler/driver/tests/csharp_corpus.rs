@@ -17,8 +17,8 @@ mod csharp_support;
 
 use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
-    CompiledFragment, ResolvedToolchain, SemanticAuthorityInput,
-    ToolchainSelection, compile, compile_ir,
+    CompiledFragment, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    compile_ir,
 };
 use compiler_ir::{DocFragmentInput, EntityKind, FragmentView, OccurrenceTarget, ReferenceKind};
 use compiler_publication::{
@@ -51,9 +51,6 @@ const DOWNLOAD_CAP: usize = 16 * 1024 * 1024;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60);
 /// The oracle run bound from the locked card.
 const ORACLE_DEADLINE: Duration = Duration::from_secs(120);
-/// The shared lane bound every fragment's occurrence plane admits; rows
-/// whose bound file resolves more references stop at the closed terminal.
-const OCCURRENCE_LANE_BOUND: usize = 1024;
 
 /// The documented second-generation probe: appended to a copy of the
 /// primary source, regenerated through the oracle, recompiled, and required
@@ -118,12 +115,6 @@ enum Expectation {
     /// The full journey completes: IR, fragment, publication, index, and a
     /// second generation.
     Full,
-    /// The bound primary resolves more compiler-resolved references than the
-    /// shared 1024-row occurrence lane admits, so the journey's exact typed
-    /// terminal is the lane's closed capacity rejection. `resolved` is the
-    /// reference count the produced authority image carries, verified
-    /// in-test through the public image reader before the compile runs.
-    OccurrenceCapacity { resolved: usize },
     /// The reopened fragment carries more entities than the shared exact/
     /// lexical index segment bound admits, so the journey's exact typed
     /// terminal is the index build's EntityLimit admission rejection —
@@ -297,12 +288,11 @@ const RAML_080_ROW: CorpusRow = CorpusRow {
 };
 
 /// esp-net-source 0.6.4 — largest `.cs`. Symbols read from
-/// `content/App_Packages/Esp.Net.0.6.4/Router.cs`. RED ROW: the bound file
-/// carries parameterless `void` executables (`Router` ctor,
-/// `PurgeEventQueues`), whose zero-children signature record panics the
-/// shared lane's write path at `lower.rs:1595`
-/// (`has_result.then_some(children[child_count - 1])` evaluates the index
-/// eagerly); until that one-line fix lands, the journey fails there.
+/// `content/App_Packages/Esp.Net.0.6.4/Router.cs`. The bound file's
+/// parameterless `void` executables (`Router` ctor, `PurgeEventQueues`)
+/// were the zero-children function-pointer panic at `lower.rs:1595`; the
+/// typed `Dangling` rejection and legal zero-arity path landed, and the
+/// row now completes the full journey.
 const ESP_NET_064_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.6.4",
     purl: "nuget:esp-net-source@0.6.4",
@@ -318,9 +308,9 @@ const ESP_NET_064_ROW: CorpusRow = CorpusRow {
 };
 
 /// esp-net-source 0.2.3 — largest `.cs`. Symbols read from
-/// `content/App_Packages/Esp.Net.0.2.3/Router.cs`. RED ROW: same
-/// parameterless-`void` lane panic as `ESP_NET_064_ROW` (`PurgeEventQueue`,
-/// `ThrowIfHalted`, `ThrowIfInvalidThread`, …).
+/// `content/App_Packages/Esp.Net.0.2.3/Router.cs` (`PurgeEventQueue`,
+/// `ThrowIfHalted`, `ThrowIfInvalidThread`, …). Was red on the same
+/// parameterless-`void` lane panic as `ESP_NET_064_ROW`; fixed with it.
 const ESP_NET_023_ROW: CorpusRow = CorpusRow {
     label: "esp-net-source 0.2.3",
     purl: "nuget:esp-net-source@0.2.3",
@@ -339,8 +329,8 @@ const ESP_NET_023_ROW: CorpusRow = CorpusRow {
 
 /// nullability.source 2.3.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
-/// RED ROW: same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`).
+/// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
+/// (`EnsureIsSupported`); fixed with it.
 const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.3.0",
     purl: "nuget:nullability.source@2.3.0",
@@ -358,8 +348,8 @@ const NULLABILITY_230_ROW: CorpusRow = CorpusRow {
 
 /// nullability.source 2.1.0 — largest `.cs`. Symbols read from
 /// `contentFiles/cs/netstandard2.0/Nullability.Source/NullabilityInfoContext.cs`.
-/// RED ROW: same parameterless-`void` lane panic as `ESP_NET_064_ROW`
-/// (`EnsureIsSupported`).
+/// Was red on the same parameterless-`void` lane panic as `ESP_NET_064_ROW`
+/// (`EnsureIsSupported`); fixed with it.
 const NULLABILITY_210_ROW: CorpusRow = CorpusRow {
     label: "nullability.source 2.1.0",
     purl: "nuget:nullability.source@2.1.0",
@@ -929,11 +919,6 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
     };
     match &row.expectation {
         Expectation::Full | Expectation::IndexEntityLimit { .. } => {}
-        Expectation::OccurrenceCapacity { resolved: expected } => {
-            if resolved != *expected {
-                return Err(TestError::Fact("occurrence capacity operand drifted"));
-            }
-        }
         Expectation::AttributeCapacity {
             declaration,
             spellings: expected,
@@ -949,9 +934,6 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
     // the shared 16-slot list stop before a fragment is emitted.
     let capacity_operand = match &row.expectation {
         Expectation::Full | Expectation::IndexEntityLimit { .. } => None,
-        Expectation::OccurrenceCapacity { .. } => Some(format!(
-            "{resolved} resolved references against the {OCCURRENCE_LANE_BOUND}-row occurrence lane"
-        )),
         Expectation::AttributeCapacity {
             declaration,
             spellings,
