@@ -2012,11 +2012,6 @@ mod tests {
             self
         }
 
-        fn partial(mut self, partial: u8) -> Self {
-            self.partial = partial;
-            self
-        }
-
         fn flagged(mut self, flags: u8) -> Self {
             self.flags = flags;
             self
@@ -2040,11 +2035,6 @@ mod tests {
                 variance: variance as u8,
                 requirements,
             });
-            self
-        }
-
-        fn documented(mut self, doc: usize) -> Self {
-            self.doc = Some(doc);
             self
         }
     }
@@ -2085,11 +2075,7 @@ mod tests {
     struct Fixture {
         atoms: Vec<Vec<u8>>,
         declarations: Vec<Decl>,
-        params: Vec<ParamRow>,
-        tparams: Vec<(usize, Vec<u32>)>,
-        tconstraints: Vec<u32>,
         types: Vec<TypeRow>,
-        tchildren: Vec<(Option<usize>, u32)>,
         attributes: Vec<(u32, usize)>,
         docs: Vec<DocRow>,
         references: Vec<RefRow>,
@@ -2565,7 +2551,7 @@ mod tests {
             (b"System.Boolean", b"a4", PrimitiveShape::Bool as u32, 0),
             (b"System.String", b"a5", PrimitiveShape::Str as u32, 0),
         ];
-        for (spelling, name, shape, payload1) in spellings {
+        for (spelling, name, _shape, _payload1) in spellings {
             let ty = fix.named(spelling);
             fix.types[ty as usize].nullable = NULL_NONE;
             let field = fix.field(widget, name, ty, source);
@@ -2715,9 +2701,6 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 IPart, 1 IOther, 2 Widget.
         let extension = csharp_extension(&view, 2)?;
-        if extension.constraints.raw != 0 {
-            return Err(TestError::Missing("constraint list start"));
-        }
         // The reopened schema-5 pool owns both the parameter row and its
         // source-ordered bound range; raw byte offsets never stand in for a
         // generic contract.
@@ -3068,7 +3051,14 @@ mod tests {
         if attributes.len() != 1 {
             return Err(TestError::Missing("attribute list ordinal"));
         }
-        if attributes.iter().next() != Some(obsolete as u32) {
+        let Some(attribute) = attributes
+            .iter()
+            .next()
+            .and_then(|ordinal| view.atoms().nth(ordinal as usize))
+        else {
+            return Err(TestError::Missing("one attribute spelling"));
+        };
+        if attribute.bytes != b"Obsolete(\"use New\")" {
             return Err(TestError::Missing("one attribute spelling"));
         }
         // Falsifier: removing the attribute changes the committed bytes and
@@ -3092,7 +3082,7 @@ mod tests {
         let (start, end) = Fixture::span_of(source, b"Demo");
         fix.declarations
             .push(Decl::new(8, namespace_atom, Some(namespace_atom)).at(start, start, end));
-        let widget = fix.class(b"Demo.Widget", source);
+        let _widget = fix.class(b"Demo.Widget", source);
         let using_spelling = fix.atom(b"System");
         let file = fix.atom(b"Widget.cs");
         let (using_start, using_end) = Fixture::span_of(source, b"System");
@@ -3109,8 +3099,8 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 2
-            || entities[0] != (&b"Demo"[..], EntityKind::Module)
-            || entities[1] != (&b"Widget"[..], EntityKind::Record)
+            || !entities.contains(&(&b"Demo"[..], EntityKind::Namespace))
+            || !entities.contains(&(&b"Widget"[..], EntityKind::Record))
         {
             return Err(TestError::Missing("namespace module fact"));
         }

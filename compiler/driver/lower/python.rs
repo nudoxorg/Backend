@@ -1967,12 +1967,7 @@ fn foreign_package<'source>(
         let Ok(lineage) = PackageLineage::new("pypi", name) else {
             return foreign_universe(module_spelling);
         };
-        if let Ok(key) = ForeignKey::new(
-            ForeignOrigin::Package(lineage),
-            path,
-            display,
-            None,
-        ) {
+        if let Ok(key) = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, None) {
             return Ok(OccurrenceTarget::Foreign(key));
         }
     }

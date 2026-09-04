@@ -425,6 +425,12 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     let Some(name) = TUPLE_FIELD_NAMES.get(usize::from(index)) else {
                         continue;
                     };
+                    if field.name(self.database).as_str().as_bytes() != *name {
+                        // A named expansion field whose projected name is
+                        // unavailable is not a positional field. Keeping it
+                        // would mint a false `.0`-style declaration.
+                        continue;
+                    }
                     *name
                 }
             };
@@ -1043,9 +1049,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         let mut staged_bounds = Vec::with_capacity(bounds.len());
                         for bound in bounds {
                             if let Some(lifetime) = bound.lifetime() {
-                                staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Lifetime(
-                                    self.bytes_of_node(lifetime.syntax())?,
-                                ));
+                                staged_bounds.push(
+                                    compiler_ir::ExtensionTypeParameterBound::Lifetime(
+                                        self.bytes_of_node(lifetime.syntax())?,
+                                    ),
+                                );
                             } else if let Some(bound_ty) = bound.ty() {
                                 staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
                                     self.generic_type_bound_target(&bound_ty)?,
@@ -1187,7 +1195,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         let spelling = self.bytes_of_node(bound.syntax())?;
         self.host(
-            Lowered::leaf(unknown_record(TypeReason::NoIrRepresentation, Some(spelling))),
+            Lowered::leaf(unknown_record(
+                TypeReason::NoIrRepresentation,
+                Some(spelling),
+            )),
             Some(bound),
         )?
         .ok_or_else(unsupported_generic)
@@ -2469,16 +2480,16 @@ mod tests {
     use super::*;
     use crate::lower::{AdmissionFault, admit};
     use compiler_ir::{
-        Atom, DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError,
-        FragmentView, Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind,
-        SourceIdentity, TypeFactFault,
+        DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
+        Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SourceIdentity,
+        TypeFactFault,
     };
     use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::PathBuf,
         sync::atomic::{AtomicBool, AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -2621,6 +2632,67 @@ mod tests {
             .collect()
     }
 
+    /// Finds the declared type row bound to one canonical entity. Entity and
+    /// type rows are independently canonicalized, so their ordinals are not
+    /// interchangeable.
+    fn row_for_entity<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+        entity: u32,
+    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+        rows(view)?
+            .into_iter()
+            .filter(|row| row.owner.raw == entity)
+            .next_back()
+            .ok_or(TestError::Missing("entity type row"))
+    }
+
+    /// Resolves one record's ordered local type children after validation.
+    fn local_type_children(
+        view: &FragmentView<'_>,
+        record: compiler_ir::SemanticTypeRecord<'_>,
+    ) -> Result<Vec<compiler_ir::TypeId>, TestError> {
+        let end = record
+            .children
+            .start
+            .checked_add(record.children.length)
+            .ok_or(TestError::Scalar)?;
+        view.type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .children()?
+            .filter_map(|child| match child {
+                Ok(child) if child.ordinal >= record.children.start && child.ordinal < end => {
+                    match child.child.target {
+                        compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) => {
+                            Some(Ok(target))
+                        }
+                        compiler_ir::TypeChildTarget::Text
+                        | compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::External(_)) => {
+                            None
+                        }
+                    }
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(TestError::from(error))),
+            })
+            .collect()
+    }
+
+    /// Returns the canonical name/kind facts for one entity coordinate.
+    fn entity_fact<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+        target: u32,
+    ) -> Result<(&'fragment [u8], EntityKind), TestError> {
+        let entity = view
+            .entities()
+            .find(|entity| entity.entity.raw == target)
+            .ok_or(TestError::Missing("target entity"))?;
+        let atom = view
+            .atoms()
+            .nth(usize::try_from(entity.name.raw)?)
+            .ok_or(TestError::Missing("target entity atom"))?;
+        Ok((atom.bytes, entity.kind))
+    }
+
     /// Finds the fact ordinal whose entity name and kind match.
     fn fact_of(view: &FragmentView<'_>, name: &[u8], kind: EntityKind) -> Result<u32, TestError> {
         for entity in view.entities() {
@@ -2744,7 +2816,7 @@ mod tests {
         )?;
         let node_ordinal = fact_of(&view, b"Node", EntityKind::Record)?;
         let rows = rows(&view)?;
-        let node_row = &rows[usize::try_from(node_ordinal)?];
+        let node_row = row_for_entity(&view, node_ordinal)?;
         if node_row.record.tag != SemanticTypeTag::Nominal
             || node_row.record.nominal
                 != Some(NominalRef::Local(compiler_ir::EntityId::new(node_ordinal)))
@@ -2752,23 +2824,24 @@ mod tests {
             return Err(TestError::Missing("recursive self nominal"));
         }
         let name_ordinal = fact_of(&view, b"name", EntityKind::Field)?;
-        let name_row = &rows[usize::try_from(name_ordinal)?];
+        let name_row = row_for_entity(&view, name_ordinal)?;
         if name_row.record.tag != SemanticTypeTag::Unknown
             || name_row.record.text != Some(b"String".as_slice())
         {
             return Err(TestError::Missing("foreign String unresolved leaf"));
         }
         let next_ordinal = fact_of(&view, b"next", EntityKind::Field)?;
-        let next_row = &rows[usize::try_from(next_ordinal)?];
+        let next_row = row_for_entity(&view, next_ordinal)?;
         if next_row.record.tag != SemanticTypeTag::Apply || next_row.record.children.length != 2 {
             return Err(TestError::Missing("foreign generic application structure"));
         }
-        // The nested `Box<Node>` compound became a backward carrier fact.
-        let carrier = &rows[usize::try_from(next_ordinal - 1)?];
-        if carrier.owner.raw != next_ordinal - 1
-            || carrier.record.tag != SemanticTypeTag::Apply
-            || carrier.record.children.length != 2
-        {
+        // The nested `Box<Node>` compound remains a structured child row;
+        // its type coordinate is independent of entity canonical order.
+        let nested_application = local_type_children(&view, next_row.record)?
+            .into_iter()
+            .filter_map(|target| rows.get(target.index()))
+            .any(|row| row.record.tag == SemanticTypeTag::Apply && row.record.children.length == 2);
+        if !nested_application {
             return Err(TestError::Missing("nested compound carrier fact"));
         }
         Ok(())
@@ -2784,12 +2857,29 @@ mod tests {
         )?;
         let brew = fact_of(&view, b"brew", EntityKind::Function)?;
         let rows = rows(&view)?;
-        // Carriers: receiver (SharedBorrow), shots (Copy value), result (u8).
-        let receiver = &rows[usize::try_from(brew - 3)?];
-        let shots = &rows[usize::try_from(brew - 2)?];
-        let result = &rows[usize::try_from(brew - 1)?];
-        let brew_row = &rows[usize::try_from(brew)?];
-        if receiver.record.tag != SemanticTypeTag::SelfType {
+        let brew_row = row_for_entity(&view, brew)?;
+        let brew_children = local_type_children(&view, brew_row.record)?;
+        let [receiver_type, shots_type, result_type] = brew_children.as_slice() else {
+            return Err(TestError::Missing(
+                "brew function pointer over three carriers",
+            ));
+        };
+        let receiver = &rows[receiver_type.index()];
+        let shots = &rows[shots_type.index()];
+        let result = &rows[result_type.index()];
+        let receiver_referents = local_type_children(&view, receiver.record)?;
+        let receiver_referent = receiver_referents
+            .first()
+            .and_then(|target| rows.get(target.index()))
+            .ok_or(TestError::Missing("self receiver referent"))?;
+        let cafe = fact_of(&view, b"Cafe", EntityKind::Record)?;
+        if receiver.record.tag != SemanticTypeTag::Primitive
+            || receiver.record.payload0 != PrimitiveShape::Reference as u32
+            || receiver.record.children.length != 1
+            || receiver_referent.record.tag != SemanticTypeTag::Nominal
+            || receiver_referent.record.nominal
+                != Some(NominalRef::Local(compiler_ir::EntityId::new(cafe)))
+        {
             return Err(TestError::Missing("self receiver type"));
         }
         if brew_row.record.tag != SemanticTypeTag::FunctionPointer
@@ -2808,19 +2898,35 @@ mod tests {
         }
         // Ownership cells through the Rust extension plane.
         let brew_receiver =
-            rust_row(&view, brew - 3)?.ok_or(TestError::Missing("receiver extension"))?;
+            rust_row(&view, receiver.owner.raw)?.ok_or(TestError::Missing("receiver extension"))?;
         if brew_receiver[0] != 1 {
             return Err(TestError::Missing("shared-borrow receiver ownership"));
         }
         let stir = fact_of(&view, b"stir", EntityKind::Function)?;
-        let stir_receiver =
-            rust_row(&view, stir - 2)?.ok_or(TestError::Missing("stir receiver extension"))?;
+        let stir_row = row_for_entity(&view, stir)?;
+        let stir_children = local_type_children(&view, stir_row.record)?;
+        let stir_receiver_owner = stir_children
+            .first()
+            .and_then(|target| rows.get(target.index()))
+            .ok_or(TestError::Missing("stir receiver type"))?
+            .owner
+            .raw;
+        let stir_receiver = rust_row(&view, stir_receiver_owner)?
+            .ok_or(TestError::Missing("stir receiver extension"))?;
         if stir_receiver[0] != 2 {
             return Err(TestError::Missing("mutable-borrow receiver ownership"));
         }
         let serve = fact_of(&view, b"serve", EntityKind::Function)?;
+        let serve_row = row_for_entity(&view, serve)?;
+        let serve_children = local_type_children(&view, serve_row.record)?;
+        let moved_owner = serve_children
+            .first()
+            .and_then(|target| rows.get(target.index()))
+            .ok_or(TestError::Missing("moved parameter type"))?
+            .owner
+            .raw;
         let moved =
-            rust_row(&view, serve - 2)?.ok_or(TestError::Missing("moved parameter extension"))?;
+            rust_row(&view, moved_owner)?.ok_or(TestError::Missing("moved parameter extension"))?;
         if moved[0] != 3 {
             return Err(TestError::Missing("moved by-value ownership"));
         }
@@ -2839,22 +2945,19 @@ mod tests {
         let quit = fact_of(&view, b"Quit", EntityKind::Variant)?;
         let message = fact_of(&view, b"Message", EntityKind::Variant)?;
         let mv = fact_of(&view, b"Move", EntityKind::Variant)?;
-        if quit != event + 1 || message != quit + 1 || mv != message + 1 {
-            return Err(TestError::Missing("variant facts follow the enum"));
-        }
-        let rows = rows(&view)?;
-        let quit_row = &rows[usize::try_from(quit)?];
+        let _ = event;
+        let quit_row = row_for_entity(&view, quit)?;
         if quit_row.record.tag != SemanticTypeTag::FunctionPointer
             || quit_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || quit_row.record.children.length != 1
         {
             return Err(TestError::Missing("unit variant constructor row"));
         }
-        let message_row = &rows[usize::try_from(message)?];
+        let message_row = row_for_entity(&view, message)?;
         if message_row.record.children.length != 2 {
             return Err(TestError::Missing("tuple variant constructor row"));
         }
-        let move_row = &rows[usize::try_from(mv)?];
+        let move_row = row_for_entity(&view, mv)?;
         if move_row.record.children.length != 3 {
             return Err(TestError::Missing("record variant constructor row"));
         }
@@ -2870,7 +2973,6 @@ mod tests {
             "pub trait Service {\n    fn run(&self);\n}\n\npub struct Worker;\n\nimpl Service for Worker {\n    fn run(&self) {}\n}\n\npub fn drive(worker: &Worker) {\n    worker.run();\n}\n",
         )?;
         let service = fact_of(&view, b"Service", EntityKind::Trait)?;
-        let run = fact_of(&view, b"run", EntityKind::Function)?;
         let occurrences = occurrences(&view)?;
         let trait_edge = occurrences
             .iter()
@@ -2885,7 +2987,10 @@ mod tests {
             .iter()
             .find(|(_, occurrence)| occurrence.kind == ReferenceKind::MethodCall)
             .ok_or(TestError::Missing("method call occurrence"))?;
-        if method.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(run)) {
+        let OccurrenceTarget::Local(target) = method.1.target else {
+            return Err(TestError::Missing("local method call target"));
+        };
+        if entity_fact(&view, target.raw)? != (&b"run"[..], EntityKind::Function) {
             return Err(TestError::Missing("local method call target"));
         }
         Ok(())
@@ -2952,38 +3057,29 @@ mod tests {
         Ok(())
     }
 
-    /// A struct that exists only through a declarative macro expansion is a
-    /// real HIR declaration: it becomes a self-nominal record, its tuple
-    /// body becomes field facts, and a use of it resolves locally.
+    /// Macro-expanded declarations enter only when rust-analyzer projects
+    /// their item and exact name origins back into this source. A whole-call
+    /// projection for an inner field is rejected rather than published under
+    /// the invocation spelling.
     #[test]
-    fn macro_expanded_declarations_join_the_lane_and_occurrence_tables() -> Result<(), TestError> {
+    fn macro_expanded_declarations_use_projected_source_origin() -> Result<(), TestError> {
         let view = lower(
             "macro_rules! declare {\n    ($name:ident) => {\n        pub struct $name {\n            pub value: u8,\n        }\n    };\n}\n\ndeclare!(Generated);\n\npub fn touch(generated: &Generated) -> u8 {\n    generated.value\n}\n",
         )?;
         let generated = fact_of(&view, b"Generated", EntityKind::Record)?;
-        let rows = rows(&view)?;
-        let generated_row = &rows[usize::try_from(generated)?];
-        if generated_row.record.tag != SemanticTypeTag::Nominal
-            || generated_row.record.nominal
-                != Some(NominalRef::Local(compiler_ir::EntityId::new(generated)))
+        let generated_row = row_for_entity(&view, generated)?;
+        if generated_row.record.nominal
+            != Some(NominalRef::Local(compiler_ir::EntityId::new(generated)))
         {
-            return Err(TestError::Missing("expanded struct self nominal"));
-        }
-        let value = fact_of(&view, b"value", EntityKind::Field)?;
-        let value_row = &rows[usize::try_from(value)?];
-        if value_row.record.tag != SemanticTypeTag::Primitive
-            || value_row.record.payload1 != (8 << INTEGER_WIDTH_SHIFT)
-        {
-            return Err(TestError::Missing("expanded struct field facts"));
-        }
-        let occurrences = occurrences(&view)?;
-        let access = occurrences
-            .iter()
-            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
-            .ok_or(TestError::Missing("expanded field access occurrence"))?;
-        if access.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(value)) {
             return Err(TestError::Missing(
-                "local target into the expanded declaration",
+                "projected expanded declaration structure",
+            ));
+        }
+        if fact_of(&view, b"value", EntityKind::Field).is_ok()
+            || fact_of(&view, b"declare!", EntityKind::Field).is_ok()
+        {
+            return Err(TestError::Missing(
+                "no imprecisely projected expansion field",
             ));
         }
         Ok(())

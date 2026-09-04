@@ -697,9 +697,16 @@ impl<'analysis> RustAuthority<'analysis> {
         if !item.is_local() {
             return;
         }
-        let name = name
-            .and_then(|name| self.projected_span(&name).ok())
-            .flatten();
+        let name = name.and_then(|name| {
+            let projected = self.projected_span(&name).ok().flatten()?;
+            let projected_bytes = self.source_at(projected).ok()?;
+            // `original_range` may conservatively map an expansion token to
+            // the complete invocation. Such a range proves an origin but not
+            // the declaration's exact name. Admit the coordinate only when
+            // its caller-source bytes equal the authority syntax spelling.
+            let authority_spelling = name.text().to_string();
+            (projected_bytes == authority_spelling.as_bytes()).then_some(projected)
+        });
         out.push(ModuleDeclaration {
             definition,
             item,

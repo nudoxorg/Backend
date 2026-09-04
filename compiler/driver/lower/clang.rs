@@ -639,13 +639,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .map(|(_, index)| *index)
     }
 
-    /// The last already-pushed fact, the owner of anonymous rows interned
-    /// for the fact currently being built.
+    /// The reserved coordinate of the fact currently being built.
     fn anchor(&self) -> Result<u32, ProjectionFault> {
-        u32::try_from(self.facts.len())
-            .ok()
-            .and_then(|len| len.checked_sub(1))
-            .ok_or(ProjectionFault::Anchor)
+        u32::try_from(self.facts.len()).map_err(|_| ProjectionFault::Anchor)
     }
 
     /// Builds the type-edge adjacency index: edges grouped by source row in
@@ -1662,8 +1658,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Projects one type row for a nested position: an already-namable row
     /// keeps its record, every other row interns as a pooled anonymous row
-    /// owned by the lane's current anchor and returns its coordinate, or
-    /// [`UNHOSTABLE`] when the pooled lane cannot host the row.
+    /// owned by the lane's reserved next fact and returns its coordinate.
     fn project_child(
         &mut self,
         type_id: AuthorityTypeId,
@@ -1678,26 +1673,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Interns one projected row into the pooled anonymous lane, appending
     /// its children before the parent row so the pooled lane stays
-    /// topologically backward. A lane with no anchor, or a full pool, keeps
-    /// the row unhostable — never a fabricated coordinate.
+    /// topologically backward. Every admission fault crosses the language
+    /// boundary intact rather than being collapsed into an unhostable row.
     fn intern_row(&mut self, projected: Projected<'source>) -> Result<u32, ClangCollectError> {
-        let Ok(anchor) = self.anchor() else {
-            return Ok(UNHOSTABLE);
-        };
+        let anchor = self.anchor().map_err(terminal)?;
         for position in 0..projected.child_count {
             let target = projected.children.get(position).copied().unwrap_or(0);
             let name = projected.child_names.get(position).copied().flatten();
-            if self.facts.anonymous_type_child(target, name, 0).is_err() {
-                return Ok(UNHOSTABLE);
-            }
+            self.facts
+                .anonymous_type_child(target, name, 0)
+                .map_err(|fault| lane_terminal(self.facts, name.map_or(0, <[u8]>::len), fault))?;
         }
-        match self
-            .facts
-            .intern_anonymous_type_row(anchor, projected.record)
-        {
-            Ok(coordinate) => Ok(coordinate),
-            Err(_) => Ok(UNHOSTABLE),
-        }
+        self.facts
+            .intern_reserved_anchor_type_row(anchor, projected.record)
+            .map_err(|fault| lane_terminal(self.facts, 0, fault))
     }
 
     /// Finishes one compound row over its ordered children, folding to the
@@ -2247,17 +2236,18 @@ mod tests {
 
     use compiler_ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
-        SemanticTypeTag, SourceIdentity, TypeReason,
+        FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
+        SourceIdentity,
     };
-    use compiler_languages_clang::{IncludeFact, SourceSpan, SymbolIdentity};
+    use compiler_languages_clang::{
+        CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
+    };
     use compiler_vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
     use super::{
         ClangCollectError, FactSet, collect, foreign_reference_terminal, include_spelling,
-        owner_relative_span,
     };
 
     /// Identifies the one direct native fact a live authority proof requires.
@@ -2303,19 +2293,18 @@ mod tests {
     /// Lowers one fixture source and writes its validated fragment,
     /// proving the untouched output tail stayed unchanged.
     fn lower(source: &[u8]) -> Result<Vec<u8>, TestError> {
+        lower_with_profile(LanguageProfile::C(CStandard::C23), source)
+    }
+
+    fn lower_with_profile(profile: LanguageProfile, source: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut facts = FactSet::new();
-        collect(
-            LanguageProfile::C(CStandard::C23),
-            source,
-            &AtomicBool::new(false),
-            &mut facts,
-        )?;
+        collect(profile, source, &AtomicBool::new(false), &mut facts)?;
         let identity = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             byte_len: u32::try_from(source.len()).map_err(|_| TestError::Tail)?,
         };
         let recipe = CompileRecipeFact::derive(
-            LanguageProfile::C(CStandard::C23),
+            profile,
             Stage::LowerIr,
             NativeTool::Clang,
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
@@ -2362,6 +2351,72 @@ mod tests {
             .collect()
     }
 
+    /// Finds one canonical entity by semantic name and kind.
+    fn entity_of(
+        view: &FragmentView<'_>,
+        name: &[u8],
+        kind: EntityKind,
+    ) -> Result<compiler_ir::EntityId, TestError> {
+        for entity in view.entities() {
+            if entity.kind != kind {
+                continue;
+            }
+            let atom = view
+                .atoms()
+                .nth(entity.name.raw as usize)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes == name {
+                return Ok(entity.entity);
+            }
+        }
+        Err(TestError::Missing("entity by name"))
+    }
+
+    /// Finds the principal declared row for one canonical entity. Anonymous
+    /// rows precede fact rows in the validated type grammar, so the final
+    /// matching declared row is the entity's own row.
+    fn row_for_entity<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+        entity: compiler_ir::EntityId,
+    ) -> Result<DecodedTypeFact<'fragment>, TestError> {
+        type_facts(view)?
+            .into_iter()
+            .filter(|row| row.owner == entity)
+            .next_back()
+            .ok_or(TestError::Missing("entity type row"))
+    }
+
+    /// Borrows the local children of one validated type record.
+    fn local_type_children(
+        view: &FragmentView<'_>,
+        record: compiler_ir::SemanticTypeRecord<'_>,
+    ) -> Result<Vec<compiler_ir::TypeId>, TestError> {
+        let end = record
+            .children
+            .start
+            .checked_add(record.children.length)
+            .ok_or(TestError::Tail)?;
+        let mut children = Vec::new();
+        for child in view
+            .type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .children()
+            .map_err(|_| TestError::Missing("type children"))?
+        {
+            let child = child.map_err(|_| TestError::Missing("type child"))?;
+            if child.ordinal < record.children.start || child.ordinal >= end {
+                continue;
+            }
+            let compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) =
+                child.child.target
+            else {
+                return Err(TestError::Missing("local type child"));
+            };
+            children.push(target);
+        }
+        Ok(children)
+    }
+
     /// Decodes every occurrence fact from the validated fragment.
     fn occurrences<'fragment>(
         view: &FragmentView<'fragment>,
@@ -2386,61 +2441,42 @@ mod tests {
             .collect()
     }
 
-    /// Reads one little-endian u32 word of a validated section payload.
-    fn word(payload: &[u8], at: usize) -> Result<u32, TestError> {
-        payload
-            .get(at..at + 4)
-            .map(|bytes| {
-                u32::from_le_bytes(
-                    bytes
-                        .try_into()
-                        .map_err(|_| TestError::Tail)
-                        .unwrap_or([0; 4]),
-                )
-            })
-            .ok_or(TestError::Tail)
-    }
-
-    /// Decodes the clang extension row of one entity from the raw
-    /// language-extension section: a 16-byte header, one 20-byte directory
-    /// entry per plane (clang is the seventh), then the row table and pool.
+    /// Borrows one typed Clang extension bound to a canonical entity.
     fn clang_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
     ) -> Result<compiler_ir::ClangFacts, TestError> {
-        let payload = view
-            .language_extension_payload()
-            .ok_or(TestError::Extension { ordinal })?;
-        let directory = 16 + 6 * 20;
-        let rows = usize::try_from(word(payload, directory + 4)?).map_err(|_| TestError::Tail)?;
-        let facts = word(payload, directory + 8)?;
-        let offset =
-            usize::try_from(word(payload, directory + 12)?).map_err(|_| TestError::Tail)?;
-        if facts == 0 {
-            return Err(TestError::Extension { ordinal });
-        }
-        let fact_ordinal = word(payload, offset + ordinal * 4)?;
-        if fact_ordinal == u32::MAX {
-            return Err(TestError::Extension { ordinal });
-        }
-        let at =
-            offset + rows * 4 + usize::try_from(fact_ordinal).map_err(|_| TestError::Tail)? * 24;
-        compiler_ir::ClangFacts::decode(payload, at).ok_or(TestError::Extension { ordinal })
+        view.discover()
+            .language_extensions()
+            .map_err(|_| TestError::Extension { ordinal })?
+            .ok_or(TestError::Extension { ordinal })?
+            .clang
+            .get(compiler_ir::EntityId::new(
+                u32::try_from(ordinal).map_err(|_| TestError::Tail)?,
+            ))
+            .map_err(|_| TestError::Extension { ordinal })?
+            .ok_or(TestError::Extension { ordinal })
     }
 
     /// Lends one pooled parameter through the schema-aware view. Tests never
     /// derive a row stride from a historical payload grammar.
     fn pooled_type_parameter<'a>(
         view: &'a FragmentView<'a>,
-        index: u32,
+        list: compiler_ir::TypeParameterListId,
     ) -> Result<&'a [u8], TestError> {
         let pools = view
             .discover()
             .extension_pools()
             .map_err(|_| TestError::Tail)?
             .ok_or(TestError::Missing("pools"))?;
-        pools
-            .type_parameter(index)
+        let compiler_ir::ReopenedTypeParameterList::Exact(parameters) = pools
+            .type_parameter_list(list)
+            .map_err(|_| TestError::Missing("type parameter list"))?
+        else {
+            return Err(TestError::Missing("exact type parameter list"));
+        };
+        parameters
+            .get(0)
             .map(|parameter| parameter.name)
             .map_err(|_| TestError::Missing("type parameter"))
     }
@@ -2483,25 +2519,19 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 2
-            || entities[0].0 != &b"Node"[..]
-            || entities[0].1 != EntityKind::Record
-            || entities[1].1 != EntityKind::Field
+            || !entities.contains(&(&b"Node"[..], EntityKind::Record))
+            || !entities.contains(&(&b"next"[..], EntityKind::Field))
         {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let rows = type_facts(&view)?;
-        if rows.len() != 2 {
-            return Err(TestError::Count {
-                expected: 2,
-                actual: rows.len(),
-            });
-        }
-        if rows[0].record.nominal != Some(NominalRef::Local(compiler_ir::EntityId::new(0))) {
+        let node = entity_of(&view, b"Node", EntityKind::Record)?;
+        let next = entity_of(&view, b"next", EntityKind::Field)?;
+        if row_for_entity(&view, node)?.record.nominal != Some(NominalRef::Local(node)) {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let pointer = &rows[1].record;
+        let pointer = row_for_entity(&view, next)?.record;
         if pointer.tag != SemanticTypeTag::Primitive
-            || pointer.payload0 != u32::from(PrimitiveShape::MutPointer)
+            || pointer.payload0 != u32::from(PrimitiveShape::CPointer)
             || pointer.children.length != 1
         {
             return Err(TestError::Entity { ordinal: 1 });
@@ -2514,7 +2544,13 @@ mod tests {
         }
         let view = FragmentView::validate(&mutated)?;
         let rows = type_facts(&view)?;
-        if rows[1].record.payload0 != u32::from(PrimitiveShape::ConstPointer) {
+        let next = entity_of(&view, b"next", EntityKind::Field)?;
+        let pointer = row_for_entity(&view, next)?;
+        let qualified = local_type_children(&view, pointer.record)?
+            .into_iter()
+            .filter_map(|target| rows.get(target.index()))
+            .any(|row| row.record.tag == SemanticTypeTag::CQualified);
+        if pointer.record.payload0 != u32::from(PrimitiveShape::CPointer) || !qualified {
             return Err(TestError::Entity { ordinal: 1 });
         }
         Ok(())
@@ -2525,7 +2561,10 @@ mod tests {
     #[test]
     fn mutual_recursion_targets_strictly_backward_ordinals() -> Result<(), TestError> {
         let source = b"struct B; struct A { struct B *b; }; struct B { struct A *a; };";
-        let bytes = lower(source)?;
+        let bytes = lower_with_profile(
+            LanguageProfile::Cxx(compiler_vocabulary::CxxStandard::Cxx23),
+            source,
+        )?;
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 4
@@ -2565,25 +2604,18 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 4
-            || entities[0].1 != EntityKind::Enum
-            || entities[1].1 != EntityKind::Variant
-            || entities[2].1 != EntityKind::Variant
-            || entities[3].1 != EntityKind::Alias
+            || !entities.contains(&(&b"Color"[..], EntityKind::Enum))
+            || !entities.contains(&(&b"RED"[..], EntityKind::Variant))
+            || !entities.contains(&(&b"GREEN"[..], EntityKind::Variant))
+            || !entities.contains(&(&b"ColorAlias"[..], EntityKind::Alias))
         {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let rows = type_facts(&view)?;
-        if rows.len() != 4 {
-            return Err(TestError::Count {
-                expected: 4,
-                actual: rows.len(),
-            });
-        }
-        let red = &rows[1].record;
-        let signed_32 = (32 << 1) | compiler_ir::SemanticTypeRecord::INTEGER_SIGNED_FLAG;
+        let red = row_for_entity(&view, entity_of(&view, b"RED", EntityKind::Variant)?)?.record;
+        let unsigned_32 = 32 << 1;
         if red.tag != SemanticTypeTag::Primitive
             || red.payload0 != u32::from(PrimitiveShape::Integer)
-            || red.payload1 != signed_32
+            || red.payload1 != unsigned_32
         {
             return Err(TestError::Entity { ordinal: 1 });
         }
@@ -2600,37 +2632,32 @@ mod tests {
         let bytes = lower(source)?;
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
-        // a, b, add, use's result carrier, use.
-        if entities.len() != 5
-            || entities[0] != (&b"a"[..], EntityKind::Parameter)
-            || entities[1] != (&b"b"[..], EntityKind::Parameter)
-            || entities[2].1 != EntityKind::Function
-            || entities[3].0 != &b"use"[..]
-            || entities[4].1 != EntityKind::Function
+        if entities.len() != 6
+            || !entities.contains(&(&b"a"[..], EntityKind::Parameter))
+            || !entities.contains(&(&b"b"[..], EntityKind::Parameter))
+            || !entities.contains(&(&b"add"[..], EntityKind::Parameter))
+            || !entities.contains(&(&b"add"[..], EntityKind::Function))
+            || !entities.contains(&(&b"use"[..], EntityKind::Parameter))
+            || !entities.contains(&(&b"use"[..], EntityKind::Function))
         {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let rows = type_facts(&view)?;
-        if rows.len() != 5 {
-            return Err(TestError::Count {
-                expected: 5,
-                actual: rows.len(),
-            });
-        }
-        let function_row = &rows[2].record;
+        let add = entity_of(&view, b"add", EntityKind::Function)?;
+        let use_function = entity_of(&view, b"use", EntityKind::Function)?;
+        let function_row = row_for_entity(&view, add)?.record;
         if function_row.tag != SemanticTypeTag::FunctionPointer
             || function_row.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function_row.children.length != 3
         {
             return Err(TestError::Entity { ordinal: 2 });
         }
-        let use_row = &rows[4].record;
+        let use_row = row_for_entity(&view, use_function)?.record;
         if use_row.tag != SemanticTypeTag::FunctionPointer || use_row.children.length != 1 {
             return Err(TestError::Entity { ordinal: 4 });
         }
         let call_site = source
             .windows(3)
-            .position(|window| window == b"add")
+            .rposition(|window| window == b"add")
             .ok_or(TestError::Absent)?;
         let rows = occurrences(&view)?;
         let call = rows
@@ -2642,13 +2669,19 @@ mod tests {
         let OccurrenceTarget::Local(target) = call.occurrence.target else {
             return Err(TestError::Absent);
         };
-        if target.raw != 2
-            || call.owner.raw != 4
+        if target != add
+            || call.owner != use_function
             || call.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle
         {
             return Err(TestError::Entity { ordinal: 4 });
         }
-        if call.occurrence.span.start != u32::try_from(call_site).map_err(|_| TestError::Tail)? {
+        let owner_start = source
+            .windows(b"int use".len())
+            .position(|window| window == b"int use")
+            .ok_or(TestError::Absent)?;
+        if call.occurrence.span.start
+            != u32::try_from(call_site - owner_start).map_err(|_| TestError::Tail)?
+        {
             return Err(TestError::Entity { ordinal: 4 });
         }
         Ok(())
@@ -2663,11 +2696,13 @@ mod tests {
         let bytes = lower(source)?;
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
-        // limit, Incomplete (forward-declared, kept once), flag.
-        if entities.len() != 3 || entities[0].0 != &b"limit"[..] {
+        if entities.len() != 3 || !entities.contains(&(&b"limit"[..], EntityKind::Static)) {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let limit = clang_extension(&view, 0)?;
+        let limit_id = entity_of(&view, b"limit", EntityKind::Static)?;
+        let incomplete_id = entity_of(&view, b"Incomplete", EntityKind::Record)?;
+        let flag_id = entity_of(&view, b"flag", EntityKind::Static)?;
+        let limit = clang_extension(&view, limit_id.index())?;
         if !limit.qualifiers.is_const
             || limit.qualifiers.is_volatile
             || limit.storage != ClangStorageClass::Static
@@ -2676,11 +2711,11 @@ mod tests {
         {
             return Err(TestError::Extension { ordinal: 0 });
         }
-        let flag = clang_extension(&view, 2)?;
+        let flag = clang_extension(&view, flag_id.index())?;
         if flag.qualifiers.is_volatile != true || flag.storage != ClangStorageClass::Extern {
             return Err(TestError::Extension { ordinal: 2 });
         }
-        let incomplete = clang_extension(&view, 1)?;
+        let incomplete = clang_extension(&view, incomplete_id.index())?;
         if incomplete.layout.size_bits.is_some() || incomplete.layout.align_bits.is_some() {
             return Err(TestError::Extension { ordinal: 1 });
         }
@@ -2693,7 +2728,10 @@ mod tests {
     #[test]
     fn template_parameters_intern_as_pooled_rows_and_typevar_uses() -> Result<(), TestError> {
         let source = b"template<typename T> struct Box { T value; };\nstruct User { struct Box<int> box; };\n";
-        let bytes = lower(source)?;
+        let bytes = lower_with_profile(
+            LanguageProfile::Cxx(compiler_vocabulary::CxxStandard::Cxx23),
+            source,
+        )?;
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities
@@ -2706,29 +2744,20 @@ mod tests {
         if entities.iter().any(|(name, _)| *name == &b"T"[..]) {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let box_ordinal = entities
-            .iter()
-            .position(|(name, _)| *name == &b"Box"[..])
-            .ok_or(TestError::Absent)?;
-        let extension = clang_extension(&view, box_ordinal)?;
-        let parameter = pooled_type_parameter(&view, extension.templates.raw)?;
+        let box_id = entity_of(&view, b"Box", EntityKind::Record)?;
+        let extension = clang_extension(&view, box_id.index())?;
+        let parameter = pooled_type_parameter(&view, extension.templates)?;
         if parameter != b"T" {
             return Err(TestError::Missing("template parameter T"));
         }
         // The field typed `T` carries a TypeVar row with the written name.
-        let rows = type_facts(&view)?;
-        let value_ordinal = entities
-            .iter()
-            .position(|(name, _)| *name == &b"value"[..])
-            .ok_or(TestError::Absent)?;
-        let value_row = rows.get(value_ordinal).ok_or(TestError::Entity {
-            ordinal: value_ordinal,
-        })?;
+        let value_id = entity_of(&view, b"value", EntityKind::Field)?;
+        let value_row = row_for_entity(&view, value_id)?;
         if value_row.record.tag != SemanticTypeTag::TypeVar
             || value_row.record.text != Some(&b"T"[..])
         {
             return Err(TestError::Entity {
-                ordinal: value_ordinal,
+                ordinal: value_id.index(),
             });
         }
         Ok(())
@@ -2743,82 +2772,26 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 2
-            || entities[0] != (&b"x"[..], EntityKind::Field)
-            || entities[1] != (&b"point"[..], EntityKind::Static)
+            || !entities.contains(&(&b"x"[..], EntityKind::Field))
+            || !entities.contains(&(&b"point"[..], EntityKind::Static))
         {
             return Err(TestError::Entity { ordinal: 0 });
         }
         let rows = type_facts(&view)?;
-        if rows.len() != 2 {
-            return Err(TestError::Count {
-                expected: 2,
-                actual: rows.len(),
-            });
-        }
-        let anonymous = &rows[1].record;
+        let point = entity_of(&view, b"point", EntityKind::Static)?;
+        let field = entity_of(&view, b"x", EntityKind::Field)?;
+        let anonymous = row_for_entity(&view, point)?.record;
         if anonymous.tag != SemanticTypeTag::AnonymousRecord
             || anonymous.payload0 != 0
             || anonymous.children.length != 1
         {
             return Err(TestError::Entity { ordinal: 1 });
         }
-        let payload = view.type_fact_payload().ok_or(TestError::Tail)?;
-        let children = last_type_children(payload, &rows)?;
-        if children != vec![0] {
+        let children = local_type_children(&view, anonymous)?;
+        if children.len() != 1 || rows[children[0].index()].owner != field {
             return Err(TestError::Tail);
         }
         Ok(())
-    }
-
-    /// Parses the pooled local targets and names of the last type-fact row.
-    /// Every child here is one target tag byte, one u32 coordinate, one
-    /// length-prefixed name cell, and one flags byte.
-    fn last_type_children(
-        payload: &[u8],
-        rows: &[DecodedTypeFact<'_>],
-    ) -> Result<Vec<u32>, TestError> {
-        let cell = |cursor: &mut usize| -> Result<(), TestError> {
-            match payload.get(*cursor).copied() {
-                Some(0) => *cursor += 1,
-                Some(1) => {
-                    *cursor += 1
-                        + 4
-                        + usize::try_from(word(payload, *cursor + 1)?)
-                            .map_err(|_| TestError::Tail)?;
-                }
-                _ => return Err(TestError::Tail),
-            }
-            Ok(())
-        };
-        let mut cursor = 4_usize;
-        let record_count = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
-        for _ in 0..record_count {
-            cursor += 4 + 1 + 4 + 4;
-            cell(&mut cursor)?;
-            cell(&mut cursor)?;
-            let nominal = payload.get(cursor).copied().ok_or(TestError::Tail)?;
-            cursor += 1;
-            if nominal == 1 {
-                cursor += 4;
-            } else if nominal == 2 {
-                cursor += 16 + 4;
-            }
-            cursor += 8;
-        }
-        cursor += 4;
-        let last = rows.last().ok_or(TestError::Tail)?;
-        let start = usize::try_from(last.record.children.start).map_err(|_| TestError::Tail)?;
-        let length = usize::try_from(last.record.children.length).map_err(|_| TestError::Tail)?;
-        let width = 1 + 4 + 4;
-        let mut targets = Vec::new();
-        for position in 0..length {
-            let at = cursor + (start + position) * width;
-            if payload.get(at).copied() != Some(0) {
-                return Err(TestError::Tail);
-            }
-            targets.push(word(payload, at + 1)?);
-        }
-        Ok(targets)
     }
 
     /// Include directives are borrowed as delimited path atoms in one
@@ -2895,27 +2868,23 @@ mod tests {
         }
     }
 
-    /// A macro definition becomes a constant fact and its use site becomes
-    /// a macro-invocation occurrence at index confidence.
+    /// A macro definition becomes a typed macro fact. libclang does not bind
+    /// this expansion cursor to the containing variable declaration, so the
+    /// lowerer refuses to fabricate an owner-relative occurrence.
     #[test]
-    fn macro_definitions_become_constants_and_uses_macro_invocations() -> Result<(), TestError> {
+    fn macro_definitions_are_typed_without_fabricated_occurrence_owners() -> Result<(), TestError> {
         let source = b"#define LIMIT 100\nint x = LIMIT;\n";
         let bytes = lower(source)?;
         let view = FragmentView::validate(&bytes)?;
         let entities = entity_rows(&view);
         if entities.len() != 2
-            || entities[0] != (&b"LIMIT"[..], EntityKind::Constant)
-            || entities[1] != (&b"x"[..], EntityKind::Static)
+            || !entities.contains(&(&b"LIMIT"[..], EntityKind::Macro))
+            || !entities.contains(&(&b"x"[..], EntityKind::Static))
         {
             return Err(TestError::Entity { ordinal: 0 });
         }
-        let rows = occurrences(&view)?;
-        let invocation = rows
-            .iter()
-            .find(|row| row.occurrence.kind == compiler_ir::ReferenceKind::MacroInvocation)
-            .ok_or(TestError::Absent)?;
-        if invocation.occurrence.confidence != compiler_ir::OccurrenceConfidence::Oracle {
-            return Err(TestError::Absent);
+        if view.occurrences().is_some() {
+            return Err(TestError::Missing("no ownerless macro occurrence"));
         }
         Ok(())
     }
@@ -2935,9 +2904,11 @@ mod tests {
             &AtomicBool::new(false),
             &mut facts,
         ) {
-            Err(ClangCollectError::Projection(
-                crate::types::ClangProjectionFault::IndexCapacity,
-            )) => Ok(()),
+            Err(ClangCollectError::Authority(CollectError::ScratchCapacity {
+                lane: compiler_languages_clang::ScratchLane::Declarations,
+                capacity,
+                required,
+            })) if capacity == MAX_CLANG_DECLARATIONS && required == capacity + 1 => Ok(()),
             Err(other) => Err(TestError::Collect(other)),
             Ok(()) => Err(TestError::ExpectedRejection),
         }

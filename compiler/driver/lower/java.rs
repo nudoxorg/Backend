@@ -339,7 +339,9 @@ const fn entity_kind(kind: DeclarationKind) -> EntityKind {
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
-        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => SemanticProductConstructor::PRODUCT,
+        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => {
+            SemanticProductConstructor::PRODUCT
+        }
         EntityKind::Trait => SemanticProductConstructor::INTERSECTION,
         EntityKind::Enum => SemanticProductConstructor::UNION,
         EntityKind::Constant
@@ -1008,8 +1010,9 @@ fn push_member<'source>(
     let kind = entity_kind(declared.kind);
     let anchor = type_anchor(facts, names, declared).map_err(terminal)?;
     let projected = match declared.semantic_type {
-        Some(reference) => project(facts, image, names, anchor, reference, DEPTH_LIMIT)
-            .map_err(terminal)?,
+        Some(reference) => {
+            project(facts, image, names, anchor, reference, DEPTH_LIMIT).map_err(terminal)?
+        }
         None => ProjectedType::leaf(unknown_record(TypeReason::Unannotated, None), None),
     };
     let fact = projected.attach(SemanticFact::new(
@@ -1049,8 +1052,8 @@ fn push_executable<'source>(
     let mut parameter_count = 0usize;
     let mut signature_count = 0usize;
     for parameter in symbol.parameters {
-        let projected = project(facts, image, names, anchor, parameter, DEPTH_LIMIT)
-            .map_err(terminal)?;
+        let projected =
+            project(facts, image, names, anchor, parameter, DEPTH_LIMIT).map_err(terminal)?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 kind: TypeKind::None,
@@ -1072,8 +1075,8 @@ fn push_executable<'source>(
     // Result carrier for non-void methods; constructors carry none.
     let mut result_ordinal = None;
     if !is_constructor && let Some(return_type) = declared.semantic_type {
-        let projected = project(facts, image, names, anchor, return_type, DEPTH_LIMIT)
-            .map_err(terminal)?;
+        let projected =
+            project(facts, image, names, anchor, return_type, DEPTH_LIMIT).map_err(terminal)?;
         if !projected.void {
             let name = projected.spelling.ok_or_else(|| {
                 terminal(ProjectionFault::Malformed {
@@ -1794,8 +1797,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
-    {
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections()
+    -> Result<(), TestError> {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2086,10 +2089,7 @@ mod tests {
     }
 
     /// Lends one pooled entity list through the schema-aware pool view.
-    fn entity_list<'a>(
-        view: &'a FragmentView<'a>,
-        ordinal: u32,
-    ) -> Result<Vec<u32>, TestError> {
+    fn entity_list<'a>(view: &'a FragmentView<'a>, ordinal: u32) -> Result<Vec<u32>, TestError> {
         let pools = view
             .discover()
             .extension_pools()
@@ -2375,9 +2375,7 @@ mod tests {
             return Err(TestError::Missing("generic application row"));
         }
         let array = row(&view, 3)?;
-        if array.record.tag != SemanticTypeTag::ArraySequence
-            || array.record.children.length != 1
-        {
+        if array.record.tag != SemanticTypeTag::ArraySequence || array.record.children.length != 1 {
             return Err(TestError::Missing("array arity row"));
         }
         let foreign_row = row(&view, 4)?;
@@ -2390,8 +2388,8 @@ mod tests {
     }
 
     #[test]
-    fn nested_sequence_arrays_keep_every_dimension_without_a_spelling_ceiling(
-    ) -> Result<(), TestError> {
+    fn nested_sequence_arrays_keep_every_dimension_without_a_spelling_ceiling()
+    -> Result<(), TestError> {
         let source = b"class Matrix { Node[][][][][][][][][] deep; }";
         let mut fix = Fixture::default();
         let matrix = fix.class(b"demo.Matrix");
@@ -2422,9 +2420,7 @@ mod tests {
         // Eight inner anonymous sequence rows precede the three declared
         // rows; the ninth, outer sequence is the `deep` field's own row.
         let deep = row(&view, 10)?;
-        if deep.record.tag != SemanticTypeTag::ArraySequence
-            || deep.record.children.length != 1
-        {
+        if deep.record.tag != SemanticTypeTag::ArraySequence || deep.record.children.length != 1 {
             return Err(TestError::Missing("outer nested sequence"));
         }
         for ordinal in 0..8 {

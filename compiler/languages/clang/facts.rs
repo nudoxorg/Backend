@@ -2,7 +2,7 @@
 //! All locations are exact half-open byte spans into the caller's input source slice.
 //! Recursive type structure is represented by fact and edge rows, never serialized strings.
 //!
-//! Authority lane geometry is 1024 rows: declarations and references feed the trunk's
+//! Authority lane geometry is 16,384 rows: declarations and references feed the trunk's
 //! `MAX_EMISSION_FACTS` and `MAX_EMISSION_OCCURRENCES` lanes respectively. Types and type edges
 //! feed the trunk fact/type-child lanes; diagnostics feed doc fragments; includes and overrides
 //! feed the extension/occurrence lanes. A filled lane retains only its typed slots on the caller's
@@ -13,13 +13,18 @@
 use core::mem::size_of;
 
 /// Shared trunk-class row geometry for every bounded Clang authority lane.
-pub const MAX_CLANG_FACTS: usize = 1024;
+///
+/// This matches the compiler driver's measured declaration ceiling: the
+/// target corpus reached 6,882 declarations in one translation unit, so the
+/// former 1,024-row authority boundary rejected valid source before the
+/// shared typed admission lane could apply its own capacity contract.
+pub const MAX_CLANG_FACTS: usize = 16_384;
 /// Declaration rows feed trunk `MAX_EMISSION_FACTS`.
 pub const MAX_CLANG_DECLARATIONS: usize = MAX_CLANG_FACTS;
 /// Recursive type rows feed trunk type facts; one declaration may own a
 /// nominal row plus nested pointer/element rows, so the lane keeps the
-/// historical four-times ratio and matches trunk's `MAX_TYPE_ROWS` (4096 =
-/// 1024 fact rows + 2048 anonymous + 1024 computed).
+/// historical four-times ratio and preserves capacity for nested native
+/// type graphs without truncation.
 pub const MAX_CLANG_TYPES: usize = 4 * MAX_CLANG_FACTS;
 /// Recursive type edges feed trunk type-child adjacency within
 /// `MAX_EMISSION_FACTS`; edges scale with type rows, keeping the same ratio.

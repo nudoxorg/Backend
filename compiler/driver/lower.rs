@@ -1800,16 +1800,6 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
-    /// Returns one authority-admitted declaration kind by its validated lane ordinal.
-    #[cfg(test)]
-    pub(super) fn kind_at(&self, ordinal: usize) -> Option<EntityKind> {
-        if ordinal >= self.len {
-            None
-        } else {
-            self.kinds.get(ordinal).copied()
-        }
-    }
-
     /// Materializes the owned semantic image directly from this exact
     /// admitted lane. The compact fragment and image therefore cannot
     /// diverge on declaration names, kinds, or primitive facts.

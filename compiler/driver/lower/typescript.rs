@@ -5,17 +5,17 @@
 //! Contains no token reconstruction, fallback collector, or declaration guessing.
 
 use compiler_ir::{
-    AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin,
-    LatticeMappedModifier, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
-    PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
-    SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
-    TypeParameterListId, TypeReason, TypeWidth,
+    AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
+    ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, LatticeMappedModifier,
+    NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
+    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
+    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_typescript::{
-    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    MappedModifier as CheckerMappedModifier, NodeId, Semantic, Span, SymbolFlags, SymbolId,
-    TemplatePart, SyntaxMappedModifier, TypeTree, Utf8Span, syntax_mapped_modifier, with_analysis,
+    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
+    MappedModifier as CheckerMappedModifier, NodeId, Origin, ReferenceFlags, Semantic, Span,
+    SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
+    syntax_mapped_modifier, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -1010,10 +1010,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 // substitution. Keep that ordered alternating sequence in the
                 // canonical child lane; `record.text` cannot represent it.
                 for (position, quasi) in template.quasis.iter().enumerate() {
-                    let text = self.slice_span(quasi.span).ok_or(TypeScriptCollectError::Span {
-                        start: quasi.span.start,
-                        end: quasi.span.end,
-                    })?;
+                    let text = self
+                        .slice_span(quasi.span)
+                        .ok_or(TypeScriptCollectError::Span {
+                            start: quasi.span.start,
+                            end: quasi.span.end,
+                        })?;
                     cells.push_child(u32::MAX, Some(text), 0)?;
                     if let Some(substitution) = template.types.get(position) {
                         let substitution_span = substitution.span();
@@ -1222,16 +1224,22 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             if let Some(mapped) = kind.as_ts_mapped_type() {
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Mapped);
-                cells.record.payload0 = syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.readonly));
-                cells.record.payload1 = syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.optional));
+                cells.record.payload0 =
+                    syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.readonly));
+                cells.record.payload1 =
+                    syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.optional));
                 cells.record.text = self.slice_span(mapped.key.span);
                 let constraint = mapped.constraint.span();
                 let constraint_target =
                     self.child_target(constraint.start, constraint.end, next_depth)?;
-                let name_as_target = mapped.name_type.as_ref().map(|name_type| {
-                    let span = name_type.span();
-                    self.child_target(span.start, span.end, next_depth)
-                }).transpose()?;
+                let name_as_target = mapped
+                    .name_type
+                    .as_ref()
+                    .map(|name_type| {
+                        let span = name_type.span();
+                        self.child_target(span.start, span.end, next_depth)
+                    })
+                    .transpose()?;
                 let value_target = match mapped.type_annotation.as_ref() {
                     Some(value) => {
                         let value_span = value.span();
@@ -2855,16 +2863,14 @@ fn intern_computed_tree<'source>(
         );
     }
     match tree {
-        TypeTree::This => {
-            match registry.source_spelling(spell, b"this", owner) {
-                Some(spelling) => {
-                    let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::SelfType);
-                    record.text = Some(spelling);
-                    intern_computed_leaf(facts, record, owner)
-                }
-                None => intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner),
+        TypeTree::This => match registry.source_spelling(spell, b"this", owner) {
+            Some(spelling) => {
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::SelfType);
+                record.text = Some(spelling);
+                intern_computed_leaf(facts, record, owner)
             }
-        }
+            None => intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner),
+        },
         TypeTree::TypeParameter { name } => {
             // A computed type parameter names the source spelling of its
             // declared generic parameter; the record text is sliced from
@@ -2938,7 +2944,8 @@ fn intern_computed_tree<'source>(
             readonly,
             optional,
         } => {
-            let constraint = intern_computed_tree(registry, facts, constraint, owner, depth, spell)?;
+            let constraint =
+                intern_computed_tree(registry, facts, constraint, owner, depth, spell)?;
             let name_as = name_as
                 .as_deref()
                 .map(|name_as| intern_computed_tree(registry, facts, name_as, owner, depth, spell))
@@ -2974,7 +2981,8 @@ fn intern_computed_tree<'source>(
             }
             for (position, part) in parts.iter().enumerate() {
                 if let TemplatePart::Text { text } = part {
-                    let Some(source_text) = registry.source_spelling(spell, text.as_bytes(), owner) else {
+                    let Some(source_text) = registry.source_spelling(spell, text.as_bytes(), owner)
+                    else {
                         return intern_computed_leaf(
                             facts,
                             unknown_record(TypeReason::OracleGap),

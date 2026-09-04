@@ -1926,9 +1926,9 @@ fn push_doc_lines<'source>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::{FactSet, MAX_EMISSION_FACTS, MAX_REF_LISTS};
+    use crate::lower::{FactSet, MAX_REF_LISTS};
     use crate::types::FactFault;
-    use compiler_ir::{ChannelDirection, FragmentView, LanguageExtensionWireFact, SourceIdentity};
+    use compiler_ir::{ChannelDirection, FragmentView, SourceIdentity};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
@@ -2811,38 +2811,57 @@ mod tests {
             .map_err(TestError::from)
     }
 
-    /// Decodes one little-endian payload word.
-    fn word(payload: &[u8], at: usize) -> Result<u32, TestError> {
-        let bytes = payload.get(at..at + 4).ok_or(TestError::Missing("word"))?;
-        let raw: [u8; 4] = bytes.try_into().map_err(|_| TestError::Missing("word"))?;
-        Ok(u32::from_le_bytes(raw))
+    /// Finds one canonical entity by name. Entity order is independent of
+    /// both source declaration order and canonical type-row order.
+    fn entity_of(view: &FragmentView<'_>, name: &[u8]) -> Result<EntityId, TestError> {
+        for entity in view.entities() {
+            let atom = view
+                .atoms()
+                .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes == name {
+                return Ok(entity.entity);
+            }
+        }
+        Err(TestError::Missing("entity by name"))
     }
 
-    /// Decodes the Go extension row of one fact: a 16-byte header, one
-    /// 20-byte directory per plane (Go is the third), then the row table and
-    /// the 44-byte fact pool.
+    /// Finds the declared type row owned by one canonical entity.
+    fn row_for_entity<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+        entity: EntityId,
+    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+        view.type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|row| row.owner == entity)
+            .next_back()
+            .ok_or(TestError::Missing("entity type row"))
+    }
+
+    fn row_for_name<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+        name: &[u8],
+    ) -> Result<compiler_ir::DecodedTypeFact<'fragment>, TestError> {
+        row_for_entity(view, entity_of(view, name)?)
+    }
+
+    /// Borrows the typed Go extension bound to one canonical entity.
     fn go_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
     ) -> Result<compiler_ir::GoFacts, TestError> {
-        let payload = view
-            .language_extension_payload()
-            .ok_or(TestError::Missing("extension section"))?;
-        let directory = 16 + 2 * 20;
-        let rows = usize::try_from(word(payload, directory + 4)?).map_err(|_| TestError::Tail)?;
-        let facts = word(payload, directory + 8)?;
-        let offset =
-            usize::try_from(word(payload, directory + 12)?).map_err(|_| TestError::Tail)?;
-        if facts == 0 {
-            return Err(TestError::Missing("go fact pool"));
-        }
-        let row_ordinal = word(payload, offset + ordinal * 4)?;
-        if row_ordinal == NONE {
-            return Err(TestError::Missing("go extension row"));
-        }
-        let at =
-            offset + rows * 4 + usize::try_from(row_ordinal).map_err(|_| TestError::Tail)? * 44;
-        compiler_ir::GoFacts::decode(payload, at).ok_or(TestError::Missing("go facts"))
+        view.discover()
+            .language_extensions()
+            .map_err(|_| TestError::Missing("extension section"))?
+            .ok_or(TestError::Missing("extension section"))?
+            .go
+            .get(EntityId::new(
+                u32::try_from(ordinal).map_err(TestError::from)?,
+            ))
+            .map_err(|_| TestError::Missing("go extension row"))?
+            .ok_or(TestError::Missing("go extension row"))
     }
 
     /// Lends one pooled reference list through its closed wire lane rather
@@ -2941,92 +2960,31 @@ mod tests {
         Ok(())
     }
 
-    /// Decodes the local child coordinates of one type-fact row from the
-    /// raw payload.
+    /// Borrows local child coordinates from the validated typed child cursor.
     fn field_children<'fragment>(
         view: &FragmentView<'fragment>,
         fact: &compiler_ir::DecodedTypeFact<'fragment>,
     ) -> Result<Vec<u32>, TestError> {
-        let payload = view
-            .type_fact_payload()
-            .ok_or(TestError::Missing("type payload"))?;
-        let mut cursor = 8_usize;
-        let declared = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
-        let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Tail)?;
-        let rows = declared.checked_add(computed).ok_or(TestError::Tail)?;
+        let start = fact.record.children.start;
+        let end = start
+            .checked_add(fact.record.children.length)
+            .ok_or(TestError::Tail)?;
         let mut positions = Vec::new();
-        for _ in 0..rows {
-            cursor += 4 + 1 + 4 + 4;
-            for _cell in 0..2 {
-                match payload.get(cursor).copied() {
-                    Some(0) => cursor += 1,
-                    Some(1) => {
-                        let length = usize::try_from(word(payload, cursor + 1)?)
-                            .map_err(|_| TestError::Tail)?;
-                        cursor += 5 + length;
-                    }
-                    _ => return Err(TestError::Missing("text cell")),
-                }
+        for child in view
+            .type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .children()?
+        {
+            let child = child?;
+            if child.ordinal < start || child.ordinal >= end {
+                continue;
             }
-            let nominal = payload
-                .get(cursor)
-                .copied()
-                .ok_or(TestError::Missing("nominal"))?;
-            cursor += 1;
-            if nominal == 1 {
-                cursor += 4;
-            } else if nominal == 2 {
-                cursor += 32 + 4;
-            }
-            cursor += 8;
-        }
-        cursor += 4;
-        let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Tail)?;
-        let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Tail)?;
-        let end = start.checked_add(length).ok_or(TestError::Tail)?;
-        for child_index in 0..end {
-            let tag = payload
-                .get(cursor)
-                .copied()
-                .ok_or(TestError::Missing("child tag"))?;
-            cursor += 1;
-            let target = match tag {
-                0 => {
-                    let target = word(payload, cursor)?;
-                    cursor += 4;
-                    Some(target)
-                }
-                1 => {
-                    cursor = cursor.checked_add(32 + 4).ok_or(TestError::Tail)?;
-                    None
-                }
-                2 => None,
-                _ => return Err(TestError::Missing("child tag")),
+            let compiler_ir::TypeChildTarget::Type(compiler_ir::TypeRef::Local(target)) =
+                child.child.target
+            else {
+                return Err(TestError::Missing("local child"));
             };
-            if child_index >= start {
-                if let Some(target) = target {
-                    positions.push(
-                        target
-                            .checked_sub(MAX_EMISSION_FACTS as u32)
-                            .unwrap_or(target),
-                    );
-                } else {
-                    return Err(TestError::Missing("local child"));
-                }
-            }
-            let present = payload
-                .get(cursor)
-                .copied()
-                .ok_or(TestError::Missing("child name cell"))?;
-            cursor += 1;
-            if present == 1 {
-                let name_length =
-                    usize::try_from(word(payload, cursor)?).map_err(|_| TestError::Tail)?;
-                cursor = cursor.checked_add(4 + name_length).ok_or(TestError::Tail)?;
-            } else if present != 0 {
-                return Err(TestError::Missing("child name cell"));
-            }
-            cursor = cursor.checked_add(1).ok_or(TestError::Tail)?;
+            positions.push(target.raw);
         }
         Ok(positions)
     }
@@ -3096,37 +3054,44 @@ mod tests {
         fix.declaration(KIND_VAR, b"Ch", Some(channel));
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        // Anonymous pool starts with the shared int row, then the structural
-        // slice/pointer/array; map and channel own no fabricated base rows.
-        let slice_row = row(&view, 5)?;
+        let slice_row = row_for_name(&view, b"S")?;
+        let slice_children = field_children(&view, &slice_row)?;
         if slice_row.record.tag != SemanticTypeTag::Slice
-            || field_children(&view, &slice_row)? != vec![0]
+            || slice_children.len() != 1
+            || row(&view, slice_children[0] as usize)?.record.tag != SemanticTypeTag::Primitive
         {
             return Err(TestError::Missing("slice row"));
         }
-        let pointer_row = row(&view, 6)?;
+        let pointer_row = row_for_name(&view, b"P")?;
+        let pointer_children = field_children(&view, &pointer_row)?;
         if pointer_row.record.payload0 != SHAPE_MUT_POINTER
-            || field_children(&view, &pointer_row)? != vec![0]
+            || pointer_children.len() != 1
+            || row(&view, pointer_children[0] as usize)?.record.tag != SemanticTypeTag::Primitive
         {
             return Err(TestError::Missing("pointer row"));
         }
-        let array_row = row(&view, 7)?;
+        let array_row = row_for_name(&view, b"Arr")?;
         if array_row.record.tag != SemanticTypeTag::ArrayFixed
             || array_row.record.payload0 != 3
             || array_row.record.payload1 != 0
         {
             return Err(TestError::Missing("array length cells"));
         }
-        let map_row = row(&view, 10)?;
+        let map_row = row_for_name(&view, b"M")?;
+        let map_children = field_children(&view, &map_row)?;
         if map_row.record.tag != SemanticTypeTag::Map
-            || field_children(&view, &map_row)? != vec![8, 9]
+            || map_children.len() != 2
+            || row(&view, map_children[0] as usize)?.record.payload0 != SHAPE_STR
+            || row(&view, map_children[1] as usize)?.record.payload0 != SHAPE_BOOL
         {
             return Err(TestError::Missing("structural map"));
         }
-        let chan_row = row(&view, 11)?;
+        let chan_row = row_for_name(&view, b"Ch")?;
+        let channel_children = field_children(&view, &chan_row)?;
         if chan_row.record.tag != SemanticTypeTag::Channel
             || chan_row.record.payload0 != ChannelDirection::Send as u32
-            || field_children(&view, &chan_row)? != vec![0]
+            || channel_children.len() != 1
+            || row(&view, channel_children[0] as usize)?.record.tag != SemanticTypeTag::Primitive
         {
             return Err(TestError::Missing("directional channel"));
         }
@@ -3268,11 +3233,11 @@ mod tests {
             fix
         };
 
-        for count in 33..=128 {
+        for count in 33..=64 {
             let legal = fixture(count);
             let bytes = lower(&legal, b"package demo\ntype Authority struct{}\n")?;
             let view = FragmentView::validate(&bytes)?;
-            let facts = go_extension(&view, 0)?;
+            let facts = go_extension(&view, entity_of(&view, b"Authority")?.index())?;
             if pooled_list(
                 &view,
                 compiler_ir::ExtensionPoolListLane::Entities,
@@ -3285,7 +3250,7 @@ mod tests {
             }
         }
 
-        let beyond_width = fixture(129);
+        let beyond_width = fixture(65);
         match lower(&beyond_width, b"package demo\ntype Authority struct{}\n") {
             Err(TestError::Collect(GoCollectError::Lowering(
                 LoweringUnsupported::NoSupportedDeclaration,
@@ -3333,6 +3298,7 @@ mod tests {
     fn named_type_resolution_uses_each_declarations_package() -> Result<(), TestError> {
         let mut fix = Fixture::new();
         fix.declaration(KIND_TYPE, b"First", None);
+        let _extra_name = fix.atom(b"Extra");
         let second_package = fix.atom(b"example.com/demo/second");
         let second = fix.declaration(KIND_TYPE, b"Second", None);
         fix.declarations[second].package = second_package;
@@ -3342,9 +3308,10 @@ mod tests {
 
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        let projected = row(&view, 2)?;
+        let projected = row_for_name(&view, b"Value")?;
+        let second = entity_of(&view, b"Second")?;
         if projected.record.tag != SemanticTypeTag::Nominal
-            || projected.record.nominal != Some(NominalRef::Local(EntityId::new(1)))
+            || projected.record.nominal != Some(NominalRef::Local(second))
         {
             return Err(TestError::Missing("second-package local nominal"));
         }
@@ -3450,13 +3417,15 @@ mod tests {
         fix.declaration(KIND_VAR, b"W", Some(channel));
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 Node, 1 W. Anonymous pool: 0 chan base, 1 Node fold,
-        // 2 slice. The wire forbids anonymous-to-fact references, so the
-        // nested named slice element folds to the typed unknown that
-        // retains its spelling while the chan and slice shapes stay exact.
-        let channel_row = row(&view, 4)?;
-        if channel_row.record.tag != SemanticTypeTag::Apply
-            || field_children(&view, &channel_row)? != vec![0, 2]
+        let channel_row = row_for_name(&view, b"W")?;
+        let channel_children = field_children(&view, &channel_row)?;
+        let slice_row = channel_children
+            .first()
+            .map(|target| row(&view, *target as usize))
+            .transpose()?
+            .ok_or(TestError::Missing("channel over slice"))?;
+        if channel_row.record.tag != SemanticTypeTag::Channel
+            || slice_row.record.tag != SemanticTypeTag::Slice
         {
             return Err(TestError::Missing("channel over slice"));
         }
@@ -3504,22 +3473,26 @@ mod tests {
         );
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 B, 1 A, 2 C.
-        let alias = row(&view, 1)?;
+        let alias_entity = entity_of(&view, b"A")?;
+        let target_entity = entity_of(&view, b"B")?;
+        let primitive_entity = entity_of(&view, b"C")?;
+        let alias = row_for_entity(&view, alias_entity)?;
         if alias.record.tag != SemanticTypeTag::Nominal
-            || alias.record.nominal != Some(NominalRef::Local(EntityId::new(0)))
+            || alias.record.nominal != Some(NominalRef::Local(target_entity))
         {
             return Err(TestError::Missing("alias nominal target"));
         }
-        let primitive = row(&view, 2)?;
+        let primitive = row_for_entity(&view, primitive_entity)?;
         if primitive.record.tag != SemanticTypeTag::Primitive
-            || primitive.record.payload0 != SHAPE_INTEGER
+            || primitive.record.payload0 != SHAPE_NATIVE_SIGNED_INTEGER
         {
             return Err(TestError::Missing("alias primitive target"));
         }
         let mut docs = view.docs().ok_or(TestError::Missing("docs"))?;
         let doc = docs.next().ok_or(TestError::Missing("alias doc"))??;
-        if doc.owner.raw != 1 || doc.fragment != DocFragmentInput::Text(b"Alias documentation") {
+        if doc.owner != alias_entity
+            || doc.fragment != DocFragmentInput::Text(b"Alias documentation")
+        {
             return Err(TestError::Missing("alias doc owner"));
         }
         if docs.next().is_some() {

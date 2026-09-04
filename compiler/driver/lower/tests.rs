@@ -3,10 +3,10 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
-    AtomListId, BuildError, ConcreteType, EntityId, EntityKind, EntityVersion, FragmentView, Occurrence,
-    CorePayloadHash, EntityAuthorityFacts, FactAvailability, ParentageAuthority, PrepareError,
-    PreparedFragment, ReopenedTypeParameterList, RustFacts,
-    RustOwnership, NominalRef, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
+    AtomListId, BuildError, ConcreteType, CorePayloadHash, EntityAuthorityFacts, EntityId,
+    EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
+    ParentageAuthority, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
+    RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
     TypeTriplePayload, VariadicForm, Visibility,
 };
@@ -16,14 +16,14 @@ use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 use super::{
-    AdmissionFault, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS, MAX_EMISSION_DOC_FRAGMENTS,
-    MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
-    EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
+    AdmissionFault, EmissionExtension, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS,
+    MAX_EMISSION_DOC_FRAGMENTS, MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS,
+    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
 use crate::types::{ParentageState, SourceSpanFact};
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
-const OUTPUT_CAPACITY: usize = 512;
+const OUTPUT_CAPACITY: usize = 1_024;
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -212,10 +212,8 @@ fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<
         computed_child_counts: facts.computed_child_counts[..facts.computed_rows].to_vec(),
         computed_child_targets: facts.computed_child_targets[..facts.computed_children_total]
             .to_vec(),
-        computed_child_names: facts.computed_child_names[..facts.computed_children_total]
-            .to_vec(),
-        computed_child_flags: facts.computed_child_flags[..facts.computed_children_total]
-            .to_vec(),
+        computed_child_names: facts.computed_child_names[..facts.computed_children_total].to_vec(),
+        computed_child_flags: facts.computed_child_flags[..facts.computed_children_total].to_vec(),
     }
 }
 
@@ -301,9 +299,7 @@ fn owned_topology_projection(facts: &FactSet<'_>) -> Result<OwnedTopologyProject
 
 /// Exact cold authority facts from the same owned-tree transaction. Tests use
 /// the public column views directly rather than a driver compatibility copy.
-fn owned_authority_projection(
-    facts: &FactSet<'_>,
-) -> Result<Vec<EntityAuthorityFacts>, TestError> {
+fn owned_authority_projection(facts: &FactSet<'_>) -> Result<Vec<EntityAuthorityFacts>, TestError> {
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
@@ -330,10 +326,7 @@ fn owned_authority_projection(
 }
 
 fn pending_plan() -> FactSet<'static> {
-    let mut plan = super::ResourcePlan::for_source(
-        LanguageProfile::Rust(RustEdition::Rust2024),
-        0,
-    );
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
     // Recovery falsifiers need only one declared owner, one observer, and a
     // reusable row in each pending lane; they must not reserve protocol-max
     // sidecars simply to demonstrate cursor rollback.
@@ -344,10 +337,7 @@ fn pending_plan() -> FactSet<'static> {
 }
 
 fn capacity_pending_plan() -> FactSet<'static> {
-    let mut plan = super::ResourcePlan::for_source(
-        LanguageProfile::Rust(RustEdition::Rust2024),
-        0,
-    );
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
     plan.facts = 2;
     plan.anonymous_rows = 1;
     plan.computed_rows = 1;
@@ -365,10 +355,7 @@ fn push_pending_seed(facts: &mut FactSet<'static>) -> Result<(), TestError> {
     Ok(())
 }
 
-fn push_anonymous_observer(
-    facts: &mut FactSet<'static>,
-    row: u32,
-) -> Result<(), TestError> {
+fn push_anonymous_observer(facts: &mut FactSet<'static>, row: u32) -> Result<(), TestError> {
     facts
         .push(
             SemanticFact::new(
@@ -423,8 +410,8 @@ fn admit_facts(facts: [SemanticFact<'static>; 2]) -> Result<FactSet<'static>, Te
 }
 
 #[test]
-fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
-) -> Result<(), TestError> {
+fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids() -> Result<(), TestError>
+{
     let mut facts = FactSet::new();
     facts
         .push(SemanticFact::new(
@@ -458,7 +445,11 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
         .map_err(rejected)?;
     // Carrier facts give callable elements their own names and semantic
     // roles. The shared function range retains both Go-style result labels.
-    for name in [b"argument".as_slice(), b"left".as_slice(), b"right".as_slice()] {
+    for name in [
+        b"argument".as_slice(),
+        b"left".as_slice(),
+        b"right".as_slice(),
+    ] {
         facts
             .push(SemanticFact::new(
                 EntityKind::Parameter,
@@ -476,12 +467,18 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
                 b"many",
                 SemanticProductConstructor::function(1, 2),
             )
+            .child(ProductChildRole::FunctionParameter, 3)
+            .child(ProductChildRole::FunctionResult, 4)
+            .child(ProductChildRole::FunctionResult, 5)
             .typed(many)
             .type_child(3, None, 0)
             .type_child(4, None, 0)
             .type_child(5, None, 0),
         )
         .map_err(rejected)?;
+    for child in [3_u32, 4, 5] {
+        facts.attach_parent(child, 6).map_err(lane_fault)?;
+    }
     facts
         .push(
             SemanticFact::new(
@@ -541,6 +538,7 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
             .type_child(10, None, 0),
         )
         .map_err(rejected)?;
+    facts.attach_parent(10, 11).map_err(lane_fault)?;
 
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
@@ -564,11 +562,20 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
         panic!("multi-result callable lost its function shape");
     };
     assert_eq!(variadic, VariadicForm::None);
-    assert_eq!(ir.tuple_elements(parameters).expect("parameter list").len(), 1);
+    assert_eq!(
+        ir.tuple_elements(parameters).expect("parameter list").len(),
+        1
+    );
     let results = ir.tuple_elements(results).expect("result list");
     assert_eq!(results.len(), 2);
-    assert_eq!(ir.atom(results[0].label.expect("left label")), Some(&b"left"[..]));
-    assert_eq!(ir.atom(results[1].label.expect("right label")), Some(&b"right"[..]));
+    assert_eq!(
+        ir.atom(results[0].label.expect("left label")),
+        Some(&b"left"[..])
+    );
+    assert_eq!(
+        ir.atom(results[1].label.expect("right label")),
+        Some(&b"right"[..])
+    );
     let single = ir
         .items()
         .find(|item| item.name() == b"single")
@@ -580,7 +587,10 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
     };
     let results = ir.tuple_elements(results).expect("single result list");
     assert_eq!(results.len(), 1);
-    assert_eq!(ir.atom(results[0].label.expect("single result label")), Some(&b"solo"[..]));
+    assert_eq!(
+        ir.atom(results[0].label.expect("single result label")),
+        Some(&b"solo"[..])
+    );
     let c_tail = ir
         .items()
         .find(|item| item.name() == b"c_tail")
@@ -994,8 +1004,8 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
 }
 
 #[test]
-fn empty_fact_list_writes_the_exact_current_schema_fragment_without_semantic_data() -> Result<(), TestError>
-{
+fn empty_fact_list_writes_the_exact_current_schema_fragment_without_semantic_data()
+-> Result<(), TestError> {
     let empty = FactSet::new();
     let mut output = [0xa5_u8; OUTPUT_CAPACITY];
     let length = super::admit(&empty, identity()?, recipe(), recipe().profile, &mut output)
@@ -1027,16 +1037,21 @@ fn empty_fact_list_writes_the_exact_current_schema_fragment_without_semantic_dat
 #[test]
 fn admitted_generic_extensions_reopen_exact_empty_and_nonempty_ranges() -> Result<(), TestError> {
     let mut facts = FactSet::new();
+    let empty_atoms = facts.intern_atom_list(&[]).map_err(lane_fault)?;
     let empty = RustFacts {
         ownership: RustOwnership::Value,
-        lifetimes: AtomListId::new(0),
+        lifetimes: empty_atoms,
         where_clauses: TypeParameterListId::new(0),
-        macros: AtomListId::new(0),
+        macros: empty_atoms,
     };
     facts
         .push(
-            SemanticFact::new(EntityKind::Alias, b"Empty", SemanticProductConstructor::PRODUCT)
-                .with_extension(EmissionExtension::Rust(empty)),
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"Empty",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .with_extension(EmissionExtension::Rust(empty)),
         )
         .map_err(rejected)?;
     facts
@@ -1107,8 +1122,8 @@ fn admitted_generic_extensions_reopen_exact_empty_and_nonempty_ranges() -> Resul
 }
 
 #[test]
-fn rejected_generic_fact_is_byte_for_byte_transactional_before_a_valid_push(
-) -> Result<(), TestError> {
+fn rejected_generic_fact_is_byte_for_byte_transactional_before_a_valid_push()
+-> Result<(), TestError> {
     let rust_extension = |parameter_start| {
         EmissionExtension::Rust(RustFacts {
             ownership: RustOwnership::Value,
@@ -1193,24 +1208,29 @@ fn parentage_transitions_are_closed_typed_and_idempotent() -> Result<(), TestErr
             .map_err(rejected)?;
     }
 
-    facts.attach_parent(2, 0).map_err(|cause| TestError::Rejected {
-        fact: 2,
-        name_len: b"child".len(),
-        cause,
-    })?;
+    facts
+        .attach_parent(2, 0)
+        .map_err(|cause| TestError::Rejected {
+            fact: 2,
+            name_len: b"child".len(),
+            cause,
+        })?;
     // A repeated authority observation is the sole legal no-op transition.
-    facts.attach_parent(2, 0).map_err(|cause| TestError::Rejected {
-        fact: 2,
-        name_len: b"child".len(),
-        cause,
-    })?;
+    facts
+        .attach_parent(2, 0)
+        .map_err(|cause| TestError::Rejected {
+            fact: 2,
+            name_len: b"child".len(),
+            cause,
+        })?;
     match facts.attach_parent(2, 1) {
         Err(FactFault::ConflictingParentage {
             entity,
             existing: ParentageState::Bound { parent },
-            requested: ParentageState::Bound {
-                parent: requested_parent,
-            },
+            requested:
+                ParentageState::Bound {
+                    parent: requested_parent,
+                },
         }) if entity == EntityId::new(2)
             && parent == EntityId::new(0)
             && requested_parent == EntityId::new(1) => {}
@@ -1227,16 +1247,20 @@ fn parentage_transitions_are_closed_typed_and_idempotent() -> Result<(), TestErr
         Ok(()) => return Err(TestError::UnexpectedPush),
     }
 
-    facts.mark_parentage_root(3).map_err(|cause| TestError::Rejected {
-        fact: 3,
-        name_len: b"root".len(),
-        cause,
-    })?;
-    facts.mark_parentage_root(3).map_err(|cause| TestError::Rejected {
-        fact: 3,
-        name_len: b"root".len(),
-        cause,
-    })?;
+    facts
+        .mark_parentage_root(3)
+        .map_err(|cause| TestError::Rejected {
+            fact: 3,
+            name_len: b"root".len(),
+            cause,
+        })?;
+    facts
+        .mark_parentage_root(3)
+        .map_err(|cause| TestError::Rejected {
+            fact: 3,
+            name_len: b"root".len(),
+            cause,
+        })?;
     match facts.attach_parent(3, 0) {
         Err(FactFault::ConflictingParentage {
             entity,
@@ -1267,12 +1291,16 @@ fn parentage_transitions_are_closed_typed_and_idempotent() -> Result<(), TestErr
 }
 
 #[test]
-fn provenance_is_exactly_transactional_and_members_require_complete_capture(
-) -> Result<(), TestError> {
+fn provenance_is_exactly_transactional_and_members_require_complete_capture()
+-> Result<(), TestError> {
     let mut candidate = FactSet::new();
     let mut control = FactSet::new();
     for name in [b"parent".as_slice(), b"child", b"empty"] {
-        let fact = SemanticFact::new(EntityKind::Constant, name, SemanticProductConstructor::PRODUCT);
+        let fact = SemanticFact::new(
+            EntityKind::Constant,
+            name,
+            SemanticProductConstructor::PRODUCT,
+        );
         candidate.push(fact).map_err(rejected)?;
         control.push(fact).map_err(rejected)?;
     }
@@ -1283,16 +1311,22 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
         return Err(TestError::Tail);
     };
 
-    candidate.attach_source_span(0, first_span).map_err(lane_fault)?;
+    candidate
+        .attach_source_span(0, first_span)
+        .map_err(lane_fault)?;
     // The only legal repeated source observation is byte-for-byte identical.
-    candidate.attach_source_span(0, first_span).map_err(lane_fault)?;
+    candidate
+        .attach_source_span(0, first_span)
+        .map_err(lane_fault)?;
     candidate.mark_parentage_root(0).map_err(lane_fault)?;
     candidate.mark_parentage_root(0).map_err(lane_fault)?;
     candidate.attach_parent(1, 0).map_err(lane_fault)?;
     candidate.attach_parent(1, 0).map_err(lane_fault)?;
     candidate.mark_parentage_root(2).map_err(lane_fault)?;
 
-    control.attach_source_span(0, first_span).map_err(lane_fault)?;
+    control
+        .attach_source_span(0, first_span)
+        .map_err(lane_fault)?;
     control.mark_parentage_root(0).map_err(lane_fault)?;
     control.attach_parent(1, 0).map_err(lane_fault)?;
     control.mark_parentage_root(2).map_err(lane_fault)?;
@@ -1323,7 +1357,9 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
     candidate.mark_members_captured(2).map_err(lane_fault)?;
     candidate.mark_members_captured(2).map_err(lane_fault)?;
     control.mark_members_captured(2).map_err(lane_fault)?;
-    if owned_authority_projection(&candidate)?.get(2).map(|row| row.members)
+    if owned_authority_projection(&candidate)?
+        .get(2)
+        .map(|row| row.members)
         != Some(FactAvailability::Captured)
     {
         return Err(TestError::Tail);
@@ -1362,7 +1398,7 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
     let expected = OwnedTopologyProjection {
         sources: vec![Some((1, 3)), None, None],
         parents: vec![None, Some(EntityId::new(0)), None],
-        members: vec![vec![EntityId::new(1)], vec![], vec![]],
+        members: vec![vec![], vec![], vec![]],
     };
     if transaction_state(&candidate) != transaction_state(&control)
         || write(&candidate)? != write(&control)?
@@ -1399,8 +1435,8 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
 }
 
 #[test]
-fn authority_facts_mark_empty_documentation_and_private_visibility_when_supplied(
-) -> Result<(), TestError> {
+fn authority_facts_mark_empty_documentation_and_private_visibility_when_supplied()
+-> Result<(), TestError> {
     let mut facts = FactSet::new();
     facts
         .push(
@@ -1412,11 +1448,13 @@ fn authority_facts_mark_empty_documentation_and_private_visibility_when_supplied
             .with_visibility(Visibility::Private),
         )
         .map_err(rejected)?;
-    facts.mark_documentation_captured(0).map_err(|cause| TestError::Rejected {
-        fact: 0,
-        name_len: b"documented".len(),
-        cause,
-    })?;
+    facts
+        .mark_documentation_captured(0)
+        .map_err(|cause| TestError::Rejected {
+            fact: 0,
+            name_len: b"documented".len(),
+            cause,
+        })?;
     facts
         .push(SemanticFact::new(
             EntityKind::Constant,
@@ -1443,8 +1481,7 @@ fn authority_facts_mark_empty_documentation_and_private_visibility_when_supplied
 }
 
 #[test]
-fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row(
-) -> Result<(), TestError> {
+fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row() -> Result<(), TestError> {
     // A failed append abandons the preceding valid child as well as the
     // invalid request, so the next row begins at a fresh reusable prefix.
     let mut candidate = pending_plan();
@@ -1491,7 +1528,8 @@ fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .anonymous_type_child(0, None, 0)
         .map_err(lane_fault)?;
-    match candidate.intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::SelfType))
+    match candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::SelfType))
     {
         Err(FactFault::TypeRecord(SemanticTypeFault::ChildCount {
             tag: SemanticTypeTag::SelfType,
@@ -1597,7 +1635,9 @@ fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .anonymous_type_child(0, None, 0)
         .map_err(lane_fault)?;
-    match candidate.intern_reserved_anchor_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
+    match candidate
+        .intern_reserved_anchor_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+    {
         Err(FactFault::RefTarget {
             lane: "reserved_type_rows",
             raw: 0,
@@ -1647,8 +1687,7 @@ fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row(
 }
 
 #[test]
-fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
-) -> Result<(), TestError> {
+fn computed_pending_rows_abort_each_failure_before_the_next_valid_row() -> Result<(), TestError> {
     // The text sentinel is a first-class computed child. An invalid sibling
     // must discard it, then the next template row commits only its new text.
     let mut candidate = pending_plan();
@@ -1670,12 +1709,20 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .computed_type_text_child(b"kept")
         .map_err(lane_fault)?;
-    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    control
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
     candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     control
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     recovered_pending_rows_match_control(&candidate, &control)?;
 
@@ -1701,12 +1748,20 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .computed_type_text_child(b"kept")
         .map_err(lane_fault)?;
-    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    control
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
     candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     control
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     recovered_pending_rows_match_control(&candidate, &control)?;
 
@@ -1717,15 +1772,12 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     push_pending_seed(&mut candidate)?;
     push_pending_seed(&mut control)?;
     candidate
-        .computed_type_child(
-            u32::MAX,
-            Some(b"discarded"),
-            SemanticTypeChild::FLAG_REST,
-        )
+        .computed_type_child(u32::MAX, Some(b"discarded"), SemanticTypeChild::FLAG_REST)
         .map_err(lane_fault)?;
-    match candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
-    {
+    match candidate.intern_computed_type_row(
+        0,
+        SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+    ) {
         Err(FactFault::TypeChild {
             position: 0,
             fault:
@@ -1741,12 +1793,20 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .computed_type_text_child(b"kept")
         .map_err(lane_fault)?;
-    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    control
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
     candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     control
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     recovered_pending_rows_match_control(&candidate, &control)?;
 
@@ -1759,9 +1819,10 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .computed_type_text_child(b"discarded")
         .map_err(lane_fault)?;
-    match candidate
-        .intern_computed_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
-    {
+    match candidate.intern_computed_type_row(
+        1,
+        SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+    ) {
         Err(FactFault::RefTarget {
             lane: "computed_owners",
             raw: 1,
@@ -1773,12 +1834,20 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     candidate
         .computed_type_text_child(b"kept")
         .map_err(lane_fault)?;
-    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    control
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
     candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     control
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     recovered_pending_rows_match_control(&candidate, &control)?;
 
@@ -1790,17 +1859,24 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
     push_pending_seed(&mut candidate)?;
     push_pending_seed(&mut control)?;
     candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     control
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .intern_computed_type_row(
+            0,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
         .map_err(lane_fault)?;
     candidate
         .computed_type_text_child(b"discarded")
         .map_err(lane_fault)?;
-    match candidate
-        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
-    {
+    match candidate.intern_computed_type_row(
+        0,
+        SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+    ) {
         Err(FactFault::ComputedRowCapacity) => {}
         Err(cause) => return Err(lane_fault(cause)),
         Ok(_) => return Err(TestError::UnexpectedPush),
@@ -1809,8 +1885,7 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
 }
 
 #[test]
-fn unique_type_edit_changes_payload_without_reminting_stable_identity(
-) -> Result<(), TestError> {
+fn unique_type_edit_changes_payload_without_reminting_stable_identity() -> Result<(), TestError> {
     let mut tuple = FactSet::new();
     tuple
         .push(
@@ -1842,8 +1917,7 @@ fn unique_type_edit_changes_payload_without_reminting_stable_identity(
 }
 
 #[test]
-fn provenance_member_addition_changes_parent_payload_without_reminting_parent(
-) -> Result<(), TestError> {
+fn attaching_parentage_does_not_fabricate_parent_product_members() -> Result<(), TestError> {
     let mut empty = FactSet::new();
     empty
         .push(SemanticFact::new(
@@ -1874,14 +1948,16 @@ fn provenance_member_addition_changes_parent_payload_without_reminting_parent(
 
     let empty = entity_versions(&empty)?;
     let member = entity_versions(&member)?;
-    if empty[0].identity() != member[0].identity() || empty[0].core_payload == member[0].core_payload {
+    if empty[0].identity() != member[0].identity()
+        || empty[0].core_payload != member[0].core_payload
+    {
         return Err(TestError::Tail);
     }
     Ok(())
 }
 
 #[test]
-fn bound_child_stable_identity_ignores_parent_payload_edits() -> Result<(), TestError> {
+fn bound_child_family_tracks_parent_variant_edits() -> Result<(), TestError> {
     let mut tuple_parent = FactSet::new();
     tuple_parent
         .push(
@@ -1928,7 +2004,9 @@ fn bound_child_stable_identity_ignores_parent_payload_edits() -> Result<(), Test
     let record_parent = entity_versions(&record_parent)?;
     if tuple_parent[0].family != record_parent[0].family
         || tuple_parent[0].core_payload == record_parent[0].core_payload
-        || tuple_parent[1].identity() != record_parent[1].identity()
+        || tuple_parent[1].family == record_parent[1].family
+        || tuple_parent[1].variant != record_parent[1].variant
+        || tuple_parent[1].core_payload != record_parent[1].core_payload
     {
         return Err(TestError::Tail);
     }
@@ -1936,41 +2014,48 @@ fn bound_child_stable_identity_ignores_parent_payload_edits() -> Result<(), Test
 }
 
 #[test]
-fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
-) -> Result<(), TestError> {
+fn overload_signatures_are_distinct_reorder_stable_and_nested_safe() -> Result<(), TestError> {
     let mut first = FactSet::new();
     first
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
         .map_err(rejected)?;
     first
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
         .map_err(rejected)?;
     let mut reversed = FactSet::new();
     reversed
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
         .map_err(rejected)?;
     reversed
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
         .map_err(rejected)?;
     let first_versions = entity_versions(&first)?;
     let reversed_versions = entity_versions(&reversed)?;
@@ -1993,20 +2078,24 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
         ))
         .map_err(rejected)?;
     nested
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
         .map_err(rejected)?;
     nested
-        .push(SemanticFact::new(
-            EntityKind::Function,
-            b"overload",
-            SemanticProductConstructor::PRODUCT,
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"overload",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)),
         )
-        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
         .map_err(rejected)?;
     nested.mark_parentage_root(0).map_err(lane_fault)?;
     nested.attach_parent(1, 0).map_err(lane_fault)?;
@@ -2019,8 +2108,8 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
 }
 
 #[test]
-fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants(
-) -> Result<(), TestError> {
+fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants()
+-> Result<(), TestError> {
     fn push_overload(
         facts: &mut FactSet<'static>,
         inner_tag: SemanticTypeTag,
@@ -2029,7 +2118,9 @@ fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants(
         let inner = facts
             .intern_reserved_anchor_type_row(owner, SemanticTypeRecord::leaf(inner_tag))
             .map_err(lane_fault)?;
-        facts.anonymous_type_child(inner, None, 0).map_err(lane_fault)?;
+        facts
+            .anonymous_type_child(inner, None, 0)
+            .map_err(lane_fault)?;
         let outer = facts
             .intern_reserved_anchor_type_row(
                 owner,
@@ -2096,8 +2187,7 @@ fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants(
 }
 
 #[test]
-fn recursive_signature_components_are_reorder_stable_without_row_tokens(
-) -> Result<(), TestError> {
+fn recursive_signature_components_are_reorder_stable_without_row_tokens() -> Result<(), TestError> {
     fn versions(reversed: bool) -> Result<Vec<EntityVersion>, TestError> {
         let names = if reversed {
             [b"right".as_slice(), b"left"]
@@ -2108,19 +2198,17 @@ fn recursive_signature_components_are_reorder_stable_without_row_tokens(
         for name in names {
             facts
                 .push(
-                    SemanticFact::new(
-                        EntityKind::Alias,
-                        name,
-                        SemanticProductConstructor::PRODUCT,
-                    )
-                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Nominal)),
+                    SemanticFact::new(EntityKind::Alias, name, SemanticProductConstructor::PRODUCT)
+                        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
                 )
                 .map_err(rejected)?;
         }
         // A hostile admitted-image mutant: producer admission disallows
         // forward local references, while the materializer still must hash a
         // pre-existing cyclic image without a recursive call or row token.
+        facts.type_records[0] = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
         facts.type_records[0].nominal = Some(NominalRef::Local(EntityId::new(1)));
+        facts.type_records[1] = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
         facts.type_records[1].nominal = Some(NominalRef::Local(EntityId::new(0)));
         facts.mark_parentage_root(0).map_err(lane_fault)?;
         facts.mark_parentage_root(1).map_err(lane_fault)?;
@@ -2138,19 +2226,14 @@ fn recursive_signature_components_are_reorder_stable_without_row_tokens(
 }
 
 #[test]
-fn recursive_signature_edges_retain_labelled_scc_topology(
-) -> Result<(), TestError> {
+fn recursive_signature_edges_retain_labelled_scc_topology() -> Result<(), TestError> {
     fn versions(edges: [u32; 3]) -> Result<Vec<EntityVersion>, TestError> {
         let mut facts = FactSet::new();
         for name in [b"alpha".as_slice(), b"beta", b"gamma"] {
             facts
                 .push(
-                    SemanticFact::new(
-                        EntityKind::Alias,
-                        name,
-                        SemanticProductConstructor::PRODUCT,
-                    )
-                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Nominal)),
+                    SemanticFact::new(EntityKind::Alias, name, SemanticProductConstructor::PRODUCT)
+                        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
                 )
                 .map_err(rejected)?;
         }
@@ -2159,6 +2242,7 @@ fn recursive_signature_edges_retain_labelled_scc_topology(
         // differs, so a component-wide marker without a target header would
         // incorrectly make the alpha variant identical.
         for (ordinal, target) in edges.into_iter().enumerate() {
+            facts.type_records[ordinal] = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             facts.type_records[ordinal].nominal = Some(NominalRef::Local(EntityId::new(target)));
             facts
                 .mark_parentage_root(u32::try_from(ordinal).map_err(|_| TestError::Tail)?)
@@ -2198,15 +2282,15 @@ fn unrelated_insertion_does_not_remint_unique_siblings() -> Result<(), TestError
     }
     let base = entity_versions(&base)?;
     let inserted = entity_versions(&inserted)?;
-    if base[0].identity() != inserted[1].identity() || base[1].identity() != inserted[2].identity() {
+    if base[0].identity() != inserted[1].identity() || base[1].identity() != inserted[2].identity()
+    {
         return Err(TestError::Tail);
     }
     Ok(())
 }
 
 #[test]
-fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
-) -> Result<(), TestError> {
+fn identical_sibling_collision_and_root_unavailable_scope_remain_exact() -> Result<(), TestError> {
     let mut identical = FactSet::new();
     for _ in 0..2 {
         identical
@@ -2221,8 +2305,9 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
             .map_err(rejected)?;
     }
     match entity_versions(&identical) {
-        Ok(_) => {}
-        Err(_) => return Err(TestError::Tail),
+        Err(TestError::Build(BuildError::DuplicateDeclarationIdentity { .. })) => {}
+        Err(error) => return Err(error),
+        Ok(_) => return Err(TestError::Tail),
     }
 
     let mut root = FactSet::new();
@@ -2245,8 +2330,7 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
     let unavailable_version = entity_versions(&unavailable)?;
     if root_version[0].family == unavailable_version[0].family
         || owned_authority_projection(&root)?[0].parentage != ParentageAuthority::Root
-        || owned_authority_projection(&unavailable)?[0].parentage
-            != ParentageAuthority::Unavailable
+        || owned_authority_projection(&unavailable)?[0].parentage != ParentageAuthority::Unavailable
     {
         return Err(TestError::Tail);
     }
