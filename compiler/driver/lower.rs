@@ -1569,8 +1569,13 @@ fn live_type<'source>(
                 .erase()
         }
         SemanticTypeTag::FunctionPointer => {
-            let has_result =
-                child_count > 0 && record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
+            let has_result = record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
+            if has_result && child_count == 0 {
+                return Err(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                });
+            }
             let parameter_count = child_count - usize::from(has_result);
             let mut elements = [TupleElement {
                 label: None,
@@ -1593,12 +1598,6 @@ fn live_type<'source>(
             }
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
             let result = if has_result {
-                if child_count == 0 {
-                    return Err(compiler_ir::BuildError::Dangling {
-                        space: compiler_ir::SemanticSpace::Type,
-                        raw: row,
-                    });
-                }
                 Some(children[child_count - 1])
             } else {
                 None
