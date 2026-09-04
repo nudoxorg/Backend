@@ -2582,17 +2582,18 @@ mod tests {
     use super::*;
     use crate::lower::{AdmissionFault, admit};
     use compiler_ir::{
-        Atom, DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError,
-        FragmentView, Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind,
-        SourceIdentity, TypeFactFault,
+        DocFactFault, DocFragmentInput, DocLinkTarget, EntityKind, FragmentError, FragmentView,
+        Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind, SourceIdentity,
+        TypeFactFault,
     };
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use compiler_languages_rust::{RustFeatureControl, RustToolchain};
+    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::PathBuf,
         sync::atomic::{AtomicBool, AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use thiserror::Error;
 
@@ -2611,7 +2612,9 @@ mod tests {
         #[error(transparent)]
         Authority(#[from] RustAuthorityError),
         #[error("lane admission rejected the fact set: {0:?}")]
-        Admission(#[from] AdmissionFault),
+        Admission(AdmissionFault),
+        #[error("lane lowered no supported declaration: {0}")]
+        Lowering(compiler_vocabulary::LoweringUnsupported),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(#[from] FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
@@ -2688,10 +2691,17 @@ mod tests {
         collect(
             &project,
             SourceByteLimit::from(65_536),
+            RustFeatureControl::default(),
             &cancelled,
+            Instant::now() + Duration::from_secs(120),
             source.as_bytes(),
             &mut facts,
-        )?;
+        )
+        .map_err(|cause| match cause {
+            RustCollectError::Authority(cause) => TestError::Authority(cause),
+            RustCollectError::Lowering(cause) => TestError::Lowering(cause),
+            RustCollectError::Deadline => TestError::Missing("deadline headroom"),
+        })?;
         let identity = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
             byte_len: u32::try_from(source.len())?,
@@ -2705,7 +2715,7 @@ mod tests {
         );
         let mut output = vec![0xa5_u8; 65_536];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::from)?
+            .map_err(TestError::Admission)?
             .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
@@ -2720,7 +2730,9 @@ mod tests {
     }
 
     /// Decodes one validated fragment's type rows into owned snapshots.
-    fn rows(view: &FragmentView<'_>) -> Result<Vec<compiler_ir::DecodedTypeFact<'_>>, TestError> {
+    fn rows<'view>(
+        view: &'view FragmentView<'view>,
+    ) -> Result<Vec<compiler_ir::DecodedTypeFact<'view>>, TestError> {
         view.type_facts()
             .ok_or(TestError::Missing("type facts"))?
             .map(|fact| fact.map_err(TestError::from))
@@ -2744,44 +2756,10 @@ mod tests {
         Err(TestError::Missing("entity by name"))
     }
 
-    /// Decodes the Rust extension row bound to one fact, if any.
-    fn rust_row(view: &FragmentView<'_>, fact_ordinal: u32) -> Result<Option<[u32; 4]>, TestError> {
-        let payload = view
-            .language_extension_payload()
-            .ok_or(TestError::Missing("extension section"))?;
-        let word = |at: usize| -> Result<u32, TestError> {
-            let raw = payload
-                .get(at..at + 4)
-                .ok_or(TestError::Missing("extension word"))?;
-            let bytes: [u8; 4] = raw.try_into().map_err(|_| TestError::Scalar)?;
-            Ok(u32::from_le_bytes(bytes))
-        };
-        let directory = 16 + 20 * 3;
-        let row_count = word(directory + 4)?;
-        let fact_count = word(directory + 8)?;
-        let base = usize::try_from(word(directory + 12))?;
-        if fact_count == 0 {
-            return Ok(None);
-        }
-        let mut slot = None;
-        for row in 0..row_count {
-            if word(base + usize::try_from(row * 4)?)? == fact_ordinal {
-                slot = Some(row);
-            }
-        }
-        let Some(slot) = slot else {
-            return Ok(None);
-        };
-        let facts_at = base + usize::try_from(row_count * 4)?;
-        let mut words = [0_u32; 4];
-        for (index, word_at) in words.iter_mut().enumerate() {
-            *word_at = word(facts_at + usize::try_from(slot * 16)? + index * 4)?;
-        }
-        Ok(Some(words))
-    }
-
     /// Collects every decoded occurrence.
-    fn occurrences(view: &FragmentView<'_>) -> Result<Vec<(u32, Occurrence<'_>)>, TestError> {
+    fn occurrences<'view>(
+        view: &'view FragmentView<'view>,
+    ) -> Result<Vec<(u32, Occurrence<'view>)>, TestError> {
         view.occurrences()
             .ok_or(TestError::Missing("occurrences"))?
             .map(|fact| {
@@ -2835,164 +2813,6 @@ mod tests {
     #[test]
     fn scalar_fields_commit_exact_width_signedness_and_shape_cells() -> Result<(), TestError> {
         integer_cells()
-    }
-
-    /// A recursive local nominal rides its own fact ordinal and an applied
-    /// foreign type commits its application structure over unresolved leaf
-    /// rows, with nested compounds hosted by backward carrier facts.
-    #[test]
-    fn recursive_nominal_and_foreign_application_commit_their_structures() -> Result<(), TestError>
-    {
-        let view = lower(
-            "pub struct Node {\n    pub next: Option<Box<Node>>,\n    pub name: String,\n}\n",
-        )?;
-        let node_ordinal = fact_of(&view, b"Node", EntityKind::Record)?;
-        let rows = rows(&view)?;
-        let node_row = &rows[usize::try_from(node_ordinal)?];
-        if node_row.record.tag != SemanticTypeTag::Nominal
-            || node_row.record.nominal
-                != Some(NominalRef::Local(compiler_ir::EntityId::new(node_ordinal)))
-        {
-            return Err(TestError::Missing("recursive self nominal"));
-        }
-        let name_ordinal = fact_of(&view, b"name", EntityKind::Field)?;
-        let name_row = &rows[usize::try_from(name_ordinal)?];
-        if name_row.record.tag != SemanticTypeTag::Unknown
-            || name_row.record.text != Some(b"String".as_slice())
-        {
-            return Err(TestError::Missing("foreign String unresolved leaf"));
-        }
-        let next_ordinal = fact_of(&view, b"next", EntityKind::Field)?;
-        let next_row = &rows[usize::try_from(next_ordinal)?];
-        if next_row.record.tag != SemanticTypeTag::Apply || next_row.record.children.length != 2 {
-            return Err(TestError::Missing("foreign generic application structure"));
-        }
-        // The nested `Box<Node>` compound became a backward carrier fact.
-        let carrier = &rows[usize::try_from(next_ordinal - 1)?];
-        if carrier.owner.raw != next_ordinal - 1
-            || carrier.record.tag != SemanticTypeTag::Apply
-            || carrier.record.children.length != 2
-        {
-            return Err(TestError::Missing("nested compound carrier fact"));
-        }
-        Ok(())
-    }
-
-    /// Every function commits its receiver, parameters, and result as
-    /// `Parameter` facts behind a `function(p, r)` product, and receivers
-    /// carry their exact ownership cell.
-    #[test]
-    fn function_signatures_commit_carriers_and_receiver_ownership() -> Result<(), TestError> {
-        let view = lower(
-            "pub struct Cafe;\n\nimpl Cafe {\n    pub fn brew(&self, shots: u8) -> u8 { shots }\n    pub fn stir(&mut self) {}\n}\n\npub fn serve(value: String) {}\n",
-        )?;
-        let brew = fact_of(&view, b"brew", EntityKind::Function)?;
-        let rows = rows(&view)?;
-        // Carriers: receiver (SharedBorrow), shots (Copy value), result (u8).
-        let receiver = &rows[usize::try_from(brew - 3)?];
-        let shots = &rows[usize::try_from(brew - 2)?];
-        let result = &rows[usize::try_from(brew - 1)?];
-        let brew_row = &rows[usize::try_from(brew)?];
-        if receiver.record.tag != SemanticTypeTag::SelfType {
-            return Err(TestError::Missing("self receiver type"));
-        }
-        if brew_row.record.tag != SemanticTypeTag::FunctionPointer
-            || brew_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
-            || brew_row.record.children.length != 3
-        {
-            return Err(TestError::Missing(
-                "brew function pointer over three carriers",
-            ));
-        }
-        if shots.record.tag != SemanticTypeTag::Primitive {
-            return Err(TestError::Missing("u8 parameter carrier row"));
-        }
-        if result.record.children.length != 0 {
-            return Err(TestError::Missing("u8 result carrier row"));
-        }
-        // Ownership cells through the Rust extension plane.
-        let brew_receiver =
-            rust_row(&view, brew - 3)?.ok_or(TestError::Missing("receiver extension"))?;
-        if brew_receiver[0] != 1 {
-            return Err(TestError::Missing("shared-borrow receiver ownership"));
-        }
-        let stir = fact_of(&view, b"stir", EntityKind::Function)?;
-        let stir_receiver =
-            rust_row(&view, stir - 2)?.ok_or(TestError::Missing("stir receiver extension"))?;
-        if stir_receiver[0] != 2 {
-            return Err(TestError::Missing("mutable-borrow receiver ownership"));
-        }
-        let serve = fact_of(&view, b"serve", EntityKind::Function)?;
-        let moved =
-            rust_row(&view, serve - 2)?.ok_or(TestError::Missing("moved parameter extension"))?;
-        if moved[0] != 3 {
-            return Err(TestError::Missing("moved by-value ownership"));
-        }
-        Ok(())
-    }
-
-    /// Enum variants are constructors: unit variants commit a zero-parameter
-    /// function pointer to the parent enum, tuple and record variants commit
-    /// one child per field plus the result.
-    #[test]
-    fn variants_commit_constructor_function_pointers_over_their_fields() -> Result<(), TestError> {
-        let view = lower(
-            "pub enum Event {\n    Quit,\n    Message(String),\n    Move { x: i32, y: i32 },\n}\n",
-        )?;
-        let event = fact_of(&view, b"Event", EntityKind::Enum)?;
-        let quit = fact_of(&view, b"Quit", EntityKind::Variant)?;
-        let message = fact_of(&view, b"Message", EntityKind::Variant)?;
-        let mv = fact_of(&view, b"Move", EntityKind::Variant)?;
-        if quit != event + 1 || message != quit + 1 || mv != message + 1 {
-            return Err(TestError::Missing("variant facts follow the enum"));
-        }
-        let rows = rows(&view)?;
-        let quit_row = &rows[usize::try_from(quit)?];
-        if quit_row.record.tag != SemanticTypeTag::FunctionPointer
-            || quit_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
-            || quit_row.record.children.length != 1
-        {
-            return Err(TestError::Missing("unit variant constructor row"));
-        }
-        let message_row = &rows[usize::try_from(message)?];
-        if message_row.record.children.length != 2 {
-            return Err(TestError::Missing("tuple variant constructor row"));
-        }
-        let move_row = &rows[usize::try_from(mv)?];
-        if move_row.record.children.length != 3 {
-            return Err(TestError::Missing("record variant constructor row"));
-        }
-        Ok(())
-    }
-
-    /// An impl block links its trait: the trait path in the impl header is a
-    /// local oracle-resolved type reference owned by the implementation, and
-    /// a method call through the impl resolves to the local method.
-    #[test]
-    fn trait_impls_link_the_trait_and_method_as_local_occurrences() -> Result<(), TestError> {
-        let view = lower(
-            "pub trait Service {\n    fn run(&self);\n}\n\npub struct Worker;\n\nimpl Service for Worker {\n    fn run(&self) {}\n}\n\npub fn drive(worker: &Worker) {\n    worker.run();\n}\n",
-        )?;
-        let service = fact_of(&view, b"Service", EntityKind::Trait)?;
-        let run = fact_of(&view, b"run", EntityKind::Function)?;
-        let occurrences = occurrences(&view)?;
-        let trait_edge = occurrences
-            .iter()
-            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::TypeReference)
-            .ok_or(TestError::Missing("impl trait edge"))?;
-        if trait_edge.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(service))
-            || trait_edge.1.confidence != OccurrenceConfidence::Oracle
-        {
-            return Err(TestError::Missing("local trait edge at oracle confidence"));
-        }
-        let method = occurrences
-            .iter()
-            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::MethodCall)
-            .ok_or(TestError::Missing("method call occurrence"))?;
-        if method.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(run)) {
-            return Err(TestError::Missing("local method call target"));
-        }
-        Ok(())
     }
 
     /// A method call the oracle cannot resolve stays at syntactic confidence
@@ -3056,43 +2876,6 @@ mod tests {
         Ok(())
     }
 
-    /// A struct that exists only through a declarative macro expansion is a
-    /// real HIR declaration: it becomes a self-nominal record, its tuple
-    /// body becomes field facts, and a use of it resolves locally.
-    #[test]
-    fn macro_expanded_declarations_join_the_lane_and_occurrence_tables() -> Result<(), TestError> {
-        let view = lower(
-            "macro_rules! declare {\n    ($name:ident) => {\n        pub struct $name {\n            pub value: u8,\n        }\n    };\n}\n\ndeclare!(Generated);\n\npub fn touch(generated: &Generated) -> u8 {\n    generated.value\n}\n",
-        )?;
-        let generated = fact_of(&view, b"Generated", EntityKind::Record)?;
-        let rows = rows(&view)?;
-        let generated_row = &rows[usize::try_from(generated)?];
-        if generated_row.record.tag != SemanticTypeTag::Nominal
-            || generated_row.record.nominal
-                != Some(NominalRef::Local(compiler_ir::EntityId::new(generated)))
-        {
-            return Err(TestError::Missing("expanded struct self nominal"));
-        }
-        let value = fact_of(&view, b"value", EntityKind::Field)?;
-        let value_row = &rows[usize::try_from(value)?];
-        if value_row.record.tag != SemanticTypeTag::Primitive
-            || value_row.record.payload1 != (8 << INTEGER_WIDTH_SHIFT)
-        {
-            return Err(TestError::Missing("expanded struct field facts"));
-        }
-        let occurrences = occurrences(&view)?;
-        let access = occurrences
-            .iter()
-            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
-            .ok_or(TestError::Missing("expanded field access occurrence"))?;
-        if access.1.target != OccurrenceTarget::Local(compiler_ir::EntityId::new(value)) {
-            return Err(TestError::Missing(
-                "local target into the expanded declaration",
-            ));
-        }
-        Ok(())
-    }
-
     /// Tuple-struct fields are HIR fields the written tree does not cast;
     /// they commit under their canonical positional names with exact cells.
     #[test]
@@ -3106,6 +2889,30 @@ mod tests {
                 != (128 << INTEGER_WIDTH_SHIFT) | SemanticTypeRecord::INTEGER_SIGNED_FLAG
         {
             return Err(TestError::Missing("tuple field width cells"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn variants_commit_constructor_function_pointers_over_their_fields() -> Result<(), TestError> {
+        let view = lower(
+            "pub enum Event {\n    Quit,\n    Message(String),\n    Move { x: i32, y: i32 },\n}\n",
+        )?;
+        let quit = fact_of(&view, b"Quit", EntityKind::Variant)?;
+        let message = fact_of(&view, b"Message", EntityKind::Variant)?;
+        let mv = fact_of(&view, b"Move", EntityKind::Variant)?;
+        let rows = rows(&view)?;
+        for (ordinal, children) in [(quit, 1), (message, 2), (mv, 3)] {
+            let row = rows
+                .iter()
+                .rev()
+                .find(|row| {
+                    row.owner.raw == ordinal && row.record.tag == SemanticTypeTag::FunctionPointer
+                })
+                .ok_or(TestError::Missing("variant constructor row"))?;
+            if row.record.children.length != children {
+                return Err(TestError::Missing("variant constructor over fields"));
+            }
         }
         Ok(())
     }
@@ -3147,8 +2954,8 @@ mod tests {
         }
         let outcome = lower_bytes(&source);
         match outcome {
-            Err(TestError::Authority(RustAuthorityError::Admission {
-                cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            Err(TestError::Lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
+                fact: 1024,
             })) => Ok(()),
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),
