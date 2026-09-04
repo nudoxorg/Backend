@@ -133,6 +133,17 @@ pub enum LanguageExtensionEncodeError {
         expected: usize,
         observed: usize,
     },
+    OrdinalCountMismatch {
+        rows: usize,
+        ordinals: usize,
+        facts: usize,
+    },
+    FactOrdinal {
+        plane: LanguageExtensionDirectoryKind,
+        row: u32,
+        fact: u32,
+        fact_count: usize,
+    },
     LengthOverflow,
 }
 
@@ -351,6 +362,9 @@ pub trait ExtensionSectionSource: Copy {
 
     /// Number of entity rows, including universally absent rows.
     fn row_count(&self) -> usize;
+    /// Number of physically materialized row ordinals. This is either zero
+    /// for universal absence or exactly [`Self::row_count`].
+    fn ordinal_count(&self) -> usize;
     /// The dense fact ordinal one row carries, or [`SECTION_NONE`] when the
     /// row carries no fact of this plane.
     fn fact_ordinal(&self, row: u32) -> u32;
@@ -364,9 +378,15 @@ pub const SECTION_NONE: u32 = u32::MAX;
 /// One borrowed sparse plane ready for section encoding.
 #[derive(Clone, Copy, Debug)]
 pub struct ExtensionSectionPlane<'a, Facts: Copy> {
+    /// Logical entity rows represented by this plane. Universally absent
+    /// planes keep this count while borrowing an empty ordinal slice, exactly
+    /// like the owned semantic sparse column.
+    pub entity_rows: usize,
     /// Dense fact pool addressed only by [`Self::row_ordinals`].
     pub facts: &'a [Facts],
-    /// One ordinal per entity row; [`SECTION_NONE`] marks an absent row.
+    /// One ordinal per entity row when any value exists. An empty slice with
+    /// nonzero `entity_rows` proves universal absence without allocating a
+    /// redundant sentinel lane.
     pub row_ordinals: &'a [u32],
 }
 
@@ -374,10 +394,17 @@ impl<'a, Facts: Copy> ExtensionSectionSource for ExtensionSectionPlane<'a, Facts
     type Facts = Facts;
 
     fn row_count(&self) -> usize {
+        self.entity_rows
+    }
+
+    fn ordinal_count(&self) -> usize {
         self.row_ordinals.len()
     }
 
     fn fact_ordinal(&self, row: u32) -> u32 {
+        if self.row_ordinals.is_empty() {
+            return SECTION_NONE;
+        }
         self.row_ordinals
             .get(usize::try_from(row).unwrap_or(usize::MAX))
             .copied()
@@ -396,6 +423,10 @@ impl<Facts: Copy, Space> ExtensionSectionSource
 
     fn row_count(&self) -> usize {
         self.ids.row_count()
+    }
+
+    fn ordinal_count(&self) -> usize {
+        self.ids.ordinals().len()
     }
 
     fn fact_ordinal(&self, row: u32) -> u32 {
@@ -481,6 +512,13 @@ where
     Cl: ExtensionSectionSource,
 {
     let rows = typescript.row_count();
+    validate_source(LanguageExtensionDirectoryKind::TypeScript, typescript, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::CSharp, csharp, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::Go, go, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::Rust, rust, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::Python, python, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::Java, java, rows)?;
+    validate_source(LanguageExtensionDirectoryKind::Clang, clang, rows)?;
     let views: [(LanguageExtensionDirectoryKind, usize, usize); PLANES] = [
         (
             LanguageExtensionDirectoryKind::TypeScript,
@@ -537,6 +575,44 @@ where
             .ok_or(LanguageExtensionEncodeError::LengthOverflow)?;
     }
     Ok(total)
+}
+
+fn validate_source<Source: ExtensionSectionSource>(
+    plane: LanguageExtensionDirectoryKind,
+    source: Source,
+    rows: usize,
+) -> Result<(), LanguageExtensionEncodeError> {
+    if source.row_count() != rows {
+        return Err(LanguageExtensionEncodeError::RowCountMismatch {
+            expected: rows,
+            observed: source.row_count(),
+        });
+    }
+    let facts = source.fact_slice().len();
+    let ordinals = source.ordinal_count();
+    if (facts == 0 && ordinals != 0) || (facts != 0 && ordinals != rows) {
+        return Err(LanguageExtensionEncodeError::OrdinalCountMismatch {
+            rows,
+            ordinals,
+            facts,
+        });
+    }
+    let rows = u32::try_from(rows)
+        .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+    let fact_count = u32::try_from(facts)
+        .map_err(|_| LanguageExtensionEncodeError::LengthOverflow)?;
+    for row in 0..rows {
+        let fact = source.fact_ordinal(row);
+        if fact != SECTION_NONE && fact >= fact_count {
+            return Err(LanguageExtensionEncodeError::FactOrdinal {
+                plane,
+                row,
+                fact,
+                fact_count: facts,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Encodes every typed sparse plane in canonical directory order into caller

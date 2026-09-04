@@ -4384,13 +4384,10 @@ pub(super) fn admit<'source, 'output>(
     let mut python_pool = Vec::with_capacity(extension_demand.python);
     let mut java_pool = Vec::with_capacity(extension_demand.java);
     let mut clang_pool = Vec::with_capacity(extension_demand.clang);
-    let mut typescript_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut csharp_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut go_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut rust_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut python_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut java_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut clang_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    // One source image has one closed language authority. The selected plane
+    // owns this aligned lane; the other six expose the same logical row count
+    // over an empty universal-absence slice.
+    let mut extension_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let any_extension = facts.extensions[..fact_count].iter().any(Option::is_some);
     for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
         match extension {
@@ -4410,7 +4407,7 @@ pub(super) fn admit<'source, 'output>(
                 rewritten.observed = rewritten
                     .observed
                     .map(|id| TypeId::new(remap_staged_type(id.raw)));
-                typescript_rows[ordinal] = next_extension_ordinal(&typescript_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&typescript_pool);
                 typescript_pool.push(rewritten);
             }
             Some(EmissionExtension::CSharp(value)) => {
@@ -4436,7 +4433,7 @@ pub(super) fn admit<'source, 'output>(
                     rewritten.xml_provenance =
                         compiler_ir::SourceSpan::new(file, span.start(), span.end());
                 }
-                csharp_rows[ordinal] = next_extension_ordinal(&csharp_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&csharp_pool);
                 csharp_pool.push(rewritten);
             }
             Some(EmissionExtension::Go(value)) => {
@@ -4449,7 +4446,7 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                go_rows[ordinal] = next_extension_ordinal(&go_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&go_pool);
                 go_pool.push(rewritten);
             }
             Some(EmissionExtension::Rust(value)) => {
@@ -4462,15 +4459,15 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                rust_rows[ordinal] = next_extension_ordinal(&rust_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&rust_pool);
                 rust_pool.push(rewritten);
             }
             Some(EmissionExtension::Python(value)) => {
-                python_rows[ordinal] = next_extension_ordinal(&python_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&python_pool);
                 python_pool.push(*value);
             }
             Some(EmissionExtension::Java(value)) => {
-                java_rows[ordinal] = next_extension_ordinal(&java_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&java_pool);
                 java_pool.push(*value);
             }
             Some(EmissionExtension::Clang(value)) => {
@@ -4483,7 +4480,7 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                clang_rows[ordinal] = next_extension_ordinal(&clang_pool);
+                extension_rows[ordinal] = next_extension_ordinal(&clang_pool);
                 clang_pool.push(rewritten);
             }
             None => {}
@@ -4591,32 +4588,39 @@ pub(super) fn admit<'source, 'output>(
     let extension_section = (any_extension).then(|| ExtensionSectionInput {
         authority: compiler_ir::SemanticImageAuthority::Language(profile),
         typescript: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &typescript_pool,
-            row_ordinals: &typescript_rows[..fact_count],
+            row_ordinals: if typescript_pool.is_empty() { &[] } else { &extension_rows },
         },
         csharp: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &csharp_pool,
-            row_ordinals: &csharp_rows[..fact_count],
+            row_ordinals: if csharp_pool.is_empty() { &[] } else { &extension_rows },
         },
         go: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &go_pool,
-            row_ordinals: &go_rows[..fact_count],
+            row_ordinals: if go_pool.is_empty() { &[] } else { &extension_rows },
         },
         rust: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &rust_pool,
-            row_ordinals: &rust_rows[..fact_count],
+            row_ordinals: if rust_pool.is_empty() { &[] } else { &extension_rows },
         },
         python: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &python_pool,
-            row_ordinals: &python_rows[..fact_count],
+            row_ordinals: if python_pool.is_empty() { &[] } else { &extension_rows },
         },
         java: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &java_pool,
-            row_ordinals: &java_rows[..fact_count],
+            row_ordinals: if java_pool.is_empty() { &[] } else { &extension_rows },
         },
         clang: ExtensionSectionPlane {
+            entity_rows: fact_count,
             facts: &clang_pool,
-            row_ordinals: &clang_rows[..fact_count],
+            row_ordinals: if clang_pool.is_empty() { &[] } else { &extension_rows },
         },
     });
 
