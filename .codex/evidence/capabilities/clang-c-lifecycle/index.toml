@@ -3,15 +3,15 @@ capability_id = "clang-c-lifecycle"
 state = "phase-rendering-and-lifecycle-landed-corpus-open"
 baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
 baseline_tree = "per-file digests in brief.md (pre-worktree-protocol freeze)"
-candidate_commit = "9159ed7a5"
+candidate_commit = "post-closure-review R1; see closure.md and codex/fidelity-clang history"
 candidate_tree = "luna/clang-lifecycle worktree; lane-owned surfaces committed, other lanes' in-flight work preserved uncommitted"
 testing_path = ""
 testing_sha256 = ""
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/clang-c-lifecycle/brief.md", sha256 = "3d24e957cb22cbb1eecd92212cecece98af5b11cd72d65ce9e59feb4ec41d048" }
-matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "updated 2026-09-02, see git history 849eb5f3c+" }
-research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "updated 2026-09-02, see git history" }
+matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "79b5c890238db0f4f2aa28af2adda9508729bc2eb3fe53e8b42d03af3ba43fb1" }
+research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "030860dff52ab8d4fdd1264574eb89582e96aef8e3ed6ccba9f05304db040a25" }
 closure = { path = ".codex/evidence/capabilities/clang-c-lifecycle/closure.md", sha256 = "" }
 
 # Worker custody is recorded per card in cards/*.md; digests at dispatch time are in
@@ -196,4 +196,15 @@ ingest = "Worker delivered the full-lifecycle skeleton (publish gen-1 -> shutdow
 task = "done"
 role = "nudox_terra_reviewer"
 card = "closure review"
-state = "planned at candidate 0534cc968"
+state = "returned: 5 majors / 5 minors / 1 question / 7 cleared suspicions; verdict NOT merge-ready pending R1"
+result = "All 5 majors accepted and repaired (06347bf4 + Terra falsifiers); minors m7/m9/m10/q11 fixed, m6/m8 recorded as documented bounds/adaptations. Reviewer independently cleared the replay mirror, cause preservation, cancellation discipline, corpus evidence authenticity, and boundary mixing."
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "R1-review (reviewer repairs M1-M5 + m7)"
+card_sha256 = "83e0a5f7a46c4646117031b503ba2d78f7b403d9a026c0d75e27604f6bc07c76"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/lower/clang.rs", "compiler/driver/database.rs", "compiler/driver/tests/build_drive.rs", "compiler/driver/tests/clang_lane.rs", "compiler/driver/types/compile.rs (forced exhaustive-match arm)"]
+baseline = "9ea191544"
+result_commit = "06347bf4"
+ingest = "Product fixes verified by Terra diff-read: M1 redirection-target lookahead, M2 from_utf8 with typed Json rejection, M3 classify-before-capacity (make + compdb), M4 exact ChildCapacity rejection replacing min(), M5 Admission variant + exact public terminals on both compile paths, m7 directory stack. Terra authored the six falsifiers the worker deferred (separated-redirection, 300-word link selection, 304-arg exact capacity, nested 3-level make, cafe UTF-8 path, 17-parameter signature rejection, 64-byte-output admission cause). types/compile.rs deviation from the card's read-only rule was FORCED by the exhaustive match on the new enum arm and mirrors the profile path's exact mapping - accepted. Gates green twice; corpus re-run twice green (293,568,512 / 281,837,568 bytes RSS)."

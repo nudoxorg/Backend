@@ -1329,11 +1329,149 @@ fn include_list_over_the_pooled_bound_names_the_exact_cause() -> Result<(), Test
                 return Err(TestError::Check("wrong pooled-bound cause"));
             }
         }
-        Err(other) => return Err(TestError::Check("wrong pooled-bound terminal")),
+        Err(_) => return Err(TestError::Check("wrong pooled-bound terminal")),
         Ok(_) => return Err(TestError::Check("pooled-bound wall admitted")),
     }
     if !output.iter().all(|byte| *byte == 0xa5) {
         return Err(TestError::Check("rejected compile touched the output"));
+    }
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
+}
+
+/// A function whose signature exceeds the lane's fixed child width is an
+/// exact typed rejection — never a silently shortened signature. Sixteen
+/// parameters remain representable; seventeen cross the lane and name the
+/// cause.
+#[test]
+fn signature_beyond_the_child_width_is_an_exact_rejection() -> Result<(), TestError> {
+    use compiler_driver::{DatabaseCompileFailure, compile_database_translation_unit};
+    use std::path::Path;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{nonce}-{serial}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let mut source = String::new();
+    let mut call_arguments = String::new();
+    for index in 0..17u32 {
+        source.push_str(&format!("int parameter_{index};\n"));
+        if index > 0 {
+            call_arguments.push_str(", ");
+        }
+        call_arguments.push_str(&format!("parameter_{index}"));
+    }
+    source.push_str(&format!(
+        "int wide({args}) {{ return parameter_0; }}\nint narrow(int only) {{ return only; }}\n",
+        args = call_arguments
+    ));
+    std::fs::write(work.join("src.c"), &source).map_err(|_| TestError::Check("write source"))?;
+    let arguments = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"src.c\",\"arguments\":[\"clang\",\"-c\",\"src.c\"]}}]",
+        work.display()
+    );
+    std::fs::write(work.join("compile_commands.json"), arguments)
+        .map_err(|_| TestError::Check("write database"))?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0xa5_u8; 4 << 20];
+    let toolchain = ResolvedToolchain::from_identity(
+        NativeTool::Clang,
+        Path::new("/usr/bin/clang"),
+        ContentId::from_canonical_bytes(b"clang-lane-signature-width"),
+    )
+    .map_err(|_| TestError::Check("toolchain"))?;
+    let result = compile_database_translation_unit(
+        &work,
+        Path::new("src.c"),
+        LanguageProfile::C(CStandard::C23),
+        Stage::LowerIr,
+        source.as_bytes(),
+        toolchain,
+        &cancelled,
+        &mut output,
+    );
+    match result {
+        Err(DatabaseCompileFailure::Rejected { rejected, .. }) => {
+            if rejected.cause != compiler_driver::FactFault::ChildCapacity {
+                return Err(TestError::Check("wrong signature-width cause"));
+            }
+        }
+        Err(other) => return Err(TestError::Check("wrong signature-width terminal")),
+        Ok(_) => return Err(TestError::Check("signature-width wall admitted")),
+    }
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestError::Check("rejected compile touched the output"));
+    }
+    std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
+}
+
+/// An admission fault on the database compile path keeps its exact cause and
+/// operands: an output buffer too small for the fragment is a Write-class
+/// terminal naming the source and recipe, not a cause-erased unsupported
+/// declaration.
+#[test]
+fn admission_fault_names_its_cause_on_the_database_path() -> Result<(), TestError> {
+    use compiler_driver::{DatabaseCompileFailure, compile_database_translation_unit};
+    use std::path::Path;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TestError::Check("clock before epoch"))?
+        .as_nanos();
+    let serial = WORK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let work = std::env::temp_dir().join(format!(
+        "nudox-clang-lane-{}-{nonce}-{serial}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&work).map_err(|_| TestError::Check("create native work"))?;
+    let source = b"struct Admitted { int field; };\nint admitted_value;\n";
+    std::fs::write(work.join("src.c"), source).map_err(|_| TestError::Check("write source"))?;
+    let arguments = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"src.c\",\"arguments\":[\"clang\",\"-c\",\"src.c\"]}}]",
+        work.display()
+    );
+    std::fs::write(work.join("compile_commands.json"), arguments)
+        .map_err(|_| TestError::Check("write database"))?;
+    let cancelled = AtomicBool::new(false);
+    let mut output = vec![0xa5_u8; 64];
+    let toolchain = ResolvedToolchain::from_identity(
+        NativeTool::Clang,
+        Path::new("/usr/bin/clang"),
+        ContentId::from_canonical_bytes(b"clang-lane-admission-cause"),
+    )
+    .map_err(|_| TestError::Check("toolchain"))?;
+    let result = compile_database_translation_unit(
+        &work,
+        Path::new("src.c"),
+        LanguageProfile::C(CStandard::C23),
+        Stage::LowerIr,
+        source,
+        toolchain,
+        &cancelled,
+        &mut output,
+    );
+    match result {
+        Err(
+            DatabaseCompileFailure::Write { .. }
+            | DatabaseCompileFailure::Prepare { .. }
+            | DatabaseCompileFailure::Canonical { .. },
+        ) => {}
+        Err(DatabaseCompileFailure::Lowering(cause)) => {
+            // The old cause-erased terminal: the reviewer's M5 mutant.
+            return Err(TestError::Lowering(cause));
+        }
+        other => {
+            let _ = other;
+            return Err(TestError::Check("wrong admission terminal"));
+        }
+    }
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestError::Check("failed compile touched the output"));
     }
     std::fs::remove_dir_all(&work).map_err(|_| TestError::Check("remove native work"))
 }

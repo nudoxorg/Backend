@@ -928,3 +928,156 @@ fn cmake_project_without_compilable_edges_is_a_typed_empty_selection()
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+/// A separated redirection's TARGET must leave with its operator: the adapter
+/// transports make's printed argv verbatim, and a log file the build never
+/// compiled is not a compiler input.
+#[test]
+fn separated_redirection_target_is_not_a_compiler_input() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("redirect-target")?;
+    fs::write(root.join("one.c"), "int one(void) { return 1; }\n")?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\tclang -c one.c -o one.o > build.log 2> build.err < one.c.in\n",
+    )?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 1);
+    assert_eq!(
+        driven.translation_units[0].arguments,
+        ["clang", "-c", "one.c", "-o", "one.o"]
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// Classification precedes the capacity bound: a link line carrying hundreds
+/// of object words is adapter selection, not a capacity terminal.
+#[test]
+fn oversized_non_compile_lines_are_selection_not_capacity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("wide-link")?;
+    let mut objects = String::from("cc -o app");
+    for index in 0..300 {
+        objects.push_str(&format!(" obj{index}.o"));
+    }
+    fs::write(
+        root.join("Makefile"),
+        format!("all:\n\t{objects}\n\tclang -c one.c -o one.o\n"),
+    )?;
+    fs::write(root.join("one.c"), "int one(void) { return 1; }\n")?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 1);
+    assert_eq!(driven.translation_units[0].source, Path::new("one.c"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// An admitted compile command over the argument bound still fails exactly.
+#[test]
+fn oversized_compile_command_is_exact_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    let root = directory("wide-compile")?;
+    let mut command = String::from("clang -c one.c -o one.o");
+    for index in 0..299 {
+        command.push_str(&format!(" -Iinclude{index}"));
+    }
+    fs::write(root.join("Makefile"), format!("all:\n\t{command}\n"))?;
+    fs::write(root.join("one.c"), "int one(void) { return 1; }\n")?;
+    let result = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false));
+    match result {
+        Err(BuildDriveFailure::CommandCapacity { required, capacity }) => {
+            assert_eq!(required, 304);
+            assert_eq!(capacity, 256);
+        }
+        other => return Err(format!("unexpected terminal: {other:?}").into()),
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// Three-level recursive makes: a command echoed at the middle level AFTER
+/// the inner make returns belongs to the middle directory, not the root.
+#[test]
+fn nested_leaving_directory_restores_the_enclosing_level() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = directory("nested-make")?;
+    fs::create_dir_all(root.join("src").join("inner"))?;
+    fs::write(root.join("root.c"), "int root_value;\n")?;
+    fs::write(root.join("src").join("util.c"), "int util_value;\n")?;
+    fs::write(
+        root.join("src").join("inner").join("deep.c"),
+        "int deep_value;\n",
+    )?;
+    fs::write(
+        root.join("Makefile"),
+        "all:\n\t$(MAKE) -C src\n\tclang -c root.c -o root.o\n",
+    )?;
+    fs::write(
+        root.join("src").join("Makefile"),
+        "all:\n\t$(MAKE) -C inner\n\tclang -O1 -c util.c -o util.o\n",
+    )?;
+    fs::write(
+        root.join("src").join("inner").join("Makefile"),
+        "all:\n\tclang -c deep.c -o deep.o\n",
+    )?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 3);
+    let directory_of = |source: &str| -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Ok(driven
+            .translation_units
+            .iter()
+            .find(|unit| unit.source == Path::new(source))
+            .ok_or(format!("missing unit {source}"))?
+            .directory
+            .clone())
+    };
+    let deep_directory = directory_of("deep.c")?;
+    let util_directory = directory_of("util.c")?;
+    let root_directory = directory_of("root.c")?;
+    assert!(deep_directory.ends_with("src/inner"));
+    assert!(util_directory.ends_with("src"));
+    // make announces resolved absolute paths; macOS presents /var as /private/var.
+    assert_eq!(root_directory, root.canonicalize()?);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// A non-ASCII checkout path must survive compdb decoding byte-exactly: the
+/// old byte-as-char decode turned `café` into mojibake, so libclang could not
+/// open the driven translation unit at all.
+#[test]
+fn compdb_strings_preserve_raw_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
+    if !real_tool("cmake") {
+        return Ok(());
+    }
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let root = std::env::temp_dir().join(format!("nudox-build-drive-café-{nonce}"));
+    fs::create_dir_all(&root)?;
+    fs::write(
+        root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.10)\nproject(utf8_probe C)\nadd_executable(utf8_probe main.c)\n",
+    )?;
+    fs::write(root.join("main.c"), "int main(void) { return 0; }\n")?;
+    let driven = discover_and_drive(&root, &root.join("scratch"), &AtomicBool::new(false))?;
+    assert_eq!(driven.translation_units.len(), 1);
+    let unit_directory = driven.translation_units[0]
+        .directory
+        .to_string_lossy()
+        .into_owned();
+    assert!(unit_directory.contains("café"));
+    let source = fs::read(
+        driven.translation_units[0]
+            .directory
+            .join(&driven.translation_units[0].source),
+    )?;
+    let cancelled = AtomicBool::new(false);
+    compile_unit(
+        &driven.database_directory,
+        &driven.translation_units[0],
+        &source,
+        &cancelled,
+        &mut vec![0; 4 << 20],
+    )?;
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

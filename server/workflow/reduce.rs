@@ -225,8 +225,11 @@ pub fn reduce(state: WorkflowState, event: WorkflowEvent) -> Result<Reduction, R
     }
 }
 
-/// Applies the publication chaining rule: a `Requested` event on a still-keyed
-/// state opens the next generation chain.
+/// Applies the publication chaining rule: a `Requested` event whose stage key
+/// differs from the still-keyed previous generation (strict `reduce` fails
+/// with `StageKeyMismatch`) opens the next generation chain by reducing once
+/// from the empty state. Same-key `Requested` replays idempotently without
+/// chaining; any other mismatch stays rejected.
 pub fn reduce_chained(
     state: WorkflowState,
     event: WorkflowEvent,
