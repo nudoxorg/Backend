@@ -175,7 +175,9 @@ pub(crate) fn collect<'source>(
                     continue;
                 }
                 let ordinal = push_type_root(facts, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
+                ordinals
+                    .record(coordinate, ordinal)
+                    .map_err(CSharpCollectError::from)?;
                 if let Some(qualified) = declared.qualified {
                     names
                         .record(qualified.bytes, coordinate)
@@ -184,7 +186,9 @@ pub(crate) fn collect<'source>(
             }
             DeclarationKind::Namespace => {
                 let ordinal = push_namespace(facts, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
+                ordinals
+                    .record(coordinate, ordinal)
+                    .map_err(CSharpCollectError::from)?;
             }
             DeclarationKind::Delegate
             | DeclarationKind::Field
@@ -205,7 +209,9 @@ pub(crate) fn collect<'source>(
         let declared = declaration(&image, coordinate).map_err(CSharpCollectError::from)?;
         if declared.kind == DeclarationKind::Delegate {
             let ordinal = push_delegate(facts, &image, &names, &ordinals, source, &declared)?;
-            ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
+            ordinals
+                .record(coordinate, ordinal)
+                .map_err(CSharpCollectError::from)?;
         }
     }
     for coordinate in 0..total {
@@ -225,14 +231,18 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Indexer
             | DeclarationKind::Event => {
                 let ordinal = push_member(facts, &image, &names, &ordinals, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
+                ordinals
+                    .record(coordinate, ordinal)
+                    .map_err(CSharpCollectError::from)?;
             }
             DeclarationKind::Constructor
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
                 let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
+                ordinals
+                    .record(coordinate, ordinal)
+                    .map_err(CSharpCollectError::from)?;
             }
         }
     }
@@ -365,7 +375,11 @@ impl<'image> Names<'image> {
         }
     }
 
-    fn record(&mut self, name: &'image [u8], coordinate: usize) -> Result<(), CSharpProjectionFault> {
+    fn record(
+        &mut self,
+        name: &'image [u8],
+        coordinate: usize,
+    ) -> Result<(), CSharpProjectionFault> {
         if self.len == self.entries.len() {
             return Err(CSharpProjectionFault::IndexCapacity);
         }
@@ -486,6 +500,7 @@ fn push_delegate<'source>(
     let anchor = anchor_for(ordinals, declared);
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
+        let parameter = parameter.map_err(CSharpProjectionFault::Image)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
@@ -513,6 +528,7 @@ fn push_member<'source>(
     let mut parameter_ordinals = Vec::new();
     if declared.kind == DeclarationKind::Indexer {
         for parameter in declared.parameters.iter() {
+            let parameter = parameter.map_err(CSharpProjectionFault::Image)?;
             let ordinal = push_parameter_fact(facts, image, names, ordinals, anchor, parameter)?;
             parameter_ordinals.push(ordinal);
         }
@@ -571,6 +587,7 @@ fn push_executable<'source>(
     let anchor = anchor_for(ordinals, declared);
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
+        let parameter = parameter.map_err(CSharpProjectionFault::Image)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
@@ -732,7 +749,9 @@ fn project_fact_type<'source>(
     if depth == 0 {
         return Err(CSharpCollectError::from(CSharpProjectionFault::Depth));
     }
-    let node = image.type_node(reference).map_err(CSharpProjectionFault::Image)?;
+    let node = image
+        .type_node(reference)
+        .map_err(CSharpProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
     match projection.fact {
         // The bare in-file nominal terminal: the fact's record names the
@@ -772,16 +791,14 @@ fn child_target<'source>(
     if depth == 0 {
         return Err(CSharpCollectError::from(CSharpProjectionFault::Depth));
     }
-    let node = image.type_node(reference).map_err(CSharpProjectionFault::Image)?;
+    let node = image
+        .type_node(reference)
+        .map_err(CSharpProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
     match projection.fact {
         Some(ordinal) => Ok(ordinal),
-        None => {
-            intern_row(facts, anchor, projection.record, &projection.children)
-            .map_err(|fault| {
-                CSharpCollectError::from(CSharpProjectionFault::Fact(fault))
-            })
-        }
+        None => intern_row(facts, anchor, projection.record, &projection.children)
+            .map_err(|fault| CSharpCollectError::from(CSharpProjectionFault::Fact(fault))),
     }
 }
 
@@ -1180,9 +1197,10 @@ fn csharp_facts<'source>(
     // Nullability: executables, delegates, and members carry their return
     // or declared type's cell; namespaces and type declarations have none.
     let nullability_source = declared.declared_type;
-    if let Some(return_type) = nullability_source
-        && let Ok(node) = image.type_node(return_type)
-    {
+    if let Some(return_type) = nullability_source {
+        let node = image
+            .type_node(return_type)
+            .map_err(CSharpProjectionFault::Image)?;
         extension.nullability = lane_nullability(node.nullable);
     }
 
@@ -1191,6 +1209,7 @@ fn csharp_facts<'source>(
     let start = facts.type_parameter_len;
     let start = u32::try_from(start).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     for generic in declared.type_parameters.iter() {
+        let generic = generic.map_err(CSharpProjectionFault::Image)?;
         let constraints: Vec<_> = generic.constraints.clone().collect();
         let constraint = constraints.iter().find_map(|child| {
             let node = image.type_node(*child).ok()?;
@@ -1212,14 +1231,20 @@ fn csharp_facts<'source>(
         .filter(|(declaration, _)| *declaration == raw_coordinate)
     {
         if atoms.len() >= MAX_REF_LIST_ELEMENTS {
-            return Err(CSharpCollectError::from(CSharpProjectionFault::AttributeCapacity {
-                spellings: atoms.len() + 1,
-            }));
+            return Err(CSharpCollectError::from(
+                CSharpProjectionFault::AttributeCapacity {
+                    spellings: atoms.len() + 1,
+                },
+            ));
         }
-        let atom = facts.intern_atom(spelling).map_err(|fault| CSharpProjectionFault::Fact(fault))?;
+        let atom = facts
+            .intern_atom(spelling)
+            .map_err(|fault| CSharpProjectionFault::Fact(fault))?;
         atoms.push(atom);
     }
-    extension.attributes = facts.intern_atom_list(&atoms).map_err(CSharpProjectionFault::Fact)?;
+    extension.attributes = facts
+        .intern_atom_list(&atoms)
+        .map_err(CSharpProjectionFault::Fact)?;
 
     // XML provenance: the documented file travels as a provisional atom with
     // the comment's byte span; admission rewrites the coordinate.
@@ -1296,7 +1321,10 @@ fn push_occurrence<'source>(
     let target = match reference.target {
         Some(coordinate) => {
             let ordinal = ordinals
-                .lookup(usize::try_from(coordinate).map_err(|_| CSharpProjectionFault::IndexCapacity)?)
+                .lookup(
+                    usize::try_from(coordinate)
+                        .map_err(|_| CSharpProjectionFault::IndexCapacity)?,
+                )
                 .ok_or(CSharpProjectionFault::IndexCapacity)?;
             OccurrenceTarget::Local(EntityId::new(ordinal))
         }
@@ -1304,9 +1332,8 @@ fn push_occurrence<'source>(
             // Image atoms are UTF-8-validated at open, so the spelling has a
             // string domain; the key keeps the written spelling as both path
             // and display.
-            let spelling =
-                str::from_utf8(reference.spelling.bytes)
-                    .map_err(|_| CSharpProjectionFault::Foreign)?;
+            let spelling = str::from_utf8(reference.spelling.bytes)
+                .map_err(|_| CSharpProjectionFault::Foreign)?;
             let key = ForeignKey::new(
                 ForeignOrigin::Universe {
                     ecosystem: ECOSYSTEM_STR,
@@ -1605,14 +1632,13 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use compiler_ir::{
         CSharpFacts, DecodedTypeParameter, DocFragmentInput, DocLinkTarget, EntityKind,
-        ForeignOrigin, FragmentView,
-        LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
-        SourceIdentity, Variance,
+        ForeignOrigin, FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget,
+        PrimitiveShape, SemanticTypeTag, SourceIdentity, Variance,
     };
+    use compiler_languages_csharp::CSharpImage;
     use compiler_vocabulary::{
         CSharpVersion, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
     };
-    use compiler_languages_csharp::CSharpImage;
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::{Digest, Sha256};
 
@@ -3021,14 +3047,19 @@ mod tests {
             .type_parameters
             .iter()
             .next()
+            .transpose()?
             .ok_or(TestError::Missing("generic image row"))?;
         assert_eq!(generic.name.bytes, b"T");
-        assert_eq!(generic.variance, compiler_languages_csharp::VarianceTag::Out);
+        assert_eq!(
+            generic.variance,
+            compiler_languages_csharp::VarianceTag::Out
+        );
         let rest_image = admitted_image
             .declaration(1)?
             .parameters
             .iter()
             .next()
+            .transpose()?
             .ok_or(TestError::Missing("params image row"))?;
         assert!(rest_image.is_params);
 
@@ -3060,8 +3091,7 @@ mod tests {
         // decode width or field set and fails the assert.
         let reopened_type_parameter = decode_reopened_type_parameter(pools)?;
         assert_eq!(
-            reopened_type_parameter.name,
-            b"T",
+            reopened_type_parameter.name, b"T",
             "reopened pooled row must name the fixture's type parameter"
         );
         assert_eq!(
@@ -3076,13 +3106,14 @@ mod tests {
         // CSharpFacts at compiler/ir/semantic.rs:1296 owns no `params` field;
         // that absence is structural in the reopened record layout.
         let rest_facts = csharp_extension(&view, 2)?;
-        assert_eq!(rest_facts.reference_kind, compiler_ir::CSharpReferenceKind::Value);
+        assert_eq!(
+            rest_facts.reference_kind,
+            compiler_ir::CSharpReferenceKind::Value
+        );
         Ok(())
     }
 
-    fn decode_reopened_type_parameter(
-        pools: &[u8],
-    ) -> Result<DecodedTypeParameter<'_>, TestError> {
+    fn decode_reopened_type_parameter(pools: &[u8]) -> Result<DecodedTypeParameter<'_>, TestError> {
         let word = |at: usize| -> Result<u32, TestError> {
             let bytes: [u8; 4] = pools
                 .get(at..at + 4)
