@@ -12,9 +12,9 @@ use compiler_ir_vocabulary::{
     TypeChildTarget, TypeRef,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, RustEdition, Stage};
+use core::num::ParseIntError;
 use heart_identity::{ContentId, IrFragmentDomain, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
-use core::num::ParseIntError;
 
 #[derive(Debug, Error)]
 enum TestFailure {
@@ -117,7 +117,10 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
         let entry = 12 + ordinal * 16;
         if u16::from_le_bytes([bytes[entry], bytes[entry + 1]]) == 9 {
             type_offset = u32::from_le_bytes([
-                bytes[entry + 8], bytes[entry + 9], bytes[entry + 10], bytes[entry + 11],
+                bytes[entry + 8],
+                bytes[entry + 9],
+                bytes[entry + 10],
+                bytes[entry + 11],
             ]) as usize;
             break;
         }
@@ -129,7 +132,10 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
     for ordinal in 0..usize::from(section_count) {
         let entry = 12 + ordinal * 16;
         let offset = u32::from_le_bytes([
-            bytes[entry + 8], bytes[entry + 9], bytes[entry + 10], bytes[entry + 11],
+            bytes[entry + 8],
+            bytes[entry + 9],
+            bytes[entry + 10],
+            bytes[entry + 11],
         ]) as usize;
         if offset > type_offset {
             bytes[entry + 8..entry + 12]
@@ -139,7 +145,10 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
             let count = u16::from_le_bytes([bytes[entry + 4], bytes[entry + 5]]);
             bytes[entry + 4..entry + 6].copy_from_slice(&(count - 4).to_le_bytes());
             let length = u32::from_le_bytes([
-                bytes[entry + 12], bytes[entry + 13], bytes[entry + 14], bytes[entry + 15],
+                bytes[entry + 12],
+                bytes[entry + 13],
+                bytes[entry + 14],
+                bytes[entry + 15],
             ]);
             bytes[entry + 12..entry + 16].copy_from_slice(&(length - 4).to_le_bytes());
         }

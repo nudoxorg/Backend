@@ -159,12 +159,7 @@ fn template_renders() {
     let ir = compile(CASES[5].1);
     // Fork-pending operand class: template text parts have no declared-plane
     // record representation; the placeholder remains structurally decoded.
-    signature(
-        &ir,
-        "Greet",
-        ItemKind::TypeAlias,
-        "type Greet = `${str}`",
-    );
+    signature(&ir, "Greet", ItemKind::TypeAlias, "type Greet = `${str}`");
 }
 
 #[test]

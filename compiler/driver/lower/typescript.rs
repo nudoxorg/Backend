@@ -1362,9 +1362,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             Some(compiler_languages_typescript::LiteralBase::String)
         } else if text == b"true" || text == b"false" {
             Some(compiler_languages_typescript::LiteralBase::Boolean)
-        } else if text.ends_with(b"n") && text[..text.len().saturating_sub(1)]
-            .iter()
-            .all(u8::is_ascii_digit)
+        } else if text.ends_with(b"n")
+            && text[..text.len().saturating_sub(1)]
+                .iter()
+                .all(u8::is_ascii_digit)
         {
             Some(compiler_languages_typescript::LiteralBase::Bigint)
         } else if !text.is_empty()
@@ -2891,14 +2892,8 @@ fn intern_computed_tree<'source>(
                 then_type.as_ref().clone(),
                 else_type.as_ref().clone(),
             ];
-            let children = intern_computed_children(
-                registry,
-                facts,
-                &children,
-                owner,
-                depth,
-                spell,
-            )?;
+            let children =
+                intern_computed_children(registry, facts, &children, owner, depth, spell)?;
             intern_computed_row(
                 registry,
                 facts,
@@ -2935,7 +2930,9 @@ fn intern_computed_tree<'source>(
             for part in parts {
                 match part {
                     TemplatePart::Text { text: value } => {
-                        text = registry.source_spelling(spell, value.as_bytes(), owner).or(text);
+                        text = registry
+                            .source_spelling(spell, value.as_bytes(), owner)
+                            .or(text);
                     }
                     TemplatePart::Type { r#type } => {
                         let slot = children.get_mut(child_count).ok_or_else(|| {
@@ -2992,9 +2989,9 @@ fn intern_computed_tree<'source>(
                 ));
             }
             for parameter in parameters {
-                let slot = children.get_mut(len).ok_or_else(|| {
-                    computed_fault(registry, owner, FactFault::TypeChildCapacity)
-                })?;
+                let slot = children
+                    .get_mut(len)
+                    .ok_or_else(|| computed_fault(registry, owner, FactFault::TypeChildCapacity))?;
                 *slot = intern_computed_tree(
                     registry,
                     facts,
@@ -3013,9 +3010,9 @@ fn intern_computed_tree<'source>(
                 depth.saturating_add(1),
                 spell,
             )?;
-            let slot = children.get_mut(len).ok_or_else(|| {
-                computed_fault(registry, owner, FactFault::TypeChildCapacity)
-            })?;
+            let slot = children
+                .get_mut(len)
+                .ok_or_else(|| computed_fault(registry, owner, FactFault::TypeChildCapacity))?;
             *slot = result_row;
             len += 1;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);

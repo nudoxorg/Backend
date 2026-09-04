@@ -205,7 +205,9 @@ impl DurablePublisher {
                     attempted,
                 }))
             })?;
-            if let Ok(mut latest) = state.latest.lock() { *latest = Some(published); }
+            if let Ok(mut latest) = state.latest.lock() {
+                *latest = Some(published);
+            }
         }
         Ok(Self {
             sender: Some(sender),

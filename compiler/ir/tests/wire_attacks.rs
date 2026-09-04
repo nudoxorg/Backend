@@ -144,7 +144,7 @@ fn header_and_directory_mutations_keep_exact_operands() -> Result<(), TestFailur
     bytes[4] = 3;
     assert_eq!(
         FragmentView::validate(&bytes).err(),
-            Some(FragmentError::Schema { actual: 3 })
+        Some(FragmentError::Schema { actual: 3 })
     );
     bytes = golden;
     bytes[ENTITY_FLAGS] = 3;

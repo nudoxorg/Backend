@@ -237,7 +237,10 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+    if let Err(source) = std::process::Command::new(&compiler)
+        .arg("version")
+        .output()
+    {
         return Err(OracleError::ToolingUnavailable {
             tool: "COMPILER_GO_COMPILER",
             source,
@@ -449,7 +452,10 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+    if let Err(source) = std::process::Command::new(&compiler)
+        .arg("version")
+        .output()
+    {
         return Err(OracleError::ToolingUnavailable {
             tool: "COMPILER_GO_COMPILER",
             source,
@@ -539,7 +545,10 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         .map_err(image_fault)?;
     for row in &references {
         let owner = image.declaration(row.owner as usize).map_err(image_fault)?;
-        assert_ne!(owner.name, b"init", "implicit init must not own a reference row");
+        assert_ne!(
+            owner.name, b"init",
+            "implicit init must not own a reference row"
+        );
     }
     let method_reference = references
         .into_iter()
@@ -662,7 +671,10 @@ fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+    if let Err(source) = std::process::Command::new(&compiler)
+        .arg("version")
+        .output()
+    {
         return Err(OracleError::ToolingUnavailable {
             tool: "COMPILER_GO_COMPILER",
             source,

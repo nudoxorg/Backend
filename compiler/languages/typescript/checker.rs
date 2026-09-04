@@ -26,7 +26,7 @@ use compiler_vocabulary::TypeScriptSource;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CoordinateError, Utf16Span, Utf8Span};
+use crate::{CoordinateError, Utf8Span, Utf16Span};
 
 /// Digest width of one SHA-256 source binding.
 const DIGEST_BYTES: usize = 32;

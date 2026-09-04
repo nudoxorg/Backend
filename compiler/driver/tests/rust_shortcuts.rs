@@ -10,8 +10,8 @@ use std::{
 };
 
 use compiler_driver::{
-    compile, CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool,
-    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_ir::{FragmentView, TypeFactSegment};
 use compiler_languages_rust::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};

@@ -33,10 +33,10 @@ use compiler_ir::{
     SemanticTypeTag, TypeReason, TypeWidth,
 };
 use compiler_languages_python::{
-    Annotation, AnnotationFact, AnnotationPosition, CheckerReport, ClassForm, DeclarationFact,
-    DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts, OccurrenceFact,
-    ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome, TypeReason as ExtractedReason,
-    extract,
+    Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
+    DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
+    OccurrenceFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    TypeReason as ExtractedReason, extract,
 };
 use compiler_vocabulary::PythonVersion;
 
@@ -55,6 +55,10 @@ use crate::{
 pub(crate) enum PythonCollectError {
     /// Ruff rejected the caller's selected Python grammar or source bytes.
     Authority(ExtractionError),
+    /// The optional checker was selected and then failed. This is distinct
+    /// from an unavailable checker: erasing it would incorrectly claim a
+    /// syntax-only projection succeeded under checker authority.
+    Checker(CheckerError),
     /// Canonical declaration admission rejected an exact borrowed fact.
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
@@ -68,9 +72,8 @@ pub(crate) enum PythonCollectError {
 /// Ruff owns spans, declarations, and written annotations. pyrefly runs as
 /// the peer type authority: its typed report fills unannotated constants and
 /// parameters, upgrades resolved call sites to `Import`/`Oracle` evidence,
-/// and lifts dynamic-confidence tiers. When the checker is unavailable or
-/// fails, the lane degrades to its proven syntax tiers — it never invents a
-/// dynamic fact the checker did not supply.
+/// and lifts dynamic-confidence tiers. Only an unavailable checker degrades
+/// to syntax facts; once the checker starts, its exact failure is terminal.
 pub(crate) fn collect<'source>(
     profile: PythonVersion,
     source: &'source [u8],
@@ -78,9 +81,9 @@ pub(crate) fn collect<'source>(
 ) -> Result<(), PythonCollectError> {
     let module = extract(source, profile).map_err(PythonCollectError::Authority)?;
     let checker = match checked_report(profile, source, &module) {
-        Ok(report) => report,
-        // A missing or failing authority is honest absence, not a lane fault.
-        Err(_) => None,
+        CheckerOutcome::Unavailable => None,
+        CheckerOutcome::Available(report) => Some(report),
+        CheckerOutcome::Rejected(cause) => return Err(PythonCollectError::Checker(cause)),
     };
     collect_with_checker(&module, source, facts, checker.as_ref())
 }
@@ -115,19 +118,67 @@ pub(crate) fn collect_with_checker<'a, 'source>(
 
 /// Runs the pyrefly authority transaction, preserving its typed terminal.
 ///
-/// `Ok(None)` is the honest unavailable answer: the adapter does not resolve
-/// on this system. `Err` carries the exact [`compiler_languages_python::CheckerError`]
-/// with every operand intact for callers that must observe the failure.
+/// An explicit checker result. `Unavailable` means no authority transaction
+/// was attempted. `Rejected` retains the exact transaction cause; it must
+/// never be silently recast as an absent report.
+pub(crate) enum CheckerOutcome {
+    Unavailable,
+    Available(CheckerReport),
+    Rejected(CheckerError),
+}
+
+/// `Unavailable` is the honest answer when pyrefly is not configured. A
+/// started checker returns either its report or its untouched typed failure.
 pub(crate) fn checked_report(
     profile: PythonVersion,
     source: &[u8],
     module: &ModuleFacts,
-) -> Result<Option<CheckerReport>, compiler_languages_python::CheckerError> {
+) -> CheckerOutcome {
     let adapter = Pyrefly::from_env();
     if !adapter.is_available() {
-        return Ok(None);
+        return CheckerOutcome::Unavailable;
     }
-    adapter.analyze(source, profile, module).map(Some)
+    match adapter.analyze(source, profile, module) {
+        Ok(report) => CheckerOutcome::Available(report),
+        Err(cause) => CheckerOutcome::Rejected(cause),
+    }
+}
+
+/// One per-emission lookup index over a checker report. The report remains
+/// the immutable authority record; this staging-only index removes repeated
+/// linear scans while preserving every borrowed outcome.
+struct CheckerIndex<'report> {
+    inferences: std::collections::HashMap<(u32, u32), &'report InferredType>,
+    symbols: std::collections::HashMap<(u32, u32), &'report SymbolOutcome>,
+}
+
+impl<'report> CheckerIndex<'report> {
+    fn build(report: &'report CheckerReport) -> Self {
+        let mut inferences = std::collections::HashMap::with_capacity(report.inferences.len());
+        for inference in &report.inferences {
+            inferences
+                .entry((inference.site.start, inference.site.end))
+                .or_insert(&inference.observed);
+        }
+        let mut symbols = std::collections::HashMap::with_capacity(report.symbols.len());
+        for symbol in &report.symbols {
+            symbols
+                .entry((symbol.span.start, symbol.span.end))
+                .or_insert(&symbol.outcome);
+        }
+        Self {
+            inferences,
+            symbols,
+        }
+    }
+
+    fn inference_at(&self, site: Span) -> Option<&'report InferredType> {
+        self.inferences.get(&(site.start, site.end)).copied()
+    }
+
+    fn symbol_at(&self, span: Span) -> Option<&'report SymbolOutcome> {
+        self.symbols.get(&(span.start, span.end)).copied()
+    }
 }
 
 /// One pushed declaration row with the coordinates every later phase needs.
@@ -151,7 +202,7 @@ struct Emitter<'a, 'source> {
     /// Pushed declaration rows in lane order, built while emitting.
     pushed: Vec<Pushed<'source>>,
     /// The pyrefly authority report, when the checker answered.
-    checker: Option<&'a CheckerReport>,
+    checker: Option<CheckerIndex<'a>>,
     /// Reserved owner while the first structural class is being lowered.
     reserved_anchor: Option<u32>,
 }
@@ -191,7 +242,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             facts,
             ordinals,
             pushed: Vec::new(),
-            checker,
+            checker: checker.map(CheckerIndex::build),
             reserved_anchor: None,
         }
     }
@@ -732,6 +783,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return None;
         }
         self.checker
+            .as_ref()
             .and_then(|report| report.inference_at(site))
             .filter(|inferred| **inferred != InferredType::Any)
     }
@@ -1421,8 +1473,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
     ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
         let checked = self
             .checker
-            .and_then(|report| report.symbol_at(occurrence.span))
-            .map(|symbol| &symbol.outcome);
+            .as_ref()
+            .and_then(|report| report.symbol_at(occurrence.span));
         let matched = rows
             .iter()
             .find(|row| row.name == occurrence.target.as_bytes());

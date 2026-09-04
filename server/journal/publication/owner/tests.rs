@@ -131,7 +131,17 @@ fn write_fact(
         kind: EventKind::Requested,
     })?;
     let mut fact_bytes = [0; FACT_BYTES];
-    persist_fact(paths, input, super::super::format::ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] }, *receipt, &mut fact_bytes)?;
+    persist_fact(
+        paths,
+        input,
+        super::super::format::ChainLink {
+            ordinal: 1,
+            parent_root: [0; 32],
+            parent_dep_set: [0; 32],
+        },
+        *receipt,
+        &mut fact_bytes,
+    )?;
     Ok(*receipt)
 }
 

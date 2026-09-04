@@ -13,8 +13,7 @@ pub use authority::{OxcDeclaration, OxcDeclarationKind, OxcModule, analyze, with
 pub use checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
     Declaration, LiteralBase, MappedModifier, Narrowing, ObjectMember, Origin, Reference, Report,
-    TemplatePart, TypeTree,
-    source_digest,
+    TemplatePart, TypeTree, source_digest,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::AuthorityError;

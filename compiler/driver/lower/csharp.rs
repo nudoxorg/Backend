@@ -233,7 +233,10 @@ pub(crate) fn collect<'source>(
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
                 if let Some(qualified) = declared.qualified {
                     names
-                        .record(qualified.bytes, coordinate)
+                        .record(
+                            qualified.bytes,
+                            ImageDeclarationId::from_index(coordinate).map_err(terminal)?,
+                        )
                         .map_err(terminal)?;
                 }
             }
@@ -299,7 +302,15 @@ pub(crate) fn collect<'source>(
             continue;
         };
         let declared = declaration(&image, coordinate).map_err(terminal)?;
-        let extension = csharp_facts(facts, &image, &declared, &attributes, coordinate)?;
+        let extension = csharp_facts(
+            facts,
+            &image,
+            &names,
+            &ordinals,
+            &declared,
+            &attributes,
+            coordinate,
+        )?;
         facts
             .attach_extension(
                 usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
@@ -408,19 +419,23 @@ fn unknown_record(reason: TypeReason, spelling: Option<&[u8]>) -> SemanticTypeRe
 
 /// Bounded qualified-name index of the image's named type declarations.
 struct Names<'image> {
-    entries: [(&'image [u8], usize); MAX_EMISSION_FACTS],
+    entries: [(&'image [u8], ImageDeclarationId); MAX_EMISSION_FACTS],
     len: usize,
 }
 
 impl<'image> Names<'image> {
     const fn new() -> Self {
         Self {
-            entries: [(&[], 0); MAX_EMISSION_FACTS],
+            entries: [(&[], ImageDeclarationId(0)); MAX_EMISSION_FACTS],
             len: 0,
         }
     }
 
-    fn record(&mut self, name: &'image [u8], coordinate: usize) -> Result<(), ProjectionFault> {
+    fn record(
+        &mut self,
+        name: &'image [u8],
+        coordinate: ImageDeclarationId,
+    ) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
             return Err(ProjectionFault::IndexCapacity);
         }
@@ -429,7 +444,7 @@ impl<'image> Names<'image> {
         Ok(())
     }
 
-    fn lookup(&self, name: &[u8]) -> Option<usize> {
+    fn lookup(&self, name: &[u8]) -> Option<ImageDeclarationId> {
         self.entries
             .iter()
             .take(self.len)
@@ -439,7 +454,7 @@ impl<'image> Names<'image> {
 
     /// Resolves one `cref` body: qualified names match exactly and simple
     /// names match as the last qualified segment.
-    fn lookup_link(&self, spelling: &[u8]) -> Option<usize> {
+    fn lookup_link(&self, spelling: &[u8]) -> Option<ImageDeclarationId> {
         for (name, coordinate) in self.entries.iter().take(self.len) {
             if *name == spelling {
                 return Some(*coordinate);
@@ -459,6 +474,46 @@ impl<'image> Names<'image> {
 struct Ordinals {
     entries: [(usize, u32); MAX_EMISSION_FACTS],
     len: usize,
+}
+
+/// A declaration coordinate in the immutable Roslyn image. It is deliberately
+/// not a fragment coordinate: image declaration order and canonical emission
+/// order diverge for partial types, members, and synthetic signature rows.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ImageDeclarationId(u32);
+
+/// A type-fact coordinate in the staging image. This is the only coordinate
+/// C# generic constraints may lend to the shared type-parameter pool.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StagedTypeFactId(u32);
+
+impl ImageDeclarationId {
+    fn from_index(index: usize) -> Result<Self, ProjectionFault> {
+        u32::try_from(index)
+            .map(Self)
+            .map_err(|_| ProjectionFault::IndexCapacity)
+    }
+}
+
+impl StagedTypeFactId {
+    const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Resolves a named type through the two coordinate domains. Keeping this
+/// bridge here prevents an image-row index from ever being passed as a fact
+/// type reference (the former C# constraint corruption seam).
+fn staged_type_for_named_image_declaration(
+    names: &Names<'_>,
+    ordinals: &Ordinals,
+    spelling: &[u8],
+) -> Option<StagedTypeFactId> {
+    let image = names.lookup(spelling)?;
+    let staged = ordinals.lookup(usize::try_from(image.0).ok()?)?;
+    Some(StagedTypeFactId(staged))
 }
 
 impl Ordinals {
@@ -1218,6 +1273,8 @@ const fn lane_partial(role: PartialRole) -> CSharpPartialRole {
 fn csharp_facts<'source>(
     facts: &mut FactSet<'source>,
     image: &CSharpImage<'source>,
+    names: &Names<'source>,
+    ordinals: &Ordinals,
     declared: &Declaration<'source>,
     attributes: &[(u32, &'source [u8])],
     coordinate: usize,
@@ -1248,11 +1305,14 @@ fn csharp_facts<'source>(
         let constraint = constraints.iter().find_map(|child| {
             let node = image.type_node(*child).ok()?;
             let spelling = node.spelling?;
-            let coordinate = names_lookup(image, spelling.bytes)?;
-            Some(coordinate)
+            staged_type_for_named_image_declaration(names, ordinals, spelling.bytes)
         });
         facts
-            .push_type_parameter(generic.name.bytes, constraint, None)
+            .push_type_parameter(
+                generic.name.bytes,
+                constraint.map(StagedTypeFactId::raw),
+                None,
+            )
             .map_err(lane_terminal)?;
     }
     extension.constraints = TypeParameterListId::new(start);
@@ -1286,18 +1346,6 @@ fn csharp_facts<'source>(
         extension.xml_provenance = SourceSpan::new(AtomId::new(provisional), doc.start, doc.end);
     }
     Ok(extension)
-}
-
-/// Resolves one spelling through the image's declaration rows to a pushed
-/// fact ordinal, matching by qualified name.
-fn names_lookup<'source>(image: &CSharpImage<'source>, spelling: &[u8]) -> Option<u32> {
-    for (index, candidate) in image.declarations().enumerate() {
-        let candidate = candidate.ok()?;
-        if candidate.qualified?.bytes == spelling {
-            return u32::try_from(index).ok();
-        }
-    }
-    None
 }
 
 /// Bounded attribute index grouped by declaration coordinate.
@@ -1589,6 +1637,7 @@ fn see_link<'source>(
     let body = cref_body(cref);
     let target = match names
         .lookup_link(body)
+        .and_then(|coordinate| usize::try_from(coordinate.0).ok())
         .and_then(|coordinate| ordinals.lookup(coordinate))
     {
         Some(ordinal) => DocLinkTarget::Local(EntityId::new(ordinal)),

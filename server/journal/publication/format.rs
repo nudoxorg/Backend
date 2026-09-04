@@ -264,7 +264,11 @@ fn parse_fact(bytes: [u8; FACT_BYTES]) -> Result<ParsedFact, PublicationOpenErro
             checksum: record.checksum,
         },
         bytes,
-        link: ChainLink { ordinal: record.ordinal.get(), parent_root: record.parent_root, parent_dep_set: record.parent_dep_set },
+        link: ChainLink {
+            ordinal: record.ordinal.get(),
+            parent_root: record.parent_root,
+            parent_dep_set: record.parent_dep_set,
+        },
     })
 }
 
@@ -355,7 +359,8 @@ pub(super) fn persist_fact(
             })
         }
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            let parsed = read_fact(&paths.fact_for(link.ordinal)).map_err(PublicationFailure::Open)?;
+            let parsed =
+                read_fact(&paths.fact_for(link.ordinal)).map_err(PublicationFailure::Open)?;
             let Some(parsed) = parsed else {
                 return Err(PublicationFailure::Open(PublicationOpenError::MissingFact));
             };

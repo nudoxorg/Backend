@@ -65,10 +65,20 @@ pub enum TypeFactFault {
         position: u32,
         target: u32,
     },
-    #[error("type fact {ordinal} child {position} targets computed row {target} from declared segment")]
-    ComputedTargetFromDeclared { ordinal: u32, position: u32, target: u32 },
+    #[error(
+        "type fact {ordinal} child {position} targets computed row {target} from declared segment"
+    )]
+    ComputedTargetFromDeclared {
+        ordinal: u32,
+        position: u32,
+        target: u32,
+    },
     #[error("computed type fact {ordinal} child {position} targets later computed row {target}")]
-    ComputedForwardReference { ordinal: u32, position: u32, target: u32 },
+    ComputedForwardReference {
+        ordinal: u32,
+        position: u32,
+        target: u32,
+    },
     #[error(
         "type fact {ordinal} child {position} target {target} is outside {record_count} records"
     )]
@@ -342,7 +352,11 @@ fn put_nominal(output: &mut [u8], at: &mut usize, nominal: Option<NominalRef>) {
     *at += 1;
 }
 
-pub fn validate_payload(payload: &[u8], entity_count: u32, schema: u16) -> Result<(), TypeFactFault> {
+pub fn validate_payload(
+    payload: &[u8],
+    entity_count: u32,
+    schema: u16,
+) -> Result<(), TypeFactFault> {
     let mut reader = Reader {
         bytes: payload,
         at: 0,
@@ -471,14 +485,23 @@ pub fn validate_payload(payload: &[u8], entity_count: u32, schema: u16) -> Resul
                         ordinal,
                         position,
                         target: target.raw,
-                    record_count: declared_count,
-                });
+                        record_count: declared_count,
+                    });
                 }
                 if !computed && schema == 2 && target.raw >= declared_count {
-                    return Err(TypeFactFault::ComputedTargetFromDeclared { ordinal, position, target: target.raw });
+                    return Err(TypeFactFault::ComputedTargetFromDeclared {
+                        ordinal,
+                        position,
+                        target: target.raw,
+                    });
                 }
-                if computed && schema == 2 && target.raw >= declared_count && target.raw >= ordinal {
-                    return Err(TypeFactFault::ComputedForwardReference { ordinal, position, target: target.raw });
+                if computed && schema == 2 && target.raw >= declared_count && target.raw >= ordinal
+                {
+                    return Err(TypeFactFault::ComputedForwardReference {
+                        ordinal,
+                        position,
+                        target: target.raw,
+                    });
                 }
                 if schema == 1 && target.raw >= ordinal {
                     return Err(TypeFactFault::ForwardReference {
@@ -496,8 +519,18 @@ pub fn validate_payload(payload: &[u8], entity_count: u32, schema: u16) -> Resul
     Ok(())
 }
 
-fn check_nominal(ordinal: u32, target: u32, entity_count: u32, record_count: u32, schema: u16) -> Result<(), TypeFactFault> {
-    let limit = if schema == 2 { entity_count } else { record_count };
+fn check_nominal(
+    ordinal: u32,
+    target: u32,
+    entity_count: u32,
+    record_count: u32,
+    schema: u16,
+) -> Result<(), TypeFactFault> {
+    let limit = if schema == 2 {
+        entity_count
+    } else {
+        record_count
+    };
     if target >= limit {
         return Err(TypeFactFault::NominalOutOfRange { ordinal, target });
     }
@@ -646,8 +679,13 @@ impl<'fragment> TypeFactCursor<'fragment> {
             .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
             .unwrap_or(0);
         let computed = if schema == 2 {
-            payload.get(4..8).map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])).unwrap_or(0)
-        } else { 0 };
+            payload
+                .get(4..8)
+                .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+                .unwrap_or(0)
+        } else {
+            0
+        };
         Self {
             payload,
             at: if schema == 2 { 8 } else { 4 },
@@ -684,7 +722,10 @@ impl<'fragment> Iterator for TypeFactCursor<'fragment> {
         };
         let result = decode_record(&mut reader, owner);
         self.at = reader.at;
-        Some(result.map(|mut decoded| { decoded.segment = segment; decoded }))
+        Some(result.map(|mut decoded| {
+            decoded.segment = segment;
+            decoded
+        }))
     }
 }
 fn decode_record<'fragment>(

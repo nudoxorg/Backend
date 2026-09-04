@@ -380,9 +380,7 @@ fn render_review(
     let rendered = built
         .ir
         .items()
-        .find(|item| {
-            item.kind() != ItemKind::Function && item.name() == qualified.as_bytes()
-        })
+        .find(|item| item.kind() != ItemKind::Function && item.name() == qualified.as_bytes())
         .and_then(|item| built.ir.signature(item.id()))
         .map(|signature| signature.to_string())
         .ok_or_else(|| TestError::Law {
@@ -868,13 +866,14 @@ fn publication_leg(
     let closing = parser_source
         .iter()
         .rposition(|byte| *byte == b'}')
-        .ok_or(TestError::Fact(
-            "generation-2 target has no closing brace",
-        ))?;
+        .ok_or(TestError::Fact("generation-2 target has no closing brace"))?;
     let mut modified = parser_source[..closing].to_vec();
     // Annotation-type members are abstract: a body would be a javac error.
     // Every other kind admits a normal method body.
-    if parser_source.windows(10).any(|window| window == b"@interface") {
+    if parser_source
+        .windows(10)
+        .any(|window| window == b"@interface")
+    {
         modified.extend_from_slice(b"  public void added();\n}\n");
     } else {
         modified.extend_from_slice(b"  public void added() {}\n}\n");
@@ -886,7 +885,9 @@ fn publication_leg(
     let mut gen2_image = Vec::new();
     bench
         .image(&gen2_sources, classpath, &mut gen2_image)
-        .map_err(|error| TestError::Image(format!("{} {} gen-2: {error}", row.purl, extracted[last].0)))?;
+        .map_err(|error| {
+            TestError::Image(format!("{} {} gen-2: {error}", row.purl, extracted[last].0))
+        })?;
     if gen2_image.len() > MAX_IMAGE_BYTES {
         return Err(TestError::Fact("image exceeded 16 MiB"));
     }

@@ -18,8 +18,8 @@ use super::{
     },
     facts::{PublicationFacts, PublicationPaths},
     format::{
-        FACT_BYTES, HEAD_BYTES, ChainLink, PublicationInput, path_exists, persist_fact, persist_head,
-        read_fact, read_head,
+        ChainLink, FACT_BYTES, HEAD_BYTES, PublicationInput, path_exists, persist_fact,
+        persist_head, read_fact, read_head,
     },
     service::{PublisherState, conflict, journal_failure},
 };
@@ -199,7 +199,11 @@ pub(super) fn owner_thread(
             key: journal.current_key()?,
             receipt: *receipt,
             input: None,
-            link: ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] },
+            link: ChainLink {
+                ordinal: 1,
+                parent_root: [0; 32],
+                parent_dep_set: [0; 32],
+            },
         })
     });
     let mut poison = None;
@@ -296,16 +300,42 @@ fn process_group(
                 poison_group(poison, PublicationFailure::InputMismatch, group, state);
                 return;
             };
-            let event = WorkflowEvent { version: WorkflowVersion::WAVE1, key: candidate_input.key, kind: EventKind::Requested };
+            let event = WorkflowEvent {
+                version: WorkflowVersion::WAVE1,
+                key: candidate_input.key,
+                kind: EventKind::Requested,
+            };
             match journal.append_publication_group(&[event], buffers.frames) {
                 Ok(receipts) => match receipts.receipt_at(0) {
                     Some(receipt) => {
-                        *pending = Some(PendingJournal { key: candidate_input.key, receipt: *receipt, input: Some(candidate_input), link: ChainLink { ordinal, parent_root: stored.input.root, parent_dep_set: stored.input.dep_set } });
+                        *pending = Some(PendingJournal {
+                            key: candidate_input.key,
+                            receipt: *receipt,
+                            input: Some(candidate_input),
+                            link: ChainLink {
+                                ordinal,
+                                parent_root: stored.input.root,
+                                parent_dep_set: stored.input.dep_set,
+                            },
+                        });
                         Some(*receipt)
                     }
-                    None => { poison_group(poison, journal_failure(CommitError::ReceiptOverflow { sequence: FrameSequence::FIRST }), group, state); return; }
+                    None => {
+                        poison_group(
+                            poison,
+                            journal_failure(CommitError::ReceiptOverflow {
+                                sequence: FrameSequence::FIRST,
+                            }),
+                            group,
+                            state,
+                        );
+                        return;
+                    }
                 },
-                Err(error) => { poison_group(poison, map_group_error(error), group, state); return; }
+                Err(error) => {
+                    poison_group(poison, map_group_error(error), group, state);
+                    return;
+                }
             }
         }
     } else if let Some(existing) = pending.as_ref() {
@@ -346,7 +376,11 @@ fn process_group(
                         key: candidate_input.key,
                         receipt: facts,
                         input: Some(candidate_input),
-                        link: ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] },
+                        link: ChainLink {
+                            ordinal: 1,
+                            parent_root: [0; 32],
+                            parent_dep_set: [0; 32],
+                        },
                     });
                     Some(facts)
                 }
@@ -371,10 +405,25 @@ fn process_group(
     let Some(receipt) = receipt else {
         return;
     };
-    let link = pending.as_ref().map(|value| value.link).unwrap_or(ChainLink { ordinal: 1, parent_root: [0; 32], parent_dep_set: [0; 32] });
-    let needs_install = current.as_ref().is_none_or(|stored| stored.input != candidate_input);
+    let link = pending
+        .as_ref()
+        .map(|value| value.link)
+        .unwrap_or(ChainLink {
+            ordinal: 1,
+            parent_root: [0; 32],
+            parent_dep_set: [0; 32],
+        });
+    let needs_install = current
+        .as_ref()
+        .is_none_or(|stored| stored.input != candidate_input);
     if needs_install {
-        let fact = match persist_fact(buffers.paths, candidate_input, link, receipt, buffers.fact_bytes) {
+        let fact = match persist_fact(
+            buffers.paths,
+            candidate_input,
+            link,
+            receipt,
+            buffers.fact_bytes,
+        ) {
             Ok(fact) => fact,
             Err(source) => {
                 poison_group(poison, source, group, state);
@@ -400,19 +449,25 @@ fn process_group(
             facts,
             link,
         };
-        if state.published.get().is_none() { if let Err(attempted) = state.published.set(facts) {
-            poison_group(
-                poison,
-                PublicationFailure::PublishedStateConflict(Arc::new(PublicationStateConflict {
-                    retained: state.published.get().copied(),
-                    attempted,
-                })),
-                group,
-                state,
-            );
-            return;
-        }}
-        if let Ok(mut latest) = state.latest.lock() { *latest = Some(facts); }
+        if state.published.get().is_none() {
+            if let Err(attempted) = state.published.set(facts) {
+                poison_group(
+                    poison,
+                    PublicationFailure::PublishedStateConflict(Arc::new(
+                        PublicationStateConflict {
+                            retained: state.published.get().copied(),
+                            attempted,
+                        },
+                    )),
+                    group,
+                    state,
+                );
+                return;
+            }
+        }
+        if let Ok(mut latest) = state.latest.lock() {
+            *latest = Some(facts);
+        }
         *current = Some(stored);
         *pending = None;
     }

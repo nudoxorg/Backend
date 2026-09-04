@@ -573,6 +573,14 @@ fn python_terminal<'diagnostic>(
                 cause,
             },
         },
+        lower::python::PythonCollectError::Checker(cause) => CompileFailure::Authority {
+            source_identity,
+            recipe,
+            failure: AuthorityFailure::PythonChecker {
+                diagnostic: AuthorityDiagnostic::absent(),
+                cause,
+            },
+        },
         lower::python::PythonCollectError::Rejected(rejected) => CompileFailure::FactRejected {
             source_identity,
             recipe,

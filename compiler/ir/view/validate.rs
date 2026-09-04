@@ -326,8 +326,12 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         })?
                         .count,
                 );
-                crate::type_facts::validate_payload(&envelope[entry.lane.range()], entity_count, schema)
-                    .map_err(|fault| FragmentError::TypeFacts { fault })?;
+                crate::type_facts::validate_payload(
+                    &envelope[entry.lane.range()],
+                    entity_count,
+                    schema,
+                )
+                .map_err(|fault| FragmentError::TypeFacts { fault })?;
                 type_facts = Some(entry.lane);
             }
             Ok(SectionKind::Documentation) => {

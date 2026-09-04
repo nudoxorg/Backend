@@ -9,13 +9,12 @@
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AtomId, BuiltinType, ComputedType, ConcreteType, DocInput, EntityVersion, ExternalTarget, Ir,
-    IrBuilder, LiteralType,
-    ItemKind, LanguageExtensionInput, ListSpan, NominalRef, PayloadHash, PrimitiveShape,
-    ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef, SemanticAtom,
-    SemanticProduct, SemanticProductChild, SemanticProductConstructor, SemanticTypeChild,
-    SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId, TreeItemInput,
-    TemplatePart, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget, TypeId,
-    TypeWidth, Visibility,
+    IrBuilder, ItemKind, LanguageExtensionInput, ListSpan, LiteralType, NominalRef, PayloadHash,
+    PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
+    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
+    TemplatePart, TreeItemInput, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget,
+    TypeId, TypeWidth, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -375,7 +374,8 @@ impl<'source> FactSet<'source> {
             type_child_flags: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
             type_child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             total_type_children: 0,
-            constructors: vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS].into_boxed_slice(),
+            constructors: vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS]
+                .into_boxed_slice(),
             child_roles: vec![
                 ProductChildRole::ProductMember;
                 MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
@@ -1408,11 +1408,15 @@ fn live_type<'source>(
                 let value = bytes
                     .strip_prefix(b"\"")
                     .and_then(|value| value.strip_suffix(b"\""))
-                    .or_else(|| bytes.strip_prefix(b"'").and_then(|value| value.strip_suffix(b"'")))
+                    .or_else(|| {
+                        bytes
+                            .strip_prefix(b"'")
+                            .and_then(|value| value.strip_suffix(b"'"))
+                    })
                     .unwrap_or(bytes);
                 let atom = tree.intern_atom(value)?;
                 tree.intern_concrete(ConcreteType::Literal(LiteralType::String(atom)))?
-                .erase()
+                    .erase()
             }
             (value, 1, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
                 let atom = tree.intern_atom(bytes)?;
@@ -1425,117 +1429,119 @@ fn live_type<'source>(
                     .erase()
             }
             (value, 3, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => tree
-                .intern_concrete(ConcreteType::Literal(LiteralType::Boolean(bytes == b"true")))?
+                .intern_concrete(ConcreteType::Literal(LiteralType::Boolean(
+                    bytes == b"true",
+                )))?
                 .erase(),
             (_, _, _) => match PrimitiveShape::try_from(record.payload0) {
-            Ok(PrimitiveShape::Bool) => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
-                .erase(),
-            Ok(PrimitiveShape::Char) => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Char))?
-                .erase(),
-            Ok(PrimitiveShape::Str) => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
-                .erase(),
-            Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
-                (TypeWidth::ARCH_FLAG, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Int))?
+                Ok(PrimitiveShape::Bool) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
                     .erase(),
-                (8, 0) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
+                Ok(PrimitiveShape::Char) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Char))?
                     .erase(),
-                (8, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I8))?
+                Ok(PrimitiveShape::Str) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
                     .erase(),
-                (16, 0) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U16))?
+                Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
+                    (TypeWidth::ARCH_FLAG, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::Int))?
+                        .erase(),
+                    (8, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
+                        .erase(),
+                    (8, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I8))?
+                        .erase(),
+                    (16, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U16))?
+                        .erase(),
+                    (16, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I16))?
+                        .erase(),
+                    (32, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U32))?
+                        .erase(),
+                    (32, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?
+                        .erase(),
+                    (64, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U64))?
+                        .erase(),
+                    (64, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I64))?
+                        .erase(),
+                    (128, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::U128))?
+                        .erase(),
+                    (128, 1) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::I128))?
+                        .erase(),
+                    _ => tree
+                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                        .erase(),
+                },
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"None") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::None_))?
                     .erase(),
-                (16, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I16))?
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"list") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::List))?
                     .erase(),
-                (32, 0) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U32))?
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"dict") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Dict))?
                     .erase(),
-                (32, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"set") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Set))?
                     .erase(),
-                (64, 0) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U64))?
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"frozenset") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::FrozenSet))?
                     .erase(),
-                (64, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I64))?
+                Ok(PrimitiveShape::Builtin) if record.text == Some(b"bytes") => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Bytes))?
                     .erase(),
-                (128, 0) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::U128))?
-                    .erase(),
-                (128, 1) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::I128))?
+                Ok(PrimitiveShape::Float) => match record.payload1 {
+                    16 => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
+                        .erase(),
+                    32 => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F32))?
+                        .erase(),
+                    64 => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::F64))?
+                        .erase(),
+                    _ => tree
+                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                        .erase(),
+                },
+                Ok(PrimitiveShape::Reference) => {
+                    let lifetime = record
+                        .text
+                        .map(|bytes| tree.intern_atom(bytes))
+                        .transpose()?;
+                    tree.intern_concrete(ConcreteType::Reference {
+                        target: children[0],
+                        mutability: if record.payload1 == SemanticTypeRecord::INTEGER_SIGNED_FLAG {
+                            compiler_ir::Mutability::Mutable
+                        } else {
+                            compiler_ir::Mutability::Immutable
+                        },
+                        lifetime,
+                    })?
+                    .erase()
+                }
+                Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
+                    .intern_concrete(ConcreteType::Pointer {
+                        target: children[0],
+                        mutability: if record.payload0 == PrimitiveShape::MutPointer as u32 {
+                            compiler_ir::Mutability::Mutable
+                        } else {
+                            compiler_ir::Mutability::Immutable
+                        },
+                    })?
                     .erase(),
                 _ => tree
                     .intern_unknown(compiler_ir::UnknownType::Unsupported)?
                     .erase(),
-            },
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"None") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::None_))?
-                .erase(),
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"list") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::List))?
-                .erase(),
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"dict") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Dict))?
-                .erase(),
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"set") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Set))?
-                .erase(),
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"frozenset") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::FrozenSet))?
-                .erase(),
-            Ok(PrimitiveShape::Builtin) if record.text == Some(b"bytes") => tree
-                .intern_concrete(ConcreteType::Builtin(BuiltinType::Bytes))?
-                .erase(),
-            Ok(PrimitiveShape::Float) => match record.payload1 {
-                16 => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
-                    .erase(),
-                32 => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F32))?
-                    .erase(),
-                64 => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::F64))?
-                    .erase(),
-                _ => tree
-                    .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                    .erase(),
-            },
-            Ok(PrimitiveShape::Reference) => {
-                let lifetime = record
-                    .text
-                    .map(|bytes| tree.intern_atom(bytes))
-                    .transpose()?;
-                tree.intern_concrete(ConcreteType::Reference {
-                    target: children[0],
-                    mutability: if record.payload1 == SemanticTypeRecord::INTEGER_SIGNED_FLAG {
-                        compiler_ir::Mutability::Mutable
-                    } else {
-                        compiler_ir::Mutability::Immutable
-                    },
-                    lifetime,
-                })?
-                .erase()
-            }
-            Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
-                .intern_concrete(ConcreteType::Pointer {
-                    target: children[0],
-                    mutability: if record.payload0 == PrimitiveShape::MutPointer as u32 {
-                        compiler_ir::Mutability::Mutable
-                    } else {
-                        compiler_ir::Mutability::Immutable
-                    },
-                })?
-                .erase(),
-            _ => tree
-                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                .erase(),
             },
         },
         SemanticTypeTag::Never => tree
@@ -1574,7 +1580,8 @@ fn live_type<'source>(
                 parts[position] = TemplatePart::Placeholder(children[position]);
             }
             let parts = tree.intern_template_parts(&parts[..child_count])?;
-            tree.intern_computed(ComputedType::TemplateLiteral(parts))?.erase()
+            tree.intern_computed(ComputedType::TemplateLiteral(parts))?
+                .erase()
         }
         SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {
             let spelling = match record.text {

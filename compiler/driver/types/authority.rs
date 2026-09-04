@@ -145,6 +145,17 @@ pub enum AuthorityFailure<'diagnostic> {
         #[source]
         cause: compiler_languages_python::ExtractionError,
     },
+    /// Pyrefly started for this source but did not complete its type-authority
+    /// transaction. This is not checker unavailability: the exact failure is
+    /// retained through the driver boundary.
+    #[error("Python checker authority failed")]
+    PythonChecker {
+        /// Bounded source diagnostic retained by the Python authority.
+        diagnostic: AuthorityDiagnostic<'diagnostic>,
+        /// Exact pyrefly transaction failure.
+        #[source]
+        cause: compiler_languages_python::CheckerError,
+    },
     /// Ruff returned a declaration span outside the exact Python source authority.
     #[error("Python authority returned an invalid source span")]
     PythonSpan {
@@ -304,6 +315,11 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                 class: python_class(cause),
                 diagnostic: *diagnostic,
             },
+            Self::PythonChecker { diagnostic, .. } => AuthorityFailureProjection {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: *diagnostic,
+            },
             Self::PythonSpan { diagnostic, .. } => AuthorityFailureProjection {
                 phase: AuthorityPhase::Project,
                 class: AuthorityDiagnosticClass::Projection,
@@ -384,7 +400,7 @@ impl<'diagnostic> AuthorityFailure<'diagnostic> {
                     LanguageProfile::TypeScript(_)
                 )
                 | (
-                    Self::Python { .. } | Self::PythonSpan { .. },
+                    Self::Python { .. } | Self::PythonChecker { .. } | Self::PythonSpan { .. },
                     LanguageProfile::Python(_)
                 )
                 | (

@@ -330,8 +330,12 @@ impl<'facts> PreparedFragment<'facts> {
                 })?;
         }
         if let Some(lane) = type_facts {
-            lane.admit_schema(u32::from(entity_count), lane.children, crate::FRAGMENT_SCHEMA)
-                .map_err(|fault| PrepareError::TypeFacts { fault })?;
+            lane.admit_schema(
+                u32::from(entity_count),
+                lane.children,
+                crate::FRAGMENT_SCHEMA,
+            )
+            .map_err(|fault| PrepareError::TypeFacts { fault })?;
         }
         if let Some(lane) = docs {
             lane.admit(u32::from(entity_count))

@@ -125,10 +125,10 @@ pub(super) fn compound_native_work_cleanup<'diagnostic>(
         | CompileFailure::UnsupportedStage { .. }
         | CompileFailure::ToolchainSelectionMismatch { .. }
         | CompileFailure::ToolchainMismatch { .. }
-         | CompileFailure::ExtensionAtomUnbound { .. }
-         | CompileFailure::FactRejected { .. }
-         | CompileFailure::CSharpProjection { .. }
-         | CompileFailure::NativeWork {
+        | CompileFailure::ExtensionAtomUnbound { .. }
+        | CompileFailure::FactRejected { .. }
+        | CompileFailure::CSharpProjection { .. }
+        | CompileFailure::NativeWork {
             phase: NativeWorkPhase::Cleanup,
             ..
         }
