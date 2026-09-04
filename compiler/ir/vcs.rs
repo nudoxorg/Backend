@@ -7,7 +7,7 @@
 use core::{cmp::Ordering, fmt, iter::Peekable};
 
 use crate::{
-    CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationLinkTarget, Ir, ItemIdIter, ItemView, Link, LinkId,
+    CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationLinkTarget, ExternalTarget, Ir, ItemIdIter, ItemView, Link, LinkId,
     LinkKind, LinkTarget,
     VariantFingerprint,
 };
@@ -326,7 +326,13 @@ fn stable_link_key(ir: &Ir, link: Link) -> Option<StableLinkKey> {
     let from = ir.version(link.from)?.identity();
     let target = match link.target {
         LinkTarget::Local(entity) => DeclarationLinkTarget::Local(ir.version(entity)?.identity()),
-        LinkTarget::External(external) => DeclarationLinkTarget::External(ir.external(external)?.identity),
+        LinkTarget::External(external) => match ir.external(external)? {
+            ExternalTarget::Stable { target } => DeclarationLinkTarget::Stable(*target),
+            ExternalTarget::Foreign(target) => DeclarationLinkTarget::Foreign(target.identity),
+            ExternalTarget::FragmentEntity { target, .. } => {
+                DeclarationLinkTarget::FragmentEntity(*target)
+            }
+        },
     };
     Some(StableLinkKey {
         from,

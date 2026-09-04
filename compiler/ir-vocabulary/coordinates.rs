@@ -115,7 +115,7 @@ pub type ExternalFragmentId = ContentId<IrFragmentDomain>;
 /// local_only(external_target());
 /// ```
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ExternalCoordinate<ExpectedKind> {
     /// Typed fragment authority that owns `ordinal`.
     pub fragment: ExternalFragmentId,

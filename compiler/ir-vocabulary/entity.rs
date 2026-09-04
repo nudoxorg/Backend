@@ -5,10 +5,10 @@
 /// Closed declaration shape retained in the semantic entity lane.
 ///
 /// The discriminant set is exactly the declaration-kind rows named by the
-/// compiler parity matrix (Module..Param); codes 0..=2 predate the full set
-/// and never move.
+/// compiler parity matrix. Codes `0..=12` are legacy compact-wire values and
+/// never move; `Macro` and `Namespace` extend that same one vocabulary.
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EntityKind {
     /// A callable declaration with parameters and an optional result.
     Function = 0,
@@ -16,7 +16,7 @@ pub enum EntityKind {
     Constant = 1,
     /// A field-bearing nominal record (struct, class, union form).
     Record = 2,
-    /// A namespace or module boundary.
+    /// A source module boundary.
     Module = 3,
     /// A named member of a record.
     Field = 4,
@@ -36,11 +36,16 @@ pub enum EntityKind {
     Reexport = 11,
     /// One declared parameter of a callable or generic declaration.
     Parameter = 12,
+    /// A source macro declaration retained independently of an ordinary
+    /// constant or callable.
+    Macro = 13,
+    /// A lexical namespace distinct from a source module boundary.
+    Namespace = 14,
 }
 
 impl EntityKind {
     /// Canonical declaration-kind order used by registry reports and tests.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Function,
         Self::Constant,
         Self::Record,
@@ -54,7 +59,20 @@ impl EntityKind {
         Self::Static,
         Self::Reexport,
         Self::Parameter,
+        Self::Macro,
+        Self::Namespace,
     ];
+
+    /// Narrow source compatibility spelling for the canonical `Alias` kind.
+    ///
+    /// `ItemKind` is an alias of this type, so render callers may retain the
+    /// historical `TypeAlias` spelling without introducing a second kind
+    /// discriminant plane.
+    #[allow(
+        non_upper_case_globals,
+        reason = "historical ItemKind::TypeAlias spelling remains a narrow source-compatibility constant"
+    )]
+    pub const TypeAlias: Self = Self::Alias;
 }
 
 impl From<EntityKind> for u16 {
@@ -74,6 +92,8 @@ impl From<EntityKind> for u16 {
             EntityKind::Static => 10,
             EntityKind::Reexport => 11,
             EntityKind::Parameter => 12,
+            EntityKind::Macro => 13,
+            EntityKind::Namespace => 14,
         }
     }
 }
@@ -98,6 +118,8 @@ impl TryFrom<u16> for EntityKind {
             10 => Ok(Self::Static),
             11 => Ok(Self::Reexport),
             12 => Ok(Self::Parameter),
+            13 => Ok(Self::Macro),
+            14 => Ok(Self::Namespace),
             actual => Err(EntityKindCodeError { actual }),
         }
     }

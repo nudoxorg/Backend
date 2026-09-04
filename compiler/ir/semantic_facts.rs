@@ -7,10 +7,10 @@
 //! admitted fact set always writes identical section bytes.
 
 use compiler_ir_vocabulary::{
-    Confidence, EntityId, ForeignKey, ForeignOrigin, Occurrence, OccurrenceTarget, ReferenceKind,
-    StableRef,
+    Confidence, DeclarationFamilyId, DeclarationIdentity, EntityId, ForeignKey, ForeignOrigin,
+    Occurrence, OccurrenceTarget, ReferenceKind, StableRef, VariantFingerprint,
 };
-use heart_identity::{ContentId, ContentIdDecodeError, IrFragmentDomain, SourceFactDomain};
+use heart_identity::{ContentId, ContentIdDecodeError, IrFragmentDomain};
 use thiserror::Error;
 
 /// Wire tag of a stable occurrence target.
@@ -22,6 +22,8 @@ pub(crate) const LOCAL_TARGET_TAG: u8 = 2;
 
 /// Byte width of one serialized 32-byte identity cell.
 const IDENTITY_BYTES: usize = 32;
+/// Byte width of one compact declaration family or variant cell.
+const COMPACT_DECLARATION_BYTES: usize = 16;
 
 /// One admitted occurrence fact bound to its owning entity ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +80,10 @@ pub enum OccurrenceFault {
     Truncated { ordinal: u32, needed: usize },
     #[error("occurrence section declares {declared} records but carries trailing bytes")]
     TrailingBytes { declared: u32 },
+    #[error(
+        "occurrence {ordinal} uses a schema-{schema} family-only stable endpoint that cannot represent an exact declaration variant"
+    )]
+    LegacyStableTarget { ordinal: u32, schema: u16 },
     #[error("a serialized identity cell in the occurrence section is invalid")]
     Authority(#[from] ContentIdDecodeError),
 }
@@ -144,7 +150,9 @@ impl<'bytes> OccurrenceLane<'bytes> {
         for input in self.inputs {
             length += 4 + 1 + 1 + 1 + 4 + 4;
             match input.occurrence.target {
-                OccurrenceTarget::Stable(_) => length += IDENTITY_BYTES * 2,
+                OccurrenceTarget::Stable(_) => {
+                    length += IDENTITY_BYTES + (COMPACT_DECLARATION_BYTES * 2)
+                }
                 OccurrenceTarget::Local(_) => length += 4,
                 OccurrenceTarget::Foreign(foreign) => {
                     length += 1 + 2;
@@ -184,9 +192,12 @@ impl<'bytes> OccurrenceLane<'bytes> {
                     payload[cursor..cursor + IDENTITY_BYTES]
                         .copy_from_slice(stable.fragment.as_ref());
                     cursor += IDENTITY_BYTES;
-                    payload[cursor..cursor + IDENTITY_BYTES]
-                        .copy_from_slice(stable.entity.as_ref());
-                    cursor += IDENTITY_BYTES;
+                    payload[cursor..cursor + COMPACT_DECLARATION_BYTES]
+                        .copy_from_slice(stable.declaration.family.as_bytes());
+                    cursor += COMPACT_DECLARATION_BYTES;
+                    payload[cursor..cursor + COMPACT_DECLARATION_BYTES]
+                        .copy_from_slice(stable.declaration.variant.as_bytes());
+                    cursor += COMPACT_DECLARATION_BYTES;
                 }
                 OccurrenceTarget::Foreign(foreign) => {
                     payload[cursor] = FOREIGN_TARGET_TAG;
@@ -351,6 +362,9 @@ pub(crate) fn occurrence_view_fault(fault: OccurrenceFault) -> crate::view::Occu
         OccurrenceFault::EmptyPath { ordinal } => View::EmptyPath { ordinal },
         OccurrenceFault::Truncated { ordinal, needed } => View::Truncated { ordinal, needed },
         OccurrenceFault::TrailingBytes { declared } => View::TrailingBytes { declared },
+        OccurrenceFault::LegacyStableTarget { ordinal, schema } => {
+            View::LegacyStableTarget { ordinal, schema }
+        }
         OccurrenceFault::Authority(source) => match source {
             ContentIdDecodeError::Width { actual, .. } => {
                 View::AuthorityWidth { ordinal: 0, actual }
@@ -376,6 +390,7 @@ pub(crate) fn occurrence_view_fault(fault: OccurrenceFault) -> crate::view::Occu
 pub(crate) fn validate_occurrence_payload(
     payload: &[u8],
     entity_count: u32,
+    schema: u16,
 ) -> Result<(), OccurrenceFault> {
     let mut reader = PayloadReader {
         payload,
@@ -399,15 +414,18 @@ pub(crate) fn validate_occurrence_payload(
         let target_tag = reader.read_u8()?;
         match target_tag {
             STABLE_TARGET_TAG => {
+                if schema < 6 {
+                    return Err(OccurrenceFault::LegacyStableTarget { ordinal, schema });
+                }
                 let fragment = reader.take(IDENTITY_BYTES)?;
                 ContentId::<IrFragmentDomain>::try_from(fragment)?;
-                let entity = reader.take(IDENTITY_BYTES)?;
-                ContentId::<SourceFactDomain>::try_from(entity)?;
+                reader.take(COMPACT_DECLARATION_BYTES)?;
+                reader.take(COMPACT_DECLARATION_BYTES)?;
             }
             FOREIGN_TARGET_TAG => {
                 let origin_tag = reader.read_u8()?;
                 let kind_cell = reader.read_u16()?;
-                if kind_cell > u16::from(compiler_ir_vocabulary::EntityKind::Parameter) + 1 {
+                if kind_cell > u16::from(compiler_ir_vocabulary::EntityKind::Namespace) + 1 {
                     return Err(OccurrenceFault::KindCell {
                         ordinal,
                         actual: kind_cell,
@@ -479,15 +497,19 @@ pub(crate) fn validate_occurrence_payload(
 /// Lazily decodes one validated occurrence section, lending envelope bytes.
 pub struct OccurrenceCursor<'fragment> {
     payload: &'fragment [u8],
+    schema: u16,
     cursor: usize,
+    ordinal: u32,
     remaining: u32,
 }
 
 impl<'fragment> OccurrenceCursor<'fragment> {
-    pub(crate) const fn new(payload: &'fragment [u8]) -> Self {
+    pub(crate) const fn new(payload: &'fragment [u8], schema: u16) -> Self {
         Self {
             payload,
+            schema,
             cursor: 4,
+            ordinal: 0,
             remaining: if payload.len() >= 4 {
                 u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
             } else {
@@ -505,12 +527,14 @@ impl<'fragment> Iterator for OccurrenceCursor<'fragment> {
             return None;
         }
         self.remaining -= 1;
+        let ordinal = self.ordinal;
+        self.ordinal = self.ordinal.saturating_add(1);
         let mut reader = PayloadReader {
             payload: self.payload,
             cursor: self.cursor,
-            ordinal: 0,
+            ordinal,
         };
-        let decoded = decode_one(&mut reader);
+        let decoded = decode_one(&mut reader, self.schema);
         self.cursor = reader.cursor;
         Some(decoded)
     }
@@ -518,14 +542,25 @@ impl<'fragment> Iterator for OccurrenceCursor<'fragment> {
 
 fn decode_one<'payload>(
     reader: &mut PayloadReader<'payload>,
+    schema: u16,
 ) -> Result<DecodedOccurrence<'payload>, OccurrenceFault> {
     let owner = reader.read_u32()?;
     let target_tag = reader.read_u8()?;
     let target = match target_tag {
         STABLE_TARGET_TAG => {
+            if schema < 6 {
+                return Err(OccurrenceFault::LegacyStableTarget {
+                    ordinal: reader.ordinal,
+                    schema,
+                });
+            }
             let fragment = ContentId::<IrFragmentDomain>::try_from(reader.take(IDENTITY_BYTES)?)?;
-            let entity = ContentId::<SourceFactDomain>::try_from(reader.take(IDENTITY_BYTES)?)?;
-            OccurrenceTarget::Stable(StableRef { fragment, entity })
+            let family = raw_compact_declaration_id(reader)?;
+            let variant = raw_variant_fingerprint(reader)?;
+            OccurrenceTarget::Stable(StableRef {
+                fragment,
+                declaration: DeclarationIdentity { family, variant },
+            })
         }
         LOCAL_TARGET_TAG => OccurrenceTarget::Local(EntityId::new(reader.read_u32()?)),
         FOREIGN_TARGET_TAG => {
@@ -648,6 +683,22 @@ fn decode_one<'payload>(
             span,
         },
     })
+}
+
+fn raw_compact_declaration_id(
+    reader: &mut PayloadReader<'_>,
+) -> Result<DeclarationFamilyId, OccurrenceFault> {
+    let mut bytes = [0_u8; COMPACT_DECLARATION_BYTES];
+    bytes.copy_from_slice(reader.take(COMPACT_DECLARATION_BYTES)?);
+    Ok(DeclarationFamilyId::from_raw(bytes))
+}
+
+fn raw_variant_fingerprint(
+    reader: &mut PayloadReader<'_>,
+) -> Result<VariantFingerprint, OccurrenceFault> {
+    let mut bytes = [0_u8; COMPACT_DECLARATION_BYTES];
+    bytes.copy_from_slice(reader.take(COMPACT_DECLARATION_BYTES)?);
+    Ok(VariantFingerprint::from_raw(bytes))
 }
 
 use compiler_ir_vocabulary::RelSpan;

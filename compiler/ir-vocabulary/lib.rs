@@ -20,9 +20,11 @@ pub use coordinates::{
 };
 pub use entity::{EntityKind, EntityKindCodeError};
 pub use identity::{
-    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, ForeignKey,
+    DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault,
+    DeclarationPathFault, ExternalDeclarationIdentity, ForeignKey,
     ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
-    PackageLineageFault, PreimageOverflow, Resolution, StableRef,
+    ForeignDeclarationId, PackageLineageFault, PreimageOverflow, Resolution, StableRef, VariantAvailability,
+    VariantFingerprint,
 };
 pub use occurrence::{
     Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,

@@ -39,7 +39,8 @@ pub use marker::{
     IndexSnapshotDomain, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
     IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding, LocalitySortedEncoding,
     ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain,
-    StageKeyDomain, ToolchainDomain,
+    StageKeyDomain, ToolchainDomain, DeclarationKeyDomain, DeclarationFamilyDomain,
+    DeclarationVariantDomain, ForeignDeclarationDomain, SemanticScopeDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};

@@ -30,8 +30,18 @@ pub(super) fn versions(
 ) -> Result<Box<[EntityVersion]>, compiler_ir::BuildError> {
     let count = facts.len;
     let signature_seeds = declaration_signature_seeds(facts)?;
-    let locators = lexical_locators(facts, &signature_seeds)?;
-    let variants = variant_fingerprints(facts, &locators)?;
+    // Variant framing must not depend on a lexical locator that already
+    // contains that same variant.  First resolve local nominal references
+    // through a member-insensitive structural locator, then mint every
+    // published variant.  The durable lexical locator can finally carry the
+    // exact parent variant without a self-reference cycle.
+    let signature_locators = lexical_locators(facts, &signature_seeds)?;
+    let variants = variant_fingerprints(facts, &signature_locators)?;
+    let parent_variant_bases = variants
+        .iter()
+        .map(|variant| CorePayloadHash::from_raw(*variant.as_bytes()))
+        .collect::<Vec<_>>();
+    let locators = lexical_locators(facts, &parent_variant_bases)?;
     let member_payloads = member_payloads(facts, &locators, &variants)?;
     let identities = declaration_identities(facts, scope, profile, &variants)?;
     let mut payloads = vec![None; count].into_boxed_slice();
@@ -91,10 +101,8 @@ fn declaration_identities(
                 let family = scoped.family_id(&mut preimage).map_err(|cause| compiler_ir::BuildError::ScopedDeclarationPreimage {
                     entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)), cause,
                 })?;
-                let mut bytes = [0_u8; 16];
-                bytes.copy_from_slice(&family.as_ref()[..16]);
                 values[ordinal] = Some(DeclarationIdentity {
-                    family: DeclarationFamilyId::from_raw(bytes),
+                    family: DeclarationFamilyId::from_content_id(family),
                     variant: *variants.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?,
                 });
                 state[ordinal] = 2;
@@ -177,7 +185,7 @@ fn variant_fingerprints(
     let mut type_visiting = vec![false; type_shapes.len()].into_boxed_slice();
     (0..facts.len)
         .map(|ordinal| {
-            let shape = collision_shape_for(
+            let shape = declaration_variant_for(
                 facts, ordinal, locators, &mut shapes, &mut type_shapes, &mut type_visiting,
             )?;
             Ok(VariantFingerprint::from_raw(*shape.as_bytes()))
@@ -191,7 +199,7 @@ fn variant_fingerprints(
 /// closed parent state and already-minted locator, never that coordinate.
 fn lexical_locators(
     facts: &FactSet<'_>,
-    signature_seeds: &[CorePayloadHash],
+    parent_bases: &[CorePayloadHash],
 ) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
     let mut values = vec![None; facts.len].into_boxed_slice();
     let mut state = vec![0_u8; facts.len].into_boxed_slice();
@@ -212,7 +220,11 @@ fn lexical_locators(
                         let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
                         bytes.extend_from_slice(values.get(parent).and_then(|value| *value)
                             .ok_or_else(|| dangling_entity(parent))?.as_ref());
-                        bytes.extend_from_slice(signature_seeds.get(parent)
+                        // This caller-selected basis is a full published
+                        // variant for durable locators, and a provisional
+                        // structural signature only while variants are being
+                        // minted. Neither staging ordinal enters the frame.
+                        bytes.extend_from_slice(parent_bases.get(parent)
                             .ok_or_else(|| dangling_entity(parent))?.as_ref());
                     }
                     ParentageState::UnrepresentedAuthorityOwner { identity } => {
@@ -224,6 +236,17 @@ fn lexical_locators(
                 let length = u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?;
                 bytes.extend_from_slice(&length.to_le_bytes());
                 bytes.extend_from_slice(facts.names[ordinal]);
+                // A root overload has no parent cell to distinguish it. The
+                // row's own structural basis therefore belongs to every
+                // lexical locator as well. During variant minting this is the
+                // full acyclic signature basis; afterward it is the exact
+                // published variant.
+                bytes.extend_from_slice(
+                    parent_bases
+                        .get(ordinal)
+                        .ok_or_else(|| dangling_entity(ordinal))?
+                        .as_ref(),
+                );
                 values[ordinal] = Some(CorePayloadHash::from_canonical_bytes(&bytes));
                 state[ordinal] = 2;
                 continue;
@@ -248,61 +271,447 @@ fn lexical_locators(
 }
 
 /// A member-insensitive declaration signature seed for lexical nesting. It
-/// owns only direct kind/name/type scalar evidence; ordered local members
-/// remain exclusively in the core payload plane.
+/// owns the complete coordinate-free declaration/type signature graph;
+/// ordered local members remain exclusively in the core payload plane.
 fn declaration_signature_seeds(
     facts: &FactSet<'_>,
 ) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
-    (0..facts.len).map(|ordinal| {
-        let record = facts.type_records[ordinal];
-        let mut bytes = Vec::with_capacity(48 + facts.names[ordinal].len());
-        bytes.extend_from_slice(b"compiler.declaration-signature-seed.v1");
-        bytes.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
-        bytes.extend_from_slice(&u32::try_from(facts.names[ordinal].len())
-            .map_err(|_| dangling_entity(ordinal))?.to_le_bytes());
-        bytes.extend_from_slice(facts.names[ordinal]);
-        bytes.push(u8::from(record.tag));
-        append_tag_owned_scalars(&mut bytes, record);
-        let start = usize::try_from(facts.type_child_starts[ordinal])
-            .map_err(|_| dangling_entity(ordinal))?;
-        let count = usize::from(facts.type_child_counts[ordinal]);
-        let end = start.checked_add(count).ok_or_else(|| dangling_entity(ordinal))?;
-        let targets = facts.type_child_targets.get(start..end).ok_or_else(|| dangling_entity(ordinal))?;
-        let names = facts.type_child_names.get(start..end).ok_or_else(|| dangling_entity(ordinal))?;
-        let flags = facts.type_child_flags.get(start..end).ok_or_else(|| dangling_entity(ordinal))?;
-        bytes.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| dangling_entity(ordinal))?.to_le_bytes());
-        for ((target, name), flags) in targets.iter().zip(names).zip(flags) {
-            match name { Some(name) => { bytes.push(1); bytes.extend_from_slice(&u32::try_from(name.len()).map_err(|_| dangling_entity(ordinal))?.to_le_bytes()); bytes.extend_from_slice(name); }, None => bytes.push(0) }
-            bytes.push(*flags);
-            append_direct_target_signature(&mut bytes, facts, *target)?;
-        }
-        Ok(CorePayloadHash::from_canonical_bytes(&bytes))
-    }).collect::<Result<Vec<_>, compiler_ir::BuildError>>().map(Vec::into_boxed_slice)
+    let total = facts.len + facts.anonymous_rows + facts.computed_rows;
+    let mut cache = vec![None; total].into_boxed_slice();
+    let mut state = vec![0_u8; total].into_boxed_slice();
+    let cycle_markers = signature_cycle_markers(facts, total)?;
+    for ordinal in 0..facts.len {
+        signature_shape(
+            facts,
+            ordinal as u32,
+            &mut cache,
+            &mut state,
+            &cycle_markers,
+        )?;
+    }
+    cache
+        .get(..facts.len)
+        .ok_or_else(|| dangling_entity(facts.len))?
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+        .ok_or_else(|| dangling_entity(facts.len))
 }
 
-fn append_direct_target_signature(
-    out: &mut Vec<u8>,
+/// Finds recursive components in the declaration/type signature graph without
+/// recursive calls or coordinate-bearing hashes. Every edge inside one SCC
+/// receives the same marker derived from a sorted multiset of its direct
+/// structural headers, so traversal entry and source row order cannot choose
+/// which sibling gets a special back-edge representation. An intra-component
+/// edge also frames its target's direct header, so the marker cannot collapse
+/// distinct labelled SCC topologies such as `A -> A` and `A -> B`.
+fn signature_cycle_markers(
+    facts: &FactSet<'_>,
+    total: usize,
+) -> Result<Box<[Option<CorePayloadHash>]>, compiler_ir::BuildError> {
+    #[derive(Clone, Copy)]
+    struct Frame {
+        slot: usize,
+        next: usize,
+        awaiting: Option<usize>,
+    }
+
+    let mut discovery = vec![u32::MAX; total].into_boxed_slice();
+    let mut low = vec![0_u32; total].into_boxed_slice();
+    let mut active = vec![false; total].into_boxed_slice();
+    let mut markers = vec![None; total].into_boxed_slice();
+    let mut tarjan = Vec::new();
+    let mut next_discovery = 0_u32;
+
+    for root in 0..total {
+        if discovery[root] != u32::MAX {
+            continue;
+        }
+        let mut frames = Vec::new();
+        signature_discover(root, &mut discovery, &mut low, &mut active, &mut tarjan, &mut next_discovery)?;
+        frames.push(Frame {
+            slot: root,
+            next: 0,
+            awaiting: None,
+        });
+        while let Some(frame) = frames.last_mut() {
+            if let Some(child) = frame.awaiting.take() {
+                low[frame.slot] = low[frame.slot].min(low[child]);
+                continue;
+            }
+            let row = signature_row_from_slot(facts, frame.slot)?;
+            let count = signature_dependency_count(facts, row)?;
+            if frame.next < count {
+                let position = frame.next;
+                frame.next += 1;
+                let Some(target) = signature_dependency_at(facts, row, position)? else {
+                    continue;
+                };
+                let target_slot = staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
+                if discovery[target_slot] == u32::MAX {
+                    frame.awaiting = Some(target_slot);
+                    signature_discover(
+                        target_slot,
+                        &mut discovery,
+                        &mut low,
+                        &mut active,
+                        &mut tarjan,
+                        &mut next_discovery,
+                    )?;
+                    frames.push(Frame {
+                        slot: target_slot,
+                        next: 0,
+                        awaiting: None,
+                    });
+                } else if active[target_slot] {
+                    low[frame.slot] = low[frame.slot].min(discovery[target_slot]);
+                }
+                continue;
+            }
+
+            let finished = frames.pop().ok_or_else(|| dangling_type(row))?;
+            if low[finished.slot] != discovery[finished.slot] {
+                continue;
+            }
+            let mut component = Vec::new();
+            loop {
+                let slot = tarjan.pop().ok_or_else(|| dangling_type(row))?;
+                active[slot] = false;
+                component.push(slot);
+                if slot == finished.slot {
+                    break;
+                }
+            }
+            let first = *component.first().ok_or_else(|| dangling_type(row))?;
+            let recursive = component.len() > 1
+                || signature_has_self_edge(facts, signature_row_from_slot(facts, first)?)?;
+            if recursive {
+                let marker = signature_component_marker(facts, &component)?;
+                for slot in component {
+                    markers[slot] = Some(marker);
+                }
+            }
+        }
+    }
+    Ok(markers)
+}
+
+fn signature_discover(
+    slot: usize,
+    discovery: &mut [u32],
+    low: &mut [u32],
+    active: &mut [bool],
+    tarjan: &mut Vec<usize>,
+    next: &mut u32,
+) -> Result<(), compiler_ir::BuildError> {
+    let value = *next;
+    *next = next.checked_add(1).ok_or_else(|| dangling_entity(slot))?;
+    *discovery.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = value;
+    *low.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = value;
+    *active.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = true;
+    tarjan.push(slot);
+    Ok(())
+}
+
+fn signature_row_from_slot(
+    facts: &FactSet<'_>,
+    slot: usize,
+) -> Result<u32, compiler_ir::BuildError> {
+    if slot < facts.len {
+        return u32::try_from(slot).map_err(|_| dangling_entity(slot));
+    }
+    let anonymous_end = facts.len + facts.anonymous_rows;
+    if slot < anonymous_end {
+        let ordinal = u32::try_from(slot - facts.len).map_err(|_| dangling_entity(slot))?;
+        return ANONYMOUS_ROW_BASE.checked_add(ordinal).ok_or_else(|| dangling_type(ordinal));
+    }
+    let computed = slot.checked_sub(anonymous_end).ok_or_else(|| dangling_entity(slot))?;
+    if computed < facts.computed_rows {
+        let ordinal = u32::try_from(computed).map_err(|_| dangling_entity(slot))?;
+        return COMPUTED_ROW_BASE.checked_add(ordinal).ok_or_else(|| dangling_type(ordinal));
+    }
+    Err(dangling_entity(slot))
+}
+
+fn signature_dependency_count(
+    facts: &FactSet<'_>,
+    row: u32,
+) -> Result<usize, compiler_ir::BuildError> {
+    let (record, targets, _, _) = staged_type_row(facts, row)?;
+    let nominal = if matches!(record.nominal, Some(NominalRef::Local(_))) {
+        1
+    } else {
+        0
+    };
+    Ok(targets.len() + nominal)
+}
+
+fn signature_dependency_at(
+    facts: &FactSet<'_>,
+    row: u32,
+    position: usize,
+) -> Result<Option<u32>, compiler_ir::BuildError> {
+    let (record, targets, _, _) = staged_type_row(facts, row)?;
+    let local_nominal = match record.nominal {
+        Some(NominalRef::Local(local)) => Some(local.raw),
+        _ => None,
+    };
+    let target = match (local_nominal, position) {
+        (Some(local), 0) => local,
+        (Some(_), position) => *targets
+            .get(position - 1)
+            .ok_or_else(|| dangling_type(row))?,
+        (None, position) => *targets.get(position).ok_or_else(|| dangling_type(row))?,
+    };
+    Ok((target != STAGED_TEXT_CHILD).then_some(target))
+}
+
+fn signature_has_self_edge(
+    facts: &FactSet<'_>,
+    row: u32,
+) -> Result<bool, compiler_ir::BuildError> {
+    let count = signature_dependency_count(facts, row)?;
+    for position in 0..count {
+        if signature_dependency_at(facts, row, position)? == Some(row) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn signature_component_marker(
+    facts: &FactSet<'_>,
+    component: &[usize],
+) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+    let mut headers = Vec::with_capacity(component.len());
+    for slot in component {
+        let row = signature_row_from_slot(facts, *slot)?;
+        headers.push(signature_direct_header(facts, row)?);
+    }
+    headers.sort_unstable_by_key(|header| *header.as_bytes());
+    let byte_len = headers
+        .len()
+        .checked_mul(CorePayloadHash::BYTES)
+        .and_then(|value| value.checked_add(40))
+        .ok_or_else(|| dangling_entity(component.len()))?;
+    let mut preimage = Vec::with_capacity(byte_len);
+    preimage.extend_from_slice(b"compiler.declaration-signature-scc.v1");
+    preimage.extend_from_slice(
+        &u32::try_from(headers.len())
+            .map_err(|_| dangling_entity(component.len()))?
+            .to_le_bytes(),
+    );
+    for header in headers {
+        preimage.extend_from_slice(header.as_ref());
+    }
+    Ok(CorePayloadHash::from_canonical_bytes(&preimage))
+}
+
+/// A row-local, coordinate-free signature header. It deliberately omits
+/// local target edges: callers frame those with either a completed signature
+/// or an SCC marker plus this header. A sealed external fragment coordinate is
+/// authority supplied by that fragment, not a staging coordinate of this IR.
+fn signature_direct_header(
+    facts: &FactSet<'_>,
+    row: u32,
+) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+    let (record, _, _, _) = staged_type_row(facts, row)?;
+    let mut header = Vec::with_capacity(64);
+    header.extend_from_slice(b"compiler.declaration-signature-direct-header.v2");
+    append_signature_row_header(&mut header, facts, row)?;
+    header.push(u8::from(record.tag));
+    append_tag_owned_scalars(&mut header, record);
+    append_optional_signature_text(&mut header, record.text, row)?;
+    append_optional_signature_text(&mut header, record.text2, row)?;
+    match record.nominal {
+        None | Some(NominalRef::Local(_)) => header.push(0),
+        Some(NominalRef::External(external)) => {
+            header.push(1);
+            header.extend_from_slice(external.fragment.as_ref());
+            header.extend_from_slice(&external.ordinal.to_le_bytes());
+        }
+    }
+    Ok(CorePayloadHash::from_canonical_bytes(&header))
+}
+
+/// Resolves a full declaration/type signature with an explicit post-order
+/// stack. It is separate from the semantic payload resolver because it is
+/// allowed to frame an explicit coordinate-free recursion marker for a
+/// declaration-nominal cycle; no staged coordinate ever becomes identity
+/// input. Anonymous/computed cycles remain a typed rejection in the actual
+/// type resolver below.
+fn signature_shape(
+    facts: &FactSet<'_>,
+    row: u32,
+    cache: &mut [Option<CorePayloadHash>],
+    state: &mut [u8],
+    cycle_markers: &[Option<CorePayloadHash>],
+) -> Result<CorePayloadHash, compiler_ir::BuildError> {
+    let slot = staged_type_slot(facts, row).ok_or_else(|| dangling_type(row))?;
+    if let Some(shape) = cache[slot] {
+        return Ok(shape);
+    }
+    let mut stack = Vec::new();
+    stack.push((row, false));
+    while let Some((current, exit)) = stack.pop() {
+        let current_slot = staged_type_slot(facts, current).ok_or_else(|| dangling_type(current))?;
+        if cache[current_slot].is_some() {
+            continue;
+        }
+        if !exit {
+            if state[current_slot] == 1 {
+                continue;
+            }
+            state[current_slot] = 1;
+            stack.push((current, true));
+            let (record, targets, _, _) = staged_type_row(facts, current)?;
+            for target in targets.iter().rev().copied() {
+                signature_push_dependency(facts, target, cache, state, &mut stack)?;
+            }
+            if let Some(NominalRef::Local(local)) = record.nominal {
+                signature_push_dependency(facts, local.raw, cache, state, &mut stack)?;
+            }
+            continue;
+        }
+        let (record, targets, names, flags) = staged_type_row(facts, current)?;
+        let mut preimage = Vec::with_capacity(64 + targets.len() * 32);
+        preimage.extend_from_slice(b"compiler.declaration-signature-seed.v2");
+        append_signature_row_header(&mut preimage, facts, current)?;
+        preimage.push(u8::from(record.tag));
+        append_tag_owned_scalars(&mut preimage, record);
+        append_optional_signature_text(&mut preimage, record.text, current)?;
+        append_optional_signature_text(&mut preimage, record.text2, current)?;
+        match record.nominal {
+            None => preimage.push(0),
+            Some(NominalRef::Local(local)) => {
+                preimage.push(1);
+                append_signature_target(
+                    &mut preimage,
+                    facts,
+                    current,
+                    local.raw,
+                    cache,
+                    cycle_markers,
+                )?;
+            }
+            Some(NominalRef::External(external)) => {
+                preimage.push(2);
+                // This is a sealed foreign-fragment coordinate supplied by
+                // its authority, never a local staged row coordinate.
+                preimage.extend_from_slice(external.fragment.as_ref());
+                preimage.extend_from_slice(&external.ordinal.to_le_bytes());
+            }
+        }
+        preimage.extend_from_slice(
+            &u32::try_from(targets.len())
+                .map_err(|_| dangling_type(current))?
+                .to_le_bytes(),
+        );
+        for ((target, name), flag) in targets.iter().zip(names).zip(flags) {
+            append_optional_signature_text(&mut preimage, *name, current)?;
+            preimage.push(*flag);
+            append_signature_target(
+                &mut preimage,
+                facts,
+                current,
+                *target,
+                cache,
+                cycle_markers,
+            )?;
+        }
+        cache[current_slot] = Some(CorePayloadHash::from_canonical_bytes(&preimage));
+        state[current_slot] = 2;
+    }
+    cache[slot].ok_or_else(|| dangling_type(row))
+}
+
+fn signature_push_dependency(
     facts: &FactSet<'_>,
     target: u32,
+    cache: &[Option<CorePayloadHash>],
+    state: &[u8],
+    stack: &mut Vec<(u32, bool)>,
 ) -> Result<(), compiler_ir::BuildError> {
-    if target == STAGED_TEXT_CHILD { out.push(2); return Ok(()); }
-    if target < facts.len as u32 {
-        let ordinal = usize::try_from(target).map_err(|_| dangling_entity(0))?;
-        let record = *facts.type_records.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?;
+    if target == STAGED_TEXT_CHILD {
+        return Ok(());
+    }
+    let slot = staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
+    if cache[slot].is_none() && state[slot] == 0 {
+        stack.push((target, false));
+    }
+    Ok(())
+}
+
+fn append_signature_row_header(
+    out: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    row: u32,
+) -> Result<(), compiler_ir::BuildError> {
+    if row < facts.len as u32 {
+        let ordinal = usize::try_from(row).map_err(|_| dangling_entity(0))?;
+        let _ = facts.type_records.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?;
         out.push(0);
         out.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
         out.extend_from_slice(&u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?.to_le_bytes());
         out.extend_from_slice(facts.names[ordinal]);
-        out.push(u8::from(record.tag));
-        append_tag_owned_scalars(out, record);
         return Ok(());
     }
-    let (record, _, _, _) = staged_type_row(facts, target)?;
-    out.push(1);
-    out.push(u8::from(record.tag));
-    append_tag_owned_scalars(out, record);
+    out.push(if row < COMPUTED_ROW_BASE { 1 } else { 2 });
     Ok(())
 }
+
+fn append_optional_signature_text(
+    out: &mut Vec<u8>,
+    text: Option<&[u8]>,
+    row: u32,
+) -> Result<(), compiler_ir::BuildError> {
+    match text {
+        Some(text) => {
+            out.push(1);
+            out.extend_from_slice(
+                &u32::try_from(text.len())
+                    .map_err(|_| dangling_type(row))?
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(text);
+        }
+        None => out.push(0),
+    }
+    Ok(())
+}
+
+fn append_signature_target(
+    out: &mut Vec<u8>,
+    facts: &FactSet<'_>,
+    source: u32,
+    target: u32,
+    cache: &[Option<CorePayloadHash>],
+    cycle_markers: &[Option<CorePayloadHash>],
+) -> Result<(), compiler_ir::BuildError> {
+    if target == STAGED_TEXT_CHILD {
+        out.push(0);
+        return Ok(());
+    }
+    let source_slot = staged_type_slot(facts, source).ok_or_else(|| dangling_type(source))?;
+    let target_slot = staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
+    if let Some(marker) = cycle_markers[source_slot] {
+        if cycle_markers[target_slot] == Some(marker) {
+            out.push(1);
+            out.extend_from_slice(marker.as_ref());
+            // The component marker makes SCC entry/reversal stable; the
+            // target's direct header retains labelled edge topology inside
+            // that SCC without admitting an ordinal.
+            out.extend_from_slice(signature_direct_header(facts, target)?.as_ref());
+            return Ok(());
+        }
+    }
+    let shape = cache[target_slot].ok_or_else(|| dangling_type(target))?;
+    out.push(2);
+    out.extend_from_slice(shape.as_ref());
+    Ok(())
+}
+
 
 /// Direct, coordinate-free material captured when a fact is admitted.  This
 /// is a payload basis, not a declaration stable-key input.  Local targets are
@@ -364,11 +773,11 @@ pub(super) fn fact_payload_basis(fact: &SemanticFact<'_>) -> CorePayloadHash {
     CorePayloadHash::from_canonical_bytes(&preimage)
 }
 
-/// Minimal structural shape used only to distinguish a proved same-scope
-/// sibling collision.  Unlike a payload, it deliberately excludes member
+/// Structural declaration signature framed for every row. Unlike a payload,
+/// it deliberately excludes member
 /// topology, source/provenance, docs, visibility, extensions, and occurrence
 /// planes, so editing those facts never remints a collided declaration.
-fn collision_shape_for(
+fn declaration_variant_for(
     facts: &FactSet<'_>,
     ordinal: usize,
     locators: &[CorePayloadHash],

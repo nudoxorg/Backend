@@ -398,7 +398,7 @@ const fn entity_kind(kind: DeclarationKind, is_const: bool) -> EntityKind {
         | DeclarationKind::RecordStruct => EntityKind::Record,
         DeclarationKind::Interface => EntityKind::Trait,
         DeclarationKind::Enum => EntityKind::Enum,
-        DeclarationKind::Namespace => EntityKind::Module,
+        DeclarationKind::Namespace => EntityKind::Namespace,
         DeclarationKind::Delegate
         | DeclarationKind::Constructor
         | DeclarationKind::Method
@@ -416,7 +416,7 @@ const fn entity_kind(kind: DeclarationKind, is_const: bool) -> EntityKind {
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
-        EntityKind::Record | EntityKind::Module => SemanticProductConstructor::PRODUCT,
+        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => SemanticProductConstructor::PRODUCT,
         EntityKind::Trait => SemanticProductConstructor::INTERSECTION,
         EntityKind::Enum => SemanticProductConstructor::UNION,
         EntityKind::Constant
@@ -426,7 +426,8 @@ const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
         | EntityKind::Variant
         | EntityKind::Static
         | EntityKind::Reexport
-        | EntityKind::Parameter => LEAF_PRODUCT,
+        | EntityKind::Parameter
+        | EntityKind::Macro => LEAF_PRODUCT,
     }
 }
 

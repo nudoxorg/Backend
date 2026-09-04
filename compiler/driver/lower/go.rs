@@ -299,7 +299,9 @@ const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
         | EntityKind::Variant
         | EntityKind::Static
         | EntityKind::Reexport
-        | EntityKind::Parameter => LEAF_PRODUCT,
+        | EntityKind::Parameter
+        | EntityKind::Macro
+        | EntityKind::Namespace => LEAF_PRODUCT,
     }
 }
 

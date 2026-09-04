@@ -259,8 +259,8 @@ fn write_concrete_type(
             Some(item) => write_atom(output, item.name()),
             None => output.write_str("?entity"),
         },
-        ConcreteType::External(external) => match ir.external(external) {
-            Some(target) => write_atom(output, ir.atom(target.display).unwrap_or(b"?external")),
+        ConcreteType::External(external) => match ir.external(external).and_then(external_display) {
+            Some(display) => write_atom(output, ir.atom(display).unwrap_or(b"?external")),
             None => output.write_str("?external"),
         },
         ConcreteType::Parameter(name) => write_atom(output, ir.atom(name).unwrap_or(b"?generic")),
@@ -721,8 +721,8 @@ fn write_type_query(output: &mut impl fmt::Write, ir: &Ir, query: TypeQuery) -> 
             }
             Ok(())
         }
-        TypeQuery::External(external) => match ir.external(external) {
-            Some(target) => write_atom(output, ir.atom(target.path).unwrap_or(b"?external")),
+        TypeQuery::External(external) => match ir.external(external).and_then(external_path) {
+            Some(path) => write_atom(output, ir.atom(path).unwrap_or(b"?external")),
             None => output.write_str("?external"),
         },
     }
@@ -857,8 +857,8 @@ fn write_link_target(output: &mut impl fmt::Write, ir: &Ir, target: LinkTarget) 
             }
             None => output.write_str("#dangling"),
         },
-        LinkTarget::External(external) => match ir.external(external) {
-            Some(target) => write_atom(output, ir.atom(target.path).unwrap_or(b"#unresolved")),
+        LinkTarget::External(external) => match ir.external(external).and_then(external_path) {
+            Some(path) => write_atom(output, ir.atom(path).unwrap_or(b"#unresolved")),
             None => output.write_str("#unresolved"),
         },
     }
@@ -874,10 +874,26 @@ fn write_embedding_target(
             Some(item) => write_atom(output, item.name()),
             None => output.write_str("?dangling"),
         },
-        LinkTarget::External(external) => match ir.external(external) {
-            Some(target) => write_atom(output, ir.atom(target.display).unwrap_or(b"?unresolved")),
+        LinkTarget::External(external) => match ir.external(external).and_then(external_display) {
+            Some(display) => write_atom(output, ir.atom(display).unwrap_or(b"?unresolved")),
             None => output.write_str("?unresolved"),
         },
+    }
+}
+
+fn external_path(target: &crate::ExternalTarget) -> Option<crate::AtomId> {
+    match target {
+        crate::ExternalTarget::Foreign(target) => Some(target.path),
+        crate::ExternalTarget::FragmentEntity { display, .. } => Some(*display),
+        crate::ExternalTarget::Stable { .. } => None,
+    }
+}
+
+fn external_display(target: &crate::ExternalTarget) -> Option<crate::AtomId> {
+    match target {
+        crate::ExternalTarget::Foreign(target) => Some(target.display),
+        crate::ExternalTarget::FragmentEntity { display, .. } => Some(*display),
+        crate::ExternalTarget::Stable { .. } => None,
     }
 }
 

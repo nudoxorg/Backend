@@ -325,7 +325,8 @@ const fn release_matches(profile: ProfileRelease, authority: JavaRelease) -> boo
 
 const fn entity_kind(kind: DeclarationKind) -> EntityKind {
     match kind {
-        DeclarationKind::Module | DeclarationKind::Package => EntityKind::Module,
+        DeclarationKind::Module => EntityKind::Module,
+        DeclarationKind::Package => EntityKind::Namespace,
         DeclarationKind::Class | DeclarationKind::Record => EntityKind::Record,
         DeclarationKind::Interface | DeclarationKind::Annotation => EntityKind::Trait,
         DeclarationKind::Enum => EntityKind::Enum,
@@ -338,7 +339,7 @@ const fn entity_kind(kind: DeclarationKind) -> EntityKind {
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
-        EntityKind::Record | EntityKind::Module => SemanticProductConstructor::PRODUCT,
+        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => SemanticProductConstructor::PRODUCT,
         EntityKind::Trait => SemanticProductConstructor::INTERSECTION,
         EntityKind::Enum => SemanticProductConstructor::UNION,
         EntityKind::Constant
@@ -348,7 +349,8 @@ const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
         | EntityKind::Variant
         | EntityKind::Static
         | EntityKind::Reexport
-        | EntityKind::Parameter => LEAF_PRODUCT,
+        | EntityKind::Parameter
+        | EntityKind::Macro => LEAF_PRODUCT,
     }
 }
 

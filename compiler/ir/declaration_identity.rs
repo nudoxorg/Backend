@@ -4,9 +4,9 @@
 //! Structural variants are framed outside this key and never enter it.
 
 use compiler_vocabulary::LanguageProfile;
-use heart_identity::{ContentId, SourceFactDomain};
+use heart_identity::{ContentId, DeclarationFamilyDomain};
 
-use crate::semantic::{DeclarationFamilyId, DeclarationIdentity};
+use crate::DeclarationIdentity;
 
 /// Purpose tag for declaration keys whose language profile and closed
 /// containment fact are part of the declaration family. Variants are not
@@ -161,9 +161,9 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
     pub fn family_id(
         &self,
         out: &mut [u8],
-    ) -> Result<ContentId<SourceFactDomain>, crate::PreimageOverflow> {
+    ) -> Result<ContentId<DeclarationFamilyDomain>, crate::PreimageOverflow> {
         let written = self.write_family_preimage(out)?;
-        Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(
+        Ok(ContentId::<DeclarationFamilyDomain>::from_canonical_bytes(
             &out[..written],
         ))
     }

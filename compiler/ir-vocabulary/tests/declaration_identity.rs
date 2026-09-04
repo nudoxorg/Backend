@@ -1,14 +1,14 @@
 //! Proves declaration identity: stable ids are minted from exactly the
-//! `(package, path, kind, name)` key cells plus a content disambiguator —
-//! never from any ordinal — and foreign keys hash their key cells, never a
+//! `(package, path, kind, name)` key cells in their dedicated family-key
+//! domain — never from any ordinal — and foreign keys hash their key cells, never a
 //! resolved target or display spelling.
 
 use compiler_ir_vocabulary::{
-    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, EntityKind,
+    DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault, DeclarationPathFault, EntityKind,
     ForeignKey, ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
-    PackageLineageFault, PreimageOverflow, ReferenceKind, RelSpan, RelSpanFault, StableRef,
+    PackageLineageFault, PreimageOverflow, ReferenceKind, RelSpan, RelSpanFault, StableRef, VariantFingerprint,
 };
-use heart_identity::{ContentId, SourceFactDomain};
+use heart_identity::{ContentId, DeclarationKeyDomain};
 use thiserror::Error;
 
 /// Typed propagation keeps every assertion exact without panicking seams.
@@ -63,8 +63,15 @@ fn key(name: &'static [u8]) -> Result<DeclarationKey<'static>, TestFailure> {
     )?)
 }
 
-fn stable(name: &'static [u8]) -> Result<ContentId<SourceFactDomain>, TestFailure> {
+fn stable(name: &'static [u8]) -> Result<ContentId<DeclarationKeyDomain>, TestFailure> {
     Ok(key(name)?.stable_id(&mut [0_u8; 512])?)
+}
+
+fn endpoint(name: &'static [u8]) -> DeclarationIdentity {
+    DeclarationIdentity {
+        family: DeclarationFamilyId::from_canonical_bytes(name),
+        variant: VariantFingerprint::from_canonical_bytes(name),
+    }
 }
 
 /// The identity cell order is `(lineage, path, kind, name)` plus an optional
@@ -251,8 +258,8 @@ fn foreign_key_digest_excludes_display_and_resolved_targets() -> Result<(), Test
 #[test]
 fn occurrences_carry_target_kind_confidence_and_owner_relative_span() -> Result<(), TestFailure> {
     let fragment = compiler_ir_vocabulary::ExternalFragmentId::from_canonical_bytes(b"fragment-a");
-    let entity = stable(b"serialize")?;
-    let target = OccurrenceTarget::Stable(StableRef { fragment, entity });
+    let declaration = endpoint(b"serialize");
+    let target = OccurrenceTarget::Stable(StableRef { fragment, declaration });
     let occurrence = Occurrence {
         target,
         kind: ReferenceKind::FunctionCall,

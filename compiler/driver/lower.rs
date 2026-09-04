@@ -9,8 +9,9 @@
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, CvQualifiers,
-    CxxReferenceCategory, DocInput, EntityAuthorityFacts, ExternalTarget, FactAvailability, Ir,
-    CorePayloadHash, DeclarationFamilyId, ExternalDeclarationIdentity, IrBuilder, ItemKind,
+    CxxReferenceCategory, DocInput, EntityAuthorityFacts, ExternalTarget, FactAvailability,
+    ForeignExternalTarget, ForeignTargetOrigin, Ir, CorePayloadHash, ForeignDeclarationId,
+    ExternalDeclarationIdentity, IrBuilder, ItemKind,
     LanguageExtensionInput, ListSpan, LiteralType, NominalRef, ParentageAuthority,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
     ObjectMember, PropertyKey,
@@ -2091,7 +2092,7 @@ impl<'source> FactSet<'source> {
             };
             *item = TreeItemInput {
                 name: self.names[ordinal],
-                kind: item_kind(self.kinds[ordinal]),
+                kind: self.kinds[ordinal],
                 visibility: self.visibility[ordinal],
                 authority: self.entity_authority(ordinal, &versions[..fact_count])?,
                 parent: local_parent(self.provenance.parentage()[ordinal])
@@ -2364,19 +2365,21 @@ fn doc_input<'source>(
                     identity.extend_from_slice(ecosystem);
                     identity.push(0);
                     identity.extend_from_slice(path);
-                    let package = tree.intern_atom(ecosystem)?;
+                    let ecosystem = tree.intern_atom(ecosystem)?;
                     let path_id = tree.intern_atom(path)?;
                     let display_id = tree.intern_atom(path)?;
-                    TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                        identity: ExternalDeclarationIdentity {
-                            family: DeclarationFamilyId::from_canonical_bytes(&identity),
-                            variant: VariantAvailability::Unavailable,
+                    TreeLinkTarget::External(tree.intern_external(ExternalTarget::Foreign(
+                        ForeignExternalTarget {
+                            identity: ExternalDeclarationIdentity {
+                                foreign: ForeignDeclarationId::from_canonical_bytes(&identity),
+                                variant: VariantAvailability::Unavailable,
+                            },
+                            origin: ForeignTargetOrigin::Unspecified { ecosystem },
+                            path: path_id,
+                            display: display_id,
+                            kind: None,
                         },
-                        package: Some(package),
-                        path: path_id,
-                        display: display_id,
-                        kind: None,
-                    })?)
+                    ))?)
                 }
             },
         }),
@@ -2691,20 +2694,9 @@ fn external_from_occurrence<'source>(
             Ok(TreeLinkTarget::Local(compiler_ir::TreeEntityId::new(local.raw)))
         }
         compiler_ir::OccurrenceTarget::Stable(stable) => {
-            let mut identity = [0_u8; 64];
-            identity[..32].copy_from_slice(stable.fragment.as_ref());
-            identity[32..].copy_from_slice(stable.entity.as_ref());
-            let path = tree.intern_atom(b"stable")?;
-            Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                identity: ExternalDeclarationIdentity {
-                    family: DeclarationFamilyId::from_canonical_bytes(&identity),
-                    variant: VariantAvailability::Unavailable,
-                },
-                package: None,
-                path,
-                display: path,
-                kind: None,
-            })?))
+            Ok(TreeLinkTarget::External(
+                tree.intern_external(ExternalTarget::Stable { target: stable })?,
+            ))
         }
         compiler_ir::OccurrenceTarget::Foreign(foreign) => {
             // The vocabulary owns the domain separation, origin cells, and
@@ -2718,32 +2710,42 @@ fn external_from_occurrence<'source>(
             let identity = foreign.key_id(&mut identity).map_err(|cause| {
                 compiler_ir::BuildError::ForeignKeyPreimage { owner, target, cause }
             })?;
-            let package = match foreign.origin {
+            let origin = match foreign.origin {
                 compiler_ir::ForeignOrigin::Package(lineage) => {
-                    Some(tree.intern_atom(lineage.name.as_bytes())?)
+                    ForeignTargetOrigin::Package {
+                        ecosystem: tree.intern_atom(lineage.ecosystem.as_bytes())?,
+                        package: tree.intern_atom(lineage.name.as_bytes())?,
+                    }
                 }
                 compiler_ir::ForeignOrigin::Namespace {
                     ecosystem,
                     namespace,
                 } => {
-                    Some(tree.intern_atom(namespace.as_bytes())?)
+                    ForeignTargetOrigin::Namespace {
+                        ecosystem: tree.intern_atom(ecosystem.as_bytes())?,
+                        namespace: tree.intern_atom(namespace.as_bytes())?,
+                    }
                 }
                 compiler_ir::ForeignOrigin::Universe { ecosystem } => {
-                    Some(tree.intern_atom(ecosystem.as_bytes())?)
+                    ForeignTargetOrigin::Universe {
+                        ecosystem: tree.intern_atom(ecosystem.as_bytes())?,
+                    }
                 }
             };
             let path = tree.intern_atom(foreign.path.as_bytes())?;
             let display = tree.intern_atom(foreign.display.as_bytes())?;
-            Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                identity: ExternalDeclarationIdentity {
-                    family: DeclarationFamilyId::from_canonical_bytes(identity.as_ref()),
-                    variant: VariantAvailability::Unavailable,
+            Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget::Foreign(
+                ForeignExternalTarget {
+                    identity: ExternalDeclarationIdentity {
+                        foreign: ForeignDeclarationId::from_content_id(identity),
+                        variant: VariantAvailability::Unavailable,
+                    },
+                    origin,
+                    path,
+                    display,
+                    kind: foreign.kind,
                 },
-                package,
-                path,
-                display,
-                kind: foreign.kind.map(item_kind),
-            })?))
+            ))?))
         }
     }
 }
@@ -3289,18 +3291,9 @@ fn live_type<'source>(
                     raw: external.ordinal,
                 })?;
                 let path = tree.intern_atom(spelling)?;
-                let mut key = [0_u8; 36];
-                key[..32].copy_from_slice(external.fragment.as_ref());
-                key[32..].copy_from_slice(&external.ordinal.to_le_bytes());
-                let target = tree.intern_external(ExternalTarget {
-                    identity: ExternalDeclarationIdentity {
-                        family: DeclarationFamilyId::from_canonical_bytes(&key),
-                        variant: VariantAvailability::Unavailable,
-                    },
-                    package: None,
-                    path,
+                let target = tree.intern_external(ExternalTarget::FragmentEntity {
+                    target: external,
                     display: path,
-                    kind: None,
                 })?;
                 tree.intern_concrete(ConcreteType::External(target))?.erase()
             }
@@ -3683,23 +3676,6 @@ const fn builtin_from_spelling(spelling: &[u8]) -> Option<BuiltinType> {
     }
 }
 
-const fn item_kind(kind: EntityKind) -> ItemKind {
-    match kind {
-        EntityKind::Function => ItemKind::Function,
-        EntityKind::Constant => ItemKind::Constant,
-        EntityKind::Record => ItemKind::Record,
-        EntityKind::Module => ItemKind::Module,
-        EntityKind::Field => ItemKind::Field,
-        EntityKind::Alias => ItemKind::TypeAlias,
-        EntityKind::Trait => ItemKind::Trait,
-        EntityKind::Implementation => ItemKind::Implementation,
-        EntityKind::Enum => ItemKind::Enum,
-        EntityKind::Variant => ItemKind::Variant,
-        EntityKind::Static => ItemKind::Static,
-        EntityKind::Reexport => ItemKind::Reexport,
-        EntityKind::Parameter => ItemKind::Parameter,
-    }
-}
 
 /// Exact canonicalization, preparation, or write failure of the emission
 /// lane. Every fact-level invariant is already proven by [`FactSet::push`],

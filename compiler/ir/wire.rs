@@ -375,6 +375,8 @@ pub(crate) fn decode_validated_entity(record: &[u8]) -> EntityRecord {
         10 => EntityKind::Static,
         11 => EntityKind::Reexport,
         12 => EntityKind::Parameter,
+        13 => EntityKind::Macro,
+        14 => EntityKind::Namespace,
         _ => EntityKind::Function,
     };
     EntityRecord {
@@ -511,4 +513,4 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
 /// The fragment envelope magic: `"NXIR"` in every fragment.
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
 /// The fragment envelope schema version.
-pub const FRAGMENT_SCHEMA: u16 = 5;
+pub const FRAGMENT_SCHEMA: u16 = 6;

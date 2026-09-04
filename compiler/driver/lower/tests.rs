@@ -6,7 +6,7 @@ use compiler_ir::{
     AtomListId, BuildError, ConcreteType, EntityId, EntityKind, EntityVersion, FragmentView, Occurrence,
     CorePayloadHash, EntityAuthorityFacts, FactAvailability, ParentageAuthority, PrepareError,
     PreparedFragment, ReopenedTypeParameterList, RustFacts,
-    RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
+    RustOwnership, NominalRef, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
     TypeTriplePayload, VariadicForm, Visibility,
 };
@@ -1981,9 +1981,9 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
         return Err(TestError::Tail);
     }
 
-    // Bound overload siblings exercise the formerly undersized fixed scope
-    // buffer. The central scoped-key writer preflights the nested collision
-    // skeleton, so both children stay distinct without a coordinate input.
+    // Bound overload siblings exercise the compact closed-parentage frame.
+    // The central family writer preflights its exact parent identity cells,
+    // so both children stay distinct without a coordinate input.
     let mut nested = FactSet::new();
     nested
         .push(SemanticFact::new(
@@ -2013,6 +2013,163 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
     nested.attach_parent(2, 0).map_err(lane_fault)?;
     let nested_versions = entity_versions(&nested)?;
     if nested_versions[1].identity() == nested_versions[2].identity() {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn recursive_overload_signatures_distinguish_nested_and_nominal_descendants(
+) -> Result<(), TestError> {
+    fn push_overload(
+        facts: &mut FactSet<'static>,
+        inner_tag: SemanticTypeTag,
+    ) -> Result<u32, TestError> {
+        let owner = u32::try_from(facts.len()).map_err(|_| TestError::Tail)?;
+        let inner = facts
+            .intern_reserved_anchor_type_row(owner, SemanticTypeRecord::leaf(inner_tag))
+            .map_err(lane_fault)?;
+        facts.anonymous_type_child(inner, None, 0).map_err(lane_fault)?;
+        let outer = facts
+            .intern_reserved_anchor_type_row(
+                owner,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Tuple),
+            )
+            .map_err(lane_fault)?;
+        facts
+            .push(
+                SemanticFact::new(
+                    EntityKind::Function,
+                    b"overload",
+                    SemanticProductConstructor::PRODUCT,
+                )
+                .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+                .type_child(outer, Some(b"result"), 0),
+            )
+            .map_err(rejected)?;
+        Ok(owner)
+    }
+
+    let mut facts = FactSet::new();
+    let first_parent = push_overload(&mut facts, SemanticTypeTag::Tuple)?;
+    let second_parent = push_overload(&mut facts, SemanticTypeTag::AnonymousRecord)?;
+    if (first_parent, second_parent) != (0, 1) {
+        return Err(TestError::Tail);
+    }
+    for parent in [0_u32, 1] {
+        facts
+            .push(SemanticFact::new(
+                EntityKind::Alias,
+                b"Nested",
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+        let child = u32::try_from(facts.len() - 1).map_err(|_| TestError::Tail)?;
+        facts.attach_parent(child, parent).map_err(lane_fault)?;
+    }
+    for target in [2_u32, 3] {
+        let mut nominal = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+        nominal.nominal = Some(NominalRef::Local(EntityId::new(target)));
+        facts
+            .push(
+                SemanticFact::new(
+                    EntityKind::Function,
+                    b"use_nested",
+                    SemanticProductConstructor::PRODUCT,
+                )
+                .typed(nominal),
+            )
+            .map_err(rejected)?;
+    }
+    for entity in [0_u32, 1, 4, 5] {
+        facts.mark_parentage_root(entity).map_err(lane_fault)?;
+    }
+
+    let versions = entity_versions(&facts)?;
+    if versions[0].variant == versions[1].variant
+        || versions[2].identity() == versions[3].identity()
+        || versions[4].variant == versions[5].variant
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn recursive_signature_components_are_reorder_stable_without_row_tokens(
+) -> Result<(), TestError> {
+    fn versions(reversed: bool) -> Result<Box<[EntityVersion]>, TestError> {
+        let names = if reversed {
+            [b"right".as_slice(), b"left"]
+        } else {
+            [b"left".as_slice(), b"right"]
+        };
+        let mut facts = FactSet::new();
+        for name in names {
+            facts
+                .push(
+                    SemanticFact::new(
+                        EntityKind::Alias,
+                        name,
+                        SemanticProductConstructor::PRODUCT,
+                    )
+                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Nominal)),
+                )
+                .map_err(rejected)?;
+        }
+        // A hostile admitted-image mutant: producer admission disallows
+        // forward local references, while the materializer still must hash a
+        // pre-existing cyclic image without a recursive call or row token.
+        facts.type_records[0].nominal = Some(NominalRef::Local(EntityId::new(1)));
+        facts.type_records[1].nominal = Some(NominalRef::Local(EntityId::new(0)));
+        facts.mark_parentage_root(0).map_err(lane_fault)?;
+        facts.mark_parentage_root(1).map_err(lane_fault)?;
+        entity_versions(&facts)
+    }
+
+    let forward = versions(false)?;
+    let reversed = versions(true)?;
+    if forward[0].identity() != reversed[1].identity()
+        || forward[1].identity() != reversed[0].identity()
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn recursive_signature_edges_retain_labelled_scc_topology(
+) -> Result<(), TestError> {
+    fn versions(edges: [u32; 3]) -> Result<Box<[EntityVersion]>, TestError> {
+        let mut facts = FactSet::new();
+        for name in [b"alpha".as_slice(), b"beta", b"gamma"] {
+            facts
+                .push(
+                    SemanticFact::new(
+                        EntityKind::Alias,
+                        name,
+                        SemanticProductConstructor::PRODUCT,
+                    )
+                    .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Nominal)),
+                )
+                .map_err(rejected)?;
+        }
+        // Both inputs have the same three direct row headers and form one
+        // three-node SCC. Only their labelled local-reference topology
+        // differs, so a component-wide marker without a target header would
+        // incorrectly make the alpha variant identical.
+        for (ordinal, target) in edges.into_iter().enumerate() {
+            facts.type_records[ordinal].nominal = Some(NominalRef::Local(EntityId::new(target)));
+            facts
+                .mark_parentage_root(u32::try_from(ordinal).map_err(|_| TestError::Tail)?)
+                .map_err(lane_fault)?;
+        }
+        entity_versions(&facts)
+    }
+
+    let clockwise = versions([1, 2, 0])?;
+    let counter_clockwise = versions([2, 0, 1])?;
+    if clockwise[0].variant == counter_clockwise[0].variant {
         return Err(TestError::Tail);
     }
     Ok(())

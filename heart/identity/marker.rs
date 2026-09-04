@@ -111,7 +111,12 @@ protocol_registry!(
         (CompilationTargetDomain, CompilationTarget, 16, b"heart.target.v1\0"),
         (CompileRecipeDomain, CompileRecipe, 17, b"heart.recipe.v1\0"),
         (CompilePublicationDomain, CompilePublication, 18, b"heart.publish.v1"),
-        (IndexPackDomain, IndexPack, 19, b"heart.idx.pack.1")
+        (IndexPackDomain, IndexPack, 19, b"heart.idx.pack.1"),
+        (DeclarationKeyDomain, DeclarationKey, 20, b"heart.declkey.v1"),
+        (DeclarationFamilyDomain, DeclarationFamily, 21, b"heart.declfam.v1"),
+        (DeclarationVariantDomain, DeclarationVariant, 22, b"heart.declvar.v1"),
+        (ForeignDeclarationDomain, ForeignDeclaration, 23, b"heart.foreign.v1"),
+        (SemanticScopeDomain, SemanticScope, 24, b"heart.scopeid.v1")
     }
     encodings {
         (FrameEncoding, Frame, 1, b"heart.frame.v1\0\0"),
@@ -135,6 +140,8 @@ mod tests {
         IrFragmentDomain, IrFragmentEncoding, IrFragmentRangeEncoding, IrManifestDomain,
         IrManifestEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
         OperationDomain, RootDomain, SourceFactDomain, StageKeyDomain, ToolchainDomain,
+        DeclarationKeyDomain, DeclarationFamilyDomain, DeclarationVariantDomain,
+        ForeignDeclarationDomain, SemanticScopeDomain,
     };
 
     #[test]
@@ -160,6 +167,11 @@ mod tests {
             CompileRecipeDomain::TAG,
             CompilePublicationDomain::TAG,
             IndexPackDomain::TAG,
+            DeclarationKeyDomain::TAG,
+            DeclarationFamilyDomain::TAG,
+            DeclarationVariantDomain::TAG,
+            ForeignDeclarationDomain::TAG,
+            SemanticScopeDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {

@@ -8,11 +8,12 @@ use compiler_ir::{
     PrimitiveType, SourceIdentity, TypeNode, WriteError,
 };
 use compiler_ir_vocabulary::{
-    AtomId, Confidence, EntityId, ForeignKey, ForeignOrigin, Occurrence, OccurrenceTarget,
-    PackageLineage, ReferenceKind, RelSpan, StableRef, TypeId,
+    AtomId, Confidence, DeclarationFamilyId, DeclarationIdentity, EntityId, ForeignKey,
+    ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage, ReferenceKind, RelSpan,
+    StableRef, TypeId, VariantFingerprint,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
-use heart_identity::{ContentId, ContentIdDecodeError, SourceFactDomain, ToolchainDomain};
+use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,18 +26,20 @@ enum TestFailure {
     View(#[from] FragmentError),
     #[error("occurrence plane rejected: {0:?}")]
     Occurrence(#[from] OccurrenceFault),
-    #[error("identity decode rejected: {0:?}")]
-    Identity(#[from] ContentIdDecodeError),
 }
 
 fn stable_lane_inputs() -> [OccurrenceInput<'static>; 2] {
+    let declaration = DeclarationIdentity {
+        family: DeclarationFamilyId::from_canonical_bytes(b"declared-target"),
+        variant: VariantFingerprint::from_canonical_bytes(b"declared-target.variant"),
+    };
     [
         OccurrenceInput {
             owner: EntityId::new(0),
             occurrence: Occurrence {
                 target: OccurrenceTarget::Stable(StableRef {
                     fragment: ContentId::from_canonical_bytes(b"fragment-a"),
-                    entity: ContentId::from_canonical_bytes(b"declared-target"),
+                    declaration,
                 }),
                 kind: ReferenceKind::FunctionCall,
                 confidence: Confidence::Oracle,
@@ -48,7 +51,7 @@ fn stable_lane_inputs() -> [OccurrenceInput<'static>; 2] {
             occurrence: Occurrence {
                 target: OccurrenceTarget::Stable(StableRef {
                     fragment: ContentId::from_canonical_bytes(b"fragment-a"),
-                    entity: ContentId::from_canonical_bytes(b"declared-target"),
+                    declaration,
                 }),
                 kind: ReferenceKind::TypeReference,
                 confidence: Confidence::Index,
@@ -141,6 +144,7 @@ fn occurrence_lane_round_trips_through_write_and_reopen() -> Result<(), TestFail
     assert_eq!(first.occurrence.kind, ReferenceKind::FunctionCall);
     assert_eq!(first.occurrence.confidence, Confidence::Oracle);
     assert_eq!(first.occurrence.span.len(), 9);
+    assert_eq!(first.occurrence.target, inputs[0].occurrence.target);
     let second = cursor.next().expect("declared two records")?;
     assert_eq!(second.owner, EntityId::new(1));
     assert_eq!(second.occurrence.kind, ReferenceKind::TypeReference);
@@ -249,15 +253,15 @@ fn corrupted_authority_cells_reject_reopen() -> Result<(), TestFailure> {
     let written = prepared.write_into(&mut output)?;
     let view = FragmentView::validate(written)?;
 
-    // The stable target's entity identity cell sits at a fixed record
-    // offset inside the occurrence payload: header (4) + owner (4) +
-    // target tag (1) + fragment identity (32). Corrupt its domain
-    // authority byte (the cell's last byte).
+    // The resolved endpoint begins with its authority-bearing fragment
+    // identity: header (4) + owner (4) + target tag (1). Family and variant
+    // are compact exact endpoint cells, not a second forged content-domain
+    // identity.
     let payload = view.occurrence_payload().expect("admitted lane is present");
     let section_start = payload.as_ptr() as usize - written.as_ptr() as usize;
-    let entity_cell = section_start + 4 + 4 + 1 + 32;
+    let fragment_cell = section_start + 4 + 4 + 1;
     let mut mutated = written.to_vec();
-    mutated[entity_cell] ^= 0xff;
+    mutated[fragment_cell] ^= 0xff;
     match FragmentView::validate(&mutated) {
         Err(FragmentError::Occurrences {
             fault: compiler_ir::OccurrenceViewFault::AuthorityDomain { .. },
@@ -267,6 +271,39 @@ fn corrupted_authority_cells_reject_reopen() -> Result<(), TestFailure> {
         }
         Ok(_) => panic!("a forged authority cell must not validate"),
     }
+    Ok(())
+}
+
+/// Schema 5 encoded only a family-sized stable endpoint. A schema-6 exact
+/// `(fragment, family, variant)` record may never be borrowed as that old
+/// shape merely because a hostile header claims the legacy schema.
+#[test]
+fn legacy_schema_stable_endpoint_rejects_with_exact_fault() -> Result<(), TestFailure> {
+    let identity = source();
+    let inputs = stable_lane_inputs();
+    let lane = OccurrenceLane { inputs: &inputs };
+    let prepared = PreparedFragment::prepare_with_occurrences(
+        identity,
+        recipe(identity.identity),
+        &ENTITIES,
+        &[TypeNode::Primitive(PrimitiveType::Bool)],
+        &ATOMS,
+        None,
+        &lane,
+    )?;
+    let mut output = vec![0_u8; prepared.required_capacity()];
+    let written = prepared.write_into(&mut output)?;
+    let mut legacy_claim = written.to_vec();
+    legacy_claim[4..6].copy_from_slice(&5_u16.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&legacy_claim),
+        Err(FragmentError::Occurrences {
+            fault: compiler_ir::OccurrenceViewFault::LegacyStableTarget {
+                ordinal: 0,
+                schema: 5,
+            },
+        })
+    ));
     Ok(())
 }
 

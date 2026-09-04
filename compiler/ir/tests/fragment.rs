@@ -273,12 +273,34 @@ fn kind_payload(kind: EntityKind) -> &'static [u8] {
         EntityKind::Static => b"kind-static",
         EntityKind::Reexport => b"kind-reexport",
         EntityKind::Parameter => b"kind-parameter",
+        EntityKind::Macro => b"kind-macro",
+        EntityKind::Namespace => b"kind-namespace",
     }
 }
 
 #[test]
 fn declaration_kinds_beyond_the_registry_reject_with_the_observed_code() {
-    for code in 13..=15 {
+    let legacy = [
+        (0, EntityKind::Function),
+        (1, EntityKind::Constant),
+        (2, EntityKind::Record),
+        (3, EntityKind::Module),
+        (4, EntityKind::Field),
+        (5, EntityKind::Alias),
+        (6, EntityKind::Trait),
+        (7, EntityKind::Implementation),
+        (8, EntityKind::Enum),
+        (9, EntityKind::Variant),
+        (10, EntityKind::Static),
+        (11, EntityKind::Reexport),
+        (12, EntityKind::Parameter),
+    ];
+    for (code, expected) in legacy {
+        assert_eq!(EntityKind::try_from(code), Ok(expected));
+    }
+    assert_eq!(EntityKind::try_from(13), Ok(EntityKind::Macro));
+    assert_eq!(EntityKind::try_from(14), Ok(EntityKind::Namespace));
+    for code in 15..=16 {
         assert_eq!(
             EntityKind::try_from(code),
             Err(EntityKindCodeError { actual: code })

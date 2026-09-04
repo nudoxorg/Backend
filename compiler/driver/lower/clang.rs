@@ -409,8 +409,8 @@ const fn empty_override() -> OverrideFact {
 /// function type is a function template, everything else declares a record.
 const fn entity_kind(kind: DeclarationKind, type_kind: Option<TypeKind>) -> Option<EntityKind> {
     match kind {
-        DeclarationKind::Namespace => Some(EntityKind::Module),
-        DeclarationKind::Macro => Some(EntityKind::Constant),
+        DeclarationKind::Namespace => Some(EntityKind::Namespace),
+        DeclarationKind::Macro => Some(EntityKind::Macro),
         DeclarationKind::Record => Some(EntityKind::Record),
         DeclarationKind::Enumeration => Some(EntityKind::Enum),
         DeclarationKind::Enumerator => Some(EntityKind::Variant),
@@ -433,7 +433,7 @@ const fn entity_kind(kind: DeclarationKind, type_kind: Option<TypeKind>) -> Opti
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
-        EntityKind::Record => SemanticProductConstructor::PRODUCT,
+        EntityKind::Record | EntityKind::Namespace => SemanticProductConstructor::PRODUCT,
         EntityKind::Enum => SemanticProductConstructor::UNION,
         EntityKind::Trait => SemanticProductConstructor::INTERSECTION,
         EntityKind::Constant
@@ -444,7 +444,8 @@ const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
         | EntityKind::Variant
         | EntityKind::Static
         | EntityKind::Reexport
-        | EntityKind::Parameter => LEAF_PRODUCT,
+        | EntityKind::Parameter
+        | EntityKind::Macro => LEAF_PRODUCT,
     }
 }
 
@@ -1086,7 +1087,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Some(Projected::leaf(record))
     }
 
-    /// Pushes one macro definition as a constant with the honest unwritten
+    /// Pushes one macro definition with the honest unwritten
     /// type: the authority proves the macro's existence and extent, never a
     /// replacement-list type.
     fn push_macro(&mut self, index: usize) -> Result<(), ClangCollectError> {
@@ -1099,9 +1100,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let extension = self.extension(declaration, 0)?;
         let fact = SemanticFact::new(
-            EntityKind::Constant,
+            EntityKind::Macro,
             name,
-            constructor(EntityKind::Constant),
+            constructor(EntityKind::Macro),
         )
         .typed(unknown_record(TypeReason::Unannotated, None))
         .with_extension(EmissionExtension::Clang(extension));

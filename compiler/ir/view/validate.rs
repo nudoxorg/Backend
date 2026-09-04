@@ -66,7 +66,7 @@ impl<'fragment> FragmentView<'fragment> {
     /// the fragment commits no occurrence section.
     pub fn occurrences(&self) -> Option<crate::semantic_facts::OccurrenceCursor<'fragment>> {
         self.occurrence_lane
-            .map(crate::semantic_facts::OccurrenceCursor::new)
+            .map(|payload| crate::semantic_facts::OccurrenceCursor::new(payload, self.layout.schema))
     }
 
     /// The raw validated occurrence section payload, or `None` when the
@@ -381,7 +381,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         .count,
                 );
                 let payload = &envelope[entry.lane.range()];
-                crate::semantic_facts::validate_occurrence_payload(payload, entity_count).map_err(
+                crate::semantic_facts::validate_occurrence_payload(payload, entity_count, schema).map_err(
                     |fault| FragmentError::Occurrences {
                         fault: crate::semantic_facts::occurrence_view_fault(fault),
                     },

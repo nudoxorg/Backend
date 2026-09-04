@@ -278,6 +278,10 @@ pub enum OccurrenceFault {
     #[error("occurrence section declares {declared} records but carries trailing bytes")]
     TrailingBytes { declared: u32 },
     #[error(
+        "occurrence {ordinal} uses a schema-{schema} family-only stable endpoint that cannot represent an exact declaration variant"
+    )]
+    LegacyStableTarget { ordinal: u32, schema: u16 },
+    #[error(
         "occurrence {ordinal} identity authority cell must encode domain {expected:?} but observes code {observed}"
     )]
     AuthorityDomain {

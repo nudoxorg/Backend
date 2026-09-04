@@ -8,14 +8,18 @@
 use alloc::vec::Vec;
 use compiler_vocabulary::{CompileRecipeFact, Language, LanguageProfile};
 use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
+use heart_identity::{ContentId, SemanticScopeDomain};
 
 use crate::{
     AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityColumns, AuthorityFactFault,
     AuthorityFactPlane, CapacityError, DenseId, EntityAuthorityColumns, EntityAuthorityFacts,
-    DeclarationKey, EntityId, FactAvailability, ImageProvenance, ImageProvenanceClaim, Interner, ListId, ListInterner,
+    DeclarationFamilyId, DeclarationIdentity, DeclarationKey, EntityId,
+    ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance, ImageProvenanceClaim,
+    Interner, ListId, ListInterner,
     ListTable, ListTableView, OccurrenceAuthorityColumn, OccurrenceAuthorityColumns,
     OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts,
-    SourceIdentity, TextId, Type, TypeId,
+    SourceIdentity, StableRef, TextId, Type, TypeId, VariantAvailability,
+    VariantFingerprint,
     columnar::{RawColumn, Slab, SlabPlan},
     interner::{HashIndex, hash},
 };
@@ -68,26 +72,12 @@ pub type TypeParameterListId = ListId<TypeParameter>;
 /// must never recover their order from language-specific side tables.
 pub type TypeParameterBoundListId = ListId<TypeParameterBound>;
 
-/// Complete declaration vocabulary shared across language frontends.
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ItemKind {
-    Module = 1,
-    Record = 2,
-    Field = 3,
-    Function = 4,
-    TypeAlias = 5,
-    Trait = 6,
-    Implementation = 7,
-    Enum = 8,
-    Variant = 9,
-    Constant = 10,
-    Static = 11,
-    Reexport = 12,
-    Parameter = 13,
-    Macro = 14,
-    Namespace = 15,
-}
+/// Compatibility spelling for the one frozen declaration-kind vocabulary.
+///
+/// The underlying type and every discriminant come from
+/// `compiler-ir-vocabulary::EntityKind`; `TypeAlias` remains only as that
+/// type's narrow associated compatibility constant.
+pub type ItemKind = compiler_ir_vocabulary::EntityKind;
 
 /// Visibility independent of any one language's spelling.
 #[repr(u8)]
@@ -2143,16 +2133,45 @@ pub enum LinkTarget {
     External(ExternalId),
 }
 
-/// Everything needed to render and later resolve a foreign symbol.
+/// Exact retained origin facts for an unresolved foreign declaration.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ExternalTarget {
-    /// Cross-package identity. Unresolved targets retain `Unavailable`
-    /// variant knowledge instead of inventing an overload discriminator.
+pub enum ForeignTargetOrigin {
+    Package { ecosystem: AtomId, package: AtomId },
+    Namespace { ecosystem: AtomId, namespace: AtomId },
+    Universe { ecosystem: AtomId },
+    /// A producer supplied an ecosystem/path but no stronger foreign-origin
+    /// classification. This is not silently promoted to a package.
+    Unspecified { ecosystem: AtomId },
+}
+
+/// Everything a producer knows about an unresolved foreign declaration.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ForeignExternalTarget {
+    /// Separately branded foreign key plus honest variant availability.
     pub identity: ExternalDeclarationIdentity,
-    pub package: Option<AtomId>,
+    /// Exact native/package/namespace authority supplied by the producer.
+    pub origin: ForeignTargetOrigin,
+    /// Canonical remote path.
     pub path: AtomId,
+    /// Source display spelling.
     pub display: AtomId,
+    /// Expected declaration kind, when known.
     pub kind: Option<ItemKind>,
+}
+
+/// Cross-fragment graph target. Resolved declaration endpoints are never
+/// represented as an unresolved foreign path and an unresolved key can never
+/// manufacture a fragment/declaration pair.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ExternalTarget {
+    /// Exact resolved endpoint in a known external fragment.
+    Stable { target: StableRef },
+    /// Self-describing unresolved foreign authority and path facts.
+    Foreign(ForeignExternalTarget),
+    /// Legacy external fragment ordinal retained from type facts that do not
+    /// yet supply a declaration identity. It remains distinct from both a
+    /// resolved [`StableRef`] and an unresolved foreign key.
+    FragmentEntity { target: ExternalEntityRef, display: AtomId },
 }
 
 /// Documentation is UTF-8 by construction; only its IDs carry that promise.
@@ -2218,95 +2237,15 @@ impl SourceSpan {
     }
 }
 
-#[repr(transparent)]
-/// Coordinate-free declaration family identity.  It binds package/file
-/// scope, language profile, closed parentage family, kind, and name, but no
-/// signature or generation payload.  Several overload instances may share
-/// one family.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DeclarationFamilyId([u8; 16]);
-
-impl DeclarationFamilyId {
-    #[must_use]
-    pub const fn from_raw(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-    #[must_use]
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
-        let hash = blake3::hash(bytes);
-        let bytes = hash.as_bytes();
-        Self([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ])
-    }
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
-
-/// Coordinate-free structural fingerprint for one declaration instance.
-///
-/// Every admitted row has one fingerprint, including a currently unique
-/// callable.  It is paired with [`DeclarationFamilyId`] to form the unambiguous
-/// current-generation [`DeclarationIdentity`]; it is not a generation
-/// payload hash.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct VariantFingerprint([u8; 16]);
-
-impl VariantFingerprint {
-    #[must_use]
-    pub const fn from_raw(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-    #[must_use]
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
-        let hash = blake3::hash(bytes);
-        let bytes = hash.as_bytes();
-        Self([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ])
-    }
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
-
-/// Exact current-generation declaration instance identity.  The pair, not a
-/// family alone, is used by canonical indexes, parent bindings, and local
-/// link keys whenever overloads are possible.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DeclarationIdentity {
-    pub family: DeclarationFamilyId,
-    pub variant: VariantFingerprint,
-}
-
-/// Variant knowledge retained for a foreign declaration. A foreign package
-/// key may prove its family while honestly lacking an overload signature.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum VariantAvailability {
-    Known(VariantFingerprint),
-    Unavailable,
-}
-
-/// Cross-package declaration identity without a fabricated local variant.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ExternalDeclarationIdentity {
-    pub family: DeclarationFamilyId,
-    pub variant: VariantAvailability,
-}
-
 /// Exact identity used to order a graph endpoint. Local endpoints always
 /// retain both family and variant; foreign endpoints retain unavailable
 /// variant knowledge explicitly rather than borrowing a local convention.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DeclarationLinkTarget {
     Local(DeclarationIdentity),
-    External(ExternalDeclarationIdentity),
+    Stable(StableRef),
+    Foreign(ExternalDeclarationIdentity),
+    FragmentEntity(ExternalEntityRef),
 }
 
 /// Whether one semantic plane participates in [`CorePayloadHash`].
@@ -2341,6 +2280,9 @@ pub struct CorePayloadCoverage {
 pub struct CorePayloadHash([u8; 16]);
 
 impl CorePayloadHash {
+    /// Width of one canonical compact payload digest.
+    pub const BYTES: usize = core::mem::size_of::<Self>();
+
     /// Exact plane coverage of every value minted by this type.
     pub const COVERAGE: CorePayloadCoverage = CorePayloadCoverage {
         declaration_shape: CorePayloadPlane::Included,
@@ -3694,9 +3636,14 @@ impl IrBuilder {
             source,
             recipe,
             scope: SemanticScopeClaim {
-                declaration_key: scope_key
-                    .stable_id(&mut scope_preimage)
-                    .map_err(|cause| BuildError::ImageProvenanceScopePreimage { cause })?,
+                identity: {
+                    let written = scope_key
+                        .write_preimage(&mut scope_preimage)
+                        .map_err(|cause| BuildError::ImageProvenanceScopePreimage { cause })?;
+                    ContentId::<SemanticScopeDomain>::from_canonical_bytes(
+                        &scope_preimage[..written],
+                    )
+                },
             },
         };
         if let ImageProvenance::Captured {
@@ -4139,10 +4086,29 @@ impl IrBuilder {
             validate_type(self, ty)?;
         }
         for target in self.externals.as_slice() {
-            atom(self, target.path)?;
-            atom(self, target.display)?;
-            if let Some(package) = target.package {
-                atom(self, package)?;
+            match target {
+                ExternalTarget::Stable { target } => {
+                    // A resolved endpoint is entirely typed identity; it has
+                    // no invented foreign spelling to validate.
+                    let _ = target;
+                }
+                ExternalTarget::Foreign(target) => {
+                    atom(self, target.path)?;
+                    atom(self, target.display)?;
+                    match target.origin {
+                        ForeignTargetOrigin::Package { ecosystem, package } => {
+                            atom(self, ecosystem)?;
+                            atom(self, package)?;
+                        }
+                        ForeignTargetOrigin::Namespace { ecosystem, namespace } => {
+                            atom(self, ecosystem)?;
+                            atom(self, namespace)?;
+                        }
+                        ForeignTargetOrigin::Universe { ecosystem }
+                        | ForeignTargetOrigin::Unspecified { ecosystem } => atom(self, ecosystem)?,
+                    }
+                }
+                ExternalTarget::FragmentEntity { display, .. } => atom(self, *display)?,
             }
         }
         for index in 0..self.items.len() {
@@ -5030,7 +4996,7 @@ impl IrIndices {
         links: &PackedLinks,
         link_occurrences: &PackedLinkOccurrences,
         externals: &[ExternalTarget],
-    ) -> Result<(Self, [u32; 17]), BuildError> {
+    ) -> Result<(Self, [u32; 16]), BuildError> {
         let entity_count = items.len();
         let link_count = links.len();
         let occurrence_count = link_occurrences.len();
@@ -5120,7 +5086,7 @@ impl IrIndices {
             .kind
             .as_mut_slice()
             .sort_unstable_by_key(|id| (items.kinds[id.index()], versions[id.index()].identity()));
-        let mut kind_offsets = [0_u32; 17];
+        let mut kind_offsets = [0_u32; 16];
         for kind in items.kinds.iter() {
             kind_offsets[*kind as usize + 1] += 1;
         }
@@ -5144,9 +5110,12 @@ impl IrIndices {
                     LinkTarget::Local(entity) => {
                         DeclarationLinkTarget::Local(versions[entity.index()].identity())
                     }
-                    LinkTarget::External(external) => {
-                        DeclarationLinkTarget::External(externals[external.index()].identity)
-                    }
+                    LinkTarget::External(external) => declaration_link_target(
+                        *externals.get(external.index()).ok_or(BuildError::Dangling {
+                            space: SemanticSpace::External,
+                            raw: external.raw,
+                        })?,
+                    ),
                 };
                 (from, target, link.kind)
             });
@@ -5169,6 +5138,14 @@ impl IrIndices {
             indices.occurrence_outgoing_offsets.as_mut_slice(),
         );
         Ok((indices, kind_offsets))
+    }
+}
+
+fn declaration_link_target(target: ExternalTarget) -> DeclarationLinkTarget {
+    match target {
+        ExternalTarget::Stable { target } => DeclarationLinkTarget::Stable(target),
+        ExternalTarget::Foreign(target) => DeclarationLinkTarget::Foreign(target.identity),
+        ExternalTarget::FragmentEntity { target, .. } => DeclarationLinkTarget::FragmentEntity(target),
     }
 }
 
@@ -5554,7 +5531,7 @@ pub struct StorageColumns<'ir> {
     pub graph: GraphColumns<'ir>,
     pub vcs: VcsColumns<'ir>,
     pub kind_entities: &'ir [EntityId],
-    pub kind_offsets: &'ir [u32; 17],
+    pub kind_offsets: &'ir [u32; 16],
     pub name_entities: &'ir [EntityId],
 }
 
@@ -5686,7 +5663,7 @@ pub struct Ir {
     sources: SourceColumns,
     extensions: LanguageExtensions,
     indices: IrIndices,
-    kind_offsets: [u32; 17],
+    kind_offsets: [u32; 16],
     links: PackedLinks,
     link_occurrences: PackedLinkOccurrences,
     occurrence_authority: OccurrenceAuthorityColumn,

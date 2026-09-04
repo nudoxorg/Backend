@@ -52,7 +52,8 @@ pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChildCountLaw, CvQualifiers,
-    CvQualifiersError, DeclarationKey, DeclarationKeyFault, DeclarationPathFault,
+    CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
+    DeclarationKeyFault, DeclarationPathFault,
     ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
     ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
     ChannelDirection, FunctionVariadicForm, ListSpan,
@@ -65,6 +66,7 @@ pub use compiler_ir_vocabulary::{
     SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
     SemanticTypeTag, SemanticTypeTagError, StableRef, TypeCell, TypeChildTarget, TypeChildren,
     TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,
+    ExternalDeclarationIdentity, ForeignDeclarationId, VariantAvailability, VariantFingerprint,
 };
 pub use compiler_ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
@@ -118,15 +120,15 @@ pub use semantic::{
     CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
     ComputedTypeId, ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId,
-    DeclarationFamilyId, DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion,
-    External, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FrontendTree, GoExtension,
+    DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion,
+    External, ExternalId, ExternalTarget, ForeignExternalTarget, ForeignTargetOrigin, FrontendTree, GoExtension,
     GoFacts, GoSignature, GraphColumns, GuardedType, Ir,
     IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension, JavaFacts,
     LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
     LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkOccurrence,
     LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
     LinkTarget, LiteralType,
-    CorePayloadCoverage, CorePayloadHash, CorePayloadPlane, DeclarationIdentity,
+    CorePayloadCoverage, CorePayloadHash, CorePayloadPlane,
     DeclarationLinkTarget, MappedModifier,
     Mutability, ObjectMember, ObjectMemberListId, OptionalId,
     PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
@@ -138,8 +140,7 @@ pub use semantic::{
     TypeParameterInference, TypeParameterKind, TypeParameterListId, TypeParameterPrimaryRequirement,
     TypeParameterRequirements, TypeQuadPayload, TypeQuery, VariadicForm,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
-    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VariantAvailability,
-    VariantFingerprint, VcsColumns, Visibility,
+    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
     WildcardBound,
 };
 pub use semantic_data_view::{

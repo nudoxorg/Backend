@@ -2,8 +2,7 @@
 //!
 //! A declaration's stable identity is minted from producer-visible facts
 //! alone — `(package lineage, path, kind, name)` — hashed
-//! through the central `heart/identity` domain conventions
-//! (`ContentId<SourceFactDomain>`). There is deliberately **no ordinal
+//! through dedicated declaration identity domains. There is deliberately **no ordinal
 //! disambiguator and no span disambiguator**: the old system's measured
 //! 32,339 ordinal-keyed identity groups (446,947 declarations, 79 package
 //! versions) and its degenerate `0..0` span era are the defects this module
@@ -17,17 +16,19 @@
 
 use core::ops::Deref;
 
-use heart_identity::{ContentId, SourceFactDomain};
+use heart_identity::{
+    ContentId, DeclarationFamilyDomain, DeclarationKeyDomain, DeclarationVariantDomain,
+    ForeignDeclarationDomain,
+};
 
 use crate::coordinates::EntityId;
 use crate::entity::EntityKind;
 
-/// Purpose tag naming the declaration-key preimage inside the shared source
-/// fact domain. Source identities hash raw source bytes in the same domain;
-/// this prefix keeps the two preimage families non-colliding by construction.
+/// Purpose tag naming the declaration-key preimage inside its dedicated
+/// declaration-key identity domain.
 const DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.declaration.v2";
 /// Purpose tag naming the foreign-key digest preimage inside the shared
-/// source fact domain.
+/// foreign-declaration identity domain.
 const FOREIGN_KEY_PURPOSE: &[u8] = b"compiler.foreign-key.v1";
 
 /// A package lineage: ecosystem plus package name, stable across all
@@ -253,9 +254,9 @@ impl<'bytes> DeclarationKey<'bytes> {
     pub fn stable_id(
         &self,
         out: &mut [u8],
-    ) -> Result<ContentId<SourceFactDomain>, PreimageOverflow> {
+    ) -> Result<ContentId<DeclarationKeyDomain>, PreimageOverflow> {
         let written = self.write_preimage(out)?;
-        Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(
+        Ok(ContentId::<DeclarationKeyDomain>::from_canonical_bytes(
             &out[..written],
         ))
     }
@@ -270,8 +271,118 @@ pub enum DeclarationKeyFault {
     EmptyName,
 }
 
+/// Coordinate-free declaration family identity. It owns only stable scope,
+/// profile, parentage, kind, and name; overload instances may share it.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DeclarationFamilyId([u8; 16]);
+
+impl DeclarationFamilyId {
+    #[must_use]
+    pub const fn from_raw(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Narrows one dedicated declaration-family digest for the compact live
+    /// IR lane. The domain remains present in the full content identity at
+    /// the mint boundary; this compact value is never a source digest.
+    #[must_use]
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
+        let digest = ContentId::<DeclarationFamilyDomain>::from_canonical_bytes(bytes);
+        Self::from_content_id(digest)
+    }
+
+    /// Narrows an already domain-validated declaration-family content id
+    /// without accidentally retaining its wire-domain byte as entropy.
+    #[must_use]
+    pub fn from_content_id(value: ContentId<DeclarationFamilyDomain>) -> Self {
+        Self(compact_identity_payload(value.as_ref()))
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Coordinate-free structural fingerprint for every declaration instance.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VariantFingerprint([u8; 16]);
+
+impl VariantFingerprint {
+    #[must_use]
+    pub const fn from_raw(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
+        let digest = ContentId::<DeclarationVariantDomain>::from_canonical_bytes(bytes);
+        Self(compact_identity_payload(digest.as_ref()))
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Compact unresolved foreign declaration key. It is deliberately not a
+/// [`DeclarationFamilyId`]: a foreign authority key cannot be substituted
+/// for a locally minted lexical declaration family.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ForeignDeclarationId([u8; 16]);
+
+impl ForeignDeclarationId {
+    #[must_use]
+    pub const fn from_raw(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
+        Self::from_content_id(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(bytes))
+    }
+
+    /// Narrows a foreign-key content id without mixing its wire domain byte
+    /// into the compact fingerprint.
+    #[must_use]
+    pub fn from_content_id(value: ContentId<ForeignDeclarationDomain>) -> Self {
+        Self(compact_identity_payload(value.as_ref()))
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Exact current-generation local declaration endpoint.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DeclarationIdentity {
+    pub family: DeclarationFamilyId,
+    pub variant: VariantFingerprint,
+}
+
+/// Variant knowledge retained for an unresolved foreign declaration.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum VariantAvailability {
+    Known(VariantFingerprint),
+    Unavailable,
+}
+
+/// Cross-package declaration identity without fabricating a local variant.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ExternalDeclarationIdentity {
+    /// Exact unresolved foreign-key fingerprint, never a local family.
+    pub foreign: ForeignDeclarationId,
+    pub variant: VariantAvailability,
+}
+
 /// Wire-stable cross-fragment declaration reference: the owning fragment's
-/// typed artifact identity plus the target declaration's stable identity.
+/// typed artifact identity plus the target's exact composite declaration identity.
 ///
 /// This is the **only** cross-fragment reference form. Both cells are
 /// independently valid typed identities; containment (the entity id naming a
@@ -279,18 +390,21 @@ pub enum DeclarationKeyFault {
 /// owning fragment, not at construction — references are honest data that a
 /// resolver validates.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StableRef {
     /// Typed identity of the fragment that declares the target.
     pub fragment: crate::ExternalFragmentId,
-    /// Stable declaration identity inside that fragment.
-    pub entity: ContentId<SourceFactDomain>,
+    /// Exact declaration endpoint inside that fragment.
+    pub declaration: DeclarationIdentity,
 }
 
 impl StableRef {
-    /// Complete canonical byte width: two 32-byte identity cells.
+    /// Complete canonical byte width: one 32-byte fragment identity plus
+    /// two compact 16-byte declaration identity cells.
     pub const CANONICAL_BYTES: usize = 64;
 }
+
+const _: () = assert!(core::mem::size_of::<StableRef>() == StableRef::CANONICAL_BYTES);
 
 /// Where an unresolved foreign target lives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,11 +564,11 @@ impl<'bytes> ForeignKey<'bytes> {
     }
 
     /// Digests the key cells (never a resolved target, never `display`)
-    /// through the central identity domain, so sealing with and without
+    /// through the foreign-declaration identity domain, so sealing with and without
     /// dependencies loaded is byte-identical.
-    pub fn key_id(&self, out: &mut [u8]) -> Result<ContentId<SourceFactDomain>, PreimageOverflow> {
+    pub fn key_id(&self, out: &mut [u8]) -> Result<ContentId<ForeignDeclarationDomain>, PreimageOverflow> {
         let written = self.write_key_preimage(out)?;
-        Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(
+        Ok(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(
             &out[..written],
         ))
     }
@@ -531,6 +645,17 @@ const KEY_TAIL_BYTES: usize = 2;
 /// Byte width of the fixed origin cell: origin tag u8 + kind cell u16 +
 /// reserved u8.
 const ORIGIN_CELL: usize = 4;
+
+/// Narrows sixteen payload bytes from a typed 32-byte content identity.
+/// Byte zero is the domain authority, not digest entropy, so compact
+/// identities retain bytes `1..=16` rather than spending one of their fixed
+/// sixteen bytes on a constant tag.
+fn compact_identity_payload(bytes: &[u8; heart_identity::HASH_BYTES]) -> [u8; 16] {
+    [
+        bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
+        bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16],
+    ]
+}
 
 /// Writes one length-prefixed byte cell at `cursor`; returns the next
 /// cursor. The caller preflighted the total length, so the bounds checks

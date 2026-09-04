@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use compiler_vocabulary::CompileRecipeFact;
-use heart_identity::{ContentId, SourceFactDomain};
+use heart_identity::{ContentId, SemanticScopeDomain};
 
 use crate::{AtomId, DeclarationIdentity, SourceIdentity};
 
@@ -114,7 +114,7 @@ pub struct SemanticScopeFacts {
 /// framed scope; the owned header retains the queryable atom values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticScopeClaim {
-    pub declaration_key: ContentId<SourceFactDomain>,
+    pub identity: ContentId<SemanticScopeDomain>,
 }
 
 /// Exact image provenance requested at a write-once admission boundary.
