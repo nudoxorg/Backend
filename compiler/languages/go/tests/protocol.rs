@@ -237,13 +237,11 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go oracle e2e: {compiler:?} is unavailable; set COMPILER_GO_COMPILER");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let output = adapter().run(&fixture)?;
@@ -451,13 +449,11 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let source = fixture.join("demo.go");
@@ -666,13 +662,11 @@ fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let root = std::env::temp_dir().join(format!("nudox-go-image-v5-{}", std::process::id()));
     fs::create_dir_all(root.join("api")).expect("temp module directory");
