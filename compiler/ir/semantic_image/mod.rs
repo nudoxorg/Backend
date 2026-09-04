@@ -11,6 +11,7 @@ mod decode;
 mod fault;
 mod model;
 mod plan;
+mod typed;
 mod validate;
 mod view;
 mod wire;

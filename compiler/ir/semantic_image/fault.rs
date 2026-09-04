@@ -23,6 +23,7 @@ pub(crate) enum CoreSemanticImageField {
     EntityAvailability,
     EntitySource,
     EntityVersion,
+    External,
 }
 
 /// Closed authority mismatch retained by a core row admission failure.
