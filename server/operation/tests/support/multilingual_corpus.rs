@@ -259,9 +259,7 @@ impl CorpusPackage {
             PackageShape::Aggregate => {
                 write_aggregate(self, &mut writer, &mut symbol, &mut member)?
             }
-            PackageShape::Generic => {
-                write_generic(self, &mut writer, &mut symbol, &mut member)?
-            }
+            PackageShape::Generic => write_generic(self, &mut writer, &mut symbol, &mut member)?,
             PackageShape::Documentation => write_documentation(self, &mut writer, &mut symbol)?,
             PackageShape::Reference => write_reference(self, &mut writer, &mut symbol)?,
         }
@@ -379,6 +377,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
         (CorpusLanguage::CSharp, 2) => ExpectedType::Builtin(BuiltinType::String),
         (CorpusLanguage::Rust, 0) => ExpectedType::Builtin(BuiltinType::Bool),
         (CorpusLanguage::Rust, 1) => ExpectedType::Builtin(BuiltinType::I32),
+        // `ordinal % 3` closes this arm out at runtime. Keep the fallback
+        // semantically consistent with `scalar_type` so this fixture remains
+        // total if its scalar selection law is refactored later.
+        (_, _) => ExpectedType::Primitive(scalar),
     };
     // Every ordinary row has a real authority builder in the audit harness.
     // If a host lacks that producer, the run records a typed
@@ -399,7 +401,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                     CorpusLanguage::Java | CorpusLanguage::CSharp => 2,
                     _ => 1,
                 }),
-                if matches!(package.language, CorpusLanguage::Java | CorpusLanguage::CSharp) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Java | CorpusLanguage::CSharp
+                ) {
                     ParentExpectation::Nested
                 } else {
                     ParentExpectation::Root
@@ -414,7 +419,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                     CorpusLanguage::Java | CorpusLanguage::CSharp => 4,
                     _ => 3,
                 }),
-                if matches!(package.language, CorpusLanguage::Java | CorpusLanguage::CSharp) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Java | CorpusLanguage::CSharp
+                ) {
                     ParentExpectation::Nested
                 } else {
                     ParentExpectation::Root
@@ -438,7 +446,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                     CorpusLanguage::Rust | CorpusLanguage::TypeScript => EntityKind::Alias,
                     _ => EntityKind::Record,
                 },
-                if matches!(package.language, CorpusLanguage::Rust | CorpusLanguage::TypeScript) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Rust | CorpusLanguage::TypeScript
+                ) {
                     ExpectedType::Generic
                 } else {
                     ExpectedType::Nominal
@@ -452,7 +463,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                     package.language,
                     CorpusLanguage::Rust | CorpusLanguage::TypeScript
                 ),
-                if matches!(package.language, CorpusLanguage::Python | CorpusLanguage::Java) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Python | CorpusLanguage::Java
+                ) {
                     CountExpectation::Deferred
                 } else {
                     CountExpectation::Exact(1)
@@ -466,7 +480,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                     CorpusLanguage::Java | CorpusLanguage::CSharp => 2,
                     _ => 1,
                 }),
-                if matches!(package.language, CorpusLanguage::Java | CorpusLanguage::CSharp) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Java | CorpusLanguage::CSharp
+                ) {
                     ParentExpectation::Nested
                 } else {
                     ParentExpectation::Root
@@ -480,10 +497,15 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
                 CountExpectation::Exact(match package.language {
                     CorpusLanguage::Java | CorpusLanguage::CSharp => 9,
                     CorpusLanguage::TypeScript => 3,
-                    CorpusLanguage::Python | CorpusLanguage::Rust | CorpusLanguage::Go
+                    CorpusLanguage::Python
+                    | CorpusLanguage::Rust
+                    | CorpusLanguage::Go
                     | CorpusLanguage::Clang => 4,
                 }),
-                if matches!(package.language, CorpusLanguage::Java | CorpusLanguage::CSharp) {
+                if matches!(
+                    package.language,
+                    CorpusLanguage::Java | CorpusLanguage::CSharp
+                ) {
                     ParentExpectation::Nested
                 } else {
                     ParentExpectation::Root
@@ -512,7 +534,10 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
     };
     let relation = if package.shape != PackageShape::Reference {
         RelationExpectation::None
-    } else if matches!(package.language, CorpusLanguage::Java | CorpusLanguage::CSharp) {
+    } else if matches!(
+        package.language,
+        CorpusLanguage::Java | CorpusLanguage::CSharp
+    ) {
         RelationExpectation::OverloadRequired
     } else {
         RelationExpectation::OccurrenceRequired
@@ -550,7 +575,12 @@ fn write_constant(
             writer.write(b": ")?;
             writer.write(rust_type(package.ordinal % 3))?;
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b";\n")?;
         }
         CorpusLanguage::TypeScript => {
@@ -559,7 +589,12 @@ fn write_constant(
             writer.write(b": ")?;
             writer.write(typescript_type(package.ordinal % 3))?;
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b";\n")?;
         }
         CorpusLanguage::Python => {
@@ -567,7 +602,12 @@ fn write_constant(
             writer.write(b": ")?;
             writer.write(python_type(package.ordinal % 3))?;
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"\n")?;
         }
         CorpusLanguage::Go => {
@@ -576,7 +616,12 @@ fn write_constant(
             writer.write(b" ")?;
             writer.write(go_type(package.ordinal % 3))?;
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"\n")?;
         }
         CorpusLanguage::Java => {
@@ -586,7 +631,12 @@ fn write_constant(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; }\n")?;
         }
         CorpusLanguage::CSharp => {
@@ -597,7 +647,12 @@ fn write_constant(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; }\n")?;
         }
         CorpusLanguage::Clang => {
@@ -606,7 +661,12 @@ fn write_constant(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b" = ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b";\n")?;
         }
     }
@@ -634,7 +694,12 @@ fn write_callable(
             writer.write(b"(argument: number): ")?;
             writer.write(typescript_type(package.ordinal % 3))?;
             writer.write(b" { return ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; }\n")?;
         }
         CorpusLanguage::Python => {
@@ -643,7 +708,12 @@ fn write_callable(
             writer.write(b"(argument: int) -> ")?;
             writer.write(python_type(package.ordinal % 3))?;
             writer.write(b":\n    return ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"\n")?;
         }
         CorpusLanguage::Go => {
@@ -652,7 +722,12 @@ fn write_callable(
             writer.write(b"(argument int) ")?;
             writer.write(go_type(package.ordinal % 3))?;
             writer.write(b" { return ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b" }\n")?;
         }
         CorpusLanguage::Java => {
@@ -662,7 +737,12 @@ fn write_callable(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b"(int argument) { return ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; } }\n")?;
         }
         CorpusLanguage::CSharp => {
@@ -673,7 +753,12 @@ fn write_callable(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b"(int argument) => ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; }\n")?;
         }
         CorpusLanguage::Clang => {
@@ -681,7 +766,12 @@ fn write_callable(
             writer.write(b" ")?;
             *symbol = Some(write_identifier(writer, b"package_", package.ordinal)?);
             writer.write(b"(int argument) { return ")?;
-            write_value(writer, package.language, package.ordinal % 3, package.ordinal)?;
+            write_value(
+                writer,
+                package.language,
+                package.ordinal % 3,
+                package.ordinal,
+            )?;
             writer.write(b"; }\n")?;
         }
     }
@@ -962,13 +1052,13 @@ impl<'output> SourceWriter<'output> {
                 appended: input.len(),
             })?;
         let available = self.output.len();
-        let destination = self
-            .output
-            .get_mut(start..end)
-            .ok_or(CorpusRenderError::InsufficientOutput {
-                required: end,
-                available,
-            })?;
+        let destination =
+            self.output
+                .get_mut(start..end)
+                .ok_or(CorpusRenderError::InsufficientOutput {
+                    required: end,
+                    available,
+                })?;
         destination.copy_from_slice(input);
         self.written = end;
         Ok(start..end)
@@ -996,12 +1086,16 @@ fn write_value(
     ordinal: usize,
 ) -> Result<(), CorpusRenderError> {
     match variant {
-        0 => writer.write(if matches!(language, CorpusLanguage::Python) {
-            b"True"
-        } else {
-            b"true"
-        })?,
-        1 => writer.write(b"0")?,
+        0 => {
+            writer.write(if matches!(language, CorpusLanguage::Python) {
+                b"True"
+            } else {
+                b"true"
+            })?;
+        }
+        1 => {
+            writer.write(b"0")?;
+        }
         _ => {
             writer.write(b"\"")?;
             writer.write(string_prefix(language))?;
