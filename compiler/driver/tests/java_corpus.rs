@@ -362,19 +362,27 @@ fn render_review(
         },
     )
     .map_err(|error| TestError::Compile(format!("{purl} {path}: {error}")))?;
-    let simple = path
-        .rsplit('/')
+    // Java lane entities are interned under their qualified names
+    // (`org.apache.commons.lang3.AnnotationUtils`), matching the declared
+    // qualified-name entity law, so the primary item is looked up by the
+    // path-derived qualified name while the rendered check keeps the simple
+    // name.
+    let qualified = qualified_name(path);
+    let simple = qualified
+        .rsplit('.')
         .next()
-        .and_then(|name| name.strip_suffix(".java"))
         .ok_or_else(|| TestError::Law {
             purl,
             path: path.to_owned(),
             cause: "primary declaration has no simple name".into(),
-        })?;
+        })?
+        .to_owned();
     let rendered = built
         .ir
         .items()
-        .find(|item| item.kind() != ItemKind::Function && item.name() == simple.as_bytes())
+        .find(|item| {
+            item.kind() != ItemKind::Function && item.name() == qualified.as_bytes()
+        })
         .and_then(|item| built.ir.signature(item.id()))
         .map(|signature| signature.to_string())
         .ok_or_else(|| TestError::Law {
@@ -382,7 +390,7 @@ fn render_review(
             path: path.to_owned(),
             cause: "primary entity signature was not renderable".into(),
         })?;
-    if !rendered.contains(simple) {
+    if !rendered.contains(simple.as_str()) {
         return Err(TestError::Law {
             purl,
             path: path.to_owned(),
@@ -570,7 +578,15 @@ fn lower_frozen_file(
         .map_err(|error| TestError::Fragment(format!("{purl} {path}: {error}")))?;
     let (declarations, references) = deep_review(purl, path, source, &image_bytes, &view)?;
     render_review(purl, path, source, &image_bytes, work)?;
-    let qualified = qualified_name(path);
+    // A package-info entry's retainable entity is its PACKAGE row: the
+    // entity name is the package name, not the path-derived type spelling.
+    let qualified = if path.rsplit('/').next() == Some("package-info.java") {
+        path.strip_suffix("package-info.java")
+            .map(|directory| qualified_name(directory.trim_end_matches('/')))
+            .unwrap_or_else(|| qualified_name(path))
+    } else {
+        qualified_name(path)
+    };
     if !entity_present(&view, qualified.as_bytes()) {
         return Err(TestError::Law {
             purl,
@@ -701,18 +717,17 @@ fn journey_row(
         total_fragment_bytes += laws.fragment_bytes;
         occurrence_present |= laws.occurrence_present;
         occurrence_absent &= laws.occurrence_absent;
-        let declarations = laws.declarations;
-        let references = laws.references;
         println!(
-            "CORPUS|{}|{}|{}|{}|{}",
+            "CORPUS|{}|{}|{}|{}|{}|{}|{}",
             row.purl,
             name,
             laws.image_bytes,
             laws.fragment_bytes,
+            laws.declarations,
+            laws.references,
             started.elapsed().as_millis()
         );
         fragments.push(laws.fragment);
-        let _ = (declarations, references);
     }
     if row_index == ANNOTATIONS_ROW {
         if occurrence_present || !occurrence_absent {
@@ -854,10 +869,16 @@ fn publication_leg(
         .iter()
         .rposition(|byte| *byte == b'}')
         .ok_or(TestError::Fact(
-            "CSVParser bound source has no class terminator",
+            "generation-2 target has no closing brace",
         ))?;
     let mut modified = parser_source[..closing].to_vec();
-    modified.extend_from_slice(b"  public void added() {}\n}\n");
+    // Annotation-type members are abstract: a body would be a javac error.
+    // Every other kind admits a normal method body.
+    if parser_source.windows(10).any(|window| window == b"@interface") {
+        modified.extend_from_slice(b"  public void added();\n}\n");
+    } else {
+        modified.extend_from_slice(b"  public void added() {}\n}\n");
+    }
     let gen2_sources = [JavaSource {
         name: Path::new(extracted[last].0.as_str()),
         bytes: &modified,
@@ -865,13 +886,13 @@ fn publication_leg(
     let mut gen2_image = Vec::new();
     bench
         .image(&gen2_sources, classpath, &mut gen2_image)
-        .map_err(|error| TestError::Image(format!("{} CSVParser.java gen-2: {error}", row.purl)))?;
+        .map_err(|error| TestError::Image(format!("{} {} gen-2: {error}", row.purl, extracted[last].0)))?;
     if gen2_image.len() > MAX_IMAGE_BYTES {
         return Err(TestError::Fact("image exceeded 16 MiB"));
     }
     let mut gen2_output = vec![0; MAX_FRAGMENT_BYTES];
     let second = compile_fragment(&modified, &gen2_image, &mut gen2_output, &temp.path).map_err(
-        |error| TestError::Compile(format!("{} CSVParser.java gen-2: {error}", row.purl)),
+        |error| TestError::Compile(format!("{} {} gen-2: {error}", row.purl, extracted[last].0)),
     )?;
     let mut gen2_buffers = PublishBuffers::new(1);
     let second_published = publish_compiled(
