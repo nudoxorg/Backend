@@ -97,6 +97,12 @@ pub(crate) enum GoCollectError {
 enum ProjectionFault<'image> {
     /// The recursive type graph exceeded the producer depth budget.
     Depth,
+    /// The authority marked a callable variadic without a final typed
+    /// parameter to own the rest marker.
+    VariadicWithoutParameter {
+        /// Image signature row carrying the impossible claim.
+        signature: u32,
+    },
     /// No pushed fact existed to own an anonymous compound row.
     Anchor,
     /// A pooled field or method list exceeded its bounded width.
@@ -1009,8 +1015,18 @@ impl<'x, 'source> Projector<'x, 'source> {
                     });
                 }
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-                if !results.is_empty() {
-                    record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+                record.payload1 = u32::try_from(results.len()).map_err(|_| {
+                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                })?;
+                if variadic {
+                    let final_parameter = parameters.len().checked_sub(1).ok_or_else(|| {
+                        terminal(ProjectionFault::VariadicWithoutParameter { signature: row_index })
+                    })?;
+                    let parameter = carriers.get_mut(final_parameter).ok_or_else(|| {
+                        terminal(ProjectionFault::VariadicWithoutParameter { signature: row_index })
+                    })?;
+                    record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
+                    parameter.flags |= SemanticTypeChild::FLAG_REST;
                 }
                 record
             }
@@ -1213,19 +1229,25 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let mut projected = RootType {
                     record: {
                         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-                        if children.len() > param_count {
-                            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+                        record.payload1 = u32::try_from(children.len() - param_count)
+                            .map_err(|_| lane_terminal(FactFault::TypeChildCapacity))?;
+                        if row.variadic {
+                            record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
                         }
                         record
                     },
                     children: Vec::new(),
                 };
-                for child in children {
+                for (position, child) in children.into_iter().enumerate() {
                     let target = self.coordinate(Some(child), depth - 1)?;
                     projected.children.push(TypeChild {
                         target,
                         name: None,
-                        flags: 0,
+                        flags: if row.variadic && position + 1 == param_count {
+                            SemanticTypeChild::FLAG_REST
+                        } else {
+                            0
+                        },
                     });
                 }
                 Ok(projected)
@@ -1558,19 +1580,25 @@ impl<'x, 'source> Projector<'x, 'source> {
                     .unwrap_or(0)
                     .min(children.len());
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-                if children.len() > param_count {
-                    record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+                record.payload1 = u32::try_from(children.len() - param_count)
+                    .map_err(|_| lane_terminal(FactFault::TypeChildCapacity))?;
+                if row.variadic {
+                    record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
                 }
                 let mut built = AnonRow {
                     record,
                     children: Vec::new(),
                 };
-                for child in children {
+                for (position, child) in children.into_iter().enumerate() {
                     let target = self.project_anonymous(index_of(child), depth - 1)?;
                     built.children.push(TypeChild {
                         target,
                         name: None,
-                        flags: 0,
+                        flags: if row.variadic && position + 1 == param_count {
+                            SemanticTypeChild::FLAG_REST
+                        } else {
+                            0
+                        },
                     });
                 }
                 built
@@ -3132,7 +3160,7 @@ mod tests {
         }
         let brew = row(&view, 5)?;
         if brew.record.tag != SemanticTypeTag::FunctionPointer
-            || brew.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || brew.record.payload1 != 2
             || field_children(&view, &brew)? != vec![1, 2, 3, 4]
         {
             return Err(TestError::Missing("brew function pointer"));
@@ -3145,7 +3173,9 @@ mod tests {
             return Err(TestError::Missing("brew signature lists"));
         }
         let variadic_row = row(&view, 7)?;
-        if variadic_row.record.payload1 != 0 {
+        if variadic_row.record.payload1 != 0
+            || variadic_row.record.payload0 != SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG
+        {
             return Err(TestError::Missing("void variadic result flag"));
         }
         let variadic_facts = go_extension(&view, 6)?;
@@ -3198,13 +3228,13 @@ mod tests {
         }
         let get_row = row(&view, 6)?;
         if get_row.record.tag != SemanticTypeTag::FunctionPointer
-            || get_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || get_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || field_children(&view, &get_row)? != vec![5]
         {
             return Err(TestError::Missing("get signature row"));
         }
         let put_row = row(&view, 9)?;
-        if put_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+        if put_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || field_children(&view, &put_row)? != vec![7, 8]
         {
             return Err(TestError::Missing("put signature row"));

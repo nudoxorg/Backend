@@ -529,7 +529,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             )? {
                 Some(row) => {
                     children.push(row);
-                    payload1 = SemanticTypeRecord::RESULT_FLAG;
+                    payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
                 }
                 None => return Ok(None),
             }
@@ -696,7 +696,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
         let mut payload1 = 0;
         if result_ordinal.is_some() {
-            payload1 = SemanticTypeRecord::RESULT_FLAG;
+            payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         for ordinal in parameter_ordinals.iter().copied().chain(result_ordinal) {
             fact = fact.type_child(ordinal, None, 0);
@@ -1047,7 +1047,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let mut payload1 = 0;
                 if let Some(result) = result_row {
                     children.push(result);
-                    payload1 = SemanticTypeRecord::RESULT_FLAG;
+                    payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
                 }
                 Ok(Some((function_pointer_record(payload1), children)))
             }
@@ -1590,7 +1590,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         Some(row) => children.push(row),
                         None => return Ok(None),
                     }
-                    payload1 = SemanticTypeRecord::RESULT_FLAG;
+                    payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
                 }
                 Ok(Some((function_pointer_record(payload1), children)))
             }

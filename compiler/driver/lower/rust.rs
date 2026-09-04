@@ -671,7 +671,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         children.push(parent_ordinal.unwrap_or_default());
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-        record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+        record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         self.push_typed(
             index,
             declaration,
@@ -809,7 +809,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
         let arity = coordinate(parameter_ordinals.len())?;
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-        record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+        record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         let extension = self.base_extension(
             RustOwnership::Value,
             &declaration.syntax,
@@ -1520,7 +1520,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 Some(target) => children.push(target),
                 None => return Ok(self.folded_rowless(anchor)),
             }
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         Ok(Lowered { record, children })
     }
@@ -2716,7 +2716,7 @@ mod tests {
             return Err(TestError::Missing("self receiver type"));
         }
         if brew_row.record.tag != SemanticTypeTag::FunctionPointer
-            || brew_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || brew_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || brew_row.record.children.length != 3
         {
             return Err(TestError::Missing(
@@ -2768,7 +2768,7 @@ mod tests {
         let rows = rows(&view)?;
         let quit_row = &rows[usize::try_from(quit)?];
         if quit_row.record.tag != SemanticTypeTag::FunctionPointer
-            || quit_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || quit_row.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || quit_row.record.children.length != 1
         {
             return Err(TestError::Missing("unit variant constructor row"));

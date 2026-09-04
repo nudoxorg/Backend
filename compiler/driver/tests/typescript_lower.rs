@@ -175,10 +175,10 @@ fn ir_tag_shape(ir: &compiler_ir::Ir, id: compiler_ir::TypeId) -> (SemanticTypeT
             ir.types(arguments).unwrap().len() as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Function {
-            parameters, result, ..
+            parameters, results, ..
         }) => (
             SemanticTypeTag::FunctionPointer,
-            (ir.tuple_elements(parameters).unwrap().len() + usize::from(result.is_some())) as u8,
+            (ir.tuple_elements(parameters).unwrap().len() + ir.tuple_elements(results).unwrap().len()) as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Array { .. }) => (SemanticTypeTag::Array, 1),
         TypeExpr::Concrete(ConcreteType::Union(types)) => {

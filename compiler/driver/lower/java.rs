@@ -1062,7 +1062,7 @@ fn push_executable<'source>(
     // result carrier, matching the javac return type.
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
     if result_ordinal.is_some() {
-        record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+        record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
     }
 
     // Overload siblings: distinct javac signatures already differ in their
@@ -1958,7 +1958,7 @@ mod tests {
         }
         let int_method = row(&view, 11)?;
         if int_method.record.tag != SemanticTypeTag::FunctionPointer
-            || int_method.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || int_method.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || int_method.record.children.length != 1
         {
             return Err(TestError::Missing("int function pointer result flag"));
@@ -2016,7 +2016,7 @@ mod tests {
         // brew, 4 unknown param carrier, 5 unknown result carrier, 6 second brew.
         let second = row(&view, 6)?;
         if second.record.tag != SemanticTypeTag::FunctionPointer
-            || second.record.payload1 != SemanticTypeRecord::RESULT_FLAG
+            || second.record.payload1 != SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
         {
             return Err(TestError::Missing("second overload row"));
         }

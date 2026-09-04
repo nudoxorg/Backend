@@ -16,7 +16,7 @@ use compiler_ir::{
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
-    TypeChildTarget, TypeId, TypeWidth, Visibility,
+    TypeChildTarget, TypeId, TypeWidth, VariadicForm, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -512,6 +512,31 @@ impl<'source> FactSet<'source> {
     fn is_computed_type_row(&self, row: u32) -> bool {
         row >= COMPUTED_ROW_BASE && (row - COMPUTED_ROW_BASE) as usize < self.computed_rows
     }
+
+    /// Exact compound projection geometry actually admitted by this
+    /// transaction.  Each typed lane owns only the maximum it can consume;
+    /// a wide callable does not reserve an equally-wide object or template
+    /// buffer merely because all share the wire child ceiling.
+    fn projected_type_demand(&self) -> ProjectionDemand {
+        let mut demand = ProjectionDemand::default();
+        for (record, count) in self.type_records[..self.len]
+            .iter()
+            .zip(&self.type_child_counts[..self.len])
+            .chain(
+                self.anonymous_records[..self.anonymous_rows]
+                    .iter()
+                    .zip(&self.anonymous_child_counts[..self.anonymous_rows]),
+            )
+            .chain(
+                self.computed_records[..self.computed_rows]
+                    .iter()
+                    .zip(&self.computed_child_counts[..self.computed_rows]),
+            )
+        {
+            demand.observe(record.tag, usize::from(*count));
+        }
+        demand
+    }
     /// Full protocol plan for direct lowerer boundary tests.
     pub(super) fn new() -> Self {
         Self::with_plan(ResourcePlan::protocol_maximum())
@@ -752,6 +777,7 @@ impl<'source> FactSet<'source> {
         record
             .validate(child_count)
             .map_err(FactFault::TypeRecord)?;
+        self.validate_pending_anonymous_children(record, child_count)?;
         let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
@@ -790,6 +816,7 @@ impl<'source> FactSet<'source> {
         record
             .validate(child_count)
             .map_err(FactFault::TypeRecord)?;
+        self.validate_pending_anonymous_children(record, child_count)?;
         let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
@@ -833,6 +860,34 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
+    /// Validates the pending anonymous child range as one closed row before
+    /// committing it. This is where function result boundaries and a
+    /// variadic final parameter are proven for anonymous/root callable types.
+    fn validate_pending_anonymous_children(
+        &self,
+        record: SemanticTypeRecord<'source>,
+        child_count: u32,
+    ) -> Result<(), FactFault> {
+        let child_start = self.anonymous_children_total - child_count as usize;
+        for position in 0..child_count as usize {
+            let pooled = child_start + position;
+            record
+                .validate_child_in_row(
+                    position as u32,
+                    child_count,
+                    &SemanticTypeChild {
+                        target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                            compiler_ir::TypeId::new(self.anonymous_child_targets[pooled]),
+                        )),
+                        name: self.anonymous_child_names[pooled],
+                        flags: self.anonymous_child_flags[pooled],
+                    },
+                )
+                .map_err(|fault| FactFault::TypeChild { position, fault })?;
+        }
+        Ok(())
+    }
+
     /// Interns one checker-computed row in the schema-2-only lane.
     pub(super) fn intern_computed_type_row(
         &mut self,
@@ -864,8 +919,9 @@ impl<'source> FactSet<'source> {
                 )))
             };
             record
-                .validate_child(
+                .validate_child_in_row(
                     position as u32,
+                    child_count,
                     &SemanticTypeChild {
                         target,
                         name: self.computed_child_names[pooled],
@@ -1470,20 +1526,24 @@ impl<'source> FactSet<'source> {
         // Staging coordinates are segmented tags, not physical offsets.  The
         // projection stores exactly the rows admitted by this transaction.
         let staged_type_end = fact_count + self.anonymous_rows + self.computed_rows;
-        let mut type_ids = vec![TypeId::new(0); staged_type_end].into_boxed_slice();
+        let mut type_ids = vec![None; staged_type_end].into_boxed_slice();
         // 0 = unseen, 1 = recursively visiting, 2 = fully interned.  A
         // boolean can only distinguish cache hit from miss and recurses
         // forever on hostile compound type cycles.
         let mut type_seen = vec![0_u8; staged_type_end].into_boxed_slice();
-        let mut semantic_types = vec![TypeId::new(0); fact_count].into_boxed_slice();
+        // Compound projections borrow this one measured transaction buffer;
+        // they never allocate temporary vectors or invent placeholder IDs.
+        let mut projection_scratch = ProjectionScratch::new(self.projected_type_demand());
+        let mut semantic_types = vec![None; fact_count].into_boxed_slice();
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
-            *semantic_type = live_type(
+            *semantic_type = Some(live_type(
                 &mut tree,
                 self,
                 ordinal as u32,
                 &mut type_ids,
                 &mut type_seen,
-            )?;
+                &mut projection_scratch,
+            )?);
         }
         // Documentation facts are allowed to arrive interleaved by owner.
         // Count/prefix/scatter once so each tree item borrows one contiguous
@@ -1541,14 +1601,33 @@ impl<'source> FactSet<'source> {
                             )?,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         declared: value
                             .declared
-                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen))
+                            .map(|id| {
+                                live_type(
+                                    &mut tree,
+                                    self,
+                                    id.raw,
+                                    &mut type_ids,
+                                    &mut type_seen,
+                                    &mut projection_scratch,
+                                )
+                            })
                             .transpose()?,
                         observed: value
                             .observed
-                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen))
+                            .map(|id| {
+                                live_type(
+                                    &mut tree,
+                                    self,
+                                    id.raw,
+                                    &mut type_ids,
+                                    &mut type_seen,
+                                    &mut projection_scratch,
+                                )
+                            })
                             .transpose()?,
                     };
                 }
@@ -1566,6 +1645,7 @@ impl<'source> FactSet<'source> {
                             )?,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         attributes: live_atom_list(&mut tree, self, value.attributes)?,
                         xml_provenance: value
@@ -1584,6 +1664,7 @@ impl<'source> FactSet<'source> {
                                 value.signature.parameters,
                                 &mut type_ids,
                                 &mut type_seen,
+                                &mut projection_scratch,
                             )?,
                             results: live_type_list(
                                 &mut tree,
@@ -1591,6 +1672,7 @@ impl<'source> FactSet<'source> {
                                 value.signature.results,
                                 &mut type_ids,
                                 &mut type_seen,
+                                &mut projection_scratch,
                             )?,
                             ..value.signature
                         },
@@ -1606,6 +1688,7 @@ impl<'source> FactSet<'source> {
                             )?,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         fields: live_entity_list(&mut tree, self, value.fields)?,
                         method_set: live_entity_list(&mut tree, self, value.method_set)?,
@@ -1637,6 +1720,7 @@ impl<'source> FactSet<'source> {
                             )?,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         macros: live_atom_list(&mut tree, self, value.macros)?,
                         ..*value
@@ -1656,6 +1740,7 @@ impl<'source> FactSet<'source> {
                             value.throws,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         annotations: live_atom_list(&mut tree, self, value.annotations)?,
                         overloads: live_entity_list(&mut tree, self, value.overloads)?,
@@ -1680,6 +1765,7 @@ impl<'source> FactSet<'source> {
                             )?,
                             &mut type_ids,
                             &mut type_seen,
+                            &mut projection_scratch,
                         )?,
                         includes: live_atom_list(&mut tree, self, value.includes)?,
                         ..*value
@@ -1798,7 +1884,7 @@ impl<'source> FactSet<'source> {
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: self.visibility[ordinal],
                 parent: self.parents[ordinal].map(compiler_ir::TreeEntityId::new),
-                semantic_type: Some(semantic_types[ordinal]),
+                semantic_type: semantic_types[ordinal],
                 members: &members[member_ranges[ordinal].0
                     ..member_ranges[ordinal].0 + member_ranges[ordinal].1],
                 docs: &docs[doc_ranges[ordinal].0..doc_ranges[ordinal].0 + doc_ranges[ordinal].1],
@@ -1880,7 +1966,7 @@ impl<'source> FactSet<'source> {
                 flags: child.flags,
             };
             fact.type_record
-                .validate_child(position as u32, &wire_child)
+                .validate_child_in_row(position as u32, type_child_count, &wire_child)
                 .map_err(|fault| rejected(FactFault::TypeChild { position, fault }))?;
             if child.target != u32::MAX {
                 let valid = self.is_anonymous_type_row(child.target)
@@ -2098,8 +2184,9 @@ fn live_type_parameters<'source>(
     facts: &FactSet<'source>,
     start: compiler_ir::TypeParameterListId,
     range: StagedTypeParameterRange,
-    ids: &mut [TypeId],
+    ids: &mut [Option<TypeId>],
     seen: &mut [u8],
+    scratch: &mut ProjectionScratch,
 ) -> Result<compiler_ir::TypeParameterListId, compiler_ir::BuildError> {
     let start = start.raw as usize;
     if range.start != start as u32 {
@@ -2127,11 +2214,11 @@ fn live_type_parameters<'source>(
             name: tree.intern_atom(parameter.name)?,
             constraint: parameter
                 .constraint
-                .map(|row| live_type(tree, facts, row, ids, seen))
+                .map(|row| live_type(tree, facts, row, ids, seen, scratch))
                 .transpose()?,
             default: parameter
                 .default
-                .map(|row| live_type(tree, facts, row, ids, seen))
+                .map(|row| live_type(tree, facts, row, ids, seen, scratch))
                 .transpose()?,
             variance: compiler_ir::Variance::Invariant,
             is_const: false,
@@ -2180,8 +2267,9 @@ fn live_type_list<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     facts: &FactSet<'source>,
     id: compiler_ir::TypeListId,
-    ids: &mut [TypeId],
+    ids: &mut [Option<TypeId>],
     seen: &mut [u8],
+    scratch: &mut ProjectionScratch,
 ) -> Result<compiler_ir::TypeListId, compiler_ir::BuildError> {
     let index = id.raw as usize;
     if facts.type_list_len == 0 && index == 0 {
@@ -2197,7 +2285,7 @@ fn live_type_list<'source>(
     let mut types = Vec::with_capacity(length);
     for row in &facts.type_lists[index][..length] {
         types.push(
-            live_type(tree, facts, *row, ids, seen)?,
+            live_type(tree, facts, *row, ids, seen, scratch)?,
         );
     }
     tree.intern_types(&types)
@@ -2378,12 +2466,175 @@ fn external_from_occurrence<'source>(
     }
 }
 
+/// Exact per-family compound staging demand measured from admitted rows.
+#[derive(Clone, Copy, Debug, Default)]
+struct ProjectionDemand {
+    type_ids: usize,
+    tuple_elements: usize,
+    template_parts: usize,
+    object_members: usize,
+}
+
+impl ProjectionDemand {
+    fn observe(&mut self, tag: SemanticTypeTag, child_count: usize) {
+        match tag {
+            SemanticTypeTag::Tuple | SemanticTypeTag::FunctionPointer => {
+                self.tuple_elements = self.tuple_elements.max(child_count);
+            }
+            SemanticTypeTag::TemplateLiteral => {
+                self.template_parts = self.template_parts.max(child_count);
+            }
+            SemanticTypeTag::AnonymousRecord => {
+                self.object_members = self.object_members.max(child_count);
+            }
+            SemanticTypeTag::Apply => {
+                self.type_ids = self.type_ids.max(child_count.saturating_sub(1));
+            }
+            SemanticTypeTag::Union
+            | SemanticTypeTag::Intersection
+            | SemanticTypeTag::ImplTrait
+            | SemanticTypeTag::DynTrait => {
+                self.type_ids = self.type_ids.max(child_count);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Request-owned, bounded staging for compound values projected into the
+/// tree interner.
+///
+/// The interner copies a completed slice immediately. Reusing these typed
+/// lanes avoids placeholder IDs and one heap allocation per tuple, template,
+/// object, or callable while retaining the exact element types demanded by
+/// each semantic constructor. Each lane has its own measured maximum, never
+/// a protocol-wide maximum or a duplicate reservation for another family.
+struct ProjectionScratch {
+    type_capacity: usize,
+    tuple_capacity: usize,
+    template_capacity: usize,
+    object_capacity: usize,
+    type_children: Vec<TypeId>,
+    tuple_elements: Vec<TupleElement>,
+    template_parts: Vec<TemplatePart>,
+    object_members: Vec<ObjectMember>,
+}
+
+impl ProjectionScratch {
+    fn new(demand: ProjectionDemand) -> Self {
+        Self {
+            type_capacity: demand.type_ids,
+            tuple_capacity: demand.tuple_elements,
+            template_capacity: demand.template_parts,
+            object_capacity: demand.object_members,
+            type_children: Vec::with_capacity(demand.type_ids),
+            tuple_elements: Vec::with_capacity(demand.tuple_elements),
+            template_parts: Vec::with_capacity(demand.template_parts),
+            object_members: Vec::with_capacity(demand.object_members),
+        }
+    }
+
+    fn begin_type_children(
+        &self,
+        count: usize,
+        row: u32,
+    ) -> Result<usize, compiler_ir::BuildError> {
+        self.begin(self.type_children.len(), count, self.type_capacity, row)
+    }
+
+    fn begin_tuple_elements(
+        &self,
+        count: usize,
+        row: u32,
+    ) -> Result<usize, compiler_ir::BuildError> {
+        self.begin(self.tuple_elements.len(), count, self.tuple_capacity, row)
+    }
+
+    fn begin_template_parts(
+        &self,
+        count: usize,
+        row: u32,
+    ) -> Result<usize, compiler_ir::BuildError> {
+        self.begin(self.template_parts.len(), count, self.template_capacity, row)
+    }
+
+    fn begin_object_members(
+        &self,
+        count: usize,
+        row: u32,
+    ) -> Result<usize, compiler_ir::BuildError> {
+        self.begin(self.object_members.len(), count, self.object_capacity, row)
+    }
+
+    fn begin(
+        &self,
+        used: usize,
+        additional: usize,
+        capacity: usize,
+        row: u32,
+    ) -> Result<usize, compiler_ir::BuildError> {
+        let required = used.checked_add(additional).ok_or(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        })?;
+        if required > capacity {
+            return Err(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Type,
+                raw: row,
+            });
+        }
+        Ok(used)
+    }
+}
+
+/// Resolves one already-projected structural child without ever constructing
+/// a placeholder `TypeId`. Text children are meaningful only to template
+/// literals and cannot masquerade as type coordinates in another form.
+fn resolved_type_child(
+    facts: &FactSet<'_>,
+    row: u32,
+    position: usize,
+    ids: &[Option<TypeId>],
+    seen: &[u8],
+) -> Result<TypeId, compiler_ir::BuildError> {
+    let (target, _, _) = facts.staged_type_child(row, position).ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        },
+    )?;
+    if target == STAGED_TEXT_CHILD {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        });
+    }
+    let index = facts.staged_type_slot(target).ok_or(compiler_ir::BuildError::Dangling {
+        space: compiler_ir::SemanticSpace::Type,
+        raw: target,
+    })?;
+    if seen.get(index).copied() != Some(2) {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: target,
+        });
+    }
+    ids.get(index)
+        .copied()
+        .flatten()
+        .ok_or(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: target,
+        })
+}
+
 fn live_type<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     facts: &FactSet<'source>,
     row: u32,
-    ids: &mut [TypeId],
+    ids: &mut [Option<TypeId>],
     seen: &mut [u8],
+    scratch: &mut ProjectionScratch,
 ) -> Result<TypeId, compiler_ir::BuildError> {
     let index = facts.staged_type_slot(row).ok_or(compiler_ir::BuildError::Dangling {
         space: compiler_ir::SemanticSpace::Type,
@@ -2391,7 +2642,12 @@ fn live_type<'source>(
     })?;
     debug_assert!(index < ids.len());
     match seen[index] {
-        2 => return Ok(ids[index]),
+        2 => {
+            return ids[index].ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Type,
+                raw: row,
+            });
+        }
         1 => return Err(compiler_ir::BuildError::RecursiveType { raw: row }),
         _ => {}
     }
@@ -2402,7 +2658,6 @@ fn live_type<'source>(
     // declaration's top-level row.
     seen[index] = 1;
     let child = |position: usize| facts.staged_type_child(row, position);
-    let mut children = [TypeId::new(0); MAX_TYPE_CHILDREN];
     let child_count = facts.staged_type_child_count(row).ok_or(
         compiler_ir::BuildError::Dangling {
             space: compiler_ir::SemanticSpace::Type,
@@ -2413,7 +2668,7 @@ fn live_type<'source>(
         if child(position).is_some_and(|item| item.0 == STAGED_TEXT_CHILD) {
             continue;
         }
-        children[position] = live_type(
+        live_type(
             tree,
             facts,
             child(position)
@@ -2424,8 +2679,10 @@ fn live_type<'source>(
                 })?,
             ids,
             seen,
+            scratch,
         )?;
     }
+    let child_type = |position| resolved_type_child(facts, row, position, ids, seen);
     let ty = match record.tag {
         SemanticTypeTag::Primitive => match (record.payload0, record.payload1, record.text) {
             (value, 0, Some(bytes))
@@ -2550,7 +2807,7 @@ fn live_type<'source>(
                         .map(|bytes| tree.intern_atom(bytes))
                         .transpose()?;
                     tree.intern_concrete(ConcreteType::Reference {
-                        target: children[0],
+                        target: child_type(0)?,
                         mutability: if record.payload1 == SemanticTypeRecord::INTEGER_SIGNED_FLAG {
                             compiler_ir::Mutability::Mutable
                         } else {
@@ -2562,7 +2819,7 @@ fn live_type<'source>(
                 }
                 Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
                     .intern_concrete(ConcreteType::Pointer {
-                        target: children[0],
+                        target: child_type(0)?,
                         mutability: if record.payload0 == PrimitiveShape::MutPointer as u32 {
                             compiler_ir::Mutability::Mutable
                         } else {
@@ -2585,10 +2842,10 @@ fn live_type<'source>(
             .erase(),
         SemanticTypeTag::Conditional if child_count == 4 => tree
             .intern_computed(ComputedType::Conditional {
-                check: children[0],
-                extends: children[1],
-                then_type: children[2],
-                else_type: children[3],
+                check: child_type(0)?,
+                extends: child_type(1)?,
+                then_type: child_type(2)?,
+                else_type: child_type(3)?,
                 distributive: record.payload1 != 0,
             })?
             .erase(),
@@ -2602,16 +2859,16 @@ fn live_type<'source>(
             };
             tree.intern_computed(ComputedType::Mapped {
                 parameter,
-                constraint: children[0],
-                name_as: (child_count == 3).then_some(children[1]),
-                value: children[child_count - 1],
+                constraint: child_type(0)?,
+                name_as: (child_count == 3).then(|| child_type(1)).transpose()?,
+                value: child_type(child_count - 1)?,
                 readonly: modifier(record.payload0),
                 optional: modifier(record.payload1),
             })?
             .erase()
         }
         SemanticTypeTag::TemplateLiteral => {
-            let mut parts = [TemplatePart::Placeholder(TypeId::new(0)); MAX_TYPE_CHILDREN];
+            let start = scratch.begin_template_parts(child_count, row)?;
             for position in 0..child_count {
                 let (target, text, _) = child(position).ok_or(
                     compiler_ir::BuildError::Dangling {
@@ -2619,13 +2876,15 @@ fn live_type<'source>(
                         raw: row,
                     },
                 )?;
-                parts[position] = if target == STAGED_TEXT_CHILD {
+                let part = if target == STAGED_TEXT_CHILD {
                     TemplatePart::Bytes(tree.intern_atom(text.unwrap_or_default())?)
                 } else {
-                    TemplatePart::Placeholder(children[position])
+                    TemplatePart::Placeholder(child_type(position)?)
                 };
+                scratch.template_parts.push(part);
             }
-            let parts = tree.intern_template_parts(&parts[..child_count])?;
+            let parts = tree.intern_template_parts(&scratch.template_parts[start..])?;
+            scratch.template_parts.truncate(start);
             tree.intern_computed(ComputedType::TemplateLiteral(parts))?
                 .erase()
         }
@@ -2673,42 +2932,46 @@ fn live_type<'source>(
                 tree.intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))?
                     .erase()
             } else {
-                let mut elements = [TupleElement {
-                    label: None,
-                    ty: children[0],
-                    kind: TupleElementKind::Required,
-                }; MAX_TYPE_CHILDREN];
+                let start = scratch.begin_tuple_elements(child_count, row)?;
                 for position in 0..child_count {
-                    elements[position].ty = children[position];
                     let (_, label, flags) = child(position).ok_or(
                         compiler_ir::BuildError::Dangling {
                             space: compiler_ir::SemanticSpace::Type,
                             raw: row,
                         },
                     )?;
-                    elements[position].label = label.map(|bytes| tree.intern_atom(bytes)).transpose()?;
-                    elements[position].kind = if flags & SemanticTypeChild::FLAG_REST != 0 {
-                        TupleElementKind::Rest
-                    } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
-                        TupleElementKind::Optional
-                    } else {
-                        TupleElementKind::Required
-                    };
+                    scratch.tuple_elements.push(TupleElement {
+                        label: label.map(|bytes| tree.intern_atom(bytes)).transpose()?,
+                        ty: child_type(position)?,
+                        kind: if flags & SemanticTypeChild::FLAG_REST != 0 {
+                            TupleElementKind::Rest
+                        } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
+                            TupleElementKind::Optional
+                        } else {
+                            TupleElementKind::Required
+                        },
+                    });
                 }
-                let list = tree.intern_tuple_elements(&elements[..child_count])?;
+                let list = tree.intern_tuple_elements(&scratch.tuple_elements[start..])?;
+                scratch.tuple_elements.truncate(start);
                 tree.intern_concrete(ConcreteType::Tuple(list))?.erase()
             }
         }
         SemanticTypeTag::Apply if child_count > 0 => {
-            let arguments = tree.intern_types(&children[1..child_count])?;
+            let start = scratch.begin_type_children(child_count - 1, row)?;
+            for position in 1..child_count {
+                scratch.type_children.push(child_type(position)?);
+            }
+            let arguments = tree.intern_types(&scratch.type_children[start..])?;
+            scratch.type_children.truncate(start);
             tree.intern_concrete(ConcreteType::Applied {
-                constructor: children[0],
+                constructor: child_type(0)?,
                 arguments,
             })?
             .erase()
         }
         SemanticTypeTag::Slice if child_count == 1 => tree
-            .intern_concrete(ConcreteType::Slice(children[0]))?
+            .intern_concrete(ConcreteType::Slice(child_type(0)?))?
             .erase(),
         SemanticTypeTag::Array if child_count == 1 => {
             let length = record
@@ -2716,35 +2979,50 @@ fn live_type<'source>(
                 .map(|bytes| tree.intern_atom(bytes))
                 .transpose()?;
             tree.intern_concrete(ConcreteType::Array {
-                element: children[0],
+                element: child_type(0)?,
                 length,
             })?
             .erase()
         }
         SemanticTypeTag::Union => {
-            let list = tree.intern_types(&children[..child_count])?;
+            let start = scratch.begin_type_children(child_count, row)?;
+            for position in 0..child_count {
+                scratch.type_children.push(child_type(position)?);
+            }
+            let list = tree.intern_types(&scratch.type_children[start..])?;
+            scratch.type_children.truncate(start);
             tree.intern_concrete(ConcreteType::Union(list))?.erase()
         }
         SemanticTypeTag::Intersection => {
-            let list = tree.intern_types(&children[..child_count])?;
+            let start = scratch.begin_type_children(child_count, row)?;
+            for position in 0..child_count {
+                scratch.type_children.push(child_type(position)?);
+            }
+            let list = tree.intern_types(&scratch.type_children[start..])?;
+            scratch.type_children.truncate(start);
             tree.intern_concrete(ConcreteType::Intersection(list))?
                 .erase()
         }
         SemanticTypeTag::ImplTrait => {
-            let list = tree.intern_types(&children[..child_count])?;
+            let start = scratch.begin_type_children(child_count, row)?;
+            for position in 0..child_count {
+                scratch.type_children.push(child_type(position)?);
+            }
+            let list = tree.intern_types(&scratch.type_children[start..])?;
+            scratch.type_children.truncate(start);
             tree.intern_concrete(ConcreteType::ImplTrait(list))?.erase()
         }
         SemanticTypeTag::DynTrait => {
-            let list = tree.intern_types(&children[..child_count])?;
+            let start = scratch.begin_type_children(child_count, row)?;
+            for position in 0..child_count {
+                scratch.type_children.push(child_type(position)?);
+            }
+            let list = tree.intern_types(&scratch.type_children[start..])?;
+            scratch.type_children.truncate(start);
             tree.intern_concrete(ConcreteType::DynTrait(list))?.erase()
         }
         SemanticTypeTag::AnonymousRecord => {
-            let mut members = [ObjectMember::Property {
-                key: PropertyKey::Named(AtomId::new(0)),
-                ty: TypeId::new(0),
-                optional: false,
-                readonly: false,
-            }; MAX_TYPE_CHILDREN];
+            let start = scratch.begin_object_members(child_count, row)?;
             for position in 0..child_count {
                 let (_, name, flags) = child(position).ok_or(
                     compiler_ir::BuildError::Dangling {
@@ -2756,25 +3034,35 @@ fn live_type<'source>(
                     space: compiler_ir::SemanticSpace::Atom,
                     raw: position as u32,
                 })?;
-                members[position] = ObjectMember::Property {
+                scratch.object_members.push(ObjectMember::Property {
                     key: PropertyKey::Named(tree.intern_atom(name)?),
-                    ty: children[position],
+                    ty: child_type(position)?,
                     optional: flags & SemanticTypeChild::FLAG_OPTIONAL != 0,
                     readonly: flags & SemanticTypeChild::FLAG_READONLY != 0,
-                };
+                });
             }
-            let members = tree.intern_object_members(&members[..child_count])?;
+            let members = tree.intern_object_members(&scratch.object_members[start..])?;
+            scratch.object_members.truncate(start);
             tree.intern_concrete(ConcreteType::Object(members))?.erase()
         }
         SemanticTypeTag::FunctionPointer => {
-            let has_result =
-                child_count > 0 && record.payload1 & SemanticTypeRecord::RESULT_FLAG != 0;
-            let parameter_count = child_count - usize::from(has_result);
-            let mut elements = [TupleElement {
-                label: None,
-                ty: children[0],
-                kind: TupleElementKind::Required,
-            }; MAX_TYPE_CHILDREN];
+            let result_count = usize::try_from(record.function_result_count().ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                },
+            )?)
+            .map_err(|_| compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Type,
+                raw: row,
+            })?;
+            let parameter_count = child_count.checked_sub(result_count).ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                },
+            )?;
+            let parameter_start = scratch.begin_tuple_elements(parameter_count, row)?;
             for position in 0..parameter_count {
                 let (target, child_name, flags) =
                     child(position).ok_or(compiler_ir::BuildError::Dangling {
@@ -2783,9 +3071,9 @@ fn live_type<'source>(
                     })?;
                 let target = target as usize;
                 let name = child_name.or_else(|| (target < facts.len).then(|| facts.names[target]));
-                elements[position] = TupleElement {
+                scratch.tuple_elements.push(TupleElement {
                     label: name.map(|name| tree.intern_atom(name)).transpose()?,
-                    ty: children[position],
+                    ty: child_type(position)?,
                     kind: if flags & SemanticTypeChild::FLAG_REST != 0 {
                         TupleElementKind::Rest
                     } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
@@ -2793,17 +3081,49 @@ fn live_type<'source>(
                     } else {
                         TupleElementKind::Required
                     },
-                };
+                });
             }
-            let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
-            // Lazy borrow: a no-parameter, no-result executable owns zero
-            // children, so the result index exists only when has_result does.
+            let parameters = tree.intern_tuple_elements(&scratch.tuple_elements[parameter_start..])?;
+            scratch.tuple_elements.truncate(parameter_start);
+            let result_start = scratch.begin_tuple_elements(result_count, row)?;
+            for result in 0..result_count {
+                let position = parameter_count + result;
+                let (target, child_name, flags) =
+                    child(position).ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    })?;
+                let target = target as usize;
+                let name = child_name.or_else(|| (target < facts.len).then(|| facts.names[target]));
+                scratch.tuple_elements.push(TupleElement {
+                    label: name.map(|name| tree.intern_atom(name)).transpose()?,
+                    ty: child_type(position)?,
+                    kind: if flags & SemanticTypeChild::FLAG_REST != 0 {
+                        TupleElementKind::Rest
+                    } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
+                        TupleElementKind::Optional
+                    } else {
+                        TupleElementKind::Required
+                    },
+                });
+            }
+            let results = tree.intern_tuple_elements(&scratch.tuple_elements[result_start..])?;
+            scratch.tuple_elements.truncate(result_start);
             tree.intern_concrete(ConcreteType::Function {
                 parameters,
-                result: has_result.then(|| children[child_count - 1]),
-                abi: None,
-                variadic: false,
-                unsafe_: false,
+                results,
+                abi: record.text.map(|abi| tree.intern_atom(abi)).transpose()?,
+                variadic: match record.function_variadic_form().ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    },
+                )? {
+                    compiler_ir::FunctionVariadicForm::None => VariadicForm::None,
+                    compiler_ir::FunctionVariadicForm::TypedLast => VariadicForm::TypedLast,
+                    compiler_ir::FunctionVariadicForm::CUnbounded => VariadicForm::CUnbounded,
+                },
+                unsafe_: record.payload0 & SemanticTypeRecord::FUNCTION_UNSAFE_FLAG != 0,
             })?
             .erase()
         }
@@ -2830,7 +3150,7 @@ fn live_type<'source>(
             })?
             .erase(),
     };
-    ids[index] = ty;
+    ids[index] = Some(ty);
     seen[index] = 2;
     Ok(ty)
 }

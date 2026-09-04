@@ -9,7 +9,7 @@ use core::{fmt, str};
 use crate::{
     BuiltinType, ComputedType, ConcreteType, DocFragment, EntityId, Ir, ItemKind, ItemView,
     LinkTarget, LiteralType, MappedModifier, Mutability, ObjectMember, PropertyKey, TemplatePart,
-    TupleElementKind, TypeExpr, TypeId, TypeQuery, Visibility,
+    TupleElementKind, TypeExpr, TypeId, TypeQuery, VariadicForm, Visibility,
 };
 
 const MAX_TYPE_DEPTH: u8 = 96;
@@ -121,14 +121,14 @@ impl fmt::Display for SignatureDisplay<'_> {
                     ItemKind::Function,
                     Some(TypeExpr::Concrete(ConcreteType::Function {
                         parameters,
-                        result,
+                        results,
                         variadic,
                         unsafe_,
                         abi,
                     })),
                 ) => {
                     write_function_tail(
-                        formatter, self.ir, parameters, result, variadic, unsafe_, abi, 0,
+                        formatter, self.ir, parameters, results, variadic, unsafe_, abi, 0,
                     )?;
                 }
                 (ItemKind::TypeAlias | ItemKind::Implementation, _) => {
@@ -300,13 +300,13 @@ fn write_concrete_type(
         ConcreteType::Object(members) => write_object(output, ir, members, next),
         ConcreteType::Function {
             parameters,
-            result,
+            results,
             variadic,
             unsafe_,
             abi,
         } => {
             output.write_str("fn")?;
-            write_function_tail(output, ir, parameters, result, variadic, unsafe_, abi, next)
+            write_function_tail(output, ir, parameters, results, variadic, unsafe_, abi, next)
         }
         ConcreteType::Reference {
             target,
@@ -495,8 +495,8 @@ fn write_function_tail(
     output: &mut impl fmt::Write,
     ir: &Ir,
     parameters: crate::TupleElementListId,
-    result: Option<TypeId>,
-    variadic: bool,
+    results: crate::TupleElementListId,
+    variadic: VariadicForm,
     unsafe_: bool,
     abi: Option<crate::AtomId>,
     depth: u8,
@@ -527,16 +527,30 @@ fn write_function_tail(
         }
         write_type(output, ir, parameter.ty, depth + 1)?;
     }
-    if variadic {
+    if variadic == VariadicForm::CUnbounded {
         if !parameters.is_empty() {
             output.write_str(", ")?;
         }
         output.write_str("...")?;
     }
     output.write_str(")")?;
-    if let Some(result) = result {
+    let results = ir.tuple_elements(results).unwrap_or(&[]);
+    if results.len() == 1 {
         output.write_str(" -> ")?;
-        write_type(output, ir, result, depth + 1)?;
+        write_type(output, ir, results[0].ty, depth + 1)?;
+    } else if results.len() > 1 {
+        output.write_str(" -> (")?;
+        for (index, result) in results.iter().enumerate() {
+            if index != 0 {
+                output.write_str(", ")?;
+            }
+            if let Some(label) = result.label {
+                write_atom(output, ir.atom(label).unwrap_or(b"?"))?;
+                output.write_str(": ")?;
+            }
+            write_type(output, ir, result.ty, depth + 1)?;
+        }
+        output.write_str(")")?;
     }
     Ok(())
 }
@@ -652,14 +666,14 @@ fn write_object(
                 }
                 if let Some(TypeExpr::Concrete(ConcreteType::Function {
                     parameters,
-                    result,
+                    results,
                     variadic,
                     unsafe_,
                     abi,
                 })) = ir.ty(signature)
                 {
                     write_function_tail(
-                        output, ir, parameters, result, variadic, unsafe_, abi, depth,
+                        output, ir, parameters, results, variadic, unsafe_, abi, depth,
                     )?;
                 } else {
                     output.write_str(": ")?;

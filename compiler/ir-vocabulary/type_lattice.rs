@@ -98,6 +98,30 @@ pub enum SemanticTypeTag {
     QualifiedPath = 23,
 }
 
+/// Closed staged callable-tail discriminator carried in a function record's
+/// low payload bits. It mirrors, but does not depend on, owned IR so the wire
+/// grammar can reject a mixed typed-rest/C-ellipsis claim before projection.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FunctionVariadicForm {
+    None = 0,
+    TypedLast = 1,
+    CUnbounded = 2,
+}
+
+impl TryFrom<u32> for FunctionVariadicForm {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::TypedLast),
+            2 => Ok(Self::CUnbounded),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Exact type-tag rejection retaining the observed byte.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticTypeTagError {
@@ -668,6 +692,14 @@ pub enum SemanticTypeFault {
         /// Observed flags.
         actual: u8,
     },
+    /// A function row claims a variadic final parameter but its parameter
+    /// range does not carry the required rest child modifier.
+    VariadicParameter {
+        /// The final parameter position before the trailing result range.
+        position: u32,
+        /// Flags observed at that position.
+        actual: u8,
+    },
     /// A child targets text where the parent tag forbids it.
     ChildTextForbidden {
         /// Owning tag.
@@ -717,8 +749,55 @@ impl SemanticTypeRecord<'_> {
         }
     }
 
-    /// The function-pointer result-presence flag (payload1 bit 31).
-    pub const RESULT_FLAG: u32 = 1 << 31;
+    /// Exact trailing result count for a one-result function-pointer row.
+    ///
+    /// The child sequence is `[parameters..., results...]`; zero therefore
+    /// denotes a no-result callable, and every positive payload1 value is an
+    /// unambiguous trailing result count.
+    pub const FUNCTION_RESULT_COUNT_ONE: u32 = 1;
+    /// Schema-2 result-presence bit accepted only when reopening historical
+    /// fragments. New writers must use [`Self::FUNCTION_RESULT_COUNT_ONE`] or
+    /// a larger direct count for multi-result signatures.
+    pub const LEGACY_RESULT_FLAG: u32 = 1 << 31;
+    /// Function-pointer payload0: exactly the final parameter is a typed
+    /// variadic/rest element (Go, TypeScript, Python).
+    pub const FUNCTION_TYPED_VARIADIC_FLAG: u32 = 1;
+    /// Function-pointer payload0: an unnamed C-family `...` follows the
+    /// parameter range. It is distinct from a typed rest parameter.
+    pub const FUNCTION_C_VARIADIC_FLAG: u32 = 1 << 1;
+    /// Function-pointer payload0 mask for [`FunctionVariadicForm`].
+    pub const FUNCTION_VARIADIC_MASK: u32 = Self::FUNCTION_TYPED_VARIADIC_FLAG
+        | Self::FUNCTION_C_VARIADIC_FLAG;
+    /// Function-pointer payload0: the callable is unsafe.
+    pub const FUNCTION_UNSAFE_FLAG: u32 = 1 << 2;
+    /// All closed function-pointer payload0 modifier bits.
+    pub const FUNCTION_FLAGS: u32 = Self::FUNCTION_VARIADIC_MASK | Self::FUNCTION_UNSAFE_FLAG;
+
+    /// Decodes the closed staged variadic form, rejecting the unused mask
+    /// state `3` instead of treating a mixed typed/C tail as two tails.
+    #[must_use]
+    pub const fn function_variadic_form(&self) -> Option<FunctionVariadicForm> {
+        match self.payload0 & Self::FUNCTION_VARIADIC_MASK {
+            0 => Some(FunctionVariadicForm::None),
+            Self::FUNCTION_TYPED_VARIADIC_FLAG => Some(FunctionVariadicForm::TypedLast),
+            Self::FUNCTION_C_VARIADIC_FLAG => Some(FunctionVariadicForm::CUnbounded),
+            _ => None,
+        }
+    }
+
+    /// Decodes the exact result count carried by one function row. The old
+    /// high-bit presence form remains reopenable as one result, while any
+    /// other high-bit value is a malformed legacy payload.
+    #[must_use]
+    pub const fn function_result_count(&self) -> Option<u32> {
+        if self.payload1 == Self::LEGACY_RESULT_FLAG {
+            Some(1)
+        } else if self.payload1 & Self::LEGACY_RESULT_FLAG == 0 {
+            Some(self.payload1)
+        } else {
+            None
+        }
+    }
 
     /// The integer signedness bit (payload1 bit 0); the width cell occupies
     /// the bits above it.
@@ -882,23 +961,55 @@ impl SemanticTypeRecord<'_> {
                 self.require_no_text()?;
             }
             SemanticTypeTag::FunctionPointer => {
-                // payload1 bit 31 commits the optional trailing result child.
-                if self.payload1 & !Self::RESULT_FLAG != 0 {
+                let Some(results) = self.function_result_count() else {
                     return Err(SemanticTypeFault::ReservedCell {
                         tag,
                         cell: TypeCell::Payload1,
                         actual: self.payload1,
                     });
-                }
-                if self.payload1 & Self::RESULT_FLAG != 0 && child_count < 1 {
+                };
+                if results > child_count {
                     return Err(SemanticTypeFault::ChildCount {
                         tag,
                         law: ChildCountLaw {
-                            min: 1,
+                            min: results,
                             max: u32::MAX,
                         },
                         actual: child_count,
                     });
+                }
+                if self.payload0 & !Self::FUNCTION_FLAGS != 0 {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                }
+                let Some(variadic) = self.function_variadic_form() else {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                };
+                if variadic == FunctionVariadicForm::TypedLast {
+                    let minimum_variadic_children = results.checked_add(1).ok_or(
+                        SemanticTypeFault::ReservedCell {
+                            tag,
+                            cell: TypeCell::Payload1,
+                            actual: self.payload1,
+                        },
+                    )?;
+                    if child_count < minimum_variadic_children {
+                        return Err(SemanticTypeFault::ChildCount {
+                            tag,
+                            law: ChildCountLaw {
+                                min: minimum_variadic_children,
+                                max: u32::MAX,
+                            },
+                            actual: child_count,
+                        });
+                    }
                 }
                 self.check_cell(TypeCell::Text, CellLaw::Optional, self.text.is_some())?;
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
@@ -1005,6 +1116,110 @@ impl SemanticTypeRecord<'_> {
         let text_allowed = tag == SemanticTypeTag::TemplateLiteral;
         if !text_allowed && matches!(child.target, TypeChildTarget::Text) {
             return Err(SemanticTypeFault::ChildTextForbidden { tag, position });
+        }
+        Ok(())
+    }
+
+    /// Validates one child together with row-wide constraints that depend on
+    /// the result range. Callers admitting a full row use this instead of
+    /// [`Self::validate_child`] so a variadic marker cannot point at a result
+    /// or an unmarked parameter.
+    pub fn validate_child_in_row(
+        &self,
+        position: u32,
+        child_count: u32,
+        child: &SemanticTypeChild<'_>,
+    ) -> Result<(), SemanticTypeFault> {
+        self.validate_child(position, child)?;
+        if self.tag == SemanticTypeTag::FunctionPointer
+            && self.function_variadic_form() == Some(FunctionVariadicForm::TypedLast)
+        {
+            let results = self.function_result_count().ok_or(SemanticTypeFault::ReservedCell {
+                tag: self.tag,
+                cell: TypeCell::Payload1,
+                actual: self.payload1,
+            })?;
+            let minimum_variadic_children = results.checked_add(1).ok_or(
+                SemanticTypeFault::ReservedCell {
+                    tag: self.tag,
+                    cell: TypeCell::Payload1,
+                    actual: self.payload1,
+                },
+            )?;
+            let parameters = child_count.checked_sub(results).ok_or(
+                SemanticTypeFault::ChildCount {
+                    tag: self.tag,
+                    law: ChildCountLaw {
+                        min: minimum_variadic_children,
+                        max: u32::MAX,
+                    },
+                    actual: child_count,
+                },
+            )?;
+            let final_parameter = parameters.checked_sub(1).ok_or(SemanticTypeFault::ChildCount {
+                tag: self.tag,
+                law: ChildCountLaw {
+                    min: minimum_variadic_children,
+                    max: u32::MAX,
+                },
+                actual: child_count,
+            })?;
+            if position == final_parameter && child.flags & SemanticTypeChild::FLAG_REST == 0 {
+                return Err(SemanticTypeFault::VariadicParameter {
+                    position,
+                    actual: child.flags,
+                });
+            }
+            if position != final_parameter && child.flags & SemanticTypeChild::FLAG_REST != 0 {
+                return Err(SemanticTypeFault::ChildFlagsForbidden {
+                    tag: self.tag,
+                    position,
+                    actual: child.flags,
+                });
+            }
+        }
+        if self.tag == SemanticTypeTag::FunctionPointer {
+            let variadic = self.function_variadic_form().ok_or(
+                SemanticTypeFault::ReservedCell {
+                    tag: self.tag,
+                    cell: TypeCell::Payload0,
+                    actual: self.payload0,
+                },
+            )?;
+            let results = self.function_result_count().ok_or(SemanticTypeFault::ReservedCell {
+                tag: self.tag,
+                cell: TypeCell::Payload1,
+                actual: self.payload1,
+            })?;
+            let parameters = child_count.checked_sub(results).ok_or(
+                SemanticTypeFault::ChildCount {
+                    tag: self.tag,
+                    law: ChildCountLaw {
+                        min: results,
+                        max: u32::MAX,
+                    },
+                    actual: child_count,
+                },
+            )?;
+            if position >= parameters
+                && child.flags & (SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST)
+                    != 0
+            {
+                return Err(SemanticTypeFault::ChildFlagsForbidden {
+                    tag: self.tag,
+                    position,
+                    actual: child.flags,
+                });
+            }
+            if variadic != FunctionVariadicForm::TypedLast
+                && child.flags & SemanticTypeChild::FLAG_REST != 0
+            {
+                return Err(SemanticTypeFault::ChildFlagsForbidden {
+                    tag: self.tag,
+                    position,
+                    actual: child.flags,
+                });
+            }
         }
         Ok(())
     }

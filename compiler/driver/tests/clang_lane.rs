@@ -679,7 +679,7 @@ fn signatures_and_local_call_are_content_addressed() -> Result<(), TestError> {
             .find(|row| row.owner.raw == add)
             .ok_or(TestError::Check("add fact"))?;
         if function.record.tag != SemanticTypeTag::FunctionPointer
-            || function.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || function.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function.record.children.length != 3
         {
             return Err(TestError::Check("add signature"));

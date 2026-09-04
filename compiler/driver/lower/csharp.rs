@@ -748,7 +748,7 @@ impl Signature {
         let arity = u32::try_from(self.parameter_ordinals.len()).unwrap_or(u32::MAX);
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         if self.result_ordinal.is_some() {
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         let mut fact = SemanticFact::new(
             EntityKind::Function,
@@ -1009,7 +1009,7 @@ fn owned_node<'source>(
                 children.push((target, None));
             }
             if node.has_return {
-                record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+                record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
             }
             Ok(OwnedNode {
                 record,
@@ -2609,7 +2609,7 @@ mod tests {
         }
         let method_row = row(&view, 3)?;
         if method_row.record.tag != SemanticTypeTag::FunctionPointer
-            || method_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || method_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || method_row.record.children.length != 2
         {
             return Err(TestError::Missing("function pointer over carriers"));
@@ -2957,14 +2957,14 @@ mod tests {
         }
         let operator_row = row(&view, 4)?;
         if operator_row.record.tag != SemanticTypeTag::FunctionPointer
-            || operator_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || operator_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || operator_row.record.children.length != 3
         {
             return Err(TestError::Missing("operator function row"));
         }
         let conversion_row = row(&view, 7)?;
         if conversion_row.record.tag != SemanticTypeTag::FunctionPointer
-            || conversion_row.record.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || conversion_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || conversion_row.record.children.length != 2
         {
             return Err(TestError::Missing("conversion function row"));

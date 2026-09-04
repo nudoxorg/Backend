@@ -3,7 +3,9 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must remain schema-1 compatible.
 use compiler_ir::{
-    EntityKind, FragmentView, Occurrence, PrepareError, PreparedFragment, SourceIdentity,
+    BuildError, ConcreteType, EntityKind, FragmentView, Occurrence, PrepareError,
+    PreparedFragment, SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr,
+    VariadicForm,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
@@ -39,6 +41,8 @@ enum TestError {
     Prepare(#[from] PrepareError),
     #[error("fixture write failed")]
     Write(#[from] compiler_ir::WriteError),
+    #[error("rich projection failed")]
+    Build(#[from] BuildError),
     #[error("fragment output tail changed")]
     Tail,
     #[error("{label} did not change the committed bytes")]
@@ -108,6 +112,140 @@ fn admit_facts(facts: [SemanticFact<'static>; 2]) -> Result<FactSet<'static>, Te
         set.push(fact).map_err(rejected)?;
     }
     Ok(set)
+}
+
+#[test]
+fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
+) -> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Alias,
+            b"leaf",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"tuple",
+                SemanticProductConstructor::TUPLE,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+            .type_child(0, Some(b"member"), 0),
+        )
+        .map_err(rejected)?;
+    let mut c_variadic = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+    c_variadic.payload0 = SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"c_tail",
+                SemanticProductConstructor::function(0, 0),
+            )
+            .typed(c_variadic),
+        )
+        .map_err(rejected)?;
+    // Carrier facts give callable elements their own names and semantic
+    // roles. The shared function range retains both Go-style result labels.
+    for name in [b"argument".as_slice(), b"left".as_slice(), b"right".as_slice()] {
+        facts
+            .push(SemanticFact::new(
+                EntityKind::Parameter,
+                name,
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+    }
+    let mut many = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+    many.payload1 = 2;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"many",
+                SemanticProductConstructor::function(1, 2),
+            )
+            .typed(many)
+            .type_child(3, None, 0)
+            .type_child(4, None, 0)
+            .type_child(5, None, 0),
+        )
+        .map_err(rejected)?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Record,
+                b"object",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord))
+            .type_child(0, Some(b"field"), 0),
+        )
+        .map_err(rejected)?;
+    // A zero-parameter, zero-result callable exercises the former
+    // `children[0]` seed without constructing any fake type coordinate.
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"empty",
+                SemanticProductConstructor::function(0, 0),
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer)),
+        )
+        .map_err(rejected)?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"template",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+            .type_text_child(b""),
+        )
+        .map_err(rejected)?;
+
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    assert_eq!(ir.items().len(), 10);
+    assert!(ir.items().all(|item| item.semantic_type().is_some()));
+    let many = ir
+        .items()
+        .find(|item| item.name() == b"many")
+        .expect("multi-result callable was projected");
+    let Some(TypeExpr::Concrete(ConcreteType::Function {
+        parameters,
+        results,
+        variadic,
+        ..
+    })) = many.semantic_type().and_then(|ty| ir.ty(ty))
+    else {
+        panic!("multi-result callable lost its function shape");
+    };
+    assert_eq!(variadic, VariadicForm::None);
+    assert_eq!(ir.tuple_elements(parameters).expect("parameter list").len(), 1);
+    let results = ir.tuple_elements(results).expect("result list");
+    assert_eq!(results.len(), 2);
+    assert_eq!(ir.atom(results[0].label.expect("left label")), Some(&b"left"[..]));
+    assert_eq!(ir.atom(results[1].label.expect("right label")), Some(&b"right"[..]));
+    let c_tail = ir
+        .items()
+        .find(|item| item.name() == b"c_tail")
+        .expect("C variadic callable was projected");
+    let Some(TypeExpr::Concrete(ConcreteType::Function { variadic, .. })) =
+        c_tail.semantic_type().and_then(|ty| ir.ty(ty))
+    else {
+        panic!("C variadic callable lost its tail form");
+    };
+    assert_eq!(variadic, VariadicForm::CUnbounded);
+    Ok(())
 }
 
 #[test]

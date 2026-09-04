@@ -716,7 +716,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let result_count = u32::from(result_target.is_some());
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         if result_target.is_some() {
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         let extension = self.extension(type_parameter_start)?;
         let mut fact = SemanticFact::new(
@@ -1138,7 +1138,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
                 let returned = function_type.return_type.type_annotation.span();
                 let target = self.child_target(returned.start, returned.end, next_depth)?;
-                cells.record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+                cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
                 cells.push_child(target, None, 0)?;
                 return Ok(TypeOutcome::Cells(cells));
             }
@@ -3069,7 +3069,7 @@ fn intern_computed_tree<'source>(
             *slot = result_row;
             len += 1;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
             intern_computed_row(registry, facts, record, owner, &children[..len])
         }
         TypeTree::Object { members } => {

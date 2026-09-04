@@ -517,15 +517,15 @@ impl PackedTypes {
                 ConcreteType::Object(value) => header(TypeTag::Object, 0, 0, value.raw),
                 ConcreteType::Function {
                     parameters,
-                    result,
+                    results,
                     abi,
                     variadic,
                     unsafe_,
                 } => header(
                     TypeTag::Function,
-                    u8::from(variadic) | (u8::from(unsafe_) << 1),
+                    variadic as u8 | (u8::from(unsafe_) << 2),
                     0,
-                    self.triple([parameters.raw, option_raw(result), option_raw(abi)]),
+                    self.triple([parameters.raw, results.raw, option_raw(abi)]),
                 ),
                 ConcreteType::Reference {
                     target,
@@ -677,12 +677,21 @@ impl PackedTypes {
             }
             TypeTag::Function => {
                 let data = triple(value.payload)?;
+                let variadic = match value.flags & 0b11 {
+                    0 => VariadicForm::None,
+                    1 => VariadicForm::TypedLast,
+                    2 => VariadicForm::CUnbounded,
+                    _ => return None,
+                };
+                if value.flags & !0b111 != 0 {
+                    return None;
+                }
                 TypeExpr::Concrete(ConcreteType::Function {
                     parameters: TupleElementListId::new(data[0]),
-                    result: raw_option(data[1]).map(TypeId::new),
+                    results: TupleElementListId::new(data[1]),
                     abi: raw_option(data[2]).map(AtomId::new),
-                    variadic: value.flags & 1 != 0,
-                    unsafe_: value.flags & 2 != 0,
+                    variadic,
+                    unsafe_: value.flags & 4 != 0,
                 })
             }
             TypeTag::Reference => {
@@ -868,9 +877,9 @@ mod packed_type_tests {
             TypeExpr::Concrete(ConcreteType::Object(ObjectMemberListId::new(10))),
             TypeExpr::Concrete(ConcreteType::Function {
                 parameters: TupleElementListId::new(11),
-                result: Some(TypeId::new(12)),
+                results: TupleElementListId::new(12),
                 abi: Some(AtomId::new(13)),
-                variadic: true,
+                variadic: VariadicForm::TypedLast,
                 unsafe_: true,
             }),
             TypeExpr::Concrete(ConcreteType::Reference {
@@ -1139,9 +1148,13 @@ pub enum ConcreteType {
         /// Parameter rows retain names, optionality, and rest position. This is
         /// equally useful for docs rendering and exact TypeScript signatures.
         parameters: TupleElementListId,
-        result: Option<TypeId>,
+        /// Results are an independent ordered range. Most languages have zero
+        /// or one; Go has several, and retaining role-bearing elements keeps
+        /// result labels and modifiers with the type rather than recovering
+        /// them from a language extension.
+        results: TupleElementListId,
         abi: Option<AtomId>,
-        variadic: bool,
+        variadic: VariadicForm,
         unsafe_: bool,
     },
     Reference {
@@ -1248,6 +1261,28 @@ pub enum TupleElementKind {
     Required,
     Optional,
     Rest,
+}
+
+/// Closed callable-tail form. A typed rest parameter and a C-style unnamed
+/// ellipsis have different source semantics and must never be inferred from
+/// one boolean or rendered twice.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum VariadicForm {
+    /// The parameter range contains no variadic tail.
+    None = 0,
+    /// Exactly the final parameter is a typed `Rest` tuple element.
+    TypedLast = 1,
+    /// A C-family unnamed trailing `...` follows ordinary parameters.
+    CUnbounded = 2,
+}
+
+/// The role of one callable element rejected by owned-IR validation.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CallableElementRole {
+    Parameter,
+    Result,
 }
 
 /// Strong property-key split. A computed key is never confused with its
@@ -2590,6 +2625,17 @@ pub enum BuildError {
     /// compound cycle needs a dedicated recursive handle and must never
     /// recurse on the process stack while that handle is absent.
     RecursiveType { raw: u32 },
+    /// A callable element used a modifier illegal for its semantic role or
+    /// variadic form. Results are always required; a typed variadic tail is
+    /// exactly one final parameter.
+    CallableElement {
+        role: CallableElementRole,
+        position: usize,
+        kind: TupleElementKind,
+    },
+    /// A callable claimed a typed variadic tail but had no final `Rest`
+    /// parameter element to own it.
+    MissingTypedVariadicParameter { parameter_count: usize },
     /// A durable documentation fact was not valid UTF-8, so it cannot enter
     /// the owned text arena without loss.  Callers must retain it in the
     /// compact fragment or surface this exact terminal; silently dropping it
@@ -3405,21 +3451,60 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
         }
         ConcreteType::Function {
             parameters,
-            result,
+            results,
             abi,
+            variadic,
             ..
         } => {
-            for parameter in list_or_dangling(
+            let parameters = list_or_dangling(
                 &builder.tuple_elements,
                 parameters,
                 SemanticSpace::TupleElements,
-            )? {
+            )?;
+            let mut typed_rest = false;
+            for (position, parameter) in parameters.iter().copied().enumerate() {
                 if let Some(label) = parameter.label {
                     atom(builder, label)?;
                 }
                 id(parameter.ty, builder.types.len(), SemanticSpace::Type)?;
+                if parameter.kind == TupleElementKind::Rest {
+                    let is_final = position + 1 == parameters.len();
+                    if variadic != VariadicForm::TypedLast || !is_final {
+                        return Err(BuildError::CallableElement {
+                            role: CallableElementRole::Parameter,
+                            position,
+                            kind: parameter.kind,
+                        });
+                    }
+                    typed_rest = true;
+                }
             }
-            optional_id(result, builder.types.len(), SemanticSpace::Type)?;
+            if variadic == VariadicForm::TypedLast && !typed_rest {
+                return Err(BuildError::MissingTypedVariadicParameter {
+                    parameter_count: parameters.len(),
+                });
+            }
+            for (position, result) in list_or_dangling(
+                &builder.tuple_elements,
+                results,
+                SemanticSpace::TupleElements,
+            )?
+            .iter()
+            .copied()
+            .enumerate()
+            {
+                if let Some(label) = result.label {
+                    atom(builder, label)?;
+                }
+                id(result.ty, builder.types.len(), SemanticSpace::Type)?;
+                if result.kind != TupleElementKind::Required {
+                    return Err(BuildError::CallableElement {
+                        role: CallableElementRole::Result,
+                        position,
+                        kind: result.kind,
+                    });
+                }
+            }
             if let Some(abi) = abi {
                 atom(builder, abi)?;
             }

@@ -495,10 +495,10 @@ fn width_cells_reject_reserved_bits_and_zero_widths() {
 }
 
 #[test]
-fn function_pointer_results_are_committed_by_their_flag() {
-    // A result flag with no children violates the committed law.
+fn function_pointer_results_are_committed_by_an_exact_count() {
+    // A nonzero result count with no children violates the committed law.
     let mut row = record(SemanticTypeTag::FunctionPointer);
-    row.payload1 = SemanticTypeRecord::RESULT_FLAG;
+    row.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
     assert_eq!(
         row.validate(0),
         Err(SemanticTypeFault::ChildCount {
@@ -513,19 +513,100 @@ fn function_pointer_results_are_committed_by_their_flag() {
     // Params plus the committed result child validate; the ABI text is
     // optional and defaults to the language convention when absent.
     let mut row = record(SemanticTypeTag::FunctionPointer);
-    row.payload1 = SemanticTypeRecord::RESULT_FLAG;
+    row.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
     row.text = Some(b"Cdecl");
     row.children = compiler_ir_vocabulary::ListSpan::new(0, 2);
     assert_eq!(row.validate(2), Ok(()));
     // Reserved payload bits below the flag stay rejected.
     let mut row = record(SemanticTypeTag::FunctionPointer);
-    row.payload1 = SemanticTypeRecord::RESULT_FLAG | 1;
+    row.payload1 = SemanticTypeRecord::LEGACY_RESULT_FLAG | 1;
     assert_eq!(
         row.validate(0),
         Err(SemanticTypeFault::ReservedCell {
             tag: SemanticTypeTag::FunctionPointer,
             cell: TypeCell::Payload1,
-            actual: SemanticTypeRecord::RESULT_FLAG | 1,
+            actual: SemanticTypeRecord::LEGACY_RESULT_FLAG | 1,
+        })
+    );
+}
+
+#[test]
+fn variadic_function_rows_have_one_final_rest_parameter_and_plain_results() {
+    let mut row = record(SemanticTypeTag::FunctionPointer);
+    row.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
+    row.payload1 = 2;
+    assert_eq!(row.validate(3), Ok(()));
+
+    let child = |flags| SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        name: None,
+        flags,
+    };
+    assert_eq!(
+        row.validate_child_in_row(0, 3, &child(SemanticTypeChild::FLAG_REST)),
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::FunctionPointer,
+            position: 0,
+            actual: SemanticTypeChild::FLAG_REST,
+        })
+    );
+    assert_eq!(
+        row.validate_child_in_row(0, 3, &child(0)),
+        Ok(())
+    );
+    assert_eq!(
+        row.validate_child_in_row(1, 3, &child(SemanticTypeChild::FLAG_REST)),
+        Ok(())
+    );
+    assert_eq!(
+        row.validate_child_in_row(2, 3, &child(SemanticTypeChild::FLAG_OPTIONAL)),
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::FunctionPointer,
+            position: 2,
+            actual: SemanticTypeChild::FLAG_OPTIONAL,
+        })
+    );
+
+    row.payload0 = 0;
+    assert_eq!(
+        row.validate_child_in_row(1, 3, &child(SemanticTypeChild::FLAG_REST)),
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::FunctionPointer,
+            position: 1,
+            actual: SemanticTypeChild::FLAG_REST,
+        })
+    );
+}
+
+#[test]
+fn c_variadic_tail_is_distinct_from_typed_rest_and_mixed_forms_fail() {
+    let mut c_tail = record(SemanticTypeTag::FunctionPointer);
+    c_tail.payload0 = SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+    assert_eq!(c_tail.validate(0), Ok(()));
+
+    let rest = SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        name: None,
+        flags: SemanticTypeChild::FLAG_REST,
+    };
+    assert_eq!(
+        c_tail.validate_child_in_row(0, 1, &rest),
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::FunctionPointer,
+            position: 0,
+            actual: SemanticTypeChild::FLAG_REST,
+        })
+    );
+
+    c_tail.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG
+        | SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+    assert_eq!(
+        c_tail.validate(0),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::FunctionPointer,
+            cell: TypeCell::Payload0,
+            actual: SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG
+                | SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG,
         })
     );
 }

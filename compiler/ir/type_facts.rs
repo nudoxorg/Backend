@@ -213,7 +213,7 @@ impl<'bytes> TypeFactLane<'bytes> {
                 let child = &children[usize::try_from(start + position).unwrap_or(usize::MAX)];
                 input
                     .record
-                    .validate_child(position, child)
+                    .validate_child_in_row(position, length, child)
                     .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
                 if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                     child.target
@@ -524,7 +524,7 @@ pub fn validate_payload(
             }
             let child = decode_child(&mut child_reader, ordinal, position)?;
             record
-                .validate_child(position, &child)
+                .validate_child_in_row(position, record.children.length, &child)
                 .map_err(|fault| TypeFactFault::Record { ordinal, fault })?;
             if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                 child.target

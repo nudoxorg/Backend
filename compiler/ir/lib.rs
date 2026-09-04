@@ -44,7 +44,8 @@ pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
-    ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin, ListSpan,
+    ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
+    FunctionVariadicForm, ListSpan,
     NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageFault, PooledListError,
     PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
     ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
@@ -96,6 +97,7 @@ pub use range::{
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
+    CallableElementRole,
     CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
     ComputedTypeId, ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId,
@@ -113,6 +115,7 @@ pub use semantic::{
     TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
     TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
     TypeListId, TypePairPayload, TypeParameter, TypeParameterListId, TypeQuadPayload, TypeQuery,
+    VariadicForm,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
     UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
 };

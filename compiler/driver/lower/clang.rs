@@ -1144,7 +1144,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         if result_ordinal.is_some_and(|result| kept_children.contains(&result)) {
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         let mut projected = Projected::leaf(record);
         for ordinal in &kept_children {
@@ -1424,7 +1424,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
         if has_result {
-            record.payload1 = SemanticTypeRecord::RESULT_FLAG;
+            record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
         Ok(self.finish_row(record, children))
     }
@@ -2453,7 +2453,7 @@ mod tests {
         }
         let function_row = &rows[2].record;
         if function_row.tag != SemanticTypeTag::FunctionPointer
-            || function_row.payload1 != compiler_ir::SemanticTypeRecord::RESULT_FLAG
+            || function_row.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || function_row.children.length != 3
         {
             return Err(TestError::Entity { ordinal: 2 });
