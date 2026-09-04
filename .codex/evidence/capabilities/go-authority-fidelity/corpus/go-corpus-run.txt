@@ -1,0 +1,25 @@
+command: CARGO_TARGET_DIR=/private/tmp/nudox-fidelity-go/.target PATH=/Users/mileswirht/nudox-tools/go/bin:$PATH COMPILER_GO_COMPILER=/Users/mileswirht/nudox-tools/go/bin/go cargo test -p compiler-driver --test go_corpus -- --nocapture
+test go_support::tests::proxy_escapes_uppercase_only ... ok
+golang:github.com/google/uuid@v1.6.0 outcome=CapacityTerminal entities=411 wall_ms=1733 oracle_ms=1084
+golang:gopkg.in/yaml.v3@v3.0.1 outcome=CapacityTerminal entities=1774 wall_ms=4293 oracle_ms=599
+golang:github.com/gorilla/mux@v1.8.1 outcome=CapacityTerminal entities=694 wall_ms=2469 oracle_ms=1178
+golang:github.com/google/go-cmp@v0.6.0 outcome=CapacityTerminal entities=2461 wall_ms=4305 oracle_ms=568
+golang:golang.org/x/sync@v0.10.0 outcome=CapacityTerminal entities=334 wall_ms=1407 oracle_ms=800
+golang:golang.org/x/mod@v0.17.0 outcome=CapacityTerminal entities=2284 wall_ms=6326 oracle_ms=959
+golang:golang.org/x/time@v0.5.0 outcome=Complete entities=253 wall_ms=1659 oracle_ms=557
+golang:golang.org/x/tools@v0.30.0 outcome=FactCapacity entities=16384 wall_ms=20830 oracle_ms=1934
+golang:github.com/pelletier/go-toml/v2@v2.2.2 outcome=CapacityTerminal entities=3135 wall_ms=5662 oracle_ms=939
+golang:github.com/oklog/ulid/v2@v2.1.0 outcome=CapacityTerminal entities=257 wall_ms=1010 oracle_ms=461
+golang:github.com/cespare/xxhash/v2@v2.3.0 outcome=Complete entities=159 wall_ms=1178 oracle_ms=654
+golang:github.com/BurntSushi/toml@v1.4.0 outcome=CapacityTerminal entities=1624 wall_ms=2349 oracle_ms=546
+golang:github.com/zeebo/xxh3@v1.0.2 outcome=CapacityTerminal entities=283 wall_ms=1177 oracle_ms=509
+golang:github.com/minio/highwayhash@v1.0.2 outcome=Complete entities=184 wall_ms=1294 oracle_ms=691
+golang:github.com/julienschmidt/httprouter@v1.3.0 outcome=Complete entities=256 wall_ms=1759 oracle_ms=1170
+golang:github.com/go-chi/chi/v5@v5.0.12 outcome=CapacityTerminal entities=1162 wall_ms=3617 oracle_ms=1187
+golang:github.com/rs/zerolog@v1.33.0 outcome=CapacityTerminal entities=2987 wall_ms=5387 oracle_ms=1089
+golang:github.com/davecgh/go-spew@v1.1.1 outcome=CapacityTerminal entities=571 wall_ms=1446 oracle_ms=585
+golang:github.com/pkg/errors@v0.9.1 outcome=CapacityTerminal entities=263 wall_ms=1406 oracle_ms=564
+golang:github.com/mitchellh/go-homedir@v1.1.0 outcome=Complete entities=27 wall_ms=1185 oracle_ms=570
+golang:rsc.io/quote@v1.5.2 outcome=Complete entities=18 wall_ms=1038 oracle_ms=499
+test twenty_one_real_modules_have_decoded_source_truth ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 71.57s

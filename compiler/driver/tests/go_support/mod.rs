@@ -46,6 +46,8 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    #[error("Go module dependency preparation failed with status {status}: {stderr}")]
+    GoModule { status: String, stderr: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,7 +113,11 @@ fn agent() -> ureq::Agent {
 }
 
 pub fn locate(purl: &Purl) -> Result<(String, Option<[u8; 32]>), Error> {
-    let base = format!("https://proxy.golang.org/{}/@v/{}", purl.name, purl.version);
+    let base = format!(
+        "https://proxy.golang.org/{}/@v/{}",
+        proxy_path(&purl.name),
+        purl.version
+    );
     let info = agent()
         .get(&format!("{base}.info"))
         .call()
@@ -151,6 +157,20 @@ pub fn locate(purl: &Purl) -> Result<(String, Option<[u8; 32]>), Error> {
             source,
         })?;
     Ok((format!("{base}.zip"), Some(hex(&digest)?)))
+}
+
+/// Applies the Go module proxy's case-escaping rule.  Uppercase path bytes
+/// are represented by `!` followed by their lowercase ASCII byte.
+pub fn proxy_path(path: &str) -> String {
+    path.chars()
+        .flat_map(|character| {
+            character
+                .is_ascii_uppercase()
+                .then_some('!')
+                .into_iter()
+                .chain(std::iter::once(character.to_ascii_lowercase()))
+        })
+        .collect()
 }
 
 pub fn download(url: &str, cap: usize, deadline: Instant) -> Result<Vec<u8>, Error> {
@@ -322,4 +342,39 @@ pub fn ensure_module(root: &Path, module: &str) -> Result<bool, Error> {
     std::fs::write(&manifest, format!("module {module_path}\ngo 1.12\n"))
         .map_err(|source| Error::Io { source })?;
     Ok(true)
+}
+
+/// Resolves sums required by a downloaded module without changing the
+/// pre-module synthesis behavior of [`ensure_module`].
+pub fn prepare_module(root: &Path, module: &str) -> Result<(), Error> {
+    let module_root = root.join(module);
+    let compiler = std::env::var_os("COMPILER_GO_COMPILER").unwrap_or_else(|| "go".into());
+    let output = std::process::Command::new(compiler)
+        .args(["mod", "download"])
+        .current_dir(module_root)
+        .output()
+        .map_err(|source| Error::Io { source })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(Error::GoModule {
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_path;
+
+    #[test]
+    fn proxy_escapes_uppercase_only() {
+        assert_eq!(
+            proxy_path("github.com/BurntSushi/toml"),
+            "github.com/!burnt!sushi/toml"
+        );
+        assert_eq!(proxy_path("github.com/example"), "github.com/example");
+        assert_eq!(proxy_path("x/v2.0"), "x/v2.0");
+    }
 }
