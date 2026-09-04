@@ -239,6 +239,58 @@ fn schema_three_rejects_invalid_computed_rows_before_publication() {
 }
 
 #[test]
+fn schema_three_reopen_reports_the_full_type_lane_for_computed_children()
+-> Result<(), TestFailure> {
+    let declared = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+    }];
+    let computed = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::Tuple,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 1),
+        },
+    }];
+    let children = [compiler_ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(0))),
+        name: None,
+        flags: 0,
+    }];
+    let lane = TypeFactLane {
+        inputs: &declared,
+        computed: &computed,
+        children: &children,
+    };
+    let bytes = write(&lane)?;
+    let payload = FragmentView::validate(&bytes)?
+        .type_fact_payload()
+        .ok_or(TestFailure::Admission(TypeFactFault::TrailingBytes { declared: 0 }))?;
+    let offset = payload.as_ptr() as usize - bytes.as_ptr() as usize;
+    // schema-3 header (8), two 24-byte leaf records, pooled-child count (4),
+    // and the one-byte local-child tag precede the raw target word.
+    let mut mutated = bytes;
+    mutated[offset + 61..offset + 65].copy_from_slice(&2_u32.to_le_bytes());
+    assert!(matches!(
+        FragmentView::validate(&mutated),
+        Err(FragmentError::TypeFacts {
+            fault: TypeFactFault::ChildTargetOutOfRange {
+                ordinal: 1,
+                position: 0,
+                target: 2,
+                record_count: 2,
+            }
+        })
+    ));
+    Ok(())
+}
+
+#[test]
 fn type_fact_records_round_trip_through_borrowing_cursor() -> Result<(), TestFailure> {
     let inputs = records();
     let lane = TypeFactLane {

@@ -535,7 +535,7 @@ pub fn validate_payload(
                         ordinal,
                         position,
                         target: target.raw,
-                        record_count: declared_count,
+                        record_count: count,
                     });
                 }
                 if !computed && schema >= 2 && target.raw >= declared_count {
