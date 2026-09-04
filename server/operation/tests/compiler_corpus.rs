@@ -13,6 +13,8 @@ mod multilingual_corpus;
 mod native_tooling;
 #[path = "support/compiler_corpus/authority.rs"]
 mod authority;
+#[path = "support/compiler_corpus/inventory.rs"]
+mod inventory;
 #[path = "support/compiler_corpus/observation.rs"]
 mod observation;
 #[path = "support/compiler_corpus/publication.rs"]
@@ -66,8 +68,12 @@ use thiserror::Error;
 use authority::{
     AuthorityBuildError, AuthorityFactory, AuthorityUnavailableCause, CSharpHelperError,
     HostTools, NativeUnavailableCause, NativeUnavailableKind, ProviderSlot, ResolvedTools,
-    go_error_is_unavailable, native_slot, native_tool, rust_error_is_unavailable, rust_fixture,
-    go_fixture,
+    SourceUnavailableCause, SourceUnavailableKind, go_error_is_unavailable, native_slot,
+    native_tool, rust_error_is_unavailable, rust_fixture, go_fixture,
+};
+use inventory::{
+    CorpusCapacityVerdict, InventoryInvariant, REAL_PACKAGE_COUNT, RealInventorySummary,
+    validate_source_inventory,
 };
 use comparison::{
     compare_passes, CorpusMismatch, Pass, PermutationField, Plane, expected_mismatches,
@@ -215,6 +221,8 @@ enum CorpusAuditError {
         key: Option<CaseKey>,
         cause: CorpusInvariant,
     },
+    #[error("real package inventory invariant {cause:?} failed")]
+    Inventory { cause: InventoryInvariant },
     #[error("source/output matrix retained {count} mismatches; first={first:?}")]
     Mismatches {
         count: usize,
@@ -543,6 +551,32 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
         return Err(CorpusAuditError::Mismatches {
             count: mismatches.len(),
             first: Some(first),
+        });
+    }
+    Ok(())
+}
+
+/// Checks the frozen real-package source inventory without treating source
+/// absence as a successful semantic comparison.  Available rows are only
+/// admitted when their observed bytes, path, coordinate, and profile remain
+/// bound; unavailable rows remain typed inputs for the future authority/image
+/// pass and are intentionally not converted to the generated 210-row matrix.
+#[test]
+fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
+-> Result<(), CorpusAuditError> {
+    let summary: RealInventorySummary = validate_source_inventory()
+        .map_err(|cause| CorpusAuditError::Inventory { cause })?;
+    if summary.attempted.iter().sum::<usize>() != REAL_PACKAGE_COUNT {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::TotalCount {
+                observed: summary.attempted.iter().sum(),
+                expected: REAL_PACKAGE_COUNT,
+            },
+        });
+    }
+    if let CorpusCapacityVerdict::Insufficient { observed, required } = summary.capacity {
+        return Err(CorpusAuditError::Inventory {
+            cause: InventoryInvariant::CorpusCapacity { observed, required },
         });
     }
     Ok(())

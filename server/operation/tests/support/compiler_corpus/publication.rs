@@ -88,21 +88,18 @@ impl PassPublisher {
             });
         }
         let ranges = FragmentRangeManifest::from_view(&fragment.view)?;
+        let semantic_planes = observe_reopened_semantic_image(&fragment.view);
         let reopened = ReopenedObservation {
             fragment: digest_bytes(fragment.view.as_ref()),
             source: fragment.facts.source,
             recipe: fragment.facts.recipe,
             ranges: range_manifest_digest_from_manifest(ranges),
             census: fragment.view.discover().census(),
-            // `open_published` currently lends only the fragment envelope;
-            // optional semantic readers are not yet part of its public
-            // observation surface. This is observer unavailability, not a
-            // semantic claim that the published sections are absent.
-            semantic_data: PlaneObservation::ObserverUnavailable,
-            occurrences: PlaneObservation::ObserverUnavailable,
-            type_facts: PlaneObservation::ObserverUnavailable,
-            documentation: PlaneObservation::ObserverUnavailable,
-            extensions: PlaneObservation::ObserverUnavailable,
+            semantic_data: semantic_planes.semantic_data,
+            occurrences: semantic_planes.occurrences,
+            type_facts: semantic_planes.type_facts,
+            documentation: semantic_planes.documentation,
+            extensions: semantic_planes.extensions,
         };
         Ok(reopened)
     }

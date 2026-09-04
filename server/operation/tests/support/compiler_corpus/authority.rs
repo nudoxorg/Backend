@@ -26,10 +26,29 @@ pub(super) struct NativeUnavailableCause {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AuthorityUnavailableCause {
     Native(NativeUnavailableCause),
+    Source(SourceUnavailableCause),
     RustAuthority,
     GoOracle,
     JavaHarness,
     CSharpHelper,
+}
+
+/// Closed source-inventory terminal. A missing package root or fixture is a
+/// real input absence, never permission to substitute generated source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SourceUnavailableCause {
+    pub(super) language: CorpusLanguage,
+    pub(super) kind: SourceUnavailableKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SourceUnavailableKind {
+    RootUnset,
+    PackageDirectoryMissing,
+    SourceFileMissing,
+    RepositoryFixtureMissing,
+    ReadFailure,
+    SourceTooLarge,
 }
 
 #[derive(Debug, Error)]

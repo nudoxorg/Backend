@@ -105,6 +105,33 @@ pub(super) struct ReopenedObservation {
     pub(super) extensions: PlaneObservation,
 }
 
+/// Optional semantic planes available from the reopened representation.  The
+/// current publication API exposes only the compact fragment envelope, so its
+/// adapter returns explicit observer-unavailable values.  Terra's forthcoming
+/// `SemanticImageView` is intentionally the one narrow implementation point
+/// that will replace this constructor; no comparison code may infer a plane
+/// from census counts or section presence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ReopenedSemanticPlanes {
+    pub(super) semantic_data: PlaneObservation,
+    pub(super) occurrences: PlaneObservation,
+    pub(super) type_facts: PlaneObservation,
+    pub(super) documentation: PlaneObservation,
+    pub(super) extensions: PlaneObservation,
+}
+
+pub(super) fn observe_reopened_semantic_image(
+    _fragment: &FragmentView<'_>,
+) -> ReopenedSemanticPlanes {
+    ReopenedSemanticPlanes {
+        semantic_data: PlaneObservation::ObserverUnavailable,
+        occurrences: PlaneObservation::ObserverUnavailable,
+        type_facts: PlaneObservation::ObserverUnavailable,
+        documentation: PlaneObservation::ObserverUnavailable,
+        extensions: PlaneObservation::ObserverUnavailable,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RenderVerdict {
     Rendered(Digest),
@@ -852,6 +879,19 @@ pub(super) fn digest_authority_unavailable(value: AuthorityUnavailableCause) -> 
         AuthorityUnavailableCause::GoOracle => 2_u8.hash(&mut hasher),
         AuthorityUnavailableCause::JavaHarness => 3_u8.hash(&mut hasher),
         AuthorityUnavailableCause::CSharpHelper => 4_u8.hash(&mut hasher),
+        AuthorityUnavailableCause::Source(cause) => {
+            5_u8.hash(&mut hasher);
+            cause.language.hash(&mut hasher);
+            let kind = match cause.kind {
+                SourceUnavailableKind::RootUnset => 0_u8,
+                SourceUnavailableKind::PackageDirectoryMissing => 1_u8,
+                SourceUnavailableKind::SourceFileMissing => 2_u8,
+                SourceUnavailableKind::RepositoryFixtureMissing => 3_u8,
+                SourceUnavailableKind::ReadFailure => 4_u8,
+                SourceUnavailableKind::SourceTooLarge => 5_u8,
+            };
+            kind.hash(&mut hasher);
+        }
     }
     hasher.digest()
 }
