@@ -5,7 +5,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use compiler_languages_rust::{
@@ -35,6 +35,7 @@ fn authority_observes_declared_edition_per_manifest() {
     let control = RustAnalysisControl {
         cancelled: &cancelled,
         maximum_source_bytes: SourceByteLimit::from(u32::MAX),
+        deadline: Instant::now() + Duration::from_secs(180),
     };
     for (edition_spelling, expected) in [
         ("2015", RustEdition::Rust2015),

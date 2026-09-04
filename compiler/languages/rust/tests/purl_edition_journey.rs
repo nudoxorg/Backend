@@ -5,7 +5,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use compiler_languages_rust::{
@@ -44,6 +44,7 @@ fn located_edition_2015_member_analyzes_under_its_declared_edition() {
         RustAnalysisControl {
             cancelled: &cancelled,
             maximum_source_bytes: SourceByteLimit::from(u32::MAX),
+            deadline: Instant::now() + Duration::from_secs(180),
         },
         |_authority| Ok(()),
     );

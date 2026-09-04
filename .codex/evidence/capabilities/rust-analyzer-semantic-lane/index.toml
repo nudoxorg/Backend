@@ -1,27 +1,30 @@
 schema = 1
 capability_id = "rust-analyzer-semantic-lane"
 state = "executing"
-baseline_commit = "wave-3 re-freeze 2026-09-03 (see baseline.files; independent of git status)"
-baseline_tree = "commit 58634ef11 + cross-lane uncommitted working set (other lanes' shared-file edits excluded from this lane's authority); frozen per-file baseline below"
+baseline_commit = "wave-4 re-freeze 2026-09-03 at trunk commit 309acc8f1 (branch codex/fidelity-rust, clean tree); independent of git status"
+baseline_tree = "trunk 309acc8f1 — computed-type segment + geometry 1024 + journal-chained generations + exact terminals all landed and verified this session; frozen per-file baseline below"
 candidate_commit = ""
 candidate_tree = ""
 testing_path = ""
 testing_sha256 = "" # TESTING.md does not exist in this repository; evidenced exclusion in brief.md
 
-# Wave-3 frozen per-file formatted LOC + sha256 (2026-09-03), independent of
-# git status. request.rs is a shared driver file recorded because CARD-FEATURES
-# makes an additive edit there.
+# Wave-4 frozen per-file formatted LOC + sha256 (2026-09-03), independent of
+# git status. compile.rs is a shared driver file recorded because
+# CARD-W4-DEADLINE threads one deadline argument there.
 [baseline.files]
-"compiler/languages/rust/authority.rs" = { loc = 1190, sha256 = "5d32c41901feef34a5207c3f66319c725df28f72a0ed1c3e79bb27e20ba75191" }
+"compiler/languages/rust/authority.rs" = { loc = 1202, sha256 = "950b371bc9619342196301dd504edcb1ad8bcd6c28978459a41d127dfd94a551" }
 "compiler/languages/rust/lib.rs" = { loc = 93, sha256 = "3c4450dd7dda1e12e36467789c79f4a162db4306f38469d4db265d550b4bd447" }
-"compiler/languages/rust/purl.rs" = { loc = 318, sha256 = "6dd3717888271cd89ec04fdacf0941bdd743fd8bafc5c3c056bd4a1ce71ebb8a" }
+"compiler/languages/rust/purl.rs" = { loc = 455, sha256 = "b16fb9329abe7f3578ef44d8346b9cd3b974d5c04f3ff4b5730aec1c299f0376" }
 "compiler/languages/rust/Cargo.toml" = { loc = 38, sha256 = "1f0f132a86de7603ead1c2015367e80b4ff7e0086fcc2c6d2b19cfb0cce54958" }
-"compiler/driver/lower/rust.rs" = { loc = 2345, sha256 = "abc1064cd1984d66309d9d2f6c5e5c63e163ceaff24cd643f5b2c324a1e21c2f" }
-"compiler/driver/tests/rust_semantic_lane.rs" = { loc = 739, sha256 = "d60d61e5cc7f34608b90c19747de6ba33e81528db18182eb8b9b454b4f018257" }
-"compiler/driver/tests/rust_hir.rs" = { loc = 156, sha256 = "99607b6da18138dee377c7654d4ac0733cf9185d66fe8d3ff860eaa5352a6b4b" }
-"compiler/driver/tests/rust_render_golden.rs" = { loc = 337, sha256 = "16cab868a4a70b142c98c4727ff37ff8ca68e29e8ea7b4aa1131196ef600fefd" }
-"compiler/driver/tests/authority_terminal.rs" = { loc = 131, sha256 = "814622ec5d4184f22767570bb9f39af42024c8ac7e1d42ae7445bc792eedcd13" }
-"compiler/driver/types/request.rs" = { loc = 86, sha256 = "e0ac25760e480ecb776a2cdf89bf0c47971e264e932a56439dccd2d7c85bb0b2" }
+"compiler/driver/lower/rust.rs" = { loc = 2918, sha256 = "b66c9584cab679dcf3b7b33d4aa7ee8b966688ffe3ff8876a6334c9a6aefe054" }
+"compiler/driver/types/compile.rs" = { loc = 859, sha256 = "54463a42a0c0fece5b661f29d1ba1afab32d58dc4df6ba505785f259f1de63d1" }
+"compiler/driver/tests/rust_semantic_lane.rs" = { loc = 746, sha256 = "1bfa6de44bb3e5a700f049631c1c4068b92affc57b07df3626e5a09c3f9d157a" }
+"compiler/driver/tests/rust_hir.rs" = { loc = 160, sha256 = "36775256ffea397a9c685a4fa0aaf875ad0ff308f8ab878bd4058d62a4b3f082" }
+"compiler/driver/tests/rust_render_golden.rs" = { loc = 385, sha256 = "71230c896acd35b38a7a4ee664ad0941c1bf8f6a5670bd4bbc5d0d96d0c07984" }
+"compiler/driver/tests/rust_features.rs" = { loc = 201, sha256 = "35bdf51ffc19b6a003e09d598110b3639b7eb7f556d52685cb24a8f28e02c600" }
+"compiler/driver/tests/rust_traits.rs" = { loc = 279, sha256 = "ec26b635297d80df14b3c493c44fb3d2100ccbb321aa32dd9f15803566065b97" }
+"compiler/driver/tests/rust_purl_lifecycle.rs" = { loc = 473, sha256 = "826be12323660da93eb36b3dc2e1895c593ad52d0ac8c9b6cecc0c0c0234a661" }
+"compiler/driver/tests/rust_corpus.rs" = { loc = 445, sha256 = "ffee1e8db4335b9d2390dfc43c441e8d4d9bf6e989fabc5fa078623a34446296" }
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/rust-analyzer-semantic-lane/brief.md", sha256 = "" }
