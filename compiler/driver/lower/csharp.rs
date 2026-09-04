@@ -2986,12 +2986,12 @@ mod tests {
         Ok(())
     }
 
-    /// Falsifier for `.codex/evidence/capabilities/csharp-roslyn-fidelity/escalation-wire-saturation.md`:
-    /// declaration-site variance is dropped at compiler/driver/lower.rs:985 and
-    /// :1005, while `params` has no lane cell; the pooled representation drops
-    /// the corresponding field at compiler/ir/extension_pools.rs:17. When trunk
-    /// lands the cells, this test MUST be flipped to assert the saturated values
-    /// (Covariant; a params cell), never deleted.
+    /// Falsifier for the revised five-class packet in
+    /// `.codex/evidence/capabilities/csharp-roslyn-fidelity/escalation-wire-saturation.md`:
+    /// declaration-site variance, `params`, parameter defaults, generic
+    /// constraint flags, and second-and-later constraint types are retained by
+    /// the image but dropped by this lane. When trunk lands any cell, this test
+    /// MUST flip its matching assertion to saturation; no pin is deleted.
     #[test]
     fn wire_saturation_gaps_stay_image_retained_pending_trunk_cells() -> Result<(), TestError> {
         let source = b"class Box<out T> { void Rest(params string[] rest) {} }";
@@ -3021,6 +3021,14 @@ mod tests {
             });
         fix.declarations.push(rest);
 
+        let default_atom = fix.atom(b"3");
+        let box_type = fix.declarations[box_declaration as usize]
+            .declared_type
+            .ok_or(TestError::Missing("box type row"))?;
+        let second_constraint = fix.named(b"System.String");
+        fix.declarations[box_declaration as usize].generics[0].1 =
+            vec![box_type, second_constraint];
+
         let mut image = fix.encode(source)?;
         let params_directory = DIRECTORY_OFFSET + 3 * DIRECTORY_ENTRY_BYTES;
         let params_offset = usize::try_from(u32::from_le_bytes(
@@ -3029,7 +3037,13 @@ mod tests {
                 .map_err(|_| TestError::Num)?,
         ))
         .map_err(|_| TestError::Num)?;
-        image[params_offset + 9] = 0x1;
+        image[params_offset + 9] = 0x3;
+        image[params_offset + 12..params_offset + 16]
+            .copy_from_slice(
+                &u32::try_from(default_atom)
+                    .map_err(|_| TestError::Num)?
+                    .to_le_bytes(),
+            );
         let tparams_directory = DIRECTORY_OFFSET + 4 * DIRECTORY_ENTRY_BYTES;
         let tparams_offset = usize::try_from(u32::from_le_bytes(
             image[tparams_directory + 8..tparams_directory + 12]
@@ -3038,6 +3052,7 @@ mod tests {
         ))
         .map_err(|_| TestError::Num)?;
         image[tparams_offset + 10] = 0x1;
+        image[tparams_offset + 11] = 0x3f;
         let mut digest = Sha256::new();
         digest.update(DIGEST_DOMAIN);
         digest.update(&image[..IMAGE_DIGEST_OFFSET]);
@@ -3067,6 +3082,16 @@ mod tests {
             .transpose()?
             .ok_or(TestError::Missing("params image row"))?;
         assert!(rest_image.is_params);
+        assert!(rest_image.has_default);
+        assert_eq!(rest_image.default.map(|atom| atom.bytes), Some(b"3".as_slice()));
+        let generic_constraints = generic.constraints.collect::<Vec<_>>();
+        assert_eq!(generic_constraints.len(), 2);
+        assert!(generic.reference_type);
+        assert!(generic.value_type);
+        assert!(generic.not_null);
+        assert!(generic.unmanaged);
+        assert!(generic.constructor);
+        assert!(generic.allows_ref_like);
 
         let mut facts = FactSet::new();
         collect(source, &image, &mut facts)?;
@@ -3100,16 +3125,18 @@ mod tests {
             "reopened pooled row must name the fixture's type parameter"
         );
         assert_eq!(
-            reopened_type_parameter.constraint, None,
-            "the fixture's T carries no constraint; any decoded value would mean a layout drift"
+            reopened_type_parameter.constraint,
+            Some(1),
+            "only the first in-file nominal constraint is carried by the lane"
         );
         assert_eq!(
             reopened_type_parameter.default, None,
             "C# has no parameter defaults on type parameters; the cell must stay empty"
         );
 
-        // CSharpFacts at compiler/ir/semantic.rs:1296 owns no `params` field;
-        // that absence is structural in the reopened record layout.
+        // Parameter default spellings have no canonical parameter-carrier cell
+        // (the semantic CSharpFacts shape at compiler/ir/semantic.rs:1296-1304
+        // owns no default field), as recorded in the revised saturation packet.
         let rest_facts = csharp_extension(&view, 2)?;
         assert_eq!(
             rest_facts.reference_kind,
