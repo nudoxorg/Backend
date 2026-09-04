@@ -162,6 +162,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::DiagnosticLimit { .. } => "diagnostic-limit",
         CompileFailure::NativeRejected { .. } => "native-rejected",
         CompileFailure::FactRejected { .. } => "fact-rejected",
+        CompileFailure::CSharpProjection { .. } => "csharp-projection",
     }
 }
 

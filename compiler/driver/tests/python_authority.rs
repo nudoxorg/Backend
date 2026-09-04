@@ -86,6 +86,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
         CompileFailure::FactRejected { .. } => "fact-rejected",
+        CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",
         CompileFailure::Write { .. } => "write",
