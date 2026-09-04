@@ -20,7 +20,7 @@ use compiler_driver::{
     CompiledFragment, LoweringUnsupported, ResolvedToolchain, SemanticAuthorityInput,
     ToolchainSelection, compile, compile_ir,
 };
-use compiler_ir::{DocFragmentInput, EntityKind, FragmentView};
+use compiler_ir::{DocFragmentInput, EntityKind, FragmentView, OccurrenceTarget, ReferenceKind};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -63,6 +63,11 @@ const GEN_TWO_PROBE: &[u8] =
     b"\ninternal static class NudoxGenTwoProbe { internal const int Marker = 2; }\n";
 const GEN_TWO_PROBE_CLASS: &[u8] = b"NudoxGenTwoProbe";
 const GEN_TWO_PROBE_MARKER: &[u8] = b"Marker";
+
+const FIDELITY_SOURCE: &[u8] =
+    include_bytes!("../../languages/csharp/tests/fixtures/producer/fidelity.cs");
+const FIDELITY_IMAGE: &[u8] =
+    include_bytes!("../../languages/csharp/tests/fixtures/producer/fidelity.ncaimg");
 
 #[derive(Debug, Error)]
 enum TestError {
@@ -578,6 +583,115 @@ fn verify_digest(archive: &[u8], declared: &[u8; 64]) -> Result<(), TestError> {
     if csharp_support::sha512(archive) != *declared {
         return Err(TestError::Digest);
     }
+    Ok(())
+}
+
+/// The committed producer fixture must survive image admission, C# collect,
+/// canonical admission, and fragment validation without dropping its deep
+/// Roslyn facts.  The operator and constructor names are source spellings;
+/// the delegate's three carriers and the interface binding are structural
+/// truths from `languages/csharp/tests/fixtures/producer/fidelity.cs`.
+#[test]
+fn committed_fidelity_fixture_collects_without_faults() -> Result<(), TestError> {
+    let image = compiler_languages_csharp::CSharpImage::open(FIDELITY_IMAGE).map_err(|cause| {
+        TestError::JourneyCompile {
+            cause: format!("authority image admission failed: {cause:?}"),
+        }
+    })?;
+    let declarations = image
+        .declarations()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|cause| TestError::JourneyCompile {
+            cause: format!("declaration collect failed: {cause:?}"),
+        })?;
+    for declaration in &declarations {
+        for _parameter in declaration.parameters.iter() {}
+        for _parameter in declaration.type_parameters.iter() {}
+    }
+    image
+        .attributes()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|cause| TestError::JourneyCompile {
+            cause: format!("attribute collect failed: {cause:?}"),
+        })?;
+    image
+        .docs()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|cause| TestError::JourneyCompile {
+            cause: format!("documentation collect failed: {cause:?}"),
+        })?;
+    let interface_bindings = image
+        .references()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|cause| TestError::JourneyCompile {
+            cause: format!("reference collect failed: {cause:?}"),
+        })?
+        .into_iter()
+        .filter(|reference| {
+            reference.kind == compiler_languages_csharp::ReferenceTag::InterfaceImplementation
+        })
+        .count();
+    if interface_bindings == 0 {
+        return Err(TestError::Fact(
+            "fixture lost interface implementation binding",
+        ));
+    }
+    let operator = declarations.iter().any(|declaration| {
+        declaration.kind == compiler_languages_csharp::DeclarationKind::Operator
+            && declaration.name.bytes == b"+"
+    });
+    let constructor = declarations.iter().any(|declaration| {
+        declaration.kind == compiler_languages_csharp::DeclarationKind::Constructor
+            && declaration.name.bytes == b"Widget"
+    });
+    let delegate = declarations.iter().any(|declaration| {
+        declaration.kind == compiler_languages_csharp::DeclarationKind::Delegate
+            && declaration.parameters.len() == 3
+    });
+    if !(operator && constructor && delegate) {
+        return Err(TestError::Fact("fixture declaration truth changed"));
+    }
+
+    let tool = csharp_toolchain()?;
+    let work = csharp_support::fresh_dir("fidelity-fixture-work")?;
+    let mut output = vec![0_u8; 8 * 1024 * 1024];
+    let fragment = compile_fragment(FIDELITY_SOURCE, tool, FIDELITY_IMAGE, &work, &mut output)?;
+    let view = FragmentView::validate(fragment.fragment.as_ref())
+        .map_err(|source| TestError::Fragment { source })?;
+    let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
+    let has_operator = view
+        .entities()
+        .any(|entity| atoms.get(entity.name.raw as usize).copied() == Some(b"+".as_slice()));
+    let has_constructor = view
+        .entities()
+        .any(|entity| atoms.get(entity.name.raw as usize).copied() == Some(b"Widget".as_slice()));
+    if !(has_operator && has_constructor) {
+        return Err(TestError::Fact(
+            "fixture facts absent from canonical fragment",
+        ));
+    }
+    let mut occurrences = view
+        .occurrences()
+        .ok_or(TestError::Fact("fixture occurrence lane absent"))?;
+    let mut has_interface_call = false;
+    while let Some(row) = occurrences.next() {
+        let row = row.map_err(|cause| TestError::Index {
+            cause: cause.to_string(),
+        })?;
+        if row.occurrence.kind == ReferenceKind::MethodCall
+            && matches!(row.occurrence.target, OccurrenceTarget::Local(_))
+        {
+            has_interface_call = true;
+            break;
+        }
+    }
+    if !has_interface_call {
+        return Err(TestError::Fact(
+            "interface implementation occurrence did not survive as MethodCall",
+        ));
+    }
+    drop(fragment);
+    fs::remove_dir_all(work).map_err(io)?;
     Ok(())
 }
 
