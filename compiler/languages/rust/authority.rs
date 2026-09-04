@@ -475,6 +475,35 @@ impl<'analysis> RustAuthority<'analysis> {
         self.semantics.type_of_expr(expression)
     }
 
+    /// Streams written let initializers with their analyzer-proven result types.
+    pub fn inferred_let_initializers(
+        &self,
+    ) -> impl Iterator<Item = RustInferredExpression<'analysis>> + '_ {
+        self.root.syntax().descendants().filter_map(|syntax| {
+            let statement = ast::LetStmt::cast(syntax)?;
+            let expression = statement.initializer()?;
+            Some(RustInferredExpression {
+                expression: expression.clone(),
+                inferred: self.inferred_type(&expression),
+            })
+        })
+    }
+
+    /// Returns resolvable written bindings from source-level `use` items.
+    pub fn reexports(&self) -> Vec<RustReexport> {
+        let mut result = Vec::new();
+        for syntax in self.root.syntax().descendants() {
+            let Some(item) = ast::Use::cast(syntax) else {
+                continue;
+            };
+            let Some(tree) = item.use_tree() else {
+                continue;
+            };
+            collect_reexports(self, &item, &tree, &mut result);
+        }
+        result
+    }
+
     /// Converts one syntax node's local range into an exact validated original-byte span.
     ///
     /// # Errors
@@ -1011,6 +1040,59 @@ pub struct RustMethodCall<'analysis> {
     pub target: Option<Function>,
     /// Original-source span for a call discovered through macro expansion.
     pub projected_span: Option<ByteSpan>,
+}
+
+/// One written expression and its unrendered inferred type, when inference succeeded.
+pub struct RustInferredExpression<'analysis> {
+    /// The original expression syntax.
+    pub expression: ast::Expr,
+    /// The analyzer's semantic result, absent for unresolved expressions.
+    pub inferred: Option<TypeInfo<'analysis>>,
+}
+
+/// One written local spelling in a resolvable `use` binding.
+pub struct RustReexport {
+    /// The use item, retained for visibility and documentation projection.
+    pub item: ast::Use,
+    /// Exact written local name span.
+    pub name: ra_ap_syntax::SyntaxNode,
+    /// Whether rust-analyzer resolved the imported path.
+    pub resolved: bool,
+}
+
+fn collect_reexports<'analysis>(
+    authority: &RustAuthority<'analysis>,
+    item: &ast::Use,
+    tree: &ast::UseTree,
+    result: &mut Vec<RustReexport>,
+) {
+    if let Some(list) = tree.use_tree_list() {
+        for child in list.use_trees() {
+            collect_reexports(authority, item, &child, result);
+        }
+        return;
+    }
+    let Some(path) = tree.path() else {
+        return;
+    };
+    let name = tree
+        .rename()
+        .and_then(|rename| rename.name())
+        .map(|name| name.syntax().clone())
+        .or_else(|| {
+            path.segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .map(|name| name.syntax().clone())
+        });
+    let Some(name) = name else {
+        return;
+    };
+    result.push(RustReexport {
+        item: item.clone(),
+        name,
+        resolved: authority.resolve_path(&path).is_some(),
+    });
 }
 
 /// One written field-access expression with its resolved named HIR field.

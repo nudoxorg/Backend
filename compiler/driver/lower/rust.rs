@@ -52,6 +52,9 @@
 //!   record instead of a fabricated shape.
 //! - Items `#[cfg]`-gated out of the crate never reach HIR, so they never
 //!   become facts; the lane proves only what rust-analyzer proved.
+//! - Computed rows carry no name cell. Let-binding names and method-call
+//!   spellings therefore remain on declaration and occurrence planes; computed
+//!   rows are the positional type plane within their owning declaration.
 
 use std::{sync::atomic::AtomicBool, time::Instant, vec::Vec};
 
@@ -260,6 +263,7 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    computed_owner: Option<u32>,
     deadline: Instant,
 }
 
@@ -284,6 +288,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
+            computed_owner: None,
             deadline,
         }
     }
@@ -297,6 +302,10 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_type_roots(&declarations)?;
         self.check_deadline()?;
         self.emit_members(&declarations)?;
+        self.check_deadline()?;
+        self.emit_reexports()?;
+        self.check_deadline()?;
+        self.emit_computed()?;
         self.check_deadline()?;
         self.attach_macros()?;
         self.check_deadline()?;
@@ -1224,6 +1233,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         lowered: Lowered<'source>,
         anchor: Option<&ast::Type>,
     ) -> Result<Option<u32>, RustAuthorityError> {
+        if self.computed_owner.is_some() {
+            return self.host_computed(lowered).map(Some);
+        }
         if lowered.children.is_empty() {
             if let Some(NominalRef::Local(target)) = lowered.record.nominal {
                 return Ok(Some(target.raw));
@@ -1671,6 +1683,98 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 self.bytes_of(span).ok()
             }
             _ => None,
+        }
+    }
+
+    /// Emits source-level `use` bindings as declaration rows, retaining only
+    /// paths rust-analyzer resolved and preserving each written local name.
+    fn emit_reexports(&mut self) -> Result<(), RustAuthorityError> {
+        for reexport in self.authority.reexports() {
+            if !reexport.resolved {
+                continue;
+            }
+            let name_span = self.authority.span(&reexport.name)?;
+            let name = self.bytes_of(name_span)?;
+            let extension = self.empty_extension(RustOwnership::Value)?;
+            let fact = SemanticFact::new(EntityKind::Reexport, name, LEAF_PRODUCT)
+                .with_visibility(self.visibility_of(&reexport.item.syntax().clone()))
+                .typed(unknown_record(TypeReason::OracleGap, None))
+                .with_extension(EmissionExtension::Rust(extension));
+            let ordinal = coordinate(push(self.facts, fact)?)?;
+            self.rows.push(Row {
+                ordinal,
+                name,
+                span: self.authority.span(reexport.item.syntax())?,
+                extension,
+            });
+        }
+        Ok(())
+    }
+
+    /// Emits proven let initializer and method-call result types in source order.
+    fn emit_computed(&mut self) -> Result<(), RustAuthorityError> {
+        let mut expressions = Vec::new();
+        for expression in self.authority.inferred_let_initializers() {
+            let span = self.authority.span(expression.expression.syntax())?;
+            if let Some(inferred) = expression.inferred {
+                expressions.push((span, inferred.original, None));
+            }
+        }
+        for call in self.authority.method_calls() {
+            let span = self.authority.span(call.syntax.syntax())?;
+            if let Some(inferred) = call.inferred {
+                expressions.push((span, inferred.original, None));
+            }
+        }
+        expressions.sort_by_key(|(span, _, _)| span.start);
+        for (span, semantic, anchor) in expressions {
+            let Some(owner) = self.owner_of(span) else {
+                continue;
+            };
+            self.computed_owner = Some(owner);
+            let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
+            self.host_computed(lowered)?;
+            self.computed_owner = None;
+        }
+        Ok(())
+    }
+
+    /// Commits one lowered inferred type into the schema-2 computed segment.
+    fn host_computed(&mut self, lowered: Lowered<'source>) -> Result<u32, RustAuthorityError> {
+        let owner = self.computed_owner.ok_or_else(admission)?;
+        for target in lowered.children {
+            self.facts
+                .computed_type_child(target, None, 0)
+                .map_err(|_| admission())?;
+        }
+        self.facts
+            .intern_computed_type_row(owner, lowered.record)
+            .map_err(|_| admission())
+    }
+
+    /// Applies the existing visibility rule to a syntax item.
+    fn visibility_of(&self, syntax: &SyntaxNode) -> compiler_ir::Visibility {
+        let Some(visibility) =
+            ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
+        else {
+            return compiler_ir::Visibility::Private;
+        };
+        let range = visibility.syntax().text_range();
+        let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        let Some(bytes) = self.source.get(start..end) else {
+            return compiler_ir::Visibility::Unknown;
+        };
+        if bytes == b"pub(crate)" {
+            compiler_ir::Visibility::Package
+        } else if bytes.starts_with(b"pub(") {
+            compiler_ir::Visibility::Restricted
+        } else {
+            compiler_ir::Visibility::Public
         }
     }
 
