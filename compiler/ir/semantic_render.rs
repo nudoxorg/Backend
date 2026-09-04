@@ -14,6 +14,14 @@ use crate::{
     SemanticCoreReader, Visibility,
 };
 
+#[path = "semantic_render/canonical.rs"]
+mod canonical;
+
+pub use canonical::{
+    CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
+    PreparedCanonicalType, PreparedCanonicalTypeView, prepare_canonical_type,
+};
+
 pub(crate) mod sealed {
     pub trait Sealed {}
 }

@@ -167,8 +167,10 @@ pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use semantic_render::{
-    NeutralDialect, PreparedNeutral, PreparedNeutralView, RenderDialect, RenderFailure, UnsupportedSemanticStage,
-    prepare_neutral, prepare_profile,
+    CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
+    NeutralDialect, PreparedCanonicalType, PreparedCanonicalTypeView, PreparedNeutral,
+    PreparedNeutralView, RenderDialect, RenderFailure, UnsupportedSemanticStage,
+    prepare_canonical_type, prepare_neutral, prepare_profile,
 };
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,
