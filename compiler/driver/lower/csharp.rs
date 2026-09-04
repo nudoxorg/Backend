@@ -55,7 +55,7 @@ use crate::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
     MAX_TYPE_CHILDREN, SemanticFact, push_fact,
 };
-use crate::types::{FactFault, FactRejection};
+use crate::types::{CSharpProjectionFault, FactFault, FactRejection};
 
 /// Exact rejection while lending source-bound Roslyn declaration facts.
 #[derive(Debug)]
@@ -73,72 +73,15 @@ pub(crate) enum CSharpCollectError {
     Span { start: u32, end: u32 },
     /// A bounded canonical lane rejected an authority declaration.
     Lowering(LoweringUnsupported),
+    /// Projection retained its exact typed fault through the compile boundary.
+    Projection(CSharpProjectionFault),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
 }
 
-/// Exact projection fault retained until the collect boundary folds it into
-/// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership, so every fault
-/// class folds to the same closed terminal as bounded-lane capacity; the
-/// operands remain named here so the collapse site stays typed.
-#[derive(Debug)]
-enum ProjectionFault {
-    /// A validated image plane rejected a coordinate during projection.
-    Image(
-        /// The exact image-plane rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        ImageError,
-    ),
-    /// The recursive type graph exceeded the producer's documented depth budget.
-    Depth,
-    /// A declared name span cannot name the exact bound source bytes.
-    NameSpan {
-        /// The rejected inclusive span start.
-        start: u32,
-        /// The rejected exclusive span end.
-        end: u32,
-    },
-    /// A reference precedes its owner's declaration start, so it has no
-    /// honest owner-relative span cell.
-    OwnerOrder {
-        /// The owning declaration's start coordinate.
-        owner_start: u32,
-        /// The reference's inclusive start coordinate.
-        reference_start: u32,
-    },
-    /// A foreign occurrence key could not be built from its spelling.
-    Foreign,
-    /// The bounded attribute lane overflowed its pooled width.
-    AttributeCapacity {
-        /// The rejected attribute spelling length.
-        spellings: usize,
-    },
-    /// A bounded projection index overflowed its lane width.
-    IndexCapacity,
-}
-
-/// Folds one projection fault into the lane's closed terminal. The shared
-/// driver failure match owns the terminal arms and is outside this module's
-/// ownership, so operand-preserving C# terminals stay folded here; adding a
-/// terminal arm is recorded as a lane criticism in the module's review notes.
-fn terminal(fault: ProjectionFault) -> CSharpCollectError {
-    let _ = fault;
-    CSharpCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
-}
-
-/// Folds one bounded-lane fact rejection into the lane's closed terminal.
-fn lane_terminal(fault: FactFault) -> CSharpCollectError {
-    let _ = fault;
-    CSharpCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
-}
-
-impl From<ProjectionFault> for CSharpCollectError {
-    fn from(fault: ProjectionFault) -> Self {
-        terminal(fault)
+impl From<CSharpProjectionFault> for CSharpCollectError {
+    fn from(fault: CSharpProjectionFault) -> Self {
+        Self::Projection(fault)
     }
 }
 
@@ -148,7 +91,9 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let ordinal = push_fact(facts, fact).map_err(CSharpCollectError::Rejected)?;
-    u32::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))
+    u32::try_from(ordinal)
+        .map_err(|_| CSharpProjectionFault::IndexCapacity)
+        .map_err(CSharpCollectError::from)
 }
 
 /// Producer depth budget of the recursive type graph, documented by the image
@@ -215,7 +160,7 @@ pub(crate) fn collect<'source>(
     let mut names = Names::new();
     let mut ordinals = Ordinals::new();
     for coordinate in 0..total {
-        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let declared = declaration(&image, coordinate).map_err(CSharpCollectError::from)?;
         match declared.kind {
             DeclarationKind::Class
             | DeclarationKind::Struct
@@ -230,16 +175,16 @@ pub(crate) fn collect<'source>(
                     continue;
                 }
                 let ordinal = push_type_root(facts, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(terminal)?;
+                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
                 if let Some(qualified) = declared.qualified {
                     names
                         .record(qualified.bytes, coordinate)
-                        .map_err(terminal)?;
+                        .map_err(CSharpCollectError::from)?;
                 }
             }
             DeclarationKind::Namespace => {
                 let ordinal = push_namespace(facts, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(terminal)?;
+                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
             }
             DeclarationKind::Delegate
             | DeclarationKind::Field
@@ -257,14 +202,14 @@ pub(crate) fn collect<'source>(
     // Pass two: delegates first — their invocation signatures anchor the
     // type plane — then every member in declaration order.
     for coordinate in 0..total {
-        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let declared = declaration(&image, coordinate).map_err(CSharpCollectError::from)?;
         if declared.kind == DeclarationKind::Delegate {
             let ordinal = push_delegate(facts, &image, &names, &ordinals, source, &declared)?;
-            ordinals.record(coordinate, ordinal).map_err(terminal)?;
+            ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
         }
     }
     for coordinate in 0..total {
-        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let declared = declaration(&image, coordinate).map_err(CSharpCollectError::from)?;
         match declared.kind {
             DeclarationKind::Delegate
             | DeclarationKind::Namespace
@@ -280,44 +225,44 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Indexer
             | DeclarationKind::Event => {
                 let ordinal = push_member(facts, &image, &names, &ordinals, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(terminal)?;
+                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
             }
             DeclarationKind::Constructor
             | DeclarationKind::Method
             | DeclarationKind::Operator
             | DeclarationKind::Conversion => {
                 let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
-                ordinals.record(coordinate, ordinal).map_err(terminal)?;
+                ordinals.record(coordinate, ordinal).map_err(CSharpCollectError::from)?;
             }
         }
     }
 
     // Pass three: language extensions, after every constraint target exists.
-    let attributes = attribute_index(&image).map_err(terminal)?;
+    let attributes = attribute_index(&image).map_err(CSharpCollectError::from)?;
     for coordinate in 0..total {
         let Some(ordinal) = ordinals.lookup(coordinate) else {
             continue;
         };
-        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let declared = declaration(&image, coordinate).map_err(CSharpCollectError::from)?;
         let extension = csharp_facts(facts, &image, &declared, &attributes, coordinate)?;
         facts
             .attach_extension(
-                usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+                usize::try_from(ordinal).map_err(|_| CSharpProjectionFault::IndexCapacity)?,
                 EmissionExtension::CSharp(extension),
             )
-            .map_err(lane_terminal)?;
+            .map_err(|fault| CSharpCollectError::Projection(CSharpProjectionFault::Fact(fault)))?;
     }
 
     // Pass four: compiler-resolved occurrences in image order.
     for reference in image.references() {
-        let reference = reference.map_err(ProjectionFault::Image)?;
-        push_occurrence(facts, &image, &ordinals, &reference).map_err(terminal)?;
+        let reference = reference.map_err(CSharpProjectionFault::Image)?;
+        push_occurrence(facts, &image, &ordinals, &reference).map_err(CSharpCollectError::from)?;
     }
 
     // Pass five: XML documentation provenance and summary fragments.
     for doc in image.docs() {
-        let doc = doc.map_err(ProjectionFault::Image)?;
-        push_doc(facts, &names, &ordinals, &doc).map_err(terminal)?;
+        let doc = doc.map_err(CSharpProjectionFault::Image)?;
+        push_doc(facts, &names, &ordinals, &doc).map_err(CSharpCollectError::from)?;
     }
     Ok(())
 }
@@ -326,9 +271,9 @@ pub(crate) fn collect<'source>(
 fn declaration<'image>(
     image: &CSharpImage<'image>,
     coordinate: usize,
-) -> Result<Declaration<'image>, ProjectionFault> {
-    let raw = u32::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity)?;
-    image.declaration(raw).map_err(ProjectionFault::Image)
+) -> Result<Declaration<'image>, CSharpProjectionFault> {
+    let raw = u32::try_from(coordinate).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
+    image.declaration(raw).map_err(CSharpProjectionFault::Image)
 }
 
 /// Verifies one declared name span names the exact bound source bytes and
@@ -420,9 +365,9 @@ impl<'image> Names<'image> {
         }
     }
 
-    fn record(&mut self, name: &'image [u8], coordinate: usize) -> Result<(), ProjectionFault> {
+    fn record(&mut self, name: &'image [u8], coordinate: usize) -> Result<(), CSharpProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(CSharpProjectionFault::IndexCapacity);
         }
         self.entries[self.len] = (name, coordinate);
         self.len += 1;
@@ -469,9 +414,9 @@ impl Ordinals {
         }
     }
 
-    fn record(&mut self, coordinate: usize, ordinal: u32) -> Result<(), ProjectionFault> {
+    fn record(&mut self, coordinate: usize, ordinal: u32) -> Result<(), CSharpProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(CSharpProjectionFault::IndexCapacity);
         }
         self.entries[self.len] = (coordinate, ordinal);
         self.len += 1;
@@ -508,7 +453,7 @@ fn push_type_root<'source>(
     let name = checked_name(source, declared)?;
     let kind = entity_kind(declared.kind, declared.flags.is_const);
     let self_ordinal =
-        u32::try_from(facts.len()).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+        u32::try_from(facts.len()).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     push(
         facts,
         SemanticFact::new(kind, name, constructor(kind)).typed(nominal_record(self_ordinal)),
@@ -785,9 +730,9 @@ fn project_fact_type<'source>(
     depth: usize,
 ) -> Result<ProjectedType<'source>, CSharpCollectError> {
     if depth == 0 {
-        return Err(terminal(ProjectionFault::Depth));
+        return Err(CSharpCollectError::from(CSharpProjectionFault::Depth));
     }
-    let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
+    let node = image.type_node(reference).map_err(CSharpProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
     match projection.fact {
         // The bare in-file nominal terminal: the fact's record names the
@@ -825,14 +770,18 @@ fn child_target<'source>(
     depth: usize,
 ) -> Result<u32, CSharpCollectError> {
     if depth == 0 {
-        return Err(terminal(ProjectionFault::Depth));
+        return Err(CSharpCollectError::from(CSharpProjectionFault::Depth));
     }
-    let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
+    let node = image.type_node(reference).map_err(CSharpProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
     match projection.fact {
         Some(ordinal) => Ok(ordinal),
-        None => intern_row(facts, anchor, projection.record, &projection.children)
-            .map_err(lane_terminal),
+        None => {
+            intern_row(facts, anchor, projection.record, &projection.children)
+            .map_err(|fault| {
+                CSharpCollectError::from(CSharpProjectionFault::Fact(fault))
+            })
+        }
     }
 }
 
@@ -844,12 +793,10 @@ fn intern_row<'source>(
     record: SemanticTypeRecord<'source>,
     children: &[(u32, Option<&'source [u8]>)],
 ) -> Result<u32, FactFault> {
-    let pending = u32::try_from(children.len()).map_err(|_| FactFault::TypeRowCapacity)?;
-    record.validate(pending).map_err(FactFault::TypeRecord)?;
-    let row = facts.intern_anonymous_type_row(anchor, record)?;
     for (target, name) in children {
         facts.anonymous_type_child(*target, *name, 0)?;
     }
+    let row = facts.intern_anonymous_type_row(anchor, record)?;
     Ok(row)
 }
 
@@ -980,7 +927,7 @@ fn owned_node<'source>(
             let name = node
                 .spelling
                 .map(|atom| atom.bytes)
-                .ok_or_else(|| terminal(ProjectionFault::Depth))?;
+                .ok_or_else(|| CSharpCollectError::from(CSharpProjectionFault::Depth))?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
             record.text = Some(name);
             Ok(OwnedNode {
@@ -1020,7 +967,7 @@ fn named_node<'source>(
     let spelling = node
         .spelling
         .map(|atom| atom.bytes)
-        .ok_or_else(|| terminal(ProjectionFault::Depth))?;
+        .ok_or_else(|| CSharpCollectError::from(CSharpProjectionFault::Depth))?;
     if let Some(record) = primitive_record(spelling) {
         let void = matches!(spelling, b"System.Void" | b"void");
         return Ok(OwnedNode {
@@ -1242,7 +1189,7 @@ fn csharp_facts<'source>(
     // Constraints: one pooled row per declaration-site parameter, carrying
     // the first in-file nominal constraint ordinal when one resolves.
     let start = facts.type_parameter_len;
-    let start = u32::try_from(start).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let start = u32::try_from(start).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     for generic in declared.type_parameters.iter() {
         let constraints: Vec<_> = generic.constraints.clone().collect();
         let constraint = constraints.iter().find_map(|child| {
@@ -1253,7 +1200,7 @@ fn csharp_facts<'source>(
         });
         facts
             .push_type_parameter(generic.name.bytes, constraint, None)
-            .map_err(lane_terminal)?;
+            .map_err(|fault| CSharpCollectError::from(CSharpProjectionFault::Fact(fault)))?;
     }
     extension.constraints = TypeParameterListId::new(start);
 
@@ -1265,14 +1212,14 @@ fn csharp_facts<'source>(
         .filter(|(declaration, _)| *declaration == raw_coordinate)
     {
         if atoms.len() >= MAX_REF_LIST_ELEMENTS {
-            return Err(terminal(ProjectionFault::AttributeCapacity {
+            return Err(CSharpCollectError::from(CSharpProjectionFault::AttributeCapacity {
                 spellings: atoms.len() + 1,
             }));
         }
-        let atom = facts.intern_atom(spelling).map_err(lane_terminal)?;
+        let atom = facts.intern_atom(spelling).map_err(|fault| CSharpProjectionFault::Fact(fault))?;
         atoms.push(atom);
     }
-    extension.attributes = facts.intern_atom_list(&atoms).map_err(lane_terminal)?;
+    extension.attributes = facts.intern_atom_list(&atoms).map_err(CSharpProjectionFault::Fact)?;
 
     // XML provenance: the documented file travels as a provisional atom with
     // the comment's byte span; admission rewrites the coordinate.
@@ -1282,7 +1229,9 @@ fn csharp_facts<'source>(
         .and_then(|index| image.docs().nth(index))
         .and_then(|row| row.ok())
     {
-        let provisional = facts.intern_atom(doc.file.bytes).map_err(lane_terminal)?;
+        let provisional = facts
+            .intern_atom(doc.file.bytes)
+            .map_err(CSharpProjectionFault::Fact)?;
         extension.xml_provenance = SourceSpan::new(AtomId::new(provisional), doc.start, doc.end);
     }
     Ok(extension)
@@ -1303,10 +1252,10 @@ fn names_lookup<'source>(image: &CSharpImage<'source>, spelling: &[u8]) -> Optio
 /// Bounded attribute index grouped by declaration coordinate.
 fn attribute_index<'source>(
     image: &CSharpImage<'source>,
-) -> Result<Vec<(u32, &'source [u8])>, ProjectionFault> {
+) -> Result<Vec<(u32, &'source [u8])>, CSharpProjectionFault> {
     let mut rows = Vec::new();
     for attribute in image.attributes() {
-        let attribute = attribute.map_err(ProjectionFault::Image)?;
+        let attribute = attribute.map_err(CSharpProjectionFault::Image)?;
         rows.push((attribute.declaration, attribute.spelling.bytes));
     }
     Ok(rows)
@@ -1320,35 +1269,35 @@ fn push_occurrence<'source>(
     image: &CSharpImage<'source>,
     ordinals: &Ordinals,
     reference: &ResolvedReference<'source>,
-) -> Result<(), ProjectionFault> {
+) -> Result<(), CSharpProjectionFault> {
     let owner_coordinate =
-        usize::try_from(reference.owner).map_err(|_| ProjectionFault::IndexCapacity)?;
+        usize::try_from(reference.owner).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     let owner = ordinals
         .lookup(owner_coordinate)
-        .ok_or(ProjectionFault::IndexCapacity)?;
+        .ok_or(CSharpProjectionFault::IndexCapacity)?;
     let owner_start = image
         .declaration(reference.owner)
-        .map_err(ProjectionFault::Image)?
+        .map_err(CSharpProjectionFault::Image)?
         .decl_start;
     if reference.start < owner_start {
         // The reference precedes its owner's declaration start; the lane's
         // owner-relative span cannot host it and none is synthesized.
-        return Err(ProjectionFault::OwnerOrder {
+        return Err(CSharpProjectionFault::OwnerOrder {
             owner_start,
             reference_start: reference.start,
         });
     }
     let start = reference.start - owner_start;
     let end = reference.end - owner_start;
-    let span = RelSpan::new(start, end).map_err(|_| ProjectionFault::OwnerOrder {
+    let span = RelSpan::new(start, end).map_err(|_| CSharpProjectionFault::OwnerOrder {
         owner_start,
         reference_start: reference.start,
     })?;
     let target = match reference.target {
         Some(coordinate) => {
             let ordinal = ordinals
-                .lookup(usize::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity)?)
-                .ok_or(ProjectionFault::IndexCapacity)?;
+                .lookup(usize::try_from(coordinate).map_err(|_| CSharpProjectionFault::IndexCapacity)?)
+                .ok_or(CSharpProjectionFault::IndexCapacity)?;
             OccurrenceTarget::Local(EntityId::new(ordinal))
         }
         None => {
@@ -1356,7 +1305,8 @@ fn push_occurrence<'source>(
             // string domain; the key keeps the written spelling as both path
             // and display.
             let spelling =
-                str::from_utf8(reference.spelling.bytes).map_err(|_| ProjectionFault::Foreign)?;
+                str::from_utf8(reference.spelling.bytes)
+                    .map_err(|_| CSharpProjectionFault::Foreign)?;
             let key = ForeignKey::new(
                 ForeignOrigin::Universe {
                     ecosystem: ECOSYSTEM_STR,
@@ -1365,7 +1315,7 @@ fn push_occurrence<'source>(
                 spelling,
                 foreign_kind(reference.kind),
             )
-            .map_err(|_| ProjectionFault::Foreign)?;
+            .map_err(|_| CSharpProjectionFault::Foreign)?;
             OccurrenceTarget::Foreign(key)
         }
     };
@@ -1379,7 +1329,7 @@ fn push_occurrence<'source>(
                 span,
             },
         )
-        .map_err(|_| ProjectionFault::IndexCapacity)?;
+        .map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     Ok(())
 }
 
@@ -1422,9 +1372,9 @@ fn push_doc<'source>(
     names: &Names<'source>,
     ordinals: &Ordinals,
     doc: &compiler_languages_csharp::Doc<'source>,
-) -> Result<(), ProjectionFault> {
+) -> Result<(), CSharpProjectionFault> {
     let coordinate =
-        usize::try_from(doc.declaration).map_err(|_| ProjectionFault::IndexCapacity)?;
+        usize::try_from(doc.declaration).map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     let Some(owner) = ordinals.lookup(coordinate) else {
         return Ok(());
     };
@@ -1434,7 +1384,7 @@ fn push_doc<'source>(
     for fragment in summary_fragments(names, ordinals, inner) {
         facts
             .push_doc(owner, fragment)
-            .map_err(|_| ProjectionFault::IndexCapacity)?;
+            .map_err(|_| CSharpProjectionFault::IndexCapacity)?;
     }
     Ok(())
 }

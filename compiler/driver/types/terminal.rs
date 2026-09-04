@@ -406,6 +406,13 @@ pub enum CompileFailure<'diagnostic> {
         recipe: CompileRecipeFact,
         rejected: crate::types::FactRejection,
     },
+    /// C# projection rejected one exact authority fact before canonical admission.
+    #[error("{recipe:?} C# projection failed: {fault:?}")]
+    CSharpProjection {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        fault: crate::types::CSharpProjectionFault,
+    },
     /// Rich lowering could not condense the frontend tree into canonical IR.
     #[error("could not build canonical semantic IR for {recipe:?}")]
     Build {

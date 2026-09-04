@@ -177,6 +177,7 @@ pub(super) enum CompileTerminal {
     Write,
     Validate,
     FactRejected,
+    CSharpProjection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -446,6 +447,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         }
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
         CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
+        CompileFailure::CSharpProjection { .. } => CompileTerminal::CSharpProjection,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,

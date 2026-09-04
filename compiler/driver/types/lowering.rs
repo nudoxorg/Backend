@@ -7,6 +7,7 @@
 //! that produced them.
 
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticTypeFault};
+use compiler_languages_csharp::ImageError;
 
 /// Exact cause for rejecting one emitted fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,4 +111,28 @@ pub struct FactRejection {
     pub name_len: usize,
     /// Full typed rejection cause with every operand.
     pub cause: FactFault,
+}
+
+/// Exact C# projection failure retained across the compile terminal.
+#[derive(Debug)]
+pub(crate) enum CSharpProjectionFault {
+    /// The validated authority image rejected one row while it was lent.
+    Image(ImageError),
+    /// The recursive authority type graph exceeded its projection budget.
+    Depth,
+    /// A declaration name span did not name the bound source bytes.
+    NameSpan { start: u32, end: u32 },
+    /// A reference preceded its owning declaration.
+    OwnerOrder {
+        owner_start: u32,
+        reference_start: u32,
+    },
+    /// A foreign occurrence key could not be built from its spelling.
+    Foreign,
+    /// The bounded attribute lane exceeded its element capacity.
+    AttributeCapacity { spellings: usize },
+    /// A projection index exceeded its representable width.
+    IndexCapacity,
+    /// Canonical fact admission rejected the projected fact.
+    Fact(FactFault),
 }

@@ -694,6 +694,11 @@ fn csharp_terminal<'diagnostic>(
             recipe,
             rejected,
         },
+        lower::csharp::CSharpCollectError::Projection(fault) => CompileFailure::CSharpProjection {
+            source_identity,
+            recipe,
+            fault,
+        },
         lower::csharp::CSharpCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,

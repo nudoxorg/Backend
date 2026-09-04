@@ -17,7 +17,7 @@ mod csharp_support;
 
 use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
-    CompiledFragment, LoweringUnsupported, ResolvedToolchain, SemanticAuthorityInput,
+    CompiledFragment, ResolvedToolchain, SemanticAuthorityInput,
     ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{DocFragmentInput, EntityKind, FragmentView, OccurrenceTarget, ReferenceKind};
@@ -113,6 +113,7 @@ fn io(source: std::io::Error) -> TestError {
 }
 
 /// What the row's compile terminal is expected to be.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Expectation {
     /// The full journey completes: IR, fragment, publication, index, and a
     /// second generation.
@@ -123,6 +124,12 @@ enum Expectation {
     /// reference count the produced authority image carries, verified
     /// in-test through the public image reader before the compile runs.
     OccurrenceCapacity { resolved: usize },
+    /// The reopened fragment carries more entities than the shared exact/
+    /// lexical index segment bound admits, so the journey's exact typed
+    /// terminal is the index build's EntityLimit admission rejection —
+    /// the six 1.17.0 precedent from the python corpus. Compile, publish,
+    /// and reopen still complete; `observed` is the reopened entity count.
+    IndexEntityLimit { observed: usize },
     /// One declaration of the bound primary carries more interned attribute
     /// spellings than the shared 16-slot attribute list admits, so the
     /// journey's exact typed terminal is the lane's closed capacity
@@ -149,17 +156,15 @@ struct CorpusRow {
 
 /// nullable 1.3.1 — primary pinned after live confirmation: the largest
 /// `.cs` (4541 bytes) ships in three TFM folders of equal depth; the
-/// lexicographic winner is the net40 copy. The class declaration carries 23
-/// applied-attribute spellings (the package's TFM variants apply
-/// `[AttributeUsage]`/`[DebuggerNonUserCode]` per conditional branch), one
-/// above the shared 16-slot attribute list, so the row's terminal is the
-/// lane's exact typed capacity rejection.
+/// lexicographic winner is the net40 copy. Declaration 1 carries 23 applied
+/// attribute spellings, one above the shared 16-slot attribute list, so the
+/// row's terminal is the lane's exact typed capacity rejection.
 const NULLABLE_ROW: CorpusRow = CorpusRow {
     label: "nullable 1.3.1",
     purl: "nuget:nullable@1.3.1",
     primary: "contentFiles/cs/net40/Nullable/MemberNotNullWhenAttribute.cs",
     symbols: &[],
-    occurrences: 0,
+    occurrences: 1170,
     doc_links: false,
     expectation: Expectation::AttributeCapacity {
         declaration: 1,
@@ -245,16 +250,17 @@ const DEVLOOPED_ROW: CorpusRow = CorpusRow {
 
 /// tinyioc 1.4.0-rc1 — the package's single source file (`content/TinyIoc.cs`,
 /// the lexicographic winner over the equal-length `contentFiles/cs/any`
-/// copy) resolves 1253 references, beyond the shared 1024-row occurrence
-/// lane, so the row's terminal is the lane's exact typed capacity rejection.
+/// copy) resolves 1253 references and now completes under the authorized
+/// 8192-row occurrence scratch bound; its 940 reopened entities stop the
+/// index build at the shared 256-entity exact/lexical segment bound.
 const TINYIOC_RC1_ROW: CorpusRow = CorpusRow {
     label: "tinyioc 1.4.0-rc1",
     purl: "nuget:tinyioc@1.4.0-rc1",
     primary: "content/TinyIoc.cs",
     symbols: &[],
-    occurrences: 0,
+    occurrences: 1253,
     doc_links: false,
-    expectation: Expectation::OccurrenceCapacity { resolved: 1253 },
+    expectation: Expectation::IndexEntityLimit { observed: 940 },
 };
 
 /// ramltoopenapiconverter.sourceonly 0.21.0 — largest `.cs`. Symbols read
@@ -489,16 +495,17 @@ const MORELINQ_GENERATEBYINDEX_ROW: CorpusRow = CorpusRow {
 };
 
 /// tinyioc 1.3.0 — the package's single source file (`Content/TinyIoC.cs`)
-/// resolves 1170 references, beyond the shared 1024-row occurrence lane, so
-/// the row's terminal is the lane's exact typed capacity rejection.
+/// resolves 1170 references and now completes under the authorized 8192-row
+/// occurrence scratch bound; its 876 reopened entities stop the index build
+/// at the shared 256-entity exact/lexical segment bound.
 const TINYIOC_130_ROW: CorpusRow = CorpusRow {
     label: "tinyioc 1.3.0",
     purl: "nuget:tinyioc@1.3.0",
     primary: "Content/TinyIoC.cs",
     symbols: &[],
-    occurrences: 0,
+    occurrences: 1170,
     doc_links: false,
-    expectation: Expectation::OccurrenceCapacity { resolved: 1170 },
+    expectation: Expectation::IndexEntityLimit { observed: 876 },
 };
 
 #[test]
@@ -921,7 +928,7 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
         Ok(count)
     };
     match &row.expectation {
-        Expectation::Full => {}
+        Expectation::Full | Expectation::IndexEntityLimit { .. } => {}
         Expectation::OccurrenceCapacity { resolved: expected } => {
             if resolved != *expected {
                 return Err(TestError::Fact("occurrence capacity operand drifted"));
@@ -938,12 +945,10 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
         }
     }
 
-    // The lane's typed capacity terminals: a bound file that resolves more
-    // references than the occurrence lane admits, or interned attribute
-    // spellings beyond the shared 16-slot list, folds to the closed
-    // LoweringUnsupported terminal with no fragment at all.
+    // The lane's typed capacity terminal: interned attribute spellings beyond
+    // the shared 16-slot list stop before a fragment is emitted.
     let capacity_operand = match &row.expectation {
-        Expectation::Full => None,
+        Expectation::Full | Expectation::IndexEntityLimit { .. } => None,
         Expectation::OccurrenceCapacity { .. } => Some(format!(
             "{resolved} resolved references against the {OCCURRENCE_LANE_BOUND}-row occurrence lane"
         )),
@@ -965,10 +970,7 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
             },
         );
         match failed {
-            Err(CompileFailure::LoweringUnsupported {
-                cause: LoweringUnsupported::NoSupportedDeclaration,
-                ..
-            }) => {
+            Err(CompileFailure::CSharpProjection { .. }) => {
                 eprintln!(
                     "csharp corpus typed terminal: {} stopped at the lane's closed capacity bound ({operand})",
                     row.label
@@ -1079,7 +1081,7 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
         let mut types = (0..type_node_count)
             .map(|_| MaybeUninit::uninit())
             .collect::<Vec<_>>();
-        let prepared = build(
+        let prepared = match build(
             &fragment_ref,
             IndexBuildScratch {
                 projections: &mut projections,
@@ -1089,30 +1091,48 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
                 atoms: &mut atoms,
                 type_nodes: &mut types,
             },
-        )
-        .map_err(|cause| TestError::Index {
-            cause: cause.to_string(),
-        })?;
-        let mut exact_ids = [prepared.exact.id];
-        let mut lexical_ids = [prepared.lexical.id];
-        let sealed = seal_compilation_index(
-            opened,
-            std::slice::from_ref(&prepared),
-            CompilationIndexScratch {
-                exact: &mut exact_ids,
-                lexical: &mut lexical_ids,
-            },
-        )
-        .map_err(|cause| TestError::Index {
-            cause: cause.error.to_string(),
-        })?;
-        let plan = plan_index_pack(&sealed).map_err(|cause| TestError::Index {
-            cause: cause.to_string(),
-        })?;
-        let mut encoded = vec![0_u8; plan.encoded_bytes];
-        encode_index_pack(&plan, &mut encoded).map_err(|cause| TestError::Index {
-            cause: cause.to_string(),
-        })?;
+        ) {
+            Ok(prepared) => Some(prepared),
+            Err(server_index_build::BuildError::Admission(
+                server_index_build::BuildAdmissionError::EntityLimit { maximum, observed },
+            )) if row.expectation == Expectation::IndexEntityLimit { observed }
+                && maximum == 256 =>
+            {
+                eprintln!(
+                    "{} typed index terminal: shared segment bound {maximum}, \
+                     reopened entities {observed}",
+                    row.label
+                );
+                None
+            }
+            Err(cause) => {
+                return Err(TestError::Index {
+                    cause: cause.to_string(),
+                });
+            }
+        };
+        if let Some(prepared) = prepared {
+            let mut exact_ids = [prepared.exact.id];
+            let mut lexical_ids = [prepared.lexical.id];
+            let sealed = seal_compilation_index(
+                opened,
+                std::slice::from_ref(&prepared),
+                CompilationIndexScratch {
+                    exact: &mut exact_ids,
+                    lexical: &mut lexical_ids,
+                },
+            )
+            .map_err(|cause| TestError::Index {
+                cause: cause.error.to_string(),
+            })?;
+            let plan = plan_index_pack(&sealed).map_err(|cause| TestError::Index {
+                cause: cause.to_string(),
+            })?;
+            let mut encoded = vec![0_u8; plan.encoded_bytes];
+            encode_index_pack(&plan, &mut encoded).map_err(|cause| TestError::Index {
+                cause: cause.to_string(),
+            })?;
+        }
         reopened.shutdown().map_err(|cause| TestError::Publish {
             cause: cause.to_string(),
         })?;
@@ -1250,7 +1270,7 @@ fn row_devlooped_tablestorage_source_5_5_0_full_lifecycle() -> Result<(), TestEr
 }
 
 #[test]
-fn row_tinyioc_1_4_0_rc1_occurrence_lane_terminal() -> Result<(), TestError> {
+fn row_tinyioc_1_4_0_rc1_full_lifecycle() -> Result<(), TestError> {
     corpus_row_lifecycle(&TINYIOC_RC1_ROW)
 }
 
@@ -1320,6 +1340,6 @@ fn row_morelinq_generatebyindex_1_0_2_full_lifecycle() -> Result<(), TestError> 
 }
 
 #[test]
-fn row_tinyioc_1_3_0_occurrence_lane_terminal() -> Result<(), TestError> {
+fn row_tinyioc_1_3_0_full_lifecycle() -> Result<(), TestError> {
     corpus_row_lifecycle(&TINYIOC_130_ROW)
 }
