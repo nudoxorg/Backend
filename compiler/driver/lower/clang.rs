@@ -924,7 +924,19 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// identity and half-open span that own occurrence facts own the tree.
     fn attach_topology(&mut self) -> Result<(), ClangCollectError> {
         let mut bindings = Vec::new();
+        // Each current fact ordinal has one fixed bit. A set bit proves only
+        // that its authority owner has at least one child, which is enough to
+        // withhold completeness; an unset image-backed ordinal permits the
+        // conservative proved-empty marker below. Synthetic carriers have no
+        // image ordinal and never enter this lane.
+        let mut owner_has_child = vec![false; self.facts.len()];
         for (index, declaration) in self.authority.declarations.iter().enumerate() {
+            if let Some(owner) = declaration.owner
+                && let Some(parent) = self.ordinal_of(owner)
+                && let Some(has_child) = owner_has_child.get_mut(parent as usize)
+            {
+                *has_child = true;
+            }
             let Some(child) = self.ordinals.get(index).copied().flatten() else {
                 continue;
             };
@@ -961,6 +973,22 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             self.facts
                 .attach_source_span(child, span)
                 .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+        }
+
+        // The completed authority pass proves an empty local member set only
+        // for a retained USR with no native child at all. If any child exists,
+        // this lane cannot yet prove every child was represented or
+        // canonicalized under the same row, so capture remains unavailable.
+        // Synthetic carrier rows have no retained declaration identity and
+        // are therefore never marked by this conservative postpass.
+        for ordinal in self.ordinals.iter().copied().flatten() {
+            let index = usize::try_from(ordinal)
+                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            if owner_has_child.get(index) == Some(&false) {
+                self.facts
+                    .mark_members_captured(ordinal)
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+            }
         }
         Ok(())
     }

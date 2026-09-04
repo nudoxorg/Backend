@@ -265,11 +265,25 @@ pub(crate) fn collect<'source>(
     // not retain a declaration-end coordinate, so capture the exact named
     // identifier span rather than pretending its start/name-end interval is
     // the whole declaration.
+    // One image-aligned lane records the only positive conclusion this pass
+    // needs: a retained declaration has some authority child. We record it
+    // before filtering the child itself, so an unsupported or filtered child
+    // prevents an empty-set claim for its retained owner.
+    let mut owner_has_child = vec![false; total];
     for coordinate in 0..total {
+        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let owner = declared
+            .owner
+            .map(|owner| usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity)))
+            .transpose()?;
+        if let Some(owner) = owner
+            && let Some(has_child) = owner_has_child.get_mut(owner)
+        {
+            *has_child = true;
+        }
         let Some(ordinal) = ordinals.lookup(coordinate) else {
             continue;
         };
-        let declared = declaration(&image, coordinate).map_err(terminal)?;
         let span = StagedSourceSpan::new(declared.name_start, declared.name_end).ok_or_else(|| {
             terminal(ProjectionFault::NameSpan {
                 start: declared.name_start,
@@ -282,14 +296,30 @@ pub(crate) fn collect<'source>(
         facts
             .mark_documentation_captured(ordinal)
             .map_err(lane_terminal)?;
-        match declared.owner {
+        match owner {
             None => facts.mark_parentage_root(ordinal).map_err(lane_terminal)?,
             Some(owner) => {
-                let owner = usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
                 if let Some(parent) = ordinals.lookup(owner) {
                     facts.attach_parent(ordinal, parent).map_err(lane_terminal)?;
                 }
             }
+        }
+    }
+
+    // This completed relation pass can prove an exact empty member set only
+    // when no authority declaration names this row as owner. An owner with
+    // even one child remains unavailable until every child is represented or
+    // explicitly canonicalized under the retained row; a completed pass
+    // alone is not proof. Signature carriers have no image coordinate and
+    // are never marked. A filtered C# owner still has no stable representable
+    // identity, so its child intentionally remains parentage-unavailable
+    // rather than being fabricated as a root.
+    for coordinate in 0..total {
+        let Some(ordinal) = ordinals.lookup(coordinate) else {
+            continue;
+        };
+        if !owner_has_child[coordinate] {
+            facts.mark_members_captured(ordinal).map_err(lane_terminal)?;
         }
     }
 

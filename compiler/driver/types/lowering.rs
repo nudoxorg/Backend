@@ -36,6 +36,28 @@ pub enum ParentageState {
     },
 }
 
+/// One authority-proven half-open span in the entered primary source.
+///
+/// This is a compact provenance fact rather than a durable wire coordinate:
+/// the owned and compact projections bind their request-local source file
+/// only after the authority span has been admitted. Its fields are public so
+/// an exact conflict diagnostic carries both observed facts without getters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceSpanFact {
+    /// Inclusive starting byte offset in the entered primary source.
+    pub start: u32,
+    /// Exclusive ending byte offset in the entered primary source.
+    pub end: u32,
+}
+
+impl SourceSpanFact {
+    /// Constructs only a well-ordered half-open source span.
+    #[must_use]
+    pub const fn new(start: u32, end: u32) -> Option<Self> {
+        (start <= end).then_some(Self { start, end })
+    }
+}
+
 /// Exact cause for rejecting one emitted fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FactFault {
@@ -140,6 +162,16 @@ pub enum FactFault {
         end: u32,
         /// Exact entered primary source length.
         source_len: u32,
+    },
+    /// Two authority passes supplied incompatible primary-source spans for
+    /// one emitted entity. Repeating the same source fact is idempotent.
+    ConflictingSourceSpan {
+        /// Entity whose source fact was already established.
+        entity: EntityId,
+        /// Previously retained authority span.
+        existing: SourceSpanFact,
+        /// New incompatible authority span.
+        requested: SourceSpanFact,
     },
     /// Two authority passes made incompatible containment claims for one
     /// emitted entity. Repeating an identical proved state is idempotent.

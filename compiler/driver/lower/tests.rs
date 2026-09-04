@@ -19,7 +19,7 @@ use super::{
     MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
     EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
-use crate::types::{ParentageState, RichCapture};
+use crate::types::{ParentageState, RichCapture, SourceSpanFact};
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 512;
@@ -126,6 +126,8 @@ struct FactTransactionState<'source> {
     visibility_captured: Vec<bool>,
     documentation_captured: Vec<bool>,
     parentage: Vec<ParentageState>,
+    source_spans: Vec<Option<SourceSpanFact>>,
+    members_captured: Vec<bool>,
     type_parameter_ranges: Vec<Option<super::StagedTypeParameterRange>>,
     anonymous_records: Vec<SemanticTypeRecord<'source>>,
     anonymous_owners: Vec<u32>,
@@ -180,7 +182,18 @@ fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<
         visibility: facts.visibility.to_vec(),
         visibility_captured: facts.visibility_captured.to_vec(),
         documentation_captured: facts.documentation_captured.to_vec(),
-        parentage: facts.parentage.to_vec(),
+        // Provenance is transaction state only for admitted facts. Keep the
+        // active prefix here: unopened planned capacity must not make a
+        // no-mutation comparison depend on irrelevant future slots.
+        parentage: facts.provenance.parentage()[..facts.len].to_vec(),
+        source_spans: facts.provenance.source_spans()[..facts.len].to_vec(),
+        members_captured: facts
+            .provenance
+            .member_sets()
+            .iter()
+            .take(facts.len)
+            .map(|capture| *capture == super::provenance::MemberSetCapture::Captured)
+            .collect(),
         type_parameter_ranges: facts.type_parameter_ranges.to_vec(),
         anonymous_records: facts.anonymous_records[..facts.anonymous_rows].to_vec(),
         anonymous_owners: facts.anonymous_owners[..facts.anonymous_rows].to_vec(),
@@ -242,6 +255,32 @@ fn owned_type_projection(facts: &FactSet<'_>) -> Result<OwnedTypeProjection, Tes
         pairs: columns.types.pairs.to_vec(),
         triples: columns.types.triples.to_vec(),
         quads: columns.types.quads.to_vec(),
+    })
+}
+
+/// The owned topology projections affected by transaction-local provenance.
+/// Keeping only these borrowed-view facts makes conflict falsifiers compare
+/// the observable result without reaching into `Ir` storage internals.
+#[derive(Debug, Eq, PartialEq)]
+struct OwnedTopologyProjection {
+    sources: Vec<Option<(u32, u32)>>,
+    parents: Vec<Option<EntityId>>,
+    members: Vec<Vec<EntityId>>,
+}
+
+fn owned_topology_projection(facts: &FactSet<'_>) -> Result<OwnedTopologyProjection, TestError> {
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    Ok(OwnedTopologyProjection {
+        sources: ir
+            .items()
+            .map(|item| item.source().map(|span| (span.start(), span.end())))
+            .collect(),
+        parents: ir.items().map(|item| item.parent()).collect(),
+        members: ir.items().map(|item| item.members().to_vec()).collect(),
     })
 }
 
@@ -1174,6 +1213,138 @@ fn parentage_transitions_are_closed_typed_and_idempotent() -> Result<(), TestErr
             existing: ParentageState::UnrepresentedAuthorityOwner { identity },
             requested: ParentageState::Root,
         }) if entity == EntityId::new(1) && identity == authority_identity => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    Ok(())
+}
+
+#[test]
+fn provenance_is_exactly_transactional_and_members_require_complete_capture(
+) -> Result<(), TestError> {
+    let mut candidate = FactSet::new();
+    let mut control = FactSet::new();
+    for name in [b"parent".as_slice(), b"child", b"empty"] {
+        let fact = SemanticFact::new(EntityKind::Constant, name, SemanticProductConstructor::PRODUCT);
+        candidate.push(fact).map_err(rejected)?;
+        control.push(fact).map_err(rejected)?;
+    }
+    let Some(first_span) = SourceSpanFact::new(1, 3) else {
+        return Err(TestError::Tail);
+    };
+    let Some(conflicting_span) = SourceSpanFact::new(2, 4) else {
+        return Err(TestError::Tail);
+    };
+
+    candidate.attach_source_span(0, first_span).map_err(lane_fault)?;
+    // The only legal repeated source observation is byte-for-byte identical.
+    candidate.attach_source_span(0, first_span).map_err(lane_fault)?;
+    candidate.mark_parentage_root(0).map_err(lane_fault)?;
+    candidate.mark_parentage_root(0).map_err(lane_fault)?;
+    candidate.attach_parent(1, 0).map_err(lane_fault)?;
+    candidate.attach_parent(1, 0).map_err(lane_fault)?;
+    candidate.mark_parentage_root(2).map_err(lane_fault)?;
+
+    control.attach_source_span(0, first_span).map_err(lane_fault)?;
+    control.mark_parentage_root(0).map_err(lane_fault)?;
+    control.attach_parent(1, 0).map_err(lane_fault)?;
+    control.mark_parentage_root(2).map_err(lane_fault)?;
+
+    match candidate.attach_source_span(0, conflicting_span) {
+        Err(FactFault::ConflictingSourceSpan {
+            entity,
+            existing,
+            requested,
+        }) if entity == EntityId::new(0)
+            && existing == first_span
+            && requested == conflicting_span => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    // Neither root nor a bound relation declares that all local members were
+    // enumerated. The root's actual child makes that distinction observable.
+    let capture = candidate.rich_capture();
+    if capture.entities.get(0).map(|row| row.members) != Some(RichCapture::Unavailable)
+        || capture.entities.get(1).map(|row| row.members) != Some(RichCapture::Unavailable)
+        || capture.entities.get(2).map(|row| row.members) != Some(RichCapture::Unavailable)
+    {
+        return Err(TestError::Tail);
+    }
+
+    // This root has no local children; an explicit authority observation of
+    // that empty set changes availability, and repeating it is harmless.
+    candidate.mark_members_captured(2).map_err(lane_fault)?;
+    candidate.mark_members_captured(2).map_err(lane_fault)?;
+    control.mark_members_captured(2).map_err(lane_fault)?;
+    if candidate.rich_capture().entities.get(2).map(|row| row.members)
+        != Some(RichCapture::Captured)
+    {
+        return Err(TestError::Tail);
+    }
+
+    // Each invalid coordinate retains its lane and raw operand exactly and
+    // leaves all active provenance prefixes equal to the control lane.
+    match candidate.attach_source_span(3, first_span) {
+        Err(FactFault::RefTarget {
+            lane: "entity_source_spans",
+            raw: 3,
+            fact_count: 3,
+        }) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    match candidate.attach_parent(1, 3) {
+        Err(FactFault::RefTarget {
+            lane: "entity_parents",
+            raw: 3,
+            fact_count: 3,
+        }) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    match candidate.mark_members_captured(3) {
+        Err(FactFault::RefTarget {
+            lane: "entity_members",
+            raw: 3,
+            fact_count: 3,
+        }) => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+
+    let expected = OwnedTopologyProjection {
+        sources: vec![Some((1, 3)), None, None],
+        parents: vec![None, Some(EntityId::new(0)), None],
+        members: vec![vec![EntityId::new(1)], vec![], vec![]],
+    };
+    if transaction_state(&candidate) != transaction_state(&control)
+        || write(&candidate)? != write(&control)?
+        || owned_topology_projection(&candidate)? != expected
+        || owned_topology_projection(&candidate)? != owned_topology_projection(&control)?
+    {
+        return Err(TestError::Tail);
+    }
+
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
+    plan.facts = 1;
+    let mut bounded = FactSet::with_primary_source(plan, 3);
+    bounded
+        .push(SemanticFact::new(
+            EntityKind::Constant,
+            b"bounded",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    let Some(escaped) = SourceSpanFact::new(1, 4) else {
+        return Err(TestError::Tail);
+    };
+    match bounded.attach_source_span(0, escaped) {
+        Err(FactFault::SourceSpan {
+            entity: 0,
+            start: 1,
+            end: 4,
+            source_len: 3,
+        }) => {}
         Err(_) => return Err(TestError::Tail),
         Ok(()) => return Err(TestError::UnexpectedPush),
     }
