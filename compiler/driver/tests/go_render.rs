@@ -256,13 +256,26 @@ fn go_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
     }
 
     let mut field_mutation = SOURCE.to_vec();
+    // The mutation must keep the module type-correct: the W13 oracle
+    // refusal rejects images whose packages no longer type-check, so
+    // changing `Name`'s type coherently changes `Value`'s return type.
     let old_field = b"Name string `json:\"name\"`";
     let new_field = b"Name int `json:\"name\"`";
+    let old_method = b"func (widget Widget) Value() string { return widget.Name }";
+    let new_method = b"func (widget Widget) Value() int { return widget.Name }";
     let at = field_mutation
         .windows(old_field.len())
         .position(|window| window == old_field)
         .ok_or(TestError::Unchanged("field type"))?;
     field_mutation.splice(at..at + old_field.len(), new_field.iter().copied());
+    let method_at = field_mutation
+        .windows(old_method.len())
+        .position(|window| window == old_method)
+        .ok_or(TestError::Unchanged("value method"))?;
+    field_mutation.splice(
+        method_at..method_at + old_method.len(),
+        new_method.iter().copied(),
+    );
     let mutated = compile_source(&field_mutation)?;
     let original_field = {
         let item = ir
