@@ -292,7 +292,7 @@ fn structural_tags_enforce_their_child_count_laws() {
         (SemanticTypeTag::Array, 1, 1),
         (SemanticTypeTag::Annotated, 1, 1),
         (SemanticTypeTag::Conditional, 4, 4),
-        (SemanticTypeTag::Mapped, 2, 2),
+        (SemanticTypeTag::Mapped, 2, 3),
     ];
     for (tag, min, max) in laws {
         let mut row = record(tag);
@@ -411,13 +411,13 @@ fn child_names_and_flags_are_tag_owned() {
                         compiler_ir_vocabulary::TypeId::new(0)
                     )),
                     name: Some(b"x"),
-                    flags: 0b100,
+                    flags: 0b1000,
                 }
             ),
             Err(SemanticTypeFault::ChildFlagsForbidden {
                 tag,
                 position: 0,
-                actual: 0b100,
+                actual: 0b1000,
             })
         );
     }

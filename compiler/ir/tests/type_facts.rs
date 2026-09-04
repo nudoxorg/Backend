@@ -157,6 +157,88 @@ fn write<'bytes>(lane: &TypeFactLane<'bytes>) -> Result<Vec<u8>, TestFailure> {
 }
 
 #[test]
+fn schema_three_rejects_invalid_computed_rows_before_publication() {
+    let declared = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+    }];
+
+    let invalid_owner = [TypeFactInput {
+        owner: EntityId::new(1),
+        record: SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
+    }];
+    let lane = TypeFactLane {
+        inputs: &declared,
+        computed: &invalid_owner,
+        children: &[],
+    };
+    assert!(matches!(
+        write(&lane),
+        Err(TestFailure::Prepare(PrepareError::TypeFacts {
+            fault: TypeFactFault::Owner { ordinal: 1, .. }
+        }))
+    ));
+
+    let invalid_child = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::Tuple,
+            payload0: 0,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 1),
+        },
+    }];
+    let child = [compiler_ir_vocabulary::SemanticTypeChild {
+        target: TypeChildTarget::Type(TypeRef::Local(compiler_ir_vocabulary::TypeId::new(2))),
+        name: None,
+        flags: 0,
+    }];
+    let lane = TypeFactLane {
+        inputs: &declared,
+        computed: &invalid_child,
+        children: &child,
+    };
+    assert!(matches!(
+        write(&lane),
+        Err(TestFailure::Prepare(PrepareError::TypeFacts {
+            fault: TypeFactFault::ChildTargetOutOfRange {
+                ordinal: 1,
+                target: 2,
+                record_count: 2,
+                ..
+            }
+        }))
+    ));
+
+    let invalid_record = [TypeFactInput {
+        owner: EntityId::new(0),
+        record: SemanticTypeRecord {
+            tag: SemanticTypeTag::SelfType,
+            payload0: 9,
+            payload1: 0,
+            text: None,
+            text2: None,
+            nominal: None,
+            children: ListSpan::new(0, 0),
+        },
+    }];
+    let lane = TypeFactLane {
+        inputs: &declared,
+        computed: &invalid_record,
+        children: &[],
+    };
+    assert!(matches!(
+        write(&lane),
+        Err(TestFailure::Prepare(PrepareError::TypeFacts {
+            fault: TypeFactFault::Record { ordinal: 1, .. }
+        }))
+    ));
+}
+
+#[test]
 fn type_fact_records_round_trip_through_borrowing_cursor() -> Result<(), TestFailure> {
     let inputs = records();
     let lane = TypeFactLane {

@@ -12,6 +12,7 @@ use compiler_ir::{
     EntityVersion, ExternalTarget, Ir,
     IrBuilder, ItemKind, LanguageExtensionInput, ListSpan, LiteralType, NominalRef, PayloadHash,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
+    ObjectMember, PropertyKey,
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
@@ -86,6 +87,10 @@ const _: () = assert!(MAX_TYPE_ROWS <= u32::MAX as usize);
 const ANONYMOUS_ROW_BASE: u32 = 0x4000_0000;
 /// Tagged staging coordinate for checker-observed type rows.
 pub(super) const COMPUTED_ROW_BASE: u32 = 0x8000_0000;
+/// A literal template segment is not a staged type coordinate. This value is
+/// private to the transaction-local collector and becomes the typed
+/// `TypeChildTarget::Text` at the durable projection boundary.
+const STAGED_TEXT_CHILD: u32 = u32::MAX;
 /// Sentinel marking an absent row in an extension plane's row table.
 const SECTION_NONE: u32 = u32::MAX;
 
@@ -316,7 +321,7 @@ impl<'source> SemanticFact<'source> {
         let ordinal = usize::from(self.type_child_count);
         if ordinal < MAX_TYPE_CHILDREN {
             self.type_children[ordinal] = FactTypeChild {
-                target: u32::MAX,
+                target: STAGED_TEXT_CHILD,
                 name: Some(text),
                 flags: 0,
             };
@@ -848,6 +853,27 @@ impl<'source> FactSet<'source> {
         record
             .validate(child_count)
             .map_err(FactFault::TypeRecord)?;
+        let child_start = self.computed_children_total - child_count as usize;
+        for position in 0..child_count as usize {
+            let pooled = child_start + position;
+            let target = if self.computed_child_targets[pooled] == STAGED_TEXT_CHILD {
+                TypeChildTarget::Text
+            } else {
+                TypeChildTarget::Type(compiler_ir::TypeRef::Local(compiler_ir::TypeId::new(
+                    self.computed_child_targets[pooled],
+                )))
+            };
+            record
+                .validate_child(
+                    position as u32,
+                    &SemanticTypeChild {
+                        target,
+                        name: self.computed_child_names[pooled],
+                        flags: self.computed_child_flags[pooled],
+                    },
+                )
+                .map_err(|fault| FactFault::TypeChild { position, fault })?;
+        }
         let index = self.computed_rows;
         self.computed_records[index] = record;
         self.computed_owners[index] = owner;
@@ -867,7 +893,8 @@ impl<'source> FactSet<'source> {
         name: Option<&'source [u8]>,
         flags: u8,
     ) -> Result<(), FactFault> {
-        let valid = self.is_computed_type_row(target)
+        let valid = target == STAGED_TEXT_CHILD
+            || self.is_computed_type_row(target)
             || self.is_anonymous_type_row(target)
             || target < self.len as u32;
         if !valid {
@@ -889,6 +916,15 @@ impl<'source> FactSet<'source> {
         self.computed_children_total += 1;
         self.computed_child_pending += 1;
         Ok(())
+    }
+
+    /// Appends one literal template segment to the computed lane. It is kept
+    /// distinct from a type coordinate all the way to `TypeChildTarget::Text`.
+    pub(super) fn computed_type_text_child(
+        &mut self,
+        text: &'source [u8],
+    ) -> Result<(), FactFault> {
+        self.computed_type_child(STAGED_TEXT_CHILD, Some(text), 0)
     }
 
     /// Attaches one language extension to an already-pushed fact whose
@@ -1435,8 +1471,11 @@ impl<'source> FactSet<'source> {
         // projection stores exactly the rows admitted by this transaction.
         let staged_type_end = fact_count + self.anonymous_rows + self.computed_rows;
         let mut type_ids = vec![TypeId::new(0); staged_type_end].into_boxed_slice();
-        let mut type_seen = vec![false; staged_type_end].into_boxed_slice();
-        let mut semantic_types = vec![None; fact_count].into_boxed_slice();
+        // 0 = unseen, 1 = recursively visiting, 2 = fully interned.  A
+        // boolean can only distinguish cache hit from miss and recurses
+        // forever on hostile compound type cycles.
+        let mut type_seen = vec![0_u8; staged_type_end].into_boxed_slice();
+        let mut semantic_types = vec![TypeId::new(0); fact_count].into_boxed_slice();
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
             *semantic_type = live_type(
                 &mut tree,
@@ -1444,7 +1483,6 @@ impl<'source> FactSet<'source> {
                 ordinal as u32,
                 &mut type_ids,
                 &mut type_seen,
-                true,
             )?;
         }
         // Documentation facts are allowed to arrive interleaved by owner.
@@ -1506,14 +1544,12 @@ impl<'source> FactSet<'source> {
                         )?,
                         declared: value
                             .declared
-                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen, false))
-                            .transpose()?
-                            .flatten(),
+                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen))
+                            .transpose()?,
                         observed: value
                             .observed
-                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen, false))
-                            .transpose()?
-                            .flatten(),
+                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen))
+                            .transpose()?,
                     };
                 }
                 Some(EmissionExtension::CSharp(value)) => {
@@ -1762,7 +1798,7 @@ impl<'source> FactSet<'source> {
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: self.visibility[ordinal],
                 parent: self.parents[ordinal].map(compiler_ir::TreeEntityId::new),
-                semantic_type: semantic_types[ordinal],
+                semantic_type: Some(semantic_types[ordinal]),
                 members: &members[member_ranges[ordinal].0
                     ..member_ranges[ordinal].0 + member_ranges[ordinal].1],
                 docs: &docs[doc_ranges[ordinal].0..doc_ranges[ordinal].0 + doc_ranges[ordinal].1],
@@ -1982,16 +2018,6 @@ fn builtin_type(record: SemanticTypeRecord<'_>) -> Option<BuiltinType> {
 }
 
 /// Stable lattice code for the one unknown reason rendered as an external.
-const UNRESOLVED_EXTERNAL_REASON: u32 = {
-    #[expect(
-        clippy::as_conversions,
-        reason = "TypeReason is a repr(u32) lattice with frozen wire discriminants"
-    )]
-    {
-        compiler_ir::TypeReason::UnresolvedExternal as u32
-    }
-};
-
 fn doc_input<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     fragment: DocFragmentInput<'source>,
@@ -2073,7 +2099,7 @@ fn live_type_parameters<'source>(
     start: compiler_ir::TypeParameterListId,
     range: StagedTypeParameterRange,
     ids: &mut [TypeId],
-    seen: &mut [bool],
+    seen: &mut [u8],
 ) -> Result<compiler_ir::TypeParameterListId, compiler_ir::BuildError> {
     let start = start.raw as usize;
     if range.start != start as u32 {
@@ -2101,14 +2127,12 @@ fn live_type_parameters<'source>(
             name: tree.intern_atom(parameter.name)?,
             constraint: parameter
                 .constraint
-                .map(|row| live_type(tree, facts, row, ids, seen, false))
-                .transpose()?
-                .flatten(),
+                .map(|row| live_type(tree, facts, row, ids, seen))
+                .transpose()?,
             default: parameter
                 .default
-                .map(|row| live_type(tree, facts, row, ids, seen, false))
-                .transpose()?
-                .flatten(),
+                .map(|row| live_type(tree, facts, row, ids, seen))
+                .transpose()?,
             variance: compiler_ir::Variance::Invariant,
             is_const: false,
         });
@@ -2157,7 +2181,7 @@ fn live_type_list<'source>(
     facts: &FactSet<'source>,
     id: compiler_ir::TypeListId,
     ids: &mut [TypeId],
-    seen: &mut [bool],
+    seen: &mut [u8],
 ) -> Result<compiler_ir::TypeListId, compiler_ir::BuildError> {
     let index = id.raw as usize;
     if facts.type_list_len == 0 && index == 0 {
@@ -2173,12 +2197,7 @@ fn live_type_list<'source>(
     let mut types = Vec::with_capacity(length);
     for row in &facts.type_lists[index][..length] {
         types.push(
-            live_type(tree, facts, *row, ids, seen, false)?.ok_or(
-                compiler_ir::BuildError::Dangling {
-                    space: compiler_ir::SemanticSpace::Type,
-                    raw: *row,
-                },
-            )?,
+            live_type(tree, facts, *row, ids, seen)?,
         );
     }
     tree.intern_types(&types)
@@ -2364,22 +2383,24 @@ fn live_type<'source>(
     facts: &FactSet<'source>,
     row: u32,
     ids: &mut [TypeId],
-    seen: &mut [bool],
-    top_level: bool,
-) -> Result<Option<TypeId>, compiler_ir::BuildError> {
+    seen: &mut [u8],
+) -> Result<TypeId, compiler_ir::BuildError> {
     let index = facts.staged_type_slot(row).ok_or(compiler_ir::BuildError::Dangling {
         space: compiler_ir::SemanticSpace::Type,
         raw: row,
     })?;
     debug_assert!(index < ids.len());
-    if seen[index] {
-        return Ok(Some(ids[index]));
+    match seen[index] {
+        2 => return Ok(ids[index]),
+        1 => return Err(compiler_ir::BuildError::RecursiveType { raw: row }),
+        _ => {}
     }
     let record = facts.staged_type_record(row)?;
-    let top_level_excluded = row < ANONYMOUS_ROW_BASE && record.tag == SemanticTypeTag::Unknown;
-    if top_level_excluded && top_level {
-        return Ok(None);
-    }
+    // An explicit source `Unknown` is semantic truth (unannotated,
+    // dynamically typed, unresolved, truncated, ...), not absence.  The
+    // owned item type therefore never disappears merely because it is the
+    // declaration's top-level row.
+    seen[index] = 1;
     let child = |position: usize| facts.staged_type_child(row, position);
     let mut children = [TypeId::new(0); MAX_TYPE_CHILDREN];
     let child_count = facts.staged_type_child_count(row).ok_or(
@@ -2389,7 +2410,7 @@ fn live_type<'source>(
         },
     )?;
     for position in 0..child_count {
-        if child(position).is_some_and(|item| item.0 == u32::MAX) {
+        if child(position).is_some_and(|item| item.0 == STAGED_TEXT_CHILD) {
             continue;
         }
         children[position] = live_type(
@@ -2403,16 +2424,15 @@ fn live_type<'source>(
                 })?,
             ids,
             seen,
-            false,
-        )?
-        .ok_or(compiler_ir::BuildError::Dangling {
-            space: compiler_ir::SemanticSpace::Type,
-            raw: row,
-        })?;
+        )?;
     }
     let ty = match record.tag {
         SemanticTypeTag::Primitive => match (record.payload0, record.payload1, record.text) {
-            (value, 0, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+            (value, 0, Some(bytes))
+                if value == u32::from(PrimitiveShape::Builtin)
+                    && ((bytes.starts_with(b"\"") && bytes.ends_with(b"\""))
+                        || (bytes.starts_with(b"'") && bytes.ends_with(b"'"))) =>
+            {
                 let value = bytes
                     .strip_prefix(b"\"")
                     .and_then(|value| value.strip_suffix(b"\""))
@@ -2426,17 +2446,24 @@ fn live_type<'source>(
                 tree.intern_concrete(ConcreteType::Literal(LiteralType::String(atom)))?
                     .erase()
             }
-            (value, 1, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+            (value, 1, Some(bytes))
+                if value == u32::from(PrimitiveShape::Builtin)
+                    && bytes.iter().all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'+' | b'_')) =>
+            {
                 let atom = tree.intern_atom(bytes)?;
                 tree.intern_concrete(ConcreteType::Literal(LiteralType::Number(atom)))?
                     .erase()
             }
-            (value, 2, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => {
+            (value, 2, Some(bytes))
+                if value == u32::from(PrimitiveShape::Builtin) && bytes.ends_with(b"n") =>
+            {
                 let atom = tree.intern_atom(bytes)?;
                 tree.intern_concrete(ConcreteType::Literal(LiteralType::BigInt(atom)))?
                     .erase()
             }
-            (value, 3, Some(bytes)) if value == u32::from(PrimitiveShape::Builtin) => tree
+            (value, 3, Some(bytes))
+                if value == u32::from(PrimitiveShape::Builtin)
+                    && matches!(bytes, b"true" | b"false") => tree
                 .intern_concrete(ConcreteType::Literal(LiteralType::Boolean(
                     bytes == b"true",
                 )))?
@@ -2486,27 +2513,21 @@ fn live_type<'source>(
                         .intern_concrete(ConcreteType::Builtin(BuiltinType::I128))?
                         .erase(),
                     _ => tree
-                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                        .intern_unknown(compiler_ir::UnknownType::new(
+                            compiler_ir::UnknownReason::NoIrRepresentation,
+                        ))?
                         .erase(),
                 },
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"None") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::None_))?
-                    .erase(),
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"list") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::List))?
-                    .erase(),
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"dict") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Dict))?
-                    .erase(),
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"set") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Set))?
-                    .erase(),
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"frozenset") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::FrozenSet))?
-                    .erase(),
-                Ok(PrimitiveShape::Builtin) if record.text == Some(b"bytes") => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Bytes))?
-                    .erase(),
+                Ok(PrimitiveShape::Builtin) => match record.text.and_then(builtin_from_spelling) {
+                    Some(builtin) => tree.intern_concrete(ConcreteType::Builtin(builtin))?.erase(),
+                    None => {
+                        let spelling = record.text.map(|bytes| tree.intern_atom(bytes)).transpose()?;
+                        tree.intern_unknown(compiler_ir::UnknownType {
+                            reason: compiler_ir::UnknownReason::NoIrRepresentation,
+                            spelling,
+                        })?.erase()
+                    }
+                },
                 Ok(PrimitiveShape::Float) => match record.payload1 {
                     16 => tree
                         .intern_concrete(ConcreteType::Builtin(BuiltinType::F16))?
@@ -2518,7 +2539,9 @@ fn live_type<'source>(
                         .intern_concrete(ConcreteType::Builtin(BuiltinType::F64))?
                         .erase(),
                     _ => tree
-                        .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                        .intern_unknown(compiler_ir::UnknownType::new(
+                            compiler_ir::UnknownReason::NoIrRepresentation,
+                        ))?
                         .erase(),
                 },
                 Ok(PrimitiveShape::Reference) => {
@@ -2548,12 +2571,17 @@ fn live_type<'source>(
                     })?
                     .erase(),
                 _ => tree
-                    .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                    .intern_unknown(compiler_ir::UnknownType::new(
+                        compiler_ir::UnknownReason::NoIrRepresentation,
+                    ))?
                     .erase(),
             },
         },
         SemanticTypeTag::Never => tree
             .intern_concrete(ConcreteType::Builtin(BuiltinType::Never))?
+            .erase(),
+        SemanticTypeTag::Any => tree
+            .intern_concrete(ConcreteType::Builtin(BuiltinType::Any))?
             .erase(),
         SemanticTypeTag::Conditional if child_count == 4 => tree
             .intern_computed(ComputedType::Conditional {
@@ -2564,7 +2592,7 @@ fn live_type<'source>(
                 distributive: record.payload1 != 0,
             })?
             .erase(),
-        SemanticTypeTag::Mapped if child_count == 2 => {
+        SemanticTypeTag::Mapped if matches!(child_count, 2 | 3) => {
             let parameter = tree.intern_atom(record.text.unwrap_or(b"K"))?;
             let modifier = |value: u32| match value {
                 0 => compiler_ir::MappedModifier::Preserve,
@@ -2575,8 +2603,8 @@ fn live_type<'source>(
             tree.intern_computed(ComputedType::Mapped {
                 parameter,
                 constraint: children[0],
-                name_as: None,
-                value: children[1],
+                name_as: (child_count == 3).then_some(children[1]),
+                value: children[child_count - 1],
                 readonly: modifier(record.payload0),
                 optional: modifier(record.payload1),
             })?
@@ -2591,7 +2619,7 @@ fn live_type<'source>(
                         raw: row,
                     },
                 )?;
-                parts[position] = if target == u32::MAX {
+                parts[position] = if target == STAGED_TEXT_CHILD {
                     TemplatePart::Bytes(tree.intern_atom(text.unwrap_or_default())?)
                 } else {
                     TemplatePart::Placeholder(children[position])
@@ -2601,6 +2629,9 @@ fn live_type<'source>(
             tree.intern_computed(ComputedType::TemplateLiteral(parts))?
                 .erase()
         }
+        SemanticTypeTag::SelfType if record.text == Some(b"this") => tree
+            .intern_computed(ComputedType::This)?
+            .erase(),
         SemanticTypeTag::SelfType | SemanticTypeTag::TypeVar => {
             let spelling = match record.text {
                 Some(spelling) => spelling,
@@ -2614,7 +2645,11 @@ fn live_type<'source>(
                 .intern_concrete(ConcreteType::Nominal(id))?
                 .erase(),
             Some(NominalRef::External(external)) => {
-                let path = tree.intern_atom(record.text.unwrap_or(b"foreign"))?;
+                let spelling = record.text.ok_or(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Atom,
+                    raw: external.ordinal,
+                })?;
+                let path = tree.intern_atom(spelling)?;
                 let mut key = [0_u8; 36];
                 key[..32].copy_from_slice(external.fragment.as_ref());
                 key[32..].copy_from_slice(&external.ordinal.to_le_bytes());
@@ -2628,7 +2663,9 @@ fn live_type<'source>(
                 tree.intern_concrete(ConcreteType::External(target))?.erase()
             }
             None => tree
-                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                .intern_unknown(compiler_ir::UnknownType::new(
+                    compiler_ir::UnknownReason::NoIrRepresentation,
+                ))?
                 .erase(),
         },
         SemanticTypeTag::Tuple => {
@@ -2643,6 +2680,20 @@ fn live_type<'source>(
                 }; MAX_TYPE_CHILDREN];
                 for position in 0..child_count {
                     elements[position].ty = children[position];
+                    let (_, label, flags) = child(position).ok_or(
+                        compiler_ir::BuildError::Dangling {
+                            space: compiler_ir::SemanticSpace::Type,
+                            raw: row,
+                        },
+                    )?;
+                    elements[position].label = label.map(|bytes| tree.intern_atom(bytes)).transpose()?;
+                    elements[position].kind = if flags & SemanticTypeChild::FLAG_REST != 0 {
+                        TupleElementKind::Rest
+                    } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
+                        TupleElementKind::Optional
+                    } else {
+                        TupleElementKind::Required
+                    };
                 }
                 let list = tree.intern_tuple_elements(&elements[..child_count])?;
                 tree.intern_concrete(ConcreteType::Tuple(list))?.erase()
@@ -2674,10 +2725,46 @@ fn live_type<'source>(
             let list = tree.intern_types(&children[..child_count])?;
             tree.intern_concrete(ConcreteType::Union(list))?.erase()
         }
-        SemanticTypeTag::Intersection | SemanticTypeTag::DynTrait | SemanticTypeTag::ImplTrait => {
+        SemanticTypeTag::Intersection => {
             let list = tree.intern_types(&children[..child_count])?;
             tree.intern_concrete(ConcreteType::Intersection(list))?
                 .erase()
+        }
+        SemanticTypeTag::ImplTrait => {
+            let list = tree.intern_types(&children[..child_count])?;
+            tree.intern_concrete(ConcreteType::ImplTrait(list))?.erase()
+        }
+        SemanticTypeTag::DynTrait => {
+            let list = tree.intern_types(&children[..child_count])?;
+            tree.intern_concrete(ConcreteType::DynTrait(list))?.erase()
+        }
+        SemanticTypeTag::AnonymousRecord => {
+            let mut members = [ObjectMember::Property {
+                key: PropertyKey::Named(AtomId::new(0)),
+                ty: TypeId::new(0),
+                optional: false,
+                readonly: false,
+            }; MAX_TYPE_CHILDREN];
+            for position in 0..child_count {
+                let (_, name, flags) = child(position).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    },
+                )?;
+                let name = name.ok_or(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Atom,
+                    raw: position as u32,
+                })?;
+                members[position] = ObjectMember::Property {
+                    key: PropertyKey::Named(tree.intern_atom(name)?),
+                    ty: children[position],
+                    optional: flags & SemanticTypeChild::FLAG_OPTIONAL != 0,
+                    readonly: flags & SemanticTypeChild::FLAG_READONLY != 0,
+                };
+            }
+            let members = tree.intern_object_members(&members[..child_count])?;
+            tree.intern_concrete(ConcreteType::Object(members))?.erase()
         }
         SemanticTypeTag::FunctionPointer => {
             let has_result =
@@ -2689,7 +2776,7 @@ fn live_type<'source>(
                 kind: TupleElementKind::Required,
             }; MAX_TYPE_CHILDREN];
             for position in 0..parameter_count {
-                let (target, child_name, _) =
+                let (target, child_name, flags) =
                     child(position).ok_or(compiler_ir::BuildError::Dangling {
                         space: compiler_ir::SemanticSpace::Type,
                         raw: row,
@@ -2699,7 +2786,13 @@ fn live_type<'source>(
                 elements[position] = TupleElement {
                     label: name.map(|name| tree.intern_atom(name)).transpose()?,
                     ty: children[position],
-                    kind: TupleElementKind::Required,
+                    kind: if flags & SemanticTypeChild::FLAG_REST != 0 {
+                        TupleElementKind::Rest
+                    } else if flags & SemanticTypeChild::FLAG_OPTIONAL != 0 {
+                        TupleElementKind::Optional
+                    } else {
+                        TupleElementKind::Required
+                    },
                 };
             }
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
@@ -2714,32 +2807,62 @@ fn live_type<'source>(
             })?
             .erase()
         }
-        SemanticTypeTag::Unknown if record.payload0 == UNRESOLVED_EXTERNAL_REASON => {
-            let spelling = match record.text {
-                Some(spelling) => spelling,
-                None => b"unresolved",
+        SemanticTypeTag::Unknown => {
+            let reason = match compiler_ir::TypeReason::try_from(record.payload0) {
+                Ok(compiler_ir::TypeReason::Unannotated) => compiler_ir::UnknownReason::Unannotated,
+                Ok(compiler_ir::TypeReason::DynamicallyTyped) => compiler_ir::UnknownReason::DynamicallyTyped,
+                Ok(compiler_ir::TypeReason::UnresolvedLocalName) => compiler_ir::UnknownReason::UnresolvedLocalName,
+                Ok(compiler_ir::TypeReason::UnresolvedExternal) => compiler_ir::UnknownReason::UnresolvedExternal,
+                Ok(compiler_ir::TypeReason::TruncatedAtDepthLimit) => compiler_ir::UnknownReason::TruncatedAtDepthLimit,
+                Ok(compiler_ir::TypeReason::OracleGap) => compiler_ir::UnknownReason::OracleGap,
+                Ok(compiler_ir::TypeReason::NoIrRepresentation) | Err(_) => compiler_ir::UnknownReason::NoIrRepresentation,
             };
-            let path = tree.intern_atom(spelling)?;
-            let external = tree.intern_external(ExternalTarget {
-                stable: StableEntityId::from_canonical_bytes(spelling),
-                package: None,
-                path,
-                display: path,
-                kind: None,
-            })?;
-            tree.intern_concrete(ConcreteType::External(external))?
-                .erase()
+            let spelling = record.text.map(|bytes| tree.intern_atom(bytes)).transpose()?;
+            tree.intern_unknown(compiler_ir::UnknownType { reason, spelling })?.erase()
         }
-        SemanticTypeTag::Unknown => tree
-            .intern_unknown(compiler_ir::UnknownType::Unsupported)?
-            .erase(),
+        // A closed row that has not gained a richer owned-IR variant remains
+        // explicit semantic truth. Preserve any tag-owned spelling rather
+        // than collapsing it into a renderer's generic `?unsupported`.
         _ => tree
-            .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+            .intern_unknown(compiler_ir::UnknownType {
+                reason: compiler_ir::UnknownReason::NoIrRepresentation,
+                spelling: record.text.map(|bytes| tree.intern_atom(bytes)).transpose()?,
+            })?
             .erase(),
     };
     ids[index] = ty;
-    seen[index] = true;
-    Ok(Some(ty))
+    seen[index] = 2;
+    Ok(ty)
+}
+
+/// Maps only the spelling-bearing builtin rows in the common type lattice to
+/// the closed cross-language builtin vocabulary.  Width-bearing primitives
+/// remain payload-driven above; an unrecognized spelling stays an explicit
+/// `NoIrRepresentation` unknown with its atom, never a false `String`.
+const fn builtin_from_spelling(spelling: &[u8]) -> Option<BuiltinType> {
+    match spelling {
+        b"void" | b"System.Void" | b"java.lang.Void" => Some(BuiltinType::Void),
+        b"bigint" => Some(BuiltinType::BigInt),
+        b"symbol" => Some(BuiltinType::Symbol),
+        b"unique symbol" => Some(BuiltinType::UniqueSymbol),
+        b"null" => Some(BuiltinType::Null),
+        b"undefined" => Some(BuiltinType::Undefined),
+        b"None" | b"NoneType" => Some(BuiltinType::None_),
+        b"bytes" | b"byte[]" => Some(BuiltinType::Bytes),
+        b"list" | b"List" => Some(BuiltinType::List),
+        b"dict" | b"Dict" => Some(BuiltinType::Dict),
+        b"set" | b"Set" => Some(BuiltinType::Set),
+        b"frozenset" | b"FrozenSet" => Some(BuiltinType::FrozenSet),
+        b"complex" => Some(BuiltinType::Complex),
+        b"decimal" | b"Decimal" => Some(BuiltinType::Decimal),
+        b"object" | b"Object" | b"java.lang.Object" => Some(BuiltinType::Object),
+        b"string" | b"str" | b"String" => Some(BuiltinType::String),
+        b"boolean" | b"bool" | b"Boolean" => Some(BuiltinType::Bool),
+        b"number" => Some(BuiltinType::Number),
+        b"unknown" => Some(BuiltinType::Unknown),
+        b"usize" | b"uint" | b"uintptr" | b"nuint" => Some(BuiltinType::UInt),
+        _ => None,
+    }
 }
 
 /// Digests the producer-authored declaration skeleton of one fact.
@@ -2880,10 +3003,26 @@ fn scoped_fact_key(
     }
     let type_child_start = facts.type_child_starts[ordinal] as usize;
     let type_child_count = usize::from(facts.type_child_counts[ordinal]);
-    for target in facts.type_child_targets[type_child_start..type_child_start + type_child_count]
+    for ((target, name), flags) in facts.type_child_targets
+        [type_child_start..type_child_start + type_child_count]
         .iter()
+        .zip(&facts.type_child_names[type_child_start..type_child_start + type_child_count])
+        .zip(&facts.type_child_flags[type_child_start..type_child_start + type_child_count])
     {
-        append_type_target_key(&mut preimage, facts, ordinal, *target, cache, visiting)?;
+        if *target == STAGED_TEXT_CHILD {
+            preimage.extend_from_slice(b"compiler.template-text-child.v1");
+            preimage.push(*flags);
+            match name {
+                Some(bytes) => {
+                    preimage.push(1);
+                    preimage.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                    preimage.extend_from_slice(bytes);
+                }
+                None => preimage.push(0),
+            }
+        } else {
+            append_type_target_key(&mut preimage, facts, ordinal, *target, cache, visiting)?;
+        }
     }
     if let Some(NominalRef::Local(target)) = facts.type_records[ordinal].nominal {
         append_type_target_key(&mut preimage, facts, ordinal, target.raw, cache, visiting)?;
@@ -3035,7 +3174,11 @@ fn staged_type_shape_key_inner(
             None => preimage.push(0),
         }
         preimage.push(*flags);
-        if *target == owner as u32 {
+        if *target == STAGED_TEXT_CHILD {
+            // Exact bytes and flags were framed above. This sentinel is never
+            // a type row and therefore never enters recursive shape lookup.
+            preimage.extend_from_slice(b"template-text");
+        } else if *target == owner as u32 {
             preimage.extend_from_slice(b"owner-type");
         } else if *target < facts.len as u32 {
             preimage.extend_from_slice(
@@ -3543,10 +3686,15 @@ pub(super) fn admit<'source, 'output>(
         let base = facts.anonymous_child_starts[index] as usize;
         for offset in 0..child_count {
             let pooled = type_pooled_cursor + offset;
+            let raw = facts.anonymous_child_targets[base + offset];
             type_children[pooled] = SemanticTypeChild {
-                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                    compiler_ir::TypeId::new(remap(facts.anonymous_child_targets[base + offset])),
-                )),
+                target: if raw == STAGED_TEXT_CHILD {
+                    TypeChildTarget::Text
+                } else {
+                    TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                        compiler_ir::TypeId::new(remap(raw)),
+                    ))
+                },
                 name: facts.anonymous_child_names[base + offset],
                 flags: facts.anonymous_child_flags[base + offset],
             };
@@ -3567,9 +3715,13 @@ pub(super) fn admit<'source, 'output>(
             let pooled = type_pooled_cursor + offset;
             let source = facts.type_child_flat(facts.type_children_base(ordinal) + offset);
             type_children[pooled] = SemanticTypeChild {
-                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                    compiler_ir::TypeId::new(remap(source.0)),
-                )),
+                target: if source.0 == STAGED_TEXT_CHILD {
+                    TypeChildTarget::Text
+                } else {
+                    TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                        compiler_ir::TypeId::new(remap(source.0)),
+                    ))
+                },
                 name: source.1,
                 flags: source.2,
             };
@@ -3598,16 +3750,20 @@ pub(super) fn admit<'source, 'output>(
         let base = facts.computed_child_starts[index] as usize;
         for offset in 0..child_count {
             let pooled = type_pooled_cursor + offset;
-            let target = facts.computed_child_targets[base + offset];
-            let target = if target >= COMPUTED_ROW_BASE {
-                declared_count as u32 + target - COMPUTED_ROW_BASE
-            } else {
-                remap(target)
-            };
+            let raw = facts.computed_child_targets[base + offset];
             type_children[pooled] = SemanticTypeChild {
-                target: TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                    compiler_ir::TypeId::new(target),
-                )),
+                target: if raw == STAGED_TEXT_CHILD {
+                    TypeChildTarget::Text
+                } else {
+                    let target = if raw >= COMPUTED_ROW_BASE {
+                        declared_count as u32 + raw - COMPUTED_ROW_BASE
+                    } else {
+                        remap(raw)
+                    };
+                    TypeChildTarget::Type(compiler_ir::TypeRef::Local(
+                        compiler_ir::TypeId::new(target),
+                    ))
+                },
                 name: facts.computed_child_names[base + offset],
                 flags: facts.computed_child_flags[base + offset],
             };

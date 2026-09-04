@@ -137,17 +137,57 @@ pub enum BuiltinType {
     Set,
     /// Python's immutable set.
     FrozenSet,
+    /// Architecture-sized unsigned integer (`usize`, Go `uint`/`uintptr`,
+    /// C# `nuint`); distinct from a fixed-width unsigned primitive.
+    UInt,
+    /// Python's exact complex builtin.
+    Complex,
+    /// C# decimal fixed-point builtin.
+    Decimal,
 }
 
-/// Why a frontend could not produce a more precise type.
+/// Closed cause for an explicitly unknown semantic type.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum UnknownType {
+pub enum UnknownReason {
     Unannotated,
-    Unresolved,
-    Unsupported,
-    Inferred,
+    DynamicallyTyped,
+    UnresolvedLocalName,
+    UnresolvedExternal,
+    TruncatedAtDepthLimit,
+    OracleGap,
+    NoIrRepresentation,
     Error,
+}
+
+/// Why a frontend could not produce a more precise type, together with the
+/// exact optional source spelling the authority supplied.  Unknown is a real
+/// semantic state, not a missing `TypeId`; a spelling is an atom so it
+/// participates in owned IR, render, and durable comparison without a side
+/// channel.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct UnknownType {
+    pub reason: UnknownReason,
+    pub spelling: Option<AtomId>,
+}
+
+impl UnknownType {
+    #[must_use]
+    pub const fn new(reason: UnknownReason) -> Self {
+        Self {
+            reason,
+            spelling: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_spelling(self, spelling: AtomId) -> Self {
+        Self {
+            reason: self.reason,
+            spelling: Some(spelling),
+        }
+    }
+
 }
 
 /// One hash-consed semantic type node.
@@ -364,6 +404,8 @@ pub enum TypeTag {
     Awaited,
     This,
     Unknown,
+    ImplTrait,
+    DynTrait,
 }
 
 #[repr(C)]
@@ -499,6 +541,8 @@ impl PackedTypes {
                 ConcreteType::Optional(value) => header(TypeTag::Optional, 0, 0, value.raw),
                 ConcreteType::Union(value) => header(TypeTag::Union, 0, 0, value.raw),
                 ConcreteType::Intersection(value) => header(TypeTag::Intersection, 0, 0, value.raw),
+                ConcreteType::ImplTrait(value) => header(TypeTag::ImplTrait, 0, 0, value.raw),
+                ConcreteType::DynTrait(value) => header(TypeTag::DynTrait, 0, 0, value.raw),
             },
             TypeExpr::Computed(ty) => match ty {
                 ComputedType::KeyOf(value) => header(TypeTag::KeyOf, 0, 0, value.raw),
@@ -568,7 +612,12 @@ impl PackedTypes {
                 ComputedType::Awaited(value) => header(TypeTag::Awaited, 0, 0, value.raw),
                 ComputedType::This => header(TypeTag::This, 0, 0, 0),
             },
-            TypeExpr::Unknown(value) => header(TypeTag::Unknown, 0, value as u16, 0),
+            TypeExpr::Unknown(value) => header(
+                TypeTag::Unknown,
+                0,
+                value.reason as u16,
+                option_raw(value.spelling),
+            ),
         };
         self.headers.push(header);
     }
@@ -656,6 +705,12 @@ impl PackedTypes {
             TypeTag::Intersection => {
                 TypeExpr::Concrete(ConcreteType::Intersection(TypeListId::new(value.payload)))
             }
+            TypeTag::ImplTrait => {
+                TypeExpr::Concrete(ConcreteType::ImplTrait(TypeListId::new(value.payload)))
+            }
+            TypeTag::DynTrait => {
+                TypeExpr::Concrete(ConcreteType::DynTrait(TypeListId::new(value.payload)))
+            }
             TypeTag::KeyOf => TypeExpr::Computed(ComputedType::KeyOf(TypeId::new(value.payload))),
             TypeTag::TypeOf => TypeExpr::Computed(ComputedType::TypeOf(match value.flags {
                 0 => TypeQuery::Entity(EntityId::new(value.payload)),
@@ -713,7 +768,10 @@ impl PackedTypes {
                 TypeExpr::Computed(ComputedType::Awaited(TypeId::new(value.payload)))
             }
             TypeTag::This => TypeExpr::Computed(ComputedType::This),
-            TypeTag::Unknown => TypeExpr::Unknown(unknown_from(value.auxiliary)?),
+            TypeTag::Unknown => TypeExpr::Unknown(UnknownType {
+                reason: unknown_from(value.auxiliary)?,
+                spelling: raw_option(value.payload).map(AtomId::new),
+            }),
         })
     }
 
@@ -823,6 +881,8 @@ mod packed_type_tests {
             TypeExpr::Concrete(ConcreteType::Optional(TypeId::new(20))),
             TypeExpr::Concrete(ConcreteType::Union(TypeListId::new(21))),
             TypeExpr::Concrete(ConcreteType::Intersection(TypeListId::new(22))),
+            TypeExpr::Concrete(ConcreteType::ImplTrait(TypeListId::new(23))),
+            TypeExpr::Concrete(ConcreteType::DynTrait(TypeListId::new(24))),
             TypeExpr::Computed(ComputedType::KeyOf(TypeId::new(23))),
             TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(EntityId::new(24)))),
             TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Path(AtomListId::new(25)))),
@@ -885,11 +945,14 @@ mod packed_type_tests {
             BuiltinType::Any,
             BuiltinType::Unknown,
             BuiltinType::Int,
+            BuiltinType::UInt,
             BuiltinType::None_,
             BuiltinType::List,
             BuiltinType::Dict,
             BuiltinType::Set,
             BuiltinType::FrozenSet,
+            BuiltinType::Complex,
+            BuiltinType::Decimal,
             BuiltinType::Void,
             BuiltinType::Number,
             BuiltinType::BigInt,
@@ -901,11 +964,14 @@ mod packed_type_tests {
             types.push(TypeExpr::Concrete(ConcreteType::Builtin(builtin)));
         }
         for reason in [
-            UnknownType::Unannotated,
-            UnknownType::Unresolved,
-            UnknownType::Unsupported,
-            UnknownType::Inferred,
-            UnknownType::Error,
+            UnknownType::new(UnknownReason::Unannotated),
+            UnknownType::new(UnknownReason::DynamicallyTyped),
+            UnknownType::new(UnknownReason::UnresolvedLocalName),
+            UnknownType::new(UnknownReason::UnresolvedExternal),
+            UnknownType::new(UnknownReason::TruncatedAtDepthLimit),
+            UnknownType::new(UnknownReason::OracleGap),
+            UnknownType::new(UnknownReason::NoIrRepresentation),
+            UnknownType::new(UnknownReason::Error),
         ] {
             types.push(TypeExpr::Unknown(reason));
         }
@@ -987,6 +1053,9 @@ const fn builtin_from(value: u16) -> Option<BuiltinType> {
         32 => BuiltinType::Dict,
         33 => BuiltinType::Set,
         34 => BuiltinType::FrozenSet,
+        35 => BuiltinType::UInt,
+        36 => BuiltinType::Complex,
+        37 => BuiltinType::Decimal,
         _ => return None,
     })
 }
@@ -1008,13 +1077,16 @@ const fn modifier_from(value: u8) -> Option<MappedModifier> {
     }
 }
 
-const fn unknown_from(value: u16) -> Option<UnknownType> {
+const fn unknown_from(value: u16) -> Option<UnknownReason> {
     match value {
-        0 => Some(UnknownType::Unannotated),
-        1 => Some(UnknownType::Unresolved),
-        2 => Some(UnknownType::Unsupported),
-        3 => Some(UnknownType::Inferred),
-        4 => Some(UnknownType::Error),
+        0 => Some(UnknownReason::Unannotated),
+        1 => Some(UnknownReason::DynamicallyTyped),
+        2 => Some(UnknownReason::UnresolvedLocalName),
+        3 => Some(UnknownReason::UnresolvedExternal),
+        4 => Some(UnknownReason::TruncatedAtDepthLimit),
+        5 => Some(UnknownReason::OracleGap),
+        6 => Some(UnknownReason::NoIrRepresentation),
+        7 => Some(UnknownReason::Error),
         _ => None,
     }
 }
@@ -1080,6 +1152,10 @@ pub enum ConcreteType {
     Optional(TypeId),
     Union(TypeListId),
     Intersection(TypeListId),
+    /// Rust's static-dispatch existential bound set (`impl Trait`).
+    ImplTrait(TypeListId),
+    /// Rust's dynamic-dispatch trait-object bound set (`dyn Trait`).
+    DynTrait(TypeListId),
 }
 
 /// Literal type payload. Numeric spelling remains raw to preserve `-0`, bigint,
@@ -2457,6 +2533,11 @@ pub enum BuildError {
         space: SemanticSpace,
         raw: u32,
     },
+    /// A recursive compound type reached a row still under projection.  A
+    /// recursive nominal is representable as its terminal nominal row; a
+    /// compound cycle needs a dedicated recursive handle and must never
+    /// recurse on the process stack while that handle is absent.
+    RecursiveType { raw: u32 },
     /// A durable documentation fact was not valid UTF-8, so it cannot enter
     /// the owned text arena without loss.  Callers must retain it in the
     /// compact fragment or surface this exact terminal; silently dropping it
@@ -2507,6 +2588,9 @@ impl fmt::Display for BuildError {
             }
             Self::Dangling { space, raw } => {
                 write!(formatter, "{space:?} coordinate {raw} is dangling")
+            }
+            Self::RecursiveType { raw } => {
+                write!(formatter, "compound type coordinate {raw} is recursively projected")
             }
             Self::InvalidDocumentationUtf8 { bytes } => {
                 write!(formatter, "documentation fact has {bytes} invalid UTF-8 bytes")
@@ -3167,7 +3251,11 @@ fn validate_type(builder: &IrBuilder, ty: TypeExpr) -> Result<(), BuildError> {
     match ty {
         TypeExpr::Concrete(concrete) => validate_concrete_type(builder, concrete),
         TypeExpr::Computed(computed) => validate_computed_type(builder, computed),
-        TypeExpr::Unknown(_) => Ok(()),
+        TypeExpr::Unknown(unknown) => unknown
+            .spelling
+            .map(|spelling| atom(builder, spelling))
+            .transpose()
+            .map(|_| ()),
     }
 }
 
@@ -3213,7 +3301,10 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
             }
             Ok(())
         }
-        ConcreteType::Union(list) | ConcreteType::Intersection(list) => {
+        ConcreteType::Union(list)
+        | ConcreteType::Intersection(list)
+        | ConcreteType::ImplTrait(list)
+        | ConcreteType::DynTrait(list) => {
             validate_type_list(builder, list)
         }
         ConcreteType::Function {

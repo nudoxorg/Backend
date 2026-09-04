@@ -317,7 +317,7 @@ fn template_literal_mapped_and_conditional_records_commit_their_tags() {
     assert!(facts(&v).iter().any(|f| {
         f.owner.raw == lit_owner
             && f.record.tag == SemanticTypeTag::TemplateLiteral
-            && f.record.children.length == 1
+            && f.record.children.length == 3
     }));
     assert!(facts(&v).iter().any(|f| {
         f.owner.raw == branch_owner

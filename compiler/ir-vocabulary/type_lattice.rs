@@ -545,17 +545,21 @@ pub struct SemanticTypeChild<'bytes> {
     pub target: TypeChildTarget,
     /// Member or label spelling, where the parent tag demands one.
     pub name: Option<&'bytes [u8]>,
-    /// Anonymous-record member flags: bit 0 optional, bit 1 readonly.
+    /// Tag-owned child modifiers. Bit 0 is optional (tuple, function, or
+    /// object member), bit 1 is readonly (object member), bit 2 is rest
+    /// (tuple or function parameter).
     pub flags: u8,
 }
 
 impl SemanticTypeChild<'_> {
-    /// Anonymous-record member optional flag.
+    /// Optional tuple/function/object-member flag.
     pub const FLAG_OPTIONAL: u8 = 1 << 0;
     /// Anonymous-record member readonly flag.
     pub const FLAG_READONLY: u8 = 1 << 1;
+    /// Rest tuple/function-parameter flag.
+    pub const FLAG_REST: u8 = 1 << 2;
     /// Every flag bit the closed grammar defines.
-    pub const FLAG_ALL: u8 = Self::FLAG_OPTIONAL | Self::FLAG_READONLY;
+    pub const FLAG_ALL: u8 = Self::FLAG_OPTIONAL | Self::FLAG_READONLY | Self::FLAG_REST;
 }
 
 /// Which record cell carried a tag-foreign value.
@@ -730,7 +734,8 @@ impl SemanticTypeRecord<'_> {
                 ChildCountLaw { min: 1, max: 1 }
             }
             SemanticTypeTag::Conditional => ChildCountLaw { min: 4, max: 4 },
-            SemanticTypeTag::Mapped => ChildCountLaw { min: 2, max: 2 },
+            // constraint, optional key-remap (`as`), value
+            SemanticTypeTag::Mapped => ChildCountLaw { min: 2, max: 3 },
             SemanticTypeTag::Apply => ChildCountLaw {
                 min: 1,
                 max: u32::MAX,
@@ -748,8 +753,7 @@ impl SemanticTypeRecord<'_> {
                 min: 0,
                 max: u32::MAX,
             },
-            SemanticTypeTag::SelfType
-            | SemanticTypeTag::Never
+            SemanticTypeTag::Never
             | SemanticTypeTag::Any
             | SemanticTypeTag::Unknown
             | SemanticTypeTag::Nominal
@@ -794,6 +798,28 @@ impl SemanticTypeRecord<'_> {
             | SemanticTypeTag::TemplateLiteral => {
                 self.require_no_cells()?;
             }
+            // `Self` needs no spelling, but TypeScript's distinct `this`
+            // type must survive the common row so language policy can render
+            // it without pretending it is Rust `Self`.
+            SemanticTypeTag::SelfType => {
+                if self.payload0 != 0 {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                }
+                if self.payload1 != 0 {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload1,
+                        actual: self.payload1,
+                    });
+                }
+                self.check_cell(TypeCell::Text, CellLaw::Optional, self.text.is_some())?;
+                self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
+                self.check_cell(TypeCell::Nominal, CellLaw::Forbidden, self.nominal.is_some())?;
+            }
             SemanticTypeTag::Primitive => self.validate_primitive(child_count)?,
             SemanticTypeTag::Unknown => {
                 let reason = TypeReason::try_from(self.payload0).map_err(|error| {
@@ -815,7 +841,16 @@ impl SemanticTypeRecord<'_> {
                 )?;
             }
             SemanticTypeTag::Nominal => {
-                self.check_cell(TypeCell::Text, CellLaw::Forbidden, self.text.is_some())?;
+                // Local nominals are resolved solely by their typed entity
+                // coordinate.  Foreign nominals additionally carry the
+                // authority-provided module-qualified display/path spelling;
+                // legacy fragments without it remain reopenable but cannot
+                // be rendered as an invented `foreign` name.
+                let text_law = match self.nominal {
+                    Some(NominalRef::External(_)) => CellLaw::Optional,
+                    Some(NominalRef::Local(_)) | None => CellLaw::Forbidden,
+                };
+                self.check_cell(TypeCell::Text, text_law, self.text.is_some())?;
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
                 self.check_cell(TypeCell::Nominal, CellLaw::Required, self.nominal.is_some())?;
             }
@@ -926,8 +961,8 @@ impl SemanticTypeRecord<'_> {
     /// Proves one pooled child against this row's tag at `position`.
     ///
     /// The tag owns every child fact: names only where the grammar demands
-    /// them, flags only under anonymous-record members, and text targets
-    /// only under template literals.
+    /// them, modifiers only under their matching structural parents, and text
+    /// targets only under template literals.
     pub fn validate_child(
         &self,
         position: u32,
@@ -945,8 +980,16 @@ impl SemanticTypeRecord<'_> {
         if name_required && child.name.is_none() {
             return Err(SemanticTypeFault::ChildNameRequired { tag, position });
         }
-        let flags_allowed = tag == SemanticTypeTag::AnonymousRecord;
-        if !flags_allowed && child.flags != 0 {
+        let allowed_flags = match tag {
+            SemanticTypeTag::AnonymousRecord => {
+                SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_READONLY
+            }
+            SemanticTypeTag::Tuple | SemanticTypeTag::FunctionPointer => {
+                SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST
+            }
+            _ => 0,
+        };
+        if child.flags & !allowed_flags != 0 {
             return Err(SemanticTypeFault::ChildFlagsForbidden {
                 tag,
                 position,

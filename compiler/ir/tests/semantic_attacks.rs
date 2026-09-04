@@ -418,3 +418,44 @@ fn every_semantic_structural_class_rejects_with_exact_operands() -> Result<(), T
     }
     Ok(())
 }
+
+#[test]
+fn reopened_extension_parameters_parse_mixed_optional_operands_sequentially() {
+    // count=2; T has no constraint and default=0; U has constraint=0 and
+    // no default; all three reference-list lanes are empty.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&2_u32.to_le_bytes());
+    payload.push(1);
+    payload.extend_from_slice(&1_u32.to_le_bytes());
+    payload.extend_from_slice(b"T");
+    payload.push(0);
+    payload.push(1);
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.push(1);
+    payload.extend_from_slice(&1_u32.to_le_bytes());
+    payload.extend_from_slice(b"U");
+    payload.push(1);
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.push(0);
+    for _ in 0..3 {
+        payload.extend_from_slice(&0_u32.to_le_bytes());
+    }
+    let pools = compiler_ir::reopen_extension_pools(&payload, 0, 1, 0)
+        .expect("mixed optional operands reopen");
+    assert_eq!(
+        pools.type_parameter(0).expect("first parameter"),
+        compiler_ir::DecodedTypeParameter {
+            name: b"T",
+            constraint: None,
+            default: Some(0),
+        }
+    );
+    assert_eq!(
+        pools.type_parameter(1).expect("second parameter"),
+        compiler_ir::DecodedTypeParameter {
+            name: b"U",
+            constraint: Some(0),
+            default: None,
+        }
+    );
+}

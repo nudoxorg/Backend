@@ -112,7 +112,7 @@ pub use semantic::{
     TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
     TypeListId, TypePairPayload, TypeParameter, TypeParameterListId, TypeQuadPayload, TypeQuery,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
-    UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
 };
 pub use semantic_data_view::{
     SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,

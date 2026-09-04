@@ -2,7 +2,7 @@
 
 use allocation_counter::{AllocationInfo, measure};
 use compiler_ir::{
-    BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
+    AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
     DocInput, EntityChangeKind, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
     LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot,
     StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
@@ -490,7 +490,9 @@ fn simple_ir(
 #[test]
 fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), compiler_ir::BuildError> {
     let mut builder = IrBuilder::new();
-    let ty = builder.intern_type(TypeExpr::Unknown(UnknownType::Unresolved))?;
+    let ty = builder.intern_type(TypeExpr::Unknown(UnknownType::new(
+        compiler_ir::UnknownReason::UnresolvedLocalName,
+    )))?;
     let versions = [version(1, 1)];
     builder.add_borrowed_tree(BorrowedTree {
         versions: &versions,
@@ -518,6 +520,21 @@ fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), compiler_ir::
             .is_some_and(|value| !value.is_computed() && value.concrete().is_none())
     );
     Ok(())
+}
+
+#[test]
+fn unknown_spelling_is_an_atom_coordinate_not_a_renderer_fallback() {
+    let mut builder = IrBuilder::new();
+    assert!(matches!(
+        builder.intern_type(TypeExpr::Unknown(
+            UnknownType::new(compiler_ir::UnknownReason::NoIrRepresentation)
+                .with_spelling(AtomId::new(0)),
+        )),
+        Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Atom,
+            raw: 0,
+        })
+    ));
 }
 
 #[test]

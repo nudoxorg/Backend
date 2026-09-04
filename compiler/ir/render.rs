@@ -9,7 +9,7 @@ use core::{fmt, str};
 use crate::{
     BuiltinType, ComputedType, ConcreteType, DocFragment, EntityId, Ir, ItemKind, ItemView,
     LinkTarget, LiteralType, MappedModifier, Mutability, ObjectMember, PropertyKey, TemplatePart,
-    TupleElementKind, TypeExpr, TypeId, TypeQuery, UnknownType, Visibility,
+    TupleElementKind, TypeExpr, TypeId, TypeQuery, Visibility,
 };
 
 const MAX_TYPE_DEPTH: u8 = 96;
@@ -233,7 +233,15 @@ fn write_type(output: &mut impl fmt::Write, ir: &Ir, id: TypeId, depth: u8) -> f
     match ty {
         TypeExpr::Concrete(concrete) => write_concrete_type(output, ir, concrete, depth),
         TypeExpr::Computed(computed) => write_computed_type(output, ir, computed, depth),
-        TypeExpr::Unknown(reason) => write!(output, "?{}", unknown_name(reason)),
+        TypeExpr::Unknown(unknown) => {
+            write!(output, "?{}", unknown_name(unknown.reason))?;
+            if let Some(spelling) = unknown.spelling {
+                write!(output, "(")?;
+                write_atom(output, ir.atom(spelling).ok_or(fmt::Error)?)?;
+                write!(output, ")")?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -345,6 +353,14 @@ fn write_concrete_type(
         }
         ConcreteType::Union(types) => write_type_list(output, ir, types, next, " | "),
         ConcreteType::Intersection(types) => write_type_list(output, ir, types, next, " & "),
+        ConcreteType::ImplTrait(types) => {
+            output.write_str("impl ")?;
+            write_type_list(output, ir, types, next, " + ")
+        }
+        ConcreteType::DynTrait(types) => {
+            output.write_str("dyn ")?;
+            write_type_list(output, ir, types, next, " + ")
+        }
     }
 }
 
@@ -801,11 +817,14 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::Any => "any",
         BuiltinType::Unknown => "unknown",
         BuiltinType::Int => "int",
+        BuiltinType::UInt => "uint",
         BuiltinType::None_ => "None",
         BuiltinType::List => "list",
         BuiltinType::Dict => "dict",
         BuiltinType::Set => "set",
         BuiltinType::FrozenSet => "frozenset",
+        BuiltinType::Complex => "complex",
+        BuiltinType::Decimal => "decimal",
         BuiltinType::Void => "void",
         BuiltinType::Number => "number",
         BuiltinType::BigInt => "bigint",
@@ -816,12 +835,15 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
     }
 }
 
-const fn unknown_name(reason: UnknownType) -> &'static str {
+const fn unknown_name(reason: crate::UnknownReason) -> &'static str {
     match reason {
-        UnknownType::Unannotated => "unannotated",
-        UnknownType::Unresolved => "unresolved",
-        UnknownType::Unsupported => "unsupported",
-        UnknownType::Inferred => "inferred",
-        UnknownType::Error => "error",
+        crate::UnknownReason::Unannotated => "unannotated",
+        crate::UnknownReason::DynamicallyTyped => "dynamic",
+        crate::UnknownReason::UnresolvedLocalName => "unresolved-local",
+        crate::UnknownReason::UnresolvedExternal => "unresolved-external",
+        crate::UnknownReason::TruncatedAtDepthLimit => "truncated",
+        crate::UnknownReason::OracleGap => "oracle-gap",
+        crate::UnknownReason::NoIrRepresentation => "no-ir-representation",
+        crate::UnknownReason::Error => "error",
     }
 }

@@ -170,12 +170,14 @@ impl TypeParamRows {
     }
 }
 
-/// One staged parameter: its declared name span plus the optional span of its
-/// annotated type.
+/// One staged parameter: its declared name, optional annotation, and the
+/// source-owned optional/rest modifier bits that are later written into the
+/// canonical function type row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ParamRow {
     name: Span,
     annotation: Option<Span>,
+    flags: u8,
 }
 
 /// Bounded staging for one signature's parameters. One slot beyond the fact
@@ -193,6 +195,7 @@ impl ParamRows {
             rows: [ParamRow {
                 name: Span::new(0, 0),
                 annotation: None,
+                flags: 0,
             }; MAX_FACT_CHILDREN + 1],
             len: 0,
         }
@@ -722,9 +725,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         )
         .typed(record)
         .with_extension(extension);
-        for ordinal in param_ordinals.iter().take(params.count()) {
+        for (ordinal, parameter) in param_ordinals.iter().zip(params.iter()) {
             fact = fact.child(ProductChildRole::FunctionParameter, *ordinal);
-            fact = fact.type_child(*ordinal, None, 0);
+            fact = fact.type_child(*ordinal, None, parameter.flags);
         }
         if let Some(target) = result_target {
             fact = fact.child(ProductChildRole::FunctionResult, target);
@@ -1003,22 +1006,26 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(template) = kind.as_ts_template_literal_type() {
-                let full = self.slice_span(span).unwrap_or(&[]);
-                let inner = full
-                    .strip_prefix(b"`")
-                    .and_then(|bytes| bytes.strip_suffix(b"`"))
-                    .unwrap_or(full);
                 let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
-                for substitution in template.types.iter() {
-                    let substitution_span = substitution.span();
-                    let target = self.child_target(
-                        substitution_span.start,
-                        substitution_span.end,
-                        next_depth,
-                    )?;
-                    cells.push_child(target, None, 0)?;
+                // OXC preserves one quasi before, between, and after every
+                // substitution. Keep that ordered alternating sequence in the
+                // canonical child lane; `record.text` cannot represent it.
+                for (position, quasi) in template.quasis.iter().enumerate() {
+                    let text = self.slice_span(quasi.span).ok_or(TypeScriptCollectError::Span {
+                        start: quasi.span.start,
+                        end: quasi.span.end,
+                    })?;
+                    cells.push_child(u32::MAX, Some(text), 0)?;
+                    if let Some(substitution) = template.types.get(position) {
+                        let substitution_span = substitution.span();
+                        let target = self.child_target(
+                            substitution_span.start,
+                            substitution_span.end,
+                            next_depth,
+                        )?;
+                        cells.push_child(target, None, 0)?;
+                    }
                 }
-                let _ = inner;
                 return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(intersection) = kind.as_ts_intersection_type() {
@@ -1045,6 +1052,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let element_span = element.span();
                     let mut label: Option<Span> = None;
                     let mut inner = element_span;
+                    let mut flags = 0_u8;
                     if let Some(position) = self
                         .node_index
                         .binary_search_by_key(
@@ -1063,12 +1071,15 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         if let Some(named) = wrapped_kind.as_ts_named_tuple_member() {
                             label = Some(named.label.span);
                             inner = named.element_type.span();
+                            if named.optional {
+                                flags |= SemanticTypeChild::FLAG_OPTIONAL;
+                            }
                         } else if let Some(optional) = wrapped_kind.as_ts_optional_type() {
-                            // Tuple elements carry no flag cell in the
-                            // lattice; optionality has no wire form here.
                             inner = optional.type_annotation.span();
+                            flags |= SemanticTypeChild::FLAG_OPTIONAL;
                         } else if let Some(rest) = wrapped_kind.as_ts_rest_type() {
                             inner = rest.type_annotation.span();
+                            flags |= SemanticTypeChild::FLAG_REST;
                         }
                     }
                     let target = self.child_target(inner.start, inner.end, next_depth)?;
@@ -1081,7 +1092,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         )?),
                         None => None,
                     };
-                    cells.push_child(target, name, 0)?;
+                    cells.push_child(target, name, flags)?;
                 }
                 return Ok(TypeOutcome::Cells(cells));
             }
@@ -1107,7 +1118,22 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         }
                         None => self.unannotated_fact(parameter.span())?,
                     };
-                    cells.push_child(target, None, 0)?;
+                    let flags = if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    };
+                    cells.push_child(target, None, flags)?;
+                }
+                if let Some(rest) = function_type.params.rest.as_ref() {
+                    let target = match rest.type_annotation.as_ref() {
+                        Some(annotation) => {
+                            let inner = annotation.type_annotation.span();
+                            self.child_target(inner.start, inner.end, next_depth)?
+                        }
+                        None => self.unannotated_fact(rest.span())?,
+                    };
+                    cells.push_child(target, None, SemanticTypeChild::FLAG_REST)?;
                 }
                 let returned = function_type.return_type.type_annotation.span();
                 let target = self.child_target(returned.start, returned.end, next_depth)?;
@@ -1155,6 +1181,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let mut constructor = TypeCells::leaf(SemanticTypeTag::Nominal);
                     constructor.record.nominal =
                         Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
+                    constructor.record.text = self.slice_span(name_span);
                     if reference.type_arguments.is_some() {
                         let constructor = self.synthetic_cells_fact(name_span, constructor)?;
                         let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
@@ -1205,6 +1232,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let constraint = mapped.constraint.span();
                 let constraint_target =
                     self.child_target(constraint.start, constraint.end, next_depth)?;
+                let name_as_target = mapped.name_type.as_ref().map(|name_type| {
+                    let span = name_type.span();
+                    self.child_target(span.start, span.end, next_depth)
+                }).transpose()?;
                 let value_target = match mapped.type_annotation.as_ref() {
                     Some(value) => {
                         let value_span = value.span();
@@ -1213,6 +1244,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     None => self.unannotated_fact(span)?,
                 };
                 cells.push_child(constraint_target, None, 0)?;
+                if let Some(name_as_target) = name_as_target {
+                    cells.push_child(name_as_target, None, 0)?;
+                }
                 cells.push_child(value_target, None, 0)?;
                 return Ok(TypeOutcome::Cells(cells));
             }
@@ -1255,9 +1289,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 return Ok(TypeOutcome::Cells(self.unrepresented(span)));
             }
             if kind.as_ts_this_type().is_some() {
-                return Ok(TypeOutcome::Cells(TypeCells::leaf(
-                    SemanticTypeTag::SelfType,
-                )));
+                let mut cells = TypeCells::leaf(SemanticTypeTag::SelfType);
+                cells.record.text = Some(&b"this"[..]);
+                return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(number) = kind.as_ts_number_keyword() {
                 let _ = number;
@@ -1452,6 +1486,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
                     })?;
                 }
                 let result = method
@@ -1777,6 +1816,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
                     })?;
                 }
                 if let Some(rest) = function.params.rest.as_ref() {
@@ -1786,6 +1830,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
                 let result = function
@@ -1877,6 +1922,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
                     })?;
                 }
                 let result = method
@@ -1957,6 +2007,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        flags: if parameter.optional {
+                            SemanticTypeChild::FLAG_OPTIONAL
+                        } else {
+                            0
+                        },
                     })?;
                 }
                 let result = value
@@ -2793,11 +2848,16 @@ fn intern_computed_tree<'source>(
         );
     }
     match tree {
-        TypeTree::This => intern_computed_leaf(
-            facts,
-            SemanticTypeRecord::leaf(SemanticTypeTag::SelfType),
-            owner,
-        ),
+        TypeTree::This => {
+            match registry.source_spelling(spell, b"this", owner) {
+                Some(spelling) => {
+                    let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::SelfType);
+                    record.text = Some(spelling);
+                    intern_computed_leaf(facts, record, owner)
+                }
+                None => intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner),
+            }
+        }
         TypeTree::TypeParameter { name } => {
             // A computed type parameter names the source spelling of its
             // declared generic parameter; the record text is sliced from
@@ -2885,21 +2945,44 @@ fn intern_computed_tree<'source>(
             intern_computed_row(registry, facts, record, owner, &children[..2])
         }
         TypeTree::TemplateLiteral { parts } => {
-            let mut children = [0_u32; MAX_TYPE_CHILDREN];
-            let mut child_count = 0;
-            let mut text = None;
-            for part in parts {
+            // The checker report owns strings, while staging deliberately
+            // borrows only the entered source lease. Resolve every literal
+            // segment before appending anything so an absent source spelling
+            // becomes one truthful OracleGap row rather than a half-built
+            // computed-child transaction.
+            let mut text_parts = [None; MAX_TYPE_CHILDREN];
+            if parts.len() > MAX_TYPE_CHILDREN {
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeChildCapacity,
+                ));
+            }
+            for (position, part) in parts.iter().enumerate() {
+                if let TemplatePart::Text { text } = part {
+                    let Some(source_text) = registry.source_spelling(spell, text.as_bytes(), owner) else {
+                        return intern_computed_leaf(
+                            facts,
+                            unknown_record(TypeReason::OracleGap),
+                            owner,
+                        );
+                    };
+                    text_parts[position] = Some(source_text);
+                }
+            }
+            let record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+            for (position, part) in parts.iter().enumerate() {
                 match part {
-                    TemplatePart::Text { text: value } => {
-                        text = registry
-                            .source_spelling(spell, value.as_bytes(), owner)
-                            .or(text);
-                    }
-                    TemplatePart::Type { r#type } => {
-                        let slot = children.get_mut(child_count).ok_or_else(|| {
+                    TemplatePart::Text { .. } => {
+                        let text = text_parts[position].ok_or_else(|| {
                             computed_fault(registry, owner, FactFault::TypeChildCapacity)
                         })?;
-                        *slot = intern_computed_tree(
+                        facts
+                            .computed_type_text_child(text)
+                            .map_err(|cause| computed_fault(registry, owner, cause))?;
+                    }
+                    TemplatePart::Type { r#type } => {
+                        let child = intern_computed_tree(
                             registry,
                             facts,
                             r#type,
@@ -2907,13 +2990,15 @@ fn intern_computed_tree<'source>(
                             depth.saturating_add(1),
                             spell,
                         )?;
-                        child_count += 1;
+                        facts
+                            .computed_type_child(child, None, 0)
+                            .map_err(|cause| computed_fault(registry, owner, cause))?;
                     }
                 }
             }
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
-            record.text = text;
-            intern_computed_row(registry, facts, record, owner, &children[..child_count])
+            facts
+                .intern_computed_type_row(owner, record)
+                .map_err(|cause| computed_fault(registry, owner, cause))
         }
         TypeTree::Tuple { elements } => {
             let children =
@@ -3107,6 +3192,7 @@ fn intern_computed_reference<'source>(
             let fragment = ExternalFragmentId::from_canonical_bytes(module_bytes);
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
+            record.text = registry.source_spelling(spell, name.as_bytes(), owner);
             intern_computed_leaf(facts, record, owner)?
         }
     };

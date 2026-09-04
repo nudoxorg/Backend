@@ -176,8 +176,11 @@ impl<'bytes> TypeFactLane<'bytes> {
     ) -> Result<(), TypeFactFault> {
         let counts = self.counts()?;
         let count = counts.declared;
-        let computed_count = counts.computed;
-        for (ordinal, input) in (0..count).zip(self.inputs.iter().chain(self.computed)) {
+        let total = if schema >= 2 { counts.total()? } else { count };
+        // Schema-2 declared and computed rows share a type-coordinate space.
+        // Validate all of it: checking only the declared prefix left every
+        // computed record as unchecked durable payload.
+        for (ordinal, input) in (0..total).zip(self.inputs.iter().chain(self.computed)) {
             let computed = schema >= 2 && ordinal >= count;
             if input.owner.raw >= entity_count {
                 return Err(TypeFactFault::Owner {
@@ -215,13 +218,12 @@ impl<'bytes> TypeFactLane<'bytes> {
                 if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                     child.target
                 {
-                    let total = count.saturating_add(if schema >= 2 { computed_count } else { 0 });
                     if target.raw >= total {
                         return Err(TypeFactFault::ChildTargetOutOfRange {
                             ordinal,
                             position,
                             target: target.raw,
-                            record_count: count,
+                            record_count: total,
                         });
                     }
                     if !computed && schema >= 2 && target.raw >= count {

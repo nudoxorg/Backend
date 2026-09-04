@@ -475,12 +475,21 @@ fn read_u32(bytes: &[u8], at: usize) -> Result<u32, ExtensionPoolFault> {
 fn skip_type_parameter(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPoolFault> {
     if bytes.get(cursor).copied() != Some(PRESENCE_SOME) {
         return Err(ExtensionPoolFault::Presence {
-            actual: bytes.first().copied().unwrap_or(PRESENCE_NONE),
+            actual: bytes.get(cursor).copied().unwrap_or(PRESENCE_NONE),
         });
     }
     let name_len = usize::try_from(read_u32(bytes, cursor + 1)?)
         .map_err(|_| ExtensionPoolFault::Truncated { needed: cursor })?;
-    Ok(cursor + 5 + name_len + 10)
+    let mut next = cursor
+        .checked_add(5)
+        .and_then(|at| at.checked_add(name_len))
+        .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
+    // Optional operands are variable-width: `None` occupies its tag only,
+    // while `Some` carries four more bytes. Reuse the same parser used by the
+    // public decoder rather than embedding a false fixed stride here.
+    let _ = read_optional(bytes, &mut next)?;
+    let _ = read_optional(bytes, &mut next)?;
+    Ok(next)
 }
 
 fn skip_ref_list(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPoolFault> {
