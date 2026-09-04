@@ -52,8 +52,17 @@
 //!   record instead of a fabricated shape.
 //! - Items `#[cfg]`-gated out of the crate never reach HIR, so they never
 //!   become facts; the lane proves only what rust-analyzer proved.
+//!
+//! Fold accounting (the typed reason is part of each bounded lane):
+//! | bound | typed reason | behavior at overflow |
+//! |---|---|---|
+//! | `MAX_TYPE_DEPTH` (16) | `TruncatedAtDepthLimit` | retain an unknown row with that reason |
+//! | `MAX_COMPOUND_CHILDREN` (8) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
+//! | `MAX_DEDUPED_FOREIGN_ROWS` (64) | memory-only dedup bound | the 65th and later leaves remain separate, semantically identical rows |
+//! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
+//! | computed rows (1024) | `ComputedRowCapacity` | not applicable: computed rows belong to the checker lane |
 
-use std::{sync::atomic::AtomicBool, vec::Vec};
+use std::{collections::HashMap, sync::atomic::AtomicBool, vec::Vec};
 
 use compiler_ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey, ForeignOrigin,
@@ -255,6 +264,8 @@ struct Emitter<'authority, 'analysis, 'source> {
     foreign_rows: Vec<(&'source [u8], u32)>,
     /// Macro invocation sites collected before emission.
     macro_sites: Vec<MacroSite<'source>>,
+    /// Declaration rows ordered by source start for logarithmic owner admission.
+    owner_order: Vec<usize>,
 }
 
 impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
@@ -277,6 +288,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             ordinals: Vec::new(),
             foreign_rows: Vec::new(),
             macro_sites: Vec::new(),
+            owner_order: Vec::new(),
         }
     }
 
@@ -287,6 +299,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.collect_macro_sites()?;
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
+        self.rebuild_owner_order();
         self.attach_macros()?;
         self.emit_occurrences()?;
         self.emit_docs(&declarations)?;
@@ -321,9 +334,17 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if needle.is_empty() || self.source.len() < needle.len() {
             return None;
         }
+        let first = needle[0];
         self.source
-            .windows(needle.len())
-            .position(|window| window == needle)
+            .iter()
+            .enumerate()
+            .filter(|(_, byte)| **byte == first)
+            .map(|(start, _)| start)
+            .find(|&start| {
+                self.source
+                    .get(start..start + needle.len())
+                    .is_some_and(|window| window == needle)
+            })
             .and_then(|start| {
                 let start = u32::try_from(start).ok()?;
                 let end = start.checked_add(u32::try_from(needle.len()).ok()?)?;
@@ -1170,11 +1191,33 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Picks the innermost pushed row whose span contains `span`.
     fn owner_of(&self, span: ByteSpan) -> Option<u32> {
-        self.rows
-            .iter()
-            .filter(|row| row.span.start <= span.start && span.end <= row.span.end)
-            .max_by_key(|row| row.span.start)
-            .map(|row| row.ordinal)
+        let mut low = 0;
+        let mut high = self.owner_order.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let row = &self.rows[self.owner_order[middle]];
+            if row.span.start <= span.start {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        self.owner_order[..low].iter().rev().find_map(|index| {
+            let row = &self.rows[*index];
+            (span.end <= row.span.end).then_some(row.ordinal)
+        })
+    }
+
+    /// Builds the source-ordered declaration index once, after all declaration
+    /// rows exist. Rows are nested or disjoint in the syntax tree; reverse
+    /// search therefore selects the innermost containing declaration while
+    /// avoiding a full scan for every occurrence.
+    fn rebuild_owner_order(&mut self) {
+        self.owner_order = (0..self.rows.len()).collect();
+        self.owner_order.sort_by_key(|index| {
+            let span = self.rows[*index].span;
+            (span.start, span.end)
+        });
     }
 
     /// Lowers a type against the fact ordinal that the caller will push next.
@@ -1659,37 +1702,38 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if self.macro_sites.is_empty() {
             return Ok(());
         }
-        let mut owners: Vec<u32> = Vec::new();
+        let mut owners: HashMap<u32, usize> = HashMap::new();
         let mut owned_atoms: Vec<Vec<u32>> = Vec::new();
-        let mut spellings: Vec<(&'source [u8], u32)> = Vec::new();
+        let mut spellings: HashMap<&'source [u8], u32> = HashMap::new();
         for site in &self.macro_sites {
             let Some(owner) = self.owner_of(site.span) else {
                 continue;
             };
-            let interned = match spellings.iter().find(|(known, _)| *known == site.spelling) {
-                Some((_, atom)) => *atom,
+            let interned = match spellings.get(site.spelling) {
+                Some(atom) => *atom,
                 None => {
                     let atom = self
                         .facts
                         .intern_atom(site.spelling)
                         .map_err(|_| admission())?;
-                    spellings.push((site.spelling, atom));
+                    spellings.insert(site.spelling, atom);
                     atom
                 }
             };
-            match owners.iter().position(|known| *known == owner) {
-                Some(position) => {
-                    if let Some(atoms) = owned_atoms.get_mut(position) {
-                        atoms.push(interned);
-                    }
-                }
+            let position = match owners.get(&owner) {
+                Some(position) => *position,
                 None => {
-                    owners.push(owner);
-                    owned_atoms.push(vec![interned]);
+                    let position = owned_atoms.len();
+                    owners.insert(owner, position);
+                    owned_atoms.push(Vec::new());
+                    position
                 }
+            };
+            if let Some(atoms) = owned_atoms.get_mut(position) {
+                atoms.push(interned);
             }
         }
-        for (position, owner) in owners.iter().enumerate() {
+        for (owner, position) in owners {
             let Some(atoms) = owned_atoms.get(position) else {
                 continue;
             };
@@ -1697,12 +1741,12 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .facts
                 .intern_atom_list(atoms)
                 .map_err(|_| admission())?;
-            let Some(row) = self.rows.iter_mut().find(|row| row.ordinal == *owner) else {
+            let Some(row) = self.rows.iter_mut().find(|row| row.ordinal == owner) else {
                 continue;
             };
             row.extension.macros = list;
             let updated = row.extension;
-            let ordinal = usize::try_from(*owner).map_err(|_| admission())?;
+            let ordinal = usize::try_from(owner).map_err(|_| admission())?;
             self.facts
                 .attach_extension(ordinal, EmissionExtension::Rust(updated))
                 .map_err(|_| admission())?;
