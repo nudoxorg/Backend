@@ -61,7 +61,7 @@ pub use compiler_ir_vocabulary::{
     ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
     ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
     ChannelDirection, FunctionVariadicForm, ListSpan,
-    NativeCharacterRole, NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
+    NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
     PackageLineageFault, PooledListError,
     PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
     ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
@@ -121,6 +121,16 @@ pub use reader::{
     CoreSemanticEntity, IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows,
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
 };
+pub use semantic_image::{
+    encode_full_semantic_image, full_semantic_image_len, CoreAuthorityFault,
+    CoreAuthorityPlane, CoreProvenanceFault, CoreProvenanceIdentityField,
+    CoreSemanticImageFault, CoreSemanticImageField, ExtensionPlanFault,
+    FullEntityFault, FullPlanError, FullSemanticImageError, FullSemanticImageFault,
+    FullSemanticImageField, FullSemanticImageIdentityField, GraphPlanFault,
+    DirectoryKind, ScopeComponent, SemanticImageEncodeError, SemanticImageIdentity,
+    SemanticImageReopenError, SemanticImageView, TerminalPoolDomain,
+    TerminalPoolFault,
+};
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
@@ -138,7 +148,7 @@ pub use semantic::{
     LinkTarget, LiteralType,
     CorePayloadCoverage, CorePayloadHash, CorePayloadPlane,
     DeclarationLinkTarget, MappedModifier,
-    Mutability, ObjectMember, ObjectMemberListId, OptionalId,
+    Mutability, NativeCharacterRole, ObjectMember, ObjectMemberListId, OptionalId,
     PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
     RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
     SparseColumnView, StorageColumns, TemplatePart, TemplatePartListId,

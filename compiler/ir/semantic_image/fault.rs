@@ -8,7 +8,7 @@ use super::wire::DirectoryKind;
 
 /// Named core-image field retained by every structural fault.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreSemanticImageField {
+pub enum CoreSemanticImageField {
     Header,
     Authority,
     Provenance,
@@ -28,7 +28,7 @@ pub(crate) enum CoreSemanticImageField {
 
 /// Closed authority mismatch retained by a core row admission failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreAuthorityFault {
+pub enum CoreAuthorityFault {
     Parentage { parentage: u8, parent: u32 },
     SourceAvailability { source: u8, source_file: u8, has_source: bool },
     Availability { plane: CoreAuthorityPlane, claimed: FactAvailability, present: bool },
@@ -36,13 +36,13 @@ pub(crate) enum CoreAuthorityFault {
 
 /// Named authority plane retained by a core-image mismatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreAuthorityPlane {
+pub enum CoreAuthorityPlane {
     Visibility,
 }
 
 /// Closed image-provenance mismatch retained without a textly explanation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreProvenanceFault {
+pub enum CoreProvenanceFault {
     AuthorityProfile { authority: [u8; 2], recipe: [u8; 2] },
     RecipeStage { observed: u8 },
     RecipeTool { observed: u8 },
@@ -53,7 +53,7 @@ pub(crate) enum CoreProvenanceFault {
 
 /// Exact image-level identity cell rejected during provenance decoding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoreProvenanceIdentityField {
+pub enum CoreProvenanceIdentityField {
     Source,
     Recipe,
     Toolchain,
@@ -62,7 +62,7 @@ pub(crate) enum CoreProvenanceIdentityField {
 
 /// One retained package/file scope component.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ScopeComponent {
+pub enum ScopeComponent {
     Ecosystem,
     Package,
     Path,
@@ -70,7 +70,7 @@ pub(crate) enum ScopeComponent {
 
 /// Exact rejection from writing or reopening a portable core image.
 #[derive(Debug, Error)]
-pub(crate) enum CoreSemanticImageFault {
+pub enum CoreSemanticImageFault {
     #[error("core semantic image output needs {required} bytes but only {actual} were supplied")]
     OutputTooShort { required: usize, actual: usize },
     #[error("core semantic image length overflow while measuring {field:?}")]

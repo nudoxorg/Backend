@@ -14,14 +14,14 @@ use super::super::typed::TypedPlanError;
 
 /// Terminal list domains remain outside the recursive type dependency graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TerminalPoolDomain {
+pub enum TerminalPoolDomain {
     EntityList,
     Documentation,
 }
 
 /// Exact terminal-list planner rejection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TerminalPoolFault {
+pub enum TerminalPoolFault {
     GeometryOverflow { domain: TerminalPoolDomain, rows: usize },
     KeyLengthOverflow { domain: TerminalPoolDomain, row: u32 },
     MissingRow { domain: TerminalPoolDomain, row: u32, count: u32 },
@@ -30,7 +30,7 @@ pub(super) enum TerminalPoolFault {
 
 /// Exact full-entity row planning rejection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FullEntityFault {
+pub enum FullEntityFault {
     GeometryOverflow { rows: usize },
     MissingEntity { entity: EntityId, count: u32 },
     KeyLengthOverflow { entity: EntityId },
@@ -39,7 +39,7 @@ pub(super) enum FullEntityFault {
 /// Exact graph-plan rejection. It preserves graph coordinates as diagnostics,
 /// but never uses them to decide canonical output order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum GraphPlanFault {
+pub enum GraphPlanFault {
     GeometryOverflow { rows: usize },
     MissingLink { link: LinkId, count: u32 },
     MissingOccurrence { occurrence: u32, count: u32 },
@@ -55,7 +55,7 @@ pub(super) enum GraphPlanFault {
 /// operand prevents a generic tagged-union error from erasing which of the
 /// seven named sparse planes was malformed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ExtensionPlanFault {
+pub enum ExtensionPlanFault {
     GeometryOverflow { language: Language, rows: usize },
     KeyLengthOverflow { language: Language, fact: u32 },
     MissingFact { language: Language, fact: u32, count: u32 },
@@ -81,7 +81,7 @@ pub(super) enum ExtensionPlanFault {
 /// Full planner failure keeps common-plan, typed-graph, terminal-pool, entity,
 /// and graph causes distinct rather than collapsing them to an image error.
 #[derive(Debug)]
-pub(super) enum FullPlanError {
+pub enum FullPlanError {
     Core(CoreSemanticImageFault),
     Wire(FullSemanticImageFault),
     Typed(TypedPlanError),
@@ -129,7 +129,7 @@ impl From<ExtensionPlanFault> for FullPlanError {
 }
 
 /// Flat, domain-framed key arena for one terminal pooled-list space.
-pub(super) struct TerminalPoolPlan {
+pub(crate) struct TerminalPoolPlan {
     pub(in crate::semantic_image) order: Vec<u32>,
     remap: Vec<u32>,
     pub(in crate::semantic_image) key_bytes: Vec<u8>,
@@ -137,7 +137,7 @@ pub(super) struct TerminalPoolPlan {
 }
 
 impl TerminalPoolPlan {
-    pub(super) fn canonical(&self, raw: u32, domain: TerminalPoolDomain) -> Result<u32, TerminalPoolFault> {
+    pub(crate) fn canonical(&self, raw: u32, domain: TerminalPoolDomain) -> Result<u32, TerminalPoolFault> {
         self.remap.get(usize::try_from(raw).map_err(|_| TerminalPoolFault::GeometryOverflow {
             domain,
             rows: self.remap.len(),
@@ -151,7 +151,7 @@ impl TerminalPoolPlan {
         })
     }
 
-    pub(super) fn key(&self, raw: u32, domain: TerminalPoolDomain) -> Result<&[u8], TerminalPoolFault> {
+    pub(crate) fn key(&self, raw: u32, domain: TerminalPoolDomain) -> Result<&[u8], TerminalPoolFault> {
         let index = usize::try_from(raw).map_err(|_| TerminalPoolFault::GeometryOverflow {
             domain,
             rows: self.key_ranges.len(),
@@ -174,7 +174,7 @@ impl TerminalPoolPlan {
         self.key_bytes.get(start..end).ok_or(TerminalPoolFault::KeyLengthOverflow { domain, row: raw })
     }
 
-    pub(super) fn from_key_arena(
+    pub(crate) fn from_key_arena(
         domain: TerminalPoolDomain,
         key_bytes: Vec<u8>,
         key_ranges: Vec<ArenaRange>,
@@ -251,7 +251,7 @@ fn key_after_validation<'a>(bytes: &'a [u8], ranges: &[ArenaRange], raw: u32) ->
 /// remains the core declaration-identity order; this value is its semantic
 /// row key for future full wire validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FullEntityRow {
+pub(crate) struct FullEntityRow {
     pub(in crate::semantic_image) entity: EntityId,
     /// Canonical core entity coordinate, whose ordering is the exact
     /// declaration identity order retained by the common image plan.
@@ -262,16 +262,14 @@ pub(super) struct FullEntityRow {
     pub(in crate::semantic_image) attributes: u32,
 }
 
-pub(super) struct FullEntityPlan {
+pub(crate) struct FullEntityPlan {
     pub(in crate::semantic_image) rows: Vec<FullEntityRow>,
-    pub(in crate::semantic_image) key_bytes: Vec<u8>,
-    pub(in crate::semantic_image) key_ranges: Vec<ArenaRange>,
 }
 
 /// Canonical relation rows, plus only the raw-to-canonical map necessary for
 /// occurrence evidence. Identical occurrence evidence has no map because its
 /// independent multiplicity is deliberately retained.
-pub(super) struct GraphPlan {
+pub(crate) struct GraphPlan {
     pub(in crate::semantic_image) relations: Vec<LinkId>,
     pub(in crate::semantic_image) relation_remap: Vec<u32>,
     pub(in crate::semantic_image) occurrences: Vec<LinkOccurrenceId>,
@@ -280,7 +278,7 @@ pub(super) struct GraphPlan {
 /// One entity-to-canonical-fact sparse binding. Both coordinates are already
 /// canonical image lanes, never builder/interner ordinals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ExtensionBinding {
+pub(crate) struct ExtensionBinding {
     pub(in crate::semantic_image) entity: u32,
     pub(in crate::semantic_image) fact: u32,
 }
@@ -288,7 +286,7 @@ pub(super) struct ExtensionBinding {
 /// Flat canonical facts and sparse entity bindings for one named language
 /// plane. Keys are retained only for later explicit wire rows/validation;
 /// facts remain typed values in the owned IR and are never serialized here.
-pub(super) struct ExtensionPlanePlan {
+pub(crate) struct ExtensionPlanePlan {
     pub(in crate::semantic_image) order: Vec<u32>,
     pub(in crate::semantic_image) bindings: Vec<ExtensionBinding>,
     pub(in crate::semantic_image) key_bytes: Vec<u8>,
@@ -296,7 +294,7 @@ pub(super) struct ExtensionPlanePlan {
 }
 
 /// Seven named plans, intentionally not an erased per-row payload union.
-pub(super) struct ExtensionPlans {
+pub(crate) struct ExtensionPlans {
     pub(in crate::semantic_image) typescript: ExtensionPlanePlan,
     pub(in crate::semantic_image) csharp: ExtensionPlanePlan,
     pub(in crate::semantic_image) go: ExtensionPlanePlan,

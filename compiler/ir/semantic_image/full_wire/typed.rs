@@ -18,26 +18,26 @@ use crate::semantic_image::{full::FullPlanError, typed::{
 /// typed list/type address; `edge_start..edge_start + edge_count` is a
 /// contiguous ordered role run in [`FullTypedPlan::edges`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FullTypedPlanNode {
-    pub(super) domain: u8,
-    pub(super) coordinate: u32,
-    pub(super) edge_start: u32,
-    pub(super) edge_count: u32,
+pub(crate) struct FullTypedPlanNode {
+    pub(crate) domain: u8,
+    pub(crate) coordinate: u32,
+    pub(crate) edge_start: u32,
+    pub(crate) edge_count: u32,
 }
 
 /// One explicit role-bearing portable typed edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FullTypedPlanEdge {
-    pub(super) role: u8,
-    pub(super) role_index: u32,
-    pub(super) target: FullTypedPlanTarget,
+pub(crate) struct FullTypedPlanEdge {
+    pub(crate) role: u8,
+    pub(crate) role_index: u32,
+    pub(crate) target: FullTypedPlanTarget,
 }
 
 /// A canonical endpoint in the generic typed graph.  Every variant carries
 /// a coordinate in its own canonical domain; a bare integer is impossible at
 /// this boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FullTypedPlanTarget {
+pub(crate) enum FullTypedPlanTarget {
     Node { domain: u8, coordinate: u32 },
     Atom(u32),
     Entity(u32),
@@ -46,7 +46,7 @@ pub(super) enum FullTypedPlanTarget {
 }
 
 impl FullTypedPlanTarget {
-    pub(super) const fn tag(self) -> u8 {
+    pub(crate) const fn tag(self) -> u8 {
         match self {
             Self::Node { .. } => 0,
             Self::Atom(_) => 1,
@@ -56,14 +56,14 @@ impl FullTypedPlanTarget {
         }
     }
 
-    pub(super) const fn domain(self) -> u8 {
+    pub(crate) const fn domain(self) -> u8 {
         match self {
             Self::Node { domain, .. } => domain,
             Self::Atom(_) | Self::Entity(_) | Self::External(_) | Self::Scalar(_) => 0,
         }
     }
 
-    pub(super) const fn low(self) -> u32 {
+    pub(crate) const fn low(self) -> u32 {
         match self {
             Self::Node { coordinate, .. }
             | Self::Atom(coordinate)
@@ -76,7 +76,7 @@ impl FullTypedPlanTarget {
         }
     }
 
-    pub(super) const fn high(self) -> u32 {
+    pub(crate) const fn high(self) -> u32 {
         match self {
             Self::Node { .. } | Self::Atom(_) | Self::Entity(_) | Self::External(_) => 0,
             Self::Scalar(value) => {
@@ -90,13 +90,13 @@ impl FullTypedPlanTarget {
 /// Pre-admitted canonical rows for both typed directories.  The writer only
 /// iterates these vectors and writes little-endian primitives, so no fallible
 /// lookup remains after the caller output is observed.
-pub(super) struct FullTypedPlan {
-    pub(super) nodes: Vec<FullTypedPlanNode>,
-    pub(super) edges: Vec<FullTypedPlanEdge>,
+pub(crate) struct FullTypedPlan {
+    pub(crate) nodes: Vec<FullTypedPlanNode>,
+    pub(crate) edges: Vec<FullTypedPlanEdge>,
 }
 
 impl FullTypedPlan {
-    pub(super) fn build(typed: &TypedDependencyPlan<'_>) -> Result<Self, FullPlanError> {
+    pub(crate) fn build(typed: &TypedDependencyPlan<'_>) -> Result<Self, FullPlanError> {
         let node_count = typed.wire_nodes().len();
         let mut nodes = Vec::with_capacity(node_count);
         let mut edges = Vec::new();
@@ -130,7 +130,7 @@ impl FullTypedPlan {
         Ok(Self { nodes, edges })
     }
 
-    pub(super) fn node_bytes_len(&self) -> Result<usize, FullSemanticImageFault> {
+    pub(crate) fn node_bytes_len(&self) -> Result<usize, FullSemanticImageFault> {
         self.nodes
             .len()
             .checked_mul(TYPED_NODE_ROW_BYTES)
@@ -139,7 +139,7 @@ impl FullTypedPlan {
             })
     }
 
-    pub(super) fn edge_bytes_len(&self) -> Result<usize, FullSemanticImageFault> {
+    pub(crate) fn edge_bytes_len(&self) -> Result<usize, FullSemanticImageFault> {
         self.edges
             .len()
             .checked_mul(TYPED_EDGE_ROW_BYTES)
@@ -174,10 +174,10 @@ fn remap_edge(
 /// Closed stable wire tags for every role.  The `u32` index is a separate
 /// cell: widening source list lengths cannot silently consume discriminator
 /// bits or change a tag's interpretation.
-pub(super) const fn wire_role(role: TypedEdgeRole) -> (u8, u32) {
+pub(crate) fn wire_role(role: TypedEdgeRole) -> (u8, u32) {
     match role {
         TypedEdgeRole::TypeTag => (0, 0),
-        TypedEdgeRole::TypeField(index) => (1, index),
+        TypedEdgeRole::TypeField(index) => (1, u32::from(index)),
         TypedEdgeRole::ListElement(index) => (2, index),
         TypedEdgeRole::TupleLabel(index) => (3, index),
         TypedEdgeRole::TupleType(index) => (4, index),
@@ -206,10 +206,10 @@ pub(super) const fn wire_role(role: TypedEdgeRole) -> (u8, u32) {
 /// Decodes a role tag after the enclosing full-image validator checked the
 /// surrounding node grammar.  Keeping it closed makes a future borrowed
 /// reader reject a new producer tag rather than treating it as a list field.
-pub(super) const fn role_from_wire(tag: u8, index: u32) -> Option<TypedEdgeRole> {
+pub(crate) fn role_from_wire(tag: u8, index: u32) -> Option<TypedEdgeRole> {
     Some(match tag {
         0 if index == 0 => TypedEdgeRole::TypeTag,
-        1 => TypedEdgeRole::TypeField(index),
+        1 => TypedEdgeRole::TypeField(u8::try_from(index).ok()?),
         2 => TypedEdgeRole::ListElement(index),
         3 => TypedEdgeRole::TupleLabel(index),
         4 => TypedEdgeRole::TupleType(index),

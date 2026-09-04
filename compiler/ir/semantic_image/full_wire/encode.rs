@@ -13,21 +13,21 @@ use super::{
 };
 
 /// Measures the complete portable semantic image without touching caller
-/// bytes.  It remains crate-private until full validation and a borrowed
-/// `SemanticReader` view land in the same public transaction.
-pub(super) fn full_semantic_image_len(
+/// bytes. All writer failure is confined to the measured planning phase;
+/// callers can reopen the resulting prefix as [`super::SemanticImageView`].
+pub fn full_semantic_image_len(
     ir: &crate::Ir,
-) -> Result<usize, super::full::FullPlanError> {
+) -> Result<usize, crate::semantic_image::SemanticImageEncodeError> {
     Ok(FullSemanticImagePlan::build(ir)?.required)
 }
 
 /// Writes a fully prepared portable image. All fallible preparation occurs
 /// before `output` is borrowed mutably; a short caller buffer is unchanged and
 /// a successful prepared plan writes exactly its measured prefix.
-pub(super) fn encode_full_semantic_image(
+pub fn encode_full_semantic_image(
     ir: &crate::Ir,
     output: &mut [u8],
-) -> Result<usize, super::full::FullPlanError> {
+) -> Result<usize, crate::semantic_image::SemanticImageEncodeError> {
     let plan = FullSemanticImagePlan::build(ir)?;
     if output.len() < plan.required {
         return Err(FullSemanticImageFault::OutputTooShort {

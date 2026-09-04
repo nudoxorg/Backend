@@ -1,6 +1,6 @@
 //! Unrun hostile falsifiers for the subordinate portable core-image grammar.
 
-use alloc::vec;
+use alloc::{vec, vec::Vec};
 
 use crate::{
     BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,

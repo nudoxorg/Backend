@@ -7,9 +7,8 @@
 
 pub(crate) use super::decode::{decode_entity, decode_image_facts};
 pub(crate) use super::fault::{
-    CoreAuthorityFault, CoreAuthorityPlane, CoreProvenanceFault,
-    CoreProvenanceIdentityField, CoreSemanticImageFault, CoreSemanticImageField,
-    ScopeComponent,
+    CoreAuthorityFault, CoreAuthorityPlane, CoreSemanticImageFault,
+    CoreSemanticImageField,
 };
 pub(crate) use super::wire::{
     get_u16, get_u32, put_u16, put_u32, read_array, CoreImageLayout, DirectoryKind,

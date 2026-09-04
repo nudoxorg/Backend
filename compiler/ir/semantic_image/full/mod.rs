@@ -1,11 +1,9 @@
 //! Private full-image canonical preparation.
 //!
-//! This is intentionally not a reader or wire grammar. It joins only the
-//! common planes whose canonical coordinates are now known: recursive typed
-//! pools, terminal entity/docs lists, complete entity pooled references, and
-//! graph relations plus occurrence authority. The seven extension planes and
-//! their remapped fact pools must join before any full image capability can be
-//! exposed.
+//! This is intentionally not a reader or wire grammar. It prepares the
+//! coordinate-free inputs for every full-image plane: recursive typed pools,
+//! terminal entity/docs lists, complete entity pooled references, graph
+//! evidence and occurrence authority, and the seven sparse extension planes.
 
 mod entities;
 mod extensions;
@@ -21,31 +19,36 @@ use crate::Ir;
 use super::typed::TypedDependencyPlan;
 use super::full_wire::FullTypedPlan;
 
-pub(super) use model::{ExtensionBinding, ExtensionPlanePlan, FullPlanError};
+pub(crate) use model::{
+    ExtensionBinding, ExtensionPlanePlan, ExtensionPlans, FullEntityPlan,
+    FullEntityRow, GraphPlan,
+};
+pub use model::{
+    ExtensionPlanFault, FullEntityFault, FullPlanError, GraphPlanFault,
+    TerminalPoolDomain, TerminalPoolFault,
+};
 
 use graph::GraphPlanBuildError;
 use lists::CoreTerminalError;
-use model::{ExtensionPlans, FullEntityPlan, GraphPlan};
 use lists::TerminalPools;
 
 /// Measured private plan for every completed common full-image plane.
-pub(super) struct FullSemanticPlan<'image> {
-    pub(super) typed: TypedDependencyPlan<'image>,
-    /// Explicit canonical generic type/list rows for the future complete wire.
+pub(crate) struct FullSemanticPlan<'image> {
+    pub(crate) typed: TypedDependencyPlan<'image>,
+    /// Explicit canonical generic type/list rows for the complete wire.
     /// They are prepared with the rest of the transaction so no writer has to
     /// inspect native `TypeExpr` storage after caller output is mutable.
-    pub(super) typed_wire: FullTypedPlan,
-    pub(super) terminal: TerminalPools,
-    pub(super) entities: FullEntityPlan,
-    pub(super) graph: GraphPlan,
-    pub(super) extensions: ExtensionPlans,
+    pub(crate) typed_wire: FullTypedPlan,
+    pub(crate) terminal: TerminalPools,
+    pub(crate) entities: FullEntityPlan,
+    pub(crate) graph: GraphPlan,
+    pub(crate) extensions: ExtensionPlans,
 }
 
 impl<'image> FullSemanticPlan<'image> {
-    /// Canonicalizes every currently supported full common plane. It does not
-    /// expose a reader because language extension pools remain outside this
-    /// transaction.
-    pub(super) fn build(ir: &'image Ir) -> Result<Self, FullPlanError> {
+    /// Canonicalizes every full-image source plane before the writer borrows
+    /// caller output mutably.
+    pub(crate) fn build(ir: &'image Ir) -> Result<Self, FullPlanError> {
         let typed = TypedDependencyPlan::build(ir)?;
         let typed_wire = FullTypedPlan::build(&typed)?;
         let terminal = TerminalPools::build(ir, typed.canonical()).map_err(map_terminal)?;

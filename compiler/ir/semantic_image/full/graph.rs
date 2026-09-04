@@ -1,6 +1,6 @@
 //! Canonical relations and authority-observed graph evidence.
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use core::cmp::Ordering;
 
 use crate::{
@@ -36,7 +36,7 @@ struct OccurrenceFastKey {
 }
 
 impl GraphPlan {
-    pub(super) fn build(
+    pub(crate) fn build(
         ir: &Ir,
         canonical: &CanonicalFullPlan<'_>,
     ) -> Result<Self, GraphPlanBuildError> {
@@ -114,7 +114,7 @@ impl GraphPlan {
 }
 
 #[derive(Debug)]
-pub(super) enum GraphPlanBuildError {
+pub(crate) enum GraphPlanBuildError {
     Core(CoreSemanticImageFault),
     Graph(GraphPlanFault),
 }

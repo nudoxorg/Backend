@@ -6,7 +6,7 @@ use core::cmp::Ordering;
 use super::*;
 
 impl<'image> TypedDependencyPlan<'image> {
-    fn order_canonical_nodes(&mut self) -> Result<(), TypedPlanError> {
+    pub(crate) fn order_canonical_nodes(&mut self) -> Result<(), TypedPlanError> {
         let mut ordered = Vec::with_capacity(self.scratch.nodes.len());
         for node in self.scratch.nodes.iter().copied() {
             ordered.push((node, self.scratch.fingerprints[self.slot(node)?]));

@@ -9,7 +9,7 @@ use alloc::{vec, vec::Vec};
 
 use crate::{
     ArenaRange, CSharpFacts, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
-    ClangFacts, ClangStorageClass, EntityId, FactAvailability, GoFacts, Ir, JavaFacts,
+    ClangFacts, ClangStorageClass, FactAvailability, GoFacts, Ir, JavaFacts,
     Language, LanguageExtensionColumnView, LanguageExtensionsView, PythonFacts,
     PythonParameterKind, RustFacts, RustOwnership, SemanticImageAuthority, SourceSpan,
     TypeScriptFacts,
@@ -22,7 +22,7 @@ use super::{
 };
 
 impl ExtensionPlans {
-    pub(super) fn build(
+    pub(crate) fn build(
         ir: &Ir,
         typed: &TypedDependencyPlan<'_>,
         terminal: &TerminalPools,
@@ -60,12 +60,15 @@ fn plan_plane<Facts: Copy, Space>(
     let entities = &typed.canonical().core.entities;
     let mut binding_counts = vec![0_u32; fact_count];
     for entity in entities.iter().copied() {
-        if let Some(id) = plane.ids.get(entity).copied() {
-            let index = id.index();
+        if let Some(id) = plane.ids.get(entity) {
+            let raw_fact = id.raw;
+            let index = usize::try_from(raw_fact).map_err(|_| {
+                ExtensionPlanFault::GeometryOverflow { language, rows: fact_count }
+            })?;
             let count = binding_counts.get_mut(index).ok_or(ExtensionPlanFault::SparseBinding {
                 language,
                 entity,
-                fact: id.raw,
+                fact: raw_fact,
                 count: fact_count_u32,
             })?;
             *count = count.checked_add(1).ok_or(ExtensionPlanFault::GeometryOverflow {
@@ -94,12 +97,15 @@ fn plan_plane<Facts: Copy, Space>(
     let mut binding_entities = vec![0_u32; binding_len];
     let mut positions = binding_offsets[..fact_count].to_vec();
     for entity in entities.iter().copied() {
-        let Some(id) = plane.ids.get(entity).copied() else { continue };
-        let index = id.index();
+        let Some(id) = plane.ids.get(entity) else { continue };
+        let raw_fact = id.raw;
+        let index = usize::try_from(raw_fact).map_err(|_| {
+            ExtensionPlanFault::GeometryOverflow { language, rows: fact_count }
+        })?;
         let position = positions.get_mut(index).ok_or(ExtensionPlanFault::SparseBinding {
             language,
             entity,
-            fact: id.raw,
+            fact: raw_fact,
             count: fact_count_u32,
         })?;
         let end = *binding_offsets.get(index.checked_add(1).ok_or(
@@ -107,14 +113,14 @@ fn plan_plane<Facts: Copy, Space>(
         )?).ok_or(ExtensionPlanFault::SparseBinding {
             language,
             entity,
-            fact: id.raw,
+            fact: raw_fact,
             count: fact_count_u32,
         })?;
         if *position >= end {
             return Err(ExtensionPlanFault::SparseBinding {
                 language,
                 entity,
-                fact: id.raw,
+                fact: raw_fact,
                 count: fact_count_u32,
             }
             .into());
@@ -125,7 +131,7 @@ fn plan_plane<Facts: Copy, Space>(
         })?).ok_or(ExtensionPlanFault::SparseBinding {
             language,
             entity,
-            fact: id.raw,
+            fact: raw_fact,
             count: fact_count_u32,
         })?;
         *destination = canonical_entity;

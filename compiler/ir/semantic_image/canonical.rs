@@ -226,7 +226,7 @@ impl<'image> CanonicalFullPlan<'image> {
                 expected: external_count_wire,
                 observed: raw_wire,
             })?;
-            external_keys.push(external_key(target, &core)?);
+            external_keys.push(external_key(*target, &core)?);
         }
         let mut source_externals = (0..external_count)
             .map(|raw| {

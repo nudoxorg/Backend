@@ -1,5 +1,7 @@
 //! Unrun hostile falsifiers for canonical typed-pool planning.
 
+use alloc::vec::Vec;
+
 use crate::{
     BorrowedTree, BuiltinType, ConcreteType, CorePayloadHash,
     DeclarationFamilyId, EntityAuthorityFacts, EntityVersion, FactAvailability,

@@ -8,11 +8,23 @@
 
 mod fault;
 mod encode;
+mod extensions_decode;
+mod decode;
 mod plan;
 mod typed;
+mod typed_decode;
+mod validate;
+mod view;
 mod wire;
 
-pub(super) use fault::{FullSemanticImageFault, FullSemanticImageField};
-pub(super) use encode::{encode_full_semantic_image, full_semantic_image_len};
-pub(super) use typed::{FullTypedPlan, FullTypedPlanEdge, FullTypedPlanTarget};
-pub(super) use wire::{FullDirectoryKind, FullImageLayout};
+#[cfg(test)]
+mod tests;
+
+pub use fault::{
+    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    FullSemanticImageIdentityField,
+};
+pub use encode::{encode_full_semantic_image, full_semantic_image_len};
+pub use view::SemanticImageView;
+pub(crate) use typed::FullTypedPlan;
+pub use wire::FullDirectoryKind;

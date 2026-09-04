@@ -15,41 +15,44 @@ mod traverse;
 #[cfg(test)]
 mod tests;
 
-pub(super) use model::*;
+pub(crate) use model::*;
 
-pub(super) use traverse::{TypedDependencyPlan, TypedPlanError};
+pub(crate) use graph::for_each_edge;
+pub(crate) use traverse::{compare_role, target_tag, TypedDependencyPlan};
+pub use model::{TypedPlanFault, TypedPlanNode, TypedPlanTerminal};
+pub use traverse::TypedPlanError;
 
 // The full-image planner consumes only canonical coordinates from the typed
 // dependency subgraph.  It never reaches into the graph scratch or converts a
 // raw pool ordinal itself, so type-owned and terminal-only pool invariants
 // remain separate.
 impl<'image> TypedDependencyPlan<'image> {
-    pub(super) fn canonical_type(&self, id: crate::TypeId) -> Result<u32, TypedPlanError> {
+    pub(crate) fn canonical_type(&self, id: crate::TypeId) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::Type(id))
     }
 
-    pub(super) fn canonical_atom_list(
+    pub(crate) fn canonical_atom_list(
         &self,
         id: crate::AtomListId,
     ) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::AtomList(id))
     }
 
-    pub(super) fn canonical_type_list(
+    pub(crate) fn canonical_type_list(
         &self,
         id: crate::TypeListId,
     ) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::TypeList(id))
     }
 
-    pub(super) fn canonical_type_parameters(
+    pub(crate) fn canonical_type_parameters(
         &self,
         id: crate::TypeParameterListId,
     ) -> Result<u32, TypedPlanError> {
         self.canonical_node(model::TypedPlanNode::TypeParameters(id))
     }
 
-    pub(super) fn canonical(&self) -> &CanonicalFullPlan<'image> {
+    pub(crate) fn canonical(&self) -> &CanonicalFullPlan<'image> {
         &self.canonical
     }
 

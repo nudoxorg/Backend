@@ -6,7 +6,7 @@ use super::wire::FullDirectoryKind;
 
 /// Exact full-image lane retained by every portable grammar failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FullSemanticImageField {
+pub enum FullSemanticImageField {
     Header,
     Authority,
     Provenance,
@@ -24,11 +24,18 @@ pub(super) enum FullSemanticImageField {
     ExtensionBindings,
 }
 
+/// Exact content-identity cell whose domain tag failed to reopen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FullSemanticImageIdentityField {
+    StableFragment,
+    FragmentEntityFragment,
+}
+
 /// Full-image fault.  Every row/reference carries both its semantic lane and
 /// exact observed coordinate; no generic "invalid image" terminal erases the
 /// producer's source.
 #[derive(Debug, Error)]
-pub(super) enum FullSemanticImageFault {
+pub enum FullSemanticImageFault {
     #[error("full semantic image output needs {required} bytes but only {actual} were supplied")]
     OutputTooShort { required: usize, actual: usize },
     #[error("full semantic image length overflow while measuring {field:?}")]
@@ -53,6 +60,26 @@ pub(super) enum FullSemanticImageFault {
     Reference { field: FullSemanticImageField, row: u32, expected: u32, observed: u32 },
     #[error("full semantic image {field:?} row {row} has discriminant {observed}")]
     Discriminant { field: FullSemanticImageField, row: u32, observed: u8 },
+    #[error("full semantic image {field:?} row {row} has invalid {identity:?} content identity")]
+    ContentIdentity {
+        field: FullSemanticImageField,
+        row: u32,
+        identity: FullSemanticImageIdentityField,
+        #[source]
+        cause: heart_identity::ContentIdDecodeError,
+    },
+    #[error("full semantic image entity {row} has kind code {observed}")]
+    EntityKind { row: u32, observed: u16 },
+    #[error("full semantic image entity {row} has invalid source span {start}..{end}")]
+    SourceSpan { row: u32, start: u32, end: u32 },
+    #[error("full semantic image entity {row} has inconsistent authority plane {plane} (claimed {claimed}, present {present})")]
+    Authority { row: u32, plane: u8, claimed: u8, present: bool },
+    #[error("full semantic image entity {row} duplicates declaration identity at row {existing}")]
+    DuplicateIdentity { row: u32, existing: u32 },
+    #[error("full semantic image {field:?} row {row} duplicates canonical row {existing}")]
+    DuplicateCanonicalRow { field: FullSemanticImageField, row: u32, existing: u32 },
+    #[error("full semantic image entity {entity} has a local parent cycle through {parent}")]
+    ParentCycle { entity: u32, parent: u32 },
     #[error("full semantic image {field:?} row {row} has reserved byte {observed}")]
     Reserved { field: FullSemanticImageField, row: u32, observed: u8 },
     #[error("full semantic image {field:?} row {row} is not canonical after row {previous}")]
@@ -65,4 +92,15 @@ pub(super) enum FullSemanticImageFault {
     TypedDomain { node: u32, domain: u8 },
     #[error("full semantic image typed node {node} is semantically malformed")]
     TypedShape { node: u32 },
+}
+
+/// Exact composed reopening failure.  The core header/provenance grammar is
+/// reused verbatim by the full image, so its established fault remains a
+/// first-class cause rather than being recast as a generic full-row error.
+#[derive(Debug, Error)]
+pub enum FullSemanticImageError {
+    #[error(transparent)]
+    Core(#[from] super::super::fault::CoreSemanticImageFault),
+    #[error(transparent)]
+    Full(#[from] FullSemanticImageFault),
 }

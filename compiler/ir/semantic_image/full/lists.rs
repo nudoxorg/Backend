@@ -11,13 +11,13 @@ use crate::{ArenaRange, AtomId, DocFragment, DocId, EntityListId, Ir, LinkTarget
 use super::super::{canonical::CanonicalFullPlan, fault::CoreSemanticImageFault};
 use super::model::{TerminalPoolDomain, TerminalPoolFault, TerminalPoolPlan};
 
-pub(super) struct TerminalPools {
+pub(crate) struct TerminalPools {
     pub(in crate::semantic_image) members: TerminalPoolPlan,
     pub(in crate::semantic_image) docs: TerminalPoolPlan,
 }
 
 impl TerminalPools {
-    pub(super) fn build(
+    pub(crate) fn build(
         ir: &Ir,
         canonical: &CanonicalFullPlan<'_>,
     ) -> Result<Self, CoreTerminalError> {
@@ -27,11 +27,11 @@ impl TerminalPools {
         })
     }
 
-    pub(super) fn member(&self, id: EntityListId) -> Result<u32, TerminalPoolFault> {
+    pub(crate) fn member(&self, id: EntityListId) -> Result<u32, TerminalPoolFault> {
         self.members.canonical(id.raw, TerminalPoolDomain::EntityList)
     }
 
-    pub(super) fn docs(&self, id: DocId) -> Result<u32, TerminalPoolFault> {
+    pub(crate) fn docs(&self, id: DocId) -> Result<u32, TerminalPoolFault> {
         self.docs.canonical(id.raw, TerminalPoolDomain::Documentation)
     }
 }
@@ -39,7 +39,7 @@ impl TerminalPools {
 /// List construction can retain either an exact terminal-pool or common-plan
 /// reference cause without pretending they share the same invariant.
 #[derive(Debug)]
-pub(super) enum CoreTerminalError {
+pub(crate) enum CoreTerminalError {
     Core(CoreSemanticImageFault),
     Terminal(TerminalPoolFault),
 }

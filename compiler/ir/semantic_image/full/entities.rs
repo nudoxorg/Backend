@@ -7,13 +7,13 @@
 
 use alloc::vec::Vec;
 
-use crate::{ArenaRange, Ir};
+use crate::Ir;
 
 use super::super::typed::TypedDependencyPlan;
-use super::{FullEntityFault, FullEntityPlan, FullPlanError, TerminalPools};
+use super::{FullEntityFault, FullEntityPlan, FullEntityRow, FullPlanError, TerminalPools};
 
 impl FullEntityPlan {
-    pub(super) fn build(
+    pub(crate) fn build(
         ir: &Ir,
         typed: &TypedDependencyPlan<'_>,
         terminal: &TerminalPools,
@@ -23,8 +23,6 @@ impl FullEntityPlan {
         let entity_count_u32 = u32::try_from(entity_count)
             .map_err(|_| FullEntityFault::GeometryOverflow { rows: entity_count })?;
         let mut rows = Vec::with_capacity(entity_count);
-        let mut key_bytes = Vec::new();
-        let mut key_ranges = Vec::with_capacity(entity_count);
         for canonical_row in 0..entity_count {
             let entity = *canonical.core.entities.get(canonical_row).ok_or(
                 FullEntityFault::MissingEntity {
@@ -54,43 +52,8 @@ impl FullEntityPlan {
                 docs,
                 attributes,
             };
-            let start = key_bytes.len();
-            append_entity_key(&mut key_bytes, row);
-            let end = key_bytes.len();
-            key_ranges.push(ArenaRange {
-                start: u32::try_from(start)
-                    .map_err(|_| FullEntityFault::KeyLengthOverflow { entity })?,
-                len: u32::try_from(end.checked_sub(start).ok_or(
-                    FullEntityFault::KeyLengthOverflow { entity },
-                )?)
-                .map_err(|_| FullEntityFault::KeyLengthOverflow { entity })?,
-            });
             rows.push(row);
         }
-        Ok(Self { rows, key_bytes, key_ranges })
+        Ok(Self { rows })
     }
 }
-
-fn append_entity_key(out: &mut Vec<u8>, row: FullEntityRow) {
-    // The row is pinned to the already canonical exact declaration identity;
-    // this full-only suffix records every entity-owned pooled coordinate.
-    out.push(full_entity_row_tag());
-    out.extend_from_slice(&row.canonical_entity.to_le_bytes());
-    match row.semantic_type {
-        Some(semantic_type) => {
-            out.push(present_tag());
-            out.extend_from_slice(&semantic_type.to_le_bytes());
-        }
-        None => {
-            out.push(absent_tag());
-            out.extend_from_slice(&0_u32.to_le_bytes());
-        }
-    }
-    out.extend_from_slice(&row.members.to_le_bytes());
-    out.extend_from_slice(&row.docs.to_le_bytes());
-    out.extend_from_slice(&row.attributes.to_le_bytes());
-}
-
-const fn full_entity_row_tag() -> u8 { 0 }
-const fn absent_tag() -> u8 { 0 }
-const fn present_tag() -> u8 { 1 }

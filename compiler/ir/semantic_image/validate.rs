@@ -214,6 +214,7 @@ fn validate_atoms(bytes: &[u8], layout: CoreImageLayout) -> Result<(), CoreSeman
     )?;
     let mut expected_start = 0_usize;
     let mut previous: Option<&[u8]> = None;
+    let atom_bytes_wire = wire_usize(layout.atom_bytes, CoreSemanticImageField::AtomRange)?;
     for row in 0..layout.atom_rows {
         let row_wire = u32::try_from(row).map_err(|_| CoreSemanticImageFault::LengthOverflow {
             field: CoreSemanticImageField::AtomRange,
@@ -224,7 +225,7 @@ fn validate_atoms(bytes: &[u8], layout: CoreImageLayout) -> Result<(), CoreSeman
             CoreSemanticImageFault::Reference {
                 field: CoreSemanticImageField::AtomRange,
                 row: row_wire,
-                expected: wire_usize(layout.atom_bytes, CoreSemanticImageField::AtomRange)?,
+                expected: atom_bytes_wire,
                 observed: start_raw,
             }
         })?;
@@ -233,7 +234,7 @@ fn validate_atoms(bytes: &[u8], layout: CoreImageLayout) -> Result<(), CoreSeman
             CoreSemanticImageFault::Reference {
                 field: CoreSemanticImageField::AtomRange,
                 row: row_wire,
-                expected: wire_usize(layout.atom_bytes, CoreSemanticImageField::AtomRange)?,
+                expected: atom_bytes_wire,
                 observed: length_raw,
             }
         })?;

@@ -7,17 +7,17 @@ use crate::{ArenaRange, DeclarationIdentity, Ir};
 
 use super::*;
 
-pub(super) struct TypedDependencyPlan<'image> {
-    pub(super) canonical: CanonicalFullPlan<'image>,
-    counts: TypedPlanCounts,
+pub(crate) struct TypedDependencyPlan<'image> {
+    pub(crate) canonical: CanonicalFullPlan<'image>,
+    pub(crate) counts: TypedPlanCounts,
     bases: TypedPlanBases,
-    pub(super) scratch: TypedPlanScratch,
+    pub(crate) scratch: TypedPlanScratch,
 }
 
 /// Exact full-only planning failure. A common-plan failure remains its own
 /// typed error rather than becoming an opaque typed-pool diagnostic.
 #[derive(Debug)]
-pub(super) enum TypedPlanError {
+pub enum TypedPlanError {
     Core(CoreSemanticImageFault),
     Typed(TypedPlanFault),
 }
@@ -49,7 +49,7 @@ impl<'image> TypedDependencyPlan<'image> {
     /// Measures and canonicalizes the full type/list dependency subgraph.
     /// This owns only actual node, edge, and key scratch; no maximum geometry
     /// or per-child allocation is introduced.
-    pub(super) fn build(ir: &'image Ir) -> Result<Self, TypedPlanError> {
+    pub(crate) fn build(ir: &'image Ir) -> Result<Self, TypedPlanError> {
         let canonical = CanonicalFullPlan::build(ir)?;
         let counts = TypedPlanCounts::from_ir(ir)?;
         let bases = TypedPlanBases::new(counts.as_array())?;
@@ -113,7 +113,7 @@ impl<'image> TypedDependencyPlan<'image> {
         Ok(result)
     }
 
-    fn slot(&self, node: TypedPlanNode) -> Result<usize, TypedPlanFault> {
+    pub(crate) fn slot(&self, node: TypedPlanNode) -> Result<usize, TypedPlanFault> {
         usize::try_from(self.bases.slot(node, self.counts.as_array())?).map_err(|_| {
             TypedPlanFault::GeometryOverflow {
                 nodes: self.scratch.nodes.len(),
@@ -121,7 +121,7 @@ impl<'image> TypedDependencyPlan<'image> {
         })
     }
 
-    fn edge_range(&self, node: TypedPlanNode) -> Result<(usize, usize), TypedPlanFault> {
+    pub(crate) fn edge_range(&self, node: TypedPlanNode) -> Result<(usize, usize), TypedPlanFault> {
         let slot = self.slot(node)?;
         let start = *self
             .scratch
@@ -158,14 +158,14 @@ impl<'image> TypedDependencyPlan<'image> {
     /// The full-image writer consumes this already canonical node order.  It
     /// stays private to the semantic-image transaction: raw interner
     /// coordinates never escape as a portable image API.
-    pub(super) fn wire_nodes(&self) -> &[TypedPlanNode] {
+    pub(crate) fn wire_nodes(&self) -> &[TypedPlanNode] {
         &self.scratch.canonical_nodes
     }
 
     /// Borrows one source-ordered role-bearing edge run after validating the
     /// node coordinate against the measured graph.  The writer remaps every
     /// endpoint through the canonical plan before it emits a wire cell.
-    pub(super) fn wire_edges(
+    pub(crate) fn wire_edges(
         &self,
         node: TypedPlanNode,
     ) -> Result<&[TypedPlanEdge], TypedPlanError> {
@@ -183,14 +183,14 @@ impl<'image> TypedDependencyPlan<'image> {
     /// coordinate)` pair.  Generic typed edges use this rather than a global
     /// row ordinal, so the wire remains independently addressable by every
     /// typed list domain.
-    pub(super) fn wire_node_coordinate(
+    pub(crate) fn wire_node_coordinate(
         &self,
         node: TypedPlanNode,
     ) -> Result<(u8, u32), TypedPlanError> {
         Ok((node.domain().code(), self.canonical_node(node)?))
     }
 
-    fn build_postorder(&mut self) -> Result<(), TypedPlanFault> {
+    pub(crate) fn build_postorder(&mut self) -> Result<(), TypedPlanFault> {
         for start_index in 0..self.scratch.nodes.len() {
             let start = self.scratch.nodes[start_index];
             let start_slot = self.slot(start)?;
@@ -481,7 +481,7 @@ fn append_target(out: &mut Vec<u8>, tag: u8, fingerprint: [u8; 32]) {
     out.extend_from_slice(&fingerprint);
 }
 
-pub(super) fn target_tag(target: TypedPlanTarget) -> u8 {
+pub(crate) fn target_tag(target: TypedPlanTarget) -> u8 {
     match target {
         TypedPlanTarget::Node(_) => 0,
         TypedPlanTarget::Atom(_) => 1,
@@ -491,11 +491,11 @@ pub(super) fn target_tag(target: TypedPlanTarget) -> u8 {
     }
 }
 
-pub(super) fn compare_role(left: TypedEdgeRole, right: TypedEdgeRole) -> Ordering {
+pub(crate) fn compare_role(left: TypedEdgeRole, right: TypedEdgeRole) -> Ordering {
     role_key(left).cmp(&role_key(right))
 }
 
-pub(super) fn role_key(role: TypedEdgeRole) -> (u8, u32) {
+pub(crate) fn role_key(role: TypedEdgeRole) -> (u8, u32) {
     match role {
         TypedEdgeRole::TypeTag => (0, 0),
         TypedEdgeRole::TypeField(index) => (1, u32::from(index)),
@@ -524,7 +524,7 @@ pub(super) fn role_key(role: TypedEdgeRole) -> (u8, u32) {
     }
 }
 
-pub(super) fn identity_bytes(identity: DeclarationIdentity) -> [u8; 32] {
+pub(crate) fn identity_bytes(identity: DeclarationIdentity) -> [u8; 32] {
     let mut bytes = [0_u8; 32];
     bytes[..16].copy_from_slice(identity.family.as_bytes());
     bytes[16..].copy_from_slice(identity.variant.as_bytes());

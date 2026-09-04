@@ -3,13 +3,13 @@
 use super::*;
 use crate::Ir;
 
-pub(super) fn for_each_edge(
+pub(crate) fn for_each_edge(
     ir: &Ir,
     node: TypedPlanNode,
     sink: &mut impl FnMut(TypedPlanEdge) -> Result<(), TypedPlanError>,
 ) -> Result<(), TypedPlanError> {
     macro_rules! emit {
-        ($role:expr, $target:expr) => {
+        ($role:expr, $target:expr $(,)?) => {
             sink(TypedPlanEdge {
                 role: $role,
                 target: $target,
@@ -132,7 +132,7 @@ pub(super) fn for_each_edge(
                     crate::ConcreteType::Reference { target, mutability, lifetime } => {
                         type_tag!(10);
                         type_child!(0, target);
-                        scalar!(1, mutability(mutability));
+                        scalar!(1, mutability_code(mutability));
                         scalar!(2, u64::from(lifetime.is_some()));
                         if let Some(lifetime) = lifetime {
                             emit!(TypedEdgeRole::TypeField(3), TypedPlanTarget::Atom(lifetime));
@@ -169,7 +169,7 @@ pub(super) fn for_each_edge(
                     crate::ConcreteType::Pointer { target, mutability } => {
                         type_tag!(17);
                         type_child!(0, target);
-                        scalar!(1, mutability(mutability));
+                        scalar!(1, mutability_code(mutability));
                     }
                     crate::ConcreteType::Slice(target) => {
                         type_tag!(18);
@@ -719,7 +719,7 @@ fn variadic_form(value: crate::VariadicForm) -> u64 {
     }
 }
 
-fn mutability(value: crate::Mutability) -> u64 {
+fn mutability_code(value: crate::Mutability) -> u64 {
     match value {
         crate::Mutability::Immutable => 0,
         crate::Mutability::Mutable => 1,

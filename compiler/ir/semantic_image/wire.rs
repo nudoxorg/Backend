@@ -17,7 +17,7 @@ pub(crate) const NONE: u32 = u32::MAX;
 /// One canonical directory lane in a core image.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DirectoryKind {
+pub enum DirectoryKind {
     Atoms = 1,
     AtomBytes = 2,
     Entities = 3,

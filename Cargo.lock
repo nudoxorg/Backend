@@ -7691,8 +7691,13 @@ dependencies = [
 name = "server-operation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "compiler-driver",
  "compiler-ir",
+ "compiler-languages-csharp",
+ "compiler-languages-go",
+ "compiler-languages-java",
+ "compiler-languages-rust",
  "compiler-publication",
  "compiler-vocabulary",
  "heart-hydration",

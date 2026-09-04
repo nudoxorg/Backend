@@ -11,8 +11,8 @@ use crate::{
 
 /// A closed graph vertex; each list domain remains distinct even though each
 /// one ultimately contains type-bearing semantic values.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum TypedPlanNode {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypedPlanNode {
     Type(TypeId),
     TypeList(TypeListId),
     TupleElements(TupleElementListId),
@@ -24,7 +24,7 @@ pub(super) enum TypedPlanNode {
 }
 
 impl TypedPlanNode {
-    const fn raw(self) -> u32 {
+    pub(crate) const fn raw(self) -> u32 {
         match self {
             Self::Type(value) => value.raw,
             Self::TypeList(value) => value.raw,
@@ -37,7 +37,7 @@ impl TypedPlanNode {
         }
     }
 
-    const fn domain(self) -> TypedPlanDomain {
+    pub(crate) const fn domain(self) -> TypedPlanDomain {
         match self {
             Self::Type(_) => TypedPlanDomain::Type,
             Self::TypeList(_) => TypedPlanDomain::TypeList,
@@ -50,7 +50,7 @@ impl TypedPlanNode {
         }
     }
 
-    const fn from_domain_raw(domain: TypedPlanDomain, raw: u32) -> Self {
+    pub(crate) const fn from_domain_raw(domain: TypedPlanDomain, raw: u32) -> Self {
         match domain {
             TypedPlanDomain::Type => Self::Type(TypeId::new(raw)),
             TypedPlanDomain::TypeList => Self::TypeList(TypeListId::new(raw)),
@@ -67,7 +67,7 @@ impl TypedPlanNode {
 }
 
 impl TypedPlanDomain {
-    pub(super) const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::Type => 0,
             Self::TypeList => 1,
@@ -80,7 +80,7 @@ impl TypedPlanDomain {
         }
     }
 
-    pub(super) const fn code(self) -> u8 {
+    pub(crate) const fn code(self) -> u8 {
         match self {
             Self::Type => 0,
             Self::TypeList => 1,
@@ -98,7 +98,7 @@ impl TypedPlanDomain {
 /// so structurally similar rows from different pools cannot alias.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum TypedPlanDomain {
+pub enum TypedPlanDomain {
     Type,
     TypeList,
     TupleElements,
@@ -112,7 +112,7 @@ pub(super) enum TypedPlanDomain {
 /// Exact typed-pool graph rejection. No cycle is converted into a synthetic
 /// semantic type, and no raw coordinate becomes a canonical tie-breaker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TypedPlanFault {
+pub enum TypedPlanFault {
     GeometryOverflow {
         nodes: usize,
     },
@@ -171,7 +171,7 @@ impl core::error::Error for TypedPlanFault {}
 /// writer frames this role before its target, so a reordered pair/triple or a
 /// label/default/constraint change cannot collide with a different shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TypedEdgeRole {
+pub(crate) enum TypedEdgeRole {
     /// The closed `TypeExpr`/constructor discriminator.
     TypeTag,
     /// A constructor-owned scalar or child field. The enclosing type tag and
@@ -204,7 +204,7 @@ pub(super) enum TypedEdgeRole {
 
 /// A full semantic dependency target, never a raw untyped `u32`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TypedPlanTarget {
+pub(crate) enum TypedPlanTarget {
     Node(TypedPlanNode),
     Atom(AtomId),
     Entity(EntityId),
@@ -214,7 +214,7 @@ pub(super) enum TypedPlanTarget {
 
 /// Terminal coordinate domain retained by a rejected edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TypedPlanTerminal {
+pub enum TypedPlanTerminal {
     Atom(AtomId),
     Entity(EntityId),
     External(ExternalId),
@@ -222,9 +222,9 @@ pub(super) enum TypedPlanTerminal {
 
 /// One source-ordered, role-bearing typed dependency.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct TypedPlanEdge {
-    pub(super) role: TypedEdgeRole,
-    pub(super) target: TypedPlanTarget,
+pub(crate) struct TypedPlanEdge {
+    pub(crate) role: TypedEdgeRole,
+    pub(crate) target: TypedPlanTarget,
 }
 
 /// A fixed domain-separated structural fingerprint. It is never itself a
@@ -232,17 +232,17 @@ pub(super) struct TypedPlanEdge {
 /// comparator over the framed edge graph before ordering or rejection.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct TypedFingerprint([u8; 32]);
+pub(crate) struct TypedFingerprint(pub(crate) [u8; 32]);
 
 impl TypedFingerprint {
-    const ZERO: Self = Self([0; 32]);
+    pub(crate) const ZERO: Self = Self([0; 32]);
 
     #[cfg(test)]
-    pub(super) const fn from_raw(bytes: [u8; 32]) -> Self {
+    pub(crate) const fn from_raw(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
-    const fn as_bytes(self) -> [u8; 32] {
+    pub(crate) const fn as_bytes(self) -> [u8; 32] {
         self.0
     }
 }
@@ -250,7 +250,7 @@ impl TypedFingerprint {
 /// Dense global-state bases for all typed graph domains. Every node maps to
 /// one state/key slot in O(1); no per-edge search is permitted.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TypedPlanBases {
+pub(crate) struct TypedPlanBases {
     types: u32,
     type_lists: u32,
     tuples: u32,
@@ -263,7 +263,7 @@ pub(super) struct TypedPlanBases {
 }
 
 impl TypedPlanBases {
-    pub(super) fn new(counts: [u32; 8]) -> Result<Self, TypedPlanFault> {
+    pub(crate) fn new(counts: [u32; 8]) -> Result<Self, TypedPlanFault> {
         let mut bases = [0_u32; 8];
         let mut total = 0_u32;
         for (index, count) in counts.into_iter().enumerate() {
@@ -286,9 +286,9 @@ impl TypedPlanBases {
         })
     }
 
-    pub(super) const fn total(self) -> u32 { self.total }
+    pub(crate) const fn total(self) -> u32 { self.total }
 
-    pub(super) fn slot(self, node: TypedPlanNode, counts: [u32; 8]) -> Result<u32, TypedPlanFault> {
+    pub(crate) fn slot(self, node: TypedPlanNode, counts: [u32; 8]) -> Result<u32, TypedPlanFault> {
         let (base, count) = match node {
             TypedPlanNode::Type(_) => (self.types, counts[0]),
             TypedPlanNode::TypeList(_) => (self.type_lists, counts[1]),
@@ -309,13 +309,13 @@ impl TypedPlanBases {
 
 /// Exact domain counts used for every global-state and remap lookup.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TypedPlanCounts {
+pub(crate) struct TypedPlanCounts {
     values: [u32; 8],
     node_capacity: usize,
 }
 
 impl TypedPlanCounts {
-    pub(super) fn from_ir(ir: &Ir) -> Result<Self, TypedPlanFault> {
+    pub(crate) fn from_ir(ir: &Ir) -> Result<Self, TypedPlanFault> {
         let columns = ir.storage_columns();
         let source = [
             columns.types.headers.len(),
@@ -340,15 +340,15 @@ impl TypedPlanCounts {
         Ok(Self { values, node_capacity })
     }
 
-    const fn as_array(self) -> [u32; 8] {
+    pub(crate) const fn as_array(self) -> [u32; 8] {
         self.values
     }
 
-    const fn at(self, domain: TypedPlanDomain) -> u32 {
+    pub(crate) const fn at(self, domain: TypedPlanDomain) -> u32 {
         self.values[domain.index()]
     }
 
-    const fn node_count(self) -> usize {
+    pub(crate) const fn node_count(self) -> usize {
         self.node_capacity
     }
 }
@@ -360,15 +360,15 @@ fn count_u32(count: usize) -> Result<u32, TypedPlanFault> {
 /// A compact explicit-stack frame. `next` walks one shared flat edge lane;
 /// there is never a heap allocation per child or recursive process stack.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TypedPlanFrame {
-    pub(super) node: TypedPlanNode,
-    pub(super) edge_start: u32,
-    pub(super) edge_end: u32,
-    pub(super) next: u32,
+pub(crate) struct TypedPlanFrame {
+    pub(crate) node: TypedPlanNode,
+    pub(crate) edge_start: u32,
+    pub(crate) edge_end: u32,
+    pub(crate) next: u32,
 }
 
 impl TypedPlanFrame {
-    pub(super) const fn new(node: TypedPlanNode, edge_start: u32, edge_end: u32) -> Self {
+    pub(crate) const fn new(node: TypedPlanNode, edge_start: u32, edge_end: u32) -> Self {
         Self {
             node,
             edge_start,
@@ -384,22 +384,22 @@ impl TypedPlanFrame {
 /// framed local keys and collision-checked canonical coordinates. This shape
 /// establishes the O(nodes + edges) storage law before any wire directory can
 /// consume the result.
-pub(super) struct TypedPlanScratch {
-    pub(super) nodes: Vec<TypedPlanNode>,
-    pub(super) edge_offsets: Vec<u32>,
-    pub(super) edges: Vec<TypedPlanEdge>,
-    pub(super) states: Vec<u8>,
-    pub(super) stack: Vec<TypedPlanFrame>,
-    pub(super) postorder: Vec<TypedPlanNode>,
-    pub(super) key_ranges: Vec<ArenaRange>,
-    pub(super) key_bytes: Vec<u8>,
-    pub(super) fingerprints: Vec<TypedFingerprint>,
-    pub(super) canonical_slots: Vec<u32>,
-    pub(super) canonical_nodes: Vec<TypedPlanNode>,
+pub(crate) struct TypedPlanScratch {
+    pub(crate) nodes: Vec<TypedPlanNode>,
+    pub(crate) edge_offsets: Vec<u32>,
+    pub(crate) edges: Vec<TypedPlanEdge>,
+    pub(crate) states: Vec<u8>,
+    pub(crate) stack: Vec<TypedPlanFrame>,
+    pub(crate) postorder: Vec<TypedPlanNode>,
+    pub(crate) key_ranges: Vec<ArenaRange>,
+    pub(crate) key_bytes: Vec<u8>,
+    pub(crate) fingerprints: Vec<TypedFingerprint>,
+    pub(crate) canonical_slots: Vec<u32>,
+    pub(crate) canonical_nodes: Vec<TypedPlanNode>,
 }
 
 impl TypedPlanScratch {
-    pub(super) fn with_capacity(nodes: usize, edges: usize) -> Result<Self, TypedPlanFault> {
+    pub(crate) fn with_capacity(nodes: usize, edges: usize) -> Result<Self, TypedPlanFault> {
         let offsets = nodes.checked_add(1).ok_or(TypedPlanFault::GeometryOverflow { nodes })?;
         Ok(Self {
             nodes: Vec::with_capacity(nodes),
@@ -416,7 +416,3 @@ impl TypedPlanScratch {
         })
     }
 }
-
-/// Prepared canonical coordinates for every type-bearing pool. This remains
-/// crate-private until a full semantic-image grammar can encode and validate
-/// every referenced plane; it cannot construct a borrowed reader by itself.

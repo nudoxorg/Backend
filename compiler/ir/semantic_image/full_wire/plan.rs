@@ -157,17 +157,18 @@ fn canonical_variable_pool(
 ) -> Result<CanonicalVariablePool, FullSemanticImageFault> {
     let mut ranges = Vec::with_capacity(order.len());
     let mut bytes = Vec::with_capacity(source_bytes.len());
+    let source_count = count(source_ranges.len(), field)?;
     for raw in order.iter().copied() {
         let index = usize::try_from(raw).map_err(|_| FullSemanticImageFault::Reference {
             field,
             row: 0,
-            expected: count(source_ranges.len(), field)?,
+            expected: source_count,
             observed: raw,
         })?;
         let range = source_ranges.get(index).copied().ok_or(FullSemanticImageFault::Reference {
             field,
             row: count(ranges.len(), field)?,
-            expected: count(source_ranges.len(), field)?,
+            expected: source_count,
             observed: raw,
         })?;
         let start = usize::try_from(range.start).map_err(|_| FullSemanticImageFault::LengthOverflow { field })?;
@@ -209,7 +210,14 @@ fn plan_entities(
         })?;
         let mut bytes = [0_u8; ENTITY_ROW_BYTES];
         write_core_entity(&mut bytes, facts, canonical)?;
-        put_u32_array(&mut bytes, 120, row.semantic_type.unwrap_or(NONE));
+        put_u32_array(
+            &mut bytes,
+            120,
+            match row.semantic_type {
+                Some(value) => value,
+                None => NONE,
+            },
+        );
         put_u32_array(&mut bytes, 124, row.members);
         put_u32_array(&mut bytes, 128, row.docs);
         put_u32_array(&mut bytes, 132, row.attributes);
@@ -560,7 +568,10 @@ fn write_core_entity(
     put_u32_array(
         output,
         8,
-        entity.parent.map(|value| canonical.entity(value)).transpose()?.unwrap_or(NONE),
+        match entity.parent {
+            Some(value) => canonical.entity(value)?,
+            None => NONE,
+        },
     );
     match entity.source {
         Some(source) => {

@@ -8,24 +8,24 @@ use core::fmt;
 
 use super::fault::{FullSemanticImageFault, FullSemanticImageField};
 
-pub(super) const MAGIC: [u8; 4] = *b"NXFI";
-pub(super) const SCHEMA: u16 = 1;
+pub(crate) const MAGIC: [u8; 4] = *b"NXFI";
+pub(crate) const SCHEMA: u16 = 1;
 /// The first 176 bytes are the same explicitly documented image
 /// authority/provenance cells as the subordinate core grammar.  The full
 /// directory begins immediately afterwards with its independent count.
-pub(super) const HEADER_BYTES: usize = 176;
-pub(super) const HEADER_BYTES_U32: u32 = 176;
-pub(super) const DIRECTORY_BYTES: usize = 16;
-pub(super) const NONE: u32 = u32::MAX;
-pub(super) const ATOM_ROW_BYTES: usize = 8;
-pub(super) const ENTITY_ROW_BYTES: usize = 136;
-pub(super) const TYPED_NODE_ROW_BYTES: usize = 16;
-pub(super) const TYPED_EDGE_ROW_BYTES: usize = 20;
-pub(super) const RANGE_ROW_BYTES: usize = 8;
-pub(super) const EXTERNAL_ROW_BYTES: usize = 96;
-pub(super) const LINK_ROW_BYTES: usize = 28;
-pub(super) const OCCURRENCE_ROW_BYTES: usize = 24;
-pub(super) const SPARSE_BINDING_ROW_BYTES: usize = 8;
+pub(crate) const HEADER_BYTES: usize = 176;
+pub(crate) const HEADER_BYTES_U32: u32 = 176;
+pub(crate) const DIRECTORY_BYTES: usize = 16;
+pub(crate) const NONE: u32 = u32::MAX;
+pub(crate) const ATOM_ROW_BYTES: usize = 8;
+pub(crate) const ENTITY_ROW_BYTES: usize = 136;
+pub(crate) const TYPED_NODE_ROW_BYTES: usize = 16;
+pub(crate) const TYPED_EDGE_ROW_BYTES: usize = 20;
+pub(crate) const RANGE_ROW_BYTES: usize = 8;
+pub(crate) const EXTERNAL_ROW_BYTES: usize = 96;
+pub(crate) const LINK_ROW_BYTES: usize = 28;
+pub(crate) const OCCURRENCE_ROW_BYTES: usize = 24;
+pub(crate) const SPARSE_BINDING_ROW_BYTES: usize = 8;
 
 /// One fixed-order full-image directory.  The order is part of the grammar:
 /// no directory lookup or producer-specific ordering can alter canonical
@@ -33,7 +33,7 @@ pub(super) const SPARSE_BINDING_ROW_BYTES: usize = 8;
 /// directory and byte payload directory.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FullDirectoryKind {
+pub enum FullDirectoryKind {
     Atoms = 1,
     AtomBytes = 2,
     Entities = 3,
@@ -63,7 +63,7 @@ pub(super) enum FullDirectoryKind {
 }
 
 impl FullDirectoryKind {
-    pub(super) const ALL: [Self; 26] = [
+    pub const ALL: [Self; 26] = [
         Self::Atoms,
         Self::AtomBytes,
         Self::Entities,
@@ -92,7 +92,7 @@ impl FullDirectoryKind {
         Self::ClangBindings,
     ];
 
-    pub(super) const fn code(self) -> u16 {
+    pub const fn code(self) -> u16 {
         match self {
             Self::Atoms => 1,
             Self::AtomBytes => 2,
@@ -123,7 +123,7 @@ impl FullDirectoryKind {
         }
     }
 
-    pub(super) const fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         match self {
             Self::Atoms => 0,
             Self::AtomBytes => 1,
@@ -154,7 +154,7 @@ impl FullDirectoryKind {
         }
     }
 
-    pub(super) const fn count() -> u16 { 26 }
+    pub const fn count() -> u16 { 26 }
 }
 
 impl fmt::Display for FullDirectoryKind {
@@ -167,28 +167,28 @@ impl fmt::Display for FullDirectoryKind {
 /// row counts, never pointers into owned `Ir` storage, so a future mmap view
 /// can carry it without allocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FullDirectoryEntry {
-    pub(super) offset: usize,
-    pub(super) length: usize,
-    pub(super) offset_wire: u32,
-    pub(super) length_wire: u32,
-    pub(super) count: u32,
+pub(crate) struct FullDirectoryEntry {
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
+    pub(crate) offset_wire: u32,
+    pub(crate) length_wire: u32,
+    pub(crate) count: u32,
 }
 
 /// Borrowed directory facts held by a fully validated full-image view.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct FullImageLayout {
-    pub(super) entries: [FullDirectoryEntry; 26],
+pub(crate) struct FullImageLayout {
+    pub(crate) entries: [FullDirectoryEntry; 26],
 }
 
 impl FullImageLayout {
-    pub(super) const fn entry(self, kind: FullDirectoryKind) -> FullDirectoryEntry {
+    pub(crate) const fn entry(self, kind: FullDirectoryKind) -> FullDirectoryEntry {
         self.entries[kind.index()]
     }
 }
 
 #[inline]
-pub(super) fn get_u16(
+pub(crate) fn get_u16(
     bytes: &[u8],
     offset: usize,
     field: FullSemanticImageField,
@@ -197,7 +197,7 @@ pub(super) fn get_u16(
 }
 
 #[inline]
-pub(super) fn get_u32(
+pub(crate) fn get_u32(
     bytes: &[u8],
     offset: usize,
     field: FullSemanticImageField,
@@ -206,16 +206,7 @@ pub(super) fn get_u32(
 }
 
 #[inline]
-pub(super) fn get_u64(
-    bytes: &[u8],
-    offset: usize,
-    field: FullSemanticImageField,
-) -> Result<u64, FullSemanticImageFault> {
-    Ok(u64::from_le_bytes(read_array::<8>(bytes, offset, field)?))
-}
-
-#[inline]
-pub(super) fn read_array<const N: usize>(
+pub(crate) fn read_array<const N: usize>(
     bytes: &[u8],
     offset: usize,
     field: FullSemanticImageField,
@@ -228,16 +219,11 @@ pub(super) fn read_array<const N: usize>(
 }
 
 #[inline]
-pub(super) fn put_u16(output: &mut [u8], offset: usize, value: u16) {
+pub(crate) fn put_u16(output: &mut [u8], offset: usize, value: u16) {
     output[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
 #[inline]
-pub(super) fn put_u32(output: &mut [u8], offset: usize, value: u32) {
+pub(crate) fn put_u32(output: &mut [u8], offset: usize, value: u32) {
     output[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-#[inline]
-pub(super) fn put_u64(output: &mut [u8], offset: usize, value: u64) {
-    output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
