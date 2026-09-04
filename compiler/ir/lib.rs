@@ -27,8 +27,10 @@ mod mapping;
 mod model;
 mod prepared;
 mod range;
+mod reader;
 mod render;
 mod semantic;
+mod semantic_render;
 mod semantic_data_view;
 mod semantic_extension_section;
 mod semantic_facts;
@@ -113,6 +115,10 @@ pub use range::{
     FragmentRangeRequest, FragmentRangeVerifyError, VerifiedFragmentRange,
     VerifiedFragmentRangeView,
 };
+pub use reader::{
+    IrCanonicalEntities, IrExtensionRows, SemanticCursor, SemanticEntity, SemanticImageFacts,
+    SemanticReader,
+};
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
@@ -158,6 +164,10 @@ pub use semantic_extension_section::{
 };
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
+};
+pub use semantic_render::{
+    NeutralDialect, PreparedNeutral, PreparedNeutralView, RenderDialect, RenderFailure, UnsupportedSemanticStage,
+    prepare_neutral, prepare_profile,
 };
 pub use type_facts::{
     DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,

@@ -5803,6 +5803,16 @@ impl Ir {
     pub fn atom_list(&self, id: AtomListId) -> Option<&[AtomId]> {
         self.atom_lists.get(id)
     }
+    /// Borrows one canonical local-member list by its typed pool coordinate.
+    #[must_use]
+    pub(crate) fn entity_list(&self, id: EntityListId) -> Option<&[EntityId]> {
+        self.entity_lists.get(id)
+    }
+    /// Borrows one canonical documentation list by its typed pool coordinate.
+    #[must_use]
+    pub(crate) fn documentation(&self, id: DocId) -> Option<&[DocFragment]> {
+        self.docs.get(id)
+    }
     #[must_use]
     pub fn tuple_elements(&self, id: TupleElementListId) -> Option<&[TupleElement]> {
         self.tuple_elements.get(id)
@@ -5833,6 +5843,30 @@ impl Ir {
     #[must_use]
     pub fn version(&self, id: EntityId) -> Option<EntityVersion> {
         self.items.versions.get(id.index()).copied()
+    }
+    /// Projects every aligned immutable semantic row for one local entity.
+    ///
+    /// This is the reader boundary's row view: consumers receive the hot
+    /// declaration fields, cold authority facts, source truth, and exact
+    /// declaration version together rather than joining parallel lanes by
+    /// convention.
+    #[must_use]
+    pub(crate) fn semantic_entity(&self, id: EntityId) -> Option<crate::SemanticEntity> {
+        let index = id.index();
+        Some(crate::SemanticEntity {
+            id,
+            name: *self.items.names.get(index)?,
+            kind: *self.items.kinds.get(index)?,
+            visibility: *self.items.visibility.get(index)?,
+            parent: self.items.parents.get(index)?.get(),
+            semantic_type: self.items.semantic_types.get(index)?.get(),
+            members: *self.items.members.get(index)?,
+            docs: *self.items.docs.get(index)?,
+            attributes: *self.items.attributes.get(index)?,
+            source: self.sources.get(index),
+            authority: self.authority_facts.facts(index)?,
+            version: *self.items.versions.get(index)?,
+        })
     }
     /// Binary-searches the exact canonical declaration-instance index.
     #[must_use]
