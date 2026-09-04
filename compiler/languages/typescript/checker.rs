@@ -490,6 +490,9 @@ pub struct CheckerIndex<'report> {
     report: &'report Report,
     declarations: Box<[BoundDeclaration<'report>]>,
     references: Box<[BoundReference<'report>]>,
+    /// Reference ordinals sorted by exact UTF-8 use span, then report order.
+    /// Iteration remains report-ordered while point queries are logarithmic.
+    reference_index: Box<[usize]>,
     narrowings: Box<[BoundNarrowing<'report>]>,
 }
 
@@ -551,6 +554,11 @@ impl<'report> CheckerIndex<'report> {
                 },
             )
             .collect::<Result<Box<[_]>, CheckerError>>()?;
+        let mut reference_index: Vec<usize> = (0..references.len()).collect();
+        reference_index.sort_unstable_by_key(|ordinal| {
+            let reference = &references[*ordinal];
+            (reference.span.start, reference.span.end, *ordinal)
+        });
         let narrowings = report
             .narrowings
             .iter()
@@ -570,6 +578,7 @@ impl<'report> CheckerIndex<'report> {
             report,
             declarations,
             references,
+            reference_index: reference_index.into_boxed_slice(),
             narrowings,
         })
     }
@@ -588,6 +597,22 @@ impl<'report> CheckerIndex<'report> {
     /// Streams every span-bound reference in report order.
     pub fn references(&self) -> impl Iterator<Item = &BoundReference<'report>> {
         self.references.iter()
+    }
+
+    /// Borrows the first report-ordered reference at one exact UTF-8 span.
+    ///
+    /// Duplicate rows retain their producer order through the ordinal tie
+    /// breaker, matching the historical iterator `find` semantics without a
+    /// complete scan for every syntax reference.
+    #[must_use]
+    pub fn reference_at(&self, span: Utf8Span) -> Option<&BoundReference<'report>> {
+        let position = self.reference_index.partition_point(|ordinal| {
+            let reference = &self.references[*ordinal];
+            (reference.span.start, reference.span.end) < (span.start, span.end)
+        });
+        let ordinal = *self.reference_index.get(position)?;
+        let reference = self.references.get(ordinal)?;
+        (reference.span == span).then_some(reference)
     }
 
     /// Streams every span-bound assignment narrowing in report order.

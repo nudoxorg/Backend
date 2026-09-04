@@ -14,8 +14,8 @@ use compiler_ir::{
 };
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    MappedModifier as CheckerMappedModifier, Semantic, Span, SymbolFlags, SymbolId, TemplatePart,
-    SyntaxMappedModifier, TypeTree, Utf8Span, syntax_mapped_modifier, with_analysis,
+    MappedModifier as CheckerMappedModifier, NodeId, Semantic, Span, SymbolFlags, SymbolId,
+    TemplatePart, SyntaxMappedModifier, TypeTree, Utf8Span, syntax_mapped_modifier, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -344,7 +344,7 @@ struct Projector<'x, 'report, 'source> {
     semantic: &'x Semantic<'x>,
     /// Span index built once for this projection; type probes use binary
     /// search instead of rescanning the complete syntax arena.
-    node_index: Vec<(Span, usize)>,
+    node_index: Vec<(Span, NodeId)>,
     source: &'source str,
     facts: &'x mut FactSet<'source>,
     /// Binding-name span start per pushed fact (`UNSET` when unregistered).
@@ -968,10 +968,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let last = self
             .node_index
             .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
-        for (_, node_ordinal) in self.node_index[first..last].iter() {
-            let Some(node) = self.semantic.nodes().iter().nth(*node_ordinal) else {
-                continue;
-            };
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let node = self.semantic.nodes().get_node(*node_id);
             let kind = node.kind();
 
             // Transparent wrappers descend into their inner expression span.
@@ -1062,12 +1060,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         )
                         .ok()
                     {
-                        let Some((_, ordinal)) = self.node_index.get(position) else {
+                        let Some((_, node_id)) = self.node_index.get(position) else {
                             continue;
                         };
-                        let Some(wrapped) = self.semantic.nodes().iter().nth(*ordinal) else {
-                            continue;
-                        };
+                        let wrapped = self.semantic.nodes().get_node(*node_id);
                         let wrapped_kind = wrapped.kind();
                         if let Some(named) = wrapped_kind.as_ts_named_tuple_member() {
                             label = Some(named.label.span);
@@ -1428,12 +1424,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(node_position) = node_position else {
             return Ok(None);
         };
-        let Some((_, node_ordinal)) = self.node_index.get(node_position) else {
+        let Some((_, node_id)) = self.node_index.get(node_position) else {
             return Ok(None);
         };
-        let Some(probed) = self.semantic.nodes().iter().nth(*node_ordinal) else {
-            return Ok(None);
-        };
+        let probed = self.semantic.nodes().get_node(*node_id);
         {
             let member_kind = probed.kind();
             if let Some(property) = member_kind.as_ts_property_signature() {
@@ -1563,9 +1557,8 @@ pub(crate) fn collect_with_checker<'source, 'report>(
                 let mut index: Vec<_> = module
                     .semantic
                     .nodes()
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, node)| (node.kind().span(), ordinal))
+                    .iter_enumerated()
+                    .map(|(node_id, node)| (node.kind().span(), node_id))
                     .collect();
                 index.sort_unstable_by_key(|(span, _)| (span.start, span.end));
                 index
@@ -2331,9 +2324,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(checker) = self.checker.as_ref() else {
             return Ok(None);
         };
-        let resolved = checker
-            .references()
-            .find(|reference| reference.span.start == span.start && reference.span.end == span.end);
+        let resolved = checker.reference_at(Utf8Span {
+            start: span.start,
+            end: span.end,
+        });
         let Some(resolved) = resolved else {
             return Ok(None);
         };
@@ -2490,8 +2484,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// published fact of its binding name.
     fn checker_local_target(&self, name_span: Span) -> Option<u32> {
         let checker = self.checker.as_ref()?;
-        let resolved = checker.references().find(|reference| {
-            reference.span.start == name_span.start && reference.span.end == name_span.end
+        let resolved = checker.reference_at(Utf8Span {
+            start: name_span.start,
+            end: name_span.end,
         })?;
         let target = resolved.target?;
         self.fact_at_name_start(target.start)
@@ -2505,9 +2500,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             return false;
         };
         checker
-            .references()
-            .find(|reference| {
-                reference.span.start == name_span.start && reference.span.end == name_span.end
+            .reference_at(Utf8Span {
+                start: name_span.start,
+                end: name_span.end,
             })
             .is_some_and(|reference| reference.module.is_some())
     }
@@ -2515,9 +2510,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     fn checker_foreign_module(&self, name_span: Span) -> Option<&'report str> {
         let checker = self.checker.as_ref()?;
         checker
-            .references()
-            .find(|reference| {
-                reference.span.start == name_span.start && reference.span.end == name_span.end
+            .reference_at(Utf8Span {
+                start: name_span.start,
+                end: name_span.end,
             })
             .and_then(|reference| reference.module)
     }
@@ -2537,9 +2532,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(checker) = self.checker.as_ref() else {
             return Ok(None);
         };
-        let resolved = checker
-            .references()
-            .find(|reference| reference.span.start == span.start && reference.span.end == span.end);
+        let resolved = checker.reference_at(Utf8Span {
+            start: span.start,
+            end: span.end,
+        });
         let Some(resolved) = resolved else {
             return Ok(None);
         };

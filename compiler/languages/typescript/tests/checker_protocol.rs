@@ -79,6 +79,11 @@ fn golden_transcript_decodes_declarations_and_references() -> Result<(), Checker
         .collect();
     assert!(overload_calls.contains(&("g", Some(0))));
     assert!(overload_calls.contains(&("g", Some(1))));
+    let first_reference = *index.references().next().ok_or(CheckerError::Decode {
+        message: "golden reference missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    assert_eq!(index.reference_at(first_reference.span), Some(&first_reference));
     // The recorded assignment narrowing binds its declaration name span,
     // its exact assignment site, and the literal type of the value.
     let narrowing = *index.narrowings().next().ok_or(CheckerError::Decode {

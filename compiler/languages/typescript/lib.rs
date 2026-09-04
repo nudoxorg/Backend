@@ -24,3 +24,4 @@ pub use error::AuthorityError;
 // without naming the arena-borrowed AST crate at its own dependency boundary.
 pub use oxc_semantic::{ReferenceFlags, Scoping, Semantic, SymbolFlags, SymbolId};
 pub use oxc_span::{GetSpan, Span};
+pub use oxc_syntax::node::NodeId;
