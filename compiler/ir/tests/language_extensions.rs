@@ -1,12 +1,11 @@
 use compiler_ir::{
     BuildError, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
     CSharpReferenceKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, Confidence,
-    EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability, GoFacts, GoSignature, Ir,
-    IrBuilder, Item, ItemKind, JavaFacts,
+    CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion,
+    FactAvailability, GoFacts, GoSignature, Ir, IrBuilder, Item, ItemKind, JavaFacts,
     LanguageExtensionInput, LanguageExtensionReopenError, LanguageExtensionWireFact,
-    CorePayloadHash, DeclarationFamilyId, LanguageProfile, PythonFacts, PythonParameterKind,
-    RustFacts, RustOwnership, TreeItemInput, TypeScriptFacts, VariantFingerprint, Visibility,
-    encode_language_extension_section,
+    LanguageProfile, PythonFacts, PythonParameterKind, RustFacts, RustOwnership, TreeItemInput,
+    TypeScriptFacts, VariantFingerprint, Visibility, encode_language_extension_section,
     language_extension_section_len, reopen_language_extension_section,
 };
 
@@ -593,7 +592,7 @@ fn common_only_images_encode_zero_bytes_for_every_empty_plane() {
 }
 
 #[test]
-fn schema_two_owner_cell_and_schema_one_tail_decode() {
+fn current_clang_plane_extent_and_fact_decode() {
     let mut builder = IrBuilder::new();
     builder
         .set_language_profile(LanguageProfile::Cxx(compiler_ir::CxxStandard::Cxx26))
@@ -614,32 +613,16 @@ fn schema_two_owner_cell_and_schema_one_tail_decode() {
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
-    let schema_two = encode(&ir);
+    let bytes = encode(&ir);
     let section = reopen_language_extension_section(
-        &schema_two,
+        &bytes,
         ir.storage_columns().authority,
         ir.language_extension_common_bounds().expect("bounds"),
     )
-    .expect("schema two");
-    assert_eq!(schema_two[152..156], 36_u32.to_le_bytes());
-    assert_eq!(section.clang.owner(EntityId::new(0)), Ok(Some(0)));
-    assert_eq!(section.clang.identity_list(EntityId::new(0)), Ok(None));
-
-    let mut schema_one = schema_two;
-    schema_one[4..6].copy_from_slice(&1_u16.to_le_bytes());
-    schema_one.truncate(schema_one.len() - 8);
-    let schema_one_len = u32::try_from(schema_one.len()).expect("fixture length");
-    schema_one[12..16].copy_from_slice(&schema_one_len.to_le_bytes());
-    schema_one[152..156].copy_from_slice(&28_u32.to_le_bytes());
-    let reopened = reopen_language_extension_section(
-        &schema_one,
-        ir.storage_columns().authority,
-        ir.language_extension_common_bounds().expect("bounds"),
-    )
-    .expect("preserved schema one");
-    assert_eq!(schema_one[152..156], 28_u32.to_le_bytes());
-    assert_eq!(reopened.clang.get(EntityId::new(0)), Ok(Some(clang)));
-    assert_eq!(reopened.clang.identity_list(EntityId::new(0)), Ok(None));
+    .expect("current schema");
+    // One four-byte entity ordinal plus one 24-byte Clang fact.
+    assert_eq!(bytes[152..156], 28_u32.to_le_bytes());
+    assert_eq!(section.clang.get(EntityId::new(0)), Ok(Some(clang)));
 }
 
 #[test]
@@ -664,7 +647,7 @@ fn extension_schema_rejects_each_unadmitted_version_cell() {
     };
     add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
     let ir = builder.finish().expect("Clang IR");
-    for observed in [0_u16, 3_u16] {
+    for observed in [0_u16, 2_u16, 3_u16] {
         let mut bytes = encode(&ir);
         bytes[4..6].copy_from_slice(&observed.to_le_bytes());
         assert!(matches!(
