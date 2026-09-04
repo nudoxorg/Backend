@@ -266,6 +266,81 @@ pub(crate) enum EmissionExtension {
     Clang(compiler_ir::ClangFacts),
 }
 
+/// Transaction-local coordinate into exactly one rewritten language pool.
+///
+/// The closed tag mirrors the ingress sum type while the finalized `Ir`
+/// still owns seven named sparse planes.  This avoids allocating seven
+/// fact-count-wide temporary arrays for a source that can have only one
+/// language authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RewrittenExtension {
+    TypeScript(usize),
+    CSharp(usize),
+    Go(usize),
+    Rust(usize),
+    Python(usize),
+    Java(usize),
+    Clang(usize),
+}
+
+/// Exact temporary-pool demand measured from the already-admitted facts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExtensionDemand {
+    typescript: usize,
+    csharp: usize,
+    go: usize,
+    rust: usize,
+    python: usize,
+    java: usize,
+    clang: usize,
+}
+
+impl ExtensionDemand {
+    fn measure(rows: &[Option<EmissionExtension>]) -> Self {
+        let mut demand = Self::default();
+        for extension in rows.iter().flatten() {
+            match extension {
+                EmissionExtension::TypeScript(_) => demand.typescript += 1,
+                EmissionExtension::CSharp(_) => demand.csharp += 1,
+                EmissionExtension::Go(_) => demand.go += 1,
+                EmissionExtension::Rust(_) => demand.rust += 1,
+                EmissionExtension::Python(_) => demand.python += 1,
+                EmissionExtension::Java(_) => demand.java += 1,
+                EmissionExtension::Clang(_) => demand.clang += 1,
+            }
+        }
+        demand
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "FactSet fact geometry is statically bounded below u32::MAX"
+)]
+fn rewritten_extension_fact<Fact>(
+    facts: &[Fact],
+    fact: usize,
+    language: compiler_ir::Language,
+    entity: usize,
+) -> Result<&Fact, compiler_ir::BuildError> {
+    facts.get(fact).ok_or(compiler_ir::BuildError::LanguageExtension {
+        language,
+        entity: compiler_ir::EntityId::new(entity as u32),
+        violation: compiler_ir::LanguageExtensionViolation::MissingPoolFact {
+            fact,
+            count: facts.len(),
+        },
+    })
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "every extension pool is bounded by FactSet's u32-sized fact geometry"
+)]
+fn next_extension_ordinal<Fact>(facts: &[Fact]) -> u32 {
+    facts.len() as u32
+}
+
 impl<'source> SemanticFact<'source> {
     /// Creates the zero-child fact for one provable declaration with an
     /// honestly unknown declared type.
@@ -1767,17 +1842,20 @@ impl<'source> FactSet<'source> {
         // rows as the durable fragment.  There is intentionally no
         // TypeScript-only rewrite path: a compact fact can never disappear
         // merely because a caller asks for the owned IR view.
-        let mut rewritten_typescript = vec![empty_typescript_facts(); fact_count];
-        let mut rewritten_csharp = vec![empty_csharp_facts(); fact_count];
-        let mut rewritten_go = vec![empty_go_facts(); fact_count];
-        let mut rewritten_rust = vec![empty_rust_facts(); fact_count];
-        let mut rewritten_python = vec![empty_python_facts(); fact_count];
-        let mut rewritten_java = vec![empty_java_facts(); fact_count];
-        let mut rewritten_clang = vec![empty_clang_facts(); fact_count];
+        let extension_demand = ExtensionDemand::measure(&self.extensions[..fact_count]);
+        let mut extension_bindings = vec![None; fact_count].into_boxed_slice();
+        let mut rewritten_typescript = Vec::with_capacity(extension_demand.typescript);
+        let mut rewritten_csharp = Vec::with_capacity(extension_demand.csharp);
+        let mut rewritten_go = Vec::with_capacity(extension_demand.go);
+        let mut rewritten_rust = Vec::with_capacity(extension_demand.rust);
+        let mut rewritten_python = Vec::with_capacity(extension_demand.python);
+        let mut rewritten_java = Vec::with_capacity(extension_demand.java);
+        let mut rewritten_clang = Vec::with_capacity(extension_demand.clang);
         for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
             match extension {
                 Some(EmissionExtension::TypeScript(value)) => {
-                    rewritten_typescript[ordinal] = compiler_ir::TypeScriptFacts {
+                    let pool_index = rewritten_typescript.len();
+                    rewritten_typescript.push(compiler_ir::TypeScriptFacts {
                         type_parameters: live_type_parameters(
                             &mut tree,
                             self,
@@ -1818,10 +1896,13 @@ impl<'source> FactSet<'source> {
                                 )
                             })
                             .transpose()?,
-                    };
+                    });
+                    extension_bindings[ordinal] =
+                        Some(RewrittenExtension::TypeScript(pool_index));
                 }
                 Some(EmissionExtension::CSharp(value)) => {
-                    rewritten_csharp[ordinal] = compiler_ir::CSharpFacts {
+                    let pool_index = rewritten_csharp.len();
+                    rewritten_csharp.push(compiler_ir::CSharpFacts {
                         constraints: live_type_parameters(
                             &mut tree,
                             self,
@@ -1842,10 +1923,12 @@ impl<'source> FactSet<'source> {
                             .map(|span| live_extension_span(&mut tree, self, span))
                             .transpose()?,
                         ..*value
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::CSharp(pool_index));
                 }
                 Some(EmissionExtension::Go(value)) => {
-                    rewritten_go[ordinal] = compiler_ir::GoFacts {
+                    let pool_index = rewritten_go.len();
+                    rewritten_go.push(compiler_ir::GoFacts {
                         signature: compiler_ir::GoSignature {
                             parameters: live_type_list(
                                 &mut tree,
@@ -1892,10 +1975,12 @@ impl<'source> FactSet<'source> {
                             value.constant_value,
                         )?,
                         ..*value
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::Go(pool_index));
                 }
                 Some(EmissionExtension::Rust(value)) => {
-                    rewritten_rust[ordinal] = compiler_ir::RustFacts {
+                    let pool_index = rewritten_rust.len();
+                    rewritten_rust.push(compiler_ir::RustFacts {
                         lifetimes: live_atom_list(&mut tree, self, value.lifetimes)?,
                         where_clauses: live_type_parameters(
                             &mut tree,
@@ -1913,16 +1998,20 @@ impl<'source> FactSet<'source> {
                         )?,
                         macros: live_atom_list(&mut tree, self, value.macros)?,
                         ..*value
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::Rust(pool_index));
                 }
                 Some(EmissionExtension::Python(value)) => {
-                    rewritten_python[ordinal] = compiler_ir::PythonFacts {
+                    let pool_index = rewritten_python.len();
+                    rewritten_python.push(compiler_ir::PythonFacts {
                         decorators: live_atom_list(&mut tree, self, value.decorators)?,
                         ..*value
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::Python(pool_index));
                 }
                 Some(EmissionExtension::Java(value)) => {
-                    rewritten_java[ordinal] = compiler_ir::JavaFacts {
+                    let pool_index = rewritten_java.len();
+                    rewritten_java.push(compiler_ir::JavaFacts {
                         throws: live_type_list(
                             &mut tree,
                             self,
@@ -1938,10 +2027,12 @@ impl<'source> FactSet<'source> {
                             self,
                             value.record_components,
                         )?,
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::Java(pool_index));
                 }
                 Some(EmissionExtension::Clang(value)) => {
-                    rewritten_clang[ordinal] = compiler_ir::ClangFacts {
+                    let pool_index = rewritten_clang.len();
+                    rewritten_clang.push(compiler_ir::ClangFacts {
                         templates: live_type_parameters(
                             &mut tree,
                             self,
@@ -1958,7 +2049,8 @@ impl<'source> FactSet<'source> {
                         )?,
                         includes: live_atom_list(&mut tree, self, value.includes)?,
                         ..*value
-                    };
+                    });
+                    extension_bindings[ordinal] = Some(RewrittenExtension::Clang(pool_index));
                 }
                 None => {}
             }
@@ -2019,7 +2111,8 @@ impl<'source> FactSet<'source> {
             // must stage it explicitly rather than relabel it as primary.
             .then(|| tree.intern_atom(source.identity.as_ref()))
             .transpose()?;
-        let mut item_attributes = vec![Vec::<&'source [u8]>::new(); fact_count];
+        let mut item_attribute_ranges = vec![(0_usize, 0_usize); fact_count].into_boxed_slice();
+        let mut item_attribute_total = 0_usize;
         for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
             let Some(list) = extension.as_ref().and_then(extension_item_attributes) else {
                 continue;
@@ -2040,15 +2133,52 @@ impl<'source> FactSet<'source> {
                     raw: list as u32,
                 });
             }
-            let target = &mut item_attributes[ordinal];
-            target.reserve(usize::from(length));
-            for provisional in &self.atom_lists[list][..usize::from(length)] {
-                target.push(*self.extension_atoms.get(*provisional as usize).ok_or(
+            let length = usize::from(length);
+            item_attribute_ranges[ordinal] = (item_attribute_total, length);
+            item_attribute_total = item_attribute_total.checked_add(length).ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::AtomList,
+                    raw: list as u32,
+                },
+            )?;
+        }
+        let empty_attribute: &'source [u8] = &[];
+        let mut item_attributes = vec![empty_attribute; item_attribute_total].into_boxed_slice();
+        for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
+            let Some(list) = extension.as_ref().and_then(extension_item_attributes) else {
+                continue;
+            };
+            let list = list.raw as usize;
+            if self.atom_list_len == 0 && list == 0 {
+                continue;
+            }
+            let (start, length) = item_attribute_ranges[ordinal];
+            for (relative, provisional) in self.atom_lists[list][..length].iter().enumerate() {
+                let offset = usize::try_from(*provisional).map_err(|_| {
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Atom,
+                        raw: *provisional,
+                    }
+                })?;
+                let attribute = *self.extension_atoms.get(offset).ok_or(
                     compiler_ir::BuildError::Dangling {
                         space: compiler_ir::SemanticSpace::Atom,
                         raw: *provisional,
                     },
-                )?);
+                )?;
+                let position = start.checked_add(relative).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::AtomList,
+                        raw: list as u32,
+                    },
+                )?;
+                let slot = item_attributes.get_mut(position).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::AtomList,
+                        raw: list as u32,
+                    },
+                )?;
+                *slot = attribute;
             }
         }
         let empty_item = TreeItemInput {
@@ -2066,27 +2196,62 @@ impl<'source> FactSet<'source> {
         };
         let mut items = vec![empty_item; fact_count].into_boxed_slice();
         for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
-            let extension = match self.extensions[ordinal].as_ref() {
-                Some(EmissionExtension::TypeScript(_)) => Some(LanguageExtensionInput::TypeScript(
-                    &rewritten_typescript[ordinal],
-                )),
-                Some(EmissionExtension::CSharp(_)) => {
-                    Some(LanguageExtensionInput::CSharp(&rewritten_csharp[ordinal]))
+            let extension = match extension_bindings[ordinal] {
+                Some(RewrittenExtension::TypeScript(index)) => {
+                    Some(LanguageExtensionInput::TypeScript(rewritten_extension_fact(
+                        &rewritten_typescript,
+                        index,
+                        compiler_ir::Language::TypeScript,
+                        ordinal,
+                    )?))
                 }
-                Some(EmissionExtension::Go(_)) => {
-                    Some(LanguageExtensionInput::Go(&rewritten_go[ordinal]))
+                Some(RewrittenExtension::CSharp(index)) => {
+                    Some(LanguageExtensionInput::CSharp(rewritten_extension_fact(
+                        &rewritten_csharp,
+                        index,
+                        compiler_ir::Language::CSharp,
+                        ordinal,
+                    )?))
                 }
-                Some(EmissionExtension::Rust(_)) => {
-                    Some(LanguageExtensionInput::Rust(&rewritten_rust[ordinal]))
+                Some(RewrittenExtension::Go(index)) => {
+                    Some(LanguageExtensionInput::Go(rewritten_extension_fact(
+                        &rewritten_go,
+                        index,
+                        compiler_ir::Language::Go,
+                        ordinal,
+                    )?))
                 }
-                Some(EmissionExtension::Python(_)) => {
-                    Some(LanguageExtensionInput::Python(&rewritten_python[ordinal]))
+                Some(RewrittenExtension::Rust(index)) => {
+                    Some(LanguageExtensionInput::Rust(rewritten_extension_fact(
+                        &rewritten_rust,
+                        index,
+                        compiler_ir::Language::Rust,
+                        ordinal,
+                    )?))
                 }
-                Some(EmissionExtension::Java(_)) => {
-                    Some(LanguageExtensionInput::Java(&rewritten_java[ordinal]))
+                Some(RewrittenExtension::Python(index)) => {
+                    Some(LanguageExtensionInput::Python(rewritten_extension_fact(
+                        &rewritten_python,
+                        index,
+                        compiler_ir::Language::Python,
+                        ordinal,
+                    )?))
                 }
-                Some(EmissionExtension::Clang(_)) => {
-                    Some(LanguageExtensionInput::Clang(&rewritten_clang[ordinal]))
+                Some(RewrittenExtension::Java(index)) => {
+                    Some(LanguageExtensionInput::Java(rewritten_extension_fact(
+                        &rewritten_java,
+                        index,
+                        compiler_ir::Language::Java,
+                        ordinal,
+                    )?))
+                }
+                Some(RewrittenExtension::Clang(index)) => {
+                    Some(LanguageExtensionInput::Clang(rewritten_extension_fact(
+                        &rewritten_clang,
+                        index,
+                        compiler_ir::Language::Clang,
+                        ordinal,
+                    )?))
                 }
                 None => None,
             };
@@ -2101,7 +2266,8 @@ impl<'source> FactSet<'source> {
                 members: &members[member_ranges[ordinal].0
                     ..member_ranges[ordinal].0 + member_ranges[ordinal].1],
                 docs: &docs[doc_ranges[ordinal].0..doc_ranges[ordinal].0 + doc_ranges[ordinal].1],
-                attributes: &item_attributes[ordinal],
+                attributes: &item_attributes[item_attribute_ranges[ordinal].0
+                    ..item_attribute_ranges[ordinal].0 + item_attribute_ranges[ordinal].1],
                 source: self.provenance.source_spans()[ordinal].and_then(|span| {
                     source_file.and_then(|file| compiler_ir::SourceSpan::new(file, span.start, span.end))
                 }),
@@ -3742,97 +3908,6 @@ const MAX_TYPE_NODES: usize = 1 + PRIMITIVE_NODE_CAPACITY;
 /// product with no proven children.
 pub(super) const LEAF_PRODUCT: SemanticProductConstructor = SemanticProductConstructor::generic(0);
 
-/// Empty TypeScript pool row used before first write.
-const fn empty_typescript_facts() -> compiler_ir::TypeScriptFacts {
-    compiler_ir::TypeScriptFacts {
-        type_parameters: compiler_ir::TypeParameterListId::new(0),
-        declared: None,
-        observed: None,
-    }
-}
-
-/// Empty C# pool row used before first write.
-const fn empty_csharp_facts() -> compiler_ir::CSharpFacts {
-    compiler_ir::CSharpFacts {
-        nullability: compiler_ir::CSharpNullability::Oblivious,
-        reference_kind: compiler_ir::CSharpReferenceKind::Value,
-        constraints: compiler_ir::TypeParameterListId::new(0),
-        effects: compiler_ir::CSharpMemberEffects {
-            is_async: false,
-            is_iterator: false,
-            is_extension: false,
-        },
-        attributes: compiler_ir::AtomListId::new(0),
-        partial: compiler_ir::CSharpPartialRole::None,
-        xml_provenance: None,
-    }
-}
-
-/// Empty Go pool row used before first write.
-const fn empty_go_facts() -> compiler_ir::GoFacts {
-    compiler_ir::GoFacts {
-        signature: compiler_ir::GoSignature {
-            parameters: compiler_ir::TypeListId::new(0),
-            results: compiler_ir::TypeListId::new(0),
-            variadic: false,
-        },
-        type_parameters: compiler_ir::TypeParameterListId::new(0),
-        fields: compiler_ir::EntityListId::new(0),
-        method_set: compiler_ir::EntityListId::new(0),
-        build_constraints: compiler_ir::AtomListId::new(0),
-        constant_value: compiler_ir::AtomListId::new(0),
-        constant_group: 0,
-        constant_flags: 0,
-    }
-}
-
-/// Empty Rust pool row used before first write.
-const fn empty_rust_facts() -> compiler_ir::RustFacts {
-    compiler_ir::RustFacts {
-        ownership: compiler_ir::RustOwnership::Value,
-        lifetimes: compiler_ir::AtomListId::new(0),
-        where_clauses: compiler_ir::TypeParameterListId::new(0),
-        macros: compiler_ir::AtomListId::new(0),
-    }
-}
-
-/// Empty Python pool row used before first write.
-const fn empty_python_facts() -> compiler_ir::PythonFacts {
-    compiler_ir::PythonFacts {
-        decorators: compiler_ir::AtomListId::new(0),
-        parameter_kind: compiler_ir::PythonParameterKind::PositionalOrKeyword,
-        dynamic_confidence: compiler_ir::Confidence::Syntactic,
-    }
-}
-
-/// Empty Java pool row used before first write.
-const fn empty_java_facts() -> compiler_ir::JavaFacts {
-    compiler_ir::JavaFacts {
-        throws: compiler_ir::TypeListId::new(0),
-        annotations: compiler_ir::AtomListId::new(0),
-        overloads: compiler_ir::EntityListId::new(0),
-        record_components: compiler_ir::EntityListId::new(0),
-    }
-}
-
-/// Empty Clang pool row used before first write.
-const fn empty_clang_facts() -> compiler_ir::ClangFacts {
-    compiler_ir::ClangFacts {
-        qualifiers: compiler_ir::ClangQualifiers {
-            is_const: false,
-            is_volatile: false,
-            is_restrict: false,
-        },
-        storage: compiler_ir::ClangStorageClass::None,
-        layout: compiler_ir::ClangLayout {
-            size_bits: None,
-            align_bits: None,
-        },
-        templates: compiler_ir::TypeParameterListId::new(0),
-        includes: compiler_ir::AtomListId::new(0),
-    }
-}
-
 /// Admits one collector-emitted fact into the lane.
 ///
 /// Collectors construct facts whose identifiers are parsed source words,
@@ -4301,13 +4376,14 @@ pub(super) fn admit<'source, 'output>(
     // tables, with provisional atom coordinates rewritten to final lane
     // positions. Pooled lists keep provisional atom coordinates until the
     // pools lane rewrites them below.
-    let mut typescript_pool = vec![empty_typescript_facts(); fact_count].into_boxed_slice();
-    let mut csharp_pool = vec![empty_csharp_facts(); fact_count].into_boxed_slice();
-    let mut go_pool = vec![empty_go_facts(); fact_count].into_boxed_slice();
-    let mut rust_pool = vec![empty_rust_facts(); fact_count].into_boxed_slice();
-    let mut python_pool = vec![empty_python_facts(); fact_count].into_boxed_slice();
-    let mut java_pool = vec![empty_java_facts(); fact_count].into_boxed_slice();
-    let mut clang_pool = vec![empty_clang_facts(); fact_count].into_boxed_slice();
+    let extension_demand = ExtensionDemand::measure(&facts.extensions[..fact_count]);
+    let mut typescript_pool = Vec::with_capacity(extension_demand.typescript);
+    let mut csharp_pool = Vec::with_capacity(extension_demand.csharp);
+    let mut go_pool = Vec::with_capacity(extension_demand.go);
+    let mut rust_pool = Vec::with_capacity(extension_demand.rust);
+    let mut python_pool = Vec::with_capacity(extension_demand.python);
+    let mut java_pool = Vec::with_capacity(extension_demand.java);
+    let mut clang_pool = Vec::with_capacity(extension_demand.clang);
     let mut typescript_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let mut csharp_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let mut go_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
@@ -4315,13 +4391,6 @@ pub(super) fn admit<'source, 'output>(
     let mut python_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let mut java_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let mut clang_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
-    let mut typescript_len = 0_usize;
-    let mut csharp_len = 0_usize;
-    let mut go_len = 0_usize;
-    let mut rust_len = 0_usize;
-    let mut python_len = 0_usize;
-    let mut java_len = 0_usize;
-    let mut clang_len = 0_usize;
     let any_extension = facts.extensions[..fact_count].iter().any(Option::is_some);
     for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
         match extension {
@@ -4341,9 +4410,8 @@ pub(super) fn admit<'source, 'output>(
                 rewritten.observed = rewritten
                     .observed
                     .map(|id| TypeId::new(remap_staged_type(id.raw)));
-                typescript_pool[typescript_len] = rewritten;
-                typescript_rows[ordinal] = typescript_len as u32;
-                typescript_len += 1;
+                typescript_rows[ordinal] = next_extension_ordinal(&typescript_pool);
+                typescript_pool.push(rewritten);
             }
             Some(EmissionExtension::CSharp(value)) => {
                 let mut rewritten = *value;
@@ -4368,9 +4436,8 @@ pub(super) fn admit<'source, 'output>(
                     rewritten.xml_provenance =
                         compiler_ir::SourceSpan::new(file, span.start(), span.end());
                 }
-                csharp_pool[csharp_len] = rewritten;
-                csharp_rows[ordinal] = csharp_len as u32;
-                csharp_len += 1;
+                csharp_rows[ordinal] = next_extension_ordinal(&csharp_pool);
+                csharp_pool.push(rewritten);
             }
             Some(EmissionExtension::Go(value)) => {
                 let mut rewritten = *value;
@@ -4382,9 +4449,8 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                go_pool[go_len] = rewritten;
-                go_rows[ordinal] = go_len as u32;
-                go_len += 1;
+                go_rows[ordinal] = next_extension_ordinal(&go_pool);
+                go_pool.push(rewritten);
             }
             Some(EmissionExtension::Rust(value)) => {
                 let mut rewritten = *value;
@@ -4396,19 +4462,16 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                rust_pool[rust_len] = rewritten;
-                rust_rows[ordinal] = rust_len as u32;
-                rust_len += 1;
+                rust_rows[ordinal] = next_extension_ordinal(&rust_pool);
+                rust_pool.push(rewritten);
             }
             Some(EmissionExtension::Python(value)) => {
-                python_pool[python_len] = *value;
-                python_rows[ordinal] = python_len as u32;
-                python_len += 1;
+                python_rows[ordinal] = next_extension_ordinal(&python_pool);
+                python_pool.push(*value);
             }
             Some(EmissionExtension::Java(value)) => {
-                java_pool[java_len] = *value;
-                java_rows[ordinal] = java_len as u32;
-                java_len += 1;
+                java_rows[ordinal] = next_extension_ordinal(&java_pool);
+                java_pool.push(*value);
             }
             Some(EmissionExtension::Clang(value)) => {
                 let mut rewritten = *value;
@@ -4420,9 +4483,8 @@ pub(super) fn admit<'source, 'output>(
                         element_count: facts.type_parameter_len,
                     },
                 )?;
-                clang_pool[clang_len] = rewritten;
-                clang_rows[ordinal] = clang_len as u32;
-                clang_len += 1;
+                clang_rows[ordinal] = next_extension_ordinal(&clang_pool);
+                clang_pool.push(rewritten);
             }
             None => {}
         }
@@ -4529,31 +4591,31 @@ pub(super) fn admit<'source, 'output>(
     let extension_section = (any_extension).then(|| ExtensionSectionInput {
         authority: compiler_ir::SemanticImageAuthority::Language(profile),
         typescript: ExtensionSectionPlane {
-            facts: &typescript_pool[..typescript_len],
+            facts: &typescript_pool,
             row_ordinals: &typescript_rows[..fact_count],
         },
         csharp: ExtensionSectionPlane {
-            facts: &csharp_pool[..csharp_len],
+            facts: &csharp_pool,
             row_ordinals: &csharp_rows[..fact_count],
         },
         go: ExtensionSectionPlane {
-            facts: &go_pool[..go_len],
+            facts: &go_pool,
             row_ordinals: &go_rows[..fact_count],
         },
         rust: ExtensionSectionPlane {
-            facts: &rust_pool[..rust_len],
+            facts: &rust_pool,
             row_ordinals: &rust_rows[..fact_count],
         },
         python: ExtensionSectionPlane {
-            facts: &python_pool[..python_len],
+            facts: &python_pool,
             row_ordinals: &python_rows[..fact_count],
         },
         java: ExtensionSectionPlane {
-            facts: &java_pool[..java_len],
+            facts: &java_pool,
             row_ordinals: &java_rows[..fact_count],
         },
         clang: ExtensionSectionPlane {
-            facts: &clang_pool[..clang_len],
+            facts: &clang_pool,
             row_ordinals: &clang_rows[..fact_count],
         },
     });

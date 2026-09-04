@@ -3259,6 +3259,10 @@ pub enum LanguageExtensionViolation {
     ComputedType,
     /// A Clang layout alignment claimed an impossible zero-bit alignment.
     ZeroLayoutAlignment,
+    /// A transaction-local sparse binding escaped the exact typed fact pool
+    /// measured for its one language.  Both coordinates are retained so an
+    /// internal projection defect cannot be disguised as an absent fact.
+    MissingPoolFact { fact: usize, count: usize },
 }
 
 /// Failure while condensing or validating frontend IR.
