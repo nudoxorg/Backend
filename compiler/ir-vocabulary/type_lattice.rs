@@ -169,8 +169,15 @@ impl TryFrom<u32> for ChannelDirection {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AnnotationKind {
+    /// TypeScript's `readonly T` structural annotation.
     Readonly = 0,
+    /// C# value-nullable `T?` (`Nullable<T>`).
     NullableValue = 1,
+    /// C# nullable-reference annotation on this exact recursive type node.
+    NullableReference = 2,
+    /// C# explicitly non-null reference annotation on this exact recursive
+    /// type node.  Oblivious nullability is represented by no wrapper.
+    NonNullableReference = 3,
 }
 
 impl TryFrom<u32> for AnnotationKind {
@@ -180,6 +187,8 @@ impl TryFrom<u32> for AnnotationKind {
         match value {
             0 => Ok(Self::Readonly),
             1 => Ok(Self::NullableValue),
+            2 => Ok(Self::NullableReference),
+            3 => Ok(Self::NonNullableReference),
             _ => Err(()),
         }
     }
@@ -1382,6 +1391,27 @@ impl SemanticTypeRecord<'_> {
         child: &SemanticTypeChild<'_>,
     ) -> Result<(), SemanticTypeFault> {
         let tag = self.tag;
+        // Template text is a distinct target kind, not an unnamed type
+        // child.  In particular, an empty literal segment is meaningful in
+        // `${T}` and must retain its empty byte spelling rather than being
+        // rejected by the ordinary member-label grammar.
+        if matches!(child.target, TypeChildTarget::Text) {
+            if tag != SemanticTypeTag::TemplateLiteral || child.flags != 0 {
+                return Err(if tag != SemanticTypeTag::TemplateLiteral {
+                    SemanticTypeFault::ChildTextForbidden { tag, position }
+                } else {
+                    SemanticTypeFault::ChildFlagsForbidden {
+                        tag,
+                        position,
+                        actual: child.flags,
+                    }
+                });
+            }
+            if child.name.is_none() {
+                return Err(SemanticTypeFault::ChildNameRequired { tag, position });
+            }
+            return Ok(());
+        }
         let name_allowed = matches!(
             tag,
             SemanticTypeTag::Tuple | SemanticTypeTag::AnonymousRecord
@@ -1416,9 +1446,14 @@ impl SemanticTypeRecord<'_> {
                 actual: child.flags,
             });
         }
-        let text_allowed = tag == SemanticTypeTag::TemplateLiteral;
-        if !text_allowed && matches!(child.target, TypeChildTarget::Text) {
-            return Err(SemanticTypeFault::ChildTextForbidden { tag, position });
+        if child.flags & (SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST)
+            == SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST
+        {
+            return Err(SemanticTypeFault::ChildFlagsForbidden {
+                tag,
+                position,
+                actual: child.flags,
+            });
         }
         Ok(())
     }

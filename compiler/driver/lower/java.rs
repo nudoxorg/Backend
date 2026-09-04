@@ -200,20 +200,6 @@ const INTEGER_WIDTH_SHIFT: u32 = 1;
 /// `void` builtin spelling; the void row is a primitive builtin leaf.
 const VOID_SPELLING: &[u8] = b"void";
 
-/// Array arity spellings the lane can commit as a borrowed text cell. Deeper
-/// arrays keep their element spelling in a typed `Unknown` row instead of an
-/// allocated spelling.
-const ARITY_SPELLINGS: [&[u8]; 8] = [
-    b"[]",
-    b"[][]",
-    b"[][][]",
-    b"[][][][]",
-    b"[][][][][]",
-    b"[][][][][][]",
-    b"[][][][][][][]",
-    b"[][][][][][][][]",
-];
-
 /// Wildcard variance cell for an unbounded `<?>`.
 const VARIANCE_INVARIANT: u32 = 0;
 /// Wildcard variance cell for `? extends T`.
@@ -367,8 +353,8 @@ const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
 }
 
 /// One projected javac type row prepared for a fact: the lattice record, its
-/// ordered backward fact-ordinal children, the nearest image atom spelling,
-/// and whether the row is `void`.
+/// ordered backward type-row children, the nearest image atom spelling, and
+/// whether the row is `void`.
 struct ProjectedType<'image> {
     record: SemanticTypeRecord<'image>,
     children: [u32; MAX_TYPE_CHILDREN],
@@ -411,6 +397,30 @@ impl<'image> ProjectedType<'image> {
             fact = fact.type_child(*ordinal, None, 0);
         }
         fact
+    }
+
+    /// Materializes this projected row as a child of an already-admitted
+    /// declaration when it is not the direct local-nominal terminal. This is
+    /// the bridge that lets nested Java arrays retain one structural sequence
+    /// node per written `[]` without fabricating carrier declarations.
+    fn into_child(
+        self,
+        facts: &mut FactSet<'image>,
+        anchor: u32,
+    ) -> Result<u32, ProjectionFault<'image>> {
+        if self.child_count == 0
+            && let Some(NominalRef::Local(target)) = self.record.nominal
+        {
+            return Ok(target.raw);
+        }
+        for ordinal in self.children.iter().take(self.child_count) {
+            facts
+                .anonymous_type_child(*ordinal, None, 0)
+                .map_err(|_| ProjectionFault::IndexCapacity)?;
+        }
+        facts
+            .intern_anonymous_type_row(anchor, self.record)
+            .map_err(|_| ProjectionFault::IndexCapacity)
     }
 }
 
@@ -458,7 +468,7 @@ const fn qualified_record(spelling: &[u8]) -> SemanticTypeRecord<'_> {
 
 /// A Java sequence array has no numeric extent: each source `[]` is one
 /// nested `ArraySequence` row, and the dialect owns token placement.
-const fn array_record(_spelling: &[u8]) -> SemanticTypeRecord<'static> {
+const fn array_record() -> SemanticTypeRecord<'static> {
     SemanticTypeRecord::leaf(SemanticTypeTag::ArraySequence)
 }
 
@@ -477,8 +487,10 @@ fn unknown_declared(spelling: &[u8]) -> ProjectedType<'_> {
 
 /// Projects one image type coordinate into the lane's lattice.
 fn project<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
+    anchor: u32,
     reference: TypeRef,
     depth: usize,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
@@ -495,7 +507,7 @@ fn project<'image>(
             Ok(ProjectedType::leaf(record, None).with_void())
         }
         TypeKind::Declared => declared(image, names, &row),
-        TypeKind::Array => array(image, names, reference, depth),
+        TypeKind::Array => array(facts, image, names, anchor, reference, depth),
         TypeKind::Variable => {
             let spelling = required_spelling(&row)?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
@@ -627,12 +639,12 @@ fn declared<'image>(
     Ok(projected)
 }
 
-/// Projects one array row: the arity walk collapses consecutive array rows
-/// into one row whose text carries the derived arity spelling and whose single
-/// child targets the ultimate component's nominal row.
+/// Projects one array row into one structural sequence node per written `[]`.
 fn array<'image>(
+    facts: &mut FactSet<'image>,
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
+    anchor: u32,
     reference: TypeRef,
     depth: usize,
 ) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
@@ -652,24 +664,24 @@ fn array<'image>(
             .next()
             .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
     }
-    let component = project(image, names, cursor, depth - 1)?;
-    let nominal = match component.record.nominal {
-        Some(NominalRef::Local(target)) => Some(target.raw),
-        _ => None,
-    };
-    let committed = ARITY_SPELLINGS
-        .get(arity.saturating_sub(1))
-        .zip(nominal)
-        .and_then(|(spelling, ordinal)| {
-            ProjectedType::leaf(array_record(spelling), component.spelling).child(ordinal)
-        });
-    if let Some(projected) = committed {
-        return Ok(projected);
+    let component = project(facts, image, names, anchor, cursor, depth - 1)?;
+    let spelling = component.spelling;
+    let mut target = component.into_child(facts, anchor)?;
+    // The outer-most sequence remains this fact's record; every preceding
+    // written `[]` is an anonymous sequence owned by the same declaration.
+    // There is deliberately no source-spelling arity table or arbitrary
+    // fidelity ceiling here.
+    for _ in 1..arity {
+        facts
+            .anonymous_type_child(target, None, 0)
+            .map_err(|_| ProjectionFault::IndexCapacity)?;
+        target = facts
+            .intern_anonymous_type_row(anchor, array_record())
+            .map_err(|_| ProjectionFault::IndexCapacity)?;
     }
-    Ok(ProjectedType::leaf(
-        unknown_projection(component.spelling),
-        component.spelling,
-    ))
+    ProjectedType::leaf(array_record(), spelling)
+        .child(target)
+        .ok_or(ProjectionFault::IndexCapacity)
 }
 
 /// Projects one wildcard row: an in-image bound commits the variance cell with
@@ -969,6 +981,21 @@ fn push_type_root<'source>(
     push(facts, fact)
 }
 
+/// Finds the already-admitted declaration that owns any anonymous structural
+/// type rows for this Java declaration.  Source-bound member ownership wins;
+/// a module/package root is an honest fallback for a flat authority fixture.
+fn type_anchor(
+    facts: &FactSet<'_>,
+    names: &NameIndex<'_>,
+    declared: &Declaration<'_>,
+) -> Result<u32, ProjectionFault<'static>> {
+    declared
+        .owner
+        .and_then(|owner| names.lookup(owner.bytes))
+        .or_else(|| (facts.len() != 0).then_some(0))
+        .ok_or(ProjectionFault::IndexCapacity)
+}
+
 /// Pushes one field or enum constant with its projected declared type.
 fn push_member<'source>(
     facts: &mut FactSet<'source>,
@@ -977,8 +1004,10 @@ fn push_member<'source>(
     declared: &Declaration<'source>,
 ) -> Result<(), JavaCollectError> {
     let kind = entity_kind(declared.kind);
+    let anchor = type_anchor(facts, names, declared).map_err(terminal)?;
     let projected = match declared.semantic_type {
-        Some(reference) => project(image, names, reference, DEPTH_LIMIT).map_err(terminal)?,
+        Some(reference) => project(facts, image, names, anchor, reference, DEPTH_LIMIT)
+            .map_err(terminal)?,
         None => ProjectedType::leaf(unknown_record(TypeReason::Unannotated, None), None),
     };
     let fact = projected.attach(SemanticFact::new(
@@ -1010,6 +1039,7 @@ fn push_executable<'source>(
         .symbol(symbol_reference)
         .map_err(|cause| terminal(ProjectionFault::Image(cause)))?;
     let is_constructor = declared.kind == DeclarationKind::Constructor;
+    let anchor = type_anchor(facts, names, declared).map_err(terminal)?;
 
     // Parameter carriers first so every executable target stays backward.
     let mut parameter_ordinals = [0_u32; MAX_FACT_CHILDREN];
@@ -1017,7 +1047,8 @@ fn push_executable<'source>(
     let mut parameter_count = 0usize;
     let mut signature_count = 0usize;
     for parameter in symbol.parameters {
-        let projected = project(image, names, parameter, DEPTH_LIMIT).map_err(terminal)?;
+        let projected = project(facts, image, names, anchor, parameter, DEPTH_LIMIT)
+            .map_err(terminal)?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
                 kind: TypeKind::None,
@@ -1039,7 +1070,8 @@ fn push_executable<'source>(
     // Result carrier for non-void methods; constructors carry none.
     let mut result_ordinal = None;
     if !is_constructor && let Some(return_type) = declared.semantic_type {
-        let projected = project(image, names, return_type, DEPTH_LIMIT).map_err(terminal)?;
+        let projected = project(facts, image, names, anchor, return_type, DEPTH_LIMIT)
+            .map_err(terminal)?;
         if !projected.void {
             let name = projected.spelling.ok_or_else(|| {
                 terminal(ProjectionFault::Malformed {
@@ -2371,6 +2403,55 @@ mod tests {
             || foreign_row.record.text != Some(b"java.lang.String".as_slice())
         {
             return Err(TestError::Missing("foreign declared unknown"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_sequence_arrays_keep_every_dimension_without_a_spelling_ceiling(
+    ) -> Result<(), TestError> {
+        let source = b"class Matrix { Node[][][][][][][][][] deep; }";
+        let mut fix = Fixture::default();
+        let matrix = fix.class(b"demo.Matrix");
+        let node = fix.class(b"demo.Node");
+        let mut nested = node;
+        for _ in 0..9 {
+            let row = u32::try_from(fix.types.len())?;
+            fix.types.push(TypeRow {
+                kind: 4,
+                flags: 0,
+                atom: None,
+                children: vec![nested],
+            });
+            nested = row;
+        }
+        let deep = fix.atom(b"deep");
+        fix.declarations.push(DeclarationRow {
+            kind: 8,
+            name: deep,
+            owner: Some(usize::try_from(matrix)?),
+            documentation: None,
+            semantic_type: Some(nested),
+            symbol: None,
+        });
+
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // Eight inner anonymous sequence rows precede the three declared
+        // rows; the ninth, outer sequence is the `deep` field's own row.
+        let deep = row(&view, 10)?;
+        if deep.record.tag != SemanticTypeTag::ArraySequence
+            || deep.record.children.length != 1
+        {
+            return Err(TestError::Missing("outer nested sequence"));
+        }
+        for ordinal in 0..8 {
+            let inner = row(&view, ordinal)?;
+            if inner.record.tag != SemanticTypeTag::ArraySequence
+                || inner.record.children.length != 1
+            {
+                return Err(TestError::Missing("inner nested sequence"));
+            }
         }
         Ok(())
     }

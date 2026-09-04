@@ -507,11 +507,61 @@ fn child_names_and_flags_are_tag_owned() {
             0,
             &SemanticTypeChild {
                 target: TypeChildTarget::Text,
-                name: None,
+                // An empty segment is still captured rather than conflated
+                // with a missing text coordinate.
+                name: Some(b""),
                 flags: 0,
             }
         ),
         Ok(())
+    );
+    assert_eq!(
+        row.validate_child(
+            0,
+            &SemanticTypeChild {
+                target: TypeChildTarget::Text,
+                name: None,
+                flags: 0,
+            }
+        ),
+        Err(SemanticTypeFault::ChildNameRequired {
+            tag: SemanticTypeTag::TemplateLiteral,
+            position: 0,
+        })
+    );
+    assert_eq!(
+        row.validate_child(
+            0,
+            &SemanticTypeChild {
+                target: TypeChildTarget::Type(TypeRef::Local(
+                    compiler_ir_vocabulary::TypeId::new(0)
+                )),
+                name: Some(b"not-a-placeholder"),
+                flags: 0,
+            }
+        ),
+        Err(SemanticTypeFault::ChildNameForbidden {
+            tag: SemanticTypeTag::TemplateLiteral,
+            position: 0,
+        })
+    );
+    let row = record(SemanticTypeTag::Tuple);
+    assert_eq!(
+        row.validate_child(
+            0,
+            &SemanticTypeChild {
+                target: TypeChildTarget::Type(TypeRef::Local(
+                    compiler_ir_vocabulary::TypeId::new(0)
+                )),
+                name: None,
+                flags: SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST,
+            }
+        ),
+        Err(SemanticTypeFault::ChildFlagsForbidden {
+            tag: SemanticTypeTag::Tuple,
+            position: 0,
+            actual: SemanticTypeChild::FLAG_OPTIONAL | SemanticTypeChild::FLAG_REST,
+        })
     );
 }
 

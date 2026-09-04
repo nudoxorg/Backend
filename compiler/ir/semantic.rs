@@ -1368,6 +1368,8 @@ const fn annotation_kind_from(value: u8) -> Option<AnnotationKind> {
     match value {
         0 => Some(AnnotationKind::Readonly),
         1 => Some(AnnotationKind::NullableValue),
+        2 => Some(AnnotationKind::NullableReference),
+        3 => Some(AnnotationKind::NonNullableReference),
         _ => None,
     }
 }

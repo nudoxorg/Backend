@@ -8,7 +8,7 @@
 
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticTypeFault};
 use compiler_languages_clang::{DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity};
-use compiler_languages_csharp::ImageError;
+use compiler_languages_csharp::{ImageError, TypeRef as CSharpTypeRef};
 
 /// Exact cause for rejecting one emitted fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,6 +146,15 @@ pub enum CSharpProjectionFault {
     AttributeCapacity { spellings: usize },
     /// A projection index exceeded its representable width.
     IndexCapacity,
+    /// One rectangular-array authority row repeated non-identical element
+    /// coordinates.  Rank is a repetition of one element type, never a
+    /// lossy selection of the first child.
+    HeterogeneousArrayRank {
+        /// The first repeated element coordinate.
+        first: CSharpTypeRef,
+        /// The distinct coordinate observed later in the same rank row.
+        observed: CSharpTypeRef,
+    },
     /// Canonical fact admission rejected the projected fact.
     Fact(FactFault),
 }

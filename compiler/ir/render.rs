@@ -425,6 +425,17 @@ fn write_concrete_type(
                 write_type(output, ir, target, next)?;
                 output.write_str("?")
             }
+            AnnotationKind::NullableReference => {
+                write_type(output, ir, target, next)?;
+                output.write_str("?")
+            }
+            AnnotationKind::NonNullableReference => {
+                // C# has no non-null-reference type suffix: `!` is an
+                // expression-level null-forgiving operator.  Preserve the
+                // semantic annotation in IR while neutral rendering leaves
+                // token placement to the C# dialect.
+                write_type(output, ir, target, next)
+            }
         },
         ConcreteType::Inferred(spelling) => {
             write_atom(output, spelling.and_then(|atom| ir.atom(atom)).unwrap_or(b"_"))
@@ -622,7 +633,19 @@ fn write_function_tail(
     let results = ir.tuple_elements(results).unwrap_or(&[]);
     if results.len() == 1 {
         output.write_str(" -> ")?;
-        write_type(output, ir, results[0].ty, depth + 1)?;
+        if let Some(label) = results[0].label {
+            // A labelled singleton result is still a role-bearing callable
+            // element. Use a neutral one-element result tuple until the
+            // selected dialect owns its exact declaration syntax; dropping
+            // the label here would make rendering semantically lossy.
+            output.write_str("(")?;
+            write_atom(output, ir.atom(label).unwrap_or(b"?"))?;
+            output.write_str(": ")?;
+            write_type(output, ir, results[0].ty, depth + 1)?;
+            output.write_str(")")?;
+        } else {
+            write_type(output, ir, results[0].ty, depth + 1)?;
+        }
     } else if results.len() > 1 {
         output.write_str(" -> (")?;
         for (index, result) in results.iter().enumerate() {

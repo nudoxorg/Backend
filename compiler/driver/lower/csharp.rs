@@ -836,6 +836,21 @@ fn project_fact_type<'source>(
     }
     let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
+    if let Some(kind) = reference_nullability(projection.nullable) {
+        let spelling = projection.spelling;
+        let nullable = projection.nullable;
+        let void = projection.void;
+        let target = projection_target(facts, anchor, projection)?;
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
+        record.payload0 = kind as u32;
+        return Ok(ProjectedType {
+            record,
+            children: vec![(target, None)],
+            spelling,
+            nullable,
+            void,
+        });
+    }
     match projection.fact {
         // The bare in-file nominal terminal: the fact's record names the
         // declaration's own backward ordinal and no rows are interned.
@@ -876,10 +891,41 @@ fn child_target<'source>(
     }
     let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
     let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
+    let nullable = projection.nullable;
+    let target = projection_target(facts, anchor, projection)?;
+    match reference_nullability(nullable) {
+        Some(kind) => {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
+            record.payload0 = kind as u32;
+            intern_row(facts, anchor, record, &[(target, None)]).map_err(lane_terminal)
+        }
+        None => Ok(target),
+    }
+}
+
+/// Turns one already-projected C# node into a backward type coordinate.
+/// Bare in-image declarations retain their declaration coordinate; every
+/// other node is materialized once under the caller's reserved owner.
+fn projection_target<'source>(
+    facts: &mut FactSet<'source>,
+    anchor: u32,
+    projection: OwnedNode<'source>,
+) -> Result<u32, CSharpCollectError> {
     match projection.fact {
         Some(ordinal) => Ok(ordinal),
         None => intern_row(facts, anchor, projection.record, &projection.children)
             .map_err(lane_terminal),
+    }
+}
+
+/// Maps a meaningful Roslyn reference-nullability cell into a structural
+/// annotation. Oblivious (`None`) is intentionally absence, not a fabricated
+/// assertion about the reference type.
+const fn reference_nullability(cell: NullabilityCell) -> Option<AnnotationKind> {
+    match cell {
+        NullabilityCell::None => None,
+        NullabilityCell::Annotated => Some(AnnotationKind::NullableReference),
+        NullabilityCell::NotAnnotated => Some(AnnotationKind::NonNullableReference),
     }
 }
 
@@ -925,9 +971,18 @@ fn owned_node<'source>(
         TypeNodeKind::Named => named_node(facts, image, names, ordinals, anchor, node, depth),
         TypeNodeKind::Array => {
             let rank = node.children.len();
-            let Some(element) = node.children.clone().next() else {
+            let mut elements = node.children.clone();
+            let Some(element) = elements.next() else {
                 return Ok(spelled_unknown(node));
             };
+            for sibling in elements {
+                if sibling.ty != element.ty {
+                    return Err(terminal(ProjectionFault::HeterogeneousArrayRank {
+                        first: element.ty,
+                        observed: sibling.ty,
+                    }));
+                }
+            }
             // Jagged chains project as nested array rows. A rectangular rank
             // is a numeric authority fact, not a bounded comma spelling.
             let Some(rank) = u16::try_from(rank).ok().filter(|rank| *rank != 0) else {
@@ -958,7 +1013,7 @@ fn owned_node<'source>(
                 record,
                 children: vec![(target, None)],
                 spelling: node.spelling.map(|atom| atom.bytes),
-                nullable: NullabilityCell::None,
+                nullable: node.nullable,
                 void: false,
                 fact: None,
             })
@@ -1015,7 +1070,7 @@ fn owned_node<'source>(
                 record,
                 children,
                 spelling: node.spelling.map(|atom| atom.bytes),
-                nullable: NullabilityCell::None,
+                nullable: node.nullable,
                 void: false,
                 fact: None,
             })
@@ -1040,7 +1095,7 @@ fn owned_node<'source>(
             record: unknown_record(TypeReason::DynamicallyTyped, None),
             children: Vec::new(),
             spelling: node.spelling.map(|atom| atom.bytes),
-            nullable: NullabilityCell::None,
+            nullable: node.nullable,
             void: false,
             fact: None,
         }),
@@ -1071,7 +1126,7 @@ fn named_node<'source>(
             record,
             children: Vec::new(),
             spelling: Some(spelling),
-            nullable: NullabilityCell::None,
+            nullable: node.nullable,
             void,
             fact: None,
         });
@@ -1144,7 +1199,7 @@ fn spelled_unknown<'source>(node: &TypeNode<'source>) -> OwnedNode<'source> {
         record,
         children: Vec::new(),
         spelling,
-        nullable: NullabilityCell::None,
+        nullable: node.nullable,
         void: false,
         fact: None,
     }
@@ -1711,6 +1766,7 @@ mod tests {
 
     use super::{CSharpCollectError, collect};
     use crate::lower::{FactSet, MAX_EMISSION_FACTS, admit};
+    use crate::types::CSharpProjectionFault;
 
     const HEADER_BYTES: usize = 256;
     const DIRECTORY_OFFSET: usize = 48;
@@ -1726,6 +1782,8 @@ mod tests {
     const KIND_METHOD: u8 = 15;
     const KIND_OPERATOR: u8 = 16;
     const NULL_NONE: u8 = 0;
+    const NULL_ANNOTATED: u8 = 1;
+    const NULL_NOT_ANNOTATED: u8 = 2;
     const PARTIAL_DEFINITION: u8 = 1;
     const PARTIAL_IMPLEMENTATION: u8 = 2;
     const REF_VALUE: u8 = 0;
@@ -2459,6 +2517,40 @@ mod tests {
     }
 
     #[test]
+    fn nested_reference_nullability_stays_structural_at_each_type_node() -> Result<(), TestError> {
+        let source = b"class Box { string? maybe; string present; }";
+        let mut fix = Fixture::default();
+        let box_type = fix.class(b"demo.Box", source);
+        let nullable = fix.named(b"System.String");
+        let nonnullable = fix.named(b"System.String");
+        fix.types[nullable as usize].nullable = NULL_ANNOTATED;
+        fix.types[nonnullable as usize].nullable = NULL_NOT_ANNOTATED;
+        let maybe = fix.field(box_type, b"maybe", nullable, source);
+        let present = fix.field(box_type, b"present", nonnullable, source);
+        fix.declarations.push(maybe);
+        fix.declarations.push(present);
+
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        // The two primitive child rows are anonymous; class then fields are
+        // dense entity rows. Both reference annotations must survive rather
+        // than being relegated to the outer C# extension cell.
+        let maybe = row(&view, 3)?;
+        if maybe.record.tag != SemanticTypeTag::Annotated
+            || maybe.record.payload0 != AnnotationKind::NullableReference as u32
+        {
+            return Err(TestError::Missing("nullable reference annotation"));
+        }
+        let present = row(&view, 4)?;
+        if present.record.tag != SemanticTypeTag::Annotated
+            || present.record.payload0 != AnnotationKind::NonNullableReference as u32
+        {
+            return Err(TestError::Missing("nonnullable reference annotation"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn generic_application_and_constraint_pool_carry_backward_ordinals() -> Result<(), TestError> {
         let source = b"interface IPart {} class Widget<T> where T : IPart {}";
         let mut fix = Fixture::default();
@@ -3019,23 +3111,20 @@ mod tests {
         {
             return Err(TestError::Missing("params array row"));
         }
-        // Falsifier: a second element raises the typed rectangular rank.
+        // Falsifier: rank repeats one element coordinate; it may not select
+        // the first of heterogeneous children and silently call that a
+        // rectangular array.
         let mut mutated = fix.clone();
         let int_ty = mutated.named(b"System.Int32");
         mutated.types[array_row as usize]
             .children
             .push((None, int_ty));
-        let other = lower(&mutated, source)?;
-        if other == bytes {
-            return Err(TestError::Tail);
-        }
-        let view = FragmentView::validate(&other)?;
-        let parameter = row(&view, 2)?;
-        if parameter.record.tag != SemanticTypeTag::ArrayRectangular
-            || parameter.record.payload0 != 2
-        {
-            return Err(TestError::Missing("rank-two spelling"));
-        }
+        let Err(TestError::Collect(CSharpCollectError::Projection(
+            CSharpProjectionFault::HeterogeneousArrayRank { .. },
+        ))) = lower(&mutated, source)
+        else {
+            return Err(TestError::Missing("heterogeneous array rank rejection"));
+        };
         Ok(())
     }
 

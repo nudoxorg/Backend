@@ -515,29 +515,104 @@ impl<'source> FactSet<'source> {
         row >= COMPUTED_ROW_BASE && (row - COMPUTED_ROW_BASE) as usize < self.computed_rows
     }
 
-    /// Exact compound projection geometry actually admitted by this
-    /// transaction.  Each typed lane owns only the maximum it can consume;
-    /// a wide callable does not reserve an equally-wide object or template
-    /// buffer merely because all share the wire child ceiling.
+    /// Conservative active compound-projection bound for this transaction.
+    ///
+    /// A scratch lane is a depth-first stack, not a collection of unrelated
+    /// row maxima: a parent prefix can remain live while one of its compound
+    /// children is being completed.  Planning only the largest individual
+    /// row therefore under-allocates nested tuples/objects.  This walk
+    /// derives a safe maximum live path per typed scratch lane while retaining
+    /// independent per-family allocations. Cache/order can make the observed
+    /// peak smaller; this bound must never be smaller than that peak.
     fn projected_type_demand(&self) -> ProjectionDemand {
+        let row_count = self.len + self.anonymous_rows + self.computed_rows;
+        let mut state = vec![0_u8; row_count].into_boxed_slice();
+        let mut cached = vec![ProjectionDemand::default(); row_count].into_boxed_slice();
         let mut demand = ProjectionDemand::default();
-        for (record, count) in self.type_records[..self.len]
-            .iter()
-            .zip(&self.type_child_counts[..self.len])
-            .chain(
-                self.anonymous_records[..self.anonymous_rows]
-                    .iter()
-                    .zip(&self.anonymous_child_counts[..self.anonymous_rows]),
-            )
-            .chain(
-                self.computed_records[..self.computed_rows]
-                    .iter()
-                    .zip(&self.computed_child_counts[..self.computed_rows]),
-            )
-        {
-            demand.observe(record.tag, usize::from(*count));
+        for ordinal in 0..self.len {
+            demand = demand.maximum(self.projected_type_demand_from(
+                ordinal as u32,
+                &mut state,
+                &mut cached,
+            ));
+        }
+        for ordinal in 0..self.anonymous_rows {
+            demand = demand.maximum(self.projected_type_demand_from(
+                ANONYMOUS_ROW_BASE + ordinal as u32,
+                &mut state,
+                &mut cached,
+            ));
+        }
+        for ordinal in 0..self.computed_rows {
+            demand = demand.maximum(self.projected_type_demand_from(
+                COMPUTED_ROW_BASE + ordinal as u32,
+                &mut state,
+                &mut cached,
+            ));
         }
         demand
+    }
+
+    fn projected_type_demand_from(
+        &self,
+        row: u32,
+        state: &mut [u8],
+        cached: &mut [ProjectionDemand],
+    ) -> ProjectionDemand {
+        let Some(index) = self.staged_type_slot(row) else {
+            return ProjectionDemand::default();
+        };
+        match state[index] {
+            2 => return cached[index],
+            // The owned projector later rejects this as `RecursiveType`.
+            // Treating the back-edge as no additional scratch keeps planning
+            // finite without turning a semantic fault into an allocation
+            // policy.
+            1 => return ProjectionDemand::default(),
+            _ => {}
+        }
+        state[index] = 1;
+        let record = self.type_record_for_demand(row);
+        let child_count = self.type_child_count_for_demand(row);
+        let mut deepest_child = ProjectionDemand::default();
+        for position in 0..child_count {
+            let Some((target, _, _)) = self.staged_type_child(row, position) else {
+                continue;
+            };
+            if target != STAGED_TEXT_CHILD {
+                deepest_child = deepest_child.maximum(self.projected_type_demand_from(
+                    target,
+                    state,
+                    cached,
+                ));
+            }
+        }
+        let demand = ProjectionDemand::for_row(record.tag, child_count).with_child(deepest_child);
+        state[index] = 2;
+        cached[index] = demand;
+        demand
+    }
+
+    fn type_record_for_demand(&self, row: u32) -> SemanticTypeRecord<'source> {
+        debug_assert!(self.staged_type_slot(row).is_some());
+        if row < ANONYMOUS_ROW_BASE {
+            self.type_records[row as usize]
+        } else if self.is_anonymous_type_row(row) {
+            self.anonymous_records[(row - ANONYMOUS_ROW_BASE) as usize]
+        } else {
+            self.computed_records[(row - COMPUTED_ROW_BASE) as usize]
+        }
+    }
+
+    fn type_child_count_for_demand(&self, row: u32) -> usize {
+        debug_assert!(self.staged_type_slot(row).is_some());
+        if row < ANONYMOUS_ROW_BASE {
+            usize::from(self.type_child_counts[row as usize])
+        } else if self.is_anonymous_type_row(row) {
+            usize::from(self.anonymous_child_counts[(row - ANONYMOUS_ROW_BASE) as usize])
+        } else {
+            usize::from(self.computed_child_counts[(row - COMPUTED_ROW_BASE) as usize])
+        }
     }
     /// Full protocol plan for direct lowerer boundary tests.
     pub(super) fn new() -> Self {
@@ -2468,7 +2543,8 @@ fn external_from_occurrence<'source>(
     }
 }
 
-/// Exact per-family compound staging demand measured from admitted rows.
+/// Conservative per-family compound staging bound over live depth-first
+/// projection paths.
 #[derive(Clone, Copy, Debug, Default)]
 struct ProjectionDemand {
     type_ids: usize,
@@ -2478,27 +2554,47 @@ struct ProjectionDemand {
 }
 
 impl ProjectionDemand {
-    fn observe(&mut self, tag: SemanticTypeTag, child_count: usize) {
+    fn for_row(tag: SemanticTypeTag, child_count: usize) -> Self {
+        let mut demand = Self::default();
         match tag {
             SemanticTypeTag::Tuple | SemanticTypeTag::FunctionPointer => {
-                self.tuple_elements = self.tuple_elements.max(child_count);
+                demand.tuple_elements = child_count;
             }
             SemanticTypeTag::TemplateLiteral => {
-                self.template_parts = self.template_parts.max(child_count);
+                demand.template_parts = child_count;
             }
             SemanticTypeTag::AnonymousRecord => {
-                self.object_members = self.object_members.max(child_count);
+                demand.object_members = child_count;
             }
             SemanticTypeTag::Apply => {
-                self.type_ids = self.type_ids.max(child_count.saturating_sub(1));
+                demand.type_ids = child_count.saturating_sub(1);
             }
             SemanticTypeTag::Union
             | SemanticTypeTag::Intersection
             | SemanticTypeTag::ImplTrait
             | SemanticTypeTag::DynTrait => {
-                self.type_ids = self.type_ids.max(child_count);
+                demand.type_ids = child_count;
             }
             _ => {}
+        }
+        demand
+    }
+
+    fn maximum(self, other: Self) -> Self {
+        Self {
+            type_ids: self.type_ids.max(other.type_ids),
+            tuple_elements: self.tuple_elements.max(other.tuple_elements),
+            template_parts: self.template_parts.max(other.template_parts),
+            object_members: self.object_members.max(other.object_members),
+        }
+    }
+
+    fn with_child(self, child: Self) -> Self {
+        Self {
+            type_ids: self.type_ids.saturating_add(child.type_ids),
+            tuple_elements: self.tuple_elements.saturating_add(child.tuple_elements),
+            template_parts: self.template_parts.saturating_add(child.template_parts),
+            object_members: self.object_members.saturating_add(child.object_members),
         }
     }
 }

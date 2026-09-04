@@ -208,13 +208,38 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
             .type_text_child(b""),
         )
         .map_err(rejected)?;
+    // A single result keeps its source label in the same role-bearing result
+    // list as a Go multi-result signature. Neutral rendering may choose a
+    // language-specific surface later; the semantic model must never erase
+    // it merely because the list has cardinality one.
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Parameter,
+            b"solo",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    let mut single = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+    single.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"single",
+                SemanticProductConstructor::function(0, 1),
+            )
+            .child(ProductChildRole::FunctionResult, 10)
+            .typed(single)
+            .type_child(10, None, 0),
+        )
+        .map_err(rejected)?;
 
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
         crate::types::DeclarationScope::fixture(),
     )?;
-    assert_eq!(ir.items().len(), 10);
+    assert_eq!(ir.items().len(), 12);
     assert!(ir.items().all(|item| item.semantic_type().is_some()));
     let many = ir
         .items()
@@ -235,6 +260,18 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
     assert_eq!(results.len(), 2);
     assert_eq!(ir.atom(results[0].label.expect("left label")), Some(&b"left"[..]));
     assert_eq!(ir.atom(results[1].label.expect("right label")), Some(&b"right"[..]));
+    let single = ir
+        .items()
+        .find(|item| item.name() == b"single")
+        .expect("single-result callable was projected");
+    let Some(TypeExpr::Concrete(ConcreteType::Function { results, .. })) =
+        single.semantic_type().and_then(|ty| ir.ty(ty))
+    else {
+        panic!("single-result callable lost its function shape");
+    };
+    let results = ir.tuple_elements(results).expect("single result list");
+    assert_eq!(results.len(), 1);
+    assert_eq!(ir.atom(results[0].label.expect("single result label")), Some(&b"solo"[..]));
     let c_tail = ir
         .items()
         .find(|item| item.name() == b"c_tail")
@@ -245,6 +282,56 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
         panic!("C variadic callable lost its tail form");
     };
     assert_eq!(variadic, VariadicForm::CUnbounded);
+    Ok(())
+}
+
+#[test]
+fn nested_compounds_plan_a_depth_first_scratch_bound() -> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Alias,
+            b"leaf",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    facts
+        .anonymous_type_child(0, Some(b"inner"), 0)
+        .map_err(|cause| TestError::Rejected {
+            fact: facts.len(),
+            name_len: 0,
+            cause,
+        })?;
+    let inner = facts
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(|cause| TestError::Rejected {
+            fact: facts.len(),
+            name_len: 0,
+            cause,
+        })?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"outer",
+                SemanticProductConstructor::TUPLE,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+            .type_child(inner, Some(b"outer"), 0),
+        )
+        .map_err(rejected)?;
+
+    // Both tuple prefixes can be live on one depth-first path. The planner
+    // therefore reserves two elements rather than the old row-wise maximum
+    // of one; a later projection implementation may retain either prefix
+    // without reallocating or manufacturing a sentinel ID.
+    assert_eq!(facts.projected_type_demand().tuple_elements, 2);
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    assert!(ir.items().all(|item| item.semantic_type().is_some()));
     Ok(())
 }
 
