@@ -493,6 +493,10 @@ impl<'x, 'source> Projector<'x, 'source> {
         };
         let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
         self.type_parameters(index)?;
+        let type_parameters = self
+            .facts
+            .type_parameter_range(parameter_start)
+            .map_err(lane_terminal)?;
         let mut fields = Vec::new();
         let mut interface_methods = Vec::new();
         if let Some(root_cell) = declaration.type_root {
@@ -552,7 +556,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         let fields_list = self.entity_list(&fields)?;
         let method_set = self.entity_list(&methods)?;
         self.facts
-            .attach_extension(
+            .attach_extension_with_type_parameters(
                 usize::try_from(type_ordinal).unwrap_or(usize::MAX),
                 EmissionExtension::Go(GoFacts {
                     signature: GoSignature {
@@ -568,6 +572,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     constant_group: 0,
                     constant_flags: 0,
                 }),
+                type_parameters,
             )
             .map_err(lane_terminal)?;
         Ok(())
@@ -696,6 +701,8 @@ impl<'x, 'source> Projector<'x, 'source> {
         } else {
             (AtomListId::new(0), 0, 0)
         };
+        let empty_type_parameters = u32::try_from(self.facts.type_parameter_len)
+            .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
         let fact = root
             .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
             .with_extension(EmissionExtension::Go(GoFacts {
@@ -704,7 +711,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     results: TypeListId::new(0),
                     variadic: false,
                 },
-                type_parameters: TypeParameterListId::new(0),
+                type_parameters: TypeParameterListId::new(empty_type_parameters),
                 fields: EntityListId::new(0),
                 method_set: EntityListId::new(0),
                 build_constraints: AtomListId::new(0),
@@ -746,6 +753,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .facts
                 .intern_atom_list(core::slice::from_ref(&atom))
                 .map_err(lane_terminal)?;
+            let empty_type_parameters = u32::try_from(self.facts.type_parameter_len)
+                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
             for declaration in exported {
                 let kind = entity_kind(declaration.kind);
                 let fact = SemanticFact::new(kind, declaration.name, constructor(kind))
@@ -756,7 +765,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                             results: TypeListId::new(0),
                             variadic: false,
                         },
-                        type_parameters: TypeParameterListId::new(0),
+                        type_parameters: TypeParameterListId::new(empty_type_parameters),
                         fields: EntityListId::new(0),
                         method_set: EntityListId::new(0),
                         build_constraints: list,

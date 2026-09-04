@@ -2457,6 +2457,19 @@ pub enum BuildError {
         space: SemanticSpace,
         raw: u32,
     },
+    /// A durable documentation fact was not valid UTF-8, so it cannot enter
+    /// the owned text arena without loss.  Callers must retain it in the
+    /// compact fragment or surface this exact terminal; silently dropping it
+    /// would split render truth from durable truth.
+    InvalidDocumentationUtf8 { bytes: usize },
+    /// A relative occurrence span escaped its authority-captured owner span.
+    InvalidOccurrenceSpan {
+        owner: EntityId,
+        start: u32,
+        end: u32,
+    },
+    /// Parentage formed a cycle, so no stable qualified ownership key exists.
+    ParentCycle { entity: EntityId },
     DuplicateStableEntity {
         stable: StableEntityId,
     },
@@ -2494,6 +2507,15 @@ impl fmt::Display for BuildError {
             }
             Self::Dangling { space, raw } => {
                 write!(formatter, "{space:?} coordinate {raw} is dangling")
+            }
+            Self::InvalidDocumentationUtf8 { bytes } => {
+                write!(formatter, "documentation fact has {bytes} invalid UTF-8 bytes")
+            }
+            Self::InvalidOccurrenceSpan { owner, start, end } => {
+                write!(formatter, "occurrence span {start}..{end} escapes entity {}", owner.raw)
+            }
+            Self::ParentCycle { entity } => {
+                write!(formatter, "entity {} participates in a parent cycle", entity.raw)
             }
             Self::DuplicateStableEntity { stable } => {
                 write!(

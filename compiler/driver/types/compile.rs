@@ -4,19 +4,16 @@
 use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, LanguageProfile, Stage};
-use heart_identity::{ContentId, SourceFactDomain};
-use std::sync::atomic::Ordering;
 
 use crate::{
     lower::{self, AdmissionFault, typescript::TypeScriptCollectError},
-    native::parse_with_native_tool,
 };
 
 use super::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, CompileFailure, CompileOutput,
     CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, NativeDiagnostic,
-    NativeRecipe, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, ToolchainSelection,
-    ToolchainSelectionFact,
+    NativeRecipe, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, SourceLease,
+    ToolchainSelection, ToolchainSelectionFact, WorkPermit, WorkStopped,
 };
 
 pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
@@ -24,38 +21,27 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     scratch: CompileScratch<'diagnostic, 'work>,
     output: CompileOutput<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::new();
+    let mut facts = lower::FactSet::with_plan(lower::ResourcePlan::for_source(
+        request.profile,
+        request.source.len(),
+    ));
     let prepared = match prepare(request)? {
         PreparedRoute::Direct(prepared) => {
-            emit_facts(
-                &prepared,
-                request.source,
-                request.control.cancelled,
-                request.authority,
-                Some(scratch.diagnostic_output),
-                &mut facts,
-            )?;
+            emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
             prepared
         }
         PreparedRoute::Native {
             prepared,
             native_recipe,
         } => {
-            parse_with_native_tool(
+            crate::native::parse_with_native_tool(
                 native_recipe,
                 prepared.source,
                 prepared.recipe,
                 scratch,
-                request.control,
+                prepared.permit.control(),
             )?;
-            emit_facts(
-                &prepared,
-                request.source,
-                request.control.cancelled,
-                request.authority,
-                None,
-                &mut facts,
-            )?;
+            emit_facts(&prepared, None, &mut facts)?;
             prepared
         }
     };
@@ -112,38 +98,27 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::new();
+    let mut facts = lower::FactSet::with_plan(lower::ResourcePlan::for_source(
+        request.profile,
+        request.source.len(),
+    ));
     let prepared = match prepare(request)? {
         PreparedRoute::Direct(prepared) => {
-            emit_facts(
-                &prepared,
-                request.source,
-                request.control.cancelled,
-                request.authority,
-                Some(scratch.diagnostic_output),
-                &mut facts,
-            )?;
+            emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
             prepared
         }
         PreparedRoute::Native {
             prepared,
             native_recipe,
         } => {
-            parse_with_native_tool(
+            crate::native::parse_with_native_tool(
                 native_recipe,
                 prepared.source,
                 prepared.recipe,
                 scratch,
-                request.control,
+                prepared.permit.control(),
             )?;
-            emit_facts(
-                &prepared,
-                request.source,
-                request.control.cancelled,
-                request.authority,
-                None,
-                &mut facts,
-            )?;
+            emit_facts(&prepared, None, &mut facts)?;
             prepared
         }
     };
@@ -158,26 +133,67 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
         source: prepared.source,
         recipe: prepared.recipe,
         ir,
+        capture: facts.rich_capture(),
     })
 }
 
-struct PreparedCompile {
+struct PreparedCompile<'source, 'cancel> {
     source: SourceIdentity,
     recipe: CompileRecipeFact,
+    lease: SourceLease<'source>,
+    permit: WorkPermit<'cancel>,
+    authority: EnteredAuthority<'source>,
 }
 
-enum PreparedRoute<'source, 'toolchain> {
-    Direct(PreparedCompile),
+enum PreparedRoute<'source, 'toolchain, 'cancel> {
+    Direct(PreparedCompile<'source, 'cancel>),
     Native {
-        prepared: PreparedCompile,
+        prepared: PreparedCompile<'source, 'cancel>,
         native_recipe: NativeRecipe<'source, 'toolchain>,
+    },
+}
+
+/// Closed authority after source entry.  Profile/input mismatches are
+/// rejected before this value exists, so lowerers receive only their one
+/// meaningful native or checked authority shape.
+enum EnteredAuthority<'source> {
+    Clang { profile: LanguageProfile },
+    TypeScript {
+        profile: compiler_vocabulary::TypeScriptSource,
+        report: Option<&'source compiler_languages_typescript::Report>,
+    },
+    Python {
+        profile: compiler_vocabulary::PythonVersion,
+        report: Option<&'source compiler_languages_python::CheckerReport>,
+    },
+    Rust {
+        profile: compiler_vocabulary::RustEdition,
+        project: &'source compiler_languages_rust::RustProject,
+        maximum_source_bytes: compiler_languages_rust::SourceByteLimit,
+        features: compiler_languages_rust::RustFeatureControl<'source>,
+    },
+    Go {
+        profile: compiler_vocabulary::GoVersion,
+        image: &'source [u8],
+    },
+    Java {
+        profile: compiler_vocabulary::JavaRelease,
+        image: &'source [u8],
+    },
+    CSharp {
+        profile: compiler_vocabulary::CSharpVersion,
+        image: &'source [u8],
     },
 }
 
 fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
-) -> Result<PreparedRoute<'source, 'toolchain>, CompileFailure<'diagnostic>> {
-    let source = source_identity(request.source)?;
+) -> Result<PreparedRoute<'source, 'toolchain, 'cancel>, CompileFailure<'diagnostic>> {
+    let lease = SourceLease::enter(request.source).map_err(|source| CompileFailure::SourceLength {
+        actual: request.source.len(),
+        source,
+    })?;
+    let source = lease.identity();
     let language = Language::from(request.profile);
     let route = FullRegistry
         .route(language, request.stage)
@@ -230,109 +246,124 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
         });
     }
     let recipe = recipe_fact(request.profile, request.stage, resolved, source);
-    let authority_profile_mismatch = match (request.authority, request.profile) {
-        (SemanticAuthorityInput::Rust { .. }, profile) => {
-            !matches!(profile, LanguageProfile::Rust(_))
-        }
-        (SemanticAuthorityInput::Go { .. }, profile) => !matches!(profile, LanguageProfile::Go(_)),
-        (SemanticAuthorityInput::CSharp { .. }, profile) => {
-            !matches!(profile, LanguageProfile::CSharp(_))
-        }
-        (SemanticAuthorityInput::Java { .. }, profile) => {
-            !matches!(profile, LanguageProfile::Java(_))
-        }
-        (SemanticAuthorityInput::TypeScript { .. }, profile) => {
-            !matches!(profile, LanguageProfile::TypeScript(_))
-        }
-        (SemanticAuthorityInput::Python { .. }, profile) => {
-            !matches!(profile, LanguageProfile::Python(_))
-        }
-        (SemanticAuthorityInput::None, _) => false,
-    };
-    if authority_profile_mismatch {
-        return Err(CompileFailure::AuthorityInputProfileMismatch {
-            source_identity: source,
-            recipe,
-            profile: request.profile,
-        });
-    }
-    let requires_project_authority = matches!(
-        request.profile,
-        LanguageProfile::Go(_) | LanguageProfile::CSharp(_) | LanguageProfile::Java(_)
-    );
-    if requires_project_authority && matches!(request.authority, SemanticAuthorityInput::None) {
-        return Err(CompileFailure::AuthorityInputRequired {
-            source_identity: source,
-            recipe,
-            profile: request.profile,
-        });
-    }
-    if request.control.cancelled.load(Ordering::Acquire) {
-        return Err(CompileFailure::Cancelled {
-            source_identity: source,
+    let authority = enter_authority(request.profile, request.authority, source, recipe)?;
+    let permit = WorkPermit::new(source, request.control);
+    checkpoint(permit, recipe)?;
+    Ok(PreparedRoute::Direct(PreparedCompile {
+        source,
+        recipe,
+        lease,
+        permit,
+        authority,
+    }))
+}
+
+fn checkpoint<'diagnostic>(
+    permit: WorkPermit<'_>,
+    recipe: CompileRecipeFact,
+) -> Result<(), CompileFailure<'diagnostic>> {
+    match permit.checkpoint() {
+        Ok(()) => Ok(()),
+        Err(WorkStopped::Cancelled) => Err(CompileFailure::Cancelled {
+            source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
                 bytes: &[],
                 observed: 0,
                 truncated: false,
             },
-        });
-    }
-    if std::time::Instant::now() >= request.control.deadline {
-        return Err(CompileFailure::DeadlineExceeded {
-            source_identity: source,
+        }),
+        Err(WorkStopped::Deadline) => Err(CompileFailure::DeadlineExceeded {
+            source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
                 bytes: &[],
                 observed: 0,
                 truncated: false,
             },
-        });
-    }
-    let native_recipe = NativeRecipe {
-        profile: request.profile,
-        stage: request.stage,
-        source: request.source,
-        toolchain: resolved,
-    };
-    let direct_authority = matches!(
-        request.profile,
-        LanguageProfile::C(_)
-            | LanguageProfile::Cxx(_)
-            | LanguageProfile::TypeScript(_)
-            | LanguageProfile::Python(_)
-    );
-    let direct_authority = direct_authority
-        || matches!(
-            request.authority,
-            SemanticAuthorityInput::Rust { .. }
-                | SemanticAuthorityInput::Go { .. }
-                | SemanticAuthorityInput::CSharp { .. }
-                | SemanticAuthorityInput::Java { .. }
-        );
-    let prepared = PreparedCompile { source, recipe };
-    if direct_authority {
-        Ok(PreparedRoute::Direct(prepared))
-    } else {
-        Ok(PreparedRoute::Native {
-            prepared,
-            native_recipe,
-        })
+        }),
     }
 }
 
-fn source_identity<'diagnostic>(
-    source_bytes: &[u8],
-) -> Result<SourceIdentity, CompileFailure<'diagnostic>> {
-    let byte_len =
-        u32::try_from(source_bytes.len()).map_err(|source| CompileFailure::SourceLength {
-            actual: source_bytes.len(),
-            source,
-        })?;
-    Ok(SourceIdentity {
-        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source_bytes),
-        byte_len,
-    })
+fn enter_authority<'source, 'diagnostic>(
+    profile: LanguageProfile,
+    input: SemanticAuthorityInput<'source>,
+    source: SourceIdentity,
+    recipe: CompileRecipeFact,
+) -> Result<EnteredAuthority<'source>, CompileFailure<'diagnostic>> {
+    let mismatch = || CompileFailure::AuthorityInputProfileMismatch {
+        source_identity: source,
+        recipe,
+        profile,
+    };
+    let required = || CompileFailure::AuthorityInputRequired {
+        source_identity: source,
+        recipe,
+        profile,
+    };
+    match (profile, input) {
+        (LanguageProfile::C(profile), SemanticAuthorityInput::None) => {
+            Ok(EnteredAuthority::Clang {
+                profile: LanguageProfile::C(profile),
+            })
+        }
+        (LanguageProfile::Cxx(profile), SemanticAuthorityInput::None) => {
+            Ok(EnteredAuthority::Clang {
+                profile: LanguageProfile::Cxx(profile),
+            })
+        }
+        (LanguageProfile::TypeScript(profile), SemanticAuthorityInput::None) => {
+            Ok(EnteredAuthority::TypeScript {
+                profile,
+                report: None,
+            })
+        }
+        (LanguageProfile::TypeScript(profile), SemanticAuthorityInput::TypeScript { report }) => {
+            Ok(EnteredAuthority::TypeScript {
+                profile,
+                report: Some(report),
+            })
+        }
+        (LanguageProfile::Python(profile), SemanticAuthorityInput::None) => {
+            Ok(EnteredAuthority::Python {
+                profile,
+                report: None,
+            })
+        }
+        (LanguageProfile::Python(profile), SemanticAuthorityInput::Python { report }) => {
+            Ok(EnteredAuthority::Python {
+                profile,
+                report: Some(report),
+            })
+        }
+        (
+            LanguageProfile::Rust(profile),
+            SemanticAuthorityInput::Rust {
+                project,
+                maximum_source_bytes,
+                features,
+            },
+        ) => Ok(EnteredAuthority::Rust {
+            profile,
+            project,
+            maximum_source_bytes,
+            features,
+        }),
+        (LanguageProfile::Rust(_), SemanticAuthorityInput::None) => Err(required()),
+        (LanguageProfile::Go(profile), SemanticAuthorityInput::Go { image }) => {
+            Ok(EnteredAuthority::Go { profile, image })
+        }
+        (LanguageProfile::Go(_), SemanticAuthorityInput::None) => Err(required()),
+        (LanguageProfile::Java(profile), SemanticAuthorityInput::Java { image }) => {
+            Ok(EnteredAuthority::Java { profile, image })
+        }
+        (LanguageProfile::Java(_), SemanticAuthorityInput::None) => Err(required()),
+        (LanguageProfile::CSharp(profile), SemanticAuthorityInput::CSharp { image }) => {
+            Ok(EnteredAuthority::CSharp { profile, image })
+        }
+        (LanguageProfile::CSharp(_), SemanticAuthorityInput::None) => Err(required()),
+        (_, _) => Err(mismatch()),
+    }
 }
 
 fn recipe_fact(
@@ -350,32 +381,23 @@ fn recipe_fact(
     )
 }
 
-fn emit_facts<'source, 'diagnostic>(
-    prepared: &PreparedCompile,
-    source: &'source [u8],
-    cancelled: &std::sync::atomic::AtomicBool,
-    authority: SemanticAuthorityInput<'source>,
+fn emit_facts<'source, 'cancel, 'diagnostic>(
+    prepared: &PreparedCompile<'source, 'cancel>,
     diagnostic_output: Option<&'diagnostic mut [u8]>,
     facts: &mut lower::FactSet<'source>,
 ) -> Result<(), CompileFailure<'diagnostic>> {
-    match prepared.recipe.profile {
-        LanguageProfile::C(_) | LanguageProfile::Cxx(_) => {
-            lower::clang::collect(prepared.recipe.profile, source, cancelled, facts)
+    checkpoint(prepared.permit, prepared.recipe)?;
+    let source = prepared.lease.bytes();
+    match &prepared.authority {
+        EnteredAuthority::Clang { profile } => {
+            lower::clang::collect(*profile, source, prepared.permit.cancelled(), facts)
                 .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
         }
-        LanguageProfile::TypeScript(profile) => {
-            let owned_report = match authority {
-                SemanticAuthorityInput::None => Some(
+        EnteredAuthority::TypeScript { profile, report } => {
+            let owned = if report.is_none() {
+                Some(
                     compiler_languages_typescript::Checker::default()
-                        .run(profile, source)
+                        .run(*profile, source)
                         .map_err(|cause| {
                             typescript_terminal(
                                 None,
@@ -389,29 +411,12 @@ fn emit_facts<'source, 'diagnostic>(
                                 ),
                             )
                         })?,
-                ),
-                SemanticAuthorityInput::TypeScript { .. } => None,
-                _ => {
-                    return Err(CompileFailure::AuthorityInputProfileMismatch {
-                        source_identity: prepared.source,
-                        recipe: prepared.recipe,
-                        profile: LanguageProfile::TypeScript(profile),
-                    });
-                }
+                )
+            } else {
+                None
             };
-            let report = match authority {
-                SemanticAuthorityInput::None => owned_report.as_ref(),
-                SemanticAuthorityInput::TypeScript { report } => Some(report),
-                _ => {
-                    return Err(CompileFailure::AuthorityInputProfileMismatch {
-                        source_identity: prepared.source,
-                        recipe: prepared.recipe,
-                        profile: LanguageProfile::TypeScript(profile),
-                    });
-                }
-            };
-            lower::typescript::collect_with_checker(profile, source, report, facts).map_err(
-                |cause| {
+            lower::typescript::collect_with_checker(*profile, source, report.or(owned.as_ref()), facts)
+                .map_err(|cause| {
                     typescript_terminal(
                         diagnostic_output,
                         source,
@@ -419,144 +424,62 @@ fn emit_facts<'source, 'diagnostic>(
                         prepared.recipe,
                         cause,
                     )
-                },
-            )?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
+                })?;
         }
-        LanguageProfile::Python(profile) => {
-            match authority {
-                SemanticAuthorityInput::None => {
-                    lower::python::collect(profile, source, facts).map_err(|cause| {
-                        python_terminal(prepared.source, prepared.recipe, cause)
-                    })?;
-                }
-                SemanticAuthorityInput::Python { report } => {
-                    let module =
-                        compiler_languages_python::extract(source, profile).map_err(|cause| {
-                            python_terminal(
-                                prepared.source,
-                                prepared.recipe,
-                                lower::python::PythonCollectError::Authority(cause),
-                            )
-                        })?;
-                    lower::python::collect_with_checker(&module, source, facts, Some(report))
-                        .map_err(|cause| {
-                            python_terminal(prepared.source, prepared.recipe, cause)
-                        })?;
-                }
-                _ => {
-                    return Err(CompileFailure::AuthorityInputProfileMismatch {
-                        source_identity: prepared.source,
-                        recipe: prepared.recipe,
-                        profile: LanguageProfile::Python(profile),
-                    });
-                }
+        EnteredAuthority::Python { profile, report } => match report {
+            None => lower::python::collect(*profile, source, facts)
+                .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))?,
+            Some(report) => {
+                let module = compiler_languages_python::extract(source, *profile).map_err(|cause| {
+                    python_terminal(
+                        prepared.source,
+                        prepared.recipe,
+                        lower::python::PythonCollectError::Authority(cause),
+                    )
+                })?;
+                lower::python::collect_with_checker(&module, source, facts, Some(report)).map_err(
+                    |cause| python_terminal(prepared.source, prepared.recipe, cause),
+                )?;
             }
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
-        }
-        LanguageProfile::Rust(profile) => {
-            let SemanticAuthorityInput::Rust {
-                project,
-                maximum_source_bytes,
-                features,
-            } = authority
-            else {
-                return Err(CompileFailure::AuthorityInputRequired {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    profile: LanguageProfile::Rust(profile),
-                });
-            };
-            lower::rust::collect(
-                project,
-                maximum_source_bytes,
-                features,
-                cancelled,
-                source,
-                facts,
-            )
-            .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
-        }
-        LanguageProfile::Go(profile) => {
-            let SemanticAuthorityInput::Go { image } = authority else {
-                return Err(CompileFailure::AuthorityInputRequired {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    profile: LanguageProfile::Go(profile),
-                });
-            };
-            lower::go::collect(source, image, facts)
-                .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
-        }
-        LanguageProfile::Java(profile) => {
-            let SemanticAuthorityInput::Java { image } = authority else {
-                return Err(CompileFailure::AuthorityInputRequired {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    profile: LanguageProfile::Java(profile),
-                });
-            };
-            lower::java::collect(profile, source, image, facts)
-                .map_err(|cause| java_terminal(prepared.source, prepared.recipe, cause))?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
-        }
-        LanguageProfile::CSharp(profile) => {
-            let SemanticAuthorityInput::CSharp { image } = authority else {
-                return Err(CompileFailure::AuthorityInputRequired {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    profile: LanguageProfile::CSharp(profile),
-                });
-            };
-            lower::csharp::collect(source, image, facts)
-                .map_err(|cause| csharp_terminal(prepared.source, prepared.recipe, cause))?;
-            if facts.len() == 0 {
-                return Err(CompileFailure::LoweringUnsupported {
-                    source_identity: prepared.source,
-                    recipe: prepared.recipe,
-                    cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-                });
-            }
-            Ok(())
-        }
+        },
+        EnteredAuthority::Rust {
+            project,
+            maximum_source_bytes,
+            features,
+            ..
+        } => lower::rust::collect(
+            project,
+            *maximum_source_bytes,
+            *features,
+            prepared.permit.cancelled(),
+            source,
+            facts,
+        )
+        .map_err(|cause| rust_terminal(prepared.source, prepared.recipe, cause))?,
+        EnteredAuthority::Go { image, .. } => lower::go::collect(source, image, facts)
+            .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?,
+        EnteredAuthority::Java { profile, image } => lower::java::collect(*profile, source, image, facts)
+            .map_err(|cause| java_terminal(prepared.source, prepared.recipe, cause))?,
+        EnteredAuthority::CSharp { image, .. } => lower::csharp::collect(source, image, facts)
+            .map_err(|cause| csharp_terminal(prepared.source, prepared.recipe, cause))?,
     }
+    checkpoint(prepared.permit, prepared.recipe)?;
+    require_facts(prepared.source, prepared.recipe, facts)
+}
+
+fn require_facts<'source, 'diagnostic>(
+    source: SourceIdentity,
+    recipe: CompileRecipeFact,
+    facts: &lower::FactSet<'source>,
+) -> Result<(), CompileFailure<'diagnostic>> {
+    if facts.len() == 0 {
+        return Err(CompileFailure::LoweringUnsupported {
+            source_identity: source,
+            recipe,
+            cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+        });
+    }
+    Ok(())
 }
 
 fn python_terminal<'diagnostic>(

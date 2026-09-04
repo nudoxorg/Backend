@@ -74,7 +74,7 @@ use compiler_vocabulary::{LanguageProfile, LoweringUnsupported};
 
 use crate::lower::{
     AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
-    SemanticFact, push_fact,
+    SemanticFact, StagedSourceSpan, push_fact,
 };
 use crate::types::{FactFault, FactRejection};
 
@@ -299,6 +299,7 @@ fn collect_input<'source>(
     projector.select_representatives()?;
     projector.push_type_anchors()?;
     projector.push_members()?;
+    projector.attach_topology()?;
     projector.push_occurrences()?;
     projector.push_docs()?;
     Ok(())
@@ -889,6 +890,36 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if let Some(identity) = declaration.identity {
             self.identities.push((identity, ordinal));
         }
+    }
+
+    /// Projects libclang's authoritative owner and declaration extent rows
+    /// after both declaration passes have assigned every local ordinal.  This
+    /// is deliberately a relation pass, not source re-parsing: the same USR
+    /// identity and half-open span that own occurrence facts own the tree.
+    fn attach_topology(&mut self) -> Result<(), ClangCollectError> {
+        let mut bindings = Vec::new();
+        for (index, declaration) in self.authority.declarations.iter().enumerate() {
+            let Some(child) = self.ordinals.get(index).copied().flatten() else {
+                continue;
+            };
+            let span = StagedSourceSpan::new(declaration.span.start, declaration.span.end)
+                .ok_or_else(|| terminal(ProjectionFault::Span {
+                    span: declaration.span,
+                }))?;
+            let parent = declaration.owner.and_then(|owner| self.ordinal_of(owner));
+            bindings.push((child, parent.filter(|parent| *parent != child), span));
+        }
+        for (child, parent, span) in bindings {
+            self.facts
+                .attach_source_span(child, span)
+                .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+            if let Some(parent) = parent {
+                self.facts
+                    .attach_parent(child, parent)
+                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+            }
+        }
+        Ok(())
     }
 
     /// Pushes one enumerator: a variant whose declared type is the enum's

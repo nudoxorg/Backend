@@ -938,9 +938,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
 
     /// Builds one declaration's base Rust extension row: the ownership cell,
     /// its written lifetime spellings, and its where-clause coordinate. The
-    /// coordinate is 1-based over the pooled type-parameter lane — zero stays
-    /// the shared empty sentinel, and `start + 1` names the declaration's
-    /// first pooled row whenever it wrote any bound. Macro spellings attach
+    /// coordinate is the shared zero-based staging start; its exact length is
+    /// captured with the extension transaction, so an empty list never needs
+    /// a language-specific one-based sentinel. Macro spellings attach
     /// in a later phase. Expansion-derived declarations carry the empty
     /// lifetime list and no bounds, because their generic syntax lives in
     /// the expansion buffer, not this source.
@@ -954,10 +954,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             return self.empty_extension(ownership);
         }
         let lifetimes = self.lifetime_atoms(syntax)?;
-        let where_clauses = match self.where_rows(syntax)? {
-            Some(start) => start + 1,
-            None => 0,
-        };
+        let where_clauses = self
+            .where_rows(syntax)?
+            .unwrap_or(coordinate(self.facts.type_parameter_len)?);
         Ok(RustFacts {
             ownership,
             lifetimes,

@@ -49,7 +49,7 @@ pub(super) const MAX_FACT_CHILDREN: usize = 64;
 /// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
 pub(super) const MAX_TYPE_CHILDREN: usize = 64;
 /// Dense bound of the occurrence lane committed beside the declarations.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 8192;
 /// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
 pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.
@@ -75,12 +75,92 @@ pub(super) const MAX_TYPE_ROWS: usize =
     MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
 const _: () = assert!(MAX_EMISSION_FACTS <= u32::MAX as usize);
 const _: () = assert!(MAX_TYPE_ROWS <= u32::MAX as usize);
-/// First pool-local ordinal of an anonymous type row.
-const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
-/// First pool-local ordinal of a computed type row.
-pub(super) const COMPUTED_ROW_BASE: u32 = ANONYMOUS_ROW_BASE + MAX_ANONYMOUS_TYPE_ROWS as u32;
+/// Tagged staging coordinate for anonymous type rows.
+///
+/// These are *not* array offsets.  Keeping the lanes in disjoint tagged
+/// segments prevents an entered ten-byte request from reserving every slot
+/// below a protocol-maximum anonymous/computed row.  The compact writer is
+/// the only place where these transaction-local coordinates become dense wire
+/// `TypeId`s.
+const ANONYMOUS_ROW_BASE: u32 = 0x4000_0000;
+/// Tagged staging coordinate for checker-observed type rows.
+pub(super) const COMPUTED_ROW_BASE: u32 = 0x8000_0000;
 /// Sentinel marking an absent row in an extension plane's row table.
 const SECTION_NONE: u32 = u32::MAX;
+
+/// Per-request reservation selected before an authority starts work. The
+/// protocol constants remain hard ceilings; this plan alone determines the
+/// collector's allocation geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResourcePlan {
+    facts: usize,
+    occurrences: usize,
+    docs: usize,
+    extension_atoms: usize,
+    type_parameters: usize,
+    ref_lists: usize,
+    anonymous_rows: usize,
+    computed_rows: usize,
+}
+
+impl ResourcePlan {
+    /// Complete geometry used only by explicit capacity falsifiers.
+    pub(crate) const fn protocol_maximum() -> Self {
+        Self {
+            facts: MAX_EMISSION_FACTS,
+            occurrences: MAX_EMISSION_OCCURRENCES,
+            docs: MAX_EMISSION_DOC_FRAGMENTS,
+            extension_atoms: MAX_EXTENSION_ATOMS,
+            type_parameters: MAX_TYPE_PARAMETERS,
+            ref_lists: MAX_REF_LISTS,
+            anonymous_rows: MAX_ANONYMOUS_TYPE_ROWS,
+            computed_rows: MAX_COMPUTED_TYPE_ROWS,
+        }
+    }
+
+    /// Conservative measured demand derived from entered bytes and the one
+    /// selected language. Excess authority output is an exact capacity fault,
+    /// never an eager max-of-seven-languages allocation.
+    pub(crate) fn for_source(
+        profile: compiler_vocabulary::LanguageProfile,
+        source_bytes: usize,
+    ) -> Self {
+        let multiplier = match profile {
+            compiler_vocabulary::LanguageProfile::TypeScript(_)
+            | compiler_vocabulary::LanguageProfile::Python(_) => 4,
+            compiler_vocabulary::LanguageProfile::C(_)
+            | compiler_vocabulary::LanguageProfile::Cxx(_) => 3,
+            compiler_vocabulary::LanguageProfile::Rust(_)
+            | compiler_vocabulary::LanguageProfile::Go(_)
+            | compiler_vocabulary::LanguageProfile::Java(_)
+            | compiler_vocabulary::LanguageProfile::CSharp(_) => 2,
+        };
+        let units = source_bytes.saturating_add(1);
+        let bounded = |value, maximum| value.clamp(8, maximum);
+        let facts = bounded(units / 2 + 8, MAX_EMISSION_FACTS);
+        Self {
+            facts,
+            // A reference occurrence owns at least one source byte.  This
+            // preserves the measured C# 1,253-occurrence demand without
+            // reserving eight thousand rows for a ten-byte source.
+            occurrences: bounded(units, MAX_EMISSION_OCCURRENCES),
+            docs: bounded(units.saturating_add(8), MAX_EMISSION_DOC_FRAGMENTS),
+            extension_atoms: bounded(units / 2 + 8, MAX_EXTENSION_ATOMS),
+            type_parameters: bounded(units / 2 + 8, MAX_TYPE_PARAMETERS),
+            ref_lists: bounded(facts, MAX_REF_LISTS),
+            anonymous_rows: bounded(
+                units.saturating_mul(multiplier).saturating_add(8),
+                MAX_ANONYMOUS_TYPE_ROWS,
+            ),
+            computed_rows: bounded(
+                units
+                    .saturating_mul(multiplier.saturating_mul(2))
+                    .saturating_add(8),
+                MAX_COMPUTED_TYPE_ROWS,
+            ),
+        }
+    }
+}
 
 /// The declared-type record lane row default: an honest unknown with its
 /// reason cell, never a claimed shape the source did not spell.
@@ -298,6 +378,7 @@ impl RejectedFact<'_> {
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
 pub(super) struct FactSet<'source> {
+    plan: ResourcePlan,
     len: usize,
     total_children: usize,
     kinds: Box<[EntityKind]>,
@@ -312,10 +393,12 @@ pub(super) struct FactSet<'source> {
     child_roles: Box<[ProductChildRole]>,
     child_targets: Box<[u32]>,
     child_counts: Box<[u8]>,
-    extensions: Box<[Option<EmissionExtension>; MAX_EMISSION_FACTS]>,
-    key_digests: Box<[u64]>,
+    extensions: Box<[Option<EmissionExtension>]>,
+    key_digests: Box<[PayloadHash]>,
     visibility: Box<[Visibility]>,
-    occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
+    parents: Box<[Option<u32>]>,
+    source_spans: Box<[Option<StagedSourceSpan>]>,
+    occurrence_owners: Box<[u32]>,
     occurrences: Box<[Occurrence<'source>]>,
     occurrence_len: usize,
     doc_facts: Box<[DocFactInput<'source>]>,
@@ -324,14 +407,15 @@ pub(super) struct FactSet<'source> {
     extension_atom_len: usize,
     type_parameters: Box<[ExtensionTypeParameter<'source>]>,
     type_parameter_len: usize,
+    type_parameter_ranges: Box<[Option<StagedTypeParameterRange>]>,
     atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    atom_list_lengths: [u8; MAX_REF_LISTS],
+    atom_list_lengths: Box<[u8]>,
     atom_list_len: usize,
     type_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    type_list_lengths: [u8; MAX_REF_LISTS],
+    type_list_lengths: Box<[u8]>,
     type_list_len: usize,
     entity_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    entity_list_lengths: [u8; MAX_REF_LISTS],
+    entity_list_lengths: Box<[u8]>,
     entity_list_len: usize,
     anonymous_records: Box<[SemanticTypeRecord<'source>]>,
     anonymous_owners: Box<[u32]>,
@@ -355,38 +439,93 @@ pub(super) struct FactSet<'source> {
     computed_child_pending: u32,
 }
 
+/// A source range captured by an authority before it reaches the owned tree.
+/// It is intentionally distinct from wire/type coordinates: only `build_ir`
+/// binds its request-local file atom and constructs `compiler_ir::SourceSpan`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StagedSourceSpan {
+    start: u32,
+    end: u32,
+}
+
+/// An explicit transaction-local type-parameter range.  The public semantic
+/// ID is dense only after admission; a bare staging start is ambiguous when
+/// an empty declaration precedes the first generic declaration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StagedTypeParameterRange {
+    start: u32,
+    length: u32,
+}
+
+impl StagedSourceSpan {
+    pub(super) const fn new(start: u32, end: u32) -> Option<Self> {
+        (start <= end).then_some(Self { start, end })
+    }
+}
+
 // The boxed lanes keep this caller-owned collector below the 64 KiB stack
 // budget; each box is allocated exactly once by FactSet::new and lives with
 // its FactSet, rather than being grown during admission.
 const _: () = assert!(size_of::<FactSet<'static>>() <= 64 * 1024);
 
 impl<'source> FactSet<'source> {
+    fn staged_type_slot(&self, row: u32) -> Option<usize> {
+        if row < ANONYMOUS_ROW_BASE {
+            return (row as usize < self.len).then_some(row as usize);
+        }
+        if row >= COMPUTED_ROW_BASE {
+            let computed = row - COMPUTED_ROW_BASE;
+            return (computed as usize < self.computed_rows)
+                .then_some(self.len + self.anonymous_rows + computed as usize);
+        }
+        let anonymous = row - ANONYMOUS_ROW_BASE;
+        (anonymous as usize < self.anonymous_rows).then_some(self.len + anonymous as usize)
+    }
+
+    fn is_anonymous_type_row(&self, row: u32) -> bool {
+        row >= ANONYMOUS_ROW_BASE
+            && row < COMPUTED_ROW_BASE
+            && (row - ANONYMOUS_ROW_BASE) as usize < self.anonymous_rows
+    }
+
+    fn is_computed_type_row(&self, row: u32) -> bool {
+        row >= COMPUTED_ROW_BASE && (row - COMPUTED_ROW_BASE) as usize < self.computed_rows
+    }
+    /// Full protocol plan for direct lowerer boundary tests.
     pub(super) fn new() -> Self {
+        Self::with_plan(ResourcePlan::protocol_maximum())
+    }
+
+    /// Production collector allocation under one entered request plan.
+    pub(super) fn with_plan(plan: ResourcePlan) -> Self {
         let empty_name: &[u8] = &[];
         Self {
+            plan,
             len: 0,
             total_children: 0,
-            kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
-            names: vec![empty_name; MAX_EMISSION_FACTS].into_boxed_slice(),
-            type_records: vec![opaque_record(); MAX_EMISSION_FACTS].into_boxed_slice(),
-            type_child_targets: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_names: vec![None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_flags: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+            kinds: vec![EntityKind::Function; plan.facts].into_boxed_slice(),
+            names: vec![empty_name; plan.facts].into_boxed_slice(),
+            type_records: vec![opaque_record(); plan.facts].into_boxed_slice(),
+            type_child_targets: vec![0; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
+            type_child_names: vec![None; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
+            type_child_flags: vec![0; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
+            type_child_counts: vec![0; plan.facts].into_boxed_slice(),
             total_type_children: 0,
-            constructors: vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS]
+            constructors: vec![SemanticProductConstructor::PRODUCT; plan.facts]
                 .into_boxed_slice(),
             child_roles: vec![
                 ProductChildRole::ProductMember;
-                MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
+                plan.facts * MAX_FACT_CHILDREN
             ]
             .into_boxed_slice(),
-            child_targets: vec![0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN].into_boxed_slice(),
-            child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
-            extensions: Box::new([None; MAX_EMISSION_FACTS]),
-            key_digests: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
-            visibility: vec![Visibility::Unknown; MAX_EMISSION_FACTS].into_boxed_slice(),
-            occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
+            child_targets: vec![0; plan.facts * MAX_FACT_CHILDREN].into_boxed_slice(),
+            child_counts: vec![0; plan.facts].into_boxed_slice(),
+            extensions: vec![None; plan.facts].into_boxed_slice(),
+            key_digests: vec![PayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
+            visibility: vec![Visibility::Unknown; plan.facts].into_boxed_slice(),
+            parents: vec![None; plan.facts].into_boxed_slice(),
+            source_spans: vec![None; plan.facts].into_boxed_slice(),
+            occurrence_owners: vec![0; plan.occurrences].into_boxed_slice(),
             occurrences: vec![
                 Occurrence {
                     target: compiler_ir::OccurrenceTarget::Foreign(compiler_ir::ForeignKey {
@@ -399,7 +538,7 @@ impl<'source> FactSet<'source> {
                     confidence: compiler_ir::OccurrenceConfidence::Syntactic,
                     span: compiler_ir::RelSpan { start: 0, end: 0 },
                 };
-                MAX_EMISSION_OCCURRENCES
+                plan.occurrences
             ]
             .into_boxed_slice(),
             occurrence_len: 0,
@@ -408,11 +547,11 @@ impl<'source> FactSet<'source> {
                     owner: compiler_ir::EntityId::new(0),
                     fragment: DocFragmentInput::SoftBreak,
                 };
-                MAX_EMISSION_DOC_FRAGMENTS
+                plan.docs
             ]
             .into_boxed_slice(),
             doc_len: 0,
-            extension_atoms: vec![empty_name; MAX_EXTENSION_ATOMS].into_boxed_slice(),
+            extension_atoms: vec![empty_name; plan.extension_atoms].into_boxed_slice(),
             extension_atom_len: 0,
             type_parameters: vec![
                 ExtensionTypeParameter {
@@ -420,41 +559,42 @@ impl<'source> FactSet<'source> {
                     constraint: None,
                     default: None,
                 };
-                MAX_TYPE_PARAMETERS
+                plan.type_parameters
             ]
             .into_boxed_slice(),
             type_parameter_len: 0,
-            atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice(),
-            atom_list_lengths: [0; MAX_REF_LISTS],
+            type_parameter_ranges: vec![None; plan.facts].into_boxed_slice(),
+            atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
+            atom_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
             atom_list_len: 0,
-            type_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice(),
-            type_list_lengths: [0; MAX_REF_LISTS],
+            type_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
+            type_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
             type_list_len: 0,
-            entity_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice(),
-            entity_list_lengths: [0; MAX_REF_LISTS],
+            entity_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
+            entity_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
             entity_list_len: 0,
-            anonymous_records: vec![opaque_record(); MAX_ANONYMOUS_TYPE_ROWS].into_boxed_slice(),
-            anonymous_owners: vec![0; MAX_ANONYMOUS_TYPE_ROWS].into_boxed_slice(),
-            anonymous_child_starts: vec![0; MAX_ANONYMOUS_TYPE_ROWS].into_boxed_slice(),
-            anonymous_child_counts: vec![0; MAX_ANONYMOUS_TYPE_ROWS].into_boxed_slice(),
-            anonymous_child_targets: vec![0; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            anonymous_records: vec![opaque_record(); plan.anonymous_rows].into_boxed_slice(),
+            anonymous_owners: vec![0; plan.anonymous_rows].into_boxed_slice(),
+            anonymous_child_starts: vec![0; plan.anonymous_rows].into_boxed_slice(),
+            anonymous_child_counts: vec![0; plan.anonymous_rows].into_boxed_slice(),
+            anonymous_child_targets: vec![0; plan.anonymous_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
-            anonymous_child_names: vec![None; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            anonymous_child_names: vec![None; plan.anonymous_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
-            anonymous_child_flags: vec![0; MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            anonymous_child_flags: vec![0; plan.anonymous_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
             anonymous_rows: 0,
             anonymous_children_total: 0,
             anonymous_child_pending: 0,
-            computed_records: vec![opaque_record(); MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
-            computed_owners: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
-            computed_child_starts: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
-            computed_child_counts: vec![0; MAX_COMPUTED_TYPE_ROWS].into_boxed_slice(),
-            computed_child_targets: vec![0; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            computed_records: vec![opaque_record(); plan.computed_rows].into_boxed_slice(),
+            computed_owners: vec![0; plan.computed_rows].into_boxed_slice(),
+            computed_child_starts: vec![0; plan.computed_rows].into_boxed_slice(),
+            computed_child_counts: vec![0; plan.computed_rows].into_boxed_slice(),
+            computed_child_targets: vec![0; plan.computed_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
-            computed_child_names: vec![None; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            computed_child_names: vec![None; plan.computed_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
-            computed_child_flags: vec![0; MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN]
+            computed_child_flags: vec![0; plan.computed_rows * MAX_TYPE_CHILDREN]
                 .into_boxed_slice(),
             computed_rows: 0,
             computed_children_total: 0,
@@ -465,6 +605,51 @@ impl<'source> FactSet<'source> {
     /// Number of admitted facts.
     pub(super) const fn len(&self) -> usize {
         self.len
+    }
+
+    /// Makes authority availability explicit beside optional owned-IR fields.
+    /// A `None` inside `Ir` is never promoted to proof that the source lacked
+    /// that fact: this sidecar names which authority planes were unavailable.
+    pub(super) fn rich_capture(&self) -> crate::types::RichIrCapture {
+        let entities = (0..self.len)
+            .map(|ordinal| {
+                let source = self.source_spans[ordinal].is_some();
+                let attributes = self.extensions[ordinal]
+                    .as_ref()
+                    .and_then(extension_item_attributes)
+                    .is_some();
+                crate::types::RichEntityCapture {
+                    parentage: if source {
+                        crate::types::RichCapture::Captured
+                    } else {
+                        crate::types::RichCapture::Unavailable
+                    },
+                    source: if source {
+                        crate::types::RichCapture::Captured
+                    } else {
+                        crate::types::RichCapture::Unavailable
+                    },
+                    attributes: if attributes {
+                        crate::types::RichCapture::Captured
+                    } else {
+                        crate::types::RichCapture::Unavailable
+                    },
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let links = self.occurrence_owners[..self.occurrence_len]
+            .iter()
+            .map(|owner| {
+                if self.source_spans.get(*owner as usize).copied().flatten().is_some() {
+                    crate::types::RichCapture::Captured
+                } else {
+                    crate::types::RichCapture::Unavailable
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        crate::types::RichIrCapture { entities, links }
     }
 
     /// Rank of one admitted fact among earlier facts with an identical
@@ -496,7 +681,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.anonymous_rows == MAX_ANONYMOUS_TYPE_ROWS {
+        if self.anonymous_rows == self.plan.anonymous_rows {
             return Err(FactFault::TypeRowCapacity);
         }
         let child_count = self.anonymous_child_pending;
@@ -534,7 +719,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.anonymous_rows == MAX_ANONYMOUS_TYPE_ROWS {
+        if self.anonymous_rows == self.plan.anonymous_rows {
             return Err(FactFault::TypeRowCapacity);
         }
         let child_count = self.anonymous_child_pending;
@@ -562,12 +747,7 @@ impl<'source> FactSet<'source> {
         name: Option<&'source [u8]>,
         flags: u8,
     ) -> Result<(), FactFault> {
-        let anonymous = target >= ANONYMOUS_ROW_BASE;
-        let valid = if anonymous {
-            target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
-        } else {
-            target < self.len as u32
-        };
+        let valid = self.is_anonymous_type_row(target) || target < self.len as u32;
         if !valid {
             return Err(FactFault::TypeChildTarget {
                 position: self.anonymous_child_pending as usize,
@@ -576,7 +756,7 @@ impl<'source> FactSet<'source> {
             });
         }
         if self.anonymous_child_pending == MAX_TYPE_CHILDREN as u32
-            || self.anonymous_children_total == MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN
+            || self.anonymous_children_total == self.anonymous_child_targets.len()
         {
             return Err(FactFault::TypeChildCapacity);
         }
@@ -602,7 +782,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.computed_rows == MAX_COMPUTED_TYPE_ROWS {
+        if self.computed_rows == self.plan.computed_rows {
             return Err(FactFault::ComputedRowCapacity);
         }
         let child_count = self.computed_child_pending;
@@ -628,13 +808,9 @@ impl<'source> FactSet<'source> {
         name: Option<&'source [u8]>,
         flags: u8,
     ) -> Result<(), FactFault> {
-        let valid = if target >= COMPUTED_ROW_BASE {
-            target - COMPUTED_ROW_BASE < self.computed_rows as u32
-        } else if target >= ANONYMOUS_ROW_BASE {
-            target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
-        } else {
-            target < self.len as u32
-        };
+        let valid = self.is_computed_type_row(target)
+            || self.is_anonymous_type_row(target)
+            || target < self.len as u32;
         if !valid {
             return Err(FactFault::TypeChildTarget {
                 position: self.computed_child_pending as usize,
@@ -643,7 +819,7 @@ impl<'source> FactSet<'source> {
             });
         }
         if self.computed_child_pending == MAX_TYPE_CHILDREN as u32
-            || self.computed_children_total == MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN
+            || self.computed_children_total == self.computed_child_targets.len()
         {
             return Err(FactFault::TypeChildCapacity);
         }
@@ -671,7 +847,120 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
+        // Replacements (checker observations, macro lists) must retain the
+        // exact type-parameter range captured with the original declaration.
+        // They may run after unrelated lists have grown the shared pool.
+        if self.type_parameter_ranges[ordinal].is_none() {
+            self.type_parameter_ranges[ordinal] = self.capture_type_parameter_range(&extension)?;
+        }
         self.extensions[ordinal] = Some(extension);
+        Ok(())
+    }
+
+    /// Captures an explicit list range at the producer's close point.  This
+    /// is the only valid operation for a deferred extension replacement:
+    /// attachment time is not a list boundary.
+    pub(super) fn type_parameter_range(
+        &self,
+        start: u32,
+    ) -> Result<StagedTypeParameterRange, FactFault> {
+        let start = start as usize;
+        if start > self.type_parameter_len {
+            return Err(FactFault::RefTarget {
+                lane: "type_parameter_ranges",
+                raw: start as u32,
+                fact_count: self.type_parameter_len,
+            });
+        }
+        Ok(StagedTypeParameterRange {
+            start: start as u32,
+            length: (self.type_parameter_len - start) as u32,
+        })
+    }
+
+    /// Replaces an extension and binds the already-closed parameter range
+    /// supplied by its producer, never the ambient pool cursor.
+    pub(super) fn attach_extension_with_type_parameters(
+        &mut self,
+        ordinal: usize,
+        extension: EmissionExtension,
+        range: StagedTypeParameterRange,
+    ) -> Result<(), FactFault> {
+        if ordinal >= self.len {
+            return Err(FactFault::RefTarget {
+                lane: "extensions",
+                raw: ordinal as u32,
+                fact_count: self.len,
+            });
+        }
+        let range_end = range.start.checked_add(range.length);
+        if extension_type_parameter_start(&extension).map(|start| start.raw) != Some(range.start)
+            || !matches!(range_end, Some(end) if end as usize <= self.type_parameter_len)
+        {
+            return Err(FactFault::RefTarget {
+                lane: "type_parameter_ranges",
+                raw: range.start,
+                fact_count: self.type_parameter_len,
+            });
+        }
+        self.type_parameter_ranges[ordinal] = Some(range);
+        self.extensions[ordinal] = Some(extension);
+        Ok(())
+    }
+
+    fn capture_type_parameter_range(
+        &self,
+        extension: &EmissionExtension,
+    ) -> Result<Option<StagedTypeParameterRange>, FactFault> {
+        let Some(start) = extension_type_parameter_start(extension) else {
+            return Ok(None);
+        };
+        let start = start.raw as usize;
+        if start > self.type_parameter_len {
+            return Err(FactFault::RefTarget {
+                lane: "type_parameter_ranges",
+                raw: start as u32,
+                fact_count: self.type_parameter_len,
+            });
+        }
+        Ok(Some(StagedTypeParameterRange {
+            start: start as u32,
+            length: (self.type_parameter_len - start) as u32,
+        }))
+    }
+
+    /// Binds a child declaration to an already admitted parent.  Parentage
+    /// stays in the transaction staging lane, so the compact and owned views
+    /// derive their relation from one authority fact rather than a renderer
+    /// side channel.
+    pub(super) fn attach_parent(&mut self, child: u32, parent: u32) -> Result<(), FactFault> {
+        if child as usize >= self.len || parent as usize >= self.len || child == parent {
+            return Err(FactFault::RefTarget {
+                lane: "entity_parents",
+                raw: if child as usize >= self.len { child } else { parent },
+                fact_count: self.len,
+            });
+        }
+        self.parents[child as usize] = Some(parent);
+        Ok(())
+    }
+
+    /// Binds one authority-captured declaration span without giving a raw
+    /// image coordinate the ability to masquerade as a type or entity ID.
+    pub(super) fn attach_source_span(
+        &mut self,
+        entity: u32,
+        span: StagedSourceSpan,
+    ) -> Result<(), FactFault> {
+        if entity as usize >= self.len {
+            return Err(FactFault::RefTarget {
+                lane: "entity_source_spans",
+                raw: entity,
+                fact_count: self.len,
+            });
+        }
+        let slot = &mut self.source_spans[entity as usize];
+        *slot = Some(span);
         Ok(())
     }
 
@@ -704,25 +993,21 @@ impl<'source> FactSet<'source> {
         &self,
         row: u32,
     ) -> Result<SemanticTypeRecord<'source>, compiler_ir::BuildError> {
-        let index = usize::try_from(row).map_err(|_| compiler_ir::BuildError::Dangling {
-            space: compiler_ir::SemanticSpace::Type,
-            raw: row,
-        })?;
-        if index < self.len {
-            return Ok(self.type_records[index]);
+        if row < ANONYMOUS_ROW_BASE {
+            return self.type_records.get(row as usize).copied().ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                },
+            );
         }
-        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
-        if index < anonymous_end {
-            return Ok(self.anonymous_records[index - ANONYMOUS_ROW_BASE as usize]);
+        if self.is_anonymous_type_row(row) {
+            return Ok(self.anonymous_records[(row - ANONYMOUS_ROW_BASE) as usize]);
         }
-        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
-        if index < computed_end {
-            return Ok(self.computed_records[index - COMPUTED_ROW_BASE as usize]);
+        if self.is_computed_type_row(row) {
+            return Ok(self.computed_records[(row - COMPUTED_ROW_BASE) as usize]);
         }
-        Err(compiler_ir::BuildError::Dangling {
-            space: compiler_ir::SemanticSpace::Type,
-            raw: row,
-        })
+        Err(compiler_ir::BuildError::Dangling { space: compiler_ir::SemanticSpace::Type, raw: row })
     }
 
     /// Returns one staged child together with its exact text/tag payload.
@@ -731,14 +1016,13 @@ impl<'source> FactSet<'source> {
         row: u32,
         position: usize,
     ) -> Option<(u32, Option<&'source [u8]>, u8)> {
-        let index = usize::try_from(row).ok()?;
-        if index < self.len {
-            return (position < usize::from(self.type_child_counts[index]))
+        if row < ANONYMOUS_ROW_BASE {
+            let index = row as usize;
+            return (position < usize::from(*self.type_child_counts.get(index)?))
                 .then(|| self.type_child_flat(self.type_children_base(index) + position));
         }
-        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
-        if index < anonymous_end {
-            let anonymous = index - ANONYMOUS_ROW_BASE as usize;
+        if self.is_anonymous_type_row(row) {
+            let anonymous = (row - ANONYMOUS_ROW_BASE) as usize;
             return (position < usize::from(self.anonymous_child_counts[anonymous])).then(|| {
                 let start = self.anonymous_child_starts[anonymous] as usize;
                 (
@@ -748,9 +1032,8 @@ impl<'source> FactSet<'source> {
                 )
             });
         }
-        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
-        if index < computed_end {
-            let computed = index - COMPUTED_ROW_BASE as usize;
+        if self.is_computed_type_row(row) {
+            let computed = (row - COMPUTED_ROW_BASE) as usize;
             return (position < usize::from(self.computed_child_counts[computed])).then(|| {
                 let start = self.computed_child_starts[computed] as usize;
                 (
@@ -764,19 +1047,16 @@ impl<'source> FactSet<'source> {
     }
 
     fn staged_type_child_count(&self, row: u32) -> Option<usize> {
-        let index = usize::try_from(row).ok()?;
-        if index < self.len {
-            return Some(usize::from(self.type_child_counts[index]));
+        if row < ANONYMOUS_ROW_BASE {
+            return self.type_child_counts.get(row as usize).copied().map(usize::from);
         }
-        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
-        if index < anonymous_end {
+        if self.is_anonymous_type_row(row) {
             return Some(usize::from(
-                self.anonymous_child_counts[index - ANONYMOUS_ROW_BASE as usize],
+                self.anonymous_child_counts[(row - ANONYMOUS_ROW_BASE) as usize],
             ));
         }
-        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
-        (index < computed_end).then(|| {
-            usize::from(self.computed_child_counts[index - COMPUTED_ROW_BASE as usize])
+        self.is_computed_type_row(row).then(|| {
+            usize::from(self.computed_child_counts[(row - COMPUTED_ROW_BASE) as usize])
         })
     }
 
@@ -790,7 +1070,7 @@ impl<'source> FactSet<'source> {
         {
             return Ok(index as u32);
         }
-        if self.extension_atom_len == MAX_EXTENSION_ATOMS {
+        if self.extension_atom_len == self.plan.extension_atoms {
             return Err(FactFault::ExtensionAtomCapacity);
         }
         self.extension_atoms[self.extension_atom_len] = bytes;
@@ -871,7 +1151,7 @@ impl<'source> FactSet<'source> {
         if let Some(index) = matches {
             return Ok(index as u32);
         }
-        if count == MAX_REF_LISTS {
+        if count == self.plan.ref_lists {
             return Err(FactFault::RefListCapacity);
         }
         let mut row = [0; MAX_REF_LIST_ELEMENTS];
@@ -904,10 +1184,7 @@ impl<'source> FactSet<'source> {
         default: Option<u32>,
     ) -> Result<u32, FactFault> {
         for raw in constraint.iter().chain(default.iter()) {
-            let fact = *raw < self.len as u32;
-            let anonymous = *raw >= ANONYMOUS_ROW_BASE
-                && *raw - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32;
-            if !fact && !anonymous {
+            if *raw >= self.len as u32 && !self.is_anonymous_type_row(*raw) {
                 return Err(FactFault::RefTarget {
                     lane: "type_parameters",
                     raw: *raw,
@@ -915,7 +1192,7 @@ impl<'source> FactSet<'source> {
                 });
             }
         }
-        if self.type_parameter_len == MAX_TYPE_PARAMETERS {
+        if self.type_parameter_len == self.plan.type_parameters {
             return Err(FactFault::TypeParameterCapacity);
         }
         self.type_parameters[self.type_parameter_len] = ExtensionTypeParameter {
@@ -939,7 +1216,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.occurrence_len == MAX_EMISSION_OCCURRENCES {
+        if self.occurrence_len == self.plan.occurrences {
             return Err(FactFault::OccurrenceCapacity);
         }
         self.occurrence_owners[self.occurrence_len] = owner;
@@ -961,7 +1238,7 @@ impl<'source> FactSet<'source> {
                 fact_count: self.len,
             });
         }
-        if self.doc_len == MAX_EMISSION_DOC_FRAGMENTS {
+        if self.doc_len == self.plan.docs {
             return Err(FactFault::DocCapacity);
         }
         self.doc_facts[self.doc_len] = DocFactInput {
@@ -1002,19 +1279,33 @@ impl<'source> FactSet<'source> {
             stable: StableEntityId::from_raw([0; 16]),
             payload: PayloadHash::from_raw([0; 16]),
         };
-        let mut versions = vec![empty_version; MAX_EMISSION_FACTS].into_boxed_slice();
+        // Declaration identity includes its stable ownership path, not a
+        // transient parent ordinal.  Documentation, spans, visibility, and
+        // extension payloads deliberately remain version payload: editing
+        // them changes the entity's contents, never its logical identity.
+        let mut scoped_keys = vec![None; fact_count].into_boxed_slice();
+        let mut visiting = vec![false; fact_count].into_boxed_slice();
+        let mut versions = vec![empty_version; fact_count].into_boxed_slice();
         for (ordinal, version) in versions.iter_mut().take(fact_count).enumerate() {
+            let key = scoped_fact_key(self, ordinal, &mut scoped_keys, &mut visiting)?;
+            let rank = scoped_keys[..ordinal]
+                .iter()
+                .filter(|known| **known == Some(key))
+                .count() as u32;
             *version = fact_version(
                 source,
-                self.key_digests[ordinal],
+                key,
                 self.names[ordinal],
-                self.key_rank(ordinal),
+                rank,
             );
         }
         let mut tree = builder.reserve_tree(&versions[..fact_count])?;
-        let mut type_ids = vec![TypeId::new(0); MAX_TYPE_ROWS].into_boxed_slice();
-        let mut type_seen = vec![false; MAX_TYPE_ROWS].into_boxed_slice();
-        let mut semantic_types = vec![None; MAX_EMISSION_FACTS].into_boxed_slice();
+        // Staging coordinates are segmented tags, not physical offsets.  The
+        // projection stores exactly the rows admitted by this transaction.
+        let staged_type_end = fact_count + self.anonymous_rows + self.computed_rows;
+        let mut type_ids = vec![TypeId::new(0); staged_type_end].into_boxed_slice();
+        let mut type_seen = vec![false; staged_type_end].into_boxed_slice();
+        let mut semantic_types = vec![None; fact_count].into_boxed_slice();
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
             *semantic_type = live_type(
                 &mut tree,
@@ -1025,29 +1316,34 @@ impl<'source> FactSet<'source> {
                 true,
             )?;
         }
-        let mut docs = vec![DocInput::SoftBreak; MAX_EMISSION_DOC_FRAGMENTS].into_boxed_slice();
-        let mut doc_ranges = vec![(0usize, 0usize); MAX_EMISSION_FACTS].into_boxed_slice();
-        for ordinal in 0..fact_count {
-            let start = match self.doc_facts[..self.doc_len]
-                .iter()
-                .position(|fact| fact.owner.raw as usize == ordinal)
-            {
-                Some(start) => start,
-                None => self.doc_len,
+        // Documentation facts are allowed to arrive interleaved by owner.
+        // Count/prefix/scatter once so each tree item borrows one contiguous
+        // range without the former O(facts × docs) rescan or an accidental
+        // assumption that documentation was grouped at collection time.
+        let mut doc_counts = vec![0_usize; fact_count];
+        for fact in self.doc_facts[..self.doc_len].iter() {
+            let owner = fact.owner.raw as usize;
+            let Some(count) = doc_counts.get_mut(owner) else {
+                return Err(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Entity,
+                    raw: fact.owner.raw,
+                });
             };
-            let mut count = 0;
-            for fact in self.doc_facts[..self.doc_len]
-                .iter()
-                .filter(|fact| fact.owner.raw as usize == ordinal)
-            {
-                if let Some(input) = doc_input(&mut tree, fact.fragment)?
-                    && let Some(slot) = docs.get_mut(start + count)
-                {
-                    *slot = input;
-                    count += 1;
-                }
-            }
-            doc_ranges[ordinal] = (start, count);
+            *count += 1;
+        }
+        let mut doc_ranges = vec![(0usize, 0usize); fact_count].into_boxed_slice();
+        let mut cursor = 0_usize;
+        for (ordinal, count) in doc_counts.iter().copied().enumerate() {
+            doc_ranges[ordinal] = (cursor, count);
+            cursor += count;
+        }
+        let mut doc_cursors = doc_ranges.iter().map(|range| range.0).collect::<Vec<_>>();
+        let mut docs = vec![DocInput::SoftBreak; self.doc_len];
+        for fact in self.doc_facts[..self.doc_len].iter() {
+            let owner = fact.owner.raw as usize;
+            let slot = doc_cursors[owner];
+            docs[slot] = doc_input(&mut tree, fact.fragment)?;
+            doc_cursors[owner] += 1;
         }
         // Every sparse language plane is materialized from the same staged
         // rows as the durable fragment.  There is intentionally no
@@ -1068,6 +1364,12 @@ impl<'source> FactSet<'source> {
                             &mut tree,
                             self,
                             value.type_parameters,
+                            self.type_parameter_ranges[ordinal].ok_or(
+                                compiler_ir::BuildError::Dangling {
+                                    space: compiler_ir::SemanticSpace::TypeParameters,
+                                    raw: value.type_parameters.raw,
+                                },
+                            )?,
                             &mut type_ids,
                             &mut type_seen,
                         )?,
@@ -1089,6 +1391,12 @@ impl<'source> FactSet<'source> {
                             &mut tree,
                             self,
                             value.constraints,
+                            self.type_parameter_ranges[ordinal].ok_or(
+                                compiler_ir::BuildError::Dangling {
+                                    space: compiler_ir::SemanticSpace::TypeParameters,
+                                    raw: value.constraints.raw,
+                                },
+                            )?,
                             &mut type_ids,
                             &mut type_seen,
                         )?,
@@ -1123,6 +1431,12 @@ impl<'source> FactSet<'source> {
                             &mut tree,
                             self,
                             value.type_parameters,
+                            self.type_parameter_ranges[ordinal].ok_or(
+                                compiler_ir::BuildError::Dangling {
+                                    space: compiler_ir::SemanticSpace::TypeParameters,
+                                    raw: value.type_parameters.raw,
+                                },
+                            )?,
                             &mut type_ids,
                             &mut type_seen,
                         )?,
@@ -1148,6 +1462,12 @@ impl<'source> FactSet<'source> {
                             &mut tree,
                             self,
                             value.where_clauses,
+                            self.type_parameter_ranges[ordinal].ok_or(
+                                compiler_ir::BuildError::Dangling {
+                                    space: compiler_ir::SemanticSpace::TypeParameters,
+                                    raw: value.where_clauses.raw,
+                                },
+                            )?,
                             &mut type_ids,
                             &mut type_seen,
                         )?,
@@ -1185,6 +1505,12 @@ impl<'source> FactSet<'source> {
                             &mut tree,
                             self,
                             value.templates,
+                            self.type_parameter_ranges[ordinal].ok_or(
+                                compiler_ir::BuildError::Dangling {
+                                    space: compiler_ir::SemanticSpace::TypeParameters,
+                                    raw: value.templates.raw,
+                                },
+                            )?,
                             &mut type_ids,
                             &mut type_seen,
                         )?,
@@ -1193,6 +1519,73 @@ impl<'source> FactSet<'source> {
                     };
                 }
                 None => {}
+            }
+        }
+        // Parent edges arrive as authority facts.  Prefix/scatter them once
+        // into a compact child pool, preserving declaration order and making
+        // the `parent` and `members` projections mutual inverses.
+        let mut member_counts = vec![0_usize; fact_count];
+        for parent in self.parents[..fact_count].iter().flatten() {
+            let Some(count) = member_counts.get_mut(*parent as usize) else {
+                return Err(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Entity,
+                    raw: *parent,
+                });
+            };
+            *count += 1;
+        }
+        let mut member_ranges = vec![(0_usize, 0_usize); fact_count];
+        let mut member_total = 0_usize;
+        for (ordinal, count) in member_counts.iter().copied().enumerate() {
+            member_ranges[ordinal] = (member_total, count);
+            member_total += count;
+        }
+        let mut member_cursors = member_ranges.iter().map(|range| range.0).collect::<Vec<_>>();
+        let mut members = vec![compiler_ir::TreeEntityId::new(0); member_total];
+        for (child, parent) in self.parents[..fact_count].iter().enumerate() {
+            let Some(parent) = parent else { continue };
+            let slot = member_cursors[*parent as usize];
+            members[slot] = compiler_ir::TreeEntityId::new(child as u32);
+            member_cursors[*parent as usize] += 1;
+        }
+        let source_file = self.source_spans[..fact_count]
+            .iter()
+            .any(Option::is_some)
+            // This atom is the entered source's typed content authority, not
+            // a made-up filename.  Adapters with a distinct file authority
+            // must stage it explicitly rather than relabel it as primary.
+            .then(|| tree.intern_atom(source.identity.as_ref()))
+            .transpose()?;
+        let mut item_attributes = vec![Vec::<&'source [u8]>::new(); fact_count];
+        for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
+            let Some(list) = extension.as_ref().and_then(extension_item_attributes) else {
+                continue;
+            };
+            let list = list.raw as usize;
+            if self.atom_list_len == 0 && list == 0 {
+                continue;
+            }
+            let length = self.atom_list_lengths.get(list).copied().ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::AtomList,
+                    raw: list as u32,
+                },
+            )?;
+            if list >= self.atom_list_len {
+                return Err(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::AtomList,
+                    raw: list as u32,
+                });
+            }
+            let target = &mut item_attributes[ordinal];
+            target.reserve(usize::from(length));
+            for provisional in &self.atom_lists[list][..usize::from(length)] {
+                target.push(*self.extension_atoms.get(*provisional as usize).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Atom,
+                        raw: *provisional,
+                    },
+                )?);
             }
         }
         let empty_item = TreeItemInput {
@@ -1207,7 +1600,7 @@ impl<'source> FactSet<'source> {
             source: None,
             extension: None,
         };
-        let mut items = vec![empty_item; MAX_EMISSION_FACTS].into_boxed_slice();
+        let mut items = vec![empty_item; fact_count].into_boxed_slice();
         for (ordinal, item) in items.iter_mut().take(fact_count).enumerate() {
             let extension = match self.extensions[ordinal].as_ref() {
                 Some(EmissionExtension::TypeScript(_)) => Some(LanguageExtensionInput::TypeScript(
@@ -1237,12 +1630,15 @@ impl<'source> FactSet<'source> {
                 name: self.names[ordinal],
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: self.visibility[ordinal],
-                parent: None,
+                parent: self.parents[ordinal].map(compiler_ir::TreeEntityId::new),
                 semantic_type: semantic_types[ordinal],
-                members: &[],
+                members: &members[member_ranges[ordinal].0
+                    ..member_ranges[ordinal].0 + member_ranges[ordinal].1],
                 docs: &docs[doc_ranges[ordinal].0..doc_ranges[ordinal].0 + doc_ranges[ordinal].1],
-                attributes: &[],
-                source: None,
+                attributes: &item_attributes[ordinal],
+                source: self.source_spans[ordinal].and_then(|span| {
+                    source_file.and_then(|file| compiler_ir::SourceSpan::new(file, span.start, span.end))
+                }),
                 extension,
             };
         }
@@ -1255,11 +1651,7 @@ impl<'source> FactSet<'source> {
                 target: external_from_occurrence(&mut tree, occurrence.target)?,
                 kind: occurrence_link_kind(occurrence.kind),
                 confidence: occurrence_link_confidence(occurrence.confidence),
-                // Occurrence spans are owner-relative while `Ir` link spans
-                // are source-file absolute.  The staged declaration lane has
-                // no declaration span yet, so preserve the link fact without
-                // fabricating an absolute coordinate.
-                source: None,
+                source: occurrence_source_span(self, source_file, owner, occurrence.span)?,
             });
         }
         tree.commit(&items[..fact_count], &links)?;
@@ -1289,7 +1681,7 @@ impl<'source> FactSet<'source> {
         if fact.name.is_empty() {
             return Err(rejected(FactFault::EmptyName));
         }
-        if fact_ordinal == MAX_EMISSION_FACTS {
+        if fact_ordinal == self.plan.facts {
             return Err(rejected(FactFault::Capacity));
         }
         if fact.truncated {
@@ -1324,12 +1716,8 @@ impl<'source> FactSet<'source> {
                 .validate_child(position as u32, &wire_child)
                 .map_err(|fault| rejected(FactFault::TypeChild { position, fault }))?;
             if child.target != u32::MAX {
-                let anonymous = child.target >= ANONYMOUS_ROW_BASE;
-                let valid = if anonymous {
-                    child.target - ANONYMOUS_ROW_BASE < self.anonymous_rows as u32
-                } else {
-                    child.target < fact_ordinal as u32
-                };
+                let valid = self.is_anonymous_type_row(child.target)
+                    || child.target < fact_ordinal as u32;
                 if !valid {
                     return Err(rejected(FactFault::TypeChildTarget {
                         position,
@@ -1401,6 +1789,12 @@ impl<'source> FactSet<'source> {
         self.type_child_counts[fact_ordinal] = fact.type_child_count;
         self.constructors[fact_ordinal] = fact.constructor;
         self.child_counts[fact_ordinal] = fact.child_count;
+        self.type_parameter_ranges[fact_ordinal] = match fact.extension.as_ref() {
+            Some(extension) => self
+                .capture_type_parameter_range(extension)
+                .map_err(rejected)?,
+            None => None,
+        };
         self.extensions[fact_ordinal] = fact.extension;
         self.visibility[fact_ordinal] = fact.visibility;
         self.key_digests[fact_ordinal] = fact_key_digest(&fact);
@@ -1468,79 +1862,100 @@ const UNRESOLVED_EXTERNAL_REASON: u32 = {
 fn doc_input<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     fragment: DocFragmentInput<'source>,
-) -> Result<Option<DocInput<'source>>, compiler_ir::BuildError> {
+) -> Result<DocInput<'source>, compiler_ir::BuildError> {
+    let text = |bytes: &'source [u8]| {
+        core::str::from_utf8(bytes).map_err(|_| compiler_ir::BuildError::InvalidDocumentationUtf8 {
+            bytes: bytes.len(),
+        })
+    };
     match fragment {
-        DocFragmentInput::Text(bytes) => Ok(core::str::from_utf8(bytes).ok().map(DocInput::Text)),
-        DocFragmentInput::Code(bytes) => Ok(core::str::from_utf8(bytes).ok().map(DocInput::Code)),
-        DocFragmentInput::Link { label, target } => Ok(Some(DocInput::Link {
-            label: match core::str::from_utf8(label) {
-                Ok(value) => value,
-                Err(_) => return Ok(None),
-            },
+        DocFragmentInput::Text(bytes) => Ok(DocInput::Text(text(bytes)?)),
+        DocFragmentInput::Code(bytes) => Ok(DocInput::Code(text(bytes)?)),
+        DocFragmentInput::Link { label, target } => Ok(DocInput::Link {
+            label: text(label)?,
             target: match target {
                 DocLinkTarget::Local(id) => {
                     TreeLinkTarget::Local(compiler_ir::TreeEntityId::new(id.raw))
                 }
-                DocLinkTarget::Foreign { path, .. } => {
+                DocLinkTarget::Foreign { ecosystem, path } => {
+                    let mut identity = Vec::with_capacity(
+                        b"compiler.ir.documentation.foreign.v1\0".len()
+                            + ecosystem.len()
+                            + path.len()
+                            + 1,
+                    );
+                    identity.extend_from_slice(b"compiler.ir.documentation.foreign.v1\0");
+                    identity.extend_from_slice(ecosystem);
+                    identity.push(0);
+                    identity.extend_from_slice(path);
+                    let package = tree.intern_atom(ecosystem)?;
                     let path_id = tree.intern_atom(path)?;
                     let display_id = tree.intern_atom(path)?;
                     TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                        stable: StableEntityId::from_canonical_bytes(path),
-                        package: None,
+                        stable: StableEntityId::from_canonical_bytes(&identity),
+                        package: Some(package),
                         path: path_id,
                         display: display_id,
                         kind: None,
                     })?)
                 }
             },
-        })),
-        DocFragmentInput::SoftBreak => Ok(Some(DocInput::SoftBreak)),
-        DocFragmentInput::HardBreak => Ok(Some(DocInput::HardBreak)),
+        }),
+        DocFragmentInput::SoftBreak => Ok(DocInput::SoftBreak),
+        DocFragmentInput::HardBreak => Ok(DocInput::HardBreak),
     }
 }
 
-/// All language planes use the same provisional type-parameter pool.  A
-/// list ID is a start coordinate until the semantic transaction interns it;
-/// the next greater start closes its half-open range.  Keeping this logic in
-/// one place prevents TypeScript from receiving privileged projection rules.
-fn type_parameter_end(facts: &FactSet<'_>, start: usize) -> usize {
-    facts.extensions[..facts.len]
-        .iter()
-        .filter_map(extension_type_parameter_starts)
-        .map(|candidate| candidate.raw as usize)
-        .filter(|candidate| *candidate > start)
-        .min()
-        .unwrap_or(facts.type_parameter_len)
-}
-
-fn extension_type_parameter_starts(
-    extension: &Option<EmissionExtension>,
-) -> impl Iterator<Item = compiler_ir::TypeParameterListId> {
-    let mut starts = [None; 2];
+fn extension_type_parameter_start(
+    extension: &EmissionExtension,
+) -> Option<compiler_ir::TypeParameterListId> {
     match extension {
-        Some(EmissionExtension::TypeScript(facts)) => starts[0] = Some(facts.type_parameters),
-        Some(EmissionExtension::CSharp(facts)) => starts[0] = Some(facts.constraints),
-        Some(EmissionExtension::Go(facts)) => starts[0] = Some(facts.type_parameters),
-        Some(EmissionExtension::Rust(facts)) => starts[0] = Some(facts.where_clauses),
-        Some(EmissionExtension::Python(_)) | Some(EmissionExtension::Java(_)) => {}
-        Some(EmissionExtension::Clang(facts)) => starts[0] = Some(facts.templates),
-        None => {}
+        EmissionExtension::TypeScript(facts) => Some(facts.type_parameters),
+        EmissionExtension::CSharp(facts) => Some(facts.constraints),
+        EmissionExtension::Go(facts) => Some(facts.type_parameters),
+        EmissionExtension::Rust(facts) => Some(facts.where_clauses),
+        EmissionExtension::Clang(facts) => Some(facts.templates),
+        EmissionExtension::Python(_) | EmissionExtension::Java(_) => None,
     }
-    starts.into_iter().flatten()
+}
+
+/// Attributes that belong to the generic tree item as well as their language
+/// extension row.  The bytes are staged once and borrowed into both views;
+/// this is not a renderer-side reconstruction.
+fn extension_item_attributes(extension: &EmissionExtension) -> Option<compiler_ir::AtomListId> {
+    match extension {
+        EmissionExtension::CSharp(facts) => Some(facts.attributes),
+        EmissionExtension::Python(facts) => Some(facts.decorators),
+        EmissionExtension::Java(facts) => Some(facts.annotations),
+        EmissionExtension::TypeScript(_)
+        | EmissionExtension::Go(_)
+        | EmissionExtension::Rust(_)
+        | EmissionExtension::Clang(_) => None,
+    }
 }
 
 fn live_type_parameters<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     facts: &FactSet<'source>,
     start: compiler_ir::TypeParameterListId,
+    range: StagedTypeParameterRange,
     ids: &mut [TypeId],
     seen: &mut [bool],
 ) -> Result<compiler_ir::TypeParameterListId, compiler_ir::BuildError> {
     let start = start.raw as usize;
-    if facts.type_parameter_len == 0 && start == 0 {
+    if range.length == 0 {
         return tree.intern_type_parameters(&[]);
     }
-    let end = type_parameter_end(facts, start);
+    if range.start != start as u32 {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::TypeParameters,
+            raw: start as u32,
+        });
+    }
+    let end = start.checked_add(range.length as usize).ok_or(compiler_ir::BuildError::Dangling {
+        space: compiler_ir::SemanticSpace::TypeParameters,
+        raw: start as u32,
+    })?;
     let parameters = facts.type_parameters.get(start..end).ok_or(
         compiler_ir::BuildError::Dangling {
             space: compiler_ir::SemanticSpace::TypeParameters,
@@ -1711,6 +2126,42 @@ const fn occurrence_link_confidence(
     }
 }
 
+/// Lifts an owner-relative staged occurrence range into the primary entered
+/// source coordinate space.  Uncaptured owners remain explicitly source-less;
+/// captured owners must satisfy the exact containment law.
+fn occurrence_source_span(
+    facts: &FactSet<'_>,
+    file: Option<AtomId>,
+    owner: u32,
+    relative: compiler_ir::RelSpan,
+) -> Result<Option<compiler_ir::SourceSpan>, compiler_ir::BuildError> {
+    let Some(owner_span) = facts.source_spans.get(owner as usize).copied().flatten() else {
+        return Ok(None);
+    };
+    let Some(start) = owner_span.start.checked_add(relative.start) else {
+        return Err(compiler_ir::BuildError::InvalidOccurrenceSpan {
+            owner: compiler_ir::EntityId::new(owner),
+            start: relative.start,
+            end: relative.end,
+        });
+    };
+    let Some(end) = owner_span.start.checked_add(relative.end) else {
+        return Err(compiler_ir::BuildError::InvalidOccurrenceSpan {
+            owner: compiler_ir::EntityId::new(owner),
+            start: relative.start,
+            end: relative.end,
+        });
+    };
+    if start > end || end > owner_span.end {
+        return Err(compiler_ir::BuildError::InvalidOccurrenceSpan {
+            owner: compiler_ir::EntityId::new(owner),
+            start,
+            end,
+        });
+    }
+    Ok(file.and_then(|file| compiler_ir::SourceSpan::new(file, start, end)))
+}
+
 fn external_from_occurrence<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     target: compiler_ir::OccurrenceTarget<'source>,
@@ -1784,21 +2235,16 @@ fn live_type<'source>(
     seen: &mut [bool],
     top_level: bool,
 ) -> Result<Option<TypeId>, compiler_ir::BuildError> {
-    let index = usize::try_from(row).map_err(|_| compiler_ir::BuildError::Dangling {
+    let index = facts.staged_type_slot(row).ok_or(compiler_ir::BuildError::Dangling {
         space: compiler_ir::SemanticSpace::Type,
         raw: row,
     })?;
-    if index >= ids.len() {
-        return Err(compiler_ir::BuildError::Dangling {
-            space: compiler_ir::SemanticSpace::Type,
-            raw: row,
-        });
-    }
+    debug_assert!(index < ids.len());
     if seen[index] {
         return Ok(Some(ids[index]));
     }
     let record = facts.staged_type_record(row)?;
-    let top_level_excluded = index < facts.len && record.tag == SemanticTypeTag::Unknown;
+    let top_level_excluded = row < ANONYMOUS_ROW_BASE && record.tag == SemanticTypeTag::Unknown;
     if top_level_excluded && top_level {
         return Ok(None);
     }
@@ -2164,37 +2610,118 @@ fn live_type<'source>(
     Ok(Some(ty))
 }
 
-/// Digests the identity-bearing key of one fact: kind, name, constructor
-/// payload, declared-type record cells, and every ordered child coordinate.
-fn fact_key_digest(fact: &SemanticFact<'_>) -> u64 {
-    let mut preimage = [0u8; 64];
-    preimage[0] = fact.kind as u8;
-    preimage[1] = u32::from(fact.constructor.tag) as u8;
-    preimage[2..6].copy_from_slice(&fact.constructor.payload0.to_le_bytes());
-    preimage[6..10].copy_from_slice(&fact.constructor.payload1.to_le_bytes());
-    let mut cursor = 10;
-    preimage[cursor] = u8::from(fact.type_record.tag);
-    cursor += 1;
-    preimage[cursor..cursor + 4].copy_from_slice(&fact.type_record.payload0.to_le_bytes());
-    cursor += 4;
-    for child in fact.children.iter().take(usize::from(fact.child_count)) {
-        if cursor + 8 <= preimage.len() {
-            preimage[cursor] = u8::from(child.role);
-            preimage[cursor + 4..cursor + 8].copy_from_slice(&child.target.to_le_bytes());
-            cursor += 8;
+/// Digests the complete identity-bearing key of one fact.
+///
+/// This deliberately uses an unbounded preimage before the fixed-width
+/// content digest.  A prior 64-byte scratch silently omitted a tail of the
+/// product children as well as `payload1`, text, nominal authority, and type
+/// children; two distinct declarations could then acquire the same rank and
+/// stable identity.  Length-prefix every byte field so adjacent cells cannot
+/// alias one another.
+fn fact_key_digest(fact: &SemanticFact<'_>) -> PayloadHash {
+    fn bytes(out: &mut Vec<u8>, value: &[u8]) {
+        out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        out.extend_from_slice(value);
+    }
+    fn optional_bytes(out: &mut Vec<u8>, value: Option<&[u8]>) {
+        match value {
+            Some(value) => {
+                out.push(1);
+                bytes(out, value);
+            }
+            None => out.push(0),
         }
     }
-    let name_digest = PayloadHash::from_canonical_bytes(fact.name);
-    let stable = StableEntityId::from_canonical_bytes(&preimage[..cursor]);
-    let mix = u64::from(stable.as_bytes()[0]) << 56
-        | u64::from(name_digest.as_bytes()[0]) << 48
-        | u64::from(stable.as_bytes()[1]) << 40
-        | u64::from(name_digest.as_bytes()[1]) << 32
-        | u64::from(stable.as_bytes()[2]) << 24
-        | u64::from(name_digest.as_bytes()[2]) << 16
-        | u64::from(stable.as_bytes()[3]) << 8
-        | u64::from(name_digest.as_bytes()[3]);
-    mix
+    fn record(out: &mut Vec<u8>, value: SemanticTypeRecord<'_>) {
+        out.push(u8::from(value.tag));
+        out.extend_from_slice(&value.payload0.to_le_bytes());
+        out.extend_from_slice(&value.payload1.to_le_bytes());
+        optional_bytes(out, value.text);
+        optional_bytes(out, value.text2);
+        match value.nominal {
+            None => out.push(0),
+            Some(NominalRef::Local(target)) => {
+                out.push(1);
+                out.extend_from_slice(&target.raw.to_le_bytes());
+            }
+            Some(NominalRef::External(target)) => {
+                out.push(2);
+                out.extend_from_slice(target.fragment.as_ref());
+                out.extend_from_slice(&target.ordinal.to_le_bytes());
+            }
+        }
+    }
+
+    let mut preimage = Vec::with_capacity(
+        64 + fact.name.len()
+            + fact.type_children[..usize::from(fact.type_child_count)]
+                .iter()
+                .map(|child| child.name.map_or(0, <[u8]>::len))
+                .sum::<usize>(),
+    );
+    preimage.push(fact.kind as u8);
+    bytes(&mut preimage, fact.name);
+    preimage.push(u32::from(fact.constructor.tag) as u8);
+    preimage.extend_from_slice(&fact.constructor.payload0.to_le_bytes());
+    preimage.extend_from_slice(&fact.constructor.payload1.to_le_bytes());
+    record(&mut preimage, fact.type_record);
+    preimage.push(fact.type_child_count);
+    for child in fact.type_children.iter().take(usize::from(fact.type_child_count)) {
+        preimage.extend_from_slice(&child.target.to_le_bytes());
+        optional_bytes(&mut preimage, child.name);
+        preimage.push(child.flags);
+    }
+    preimage.push(fact.child_count);
+    for child in fact.children.iter().take(usize::from(fact.child_count)) {
+        preimage.push(u8::from(child.role));
+        preimage.extend_from_slice(&child.target.to_le_bytes());
+    }
+    PayloadHash::from_canonical_bytes(&preimage)
+}
+
+/// Extends a structural declaration key with its recursively stable parent
+/// key.  This distinguishes `a::value` from `b::value` without baking an
+/// allocation-order ordinal into either identity.
+fn scoped_fact_key(
+    facts: &FactSet<'_>,
+    ordinal: usize,
+    cache: &mut [Option<PayloadHash>],
+    visiting: &mut [bool],
+) -> Result<PayloadHash, compiler_ir::BuildError> {
+    let Some(cached) = cache.get(ordinal) else {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Entity,
+            raw: ordinal as u32,
+        });
+    };
+    if let Some(key) = *cached {
+        return Ok(key);
+    }
+    if visiting.get(ordinal).copied().unwrap_or(false) {
+        return Err(compiler_ir::BuildError::ParentCycle {
+            entity: compiler_ir::EntityId::new(ordinal as u32),
+        });
+    }
+    visiting[ordinal] = true;
+    let parent = facts.parents.get(ordinal).copied().flatten();
+    let parent_key = match parent {
+        Some(parent) => scoped_fact_key(facts, parent as usize, cache, visiting)?,
+        None => PayloadHash::from_raw([0; 16]),
+    };
+    let structural = *facts.key_digests.get(ordinal).ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Entity,
+            raw: ordinal as u32,
+        },
+    )?;
+    let mut preimage = [0_u8; 33];
+    preimage[0] = u8::from(parent.is_some());
+    preimage[1..17].copy_from_slice(structural.as_ref());
+    preimage[17..].copy_from_slice(parent_key.as_ref());
+    let key = PayloadHash::from_canonical_bytes(&preimage);
+    visiting[ordinal] = false;
+    cache[ordinal] = Some(key);
+    Ok(key)
 }
 
 const fn item_kind(kind: EntityKind) -> ItemKind {
@@ -2223,15 +2750,15 @@ const fn item_kind(kind: EntityKind) -> ItemKind {
 /// unrelated declaration never moves another declaration's identity.
 fn fact_version(
     source: compiler_ir::SourceIdentity,
-    key_digest: u64,
+    key_digest: PayloadHash,
     name: &[u8],
     rank: u32,
 ) -> EntityVersion {
-    let mut identity_input = [0; 44];
+    let mut identity_input = [0; 52];
     let (source_input, remainder) = identity_input.split_at_mut(32);
-    let (key_input, rank_input) = remainder.split_at_mut(8);
+    let (key_input, rank_input) = remainder.split_at_mut(16);
     source_input.copy_from_slice(source.identity.as_ref());
-    key_input.copy_from_slice(&key_digest.to_le_bytes());
+    key_input.copy_from_slice(key_digest.as_ref());
     rank_input.copy_from_slice(&rank.to_le_bytes());
     EntityVersion {
         stable: StableEntityId::from_canonical_bytes(&identity_input),
@@ -2256,49 +2783,36 @@ pub(super) enum AdmissionFault {
     },
 }
 
-/// Conservative canonicalization reservation derived exactly from the bounded
-/// emission lane. With `P = 1,024` products and `C = P * 8 = 8,192` children:
-/// `hash = 2*P² = 2,097,152`; `sort = P² + (P²+2P)*P = 1,076,887,552`;
-/// `probe = P² = 1,048,576`; `child = 2*C*P + C*(sort+probe) =
-/// 8,830,469,537,792`; and `lane = 4P+C = 12,288`. Thus `work = hash + sort
-/// + probe + child + lane = 8,831,549,583,360`. All products fit in `u64`
-/// (the largest is `C*(sort+probe)`, below 2^64), and these are the exact
-/// worst-case formulas used by `compiler-ir::reserve_budget`: the maximal lane
-/// is admitted and any measured overrun remains a typed `BudgetExceeded`.
-#[expect(
-    clippy::as_conversions,
-    reason = "the widened lane bounds fit totally in u32/u64 reservation counters"
-)]
-const EMISSION_BUDGET: DataResourceBudget = DataResourceBudget {
-    max_refinement_rounds: MAX_EMISSION_FACTS as u32,
-    max_hash_evaluations: EMISSION_HASH_RESERVATION,
-    max_sort_comparisons: EMISSION_SORT_RESERVATION,
-    max_intern_probes: EMISSION_PROBE_RESERVATION,
-    max_work: EMISSION_HASH_RESERVATION
-        + EMISSION_SORT_RESERVATION
-        + EMISSION_PROBE_RESERVATION
-        + EMISSION_CHILD_VISIT_RESERVATION
-        + EMISSION_LANE_VISIT_RESERVATION,
-};
-
-/// P = maximal products = maximal semantic atoms.
-const EMISSION_PRODUCTS: u64 = MAX_EMISSION_FACTS as u64;
-/// C = maximal pooled product children.
-const EMISSION_CHILDREN: u64 = (MAX_EMISSION_FACTS * MAX_FACT_CHILDREN) as u64;
-/// Every product is hashed twice per refinement round.
-const EMISSION_HASH_RESERVATION: u64 = 2 * EMISSION_PRODUCTS * EMISSION_PRODUCTS;
-/// Atom sort plus per-round product structural sorts.
-const EMISSION_SORT_RESERVATION: u64 = EMISSION_PRODUCTS * EMISSION_PRODUCTS
-    + (EMISSION_PRODUCTS * EMISSION_PRODUCTS + 2 * EMISSION_PRODUCTS) * EMISSION_PRODUCTS;
-/// Open-addressing probes at the worst-case fill.
-const EMISSION_PROBE_RESERVATION: u64 = EMISSION_PRODUCTS * EMISSION_PRODUCTS;
-/// Refinement passes plus keyed comparisons visit the pooled child lane.
-const EMISSION_CHILD_VISIT_RESERVATION: u64 = 2 * EMISSION_CHILDREN * EMISSION_PRODUCTS
-    + EMISSION_CHILDREN
-        * ((EMISSION_PRODUCTS * EMISSION_PRODUCTS + 2 * EMISSION_PRODUCTS) * EMISSION_PRODUCTS
-            + EMISSION_PROBE_RESERVATION);
-/// Each admitted lane row is visited once while measuring work.
-const EMISSION_LANE_VISIT_RESERVATION: u64 = 4 * EMISSION_PRODUCTS + EMISSION_CHILDREN;
+/// Exact per-admission canonicalization work reservation, calculated from the
+/// transaction-local geometry rather than a global worst-case lane.
+fn emission_budget(facts: usize, children: usize) -> DataResourceBudget {
+    let products = facts as u64;
+    let children = children as u64;
+    let hash = 2_u64.saturating_mul(products).saturating_mul(products);
+    let sort = products.saturating_mul(products).saturating_add(
+        products
+            .saturating_mul(products.saturating_mul(products).saturating_add(2 * products)),
+    );
+    let probe = products.saturating_mul(products);
+    let child_visits = 2_u64
+        .saturating_mul(children)
+        .saturating_mul(products)
+        .saturating_add(children.saturating_mul(sort.saturating_add(probe)));
+    let lane = 4_u64
+        .saturating_mul(products)
+        .saturating_add(children);
+    DataResourceBudget {
+        max_refinement_rounds: u32::try_from(facts).unwrap_or(u32::MAX),
+        max_hash_evaluations: hash,
+        max_sort_comparisons: sort,
+        max_intern_probes: probe,
+        max_work: hash
+            .saturating_add(sort)
+            .saturating_add(probe)
+            .saturating_add(child_visits)
+            .saturating_add(lane),
+    }
+}
 
 /// Closed set of committed primitive type nodes.
 const PRIMITIVE_NODE_CAPACITY: usize = 3;
@@ -2444,8 +2958,12 @@ pub(super) fn admit<'source, 'output>(
 
     // Type-node lane: the opaque sentinel (when any fact needs it) followed by
     // one node per distinct proven primitive in first-use order.
-    let any_opaque =
-        (0..fact_count).any(|ordinal| builtin_type(facts.type_records[ordinal]).is_none());
+    // The compact index has only Bool/I32/String primitive opcodes.  Keep
+    // every other exact primitive in the type-fact lane and use the explicit
+    // opaque compact sentinel rather than falsely publishing (say) `u64` as
+    // `String`.
+    let any_opaque = (0..fact_count)
+        .any(|ordinal| compact_primitive_node(facts.type_records[ordinal]).is_none());
     let mut nodes = [TypeNode::Reference(TypeId::new(0)); MAX_TYPE_NODES];
     let mut node_count = 0;
     let mut primitive_nodes = [0_usize; PRIMITIVE_NODE_CAPACITY];
@@ -2455,16 +2973,11 @@ pub(super) fn admit<'source, 'output>(
         nodes[0] = TypeNode::Reference(TypeId::new(0));
         node_count = 1;
     }
-    let mut fact_type_nodes = vec![0_usize; MAX_EMISSION_FACTS].into_boxed_slice();
+    let mut fact_type_nodes = vec![0_usize; fact_count].into_boxed_slice();
     for (ordinal, record) in facts.type_records[..fact_count].iter().enumerate() {
-        fact_type_nodes[ordinal] = match builtin_type(*record) {
+        fact_type_nodes[ordinal] = match compact_primitive_node(*record) {
             None => 0,
-            Some(builtin) => {
-                let (code, node) = match builtin {
-                    BuiltinType::Bool => (0, TypeNode::Primitive(compiler_ir::PrimitiveType::Bool)),
-                    BuiltinType::I32 => (1, TypeNode::Primitive(compiler_ir::PrimitiveType::I32)),
-                    _ => (2, TypeNode::Primitive(compiler_ir::PrimitiveType::String)),
-                };
+            Some((code, node)) => {
                 if primitive_nodes[code] == 0 {
                     nodes[node_count] = node;
                     node_count += 1;
@@ -2483,10 +2996,10 @@ pub(super) fn admit<'source, 'output>(
             name: AtomId::new(0),
             kind: EntityKind::Function,
         };
-        MAX_EMISSION_FACTS
+        fact_count
     ]
     .into_boxed_slice();
-    let mut atoms = vec![AtomInput { bytes: b"" }; MAX_EMISSION_ATOMS].into_boxed_slice();
+    let mut atoms = vec![AtomInput { bytes: b"" }; atom_count].into_boxed_slice();
     for ordinal in 0..fact_count {
         #[expect(
             clippy::as_conversions,
@@ -2514,17 +3027,17 @@ pub(super) fn admit<'source, 'output>(
             head: AtomId::new(0),
             children: ProductListId::new(0),
         };
-        MAX_EMISSION_FACTS
+        fact_count
     ]
     .into_boxed_slice();
     let mut fact_lists =
-        vec![ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS].into_boxed_slice();
+        vec![ListSpan::<ProductChildren>::new(0, 0); fact_count].into_boxed_slice();
     let mut fact_children = vec![
         SemanticProductChild {
             target: ProductRef::Local(ProductId::new(0)),
             role: ProductChildRole::ProductMember,
         };
-        MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
+        facts.total_children
     ]
     .into_boxed_slice();
     let mut pooled_cursor = 0_usize;
@@ -2552,21 +3065,21 @@ pub(super) fn admit<'source, 'output>(
     }
 
     let mut semantic_atoms =
-        vec![SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS].into_boxed_slice();
+        vec![SemanticAtom { bytes: b"" }; fact_count].into_boxed_slice();
     for (ordinal, name) in facts.names[..fact_count].iter().enumerate() {
         semantic_atoms[ordinal] = SemanticAtom { bytes: name };
     }
-    let mut scratch_atom_order = vec![AtomId::new(0); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_atom_map = vec![0_u32; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_product_order = vec![ProductId::new(0); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_product_map = vec![0_u32; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_colors = vec![0_u32; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_next_colors = vec![0_u32; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_hashes = vec![0_u64; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_next_hashes = vec![0_u64; MAX_EMISSION_FACTS].into_boxed_slice();
+    let mut scratch_atom_order = vec![AtomId::new(0); fact_count].into_boxed_slice();
+    let mut scratch_atom_map = vec![0_u32; fact_count].into_boxed_slice();
+    let mut scratch_product_order = vec![ProductId::new(0); fact_count].into_boxed_slice();
+    let mut scratch_product_map = vec![0_u32; fact_count].into_boxed_slice();
+    let mut scratch_colors = vec![0_u32; fact_count].into_boxed_slice();
+    let mut scratch_next_colors = vec![0_u32; fact_count].into_boxed_slice();
+    let mut scratch_hashes = vec![0_u64; fact_count].into_boxed_slice();
+    let mut scratch_next_hashes = vec![0_u64; fact_count].into_boxed_slice();
     let mut scratch_representatives =
-        vec![ProductId::new(0); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut scratch_intern_slots = vec![0_u64; MAX_EMISSION_FACTS].into_boxed_slice();
+        vec![ProductId::new(0); fact_count].into_boxed_slice();
+    let mut scratch_intern_slots = vec![0_u64; fact_count].into_boxed_slice();
     let mut data_scratch = DataScratch {
         atom_order: &mut scratch_atom_order[..],
         atom_to_canonical: &mut scratch_atom_map[..],
@@ -2579,25 +3092,25 @@ pub(super) fn admit<'source, 'output>(
         product_representatives: &mut scratch_representatives[..],
         intern_slots: &mut scratch_intern_slots[..],
     };
-    let mut output_atoms = vec![SemanticAtom { bytes: b"" }; MAX_EMISSION_FACTS].into_boxed_slice();
+    let mut output_atoms = vec![SemanticAtom { bytes: b"" }; fact_count].into_boxed_slice();
     let mut output_products = vec![
         SemanticProduct {
             head: AtomId::new(0),
             children: ProductListId::new(0),
         };
-        MAX_EMISSION_FACTS
+        fact_count
     ]
     .into_boxed_slice();
     let mut output_constructors =
-        vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS].into_boxed_slice();
+        vec![SemanticProductConstructor::PRODUCT; fact_count].into_boxed_slice();
     let mut output_lists =
-        vec![ListSpan::<ProductChildren>::new(0, 0); MAX_EMISSION_FACTS].into_boxed_slice();
+        vec![ListSpan::<ProductChildren>::new(0, 0); fact_count].into_boxed_slice();
     let mut output_children = vec![
         SemanticProductChild {
             target: ProductRef::Local(ProductId::new(0)),
             role: ProductChildRole::ProductMember,
         };
-        MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
+        facts.total_children
     ]
     .into_boxed_slice();
     let mut data_output = DataOutput {
@@ -2617,16 +3130,18 @@ pub(super) fn admit<'source, 'output>(
         },
         &mut data_scratch,
         &mut data_output,
-        EMISSION_BUDGET,
+        emission_budget(fact_count, pooled_cursor),
     )
     .map_err(AdmissionFault::Canonical)?;
 
+    let anonymous_rows = facts.anonymous_rows;
+    let declared_count = anonymous_rows + fact_count;
     let mut type_facts = vec![
         TypeFactInput {
             owner: compiler_ir::EntityId::new(0),
             record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
         };
-        MAX_TYPE_ROWS
+        declared_count
     ]
     .into_boxed_slice();
     let mut type_children = vec![
@@ -2635,16 +3150,15 @@ pub(super) fn admit<'source, 'output>(
             name: None,
             flags: 0,
         };
-        MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN
-            + MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN
-            + MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN
+        facts.total_type_children
+            + facts.anonymous_children_total
+            + facts.computed_children_total
     ]
     .into_boxed_slice();
-    let anonymous_rows = facts.anonymous_rows;
     // Lane order: anonymous rows first (topological by construction), then
     // fact rows — every fact-row child and anonymous child points backward.
     let mut remap = |target: u32| -> u32 {
-        if target >= ANONYMOUS_ROW_BASE {
+        if target >= ANONYMOUS_ROW_BASE && target < COMPUTED_ROW_BASE {
             target - ANONYMOUS_ROW_BASE
         } else {
             target + anonymous_rows as u32
@@ -2656,7 +3170,7 @@ pub(super) fn admit<'source, 'output>(
             constraint: None,
             default: None,
         };
-        MAX_TYPE_PARAMETERS
+        facts.type_parameter_len
     ]
     .into_boxed_slice();
     type_parameters[..facts.type_parameter_len]
@@ -2718,10 +3232,9 @@ pub(super) fn admit<'source, 'output>(
             owner: compiler_ir::EntityId::new(0),
             record: SemanticTypeRecord::leaf(SemanticTypeTag::Unknown),
         };
-        MAX_COMPUTED_TYPE_ROWS
+        facts.computed_rows
     ]
     .into_boxed_slice();
-    let declared_count = anonymous_rows + fact_count;
     for (index, source_record) in facts.computed_records[..computed_rows].iter().enumerate() {
         let child_count = usize::from(facts.computed_child_counts[index]);
         let record = SemanticTypeRecord {
@@ -2773,20 +3286,20 @@ pub(super) fn admit<'source, 'output>(
     // tables, with provisional atom coordinates rewritten to final lane
     // positions. Pooled lists keep provisional atom coordinates until the
     // pools lane rewrites them below.
-    let mut typescript_pool = vec![empty_typescript_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut csharp_pool = vec![empty_csharp_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut go_pool = vec![empty_go_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut rust_pool = vec![empty_rust_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut python_pool = vec![empty_python_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut java_pool = vec![empty_java_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut clang_pool = vec![empty_clang_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut typescript_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut csharp_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut go_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut rust_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut python_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut java_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
-    let mut clang_rows = vec![SECTION_NONE; MAX_EMISSION_FACTS].into_boxed_slice();
+    let mut typescript_pool = vec![empty_typescript_facts(); fact_count].into_boxed_slice();
+    let mut csharp_pool = vec![empty_csharp_facts(); fact_count].into_boxed_slice();
+    let mut go_pool = vec![empty_go_facts(); fact_count].into_boxed_slice();
+    let mut rust_pool = vec![empty_rust_facts(); fact_count].into_boxed_slice();
+    let mut python_pool = vec![empty_python_facts(); fact_count].into_boxed_slice();
+    let mut java_pool = vec![empty_java_facts(); fact_count].into_boxed_slice();
+    let mut clang_pool = vec![empty_clang_facts(); fact_count].into_boxed_slice();
+    let mut typescript_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut csharp_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut go_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut rust_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut python_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut java_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
+    let mut clang_rows = vec![SECTION_NONE; fact_count].into_boxed_slice();
     let mut typescript_len = 0_usize;
     let mut csharp_len = 0_usize;
     let mut go_len = 0_usize;
@@ -2869,7 +3382,7 @@ pub(super) fn admit<'source, 'output>(
                 span: compiler_ir::RelSpan { start: 0, end: 0 },
             },
         };
-        MAX_EMISSION_OCCURRENCES
+        facts.occurrence_len
     ]
     .into_boxed_slice();
     for (index, owner) in facts.occurrence_owners[..facts.occurrence_len]
@@ -2892,7 +3405,7 @@ pub(super) fn admit<'source, 'output>(
 
     // Extension pooled lanes: provisional atom coordinates become final atom
     // lane positions; type and entity coordinates were already final.
-    let mut atom_list_elements = vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice();
+    let mut atom_list_elements = vec![[0; MAX_REF_LIST_ELEMENTS]; facts.atom_list_len].into_boxed_slice();
     for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
         .iter()
         .enumerate()
@@ -2911,7 +3424,7 @@ pub(super) fn admit<'source, 'output>(
             atom_list_elements[index][offset] = (fact_count + *provisional as usize) as u32;
         }
     }
-    let mut pooled_atom_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
+    let mut pooled_atom_lists = vec![ExtensionRefList { elements: &[] }; facts.atom_list_len];
     for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
         .iter()
         .enumerate()
@@ -2920,8 +3433,8 @@ pub(super) fn admit<'source, 'output>(
             elements: &atom_list_elements[index][..usize::from(*length)],
         };
     }
-    let mut type_list_elements = vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice();
-    let mut pooled_type_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
+    let mut type_list_elements = vec![[0; MAX_REF_LIST_ELEMENTS]; facts.type_list_len].into_boxed_slice();
+    let mut pooled_type_lists = vec![ExtensionRefList { elements: &[] }; facts.type_list_len];
     for (index, length) in facts.type_list_lengths[..facts.type_list_len]
         .iter()
         .enumerate()
@@ -2936,7 +3449,7 @@ pub(super) fn admit<'source, 'output>(
             elements: &type_list_elements[index][..usize::from(*length)],
         };
     }
-    let mut pooled_entity_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
+    let mut pooled_entity_lists = vec![ExtensionRefList { elements: &[] }; facts.entity_list_len];
     for (index, length) in facts.entity_list_lengths[..facts.entity_list_len]
         .iter()
         .enumerate()
@@ -3000,6 +3513,20 @@ pub(super) fn admit<'source, 'output>(
         },
     );
     write_prepared(prepared, output)
+}
+
+/// Exact subset representable by the compact primitive-node opcode table.
+/// The richer type-fact lane carries every [`BuiltinType`] without a lossy
+/// coercion; callers that need widths inspect that lane instead of this index.
+fn compact_primitive_node(
+    record: SemanticTypeRecord<'_>,
+) -> Option<(usize, TypeNode)> {
+    match builtin_type(record)? {
+        BuiltinType::Bool => Some((0, TypeNode::Primitive(compiler_ir::PrimitiveType::Bool))),
+        BuiltinType::I32 => Some((1, TypeNode::Primitive(compiler_ir::PrimitiveType::I32))),
+        BuiltinType::String => Some((2, TypeNode::Primitive(compiler_ir::PrimitiveType::String))),
+        _ => None,
+    }
 }
 
 fn write_prepared<'output>(

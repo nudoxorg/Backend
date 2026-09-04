@@ -1,11 +1,98 @@
 //! Defines types request behavior for `compiler-driver`, whose purpose is to run bounded native toolchains and lower their output into canonical IR.
 //! This module owns the types request invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
-use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
+use std::{
+    num::TryFromIntError,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
 
 use compiler_vocabulary::{LanguageProfile, Stage};
+use heart_identity::{ContentId, SourceFactDomain};
 
-use super::{ResolvedToolchain, ToolchainSelection};
+use super::{ResolvedToolchain, SourceIdentity, ToolchainSelection};
+
+/// An entered source buffer.  Its byte slice and durable identity enter the
+/// pipeline together, so no later authority or lowerer can accidentally
+/// analyze bytes under a different persisted identity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceLease<'source> {
+    bytes: &'source [u8],
+    identity: SourceIdentity,
+}
+
+impl<'source> SourceLease<'source> {
+    pub(crate) fn enter(bytes: &'source [u8]) -> Result<Self, TryFromIntError> {
+        let byte_len = u32::try_from(bytes.len())?;
+        Ok(Self {
+            bytes,
+            identity: SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(bytes),
+                byte_len,
+            },
+        })
+    }
+
+    pub(crate) const fn bytes(self) -> &'source [u8] {
+        self.bytes
+    }
+
+    pub(crate) const fn identity(self) -> SourceIdentity {
+        self.identity
+    }
+}
+
+/// The only deadline/cancellation gate passed beyond entry.  It carries the
+/// source identity whose work it governs, preventing detached traversal
+/// loops from checking an unrelated request control.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WorkPermit<'cancel> {
+    source: SourceIdentity,
+    deadline: Instant,
+    cancelled: &'cancel AtomicBool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkStopped {
+    Cancelled,
+    Deadline,
+}
+
+impl<'cancel> WorkPermit<'cancel> {
+    pub(crate) const fn new(source: SourceIdentity, control: CompileControl<'cancel>) -> Self {
+        Self {
+            source,
+            deadline: control.deadline,
+            cancelled: control.cancelled,
+        }
+    }
+
+    pub(crate) fn checkpoint(self) -> Result<(), WorkStopped> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(WorkStopped::Cancelled);
+        }
+        if Instant::now() >= self.deadline {
+            return Err(WorkStopped::Deadline);
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn source(self) -> SourceIdentity {
+        self.source
+    }
+
+    pub(crate) const fn cancelled(self) -> &'cancel AtomicBool {
+        self.cancelled
+    }
+
+    pub(crate) const fn control(self) -> CompileControl<'cancel> {
+        CompileControl {
+            deadline: self.deadline,
+            cancelled: self.cancelled,
+        }
+    }
+}
 
 /// Project-bearing semantic authority required by a profile that cannot infer
 /// its package graph from one source buffer.

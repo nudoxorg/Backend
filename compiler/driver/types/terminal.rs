@@ -156,6 +156,35 @@ pub struct CompiledIr {
     pub source: SourceIdentity,
     pub recipe: CompileRecipeFact,
     pub ir: Ir,
+    /// Per-row truth availability for fields whose `Ir` representation is
+    /// optional.  `None` in the owned tree is never silently promoted to a
+    /// source-language absence: callers can distinguish an authority that
+    /// captured an empty field from one that did not expose that plane.
+    pub capture: RichIrCapture,
+}
+
+/// Whether an authority supplied one optional rich-IR plane for a row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RichCapture {
+    /// The authority supplied this plane; an empty value is semantically real.
+    Captured,
+    /// The authority did not expose this plane, so the owned IR does not infer absence.
+    Unavailable,
+}
+
+/// Availability rows aligned with [`Ir`] entity/edge order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RichIrCapture {
+    pub entities: Box<[RichEntityCapture]>,
+    pub links: Box<[RichCapture]>,
+}
+
+/// Availability of optional item fields for one entity ordinal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RichEntityCapture {
+    pub parentage: RichCapture,
+    pub source: RichCapture,
+    pub attributes: RichCapture,
 }
 
 /// Exact compile terminal with source-bearing native causes and bounded diagnostic facts.
