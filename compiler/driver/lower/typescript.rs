@@ -15,7 +15,7 @@ use compiler_ir::{
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
     MappedModifier as CheckerMappedModifier, Semantic, Span, SymbolFlags, SymbolId, TemplatePart,
-    TypeTree, Utf8Span, with_analysis,
+    SyntaxMappedModifier, TypeTree, Utf8Span, syntax_mapped_modifier, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -1225,10 +1225,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 return Ok(TypeOutcome::Cells(cells));
             }
             if let Some(mapped) = kind.as_ts_mapped_type() {
-                let full = self.slice_span(span).unwrap_or(&[]);
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Mapped);
-                cells.record.payload0 = mapped_readonly_modifier(full);
-                cells.record.payload1 = mapped_optional_modifier(full);
+                cells.record.payload0 = syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.readonly));
+                cells.record.payload1 = syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.optional));
                 cells.record.text = self.slice_span(mapped.key.span);
                 let constraint = mapped.constraint.span();
                 let constraint_target =
@@ -3485,27 +3484,12 @@ fn strip_quotes(span: Span) -> Span {
     }
 }
 
-/// The readonly modifier cell of one mapped type, read from the exact source
-/// head before the bracket.
-fn mapped_readonly_modifier(mapped: &[u8]) -> u32 {
-    let head = mapped.split(|byte| *byte == b'[').next().unwrap_or(&[]);
-    if find_sub(head, b"-readonly", 0).is_some() {
-        u32::from(LatticeMappedModifier::Remove)
-    } else if find_sub(head, b"readonly", 0).is_some() {
-        u32::from(LatticeMappedModifier::Add)
-    } else {
-        u32::from(LatticeMappedModifier::Absent)
-    }
-}
-
-/// The optional modifier cell of one mapped type, read from the exact source.
-fn mapped_optional_modifier(mapped: &[u8]) -> u32 {
-    match mapped.iter().position(|byte| *byte == b'?') {
-        Some(at) if at > 0 && mapped.get(at - 1) == Some(&b'-') => {
-            u32::from(LatticeMappedModifier::Remove)
-        }
-        Some(_) => u32::from(LatticeMappedModifier::Add),
-        None => u32::from(LatticeMappedModifier::Absent),
+/// Maps the syntax authority's mapped-member token into the frozen lattice.
+fn syntax_mapped_modifier_cell(modifier: SyntaxMappedModifier) -> u32 {
+    match modifier {
+        SyntaxMappedModifier::Absent => u32::from(LatticeMappedModifier::Absent),
+        SyntaxMappedModifier::Add => u32::from(LatticeMappedModifier::Add),
+        SyntaxMappedModifier::Remove => u32::from(LatticeMappedModifier::Remove),
     }
 }
 

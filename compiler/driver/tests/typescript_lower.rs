@@ -528,6 +528,22 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
         assert_eq!(row.record.children.length, children);
     }
 }
+
+#[test]
+fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
+    const SOURCE: &[u8] =
+        b"export type table<T, U, X, Y, V> = { [K in T extends U ? X : Y]: V };";
+    let view = view(SOURCE, None);
+    let owner = named(&view, b"table").0;
+    let mapped = facts(&view)
+        .into_iter()
+        .find(|row| row.owner.raw == owner && row.record.tag == SemanticTypeTag::Mapped)
+        .expect("direct mapped row");
+    assert_eq!(
+        mapped.record.payload1,
+        u32::from(compiler_ir::LatticeMappedModifier::Absent)
+    );
+}
 #[test]
 fn empty_source_admits_the_schema1_fragment_without_semantic_data() {
     assert!(try_lower(b"", Some(&report(b""))).is_err());

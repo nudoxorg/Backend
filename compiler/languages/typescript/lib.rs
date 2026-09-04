@@ -9,7 +9,10 @@ mod checker;
 mod coordinate;
 mod error;
 
-pub use authority::{OxcDeclaration, OxcDeclarationKind, OxcModule, analyze, with_analysis};
+pub use authority::{
+    OxcDeclaration, OxcDeclarationKind, OxcModule, SyntaxMappedModifier, analyze,
+    syntax_mapped_modifier, with_analysis,
+};
 pub use checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
     Declaration, LiteralBase, MappedModifier, Narrowing, ObjectMember, Origin, Reference, Report,

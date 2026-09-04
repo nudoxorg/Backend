@@ -4,6 +4,7 @@
 
 use compiler_vocabulary::TypeScriptSource;
 use oxc_allocator::Allocator;
+use oxc_ast::ast::TSMappedTypeModifierOperator;
 use oxc_parser::Parser;
 use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::SourceType;
@@ -11,6 +12,38 @@ use oxc_syntax::module_record::ModuleRecord;
 use oxc_syntax::symbol::SymbolFlags;
 
 use crate::{AuthorityError, Utf8Span};
+
+/// The source-syntax meaning of one mapped-type modifier.
+///
+/// This is deliberately separate from the checker report modifier and the
+/// compact lattice discriminant: each vocabulary orders its variants
+/// differently, so raw casts would permute semantic values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyntaxMappedModifier {
+    /// The mapped member inherits the source property's modifier.
+    Absent,
+    /// The source explicitly adds the modifier (`readonly`, `?`, or `+`).
+    Add,
+    /// The source explicitly removes the modifier (`-readonly`, `-?`).
+    Remove,
+}
+
+/// Decodes the OXC token attached to the mapped member itself.
+///
+/// The parser has already distinguished this token from any `?` nested in
+/// the key constraint or `as` remap, so lowering never scans arbitrary type
+/// text to infer optionality.
+pub const fn syntax_mapped_modifier(
+    operator: Option<TSMappedTypeModifierOperator>,
+) -> SyntaxMappedModifier {
+    match operator {
+        None => SyntaxMappedModifier::Absent,
+        Some(TSMappedTypeModifierOperator::True | TSMappedTypeModifierOperator::Plus) => {
+            SyntaxMappedModifier::Add
+        }
+        Some(TSMappedTypeModifierOperator::Minus) => SyntaxMappedModifier::Remove,
+    }
+}
 
 /// Declaration class proven by OXC's symbol table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
