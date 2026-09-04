@@ -17,8 +17,8 @@ use compiler_driver::{
 };
 use compiler_ir::LanguageExtensionWireFact as _;
 use compiler_ir::{
-    DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustFacts,
-    RustOwnership, SemanticTypeTag,
+    DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, RustOwnership,
+    SemanticTypeTag,
 };
 use compiler_languages_rust::{
     RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
@@ -719,19 +719,37 @@ fn docs_lower_prose_and_local_links() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A source beyond the lane's 128-fact bound is the exact typed lowering
-/// rejection, never a truncated emission.
+/// A source beyond the lane's emission-fact bound is the exact typed
+/// lowering rejection, never a truncated emission.
 #[test]
-fn capacity_beyond_1024_is_the_exact_lowering_rejection() -> Result<(), TestError> {
+fn capacity_beyond_2048_is_the_exact_lowering_rejection() -> Result<(), TestError> {
     let mut body = String::new();
-    for ordinal in 0..1025 {
+    for ordinal in 0..2049 {
         body.push_str(&format!("pub struct S{ordinal};\n"));
     }
     match compile_fixture(body.as_str()) {
         Err(TestError::Compile("lowering-unsupported")) => Ok(()),
         Err(other) => Err(other),
-        Ok(_) => Err(TestError::Falsified("1025 declarations were admitted")),
+        Ok(_) => Err(TestError::Falsified("2049 declarations were admitted")),
     }
+}
+
+/// The exact emission-fact bound admits all 2048 declarations and validates
+/// the resulting fragment, rather than merely stopping before the bound.
+#[test]
+fn capacity_at_2048_admits_and_validates() -> Result<(), TestError> {
+    let mut body = String::new();
+    for ordinal in 0..2048 {
+        body.push_str(&format!("pub struct S{ordinal};\n"));
+    }
+    let bytes = compile_fixture(body.as_str())?;
+    let view = FragmentView::validate(&bytes)?;
+    if view.entities().len() != 2048 {
+        return Err(TestError::Falsified(
+            "2048 declarations were not fully emitted",
+        ));
+    }
+    Ok(())
 }
 
 /// An empty fixture source has no declaration to admit and is the exact

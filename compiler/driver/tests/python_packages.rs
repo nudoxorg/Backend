@@ -5,12 +5,12 @@
 mod python_support;
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault,
-    FactRejection, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactRejection,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_ir::{
-    DecodedOccurrence, EntityKind, ForeignOrigin, FragmentView, LanguageExtensionWireFact,
-    OccurrenceTarget, PythonFacts, SECTION_NONE,
+    DecodedOccurrence, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
+    LanguageExtensionWireFact, OccurrenceTarget, PythonFacts, PythonParameterKind, SECTION_NONE,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
 use std::{
@@ -23,60 +23,6 @@ use std::{
 use thiserror::Error;
 
 const CAP: usize = 8 * 1024 * 1024;
-
-/// The exact typed beyond-geometry terminal one primary may pin: the closed
-/// compile-failure label, the exact rejected fact, and the module that hit it.
-/// The rejected name's byte length stays at the terminal's evidence line; the
-/// pinned law is the lane bound and its fault.
-struct ExpectedTerminal {
-    label: &'static str,
-    fact: usize,
-    cause: FactFault,
-    module_suffix: &'static str,
-}
-
-/// The emission fact lane bound the beyond-geometry primaries exceed.
-const LANE_FULL_FACT: usize = 1024;
-
-/// The exact terminal pyparsing 3.2.3's core.py hits: the emission fact lane
-/// is full, so fact 1024 (the lane bound) is the first rejected declaration.
-const fn lane_full_terminal(module_suffix: &'static str) -> ExpectedTerminal {
-    ExpectedTerminal {
-        label: "fact-rejected",
-        fact: LANE_FULL_FACT,
-        cause: FactFault::Capacity,
-        module_suffix,
-    }
-}
-
-/// The exact terminal a primary whose one declaration carries more than the
-/// per-fact child geometry hits: the child lane is full at that fact ordinal.
-const fn child_lane_full_terminal(fact: usize, module_suffix: &'static str) -> ExpectedTerminal {
-    ExpectedTerminal {
-        label: "fact-rejected",
-        fact,
-        cause: FactFault::ChildCapacity,
-        module_suffix,
-    }
-}
-
-impl ExpectedTerminal {
-    fn matches(&self, terminal: &Error) -> bool {
-        let Error::Terminal {
-            package: _,
-            module,
-            label,
-            rejection,
-        } = terminal
-        else {
-            return false;
-        };
-        *label == self.label
-            && module.ends_with(self.module_suffix)
-            && rejection
-                .is_some_and(|rejected| rejected.fact == self.fact && rejected.cause == self.cause)
-    }
-}
 
 #[derive(Debug, Error)]
 enum Error {
@@ -215,7 +161,12 @@ fn sdist(name: &str, version: &str) -> Result<Vec<u8>, Error> {
         package: name.into(),
         message: "malformed sdist sha256".into(),
     })?;
-    let expected = &after[quote + 1..quote + 65];
+    let expected = after
+        .get(quote + 1..quote + 65)
+        .ok_or_else(|| Error::Fact {
+            package: name.into(),
+            message: "truncated sdist sha256".into(),
+        })?;
     let archive = python_support::download(url, CAP, Instant::now() + Duration::from_secs(60))?;
     let actual = python_support::sha256(&archive);
     let actual = actual
@@ -394,9 +345,27 @@ fn eligible(package: &str, path: &Path) -> bool {
     }
 }
 
-/// One pinned corpus row. Symbols, lane conditions, and decorator spellings
-/// are pinned from the source truth of the exact sdist version; `expect`
-/// pins the one typed beyond-geometry terminal the primary may hit.
+#[derive(Clone, Copy)]
+enum SpotCheck {
+    Entity {
+        symbol: &'static str,
+        kind: EntityKind,
+    },
+    ParameterKinds {
+        symbol: &'static str,
+        kinds: &'static [PythonParameterKind],
+    },
+    DecoratorSequence {
+        symbol: &'static str,
+        decorators: &'static [&'static [u8]],
+    },
+    DocstringPrefix {
+        symbol: &'static str,
+        prefix: &'static [u8],
+    },
+}
+
+/// One pinned corpus row, with an exact decoded entity spot check.
 struct PackageFacts {
     package: &'static str,
     version: &'static str,
@@ -405,7 +374,7 @@ struct PackageFacts {
     docs: bool,
     foreign_pypi: bool,
     decorators: &'static [&'static [u8]],
-    expect: Option<ExpectedTerminal>,
+    spot: SpotCheck,
 }
 
 const ADDITIONS: [PackageFacts; 15] = [
@@ -422,7 +391,16 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[],
-        expect: None,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "encode",
+            kinds: &[
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+            ],
+        },
     },
     PackageFacts {
         package: "certifi",
@@ -437,7 +415,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[],
-        expect: None,
+        spot: SpotCheck::Entity {
+            symbol: "_CACERT_PATH",
+            kind: EntityKind::Static,
+        },
     },
     PackageFacts {
         package: "packaging",
@@ -452,7 +433,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: false,
         decorators: &[],
-        expect: None,
+        spot: SpotCheck::Entity {
+            symbol: "__title__",
+            kind: EntityKind::Static,
+        },
     },
     PackageFacts {
         package: "pyparsing",
@@ -467,7 +451,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"staticmethod", b"property", b"classmethod"],
-        expect: Some(lane_full_terminal("pyparsing/core.py")),
+        spot: SpotCheck::ParameterKinds {
+            symbol: "enable_diag",
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
+        },
     },
     PackageFacts {
         package: "iniconfig",
@@ -482,7 +469,13 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[b"overload"],
-        expect: None,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "lineof",
+            kinds: &[
+                PythonParameterKind::PositionalOrKeyword,
+                PythonParameterKind::PositionalOrKeyword,
+            ],
+        },
     },
     PackageFacts {
         package: "pluggy",
@@ -497,7 +490,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[b"final", b"property", b"overload"],
-        expect: None,
+        spot: SpotCheck::DecoratorSequence {
+            symbol: "HookspecMarker",
+            decorators: &[b"final"],
+        },
     },
     PackageFacts {
         package: "click",
@@ -511,13 +507,11 @@ const ADDITIONS: [PackageFacts; 15] = [
         annotated: true,
         docs: true,
         foreign_pypi: true,
-        decorators: &[
-            b"property",
-            b"t.overload",
-            b"contextmanager",
-            b"click.pass_context",
-        ],
-        expect: Some(child_lane_full_terminal(105, "click/core.py")),
+        decorators: &[b"property", b"t.overload", b"contextmanager"],
+        spot: SpotCheck::Entity {
+            symbol: "Command",
+            kind: EntityKind::Record,
+        },
     },
     PackageFacts {
         package: "itsdangerous",
@@ -532,7 +526,13 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"t.overload", b"property"],
-        expect: None,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "dumps",
+            kinds: &[
+                PythonParameterKind::PositionalOnly,
+                PythonParameterKind::PositionalOnly,
+            ],
+        },
     },
     PackageFacts {
         package: "jinja2",
@@ -552,7 +552,10 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"classmethod",
             b"typing.overload",
         ],
-        expect: Some(child_lane_full_terminal(107, "jinja2/environment.py")),
+        spot: SpotCheck::ParameterKinds {
+            symbol: "create_cache",
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
+        },
     },
     PackageFacts {
         package: "markupsafe",
@@ -567,7 +570,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[b"classmethod"],
-        expect: None,
+        spot: SpotCheck::ParameterKinds {
+            symbol: "escape",
+            kinds: &[PythonParameterKind::PositionalOnly],
+        },
     },
     PackageFacts {
         package: "werkzeug",
@@ -587,7 +593,10 @@ const ADDITIONS: [PackageFacts; 15] = [
             b"property",
             b"classmethod",
         ],
-        expect: None,
+        spot: SpotCheck::Entity {
+            symbol: "Request",
+            kind: EntityKind::Record,
+        },
     },
     PackageFacts {
         package: "colorama",
@@ -602,7 +611,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[b"property"],
-        expect: None,
+        spot: SpotCheck::Entity {
+            symbol: "AnsiToWin32",
+            kind: EntityKind::Record,
+        },
     },
     PackageFacts {
         package: "PyYAML",
@@ -617,7 +629,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[b"classmethod"],
-        expect: None,
+        spot: SpotCheck::Entity {
+            symbol: "load",
+            kind: EntityKind::Function,
+        },
     },
     PackageFacts {
         package: "tomli",
@@ -632,7 +647,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: true,
         decorators: &[],
-        expect: None,
+        spot: SpotCheck::DocstringPrefix {
+            symbol: "TOMLDecodeError",
+            prefix: b"An error raised if a document is not valid TOML.",
+        },
     },
     PackageFacts {
         package: "webencodings",
@@ -647,7 +665,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: true,
         foreign_pypi: false,
         decorators: &[],
-        expect: None,
+        spot: SpotCheck::DocstringPrefix {
+            symbol: "Encoding",
+            prefix: b"Reresents a character encoding such as UTF-8,",
+        },
     },
 ];
 
@@ -655,6 +676,7 @@ const ADDITIONS: [PackageFacts; 15] = [
 /// full-fidelity lane assertions. The version stays in the test invocations.
 struct PrimaryFacts {
     package: &'static str,
+    spot: SpotCheck,
     annotated: bool,
     docs: bool,
     foreign_pypi: bool,
@@ -664,6 +686,10 @@ struct PrimaryFacts {
 const PRIMARIES: [PrimaryFacts; 5] = [
     PrimaryFacts {
         package: "requests",
+        spot: SpotCheck::Entity {
+            symbol: "Request",
+            kind: EntityKind::Record,
+        },
         annotated: false,
         docs: true,
         foreign_pypi: true,
@@ -671,6 +697,10 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "attrs",
+        spot: SpotCheck::Entity {
+            symbol: "attrib",
+            kind: EntityKind::Function,
+        },
         annotated: true,
         docs: true,
         foreign_pypi: false,
@@ -678,6 +708,10 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "flask",
+        spot: SpotCheck::Entity {
+            symbol: "Flask",
+            kind: EntityKind::Record,
+        },
         annotated: true,
         docs: true,
         foreign_pypi: true,
@@ -685,6 +719,10 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "six",
+        spot: SpotCheck::Entity {
+            symbol: "add_metaclass",
+            kind: EntityKind::Function,
+        },
         annotated: false,
         docs: true,
         foreign_pypi: true,
@@ -692,6 +730,10 @@ const PRIMARIES: [PrimaryFacts; 5] = [
     },
     PrimaryFacts {
         package: "wcwidth",
+        spot: SpotCheck::Entity {
+            symbol: "wcwidth",
+            kind: EntityKind::Function,
+        },
         annotated: false,
         docs: true,
         foreign_pypi: true,
@@ -819,6 +861,117 @@ fn source_declares(source_text: &str, symbol: &str) -> bool {
     })
 }
 
+fn assert_spot(
+    package: &str,
+    source_text: &str,
+    entities: &[(&[u8], EntityKind)],
+    view: &FragmentView<'_>,
+    spot: SpotCheck,
+) -> Result<(), Error> {
+    let fact = |message: String| Error::Fact {
+        package: package.into(),
+        message,
+    };
+    match spot {
+        SpotCheck::Entity { symbol, kind } => {
+            if !source_declares(source_text, symbol)
+                || !entities
+                    .iter()
+                    .any(|(known, actual)| *known == symbol.as_bytes() && *actual == kind)
+            {
+                return Err(fact(format!(
+                    "spot check {symbol}/{kind:?} absent from source or entities"
+                )));
+            }
+        }
+        SpotCheck::DecoratorSequence { symbol, decorators } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))?;
+            let payload = view
+                .language_extension_payload()
+                .ok_or_else(|| fact("extension section absent".into()))?;
+            let pool = view
+                .extension_pool_payload()
+                .ok_or_else(|| fact("extension pool absent".into()))?;
+            let row = python_extension_row(package, payload, ordinal)?
+                .ok_or_else(|| fact(format!("spot extension row {symbol} absent")))?;
+            let actual = pooled_atom_list(package, pool, row.decorators.raw)?;
+            let atoms: Vec<&[u8]> = actual
+                .into_iter()
+                .map(|raw| {
+                    usize::try_from(raw)
+                        .ok()
+                        .and_then(|n| view.atoms().nth(n).map(|a| a.bytes))
+                        .unwrap_or(&[])
+                })
+                .collect();
+            if atoms.as_slice() != decorators {
+                return Err(fact(format!(
+                    "spot decorator sequence {symbol} decoded {atoms:?}, expected {decorators:?}"
+                )));
+            }
+        }
+        SpotCheck::ParameterKinds { symbol, kinds } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))?;
+            let payload = view
+                .language_extension_payload()
+                .ok_or_else(|| fact("extension section absent".into()))?;
+            let mut actual = Vec::new();
+            let mut cursor = ordinal;
+            while cursor > 0 {
+                cursor -= 1;
+                if entities[cursor].1 != EntityKind::Parameter {
+                    break;
+                }
+                if let Some(row) = python_extension_row(package, payload, cursor)? {
+                    actual.push(row.parameter_kind);
+                }
+            }
+            actual.reverse();
+            if actual.as_slice() != kinds {
+                return Err(fact(format!(
+                    "spot parameter kinds {symbol} decoded {actual:?}, expected {kinds:?}"
+                )));
+            }
+        }
+        SpotCheck::DocstringPrefix { symbol, prefix } => {
+            let ordinal = entities
+                .iter()
+                .position(|(known, _)| *known == symbol.as_bytes());
+            let ordinal =
+                ordinal.ok_or_else(|| fact(format!("spot declaration {symbol} absent")))? as u32;
+            let mut found = false;
+            let mut cursor = view
+                .docs()
+                .ok_or_else(|| fact("docs section absent".into()))?;
+            for row in cursor.by_ref() {
+                let row =
+                    row.map_err(|cause| fact(format!("docs row failed to decode: {cause}")))?;
+                if row.owner.raw == ordinal {
+                    if let DocFragmentInput::Text(bytes) = row.fragment {
+                        if bytes.starts_with(prefix) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+            if !found {
+                return Err(fact(format!(
+                    "spot docstring prefix {symbol} absent or mismatched"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Decodes every lane the fragment committed, without swallowing a single
 /// row error, and asserts the source-truth conditions the card pins:
 /// type rows exist for annotated primaries, occurrences exist for modules
@@ -932,7 +1085,7 @@ fn assert_lanes(
 }
 
 fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
-    let (path, source, bytes) = select(spec.package, spec.version)?;
+    let (_path, source, bytes) = select(spec.package, spec.version)?;
     let view =
         FragmentView::validate(&bytes).map_err(|cause| Error::Fragment(cause.to_string()))?;
     let atoms: Vec<&[u8]> = view.atoms().map(|atom| atom.bytes).collect();
@@ -944,11 +1097,6 @@ fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
         package: spec.package.into(),
         message: "module source was not UTF-8".into(),
     })?;
-    eprintln!(
-        "python package selected: {} entities={}",
-        path.display(),
-        entities.len()
-    );
     let mut assertions = 0;
     for (symbol, kind) in spec.symbols {
         if !source_declares(source_text, symbol)
@@ -963,6 +1111,8 @@ fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
         }
         assertions += 1;
     }
+    assert_spot(spec.package, source_text, &entities, &view, spec.spot)?;
+    assertions += 1;
     assertions += assert_lanes(
         spec.package,
         source_text,
@@ -972,6 +1122,13 @@ fn assert_addition(spec: &PackageFacts) -> Result<usize, Error> {
         spec.foreign_pypi,
         spec.decorators,
     )?;
+    eprintln!(
+        "python corpus: {}@{} entities={} assertions={}",
+        spec.package,
+        spec.version,
+        entities.len(),
+        assertions
+    );
     Ok(assertions)
 }
 
@@ -992,18 +1149,6 @@ fn fifteen_additional_real_sdists_preserve_source_facts() -> Result<(), Error> {
             Err(Error::Toolchain(message)) if message == "python3 unavailable" => {
                 eprintln!("python package typed skip: python3 unavailable");
                 break;
-            }
-            Err(error) if spec.expect.as_ref().is_some_and(|e| e.matches(&error)) => {
-                let Error::Terminal {
-                    module, rejection, ..
-                } = &error
-                else {
-                    continue;
-                };
-                eprintln!(
-                    "python package typed terminal: {}@{} at {module} pinned {rejection:?}",
-                    spec.package, spec.version
-                );
             }
             Err(error) => return Err(error),
         }
@@ -1027,11 +1172,6 @@ fn assert_package(package: &'static str, version: &'static str) -> Result<usize,
         .entities()
         .map(|row| (name(&atoms, row.name.raw), row.kind))
         .collect();
-    eprintln!(
-        "python package selected: {} entities={}",
-        path.display(),
-        entities.len()
-    );
     let source_text = std::str::from_utf8(&source).map_err(|_| Error::Fact {
         package: package.into(),
         message: "module source was not UTF-8".into(),
@@ -1155,6 +1295,8 @@ fn assert_package(package: &'static str, version: &'static str) -> Result<usize,
         }
         _ => {}
     }
+    assert_spot(package, source_text, &entities, &view, facts.spot)?;
+    assertions += 1;
     assertions += assert_lanes(
         package,
         source_text,
@@ -1164,6 +1306,13 @@ fn assert_package(package: &'static str, version: &'static str) -> Result<usize,
         facts.foreign_pypi,
         facts.decorators,
     )?;
+    eprintln!(
+        "python corpus: {}@{} entities={} assertions={}",
+        package,
+        version,
+        entities.len(),
+        assertions
+    );
     Ok(assertions)
 }
 
@@ -1173,14 +1322,7 @@ fn requests_real_sdist_decodes_index_and_import_lanes() -> Result<(), Error> {
 }
 #[test]
 fn attrs_real_sdist_decodes_decorator_and_annotation_lanes() -> Result<(), Error> {
-    match assert_package("attrs", "25.3.0") {
-        // attrs 25.3.0's _make.py stops at the exact typed terminal: the
-        // `_ClassBuilder` fact at ordinal 258 carries more members than the
-        // per-fact child geometry admits, so admission rejects it with
-        // ChildCapacity. Every earlier fact, lane, and symbol still decoded.
-        Err(error) if child_lane_full_terminal(258, "src/attr/_make.py").matches(&error) => Ok(()),
-        other => other.map(|_| ()),
-    }
+    assert_package("attrs", "25.3.0").map(|_| ())
 }
 #[test]
 fn flask_real_sdist_decodes_application_declarations() -> Result<(), Error> {
@@ -1198,6 +1340,7 @@ fn wcwidth_real_sdist_decodes_tables_and_signature() -> Result<(), Error> {
 #[test]
 fn oracle_assertions_are_conditional_on_pyrefly() -> Result<(), Error> {
     if !compiler_languages_python::Pyrefly::from_env().is_available() {
+        eprintln!("python package typed skip: pyrefly checker unavailable");
         return Ok(());
     }
     assert_package("six", "1.17.0").map(|_| ())

@@ -176,6 +176,7 @@ pub(super) enum CompileTerminal {
     Prepare,
     Write,
     Validate,
+    FactRejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -448,6 +449,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,
         CompileFailure::Validate { .. } => CompileTerminal::Validate,
+        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
     }
 }
 

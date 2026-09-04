@@ -44,11 +44,31 @@ role = "nudox_terra_reviewer"
 state = "planned"
 
 [[dispatches]]
-task = "pending"
+task = "d5-emission-geometry"
 role = "nudox_luna_implementer"
-card = "card-purl-compile-repair.md"
-paths = ["compiler/driver/tests/python_support/mod.rs", "compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_packages.rs"]
-state = "planned"
+card = "card-d5-emission-geometry.md"
+baseline = "202b42aa2; lower.rs 2448LOC e0e1831ea2b1a1dc; lower/python.rs 2139LOC d2c31634f17d44f2; lower/tests.rs 486LOC eb47acff6445d16d"
+paths = ["compiler/driver/lower.rs", "compiler/driver/lower/python.rs", "compiler/driver/lower/tests.rs"]
+state = "accepted-with-terra-repairs"
+commit = "21eaea220 (worker could not run gates: shared-target contamination; Terra verified at isolated target and re-pinned stale boundary falsifiers in python_lower_facts.rs + rust_semantic_lane.rs)"
+
+[[dispatches]]
+task = "d7-journey-classes"
+role = "nudox_luna_implementer"
+card = "card-d7-journey-classes.md"
+baseline = "202b42aa2; python_purl_lifecycle.rs 658LOC 49d8984f97b7bf2e; python_support/mod.rs 495LOC a2e608296a1963d1"
+paths = ["compiler/driver/tests/python_purl_lifecycle.rs", "compiler/driver/tests/python_support/mod.rs"]
+state = "accepted"
+commit = "18241d2e3"
+
+[[dispatches]]
+task = "d6-corpus-unfallback"
+role = "nudox_luna_implementer"
+card = "card-d6-corpus-unfallback.md"
+baseline = "345718c8d; python_packages.rs 1204LOC d2c612eda88ce5f7"
+paths = ["compiler/driver/tests/python_packages.rs"]
+state = "accepted-after-two-rejected-repairs"
+commit = "9e47e6716 REJECTED (Entity re-label) -> 66d50740 REJECTED-IN-PART (unconstructed DocstringPrefix, empty-sequence pins) -> f2ed48e0e accepted (Terra-noted deviation: click spot stays Entity; decorator evidence carried by spelling pins)"
 
 [[reviews]]
 boundary = "closure"
