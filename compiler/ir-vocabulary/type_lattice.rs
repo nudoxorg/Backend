@@ -785,8 +785,7 @@ impl SemanticTypeRecord<'_> {
             });
         }
         match tag {
-            SemanticTypeTag::SelfType
-            | SemanticTypeTag::Never
+            SemanticTypeTag::Never
             | SemanticTypeTag::Any
             | SemanticTypeTag::Inferred
             | SemanticTypeTag::Tuple

@@ -34,7 +34,6 @@ fn every_tag_round_trips_through_its_frozen_discriminant() {
 fn leaf_tags_reject_any_foreign_cell() {
     // Tags whose closed child law is exactly zero children.
     for tag in [
-        SemanticTypeTag::SelfType,
         SemanticTypeTag::Never,
         SemanticTypeTag::Any,
         SemanticTypeTag::Inferred,
@@ -96,6 +95,22 @@ fn leaf_tags_reject_any_foreign_cell() {
             })
         );
     }
+}
+
+#[test]
+fn self_type_allows_only_its_explicit_language_spelling() {
+    let mut row = record(SemanticTypeTag::SelfType);
+    row.text = Some(b"this");
+    assert_eq!(row.validate(0), Ok(()));
+    row.payload0 = 1;
+    assert_eq!(
+        row.validate(0),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::SelfType,
+            cell: TypeCell::Payload0,
+            actual: 1,
+        })
+    );
 }
 
 #[test]
