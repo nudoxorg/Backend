@@ -15,7 +15,7 @@ mod traverse;
 #[cfg(test)]
 mod tests;
 
-use model::*;
+pub(super) use model::*;
 
 pub(super) use traverse::{TypedDependencyPlan, TypedPlanError};
 

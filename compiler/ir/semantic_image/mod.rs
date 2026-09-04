@@ -10,6 +10,7 @@ mod encode;
 mod decode;
 mod fault;
 mod full;
+mod full_wire;
 mod model;
 mod plan;
 mod typed;

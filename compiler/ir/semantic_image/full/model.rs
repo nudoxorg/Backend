@@ -9,6 +9,7 @@ use crate::{
 };
 
 use super::super::fault::CoreSemanticImageFault;
+use super::super::full_wire::FullSemanticImageFault;
 use super::super::typed::TypedPlanError;
 
 /// Terminal list domains remain outside the recursive type dependency graph.
@@ -82,6 +83,7 @@ pub(super) enum ExtensionPlanFault {
 #[derive(Debug)]
 pub(super) enum FullPlanError {
     Core(CoreSemanticImageFault),
+    Wire(FullSemanticImageFault),
     Typed(TypedPlanError),
     Terminal(TerminalPoolFault),
     Entity(FullEntityFault),
@@ -93,6 +95,7 @@ impl fmt::Display for FullPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Core(cause) => fmt::Display::fmt(cause, formatter),
+            Self::Wire(cause) => fmt::Display::fmt(cause, formatter),
             Self::Typed(cause) => fmt::Display::fmt(cause, formatter),
             Self::Terminal(cause) => write!(formatter, "terminal semantic-image plan rejected: {cause:?}"),
             Self::Entity(cause) => write!(formatter, "entity semantic-image plan rejected: {cause:?}"),
@@ -105,6 +108,9 @@ impl core::error::Error for FullPlanError {}
 
 impl From<CoreSemanticImageFault> for FullPlanError {
     fn from(value: CoreSemanticImageFault) -> Self { Self::Core(value) }
+}
+impl From<FullSemanticImageFault> for FullPlanError {
+    fn from(value: FullSemanticImageFault) -> Self { Self::Wire(value) }
 }
 impl From<TypedPlanError> for FullPlanError {
     fn from(value: TypedPlanError) -> Self { Self::Typed(value) }

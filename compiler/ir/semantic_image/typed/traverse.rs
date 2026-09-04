@@ -155,6 +155,41 @@ impl<'image> TypedDependencyPlan<'image> {
         Ok((start, end))
     }
 
+    /// The full-image writer consumes this already canonical node order.  It
+    /// stays private to the semantic-image transaction: raw interner
+    /// coordinates never escape as a portable image API.
+    pub(super) fn wire_nodes(&self) -> &[TypedPlanNode] {
+        &self.scratch.canonical_nodes
+    }
+
+    /// Borrows one source-ordered role-bearing edge run after validating the
+    /// node coordinate against the measured graph.  The writer remaps every
+    /// endpoint through the canonical plan before it emits a wire cell.
+    pub(super) fn wire_edges(
+        &self,
+        node: TypedPlanNode,
+    ) -> Result<&[TypedPlanEdge], TypedPlanError> {
+        let (start, end) = self.edge_range(node)?;
+        self.scratch
+            .edges
+            .get(start..end)
+            .ok_or(TypedPlanFault::EdgeGeometryOverflow {
+                edges: self.scratch.edges.len(),
+            })
+            .map_err(Into::into)
+    }
+
+    /// Maps a type-bearing source vertex to its exact `(domain, canonical
+    /// coordinate)` pair.  Generic typed edges use this rather than a global
+    /// row ordinal, so the wire remains independently addressable by every
+    /// typed list domain.
+    pub(super) fn wire_node_coordinate(
+        &self,
+        node: TypedPlanNode,
+    ) -> Result<(u8, u32), TypedPlanError> {
+        Ok((node.domain().code(), self.canonical_node(node)?))
+    }
+
     fn build_postorder(&mut self) -> Result<(), TypedPlanFault> {
         for start_index in 0..self.scratch.nodes.len() {
             let start = self.scratch.nodes[start_index];
