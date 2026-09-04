@@ -23,6 +23,8 @@ mod publication;
 mod comparison;
 #[path = "support/compiler_corpus/execution.rs"]
 mod execution;
+#[path = "support/compiler_corpus/real.rs"]
+mod real;
 
 use std::{
     fmt::Write as _,
@@ -45,12 +47,15 @@ use compiler_ir::{
     BuiltinType, ConcreteType, DeclarationFamilyId, DeclarationKeyFault, EntityAuthorityFacts,
     EntityId, EntityKind, FactAvailability, FragmentRangeManifest, FragmentView, ImageProvenance,
     Ir, ItemKind, PackageLineage, PackageLineageFault, ParentageAuthority, PrimitiveType,
-    SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode, VariantFingerprint, Visibility,
+    SemanticImageIdentity, SemanticReader, SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode,
+    VariantFingerprint, Visibility,
 };
 use compiler_publication::{
-    OpenPublicationScratch, OpenedFragmentError, PublicationScratch, PublishControl,
-    open_published, publish_compiled,
+    OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragmentError,
+    PublicationScratch, PublishControl, SemanticPublicationScratch,
+    open_published, open_published_semantic, publish_compiled, publish_semantic,
 };
+use compiler_publication::manifest::SemanticImageRegion;
 use compiler_vocabulary::{
     CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
@@ -89,6 +94,7 @@ use execution::run_package;
 
 const DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const FRAGMENT_BYTES: usize = 256 * 1024;
+const SEMANTIC_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MANIFEST_BYTES: usize = 256 * 1024;
 const LOCALITY_BYTES: usize = 256 * 1024;
 const AUTHORITY_BYTES: usize = 32 * 1024 * 1024;
@@ -100,7 +106,7 @@ type Digest = [u8; 32];
 
 /// A compact, copyable key used to join observations from differently ordered
 /// matrix passes.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct CaseKey {
     case_id: CaseId,
     language: CorpusLanguage,
@@ -181,9 +187,9 @@ enum CorpusAuditError {
     #[error(transparent)]
     Render(#[from] multilingual_corpus::CorpusRenderError),
     #[error("corpus declaration scope lineage was rejected")]
-    ScopeLineage(#[source] PackageLineageFault),
+    ScopeLineage(PackageLineageFault),
     #[error("corpus declaration scope key was rejected")]
-    ScopeKey(#[source] DeclarationKeyFault),
+    ScopeKey(DeclarationKeyFault),
     #[error("corpus filesystem phase {phase:?} failed")]
     Io {
         phase: AuditIoPhase,
@@ -198,10 +204,14 @@ enum CorpusAuditError {
     Shutdown(#[from] server_journal::ShutdownError),
     #[error("corpus publication failed")]
     Publish(#[from] compiler_publication::PublishCompiledError),
+    #[error("corpus semantic publication failed")]
+    PublishSemantic(#[from] compiler_publication::PublishSemanticError),
     #[error("corpus publication reopen failed")]
     Open(#[from] compiler_publication::OpenPublishedError),
     #[error("corpus reopened fragment failed")]
     OpenedFragment(#[from] OpenedFragmentError),
+    #[error("corpus reopened semantic artifact failed")]
+    OpenedSemanticArtifact(#[from] compiler_publication::OpenedSemanticArtifactError),
     #[error("corpus fragment range manifest could not be reconstructed")]
     Ranges(#[from] compiler_ir::FragmentRangeManifestError),
     #[error("corpus authority setup failed for {key:?}")]
@@ -247,6 +257,8 @@ enum CorpusInvariant {
     },
     MissingPublishedFragment,
     ExtraPublishedFragment,
+    PublisherClosed,
+    AuthorityBindingMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -292,6 +304,7 @@ enum CompileTerminalKind {
     AuthorityInputProfileMismatch,
     LoweringUnsupported,
     ExtensionAtomUnbound,
+    ExtensionTypeParametersUnbound,
     FactRejected,
     CSharpProjection,
     ClangProjection,
@@ -303,7 +316,7 @@ enum CompileTerminalKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PassObservation {
-    cases: [CaseObservation; PACKAGE_COUNT],
+    cases: Box<[CaseObservation; PACKAGE_COUNT]>,
     summary: MatrixSummary,
     mismatches: Box<[CorpusMismatch]>,
 }
@@ -466,12 +479,12 @@ fn ordered_packages(packages: &[CorpusPackage], pass: Pass) -> Vec<CorpusPackage
 /// leave the input in ordinal order as an overflowing u16 arithmetic trick
 /// would.
 const fn shuffle_key(raw: u16) -> u16 {
-    ((u32::from(raw) * 137 + 17) % PACKAGE_COUNT as u32) as u16
+    (((raw as u32) * 137 + 17) % PACKAGE_COUNT as u32) as u16
 }
 
 const _: () = {
     assert!(shuffle_key(0) == 17);
-    assert!(shuffle_key(209) == 0);
+    assert!(shuffle_key(209) == 90);
     assert!(shuffle_key(0) != 0);
     assert!(shuffle_key(1) != 1);
     // `0` sorts before `1`, unlike reverse order; `2` sorts before `1`,
@@ -506,7 +519,7 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
             cause,
         }
     })?;
-    let mut original = run_pass(
+    let original = run_pass(
         &packages,
         Pass::Original,
         &hosts,
@@ -531,12 +544,13 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
     let mut mismatches = original.mismatches.iter().copied().collect::<Vec<_>>();
     mismatches.extend(reverse.mismatches.iter().copied());
     mismatches.extend(shuffle.mismatches.iter().copied());
+    let mut permutation_summary = original.summary;
     compare_passes(
         &packages,
         &original,
         &reverse,
         Pass::Reverse,
-        &mut original.summary,
+        &mut permutation_summary,
         &mut mismatches,
     );
     compare_passes(
@@ -544,7 +558,7 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
         &original,
         &shuffle,
         Pass::FixedShuffle,
-        &mut original.summary,
+        &mut permutation_summary,
         &mut mismatches,
     );
     if let Some(first) = mismatches.first().copied() {
@@ -556,25 +570,63 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
     Ok(())
 }
 
-/// Checks the frozen real-package source inventory without treating source
-/// absence as a successful semantic comparison.  Available rows are only
-/// admitted when their observed bytes, path, coordinate, and profile remain
-/// bound; unavailable rows remain typed inputs for the future authority/image
-/// pass and are intentionally not converted to the generated 210-row matrix.
+/// Audits the frozen real-package source inventory through the fused semantic
+/// compiler/publication boundary.  Source absence, authority absence, and
+/// deferred reader planes remain typed red outcomes; none can be converted to
+/// a generated-case success.
 #[test]
 fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
 -> Result<(), CorpusAuditError> {
-    let summary: RealInventorySummary = validate_source_inventory()
+    let inventory: RealInventorySummary = validate_source_inventory()
         .map_err(|cause| CorpusAuditError::Inventory { cause })?;
-    if summary.attempted.iter().sum::<usize>() != REAL_PACKAGE_COUNT {
+    if inventory.attempted.iter().sum::<usize>() != REAL_PACKAGE_COUNT {
         return Err(CorpusAuditError::Inventory {
             cause: InventoryInvariant::TotalCount {
-                observed: summary.attempted.iter().sum(),
+                observed: inventory.attempted.iter().sum(),
                 expected: REAL_PACKAGE_COUNT,
             },
         });
     }
-    if let CorpusCapacityVerdict::Insufficient { observed, required } = summary.capacity {
+
+    let hosts = HostTools::resolve();
+    let resolved = ResolvedTools::from_hosts(&hosts);
+    let packages: Vec<CorpusPackage> = corpus_packages().collect();
+    let first_key = packages
+        .first()
+        .copied()
+        .map(case_key)
+        .ok_or(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::MissingCase,
+        })?;
+    let authorities = AuthorityFactory::new(&hosts).map_err(|cause| {
+        CorpusAuditError::AuthoritySetup {
+            key: first_key,
+            cause,
+        }
+    })?;
+    let audit = real::audit_real_inventory(&hosts, &resolved, &authorities)?;
+    for (index, language) in CorpusLanguage::ALL.into_iter().enumerate() {
+        let lane = audit.lanes[index];
+        eprintln!(
+            "real-corpus language={language:?} attempted={} source_bound={} output={} verified={} unavailable={} terminals={} mismatches={}",
+            lane.attempted,
+            lane.source_bound,
+            lane.output,
+            lane.verified,
+            lane.unavailable,
+            lane.terminals,
+            lane.mismatches,
+        );
+    }
+    eprintln!("real-corpus capacity={:?}", audit.capacity);
+    if let Some(first) = audit.mismatches.first().copied() {
+        return Err(CorpusAuditError::Mismatches {
+            count: audit.mismatches.len(),
+            first: Some(first),
+        });
+    }
+    if let CorpusCapacityVerdict::Insufficient { observed, required } = audit.capacity {
         return Err(CorpusAuditError::Inventory {
             cause: InventoryInvariant::CorpusCapacity { observed, required },
         });
@@ -649,7 +701,7 @@ fn run_pass(
         });
     }
     let cases = match slots.into_iter().collect::<Option<Vec<_>>>() {
-        Some(cases) => match cases.try_into() {
+        Some(cases) => match cases.into_boxed_slice().try_into() {
             Ok(cases) => cases,
             Err(_) => {
                 return Err(CorpusAuditError::Invariant {

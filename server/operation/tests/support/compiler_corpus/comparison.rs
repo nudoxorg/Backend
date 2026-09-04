@@ -4,6 +4,11 @@
 //! closed enums; deferred observers remain explicit red outcomes.
 
 use super::*;
+use super::observation::{
+    digest_authority_unavailable, digest_compact, digest_owned, digest_render,
+    digest_reopened, digest_recipe, digest_source, digest_terminal, digest_u64,
+    item_kind,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Plane {
@@ -48,6 +53,41 @@ pub(super) enum PermutationField {
     DialectRender,
     Terminal,
     Availability,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SemanticImageField {
+    Status,
+    Identity,
+    ImageFacts,
+    Census,
+    Entities,
+    Types,
+    Externals,
+    Links,
+    Occurrences,
+    Extensions,
+    SourceSpans,
+    CanonicalType,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RealAuditField {
+    Source,
+    Profile,
+    Recipe,
+    Toolchain,
+    SourceSpans,
+    Declarations,
+    Types,
+    Relations,
+    Documentation,
+    Extensions,
+    Discovery,
+    CanonicalType,
+    SemanticImage,
+    Reopened,
+    Render,
 }
 
 impl PermutationField {
@@ -155,6 +195,8 @@ pub(super) enum CorpusMismatch {
     },
     Compact {
         key: CaseKey,
+        expected_fragment: Digest,
+        observed_fragment: Digest,
         expected_entities: CountExpectation,
         observed_entities: u32,
         expected_kind: EntityKind,
@@ -181,6 +223,28 @@ pub(super) enum CorpusMismatch {
         observed_ranges: Digest,
         expected_census: compiler_ir::SemanticCensus,
         observed_census: compiler_ir::SemanticCensus,
+    },
+    SemanticImage {
+        key: CaseKey,
+        field: SemanticImageField,
+        expected: observation::SemanticObservation,
+        observed: observation::SemanticObservation,
+    },
+    Real {
+        case: inventory::RealPackageCase,
+        field: RealAuditField,
+        expected: Digest,
+        observed: Digest,
+    },
+    RealUnavailable {
+        case: inventory::RealPackageCase,
+        field: RealAuditField,
+        cause: AuthorityUnavailableCause,
+    },
+    RealTerminal {
+        case: inventory::RealPackageCase,
+        source: SourceIdentity,
+        terminal: CompileTerminalKind,
     },
     CompileTerminal {
         key: CaseKey,
@@ -612,6 +676,7 @@ pub(super) fn expected_mismatches(
         type_facts: compact.type_facts,
         documentation: compact.documentation,
         extensions: compact.extensions,
+        semantic: output.owned.semantic,
     };
     if output.reopened != expected_reopened {
         mismatches.push(CorpusMismatch::Reopened {
@@ -634,6 +699,13 @@ pub(super) fn expected_mismatches(
         Plane::DurableSemanticData,
         expected_reopened.semantic_data,
         output.reopened.semantic_data,
+        mismatches,
+    );
+
+    check_semantic_image(
+        key,
+        expected_reopened.semantic,
+        output.reopened.semantic,
         mismatches,
     );
     check_reopened_plane(
@@ -671,6 +743,57 @@ pub(super) fn expected_mismatches(
         expected.dialect_render,
         output.dialect_render,
         mismatches,
+    );
+}
+
+fn check_semantic_image(
+    key: CaseKey,
+    expected: observation::SemanticObservation,
+    observed: observation::SemanticObservation,
+    mismatches: &mut Vec<CorpusMismatch>,
+) {
+    let mut check = |field: SemanticImageField, equal: bool| {
+        if !equal {
+            mismatches.push(CorpusMismatch::SemanticImage {
+                key,
+                field,
+                expected,
+                observed,
+            });
+        }
+    };
+    check(SemanticImageField::Status, expected.status == observed.status);
+    check(
+        SemanticImageField::Identity,
+        expected.identity == observed.identity,
+    );
+    check(
+        SemanticImageField::ImageFacts,
+        expected.image == observed.image,
+    );
+    check(SemanticImageField::Census, expected.census == observed.census);
+    check(SemanticImageField::Entities, expected.entities == observed.entities);
+    check(SemanticImageField::Types, expected.types == observed.types);
+    check(
+        SemanticImageField::Externals,
+        expected.externals == observed.externals,
+    );
+    check(SemanticImageField::Links, expected.links == observed.links);
+    check(
+        SemanticImageField::Occurrences,
+        expected.occurrences == observed.occurrences,
+    );
+    check(
+        SemanticImageField::Extensions,
+        expected.extensions == observed.extensions,
+    );
+    check(
+        SemanticImageField::SourceSpans,
+        expected.source_spans == observed.source_spans,
+    );
+    check(
+        SemanticImageField::CanonicalType,
+        expected.canonical_type == observed.canonical_type,
     );
 }
 

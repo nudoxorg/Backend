@@ -39,6 +39,27 @@ pub(super) enum PackageCoordinate {
     Project(&'static str),
 }
 
+impl PackageCoordinate {
+    pub(super) const fn raw(self) -> &'static str {
+        match self {
+            Self::Purl(value) | Self::Project(value) => value,
+        }
+    }
+
+    pub(super) fn lineage(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Purl(value) => {
+                let Some((ecosystem, package)) = value.split_once(':') else {
+                    return ("unknown", value);
+                };
+                let package = package.rsplit_once('@').map_or(package, |(name, _)| name);
+                (ecosystem, package)
+            }
+            Self::Project(value) => ("clang", value),
+        }
+    }
+}
+
 /// The committed source table which authorizes a coordinate.  Keeping this
 /// as a closed enum makes source provenance part of the typed package key;
 /// the display path is only derived at the reporting boundary.

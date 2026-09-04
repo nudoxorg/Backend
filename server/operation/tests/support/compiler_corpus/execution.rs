@@ -6,7 +6,7 @@
 
 use super::*;
 
-fn compile_with_authority<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
+pub(super) fn compile_with_authority<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     profile: LanguageProfile,
     source: &'source [u8],
     scope: DeclarationScope<'source>,
@@ -223,7 +223,7 @@ pub(super) fn run_package(
     let neutral_render = render_neutral(&compiled.ir, owned.primary);
     let expected_fragment = digest_bytes(compiled.artifact.fragment.as_ref());
     let expected_ranges = range_manifest_digest(&compiled.artifact.fragment)?;
-    let reopened = publisher.publish(&compiled.artifact)?;
+    let reopened = publisher.publish(&compiled, owned.primary.map(|primary| primary.id))?;
     let dialect_render = RenderVerdict::Unsupported;
     let output = CaseOutputObservation {
         source: compiled.artifact.source,
@@ -294,7 +294,7 @@ impl CaseResult {
     }
 }
 
-const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTerminalKind {
+pub(super) const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTerminalKind {
     match failure {
         CompileFailure::SourceLength { .. } => CompileTerminalKind::SourceLength,
         CompileFailure::UnsupportedStage { .. } => CompileTerminalKind::UnsupportedStage,
@@ -342,5 +342,8 @@ const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTerminalKind {
         CompileFailure::Prepare { .. } => CompileTerminalKind::Prepare,
         CompileFailure::Write { .. } => CompileTerminalKind::Write,
         CompileFailure::Validate { .. } => CompileTerminalKind::Validate,
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            CompileTerminalKind::ExtensionTypeParametersUnbound
+        }
     }
 }

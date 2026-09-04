@@ -25,6 +25,8 @@ compiler-languages-csharp = { path = "../../compiler/languages/csharp" }
 compiler-languages-go = { path = "../../compiler/languages/go" }
 compiler-languages-java = { path = "../../compiler/languages/java" }
 compiler-languages-rust = { path = "../../compiler/languages/rust" }
+compiler-languages-typescript = { path = "../../compiler/languages/typescript" }
+compiler-languages-python = { path = "../../compiler/languages/python" }
 server-journal = { path = "../journal" }
 server-index-build = { path = "../index/build" }
 server-index-core = { path = "../index/core" }

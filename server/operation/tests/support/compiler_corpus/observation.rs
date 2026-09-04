@@ -58,6 +58,40 @@ pub(super) struct OwnedObservation {
     pub(super) links: CountObservation,
     pub(super) extension: PlaneObservation,
     pub(super) semantic_digest: Digest,
+    /// Complete reader observation over the same finalized image.  This is
+    /// kept beside the legacy compact-oriented fields so the source matrix
+    /// can compare every canonical row and pooled plane without recovering
+    /// facts from cardinality.
+    pub(super) semantic: SemanticObservation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SemanticReaderStatus {
+    Captured,
+    ObserverUnavailable,
+    Unsupported,
+}
+
+/// Exact, allocation-free semantic-image facts reduced to typed values and
+/// domain-separated content digests.  The digest fields cover canonical row
+/// order and all borrowed payloads; the census retains independently checked
+/// counts and authority availability distributions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SemanticObservation {
+    pub(super) status: SemanticReaderStatus,
+    pub(super) identity: Option<compiler_ir::SemanticImageIdentity>,
+    pub(super) image: Option<compiler_ir::SemanticImageFacts>,
+    pub(super) census: Option<compiler_ir::SemanticImageCensus>,
+    pub(super) entities: Digest,
+    pub(super) types: Digest,
+    pub(super) externals: Digest,
+    pub(super) links: Digest,
+    pub(super) occurrences: Digest,
+    pub(super) extensions: [Digest; 7],
+    /// Source files and half-open spans in canonical declaration order.
+    /// File atom bytes are included instead of transient atom coordinates.
+    pub(super) source_spans: Digest,
+    pub(super) canonical_type: RenderVerdict,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +137,7 @@ pub(super) struct ReopenedObservation {
     pub(super) type_facts: PlaneObservation,
     pub(super) documentation: PlaneObservation,
     pub(super) extensions: PlaneObservation,
+    pub(super) semantic: SemanticObservation,
 }
 
 /// Optional semantic planes available from the reopened representation.  The
@@ -111,24 +146,20 @@ pub(super) struct ReopenedObservation {
 /// `SemanticImageView` is intentionally the one narrow implementation point
 /// that will replace this constructor; no comparison code may infer a plane
 /// from census counts or section presence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ReopenedSemanticPlanes {
-    pub(super) semantic_data: PlaneObservation,
-    pub(super) occurrences: PlaneObservation,
-    pub(super) type_facts: PlaneObservation,
-    pub(super) documentation: PlaneObservation,
-    pub(super) extensions: PlaneObservation,
-}
-
-pub(super) fn observe_reopened_semantic_image(
-    _fragment: &FragmentView<'_>,
-) -> ReopenedSemanticPlanes {
-    ReopenedSemanticPlanes {
-        semantic_data: PlaneObservation::ObserverUnavailable,
-        occurrences: PlaneObservation::ObserverUnavailable,
-        type_facts: PlaneObservation::ObserverUnavailable,
-        documentation: PlaneObservation::ObserverUnavailable,
-        extensions: PlaneObservation::ObserverUnavailable,
+pub(super) fn observer_unavailable_semantic() -> SemanticObservation {
+    SemanticObservation {
+        status: SemanticReaderStatus::ObserverUnavailable,
+        identity: None,
+        image: None,
+        census: None,
+        entities: [0; 32],
+        types: [0; 32],
+        externals: [0; 32],
+        links: [0; 32],
+        occurrences: [0; 32],
+        extensions: [[0; 32]; 7],
+        source_spans: [0; 32],
+        canonical_type: RenderVerdict::Unavailable,
     }
 }
 
@@ -267,6 +298,7 @@ pub(super) fn item_kind(kind: EntityKind) -> ItemKind {
         EntityKind::Static => ItemKind::Static,
         EntityKind::Reexport => ItemKind::Reexport,
         EntityKind::Parameter => ItemKind::Parameter,
+        EntityKind::Macro | EntityKind::Namespace => kind,
     }
 }
 
@@ -411,6 +443,615 @@ fn semantic_digest(ir: &Ir) -> Digest {
     hasher.digest()
 }
 
+fn hash_semantic_image_facts(
+    value: compiler_ir::SemanticImageFacts,
+    hasher: &mut StableHasher,
+) {
+    value.authority.hash(hasher);
+    match value.provenance {
+        ImageProvenance::Unavailable => 0_u8.hash(hasher),
+        ImageProvenance::Captured {
+            source,
+            recipe,
+            claim,
+            scope,
+        } => {
+            1_u8.hash(hasher);
+            source.hash_into(hasher);
+            digest_recipe(recipe).hash(hasher);
+            claim.identity.hash(hasher);
+            scope.ecosystem.hash(hasher);
+            scope.package.hash(hasher);
+            scope.path.hash(hasher);
+        }
+    }
+}
+
+fn hash_authority(value: EntityAuthorityFacts, hasher: &mut StableHasher) {
+    match value.parentage {
+        ParentageAuthority::Unavailable => 0_u8.hash(hasher),
+        ParentageAuthority::Root => 1_u8.hash(hasher),
+        ParentageAuthority::Bound(identity) => {
+            2_u8.hash(hasher);
+            identity.hash(hasher);
+        }
+        ParentageAuthority::UnrepresentedAuthorityOwner(owner) => {
+            3_u8.hash(hasher);
+            owner.hash(hasher);
+        }
+    }
+    hash_fact_availability(value.source, hasher);
+    hash_fact_availability(value.source_file, hasher);
+    hash_fact_availability(value.members, hasher);
+    hash_fact_availability(value.semantic_type, hasher);
+    hash_fact_availability(value.documentation, hasher);
+    hash_fact_availability(value.visibility, hasher);
+    hash_fact_availability(value.attributes, hasher);
+    hash_fact_availability(value.language_extension, hasher);
+}
+
+fn hash_atom<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::AtomId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.atom(id) {
+        Some(bytes) => {
+            1_u8.hash(hasher);
+            bytes.hash(hasher);
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_optional_rows<T, I>(rows: Option<I>, hasher: &mut StableHasher)
+where
+    T: Hash,
+    I: ExactSizeIterator<Item = T>,
+{
+    match rows {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn semantic_entities_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let mut hasher = StableHasher::default();
+    let entities = reader.canonical_entities();
+    entities.len().hash(&mut hasher);
+    for entity in entities {
+        entity.id.hash(&mut hasher);
+        hash_atom(reader, entity.name, &mut hasher);
+        entity.kind.hash(&mut hasher);
+        entity.visibility.hash(&mut hasher);
+        entity.parent.hash(&mut hasher);
+        entity.semantic_type.hash(&mut hasher);
+        entity.members.hash(&mut hasher);
+        hash_optional_rows(reader.entity_list(entity.members), &mut hasher);
+        entity.docs.hash(&mut hasher);
+        hash_optional_rows(reader.docs(entity.docs), &mut hasher);
+        entity.attributes.hash(&mut hasher);
+        hash_optional_rows(reader.atom_list(entity.attributes), &mut hasher);
+        entity.source.hash(&mut hasher);
+        hash_authority(entity.authority, &mut hasher);
+        entity.version.hash(&mut hasher);
+    }
+    hasher.digest()
+}
+
+pub(super) fn digest_source_span_rows(
+    mut spans: Vec<(Vec<u8>, u32, u32)>,
+) -> Digest {
+    spans.sort();
+    let mut hasher = StableHasher::default();
+    spans.len().hash(&mut hasher);
+    for (file, start, end) in spans {
+        file.hash(&mut hasher);
+        start.hash(&mut hasher);
+        end.hash(&mut hasher);
+    }
+    hasher.digest()
+}
+
+fn semantic_source_spans_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let spans = reader
+        .canonical_entities()
+        .filter_map(|entity| entity.source)
+        .map(|span| {
+            (
+                reader.atom(span.file()).unwrap_or_default().to_vec(),
+                span.start(),
+                span.end(),
+            )
+        })
+        .collect::<Vec<_>>();
+    digest_source_span_rows(spans)
+}
+
+fn semantic_types_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let mut hasher = StableHasher::default();
+    let types = reader.canonical_types();
+    types.len().hash(&mut hasher);
+    for (id, value) in types {
+        id.hash(&mut hasher);
+        value.hash(&mut hasher);
+        hash_type_references(reader, value, &mut hasher);
+    }
+    hash_extension_pools(reader, &mut hasher);
+    hasher.digest()
+}
+
+fn hash_atom_reference<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::AtomId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.atom(id) {
+        Some(bytes) => {
+            1_u8.hash(hasher);
+            bytes.hash(hasher);
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_type_list<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::TypeListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.types(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_entity_list<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::EntityListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.entity_list(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_atom_list<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::AtomListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.atom_list(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                hash_atom_reference(reader, row, hasher);
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_tuple_elements<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::TupleElementListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.tuple_elements(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+                if let Some(label) = row.label {
+                    hash_atom_reference(reader, label, hasher);
+                }
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_property_key<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    key: compiler_ir::PropertyKey,
+    hasher: &mut StableHasher,
+) {
+    match key {
+        compiler_ir::PropertyKey::Named(id)
+        | compiler_ir::PropertyKey::Private(id)
+        | compiler_ir::PropertyKey::Numeric(id) => hash_atom_reference(reader, id, hasher),
+        compiler_ir::PropertyKey::Computed(id) => id.hash(hasher),
+    }
+}
+
+fn hash_object_members<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::ObjectMemberListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.object_members(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+                match row {
+                    compiler_ir::ObjectMember::Property { key, .. }
+                    | compiler_ir::ObjectMember::Method { key, .. } => {
+                        hash_property_key(reader, key, hasher);
+                    }
+                    compiler_ir::ObjectMember::Index { parameter, .. } => {
+                        hash_atom_reference(reader, parameter, hasher);
+                    }
+                    compiler_ir::ObjectMember::Call(_) | compiler_ir::ObjectMember::Construct(_) => {}
+                }
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_template_parts<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::TemplatePartListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.template_parts(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+                if let compiler_ir::TemplatePart::Bytes(atom) = row {
+                    hash_atom_reference(reader, atom, hasher);
+                }
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_parameter_bounds<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::TypeParameterBoundListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.type_parameter_bounds(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+                if let compiler_ir::TypeParameterBound::Lifetime(atom) = row {
+                    hash_atom_reference(reader, atom, hasher);
+                }
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_parameters<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    id: compiler_ir::TypeParameterListId,
+    hasher: &mut StableHasher,
+) {
+    id.hash(hasher);
+    match reader.type_parameters(id) {
+        Some(rows) => {
+            1_u8.hash(hasher);
+            rows.len().hash(hasher);
+            for row in rows {
+                row.hash(hasher);
+                hash_atom_reference(reader, row.name, hasher);
+                hash_parameter_bounds(reader, row.bounds, hasher);
+            }
+        }
+        None => 0_u8.hash(hasher),
+    }
+}
+
+fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    expression: TypeExpr,
+    hasher: &mut StableHasher,
+) {
+    match expression {
+        TypeExpr::Concrete(concrete) => match concrete {
+            ConcreteType::Applied { arguments, .. }
+            | ConcreteType::Union(arguments)
+            | ConcreteType::Intersection(arguments)
+            | ConcreteType::ImplTrait(arguments)
+            | ConcreteType::DynTrait(arguments) => hash_type_list(reader, arguments, hasher),
+            ConcreteType::Tuple(elements) | ConcreteType::Function { parameters: elements, .. } => {
+                hash_tuple_elements(reader, elements, hasher);
+                if let ConcreteType::Function { results, .. } = concrete {
+                    hash_tuple_elements(reader, results, hasher);
+                }
+            }
+            ConcreteType::Object(members) => hash_object_members(reader, members, hasher),
+            ConcreteType::QualifiedPath { segments, .. } => {
+                if let compiler_ir::QualifiedSegments::Captured(segments) = segments {
+                    hash_atom_list(reader, segments, hasher);
+                }
+            }
+            ConcreteType::Wildcard(compiler_ir::WildcardBound::Unbounded)
+            | ConcreteType::Wildcard(compiler_ir::WildcardBound::Extends(_))
+            | ConcreteType::Wildcard(compiler_ir::WildcardBound::Super(_))
+            | ConcreteType::Builtin(_)
+            | ConcreteType::Literal(_)
+            | ConcreteType::Nominal(_)
+            | ConcreteType::External(_)
+            | ConcreteType::Parameter(_)
+            | ConcreteType::Reference { .. }
+            | ConcreteType::CxxReference { .. }
+            | ConcreteType::CPointer { .. }
+            | ConcreteType::CxxMemberPointer { .. }
+            | ConcreteType::CQualified { .. }
+            | ConcreteType::CBlockPointer { .. }
+            | ConcreteType::NativeCharacter { .. }
+            | ConcreteType::Pointer { .. }
+            | ConcreteType::Slice(_)
+            | ConcreteType::Array { .. }
+            | ConcreteType::Optional(_)
+            | ConcreteType::Annotated { .. }
+            | ConcreteType::Inferred(_)
+            | ConcreteType::Map { .. }
+            | ConcreteType::Channel { .. } => {}
+        },
+        TypeExpr::Computed(computed) => match computed {
+            compiler_ir::ComputedType::TypeOf(compiler_ir::TypeQuery::Path(path)) => {
+                hash_atom_list(reader, path, hasher);
+            }
+            compiler_ir::ComputedType::TemplateLiteral(parts) => {
+                hash_template_parts(reader, parts, hasher);
+            }
+            compiler_ir::ComputedType::Import {
+                qualifier,
+                arguments,
+                ..
+            } => {
+                hash_atom_list(reader, qualifier, hasher);
+                hash_type_list(reader, arguments, hasher);
+            }
+            compiler_ir::ComputedType::KeyOf(_)
+            | compiler_ir::ComputedType::TypeOf(_)
+            | compiler_ir::ComputedType::IndexedAccess { .. }
+            | compiler_ir::ComputedType::Conditional { .. }
+            | compiler_ir::ComputedType::Mapped { .. }
+            | compiler_ir::ComputedType::Infer { .. }
+            | compiler_ir::ComputedType::Awaited(_)
+            | compiler_ir::ComputedType::This => {}
+        },
+        TypeExpr::Unknown(_) => {}
+    }
+}
+
+fn hash_extension_pools<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    hasher: &mut StableHasher,
+) {
+    for (entity, facts) in reader.typescript_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_parameters(reader, facts.type_parameters, hasher);
+    }
+    for (entity, facts) in reader.csharp_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_parameters(reader, facts.constraints, hasher);
+        hash_atom_list(reader, facts.attributes, hasher);
+    }
+    for (entity, facts) in reader.go_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_type_list(reader, facts.signature.parameters, hasher);
+        hash_type_list(reader, facts.signature.results, hasher);
+        hash_parameters(reader, facts.type_parameters, hasher);
+        hash_entity_list(reader, facts.fields, hasher);
+        hash_entity_list(reader, facts.method_set, hasher);
+        hash_atom_list(reader, facts.build_constraints, hasher);
+        hash_atom_list(reader, facts.constant_value, hasher);
+    }
+    for (entity, facts) in reader.rust_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_atom_list(reader, facts.lifetimes, hasher);
+        hash_parameters(reader, facts.where_clauses, hasher);
+        hash_atom_list(reader, facts.macros, hasher);
+    }
+    for (entity, facts) in reader.python_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_atom_list(reader, facts.decorators, hasher);
+    }
+    for (entity, facts) in reader.java_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_type_list(reader, facts.throws, hasher);
+        hash_atom_list(reader, facts.annotations, hasher);
+        hash_entity_list(reader, facts.overloads, hasher);
+        hash_entity_list(reader, facts.record_components, hasher);
+    }
+    for (entity, facts) in reader.clang_extensions() {
+        entity.hash(hasher);
+        facts.hash(hasher);
+        hash_parameters(reader, facts.templates, hasher);
+        hash_atom_list(reader, facts.includes, hasher);
+    }
+}
+
+fn semantic_externals_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let mut hasher = StableHasher::default();
+    let externals = reader.canonical_externals();
+    externals.len().hash(&mut hasher);
+    for (id, value) in externals {
+        id.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+    hasher.digest()
+}
+
+fn semantic_links_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let mut hasher = StableHasher::default();
+    let entities = reader.canonical_entities();
+    for entity in entities {
+        entity.id.hash(&mut hasher);
+        let links = reader.links_from(entity.id);
+        links.len().hash(&mut hasher);
+        for (id, link) in links {
+            id.hash(&mut hasher);
+            link.hash(&mut hasher);
+        }
+    }
+    hasher.digest()
+}
+
+fn semantic_occurrences_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R) -> Digest {
+    let mut hasher = StableHasher::default();
+    let occurrences = reader.link_occurrences();
+    occurrences.len().hash(&mut hasher);
+    for (id, occurrence) in occurrences {
+        id.hash(&mut hasher);
+        occurrence.hash(&mut hasher);
+        match reader.occurrence_authority(id) {
+            Some(authority) => {
+                1_u8.hash(&mut hasher);
+                hash_fact_availability(authority.source, &mut hasher);
+            }
+            None => 0_u8.hash(&mut hasher),
+        }
+    }
+    hasher.digest()
+}
+
+fn extension_digest<I, Facts>(rows: I) -> Digest
+where
+    I: ExactSizeIterator<Item = (EntityId, Facts)>,
+    Facts: Hash,
+{
+    let mut hasher = StableHasher::default();
+    rows.len().hash(&mut hasher);
+    for (entity, facts) in rows {
+        entity.hash(&mut hasher);
+        facts.hash(&mut hasher);
+    }
+    hasher.digest()
+}
+
+fn canonical_type_render<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    primary: Option<EntityId>,
+) -> RenderVerdict {
+    let Some(entity) = primary.and_then(|id| reader.entity(id)) else {
+        return RenderVerdict::Unavailable;
+    };
+    let Some(root) = entity.semantic_type else {
+        return RenderVerdict::Unavailable;
+    };
+    let limits = compiler_ir::CanonicalTypeRenderLimits::new(
+        NonZeroUsize::new(1024).expect("nonzero canonical render depth"),
+    );
+    let Ok(prepared) = compiler_ir::prepare_canonical_type(reader, root, limits) else {
+        return RenderVerdict::Unavailable;
+    };
+    let mut output = vec![0_u8; prepared.encoded_len];
+    match prepared.write_into(&mut output) {
+        Ok(text) => RenderVerdict::Rendered(digest_bytes(text.as_bytes())),
+        Err(_) => RenderVerdict::Unavailable,
+    }
+}
+
+fn observe_reader<R: compiler_ir::SemanticReader + ?Sized>(
+    reader: &R,
+    identity: Option<compiler_ir::SemanticImageIdentity>,
+    primary: Option<EntityId>,
+) -> SemanticObservation {
+    let census = compiler_ir::SemanticImageDiscovery::new(reader).census().ok();
+    let status = if census.is_some() {
+        SemanticReaderStatus::Captured
+    } else {
+        SemanticReaderStatus::ObserverUnavailable
+    };
+    SemanticObservation {
+        status,
+        identity,
+        image: Some(reader.image_facts()),
+        census,
+        entities: semantic_entities_digest(reader),
+        types: semantic_types_digest(reader),
+        externals: semantic_externals_digest(reader),
+        links: semantic_links_digest(reader),
+        occurrences: semantic_occurrences_digest(reader),
+        extensions: [
+            extension_digest(reader.typescript_extensions()),
+            extension_digest(reader.csharp_extensions()),
+            extension_digest(reader.go_extensions()),
+            extension_digest(reader.rust_extensions()),
+            extension_digest(reader.python_extensions()),
+            extension_digest(reader.java_extensions()),
+            extension_digest(reader.clang_extensions()),
+        ],
+        source_spans: semantic_source_spans_digest(reader),
+        canonical_type: canonical_type_render(reader, primary),
+    }
+}
+
+fn owned_image_identity(ir: &Ir) -> Option<compiler_ir::SemanticImageIdentity> {
+    let length = compiler_ir::full_semantic_image_len(ir).ok()?;
+    let mut bytes = vec![0_u8; length];
+    let written = compiler_ir::encode_full_semantic_image(ir, &mut bytes).ok()?;
+    (written == length).then(|| compiler_ir::SemanticImageIdentity::from_encoded_bytes(&bytes))
+}
+
+pub(super) fn observe_owned_semantic(
+    ir: &Ir,
+    primary: Option<EntityId>,
+) -> SemanticObservation {
+    observe_reader(ir, owned_image_identity(ir), primary)
+}
+
+pub(super) fn observe_reopened_semantic(
+    image: &compiler_ir::SemanticImageView<'_>,
+    primary: Option<EntityId>,
+) -> SemanticObservation {
+    observe_reader(
+        image,
+        Some(compiler_ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref())),
+        primary,
+    )
+}
+
 /// Borrows one complete authority row through the immutable IR columns. A
 /// missing aligned row is observer unavailability, never an inferred empty
 /// fact from the corresponding hot semantic value.
@@ -471,6 +1112,7 @@ pub(super) fn observe_owned(
     });
     let primary_id = primary.map(|item| item.id);
     let primary_authority = primary.and_then(|item| item.authority);
+    let semantic = observe_owned_semantic(ir, primary_id);
     let documentation = primary_authority.map_or(PlaneObservation::ObserverUnavailable, |facts| {
         fact_plane(facts.documentation)
     });
@@ -507,6 +1149,7 @@ pub(super) fn observe_owned(
         links,
         extension,
         semantic_digest: semantic_digest(ir),
+        semantic,
     }
 }
 
@@ -627,7 +1270,7 @@ fn hash_type_node(value: Option<TypeNode>, hasher: &mut StableHasher) {
         None => 0_u8.hash(hasher),
         Some(TypeNode::Primitive(primitive)) => {
             1_u8.hash(hasher);
-            primitive.hash(hasher);
+            u32::from(primitive).hash(hasher);
         }
         Some(TypeNode::Reference(id)) => {
             2_u8.hash(hasher);
@@ -683,7 +1326,7 @@ fn hash_image_provenance(value: ImageProvenance, hasher: &mut StableHasher) {
             1_u8.hash(hasher);
             source.hash_into(hasher);
             digest_recipe(recipe).hash(hasher);
-            claim.declaration_key.hash(hasher);
+            claim.identity.hash(hasher);
             scope.ecosystem.hash(hasher);
             scope.package.hash(hasher);
             scope.path.hash(hasher);
@@ -704,6 +1347,90 @@ fn hash_census(value: compiler_ir::SemanticCensus, hasher: &mut StableHasher) {
     value.documentation_fragments.hash(hasher);
     value.language_extension_section.hash(hasher);
     value.extension_pool_section.hash(hasher);
+}
+
+fn hash_availability_census(
+    value: compiler_ir::AvailabilityCensus,
+    hasher: &mut StableHasher,
+) {
+    value.captured.hash(hasher);
+    value.unavailable.hash(hasher);
+}
+
+fn hash_semantic_census(
+    value: compiler_ir::SemanticImageCensus,
+    hasher: &mut StableHasher,
+) {
+    hash_semantic_image_facts(value.image, hasher);
+    value.entities.hash(hasher);
+    value.root_entities.hash(hasher);
+    value.typed_entities.hash(hasher);
+    value.source_bound_entities.hash(hasher);
+    value.member_references.hash(hasher);
+    value.documentation_fragments.hash(hasher);
+    value.attribute_references.hash(hasher);
+    value.types.hash(hasher);
+    value.external_targets.hash(hasher);
+    value.links.hash(hasher);
+    value.link_occurrences.hash(hasher);
+    hash_availability_census(value.occurrence_source_authority, hasher);
+    value.language_extensions.typescript.hash(hasher);
+    value.language_extensions.csharp.hash(hasher);
+    value.language_extensions.go.hash(hasher);
+    value.language_extensions.rust.hash(hasher);
+    value.language_extensions.python.hash(hasher);
+    value.language_extensions.java.hash(hasher);
+    value.language_extensions.clang.hash(hasher);
+    let authority = value.entity_authority;
+    authority.parentage.unavailable.hash(hasher);
+    authority.parentage.roots.hash(hasher);
+    authority.parentage.bound.hash(hasher);
+    authority.parentage.unrepresented_authority_owner.hash(hasher);
+    hash_availability_census(authority.source, hasher);
+    hash_availability_census(authority.source_file, hasher);
+    hash_availability_census(authority.members, hasher);
+    hash_availability_census(authority.semantic_type, hasher);
+    hash_availability_census(authority.documentation, hasher);
+    hash_availability_census(authority.visibility, hasher);
+    hash_availability_census(authority.attributes, hasher);
+    hash_availability_census(authority.language_extension, hasher);
+}
+
+fn hash_semantic_observation(value: SemanticObservation, hasher: &mut StableHasher) {
+    match value.status {
+        SemanticReaderStatus::Captured => 0_u8.hash(hasher),
+        SemanticReaderStatus::ObserverUnavailable => 1_u8.hash(hasher),
+        SemanticReaderStatus::Unsupported => 2_u8.hash(hasher),
+    }
+    value.identity.hash(hasher);
+    match value.image {
+        Some(image) => {
+            1_u8.hash(hasher);
+            hash_semantic_image_facts(image, hasher);
+        }
+        None => 0_u8.hash(hasher),
+    }
+    match value.census {
+        Some(census) => {
+            1_u8.hash(hasher);
+            hash_semantic_census(census, hasher);
+        }
+        None => 0_u8.hash(hasher),
+    }
+    value.entities.hash(hasher);
+    value.types.hash(hasher);
+    value.externals.hash(hasher);
+    value.links.hash(hasher);
+    value.occurrences.hash(hasher);
+    value.extensions.hash(hasher);
+    value.source_spans.hash(hasher);
+    digest_render(value.canonical_type).hash(hasher);
+}
+
+pub(super) fn digest_semantic(value: SemanticObservation) -> Digest {
+    let mut hasher = StableHasher::default();
+    hash_semantic_observation(value, &mut hasher);
+    hasher.digest()
 }
 
 pub(super) fn digest_recipe(recipe: compiler_vocabulary::CompileRecipeFact) -> Digest {
@@ -797,6 +1524,7 @@ pub(super) fn digest_reopened(value: ReopenedObservation) -> Digest {
     hash_plane_observation(value.type_facts, &mut hasher);
     hash_plane_observation(value.documentation, &mut hasher);
     hash_plane_observation(value.extensions, &mut hasher);
+    hash_semantic_observation(value.semantic, &mut hasher);
     hasher.digest()
 }
 
@@ -848,13 +1576,14 @@ const fn terminal_code(value: CompileTerminalKind) -> u64 {
         CompileTerminalKind::AuthorityInputProfileMismatch => 26,
         CompileTerminalKind::LoweringUnsupported => 27,
         CompileTerminalKind::ExtensionAtomUnbound => 28,
-        CompileTerminalKind::FactRejected => 29,
-        CompileTerminalKind::CSharpProjection => 30,
-        CompileTerminalKind::ClangProjection => 31,
-        CompileTerminalKind::Build => 32,
-        CompileTerminalKind::Prepare => 33,
-        CompileTerminalKind::Write => 34,
-        CompileTerminalKind::Validate => 35,
+        CompileTerminalKind::ExtensionTypeParametersUnbound => 29,
+        CompileTerminalKind::FactRejected => 30,
+        CompileTerminalKind::CSharpProjection => 31,
+        CompileTerminalKind::ClangProjection => 32,
+        CompileTerminalKind::Build => 33,
+        CompileTerminalKind::Prepare => 34,
+        CompileTerminalKind::Write => 35,
+        CompileTerminalKind::Validate => 36,
     }
 }
 
@@ -879,9 +1608,12 @@ pub(super) fn digest_authority_unavailable(value: AuthorityUnavailableCause) -> 
         AuthorityUnavailableCause::GoOracle => 2_u8.hash(&mut hasher),
         AuthorityUnavailableCause::JavaHarness => 3_u8.hash(&mut hasher),
         AuthorityUnavailableCause::CSharpHelper => 4_u8.hash(&mut hasher),
+        AuthorityUnavailableCause::TypeScriptChecker => 6_u8.hash(&mut hasher),
+        AuthorityUnavailableCause::PythonChecker => 7_u8.hash(&mut hasher),
+        AuthorityUnavailableCause::ObserverUnavailable => 8_u8.hash(&mut hasher),
         AuthorityUnavailableCause::Source(cause) => {
             5_u8.hash(&mut hasher);
-            cause.language.hash(&mut hasher);
+            language_code(cause.language).hash(&mut hasher);
             let kind = match cause.kind {
                 SourceUnavailableKind::RootUnset => 0_u8,
                 SourceUnavailableKind::PackageDirectoryMissing => 1_u8,
@@ -897,4 +1629,16 @@ pub(super) fn digest_authority_unavailable(value: AuthorityUnavailableCause) -> 
         }
     }
     hasher.digest()
+}
+
+const fn language_code(value: CorpusLanguage) -> u8 {
+    match value {
+        CorpusLanguage::Rust => 0,
+        CorpusLanguage::TypeScript => 1,
+        CorpusLanguage::Python => 2,
+        CorpusLanguage::Go => 3,
+        CorpusLanguage::Java => 4,
+        CorpusLanguage::CSharp => 5,
+        CorpusLanguage::Clang => 6,
+    }
 }

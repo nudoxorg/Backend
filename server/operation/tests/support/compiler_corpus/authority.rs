@@ -31,6 +31,9 @@ pub(super) enum AuthorityUnavailableCause {
     GoOracle,
     JavaHarness,
     CSharpHelper,
+    TypeScriptChecker,
+    PythonChecker,
+    ObserverUnavailable,
 }
 
 /// Closed source-inventory terminal. A missing package root or fixture is a
@@ -253,7 +256,7 @@ pub(super) fn native_slot<'path>(
         CorpusLanguage::CSharp => resolved
             .csharp
             .as_ref()
-            .map(|tool| (LanguageProfile::CSharp(CSharpVersion::CSharp12), *tool))
+            .map(|tool| (LanguageProfile::CSharp(CSharpVersion::CSharp14), *tool))
             .map_err(|cause| *cause),
         CorpusLanguage::Clang => resolved
             .clang
@@ -358,7 +361,7 @@ impl JavaAuthorityProvider {
         Ok(Self { jdk, harness })
     }
 
-    fn image(&self, source: &[u8]) -> Result<Vec<u8>, AuthorityBuildError> {
+    pub(super) fn image(&self, source: &[u8]) -> Result<Vec<u8>, AuthorityBuildError> {
         let sources = [compiler_languages_java::harness::JavaSource {
             name: Path::new("Package.java"),
             bytes: source,
@@ -412,12 +415,20 @@ impl CSharpAuthorityProvider {
         })
     }
 
-    fn image(
+    pub(super) fn image(
         &self,
         package: CorpusPackage,
         source: &[u8],
     ) -> Result<Vec<u8>, AuthorityBuildError> {
-        let root = self._root.child(&format!("case-{}", package.case_id.raw()));
+        self.image_for_source(package.case_id.raw(), source)
+    }
+
+    pub(super) fn image_for_source(
+        &self,
+        case_id: u16,
+        source: &[u8],
+    ) -> Result<Vec<u8>, AuthorityBuildError> {
+        let root = self._root.child(&format!("case-{case_id}"));
         fs::create_dir(&root).map_err(|source| {
             AuthorityBuildError::CSharp(CSharpHelperError::Io {
                 phase: AuditIoPhase::CSharpSource,
@@ -432,7 +443,7 @@ impl CSharpAuthorityProvider {
             })
         })?;
         let image_path = root.join("authority.image");
-        let assembly = format!("Corpus{}", package.case_id.raw());
+        let assembly = format!("Corpus{case_id}");
         let mut command = Command::new(&self.dotnet);
         command
             .arg("exec")
@@ -514,6 +525,14 @@ pub(super) fn rust_fixture(
     source: &[u8],
     host: &HostTool,
 ) -> Result<RustAuthorityFixture, AuthorityBuildError> {
+    rust_fixture_for_source(package.case_id.raw(), source, host)
+}
+
+pub(super) fn rust_fixture_for_source(
+    case_id: u16,
+    source: &[u8],
+    host: &HostTool,
+) -> Result<RustAuthorityFixture, AuthorityBuildError> {
     let root = FixtureDir::new("rust-case").map_err(|source| AuthorityBuildError::Io {
         phase: AuditIoPhase::Fixture,
         source,
@@ -545,7 +564,6 @@ pub(super) fn rust_fixture(
         RustEdition::Rust2024,
     )
     .map_err(AuthorityBuildError::RustProject)?;
-    let _ = package;
     Ok(RustAuthorityFixture {
         _root: root,
         project,
@@ -555,6 +573,13 @@ pub(super) fn rust_fixture(
 
 pub(super) fn go_fixture(
     package: CorpusPackage,
+    source: &[u8],
+) -> Result<GoAuthorityFixture, AuthorityBuildError> {
+    go_fixture_for_source(package.case_id.raw(), source)
+}
+
+pub(super) fn go_fixture_for_source(
+    case_id: u16,
     source: &[u8],
 ) -> Result<GoAuthorityFixture, AuthorityBuildError> {
     let root = FixtureDir::new("go-case").map_err(|source| AuthorityBuildError::Io {
@@ -579,7 +604,6 @@ pub(super) fn go_fixture(
     let image = oracle
         .authority_image(&source_path, &root.path)
         .map_err(AuthorityBuildError::Go)?;
-    let _ = package;
     Ok(GoAuthorityFixture { _root: root, image })
 }
 

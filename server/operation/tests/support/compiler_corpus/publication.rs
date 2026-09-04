@@ -4,10 +4,15 @@
 //! and semantic comparison so a missing reader plane remains typed.
 
 use super::*;
+use super::observation::{
+    observe_reopened_semantic, range_manifest_digest_from_manifest,
+};
 
 pub(super) struct PassPublisher {
     _root: FixtureDir,
-    publisher: DurablePublisher,
+    publisher: Option<DurablePublisher>,
+    paths: PublicationPaths,
+    limits: PublicationLimits,
     artifacts: PathBuf,
 }
 impl PassPublisher {
@@ -28,45 +33,71 @@ impl PassPublisher {
         let publisher = DurablePublisher::create(&paths, limits)?;
         Ok(Self {
             _root: root,
-            publisher,
+            publisher: Some(publisher),
+            paths,
+            limits,
             artifacts,
         })
     }
 
     pub(super) fn publish(
         &mut self,
-        compiled: &compiler_driver::CompiledFragment<'_>,
+        compiled: &compiler_driver::CompiledSemantic<'_>,
+        primary: Option<EntityId>,
     ) -> Result<ReopenedObservation, CorpusAuditError> {
         let mut manifest = vec![0_u8; MANIFEST_BYTES];
         let mut manifest_facts = [None; 1];
         let mut ordinals = [0_usize; 1];
+        let mut semantic_image_plan = [SemanticImageRegion::EMPTY; 1];
+        let mut semantic_image_output = vec![0_u8; SEMANTIC_IMAGE_BYTES];
         let mut locality = vec![0_u8; LOCALITY_BYTES];
         let mut binding = vec![0_u8; compiler_publication::binding::COMPILATION_BINDING_BYTES];
-        publish_compiled(
-            &self.publisher,
+        let publisher = self.publisher.as_ref().ok_or(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::PublisherClosed,
+        })?;
+        publish_semantic(
+            publisher,
             &self.artifacts,
             core::slice::from_ref(compiled),
             PublishControl::Continue,
-            PublicationScratch {
+            SemanticPublicationScratch {
                 manifest_output: &mut manifest,
                 manifest_facts: &mut manifest_facts,
                 ordinals: &mut ordinals,
+                semantic_image_plan: &mut semantic_image_plan,
+                semantic_image_output: &mut semantic_image_output,
                 locality_output: &mut locality,
                 binding_output: &mut binding,
             },
         )?;
 
+        // `DurablePublisher::shutdown` consumes its owner.  Reopen a fresh
+        // journal owner before reading so this audit proves cold durability,
+        // not merely an in-process snapshot of the publishing owner.
+        let publisher = self.publisher.take().ok_or(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::PublisherClosed,
+        })?;
+        publisher.shutdown()?;
+        self.publisher = Some(DurablePublisher::reopen(&self.paths, self.limits)?);
+
         let mut reopened_manifest = vec![0_u8; MANIFEST_BYTES];
         let mut reopened_facts = [None; 1];
         let mut reopened_fragments = vec![0_u8; FRAGMENT_BYTES];
+        let mut reopened_semantic_images = vec![0_u8; SEMANTIC_IMAGE_BYTES];
         let mut reopened_locality = vec![0_u8; LOCALITY_BYTES];
-        let opened = open_published(
-            &self.publisher,
+        let opened = open_published_semantic(
+            self.publisher.as_ref().ok_or(CorpusAuditError::Invariant {
+                key: None,
+                cause: CorpusInvariant::PublisherClosed,
+            })?,
             &self.artifacts,
-            OpenPublicationScratch {
+            OpenSemanticPublicationScratch {
                 manifest_output: &mut reopened_manifest,
                 manifest_facts: &mut reopened_facts,
                 fragment_output: &mut reopened_fragments,
+                semantic_image_output: &mut reopened_semantic_images,
                 locality_output: &mut reopened_locality,
             },
         )?
@@ -74,38 +105,41 @@ impl PassPublisher {
             key: None,
             cause: CorpusInvariant::MissingPublishedFragment,
         })?;
-        let mut fragments = opened.fragments();
-        let fragment = fragments
+        let mut artifacts = opened.artifacts();
+        let artifact = artifacts
             .next()
             .ok_or(CorpusAuditError::Invariant {
                 key: None,
                 cause: CorpusInvariant::MissingPublishedFragment,
             })??;
-        if fragments.next().is_some() {
+        if artifacts.next().is_some() {
             return Err(CorpusAuditError::Invariant {
                 key: None,
                 cause: CorpusInvariant::ExtraPublishedFragment,
             });
         }
-        let ranges = FragmentRangeManifest::from_view(&fragment.view)?;
-        let semantic_planes = observe_reopened_semantic_image(&fragment.view);
+        let ranges = FragmentRangeManifest::from_view(&artifact.fragment.view)?;
+        let semantic = observe_reopened_semantic(&artifact.semantic_image, primary);
         let reopened = ReopenedObservation {
-            fragment: digest_bytes(fragment.view.as_ref()),
-            source: fragment.facts.source,
-            recipe: fragment.facts.recipe,
+            fragment: digest_bytes(artifact.fragment.view.as_ref()),
+            source: artifact.fragment.facts.source,
+            recipe: artifact.fragment.facts.recipe,
             ranges: range_manifest_digest_from_manifest(ranges),
-            census: fragment.view.discover().census(),
-            semantic_data: semantic_planes.semantic_data,
-            occurrences: semantic_planes.occurrences,
-            type_facts: semantic_planes.type_facts,
-            documentation: semantic_planes.documentation,
-            extensions: semantic_planes.extensions,
+            census: artifact.fragment.view.discover().census(),
+            semantic_data: PlaneObservation::Captured,
+            occurrences: PlaneObservation::Captured,
+            type_facts: PlaneObservation::Captured,
+            documentation: PlaneObservation::Captured,
+            extensions: PlaneObservation::Captured,
+            semantic,
         };
         Ok(reopened)
     }
 
-    pub(super) fn finish(self) -> Result<(), CorpusAuditError> {
-        self.publisher.shutdown()?;
+    pub(super) fn finish(mut self) -> Result<(), CorpusAuditError> {
+        if let Some(publisher) = self.publisher.take() {
+            publisher.shutdown()?;
+        }
         Ok(())
     }
 }
