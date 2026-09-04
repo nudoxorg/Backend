@@ -321,10 +321,7 @@ impl NativeWorkerPanic {
     /// ends at a UTF-8 boundary; `truncated` distinguishes it from the exact
     /// complete message.
     #[must_use]
-    pub fn capture(
-        worker: NativeWorker,
-        payload: &(dyn core::any::Any + Send),
-    ) -> Self {
+    pub fn capture(worker: NativeWorker, payload: &(dyn core::any::Any + Send)) -> Self {
         let (class, message) = if let Some(message) = payload.downcast_ref::<&'static str>() {
             (NativeWorkerPanicClass::StaticMessage, *message)
         } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -357,12 +354,11 @@ impl core::fmt::Display for NativeWorkerPanic {
             "native worker {:?} panicked with {:?} payload",
             self.worker, self.class
         )?;
-        if let Some(bytes) = self.message.bytes.get(..self.message.byte_len) {
-            if let Ok(message) = core::str::from_utf8(bytes) {
-                if !message.is_empty() {
-                    write!(formatter, ": {message}")?;
-                }
-            }
+        if let Some(bytes) = self.message.bytes.get(..self.message.byte_len)
+            && let Ok(message) = core::str::from_utf8(bytes)
+            && !message.is_empty()
+        {
+            write!(formatter, ": {message}")?;
         }
         if self.message.truncated {
             formatter.write_str(" (truncated)")?;
@@ -375,6 +371,10 @@ impl core::error::Error for NativeWorkerPanic {}
 
 /// Closed semantic terminal for syntax-native source whose declaration facts lack a compact recipe.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the cold Copy terminal retains exact bounded Java projection text inline without shared or heap ownership"
+)]
 pub enum LoweringUnsupported {
     /// No declaration form has a compact semantic recipe in this compiler slice.
     #[error("no supported declaration form")]
@@ -541,6 +541,10 @@ impl core::fmt::Display for JavaProjectionText {
 
 /// Owner atom fact for a Java declaration, including an honest unnamed owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the cold Copy fact retains exact bounded owner text inline without shared or heap ownership"
+)]
 pub enum JavaProjectionOwner {
     Named(JavaProjectionText),
     Absent,

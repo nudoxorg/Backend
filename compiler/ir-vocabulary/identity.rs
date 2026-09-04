@@ -209,7 +209,6 @@ impl<'bytes> DeclarationKey<'bytes> {
     }
 
     /// Complete family-only canonical preimage length.
-    #[must_use]
     pub fn preimage_len(&self) -> Result<usize, PreimageOverflow> {
         let mut length = cell_len(DECLARATION_KEY_PURPOSE)?;
         length = add_preimage_len(length, cell_len(self.lineage.ecosystem.as_bytes())?)?;
@@ -224,10 +223,7 @@ impl<'bytes> DeclarationKey<'bytes> {
     /// length-prefixed, so distinct keys never share a preimage by
     /// concatenation. Output is written only after the total-length
     /// preflight; a short output leaves every byte untouched.
-    pub fn write_preimage(
-        &self,
-        out: &mut [u8],
-    ) -> Result<usize, PreimageOverflow> {
+    pub fn write_preimage(&self, out: &mut [u8]) -> Result<usize, PreimageOverflow> {
         let needed = self.preimage_len()?;
         if out.len() < needed {
             return Err(PreimageOverflow::OutputShort {
@@ -241,8 +237,7 @@ impl<'bytes> DeclarationKey<'bytes> {
         cursor = write_str_cell(out, cursor, self.lineage.name.as_bytes())?;
         cursor = write_str_cell(out, cursor, self.path.as_bytes())?;
         cursor = write_str_cell(out, cursor, self.name)?;
-        out[cursor..cursor + KEY_TAIL_BYTES]
-            .copy_from_slice(&u16::from(self.kind).to_le_bytes());
+        out[cursor..cursor + KEY_TAIL_BYTES].copy_from_slice(&u16::from(self.kind).to_le_bytes());
         cursor += KEY_TAIL_BYTES;
         Ok(cursor)
     }
@@ -343,7 +338,9 @@ impl ForeignDeclarationId {
 
     #[must_use]
     pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
-        Self::from_content_id(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(bytes))
+        Self::from_content_id(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(
+            bytes,
+        ))
     }
 
     /// Narrows a foreign-key content id without mixing its wire domain byte
@@ -497,7 +494,6 @@ impl<'bytes> ForeignKey<'bytes> {
     }
 
     /// Complete canonical key-digest preimage length.
-    #[must_use]
     pub fn key_preimage_len(&self) -> Result<usize, PreimageOverflow> {
         let mut length = cell_len(FOREIGN_KEY_PURPOSE)?;
         length = add_preimage_len(length, ORIGIN_CELL)?;
@@ -566,7 +562,10 @@ impl<'bytes> ForeignKey<'bytes> {
     /// Digests the key cells (never a resolved target, never `display`)
     /// through the foreign-declaration identity domain, so sealing with and without
     /// dependencies loaded is byte-identical.
-    pub fn key_id(&self, out: &mut [u8]) -> Result<ContentId<ForeignDeclarationDomain>, PreimageOverflow> {
+    pub fn key_id(
+        &self,
+        out: &mut [u8],
+    ) -> Result<ContentId<ForeignDeclarationDomain>, PreimageOverflow> {
         let written = self.write_key_preimage(out)?;
         Ok(ContentId::<ForeignDeclarationDomain>::from_canonical_bytes(
             &out[..written],
@@ -625,7 +624,9 @@ pub struct Occurrence<'bytes> {
 /// Checked byte width of one length-prefixed string cell.
 fn cell_len(bytes: &[u8]) -> Result<usize, PreimageOverflow> {
     if u32::try_from(bytes.len()).is_err() {
-        return Err(PreimageOverflow::CellTooLong { actual: bytes.len() });
+        return Err(PreimageOverflow::CellTooLong {
+            actual: bytes.len(),
+        });
     }
     add_preimage_len(4, bytes.len())
 }
@@ -652,8 +653,8 @@ const ORIGIN_CELL: usize = 4;
 /// sixteen bytes on a constant tag.
 fn compact_identity_payload(bytes: &[u8; heart_identity::HASH_BYTES]) -> [u8; 16] {
     [
-        bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
-        bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16],
+        bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15], bytes[16],
     ]
 }
 
