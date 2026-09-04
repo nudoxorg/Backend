@@ -54,6 +54,11 @@ pub(super) const MAX_FACT_CHILDREN: usize = 64;
 /// Dense bound of one fact's ordered type-record children.
 /// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
 pub(super) const MAX_TYPE_CHILDREN: usize = 64;
+/// The uncommitted portion of either fixed type-child lane can never exceed
+/// one record's bounded child capacity, so its cursor has a total compact
+/// representation independent of the platform's native word width.
+const MAX_PENDING_TYPE_CHILDREN: u8 = MAX_TYPE_CHILDREN as u8;
+const _: () = assert!(MAX_TYPE_CHILDREN <= u8::MAX as usize);
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 8192;
 /// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
@@ -456,7 +461,7 @@ pub(super) struct FactSet<'source> {
     anonymous_child_flags: Box<[u8]>,
     anonymous_rows: usize,
     anonymous_children_total: usize,
-    anonymous_child_pending: u32,
+    anonymous_child_pending: u8,
     computed_records: Box<[SemanticTypeRecord<'source>]>,
     computed_owners: Box<[u32]>,
     computed_child_starts: Box<[u32]>,
@@ -466,7 +471,7 @@ pub(super) struct FactSet<'source> {
     computed_child_flags: Box<[u8]>,
     computed_rows: usize,
     computed_children_total: usize,
-    computed_child_pending: u32,
+    computed_child_pending: u8,
 }
 
 /// A source range captured by an authority before it reaches the owned tree.
@@ -490,6 +495,15 @@ pub(super) struct StagedTypeParameterRange {
 /// Staging uses the public closed transition state directly so a fact
 /// rejection can retain both conflicting authority claims without erasure.
 type StagedParentage = ParentageState;
+
+/// One fixed child lane whose current trailing run has not yet been attached
+/// to a committed type row.  The backing slot arrays stay reusable after an
+/// abort; only their observable prefix/cursors are rolled back.
+#[derive(Clone, Copy)]
+enum PendingTypeLane {
+    Anonymous,
+    Computed,
+}
 
 /// Extracts the one local parent representable in the owned/compact views.
 /// Root, unavailable, and unrepresented native ownership deliberately never
@@ -515,6 +529,38 @@ impl StagedSourceSpan {
 const _: () = assert!(size_of::<FactSet<'static>>() <= 64 * 1024);
 
 impl<'source> FactSet<'source> {
+    /// Abandons one uncommitted trailing child run while leaving its fixed
+    /// storage available for the next row.  A row interning failure and a
+    /// child append failure share this one transition so no stale child can
+    /// become the prefix of a later otherwise-valid row.
+    fn abandon_pending_type_run(&mut self, lane: PendingTypeLane) {
+        let (total, pending) = match lane {
+            PendingTypeLane::Anonymous => (
+                &mut self.anonymous_children_total,
+                &mut self.anonymous_child_pending,
+            ),
+            PendingTypeLane::Computed => (
+                &mut self.computed_children_total,
+                &mut self.computed_child_pending,
+            ),
+        };
+        let pending = usize::from(*pending);
+        debug_assert!(pending <= *total);
+        *total -= pending;
+        *pending = 0;
+    }
+
+    /// Preserves the precise fault that aborted a pending row after returning
+    /// its child run to the reusable fixed lane.
+    fn reject_pending_type_run<T>(
+        &mut self,
+        lane: PendingTypeLane,
+        fault: FactFault,
+    ) -> Result<T, FactFault> {
+        self.abandon_pending_type_run(lane);
+        Err(fault)
+    }
+
     fn staged_type_slot(&self, row: u32) -> Option<usize> {
         if row < ANONYMOUS_ROW_BASE {
             return (row as usize < self.len).then_some(row as usize);
@@ -884,20 +930,28 @@ impl<'source> FactSet<'source> {
         record: SemanticTypeRecord<'source>,
     ) -> Result<u32, FactFault> {
         if owner >= self.len as u32 {
-            return Err(FactFault::RefTarget {
-                lane: "type_rows",
-                raw: owner,
-                fact_count: self.len,
-            });
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::RefTarget {
+                    lane: "type_rows",
+                    raw: owner,
+                    fact_count: self.len,
+                },
+            );
         }
         if self.anonymous_rows == self.plan.anonymous_rows {
-            return Err(FactFault::TypeRowCapacity);
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::TypeRowCapacity,
+            );
         }
-        let child_count = self.anonymous_child_pending;
-        record
-            .validate(child_count)
-            .map_err(FactFault::TypeRecord)?;
-        self.validate_pending_anonymous_children(record, child_count)?;
+        let child_count = u32::from(self.anonymous_child_pending);
+        if let Err(fault) = record.validate(child_count).map_err(FactFault::TypeRecord) {
+            return self.reject_pending_type_run(PendingTypeLane::Anonymous, fault);
+        }
+        if let Err(fault) = self.validate_pending_anonymous_children(record, child_count) {
+            return self.reject_pending_type_run(PendingTypeLane::Anonymous, fault);
+        }
         let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
@@ -921,22 +975,30 @@ impl<'source> FactSet<'source> {
         reserved_owner: u32,
         record: SemanticTypeRecord<'source>,
     ) -> Result<u32, FactFault> {
-        debug_assert_eq!(reserved_owner, self.len as u32);
         if reserved_owner != self.len as u32 {
-            return Err(FactFault::RefTarget {
-                lane: "reserved_type_rows",
-                raw: reserved_owner,
-                fact_count: self.len,
-            });
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::RefTarget {
+                    lane: "reserved_type_rows",
+                    raw: reserved_owner,
+                    fact_count: self.len,
+                },
+            );
         }
+        debug_assert_eq!(reserved_owner, self.len as u32);
         if self.anonymous_rows == self.plan.anonymous_rows {
-            return Err(FactFault::TypeRowCapacity);
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::TypeRowCapacity,
+            );
         }
-        let child_count = self.anonymous_child_pending;
-        record
-            .validate(child_count)
-            .map_err(FactFault::TypeRecord)?;
-        self.validate_pending_anonymous_children(record, child_count)?;
+        let child_count = u32::from(self.anonymous_child_pending);
+        if let Err(fault) = record.validate(child_count).map_err(FactFault::TypeRecord) {
+            return self.reject_pending_type_run(PendingTypeLane::Anonymous, fault);
+        }
+        if let Err(fault) = self.validate_pending_anonymous_children(record, child_count) {
+            return self.reject_pending_type_run(PendingTypeLane::Anonymous, fault);
+        }
         let row = ANONYMOUS_ROW_BASE + self.anonymous_rows as u32;
         let index = self.anonymous_rows;
         self.anonymous_records[index] = record;
@@ -960,16 +1022,22 @@ impl<'source> FactSet<'source> {
     ) -> Result<(), FactFault> {
         let valid = self.is_anonymous_type_row(target) || target < self.len as u32;
         if !valid {
-            return Err(FactFault::TypeChildTarget {
-                position: self.anonymous_child_pending as usize,
-                target,
-                fact_count: self.len,
-            });
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::TypeChildTarget {
+                    position: usize::from(self.anonymous_child_pending),
+                    target,
+                    fact_count: self.len,
+                },
+            );
         }
-        if self.anonymous_child_pending == MAX_TYPE_CHILDREN as u32
+        if self.anonymous_child_pending == MAX_PENDING_TYPE_CHILDREN
             || self.anonymous_children_total == self.anonymous_child_targets.len()
         {
-            return Err(FactFault::TypeChildCapacity);
+            return self.reject_pending_type_run(
+                PendingTypeLane::Anonymous,
+                FactFault::TypeChildCapacity,
+            );
         }
         let pooled = self.anonymous_children_total;
         self.anonymous_child_targets[pooled] = target;
@@ -1015,19 +1083,25 @@ impl<'source> FactSet<'source> {
         record: SemanticTypeRecord<'source>,
     ) -> Result<u32, FactFault> {
         if owner >= self.len as u32 {
-            return Err(FactFault::RefTarget {
-                lane: "computed_owners",
-                raw: owner,
-                fact_count: self.len,
-            });
+            return self.reject_pending_type_run(
+                PendingTypeLane::Computed,
+                FactFault::RefTarget {
+                    lane: "computed_owners",
+                    raw: owner,
+                    fact_count: self.len,
+                },
+            );
         }
         if self.computed_rows == self.plan.computed_rows {
-            return Err(FactFault::ComputedRowCapacity);
+            return self.reject_pending_type_run(
+                PendingTypeLane::Computed,
+                FactFault::ComputedRowCapacity,
+            );
         }
-        let child_count = self.computed_child_pending;
-        record
-            .validate(child_count)
-            .map_err(FactFault::TypeRecord)?;
+        let child_count = u32::from(self.computed_child_pending);
+        if let Err(fault) = record.validate(child_count).map_err(FactFault::TypeRecord) {
+            return self.reject_pending_type_run(PendingTypeLane::Computed, fault);
+        }
         let child_start = self.computed_children_total - child_count as usize;
         for position in 0..child_count as usize {
             let pooled = child_start + position;
@@ -1038,7 +1112,7 @@ impl<'source> FactSet<'source> {
                     self.computed_child_targets[pooled],
                 )))
             };
-            record
+            if let Err(fault) = record
                 .validate_child_in_row(
                     position as u32,
                     child_count,
@@ -1048,7 +1122,10 @@ impl<'source> FactSet<'source> {
                         flags: self.computed_child_flags[pooled],
                     },
                 )
-                .map_err(|fault| FactFault::TypeChild { position, fault })?;
+                .map_err(|fault| FactFault::TypeChild { position, fault })
+            {
+                return self.reject_pending_type_run(PendingTypeLane::Computed, fault);
+            }
         }
         let index = self.computed_rows;
         self.computed_records[index] = record;
@@ -1074,16 +1151,22 @@ impl<'source> FactSet<'source> {
             || self.is_anonymous_type_row(target)
             || target < self.len as u32;
         if !valid {
-            return Err(FactFault::TypeChildTarget {
-                position: self.computed_child_pending as usize,
-                target,
-                fact_count: self.len,
-            });
+            return self.reject_pending_type_run(
+                PendingTypeLane::Computed,
+                FactFault::TypeChildTarget {
+                    position: usize::from(self.computed_child_pending),
+                    target,
+                    fact_count: self.len,
+                },
+            );
         }
-        if self.computed_child_pending == MAX_TYPE_CHILDREN as u32
+        if self.computed_child_pending == MAX_PENDING_TYPE_CHILDREN
             || self.computed_children_total == self.computed_child_targets.len()
         {
-            return Err(FactFault::TypeChildCapacity);
+            return self.reject_pending_type_run(
+                PendingTypeLane::Computed,
+                FactFault::TypeChildCapacity,
+            );
         }
         let pooled = self.computed_children_total;
         self.computed_child_targets[pooled] = target;

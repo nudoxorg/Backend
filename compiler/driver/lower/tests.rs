@@ -5,8 +5,9 @@
 use compiler_ir::{
     AtomListId, BuildError, ConcreteType, EntityId, EntityKind, FragmentView, Occurrence,
     PayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
-    RustOwnership, SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr,
-    TypeParameterListId, VariadicForm, Visibility,
+    RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
+    SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
+    TypeTriplePayload, VariadicForm, Visibility,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
@@ -76,6 +77,14 @@ fn rejected(failure: RejectedFact<'_>) -> TestError {
     }
 }
 
+fn lane_fault(cause: FactFault) -> TestError {
+    TestError::Rejected {
+        fact: 0,
+        name_len: 0,
+        cause,
+    }
+}
+
 /// Exact storage and cursors which `FactSet::push` owns. A failed push must
 /// preserve even unopened future slots, then produce the same state and bytes
 /// as a lane that never saw the rejected fact.
@@ -94,10 +103,10 @@ struct FactTransactionState<'source> {
     entity_list_len: usize,
     anonymous_rows: usize,
     anonymous_children_total: usize,
-    anonymous_child_pending: u32,
+    anonymous_child_pending: u8,
     computed_rows: usize,
     computed_children_total: usize,
-    computed_child_pending: u32,
+    computed_child_pending: u8,
     kinds: Vec<EntityKind>,
     names: Vec<&'source [u8]>,
     type_records: Vec<SemanticTypeRecord<'source>>,
@@ -118,6 +127,20 @@ struct FactTransactionState<'source> {
     documentation_captured: Vec<bool>,
     parentage: Vec<ParentageState>,
     type_parameter_ranges: Vec<Option<super::StagedTypeParameterRange>>,
+    anonymous_records: Vec<SemanticTypeRecord<'source>>,
+    anonymous_owners: Vec<u32>,
+    anonymous_child_starts: Vec<u32>,
+    anonymous_child_counts: Vec<u8>,
+    anonymous_child_targets: Vec<u32>,
+    anonymous_child_names: Vec<Option<&'source [u8]>>,
+    anonymous_child_flags: Vec<u8>,
+    computed_records: Vec<SemanticTypeRecord<'source>>,
+    computed_owners: Vec<u32>,
+    computed_child_starts: Vec<u32>,
+    computed_child_counts: Vec<u8>,
+    computed_child_targets: Vec<u32>,
+    computed_child_names: Vec<Option<&'source [u8]>>,
+    computed_child_flags: Vec<u8>,
 }
 
 fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<'source> {
@@ -159,6 +182,26 @@ fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<
         documentation_captured: facts.documentation_captured.to_vec(),
         parentage: facts.parentage.to_vec(),
         type_parameter_ranges: facts.type_parameter_ranges.to_vec(),
+        anonymous_records: facts.anonymous_records[..facts.anonymous_rows].to_vec(),
+        anonymous_owners: facts.anonymous_owners[..facts.anonymous_rows].to_vec(),
+        anonymous_child_starts: facts.anonymous_child_starts[..facts.anonymous_rows].to_vec(),
+        anonymous_child_counts: facts.anonymous_child_counts[..facts.anonymous_rows].to_vec(),
+        anonymous_child_targets: facts.anonymous_child_targets[..facts.anonymous_children_total]
+            .to_vec(),
+        anonymous_child_names: facts.anonymous_child_names[..facts.anonymous_children_total]
+            .to_vec(),
+        anonymous_child_flags: facts.anonymous_child_flags[..facts.anonymous_children_total]
+            .to_vec(),
+        computed_records: facts.computed_records[..facts.computed_rows].to_vec(),
+        computed_owners: facts.computed_owners[..facts.computed_rows].to_vec(),
+        computed_child_starts: facts.computed_child_starts[..facts.computed_rows].to_vec(),
+        computed_child_counts: facts.computed_child_counts[..facts.computed_rows].to_vec(),
+        computed_child_targets: facts.computed_child_targets[..facts.computed_children_total]
+            .to_vec(),
+        computed_child_names: facts.computed_child_names[..facts.computed_children_total]
+            .to_vec(),
+        computed_child_flags: facts.computed_child_flags[..facts.computed_children_total]
+            .to_vec(),
     }
 }
 
@@ -174,6 +217,99 @@ fn write(facts: &FactSet<'_>) -> Result<Vec<u8>, TestError> {
     }
     output.truncate(length);
     Ok(output)
+}
+
+/// The exact compact type columns materialized by the owned compatibility
+/// projection. Pending child recovery must leave them identical to a control
+/// lane, not merely make subsequent admission succeed.
+#[derive(Debug, Eq, PartialEq)]
+struct OwnedTypeProjection {
+    headers: Vec<TypeHeader>,
+    pairs: Vec<TypePairPayload>,
+    triples: Vec<TypeTriplePayload>,
+    quads: Vec<TypeQuadPayload>,
+}
+
+fn owned_type_projection(facts: &FactSet<'_>) -> Result<OwnedTypeProjection, TestError> {
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    let columns = ir.storage_columns();
+    Ok(OwnedTypeProjection {
+        headers: columns.types.headers.to_vec(),
+        pairs: columns.types.pairs.to_vec(),
+        triples: columns.types.triples.to_vec(),
+        quads: columns.types.quads.to_vec(),
+    })
+}
+
+fn pending_plan() -> FactSet<'static> {
+    let mut plan = super::ResourcePlan::for_source(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        0,
+    );
+    // Recovery falsifiers need only one declared owner, one observer, and a
+    // reusable row in each pending lane; they must not reserve protocol-max
+    // sidecars simply to demonstrate cursor rollback.
+    plan.facts = 4;
+    plan.anonymous_rows = 2;
+    plan.computed_rows = 2;
+    FactSet::with_plan(plan)
+}
+
+fn capacity_pending_plan() -> FactSet<'static> {
+    let mut plan = super::ResourcePlan::for_source(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        0,
+    );
+    plan.facts = 2;
+    plan.anonymous_rows = 1;
+    plan.computed_rows = 1;
+    FactSet::with_plan(plan)
+}
+
+fn push_pending_seed(facts: &mut FactSet<'static>) -> Result<(), TestError> {
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Alias,
+            b"seed",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    Ok(())
+}
+
+fn push_anonymous_observer(
+    facts: &mut FactSet<'static>,
+    row: u32,
+) -> Result<(), TestError> {
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"anonymous_observer",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+            .type_child(row, Some(b"member"), 0),
+        )
+        .map_err(rejected)?;
+    Ok(())
+}
+
+fn recovered_pending_rows_match_control(
+    candidate: &FactSet<'_>,
+    control: &FactSet<'_>,
+) -> Result<(), TestError> {
+    if transaction_state(candidate) != transaction_state(control)
+        || write(candidate)? != write(control)?
+        || owned_type_projection(candidate)? != owned_type_projection(control)?
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
 }
 
 /// The two-fact lane under mutation: a constant product fact plus a function
@@ -1086,6 +1222,372 @@ fn rich_capture_marks_empty_documentation_and_private_visibility_when_supplied(
         return Err(TestError::Tail);
     }
     Ok(())
+}
+
+#[test]
+fn anonymous_pending_rows_abort_each_failure_before_the_next_valid_row(
+) -> Result<(), TestError> {
+    // A failed append abandons the preceding valid child as well as the
+    // invalid request, so the next row begins at a fresh reusable prefix.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .anonymous_type_child(0, Some(b"discarded"), 0)
+        .map_err(lane_fault)?;
+    match candidate.anonymous_type_child(u32::MAX, None, 0) {
+        Err(FactFault::TypeChildTarget {
+            position: 1,
+            target: u32::MAX,
+            fact_count: 1,
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .anonymous_type_child(0, Some(b"kept"), 0)
+        .map_err(lane_fault)?;
+    control
+        .anonymous_type_child(0, Some(b"kept"), 0)
+        .map_err(lane_fault)?;
+    let candidate_row = candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    let control_row = control
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    if candidate_row != control_row {
+        return Err(TestError::Tail);
+    }
+    push_anonymous_observer(&mut candidate, candidate_row)?;
+    push_anonymous_observer(&mut control, control_row)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // A record-level structural fault similarly abandons its entire pending
+    // run before the next tuple row is admitted.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    match candidate.intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::SelfType))
+    {
+        Err(FactFault::TypeRecord(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::SelfType,
+            actual: 1,
+            ..
+        })) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    control
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    let candidate_row = candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    let control_row = control
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    push_anonymous_observer(&mut candidate, candidate_row)?;
+    push_anonymous_observer(&mut control, control_row)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // The row-wide child grammar is independently fallible. Its exact flag
+    // fault survives the cleanup rather than being replaced by a reset error.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .anonymous_type_child(0, None, SemanticTypeChild::FLAG_READONLY)
+        .map_err(lane_fault)?;
+    match candidate.intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
+        Err(FactFault::TypeChild {
+            position: 0,
+            fault:
+                SemanticTypeFault::ChildFlagsForbidden {
+                    tag: SemanticTypeTag::Tuple,
+                    position: 0,
+                    actual: SemanticTypeChild::FLAG_READONLY,
+                },
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    control
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    let candidate_row = candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    let control_row = control
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    push_anonymous_observer(&mut candidate, candidate_row)?;
+    push_anonymous_observer(&mut control, control_row)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // Both ordinary and reserved-anchor owner failures use the same abort
+    // transition. The latter then successfully binds the immediately-next
+    // declared fact as its reserved owner.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    match candidate.intern_anonymous_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
+        Err(FactFault::RefTarget {
+            lane: "type_rows",
+            raw: 1,
+            fact_count: 1,
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    control
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    let candidate_row = candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    let control_row = control
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    push_anonymous_observer(&mut candidate, candidate_row)?;
+    push_anonymous_observer(&mut control, control_row)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    match candidate.intern_reserved_anchor_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
+        Err(FactFault::RefTarget {
+            lane: "reserved_type_rows",
+            raw: 0,
+            fact_count: 1,
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    control
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    let candidate_row = candidate
+        .intern_reserved_anchor_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    let control_row = control
+        .intern_reserved_anchor_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    push_anonymous_observer(&mut candidate, candidate_row)?;
+    push_anonymous_observer(&mut control, control_row)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // A full row lane cannot admit another replacement row, so this control
+    // retains the prior committed prefix and proves the failed pending child
+    // did not contaminate it.
+    let mut candidate = capacity_pending_plan();
+    let mut control = capacity_pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    control
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    candidate
+        .anonymous_type_child(0, None, 0)
+        .map_err(lane_fault)?;
+    match candidate.intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)) {
+        Err(FactFault::TypeRowCapacity) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    recovered_pending_rows_match_control(&candidate, &control)
+}
+
+#[test]
+fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
+) -> Result<(), TestError> {
+    // The text sentinel is a first-class computed child. An invalid sibling
+    // must discard it, then the next template row commits only its new text.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .computed_type_text_child(b"discarded")
+        .map_err(lane_fault)?;
+    match candidate.computed_type_child(super::COMPUTED_ROW_BASE, None, 0) {
+        Err(FactFault::TypeChildTarget {
+            position: 1,
+            target: super::COMPUTED_ROW_BASE,
+            fact_count: 1,
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
+    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    control
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // Record validation happens after a valid text append, and must roll it
+    // back before the following template row is admitted.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .computed_type_text_child(b"discarded")
+        .map_err(lane_fault)?;
+    match candidate.intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::SelfType))
+    {
+        Err(FactFault::TypeRecord(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::SelfType,
+            actual: 1,
+            ..
+        })) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
+    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    control
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // Per-child flag validation also preserves its typed operands through
+    // cleanup; the replacement row has one ordinary text segment.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .computed_type_child(
+            u32::MAX,
+            Some(b"discarded"),
+            SemanticTypeChild::FLAG_REST,
+        )
+        .map_err(lane_fault)?;
+    match candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+    {
+        Err(FactFault::TypeChild {
+            position: 0,
+            fault:
+                SemanticTypeFault::ChildFlagsForbidden {
+                    tag: SemanticTypeTag::TemplateLiteral,
+                    position: 0,
+                    actual: SemanticTypeChild::FLAG_REST,
+                },
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
+    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    control
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // An invalid owner is checked before record admission but still abandons
+    // the complete current text run and preserves the owner fault verbatim.
+    let mut candidate = pending_plan();
+    let mut control = pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .computed_type_text_child(b"discarded")
+        .map_err(lane_fault)?;
+    match candidate
+        .intern_computed_type_row(1, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+    {
+        Err(FactFault::RefTarget {
+            lane: "computed_owners",
+            raw: 1,
+            fact_count: 1,
+        }) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    candidate
+        .computed_type_text_child(b"kept")
+        .map_err(lane_fault)?;
+    control.computed_type_text_child(b"kept").map_err(lane_fault)?;
+    candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    control
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    recovered_pending_rows_match_control(&candidate, &control)?;
+
+    // As with anonymous rows, capacity has no next in-lane row to admit; a
+    // separately built control proves the preexisting computed prefix and
+    // all cursors are untouched after the failed pending template child.
+    let mut candidate = capacity_pending_plan();
+    let mut control = capacity_pending_plan();
+    push_pending_seed(&mut candidate)?;
+    push_pending_seed(&mut control)?;
+    candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    control
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+        .map_err(lane_fault)?;
+    candidate
+        .computed_type_text_child(b"discarded")
+        .map_err(lane_fault)?;
+    match candidate
+        .intern_computed_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral))
+    {
+        Err(FactFault::ComputedRowCapacity) => {}
+        Err(cause) => return Err(lane_fault(cause)),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+    recovered_pending_rows_match_control(&candidate, &control)
 }
 
 const DIGITS: [u8; 10] = *b"0123456789";
