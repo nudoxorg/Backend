@@ -24,6 +24,7 @@ use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     DocFactInput, DocFragmentInput, DocLinkTarget, EntityKind, EntityRecord, ExtensionPoolsLane,
     ExtensionRefList, ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter,
+    ExtensionTypeParameterRange,
     Occurrence, OccurrenceInput, OccurrenceLane, PrepareError, PreparedFragment, RecipeFact,
     SourceIdentity, TypeFactInput, TypeFactLane, TypeNode, WriteError,
     canonicalize_data_with_budget,
@@ -3889,6 +3890,14 @@ pub(super) enum AdmissionFault {
         provisional: u32,
         atom_count: usize,
     },
+    /// A generic extension was captured without one exact staged list range,
+    /// or that range escaped the admitted type-parameter element prefix.
+    ExtensionTypeParameters {
+        row: usize,
+        start: u32,
+        length: u32,
+        element_count: usize,
+    },
 }
 
 /// Exact per-admission canonicalization work reservation, calculated from the
@@ -4042,7 +4051,7 @@ pub(super) fn push_fact<'source>(
 
 /// Admits the ordered fact set into one prepared fragment.
 ///
-/// An empty set writes the exact schema-1 fragment without a semantic-data
+/// An empty set writes the exact current-schema fragment without a semantic-data
 /// section. A populated set canonicalizes the facts' products, commits the
 /// entities, type nodes, name atoms, and the optional semantic section, and
 /// writes everything into the caller-owned output.
@@ -4403,6 +4412,68 @@ pub(super) fn admit<'source, 'output>(
         }
     };
 
+    // Schema-4 type-parameter list table: generic extensions name dense
+    // `(start, length)` rows rather than staging element starts.  We retain a
+    // distinct row even for every explicit empty declaration, so an empty
+    // generic before the first nonempty declaration cannot alias it.
+    let mut durable_type_parameter_ranges = vec![
+        ExtensionTypeParameterRange {
+            start: 0,
+            length: 0,
+        };
+        fact_count
+    ]
+    .into_boxed_slice();
+    let mut durable_type_parameter_ids =
+        vec![None; fact_count].into_boxed_slice();
+    let mut durable_type_parameter_range_len = 0_usize;
+    for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
+        let Some(start) = extension.as_ref().and_then(extension_type_parameter_start) else {
+            continue;
+        };
+        let Some(range) = facts.type_parameter_ranges[ordinal] else {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: start.raw,
+                length: 0,
+                element_count: facts.type_parameter_len,
+            });
+        };
+        let Some(end) = range.start.checked_add(range.length) else {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.type_parameter_len,
+            });
+        };
+        if range.start != start.raw
+            || usize::try_from(end).map_or(true, |end| end > facts.type_parameter_len)
+        {
+            return Err(AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.type_parameter_len,
+            });
+        }
+        durable_type_parameter_ranges[durable_type_parameter_range_len] =
+            ExtensionTypeParameterRange {
+                start: range.start,
+                length: range.length,
+            };
+        let list = u32::try_from(durable_type_parameter_range_len).map_err(|_| {
+            AdmissionFault::ExtensionTypeParameters {
+                row: ordinal,
+                start: range.start,
+                length: range.length,
+                element_count: facts.type_parameter_len,
+            }
+        })?;
+        durable_type_parameter_ids[ordinal] = Some(compiler_ir::TypeParameterListId::new(list));
+        durable_type_parameter_range_len += 1;
+    }
+
     // Language-extension section: dense per-plane fact pools plus their row
     // tables, with provisional atom coordinates rewritten to final lane
     // positions. Pooled lists keep provisional atom coordinates until the
@@ -4433,6 +4504,14 @@ pub(super) fn admit<'source, 'output>(
         match extension {
             Some(EmissionExtension::TypeScript(value)) => {
                 let mut rewritten = *value;
+                rewritten.type_parameters = durable_type_parameter_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.type_parameters.raw,
+                        length: 0,
+                        element_count: facts.type_parameter_len,
+                    },
+                )?;
                 rewritten.declared = rewritten
                     .declared
                     .map(|id| TypeId::new(remap_staged_type(id.raw)));
@@ -4445,6 +4524,14 @@ pub(super) fn admit<'source, 'output>(
             }
             Some(EmissionExtension::CSharp(value)) => {
                 let mut rewritten = *value;
+                rewritten.constraints = durable_type_parameter_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.constraints.raw,
+                        length: 0,
+                        element_count: facts.type_parameter_len,
+                    },
+                )?;
                 if let Some(span) = rewritten.xml_provenance {
                     let provisional = span.file().raw;
                     if provisional as usize >= extension_atom_count {
@@ -4463,12 +4550,30 @@ pub(super) fn admit<'source, 'output>(
                 csharp_len += 1;
             }
             Some(EmissionExtension::Go(value)) => {
-                go_pool[go_len] = *value;
+                let mut rewritten = *value;
+                rewritten.type_parameters = durable_type_parameter_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.type_parameters.raw,
+                        length: 0,
+                        element_count: facts.type_parameter_len,
+                    },
+                )?;
+                go_pool[go_len] = rewritten;
                 go_rows[ordinal] = go_len as u32;
                 go_len += 1;
             }
             Some(EmissionExtension::Rust(value)) => {
-                rust_pool[rust_len] = *value;
+                let mut rewritten = *value;
+                rewritten.where_clauses = durable_type_parameter_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.where_clauses.raw,
+                        length: 0,
+                        element_count: facts.type_parameter_len,
+                    },
+                )?;
+                rust_pool[rust_len] = rewritten;
                 rust_rows[ordinal] = rust_len as u32;
                 rust_len += 1;
             }
@@ -4483,7 +4588,16 @@ pub(super) fn admit<'source, 'output>(
                 java_len += 1;
             }
             Some(EmissionExtension::Clang(value)) => {
-                clang_pool[clang_len] = *value;
+                let mut rewritten = *value;
+                rewritten.templates = durable_type_parameter_ids[ordinal].ok_or(
+                    AdmissionFault::ExtensionTypeParameters {
+                        row: ordinal,
+                        start: value.templates.raw,
+                        length: 0,
+                        element_count: facts.type_parameter_len,
+                    },
+                )?;
+                clang_pool[clang_len] = rewritten;
                 clang_rows[ordinal] = clang_len as u32;
                 clang_len += 1;
             }
@@ -4581,6 +4695,8 @@ pub(super) fn admit<'source, 'output>(
     }
     let extension_pools = ExtensionPoolsLane {
         type_parameters: &type_parameters[..facts.type_parameter_len],
+        type_parameter_lists:
+            &durable_type_parameter_ranges[..durable_type_parameter_range_len],
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],
         type_lists: &pooled_type_lists[..facts.type_list_len],
         entity_lists: &pooled_entity_lists[..facts.entity_list_len],

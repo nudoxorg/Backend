@@ -27,6 +27,12 @@ impl<'fragment> FragmentView<'fragment> {
         Ok(Self::from_validated_layout(envelope, layout))
     }
 
+    /// Schema proven by the enclosing fragment envelope.
+    #[must_use]
+    pub const fn schema(&self) -> u16 {
+        self.layout.schema
+    }
+
     pub(crate) fn from_validated_layout(envelope: &'fragment [u8], layout: FragmentLayout) -> Self {
         let entity_lane = &envelope[layout.entities.range()];
         let atom_lane = &envelope[layout.atoms.range()];
@@ -75,7 +81,7 @@ impl<'fragment> FragmentView<'fragment> {
             .map(|payload| crate::type_facts::TypeFactCursor::new(payload, self.layout.schema))
     }
 
-    /// Opens the validated canonical semantic-product graph.  Schema-3
+    /// Opens the validated canonical semantic-product graph. Schema-3-and-later
     /// values additionally bind each entity to an exact canonical root;
     /// legacy schema values remain explicitly root-unavailable.
     #[must_use]
@@ -115,6 +121,37 @@ impl<'fragment> FragmentView<'fragment> {
     /// fragment commits no pooled-lane section.
     pub fn extension_pool_payload(&self) -> Option<&'fragment [u8]> {
         self.extension_pool_lane
+    }
+
+    /// Reopens the extension pools from the proof established during fragment
+    /// validation. This only derives borrowed offsets; it does not re-walk
+    /// payload grammar or shared references.
+    pub(crate) fn validated_extension_pools(
+        &self,
+    ) -> Option<Result<crate::ReopenedExtensionPools<'fragment>, crate::ExtensionPoolFault>> {
+        self.extension_pool_lane.map(|payload| {
+            crate::extension_pools::reopen_validated_extension_pools(self.layout.schema, payload)
+        })
+    }
+
+    /// Reopens extension columns from the whole-fragment proof. This derives
+    /// only their borrowed directory offsets; it never revalidates the paired
+    /// language section or its shared pool references.
+    pub(crate) fn validated_language_extensions(
+        &self,
+    ) -> Option<
+        Result<
+            crate::ReopenedLanguageExtensionSection<'fragment>,
+            crate::LanguageExtensionReopenError,
+        >,
+    > {
+        self.language_extension_lane.map(|payload| {
+            crate::semantic_extension_section::reopen_validated_language_extension_section(
+                payload,
+                crate::SemanticImageAuthority::Language(self.recipe.profile),
+                u32::from(self.layout.entities.count),
+            )
+        })
     }
 }
 
@@ -395,32 +432,6 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
             Ok(SectionKind::ExtensionPools) => {
                 validate_known_length(&entry, 1)?;
                 require_known(&entry)?;
-                let atoms_lane_count = u32::from(
-                    atoms
-                        .ok_or(FragmentError::MissingSection {
-                            section: SectionKind::AtomRecords,
-                        })?
-                        .count,
-                );
-                let entity_count = u32::from(
-                    entities
-                        .ok_or(FragmentError::MissingSection {
-                            section: SectionKind::EntityTypes,
-                        })?
-                        .count,
-                );
-                let type_count = type_fact_counts
-                    .map(|counts| counts.total())
-                    .transpose()
-                    .map_err(|fault| FragmentError::TypeFacts { fault })?
-                    .unwrap_or(0);
-                crate::extension_pools::validate_extension_pool_payload(
-                    &envelope[entry.lane.range()],
-                    atoms_lane_count,
-                    type_count,
-                    entity_count,
-                )
-                .map_err(|fault| FragmentError::ExtensionPools { fault })?;
                 extension_pools = Some(entry.lane);
             }
             Err(kind) if entry.requirement == SectionRequirement::Required => {
@@ -481,6 +492,38 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                 observed: recipe.identity,
             },
         });
+    }
+    if let (Some(extension_lane), Some(pool_lane)) = (language_extensions, extension_pools) {
+        let type_count = type_fact_counts
+            .map(|counts| counts.total())
+            .transpose()
+            .map_err(|fault| FragmentError::TypeFacts { fault })?
+            .unwrap_or(0);
+        let pools = crate::reopen_extension_pools(
+            schema,
+            &envelope[pool_lane.range()],
+            u32::from(atoms.count),
+            type_count,
+            u32::from(entities.count),
+        )
+        .map_err(|fault| FragmentError::ExtensionPools { fault })?;
+        let bounds = crate::ValidatedLanguageExtensionCommonBounds::from_validated(
+            crate::LanguageExtensionCommonBounds {
+                atoms: u32::from(atoms.count),
+                types: type_count,
+                entities: u32::from(entities.count),
+                type_lists: pools.type_list_count(),
+                entity_lists: pools.entity_list_count(),
+                atom_lists: pools.atom_list_count(),
+                type_parameters: pools.type_parameter_list_bounds(),
+            },
+        );
+        crate::reopen_language_extension_section(
+            &envelope[extension_lane.range()],
+            crate::SemanticImageAuthority::Language(recipe.profile),
+            bounds,
+        )
+        .map_err(|fault| FragmentError::LanguageExtensions { fault })?;
     }
     Ok(FragmentLayout {
         schema,

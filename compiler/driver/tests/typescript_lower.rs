@@ -545,7 +545,7 @@ fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
     );
 }
 #[test]
-fn empty_source_admits_the_schema1_fragment_without_semantic_data() {
+fn empty_source_admits_the_schema4_fragment_without_semantic_data() {
     assert!(try_lower(b"", Some(&report(b""))).is_err());
 }
 #[test]

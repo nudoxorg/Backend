@@ -1,10 +1,11 @@
 //! Red falsifiers for the multi-declaration semantic emission lane: every
 //! lowered constructor, role, and name must change the committed fragment
 //! bytes, every fact admission rejection must retain the exact offending fact
-//! and cause, and an empty fact set must remain schema-1 compatible.
+//! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
-    BuildError, ConcreteType, EntityKind, FragmentView, Occurrence, PrepareError,
-    PreparedFragment, SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr,
+    AtomListId, BuildError, ConcreteType, EntityId, EntityKind, FragmentView, Occurrence,
+    PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts, RustOwnership,
+    SemanticTypeRecord, SemanticTypeTag, SourceIdentity, TypeExpr, TypeParameterListId,
     VariadicForm,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
@@ -15,7 +16,7 @@ use thiserror::Error;
 use super::{
     AdmissionFault, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS, MAX_EMISSION_DOC_FRAGMENTS,
     MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
-    MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
+    EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
@@ -684,7 +685,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
 }
 
 #[test]
-fn empty_fact_list_writes_the_exact_schema1_fragment_without_semantic_data() -> Result<(), TestError>
+fn empty_fact_list_writes_the_exact_schema4_fragment_without_semantic_data() -> Result<(), TestError>
 {
     let empty = FactSet::new();
     let mut output = [0xa5_u8; OUTPUT_CAPACITY];
@@ -692,8 +693,8 @@ fn empty_fact_list_writes_the_exact_schema1_fragment_without_semantic_data() -> 
         .map_err(TestError::Admission)?
         .len();
 
-    // Byte-exact schema-1 compatibility: the empty lane is the legacy
-    // prepared fragment with no SemanticData section at all.
+    // Byte-exact schema-4 baseline: the empty lane is the prepared fragment
+    // with no SemanticData section at all.
     let prepared = PreparedFragment::prepare(identity()?, recipe(), &[], &[], &[])?;
     let mut reference = [0_u8; OUTPUT_CAPACITY];
     let legacy = prepared.write_into(&mut reference)?;
@@ -711,6 +712,88 @@ fn empty_fact_list_writes_the_exact_schema1_fragment_without_semantic_data() -> 
         return Err(TestError::Tail);
     }
     FragmentView::validate(&populated)?;
+    Ok(())
+}
+
+#[test]
+fn admitted_generic_extensions_reopen_exact_empty_and_nonempty_ranges() -> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    let empty = RustFacts {
+        ownership: RustOwnership::Value,
+        lifetimes: AtomListId::new(0),
+        where_clauses: TypeParameterListId::new(0),
+        macros: AtomListId::new(0),
+    };
+    facts
+        .push(
+            SemanticFact::new(EntityKind::Alias, b"Empty", SemanticProductConstructor::PRODUCT)
+                .with_extension(EmissionExtension::Rust(empty)),
+        )
+        .map_err(rejected)?;
+    facts
+        .push_type_parameter(b"T", None, None)
+        .map_err(|cause| {
+            rejected(RejectedFact {
+                fact: 1,
+                name: b"Nonempty",
+                cause,
+            })
+        })?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"Nonempty",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .with_extension(EmissionExtension::Rust(empty)),
+        )
+        .map_err(rejected)?;
+
+    let bytes = write(&facts)?;
+    let view = FragmentView::validate(&bytes)?;
+    let pools = view
+        .discover()
+        .extension_pools()
+        .map_err(|_| TestError::Tail)?
+        .ok_or(TestError::Tail)?;
+    let extensions = view
+        .discover()
+        .language_extensions()
+        .map_err(|_| TestError::Tail)?
+        .ok_or(TestError::Tail)?;
+    let first_id = extensions
+        .rust
+        .get(EntityId::new(0))
+        .map_err(|_| TestError::Tail)?
+        .ok_or(TestError::Tail)?
+        .where_clauses;
+    let second_id = extensions
+        .rust
+        .get(EntityId::new(1))
+        .map_err(|_| TestError::Tail)?
+        .ok_or(TestError::Tail)?
+        .where_clauses;
+    let first = pools
+        .type_parameter_list(first_id)
+        .map_err(|_| TestError::Tail)?;
+    let second = pools
+        .type_parameter_list(second_id)
+        .map_err(|_| TestError::Tail)?;
+    if let ReopenedTypeParameterList::Exact(first) = first {
+        if first.length != 0 {
+            return Err(TestError::Tail);
+        }
+    } else {
+        return Err(TestError::Tail);
+    }
+    if let ReopenedTypeParameterList::Exact(second) = second {
+        if second.length != 1 || second.get(0).map_err(|_| TestError::Tail)?.name != b"T" {
+            return Err(TestError::Tail);
+        }
+    } else {
+        return Err(TestError::Tail);
+    }
     Ok(())
 }
 

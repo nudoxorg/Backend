@@ -2452,10 +2452,10 @@ mod tests {
         Err(TestError::Missing("atom list"))
     }
 
-    /// An empty source admits the schema-1 fragment without semantic
+    /// An empty source admits the schema-4 fragment without semantic
     /// sections: no declarations, no fabricated rows.
     #[test]
-    fn empty_source_admits_the_schema1_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_source_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let bytes = lower(b"")?;
         let view = FragmentView::validate(&bytes)?;

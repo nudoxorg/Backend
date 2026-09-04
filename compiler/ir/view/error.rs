@@ -157,6 +157,11 @@ pub enum FragmentError {
         #[source]
         fault: crate::extension_pools::ExtensionPoolFault,
     },
+    #[error("language extension section rejected: {fault}")]
+    LanguageExtensions {
+        #[source]
+        fault: crate::LanguageExtensionReopenError,
+    },
     #[error("fragment header needs {required} bytes but only {actual} are present")]
     TruncatedHeader { required: usize, actual: usize },
     #[error("fragment magic {actual:?} is unknown")]

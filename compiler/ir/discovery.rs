@@ -7,10 +7,9 @@
 
 use crate::{
     AtomCursor, DocFactCursor, EntityCursor, ExtensionPoolFault, FragmentView,
-    LanguageExtensionCommonBounds, LanguageExtensionReopenError, OccurrenceCursor,
+    LanguageExtensionReopenError, OccurrenceCursor,
     ReopenedLanguageExtensionSection, TypeFactChildCursor, TypeFactCursor, TypeFactSegment,
     TypeNodeCursor,
-    reopen_extension_pools, reopen_language_extension_section,
 };
 
 /// Exact reopen failure while joining the typed extension plane to its shared
@@ -41,7 +40,7 @@ pub struct SemanticCensus {
     pub compact_type_nodes: u32,
     pub canonical_products: u32,
     pub canonical_product_children: u32,
-    /// Schema-3 declaration roots; legacy fragments report zero and expose
+    /// Schema-3-and-later declaration roots; legacy fragments report zero and expose
     /// `UnavailableInLegacySchema` through the semantic-data view.
     pub canonical_entity_roots: u32,
     pub occurrences: u32,
@@ -106,47 +105,27 @@ impl<'fragment> FragmentDiscovery<'fragment> {
         self.view.docs()
     }
 
+    /// Opens the schema-aware shared extension pools from the fragment proof.
+    /// Schema-4 callers receive exact type-parameter list ranges; legacy
+    /// callers receive only the explicitly typed start-only interpretation.
+    pub fn extension_pools(
+        self,
+    ) -> Result<Option<crate::ReopenedExtensionPools<'fragment>>, FragmentDiscoveryError> {
+        self.view
+            .validated_extension_pools()
+            .transpose()
+            .map_err(FragmentDiscoveryError::ExtensionPools)
+    }
+
     /// Reopens all seven typed sparse extension columns under the fragment's
     /// profile authority.  No erased map or reparsing path is involved.
     pub fn language_extensions(
         self,
     ) -> Result<Option<ReopenedLanguageExtensionSection<'fragment>>, FragmentDiscoveryError> {
-        let Some(bytes) = self.view.language_extension_payload() else {
-            return Ok(None);
-        };
-        let pools = self
-            .view
-            .extension_pool_payload()
-            .ok_or(FragmentDiscoveryError::MissingExtensionPools)?;
-        let entities = self.view.entities().len() as u32;
-        let atoms = self.view.atoms().len() as u32;
-        let types = self
-            .view
-            .type_fact_counts()
-            .map(|counts| counts.total())
+        self.view
+            .validated_language_extensions()
             .transpose()
-            .map_err(FragmentDiscoveryError::TypeFacts)?
-            .unwrap_or(0);
-        let pools = reopen_extension_pools(pools, atoms, types, entities)
-            .map_err(FragmentDiscoveryError::ExtensionPools)?;
-        let bounds = crate::ValidatedLanguageExtensionCommonBounds::from_validated(
-            LanguageExtensionCommonBounds {
-                atoms,
-                types,
-                entities,
-                type_lists: pools.type_list_count(),
-                entity_lists: pools.entity_list_count(),
-                atom_lists: pools.atom_list_count(),
-                type_parameters: pools.type_parameter_count(),
-            },
-        );
-        reopen_language_extension_section(
-            bytes,
-            crate::SemanticImageAuthority::Language(self.view.recipe.profile),
-            bounds,
-        )
-        .map(Some)
-        .map_err(FragmentDiscoveryError::LanguageExtensions)
+            .map_err(FragmentDiscoveryError::LanguageExtensions)
     }
 
     /// Counts every reopened semantic plane. Existing fragment validation has

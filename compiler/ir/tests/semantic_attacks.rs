@@ -8,8 +8,10 @@ use compiler_ir::{
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
-    EntityKind, EntityRecord, FragmentError, FragmentView, PrepareError, PreparedFragment,
-    PrimitiveType, SemanticDataFault, SourceIdentity, TypeNode, WriteError,
+    EntityKind, EntityRecord, ExtensionPoolsLane, ExtensionTypeParameter,
+    ExtensionTypeParameterRange, FragmentError, FragmentView, PrepareError, PreparedFragment,
+    PrimitiveType, ReopenedTypeParameterList, SemanticDataFault, SourceIdentity, TypeNode,
+    TypeParameterListId, WriteError,
     canonicalize_data_with_budget,
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
@@ -440,7 +442,7 @@ fn reopened_extension_parameters_parse_mixed_optional_operands_sequentially() {
     for _ in 0..3 {
         payload.extend_from_slice(&0_u32.to_le_bytes());
     }
-    let pools = compiler_ir::reopen_extension_pools(&payload, 0, 1, 0)
+    let pools = compiler_ir::reopen_extension_pools(3, &payload, 0, 1, 0)
         .expect("mixed optional operands reopen");
     assert_eq!(
         pools.type_parameter(0).expect("first parameter"),
@@ -458,4 +460,119 @@ fn reopened_extension_parameters_parse_mixed_optional_operands_sequentially() {
             default: None,
         }
     );
+}
+
+#[test]
+fn schema_four_type_parameter_ranges_keep_empty_lists_distinct_from_element_starts(
+) -> Result<(), compiler_ir::ExtensionPoolFault> {
+    let parameters = [ExtensionTypeParameter {
+        name: b"T",
+        constraint: None,
+        default: None,
+    }];
+    // The first list is explicitly empty; the second begins at the same
+    // element coordinate but carries T. A raw start-only ID would alias them.
+    let ranges = [
+        ExtensionTypeParameterRange {
+            start: 0,
+            length: 0,
+        },
+        ExtensionTypeParameterRange {
+            start: 0,
+            length: 1,
+        },
+    ];
+    let lane = ExtensionPoolsLane {
+        type_parameters: &parameters,
+        type_parameter_lists: &ranges,
+        atom_lists: &[],
+        type_lists: &[],
+        entity_lists: &[],
+    };
+    lane.admit(0, 0, 0)?;
+    let mut payload = vec![0; lane.payload_len()];
+    lane.write_payload(&mut payload);
+    let pools = compiler_ir::reopen_extension_pools(4, &payload, 0, 0, 0)?;
+
+    match pools.type_parameter_list(TypeParameterListId::new(0))? {
+        ReopenedTypeParameterList::Exact(empty) => {
+            assert_eq!(empty.start, 0);
+            assert_eq!(empty.length, 0);
+            assert!(empty.cursor()?.next().is_none());
+        }
+        ReopenedTypeParameterList::LegacyStartOnly { start } => {
+            return Err(compiler_ir::ExtensionPoolFault::LegacyTypeParameterStart {
+                start,
+                element_count: 0,
+            });
+        }
+    }
+
+    match pools.type_parameter_list(TypeParameterListId::new(1))? {
+        ReopenedTypeParameterList::Exact(nonempty) => {
+            assert_eq!(nonempty.get(0)?.name, b"T");
+            let mut cursor = nonempty.cursor()?;
+            let parameter = cursor.next().transpose()?.ok_or(
+                compiler_ir::ExtensionPoolFault::TypeParameterPosition {
+                    position: 0,
+                    length: nonempty.length,
+                },
+            )?;
+            assert_eq!(parameter.name, b"T");
+        }
+        ReopenedTypeParameterList::LegacyStartOnly { start } => {
+            return Err(compiler_ir::ExtensionPoolFault::LegacyTypeParameterStart {
+                start,
+                element_count: 1,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_three_type_parameter_starts_remain_explicitly_legacy(
+) -> Result<(), compiler_ir::ExtensionPoolFault> {
+    // An empty element lane and the three required reference-list lanes.
+    let payload = [0_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let pools = compiler_ir::reopen_extension_pools(3, &payload, 0, 0, 0)?;
+    assert!(matches!(
+        pools.type_parameter_list(TypeParameterListId::new(0))?,
+        ReopenedTypeParameterList::LegacyStartOnly { start: 0 }
+    ));
+    Ok(())
+}
+
+#[test]
+fn schema_four_rejects_a_type_parameter_range_past_the_element_prefix() {
+    let parameters = [ExtensionTypeParameter {
+        name: b"T",
+        constraint: None,
+        default: None,
+    }];
+    let lane = ExtensionPoolsLane {
+        type_parameters: &parameters,
+        type_parameter_lists: &[ExtensionTypeParameterRange {
+            start: 1,
+            length: 1,
+        }],
+        atom_lists: &[],
+        type_lists: &[],
+        entity_lists: &[],
+    };
+    assert!(matches!(
+        lane.admit(0, 0, 0),
+        Err(compiler_ir::ExtensionPoolFault::TypeParameterRange {
+            list: 0,
+            start: 1,
+            length: 1,
+            element_count: 1,
+        })
+    ));
+}
+
+#[test]
+fn decoded_reference_list_rejects_an_overflowing_position_without_panicking() {
+    let list = compiler_ir::DecodedRefList { words: &[] };
+    assert_eq!(list.get(usize::MAX), None);
 }

@@ -73,8 +73,11 @@ pub use docs_facts::{
 };
 pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use extension_pools::{
-    DecodedRefList, DecodedTypeParameter, ExtensionPoolFault, ExtensionPoolsLane, ExtensionRefList,
-    ExtensionPoolListLane, ExtensionTypeParameter, ReopenedExtensionPools, reopen_extension_pools,
+    DecodedRefList, DecodedTypeParameter, DecodedTypeParameterCursor, DecodedTypeParameterList,
+    ExtensionPoolFault,
+    ExtensionPoolListLane, ExtensionPoolsLane, ExtensionRefList, ExtensionTypeParameter,
+    ExtensionTypeParameterRange, ReopenedExtensionPools, ReopenedTypeParameterList,
+    TypeParameterField, TypeParameterListBounds, reopen_extension_pools,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,

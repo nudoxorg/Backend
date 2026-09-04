@@ -5175,7 +5175,9 @@ impl Ir {
                     type_lists: u32::try_from(columns.type_lists.ranges.len()).ok()?,
                     entity_lists: u32::try_from(columns.entity_lists.ranges.len()).ok()?,
                     atom_lists: u32::try_from(columns.atom_lists.ranges.len()).ok()?,
-                    type_parameters: u32::try_from(columns.type_parameters.ranges.len()).ok()?,
+                    type_parameters: crate::TypeParameterListBounds::ExactRanges {
+                        count: u32::try_from(columns.type_parameters.ranges.len()).ok()?,
+                    },
                 },
             ),
         )

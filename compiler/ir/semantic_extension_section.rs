@@ -91,7 +91,10 @@ pub struct LanguageExtensionCommonBounds {
     pub type_lists: u32,
     pub entity_lists: u32,
     pub atom_lists: u32,
-    pub type_parameters: u32,
+    /// Schema-aware bounds for `TypeParameterListId`: fresh fragments name
+    /// exact range-table rows while legacy fragments retain start-only
+    /// coordinates without fabricated list membership.
+    pub type_parameters: crate::TypeParameterListBounds,
 }
 
 /// Bounds borrowed from an already validated common semantic image.
@@ -946,6 +949,77 @@ pub fn reopen_language_extension_section(
     })
 }
 
+/// Rebuilds borrowed extension-column offsets after fragment validation has
+/// already proved the extension grammar, authority, and every shared-pool
+/// reference. This is crate-private: public callers must use
+/// [`reopen_language_extension_section`] with explicit validated bounds.
+pub(crate) fn reopen_validated_language_extension_section(
+    bytes: &[u8],
+    authority: SemanticImageAuthority,
+    entity_rows: u32,
+) -> Result<ReopenedLanguageExtensionSection<'_>, LanguageExtensionReopenError> {
+    let empty = PlaneLayout {
+        offset: 0,
+        rows: 0,
+        facts: 0,
+        ordinal_bytes: 0,
+    };
+    let mut layouts = [empty; PLANES];
+    for (index, _) in LanguageExtensionDirectoryKind::ALL
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let directory = DIRECTORY
+            .checked_mul(index)
+            .and_then(|offset| HEADER.checked_add(offset))
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: index })?;
+        let rows = get_u32(bytes, directory.checked_add(4).ok_or(
+            LanguageExtensionReopenError::StructuralOverflow { offset: directory },
+        )?)?;
+        let facts = get_u32(bytes, directory.checked_add(8).ok_or(
+            LanguageExtensionReopenError::StructuralOverflow { offset: directory },
+        )?)?;
+        let offset = usize::try_from(get_u32(
+            bytes,
+            directory.checked_add(12).ok_or(
+                LanguageExtensionReopenError::StructuralOverflow { offset: directory },
+            )?,
+        )?)
+        .map_err(|_| LanguageExtensionReopenError::StructuralOverflow { offset: directory })?;
+        let ordinal_bytes = if facts == 0 {
+            0
+        } else {
+            usize::try_from(rows)
+                .ok()
+                .and_then(|rows| rows.checked_mul(4))
+                .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: directory })?
+        };
+        let slot = layouts
+            .get_mut(index)
+            .ok_or(LanguageExtensionReopenError::StructuralOverflow { offset: index })?;
+        *slot = PlaneLayout {
+            offset,
+            rows,
+            facts,
+            ordinal_bytes,
+        };
+    }
+    let [typescript, csharp, go, rust, python, java, clang] = layouts;
+    Ok(ReopenedLanguageExtensionSection {
+        bytes,
+        authority,
+        entity_rows,
+        typescript: reopened_column(bytes, typescript),
+        csharp: reopened_column(bytes, csharp),
+        go: reopened_column(bytes, go),
+        rust: reopened_column(bytes, rust),
+        python: reopened_column(bytes, python),
+        java: reopened_column(bytes, java),
+        clang: reopened_column(bytes, clang),
+    })
+}
+
 fn reopened_column<Facts>(
     bytes: &[u8],
     layout: PlaneLayout,
@@ -1584,9 +1658,33 @@ fn validate_fact(
             })
         }
     };
+    let check_type_parameters = |raw| match n.type_parameters {
+        crate::TypeParameterListBounds::ExactRanges { count } if raw < count => Ok(()),
+        crate::TypeParameterListBounds::LegacyStarts { element_count }
+            if raw <= element_count =>
+        {
+            Ok(())
+        }
+        crate::TypeParameterListBounds::ExactRanges { count } => {
+            Err(LanguageExtensionReopenError::SharedReference {
+                kind: k,
+                fact: f,
+                raw,
+                limit: count,
+            })
+        }
+        crate::TypeParameterListBounds::LegacyStarts { element_count } => {
+            Err(LanguageExtensionReopenError::SharedReference {
+                kind: k,
+                fact: f,
+                raw,
+                limit: element_count,
+            })
+        }
+    };
     match k {
         LanguageExtensionDirectoryKind::TypeScript => {
-            check(w(0)?, n.type_parameters)?;
+            check_type_parameters(w(0)?)?;
             for x in [w(1)?, w(2)?] {
                 if x != NONE {
                     check(x, n.types)?;
@@ -1594,7 +1692,7 @@ fn validate_fact(
             }
         }
         LanguageExtensionDirectoryKind::CSharp => {
-            check(w(4)?, n.type_parameters)?;
+            check_type_parameters(w(4)?)?;
             check(w(5)?, n.atom_lists)?;
             if w(6)? != NONE {
                 check(w(6)?, n.atoms)?;
@@ -1604,7 +1702,7 @@ fn validate_fact(
             for x in [w(0)?, w(1)?] {
                 check(x, n.type_lists)?;
             }
-            check(w(3)?, n.type_parameters)?;
+            check_type_parameters(w(3)?)?;
             for x in [w(4)?, w(5)?] {
                 check(x, n.entity_lists)?;
             }
@@ -1613,7 +1711,7 @@ fn validate_fact(
         }
         LanguageExtensionDirectoryKind::Rust => {
             check(w(1)?, n.atom_lists)?;
-            check(w(2)?, n.type_parameters)?;
+            check_type_parameters(w(2)?)?;
             check(w(3)?, n.atom_lists)?;
         }
         LanguageExtensionDirectoryKind::Python => check(w(0)?, n.atom_lists)?,
@@ -1624,7 +1722,7 @@ fn validate_fact(
             check(w(3)?, n.entity_lists)?;
         }
         LanguageExtensionDirectoryKind::Clang => {
-            check(w(4)?, n.type_parameters)?;
+            check_type_parameters(w(4)?)?;
             check(w(5)?, n.atom_lists)?;
         }
     }

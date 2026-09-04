@@ -2326,7 +2326,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_schema1_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_image_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;

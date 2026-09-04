@@ -77,7 +77,7 @@ pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2
 /// child counts.  Those schemas preserved the canonical graph but did not
 /// retain the entity-to-product roots required to reopen declaration truth.
 pub(crate) const SEMANTIC_DATA_LEGACY_HEADER_BYTES: usize = size_of::<u32>() * 5;
-/// Schema-3 semantic-data header adds an entity-root count.  The following
+/// Schema-3-and-later semantic-data headers add an entity-root count. The following
 /// root map binds each entity row to its canonical product without depending
 /// on a canonicalizer-private source coordinate map.
 pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 6;
@@ -511,4 +511,4 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
 /// The fragment envelope magic: `"NXIR"` in every fragment.
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
 /// The fragment envelope schema version.
-pub const FRAGMENT_SCHEMA: u16 = 3;
+pub const FRAGMENT_SCHEMA: u16 = 4;
