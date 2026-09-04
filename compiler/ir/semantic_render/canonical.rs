@@ -511,12 +511,26 @@ fn emit_nominal<Reader: SemanticReader + ?Sized>(
     entity: EntityId,
     output: &mut impl fmt::Write,
 ) -> Result<(), CanonicalTypeRenderError> {
+    write_text(root, output, "nominal(")?;
+    emit_entity_reference(reader, root, owner, entity, output)?;
+    write_text(root, output, ")")
+}
+
+fn emit_entity_reference<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    root: TypeId,
+    owner: TypeId,
+    entity: EntityId,
+    output: &mut impl fmt::Write,
+) -> Result<(), CanonicalTypeRenderError> {
     let row = reader.entity(entity).ok_or(CanonicalTypeRenderError::MissingReference {
         owner,
         reference: CanonicalTypeRenderReference::Entity(entity),
     })?;
-    write_text(root, output, "nominal(entity=")?;
-    write_number(root, output, u64::from(entity.raw))?;
+    write_text(root, output, "entity(family=")?;
+    emit_bytes(root, row.version.family.as_bytes(), output)?;
+    write_text(root, output, ",variant=")?;
+    emit_bytes(root, row.version.variant.as_bytes(), output)?;
     write_text(root, output, ",name=")?;
     emit_atom(reader, root, owner, row.name, output)?;
     write_text(root, output, ")")
@@ -533,11 +547,10 @@ fn emit_external<Reader: SemanticReader + ?Sized>(
         owner,
         reference: CanonicalTypeRenderReference::External(external),
     })?;
-    write_text(root, output, "external(id=")?;
-    write_number(root, output, u64::from(external.raw))?;
+    write_text(root, output, "external(")?;
     match target {
         ExternalTarget::Stable { target } => {
-            write_text(root, output, ",stable.fragment=")?;
+            write_text(root, output, "stable.fragment=")?;
             emit_bytes(root, target.fragment.as_ref(), output)?;
             write_text(root, output, ",family=")?;
             emit_bytes(root, target.declaration.family.as_bytes(), output)?;
@@ -545,7 +558,7 @@ fn emit_external<Reader: SemanticReader + ?Sized>(
             emit_bytes(root, target.declaration.variant.as_bytes(), output)?;
         }
         ExternalTarget::Foreign(target) => {
-            write_text(root, output, ",foreign=")?;
+            write_text(root, output, "foreign=")?;
             emit_bytes(root, target.identity.foreign.as_bytes(), output)?;
             write_text(root, output, ",variant=")?;
             match target.identity.variant {
@@ -565,7 +578,7 @@ fn emit_external<Reader: SemanticReader + ?Sized>(
             }
         }
         ExternalTarget::FragmentEntity { target, display } => {
-            write_text(root, output, ",fragment-entity.fragment=")?;
+            write_text(root, output, "fragment-entity.fragment=")?;
             emit_bytes(root, target.fragment.as_ref(), output)?;
             write_text(root, output, ",ordinal=")?;
             write_number(root, output, u64::from(target.ordinal))?;
@@ -670,14 +683,8 @@ fn emit_type_query<Reader: SemanticReader + ?Sized>(
     write_text(root, output, "typeof(")?;
     match query {
         TypeQuery::Entity(entity) => {
-            if reader.entity(entity).is_none() {
-                return Err(CanonicalTypeRenderError::MissingReference {
-                    owner,
-                    reference: CanonicalTypeRenderReference::Entity(entity),
-                });
-            }
             write_text(root, output, "entity=")?;
-            write_number(root, output, u64::from(entity.raw))?;
+            emit_entity_reference(reader, root, owner, entity, output)?;
         }
         TypeQuery::Path(path) => {
             write_text(root, output, "path=")?;
