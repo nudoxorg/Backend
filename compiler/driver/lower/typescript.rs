@@ -161,7 +161,7 @@ impl TypeParamRows {
                 self.len += 1;
                 Ok(())
             }
-            None => Err(lane_rejection()),
+            None => Err(fault(FactFault::TypeParameterCapacity)),
         }
     }
 
@@ -205,7 +205,7 @@ impl ParamRows {
                 self.len += 1;
                 Ok(())
             }
-            None => Err(lane_rejection()),
+            None => Err(fault(FactFault::ChildCapacity)),
         }
     }
 
@@ -273,7 +273,7 @@ impl<'source> TypeCells<'source> {
             }
             None => {
                 self.truncated = true;
-                Err(lane_rejection())
+                Err(fault(FactFault::TypeChildCapacity))
             }
         }
     }
@@ -839,7 +839,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let relative_start = local.start.checked_sub(declaration.start);
         let relative_end = local.end.checked_sub(declaration.start);
         if let (Some(relative_start), Some(relative_end)) = (relative_start, relative_end) {
-            let span = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
+            let span = RelSpan::new(relative_start, relative_end).map_err(|_| {
+                TypeScriptCollectError::Span {
+                    start: relative_start,
+                    end: relative_end,
+                }
+            })?;
             let target = self.import_target(ordinal)?;
             self.facts
                 .push_occurrence(
@@ -2274,7 +2279,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         ) else {
             return Ok(());
         };
-        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
+        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
+            TypeScriptCollectError::Span {
+                start: relative_start,
+                end: relative_end,
+            }
+        })?;
         self.facts
             .push_occurrence(
                 owner,
@@ -2674,7 +2684,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if overflow {
             // A JSDoc line with more segments than the staged bound cannot be
             // emitted without truncation, which the lane forbids.
-            return Err(lane_rejection());
+            return Err(fault(FactFault::DocCapacity));
         }
         if len == 0 {
             return Ok(false);
@@ -2928,7 +2938,9 @@ fn intern_computed_tree<'source>(
                         text = registry.source_spelling(spell, value.as_bytes(), owner).or(text);
                     }
                     TemplatePart::Type { r#type } => {
-                        let slot = children.get_mut(child_count).ok_or_else(lane_rejection)?;
+                        let slot = children.get_mut(child_count).ok_or_else(|| {
+                            computed_fault(registry, owner, FactFault::TypeChildCapacity)
+                        })?;
                         *slot = intern_computed_tree(
                             registry,
                             facts,
@@ -2972,8 +2984,17 @@ fn intern_computed_tree<'source>(
         TypeTree::Function { parameters, result } => {
             let mut children = [0_u32; MAX_TYPE_CHILDREN];
             let mut len = 0_usize;
+            if parameters.len() >= MAX_TYPE_CHILDREN {
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeChildCapacity,
+                ));
+            }
             for parameter in parameters {
-                let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
+                let slot = children.get_mut(len).ok_or_else(|| {
+                    computed_fault(registry, owner, FactFault::TypeChildCapacity)
+                })?;
                 *slot = intern_computed_tree(
                     registry,
                     facts,
@@ -2992,7 +3013,9 @@ fn intern_computed_tree<'source>(
                 depth.saturating_add(1),
                 spell,
             )?;
-            let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
+            let slot = children.get_mut(len).ok_or_else(|| {
+                computed_fault(registry, owner, FactFault::TypeChildCapacity)
+            })?;
             *slot = result_row;
             len += 1;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
@@ -3005,7 +3028,11 @@ fn intern_computed_tree<'source>(
             // source spelling.
             let mut rows = [0_u32; MAX_TYPE_CHILDREN];
             if members.len() > MAX_TYPE_CHILDREN {
-                return Err(lane_rejection());
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeChildCapacity,
+                ));
             }
             for (position, member) in members.iter().enumerate() {
                 let row = intern_computed_tree(
@@ -3016,8 +3043,12 @@ fn intern_computed_tree<'source>(
                     depth.saturating_add(1),
                     spell,
                 )?;
-                if let Some(slot) = rows.get_mut(position) {
-                    *slot = row;
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "the preceding member-count check proves every position fits the fixed row lane"
+                )]
+                {
+                    rows[position] = row;
                 }
             }
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
@@ -3032,8 +3063,24 @@ fn intern_computed_tree<'source>(
                 }
                 let spelling = registry
                     .source_spelling(spell, member.name.as_bytes(), owner)
-                    .ok_or_else(lane_rejection)?;
-                let row = rows.get(position).copied().ok_or_else(lane_rejection)?;
+                    .ok_or_else(|| {
+                        computed_fault(
+                            registry,
+                            owner,
+                            FactFault::TypeChild {
+                                position,
+                                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
+                                    tag: SemanticTypeTag::AnonymousRecord,
+                                    position: position as u32,
+                                },
+                            },
+                        )
+                    })?;
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "the preceding member-count check proves every position fits the fixed row lane"
+                )]
+                let row = rows[position];
                 facts
                     .computed_type_child(row, Some(spelling), flags)
                     .map_err(|cause| computed_fault(registry, owner, cause))?;

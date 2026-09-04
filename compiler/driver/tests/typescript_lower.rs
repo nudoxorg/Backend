@@ -614,6 +614,42 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
 }
 
 #[test]
+fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
+    const SOURCE: &[u8] = b"export const x = null;";
+    let mut checker = report(SOURCE);
+    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 14,
+        origin: compiler_languages_typescript::Origin::Computed,
+        overload_index: None,
+        r#type: Some(compiler_languages_typescript::TypeTree::Object {
+            members: vec![compiler_languages_typescript::ObjectMember {
+                name: "not-spelled".into(),
+                optional: false,
+                readonly: false,
+                member_type: compiler_languages_typescript::TypeTree::Primitive {
+                    name: "number".into(),
+                },
+            }],
+        }),
+    }]);
+    match try_lower(SOURCE, Some(&checker)) {
+        Err(CompileFailure::FactRejected { rejected, .. }) => assert_eq!(
+            rejected.cause,
+            FactFault::TypeChild {
+                position: 0,
+                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
+                    tag: SemanticTypeTag::AnonymousRecord,
+                    position: 0,
+                },
+            }
+        ),
+        Ok(_) => panic!("expected source-backed member spelling rejection"),
+        Err(_) => panic!("expected typed source-backed member spelling rejection"),
+    }
+}
+
+#[test]
 fn forward_nominal_checker_and_lowering_keep_the_later_class() {
     const SOURCE: &[u8] = b"export const a = new B(); export class B {}";
     let checker = Checker::default()
