@@ -59,6 +59,8 @@ explicit legacy ideas rejected
 - Truth is canonical objects/generations plus an immutable publication log. Indexes are disposable.
 - Every query pins one snapshot. Routing, node, cache, and provider identity never enter semantics.
 - Exact, lexical, relation, usage, and vector are distinct typed families. Share only proven substrate.
+- Families are ranked, never blended. A query spanning families declares a typed family precedence and
+  orders within each family; a score from one family never compares against a score from another.
 - Manifest metadata prunes before segment I/O. Plans reserve fan-out/range/TopK credits up front.
 - Views validate once and borrow original bytes. Lookup does not deserialize documents or build IDs in
   comparisons.
@@ -79,6 +81,9 @@ DO:    SnapshotView -> selected SegmentRef<Family> -> borrowed family query
 
 DON'T: type SearchKey = (f32, Uuid)
 DO:    RankedKey { score: Score<Recipe>, document: DocumentKey }
+
+DON'T: candidates.sort_by(|a, b| b.score.total_cmp(&a.score))
+DO:    FamilyRanked { family: Family, within: RankedKey }
 
 DON'T: async fn search(...) -> Vec<ResultDto>
 DO:    sync leaf cursor over borrowed regions + async leased range adapter + typed terminal
@@ -108,6 +113,10 @@ Every applicable slice includes golden bytes, every truncation boundary, structu
 errors and sources, pointer containment, allocation/copy/retained-byte measurements, input-permutation
 determinism, work counters, density/cardinality cliffs, terminal variants, and top-level real public
 integration. `is_err`, happy-path getters, elapsed time alone, and a backend mock are not evidence.
+
+For any query spanning two families add the case where the lower-precedence family holds the
+numerically higher score. A case where precedence and score agree is satisfied by a comparator that
+ignores family, and is not evidence.
 
 For horizontal work add stale routing, lost/delayed/duplicate leaf responses, node loss, hot keys,
 rebalance, compaction replacement, remote outage, and local prefix behavior. For SIMD add scalar
