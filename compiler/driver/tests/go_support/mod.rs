@@ -344,13 +344,20 @@ pub fn ensure_module(root: &Path, module: &str) -> Result<bool, Error> {
     Ok(true)
 }
 
-/// Resolves sums required by a downloaded module without changing the
-/// pre-module synthesis behavior of [`ensure_module`].
+/// Resolves required module dependencies before the oracle runs, without
+/// changing the pre-module synthesis behavior of [`ensure_module`]. The
+/// primary zip digest was already verified by the journey against the Go
+/// proxy; `GOSUMDB=off` is used only for dependency resolution inside this
+/// pinned test harness, with the proxy selected explicitly to avoid inherited
+/// direct-VCS settings.
 pub fn prepare_module(root: &Path, module: &str) -> Result<(), Error> {
     let module_root = root.join(module);
     let compiler = std::env::var_os("COMPILER_GO_COMPILER").unwrap_or_else(|| "go".into());
     let output = std::process::Command::new(compiler)
-        .args(["mod", "download"])
+        .args(["mod", "download", "all"])
+        .env("GOPROXY", "https://proxy.golang.org,direct")
+        .env("GOFLAGS", "-mod=mod")
+        .env("GOSUMDB", "off")
         .current_dir(module_root)
         .output()
         .map_err(|source| Error::Io { source })?;

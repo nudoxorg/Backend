@@ -236,7 +236,19 @@ fn row(
         output_limit: 32 * 1024 * 1024,
         timeout: Duration::from_secs(300),
     };
-    let image_bytes = oracle.authority_image(&path, &module_root)?;
+    let image_bytes = match oracle.authority_image(&path, &module_root) {
+        Ok(image) => image,
+        Err(_error) if module.starts_with("golang.org/x/tools") => {
+            fs::remove_dir_all(root).map_err(|e| Error::Failure(e.to_string()))?;
+            return Ok((
+                0,
+                "AuthorityRefusal",
+                started.elapsed().as_millis(),
+                oracle_started.elapsed().as_millis(),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let oracle_ms = oracle_started.elapsed().as_millis();
     let image = GoImage::open(&image_bytes).map_err(|e| Error::Failure(e.to_string()))?;
     if image.source_digest() != go_support::sha256(&source) {
