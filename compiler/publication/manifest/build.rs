@@ -203,7 +203,7 @@ impl SemanticImageRegion {
         }
     }
 
-    pub(crate) fn bytes<'output>(self, output: &'output [u8]) -> Option<&'output [u8]> {
+    pub(crate) fn bytes(self, output: &[u8]) -> Option<&[u8]> {
         let length = usize::try_from(self.byte_length).ok()?;
         output.get(self.offset..self.offset.checked_add(length)?)
     }
@@ -233,6 +233,10 @@ pub(crate) struct CanonicalSemanticCompilation<'input, 'scratch, 'fragment, 'ima
 impl<'input, 'scratch, 'fragment, 'images>
     CanonicalSemanticCompilation<'input, 'scratch, 'fragment, 'images>
 {
+    #[allow(
+        clippy::result_large_err,
+        reason = "canonical semantic preparation retains exact fragment and image-region faults"
+    )]
     pub(crate) fn prepare(
         inputs: &'input [CompiledSemantic<'fragment>],
         images: &'images [SemanticImageRegion],
@@ -283,6 +287,10 @@ impl<'input, 'scratch, 'fragment, 'images>
         })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "the cold measured-length path preserves its exact preparation terminal"
+    )]
     fn required_bytes(&self) -> Result<usize, CompilationPrepareError> {
         let entries = self.ordinals.len();
         COMPILATION_MANIFEST_HEADER_BYTES
@@ -294,6 +302,10 @@ impl<'input, 'scratch, 'fragment, 'images>
             .ok_or(CompilationPrepareError::ManifestLengthOverflow { entries })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "fresh semantic manifest validation retains exact fragment and image facts"
+    )]
     pub(crate) fn write_into<'output, 'facts>(
         &self,
         output: &'output mut [u8],

@@ -8,18 +8,20 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use compiler_driver::CompiledFragment;
+use compiler_driver::{CompiledFragment, CompiledSemantic};
 use compiler_ir::{AtomId, TypeId};
 use compiler_ir::{
-    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, PreparedFragment,
-    PrimitiveType, SourceIdentity, TypeNode,
+    AtomInput, EntityKind, EntityRecord, FragmentRangeManifest, FragmentView, IrBuilder,
+    PackageLineage, PreparedFragment, PrimitiveType, SemanticCoreReader, SourceIdentity, TypeNode,
 };
 use compiler_publication::binding::{COMPILATION_BINDING_BYTES, CompilationBindingView};
 use compiler_publication::{
-    OpenPublicationScratch, OpenedFragment, OpenedFragmentCursor, OpenedFragmentError,
-    PublicationScratch, PublishCompiledError, PublishControl, UncommittedPublication,
+    OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragment, OpenedFragmentCursor,
+    OpenedFragmentError, OpenedSemanticArtifactError, PublicationScratch, PublishCompiledError,
+    PublishControl, PublishSemanticError, SemanticPublicationScratch, UncommittedPublication,
     immutable::ImmutableArtifactStore,
-    publication::{open_published, publish_compiled},
+    manifest::SemanticImageRegion,
+    publication::{open_published, open_published_semantic, publish_compiled, publish_semantic},
 };
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
@@ -46,6 +48,10 @@ enum TestError {
     Prepare(#[from] compiler_ir::PrepareError),
     #[error("could not write a compact IR fixture")]
     Write(#[from] compiler_ir::WriteError),
+    #[error("could not build a complete semantic fixture image")]
+    SemanticBuild(#[from] compiler_ir::BuildError),
+    #[error("could not enter the semantic fixture package lineage")]
+    Lineage(compiler_ir::PackageLineageFault),
     #[error("could not validate a compact IR fixture")]
     Fragment(#[from] compiler_ir::FragmentError),
     #[error("could not validate a stored compiler manifest")]
@@ -56,10 +62,14 @@ enum TestError {
     Artifact(#[from] compiler_publication::immutable::ImmutableArtifactError),
     #[error("compiler publication failed")]
     Publish(#[from] PublishCompiledError),
+    #[error("semantic compiler publication failed")]
+    PublishSemantic(#[from] PublishSemanticError),
     #[error("compiler publication reopen failed")]
     Open(#[from] compiler_publication::publication::OpenPublishedError),
     #[error("opened compiler fragment could not reconstruct its exact immutable view")]
     OpenedFragment(#[from] OpenedFragmentError),
+    #[error("opened semantic compiler artifact could not reconstruct its exact immutable views")]
+    OpenedSemanticArtifact(#[from] OpenedSemanticArtifactError),
     #[error("fixture source length cannot fit source facts")]
     SourceLength(#[from] core::num::TryFromIntError),
     #[error("expected {expected}, observed {observed}")]
@@ -448,6 +458,148 @@ fn admitted_cancellation_returns_cancelled_only_when_cancel_wins() -> Result<(),
 #[test]
 #[allow(
     clippy::result_large_err,
+    reason = "the paired-publication test retains exact semantic corruption and cancellation terminals"
+)]
+fn semantic_publication_is_order_stable_and_rejects_corrupted_paired_image() -> Result<(), TestError>
+{
+    let fixture = Fixture::new("semantic-order-and-corruption")?;
+    let paths = PublicationPaths::in_directory(&fixture.journal());
+    let publisher = DurablePublisher::create(&paths, limits()?)?;
+    let mut alpha_bytes = [0_u8; 256];
+    let mut bravo_bytes = [0_u8; 256];
+    let alpha_length = write_fragment(&mut alpha_bytes, b"semantic-alpha-source", b"alpha")?;
+    let bravo_length = write_fragment(&mut bravo_bytes, b"semantic-bravo-source", b"bravo")?;
+    let alpha = semantic_compiled(&alpha_bytes[..alpha_length])?;
+    let bravo = semantic_compiled(&bravo_bytes[..bravo_length])?;
+
+    let cancelled = publish_semantic_fixture(
+        &publisher,
+        &fixture.artifacts(),
+        &[semantic_compiled(&alpha_bytes[..alpha_length])?],
+        PublishControl::CancelBeforeStorage,
+    );
+    assert!(matches!(
+        cancelled,
+        Err(PublishSemanticError::CancelledBeforeStorage)
+    ));
+    assert!(!fixture.artifacts().exists());
+    assert_eq!(publisher.published()?, None);
+
+    let first = publish_semantic_fixture(
+        &publisher,
+        &fixture.artifacts(),
+        &[bravo, alpha],
+        PublishControl::Continue,
+    )?;
+    let second = publish_semantic_fixture(
+        &publisher,
+        &fixture.artifacts(),
+        &[
+            semantic_compiled(&alpha_bytes[..alpha_length])?,
+            semantic_compiled(&bravo_bytes[..bravo_length])?,
+        ],
+        PublishControl::Continue,
+    )?;
+    assert_eq!(first.manifest, second.manifest);
+
+    let mut compact_manifest_output = [0_u8; 1024];
+    let mut compact_manifest_facts = [None; 2];
+    let mut compact_fragment_output = [0_u8; 1024];
+    let mut compact_locality_output = [0_u8; 1024];
+    assert!(matches!(
+        open_published(
+            &publisher,
+            &fixture.artifacts(),
+            OpenPublicationScratch {
+                manifest_output: &mut compact_manifest_output,
+                manifest_facts: &mut compact_manifest_facts,
+                fragment_output: &mut compact_fragment_output,
+                locality_output: &mut compact_locality_output,
+            },
+        ),
+        Err(
+            compiler_publication::publication::OpenPublishedError::ManifestFormat {
+                expected: compiler_publication::manifest::CompilationManifestFormat::CompactV1,
+                observed: compiler_publication::manifest::CompilationManifestFormat::SemanticV2,
+            }
+        )
+    ));
+
+    let mut manifest_output = [0_u8; 1024];
+    let mut manifest_facts = [None; 2];
+    let mut fragment_output = [0_u8; 1024];
+    let mut semantic_output = [0_u8; 16_384];
+    let mut locality_output = [0_u8; 1024];
+    let opened = open_published_semantic(
+        &publisher,
+        &fixture.artifacts(),
+        OpenSemanticPublicationScratch {
+            manifest_output: &mut manifest_output,
+            manifest_facts: &mut manifest_facts,
+            fragment_output: &mut fragment_output,
+            semantic_image_output: &mut semantic_output,
+            locality_output: &mut locality_output,
+        },
+    )?
+    .ok_or(TestError::Assertion {
+        expected: "a selected paired semantic publication",
+        observed: "no selected paired semantic publication",
+    })?;
+    for artifact in opened.artifacts() {
+        let artifact = artifact?;
+        match artifact.semantic_image.image_facts().provenance {
+            compiler_ir::ImageProvenance::Captured { source, recipe, .. } => {
+                assert_eq!(source, artifact.fragment.view.source);
+                assert_eq!(recipe, artifact.fragment.view.recipe);
+            }
+            compiler_ir::ImageProvenance::Unavailable => {
+                return Err(TestError::Assertion {
+                    expected: "captured semantic provenance paired with the compact artifact",
+                    observed: "unavailable semantic provenance",
+                });
+            }
+        }
+    }
+
+    let semantic_path = fs::read_dir(fixture.artifacts().join("semantic-images"))?
+        .next()
+        .ok_or(TestError::Assertion {
+            expected: "one paired semantic image to corrupt",
+            observed: "no paired semantic image",
+        })??
+        .path();
+    fs::write(semantic_path, b"corrupt-semantic-image")?;
+    let mut manifest_output = [0_u8; 1024];
+    let mut manifest_facts = [None; 2];
+    let mut fragment_output = [0_u8; 1024];
+    let mut semantic_output = [0_u8; 16_384];
+    let mut locality_output = [0_u8; 1024];
+    assert!(matches!(
+        open_published_semantic(
+            &publisher,
+            &fixture.artifacts(),
+            OpenSemanticPublicationScratch {
+                manifest_output: &mut manifest_output,
+                manifest_facts: &mut manifest_facts,
+                fragment_output: &mut fragment_output,
+                semantic_image_output: &mut semantic_output,
+                locality_output: &mut locality_output,
+            },
+        ),
+        Err(
+            compiler_publication::publication::OpenPublishedError::SemanticImage { ordinal: 0, .. }
+        ) | Err(
+            compiler_publication::publication::OpenPublishedError::SemanticImage { ordinal: 1, .. }
+        )
+    ));
+    publisher.shutdown()?;
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+#[allow(
+    clippy::result_large_err,
     reason = "test retains exact publication terminal"
 )]
 fn open_published_requires_the_selected_binding() -> Result<(), TestError> {
@@ -692,6 +844,56 @@ fn compiled(bytes: &[u8]) -> Result<CompiledFragment<'_>, TestError> {
         recipe: fragment.recipe,
         fragment,
     })
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "fixture retains one compact artifact and one independently owned semantic image"
+)]
+fn semantic_compiled(bytes: &[u8]) -> Result<CompiledSemantic<'_>, TestError> {
+    let artifact = compiled(bytes)?;
+    let lineage =
+        PackageLineage::new("cargo", "publication-semantic-fixture").map_err(TestError::Lineage)?;
+    let mut builder = IrBuilder::new();
+    builder.set_image_provenance(artifact.source, artifact.recipe, lineage, "src/lib.rs")?;
+    Ok(CompiledSemantic {
+        artifact,
+        ir: builder.finish()?,
+    })
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "fixture retains caller-owned semantic publication capacity and exact terminals"
+)]
+fn publish_semantic_fixture<'fragment>(
+    publisher: &DurablePublisher,
+    artifacts: &Path,
+    compiled: &[CompiledSemantic<'fragment>],
+    control: PublishControl<'_>,
+) -> Result<compiler_publication::publication::PublishedCompilation, PublishSemanticError> {
+    let mut manifest = [0_u8; 1024];
+    let mut facts = [None; 2];
+    let mut ordinals = [0_usize; 2];
+    let mut image_plan = [SemanticImageRegion::EMPTY; 2];
+    let mut semantic_output = [0_u8; 16_384];
+    let mut locality = [0_u8; 1024];
+    let mut binding = [0_u8; COMPILATION_BINDING_BYTES];
+    publish_semantic(
+        publisher,
+        artifacts,
+        compiled,
+        control,
+        SemanticPublicationScratch {
+            manifest_output: &mut manifest,
+            manifest_facts: &mut facts,
+            ordinals: &mut ordinals,
+            semantic_image_plan: &mut image_plan,
+            semantic_image_output: &mut semantic_output,
+            locality_output: &mut locality,
+            binding_output: &mut binding,
+        },
+    )
 }
 
 #[allow(

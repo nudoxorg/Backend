@@ -299,6 +299,10 @@ pub fn publish_semantic(
     .map_err(PublishSemanticError::Publication)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "the durable completion terminal retains exact binding, generation, and journal facts"
+)]
 fn complete_publication(
     publisher: &DurablePublisher,
     artifact_directory: &Path,
