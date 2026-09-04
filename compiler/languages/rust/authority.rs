@@ -1066,6 +1066,9 @@ fn collect_reexports<'analysis>(
     tree: &ast::UseTree,
     result: &mut Vec<RustReexport>,
 ) {
+    if tree.star_token().is_some() {
+        return;
+    }
     if let Some(list) = tree.use_tree_list() {
         for child in list.use_trees() {
             collect_reexports(authority, item, &child, result);

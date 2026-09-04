@@ -123,3 +123,59 @@ fn computed_rows_retain_exact_primitive_lattice() -> Result<(), Box<dyn std::err
     assert_eq!(fact.record.payload1, 8 << 1);
     Ok(())
 }
+
+#[test]
+fn unresolved_let_has_no_computed_row() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = compile_fixture("pub fn run() { let value = unresolved_path::thing; }")?;
+    let view = FragmentView::validate(&bytes)?;
+    let count = view
+        .type_facts()
+        .into_iter()
+        .flatten()
+        .filter(|fact| {
+            fact.as_ref()
+                .is_ok_and(|fact| fact.segment == TypeFactSegment::Computed)
+        })
+        .count();
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn glob_use_does_not_fabricate_a_reexport() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = compile_fixture("pub use core::fmt::*; pub fn run() {}")?;
+    let view = FragmentView::validate(&bytes)?;
+    assert_eq!(
+        view.entities()
+            .filter(|entity| entity.kind == EntityKind::Reexport)
+            .count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn computed_capacity_is_a_typed_rejection() -> Result<(), Box<dyn std::error::Error>> {
+    let mut body = String::from("pub fn run() {");
+    for index in 0..1025 {
+        body.push_str(&format!("let value_{index} = {index}u32;"));
+    }
+    body.push('}');
+    assert!(compile_fixture(&body).is_err());
+    Ok(())
+}
+
+#[test]
+fn macro_inner_call_is_owned_by_the_function() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = compile_fixture(
+        "macro_rules! make { ($value:expr) => { $value.clone() }; } pub fn run(value: String) { let copied = make!(value); }",
+    )?;
+    let view = FragmentView::validate(&bytes)?;
+    assert!(
+        view.type_facts()
+            .into_iter()
+            .flatten()
+            .any(|fact| fact.is_ok_and(|fact| fact.segment == TypeFactSegment::Computed))
+    );
+    Ok(())
+}

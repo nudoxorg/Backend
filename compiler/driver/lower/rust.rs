@@ -312,6 +312,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_occurrences()?;
         self.check_deadline()?;
         self.emit_docs(&declarations)?;
+        self.emit_reexport_docs()?;
         Ok(())
     }
 
@@ -895,8 +896,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if declaration.expanded {
             return compiler_ir::Visibility::Unknown;
         }
-        let Some(visibility) = ast::AnyHasVisibility::cast(declaration.syntax.clone())
-            .and_then(|item| item.visibility())
+        self.visibility_of(&declaration.syntax)
+    }
+
+    /// Captures the written visibility prefix of one syntax item.
+    fn visibility_of(&self, syntax: &SyntaxNode) -> compiler_ir::Visibility {
+        let Some(visibility) =
+            ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
         else {
             return compiler_ir::Visibility::Private;
         };
@@ -1698,7 +1704,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let extension = self.empty_extension(RustOwnership::Value)?;
             let fact = SemanticFact::new(EntityKind::Reexport, name, LEAF_PRODUCT)
                 .with_visibility(self.visibility_of(&reexport.item.syntax().clone()))
-                .typed(unknown_record(TypeReason::OracleGap, None))
+                .typed(unknown_record(TypeReason::NoIrRepresentation, Some(name)))
                 .with_extension(EmissionExtension::Rust(extension));
             let ordinal = coordinate(push(self.facts, fact)?)?;
             self.rows.push(Row {
@@ -1716,13 +1722,22 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let mut expressions = Vec::new();
         for expression in self.authority.inferred_let_initializers() {
             let span = self.authority.span(expression.expression.syntax())?;
-            if let Some(inferred) = expression.inferred {
+            if let Some(inferred) = expression
+                .inferred
+                .filter(|inferred| !inferred.original.is_unknown())
+            {
                 expressions.push((span, inferred.original, None));
             }
         }
         for call in self.authority.method_calls() {
-            let span = self.authority.span(call.syntax.syntax())?;
-            if let Some(inferred) = call.inferred {
+            let span = match call.projected_span {
+                Some(span) => span,
+                None => self.authority.span(call.syntax.syntax())?,
+            };
+            if let Some(inferred) = call
+                .inferred
+                .filter(|inferred| !inferred.original.is_unknown())
+            {
                 expressions.push((span, inferred.original, None));
             }
         }
@@ -1750,32 +1765,6 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts
             .intern_computed_type_row(owner, lowered.record)
             .map_err(|_| admission())
-    }
-
-    /// Applies the existing visibility rule to a syntax item.
-    fn visibility_of(&self, syntax: &SyntaxNode) -> compiler_ir::Visibility {
-        let Some(visibility) =
-            ast::AnyHasVisibility::cast(syntax.clone()).and_then(|item| item.visibility())
-        else {
-            return compiler_ir::Visibility::Private;
-        };
-        let range = visibility.syntax().text_range();
-        let Some(start) = usize::try_from(u32::from(range.start())).ok() else {
-            return compiler_ir::Visibility::Unknown;
-        };
-        let Some(end) = usize::try_from(u32::from(range.end())).ok() else {
-            return compiler_ir::Visibility::Unknown;
-        };
-        let Some(bytes) = self.source.get(start..end) else {
-            return compiler_ir::Visibility::Unknown;
-        };
-        if bytes == b"pub(crate)" {
-            compiler_ir::Visibility::Package
-        } else if bytes.starts_with(b"pub(") {
-            compiler_ir::Visibility::Restricted
-        } else {
-            compiler_ir::Visibility::Public
-        }
     }
 
     /// Attaches each macro invocation spelling to the innermost pushed
@@ -1966,6 +1955,39 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 let authority = self.authority;
                 let emitter = &*self;
                 authority.visit_documentation(&declaration.syntax, |line| {
+                    if let Some(span) = emitter.span_of_text(line)
+                        && let Ok(bytes) = emitter.bytes_of(span)
+                    {
+                        lines.push(bytes);
+                    }
+                });
+            }
+            self.push_doc_lines(owner, &lines)?;
+        }
+        Ok(())
+    }
+
+    /// Pushes documentation belonging to each emitted re-export declaration.
+    fn emit_reexport_docs(&mut self) -> Result<(), RustAuthorityError> {
+        for reexport in self.authority.reexports() {
+            if !reexport.resolved {
+                continue;
+            }
+            let name = self.bytes_of(self.authority.span(&reexport.name)?)?;
+            let item_span = self.authority.span(reexport.item.syntax())?;
+            let Some(owner) = self
+                .rows
+                .iter()
+                .find(|row| row.name == name && row.span == item_span)
+                .map(|row| row.ordinal)
+            else {
+                continue;
+            };
+            let mut lines = Vec::new();
+            {
+                let authority = self.authority;
+                let emitter = &*self;
+                authority.visit_documentation(reexport.item.syntax(), |line| {
                     if let Some(span) = emitter.span_of_text(line)
                         && let Ok(bytes) = emitter.bytes_of(span)
                     {
