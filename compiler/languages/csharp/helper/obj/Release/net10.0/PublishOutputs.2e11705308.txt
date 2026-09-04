@@ -1,7 +1,0 @@
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/oracle
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/oracle.dll
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/oracle.deps.json
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/oracle.runtimeconfig.json
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/oracle.pdb
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/Microsoft.CodeAnalysis.dll
-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/oracle-probe/Microsoft.CodeAnalysis.CSharp.dll

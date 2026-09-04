@@ -9,3 +9,5 @@
 **/.DS_Store
 **/target/
 **/*.log
+compiler/languages/csharp/helper/bin/
+compiler/languages/csharp/helper/obj/

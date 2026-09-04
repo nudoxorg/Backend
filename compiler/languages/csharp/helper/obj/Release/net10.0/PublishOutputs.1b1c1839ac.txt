@@ -1,7 +1,0 @@
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/oracle
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/oracle.dll
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/oracle.deps.json
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/oracle.runtimeconfig.json
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/oracle.pdb
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/Microsoft.CodeAnalysis.dll
-/private/tmp/nudox-fidelity-csharp/.local/oracle-publish-c3/Microsoft.CodeAnalysis.CSharp.dll
