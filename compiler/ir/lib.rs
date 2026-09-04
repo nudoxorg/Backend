@@ -16,6 +16,7 @@ compile_error!("compiler-ir requires at least a 32-bit address space");
 mod canonical_data;
 mod columnar;
 mod coordinate;
+mod declaration_identity;
 mod docs_facts;
 mod discovery;
 mod extension_pools;
@@ -40,11 +41,12 @@ pub use canonical_data::{
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
 };
+pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChildCountLaw, CvQualifiers,
-    CvQualifiersError, DeclarationKey, DeclarationKeyFault,
-    DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
+    CvQualifiersError, DeclarationKey, DeclarationKeyFault, DeclarationPathFault, Disambiguator,
+    ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
     ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
     ChannelDirection, FunctionVariadicForm, ListSpan,
     NativeCharacterRole, NominalRef, Occurrence, OccurrenceTarget, PackageLineage,

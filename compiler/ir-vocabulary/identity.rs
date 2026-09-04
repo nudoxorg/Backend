@@ -186,6 +186,11 @@ pub enum PreimageOverflow {
         /// Observed skeleton byte length.
         actual: usize,
     },
+    /// A nested canonical byte cell exceeds its fixed `u32` length field.
+    CellTooLong {
+        /// Observed nested-cell byte length.
+        actual: usize,
+    },
 }
 
 impl<'bytes> DeclarationKey<'bytes> {

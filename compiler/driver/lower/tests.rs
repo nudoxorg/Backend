@@ -3,7 +3,7 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
-    AtomListId, BuildError, ConcreteType, EntityId, EntityKind, FragmentView, Occurrence,
+    AtomListId, BuildError, ConcreteType, EntityId, EntityKind, EntityVersion, FragmentView, Occurrence,
     PayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
     RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
@@ -19,7 +19,7 @@ use super::{
     MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
     EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
-use crate::types::{ParentageState, RichCapture, SourceSpanFact};
+use crate::types::{ParentageState, RichCapture, RichParentageCapture, SourceSpanFact};
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 512;
@@ -256,6 +256,17 @@ fn owned_type_projection(facts: &FactSet<'_>) -> Result<OwnedTypeProjection, Tes
         triples: columns.types.triples.to_vec(),
         quads: columns.types.quads.to_vec(),
     })
+}
+
+/// Typed identity/payload columns from the exact owned projection.  Tests
+/// compare these facts directly rather than rendering IDs or formatting IR.
+fn entity_versions(facts: &FactSet<'_>) -> Result<Vec<EntityVersion>, TestError> {
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    Ok(ir.items().map(|item| item.version()).collect())
 }
 
 /// The owned topology projections affected by transaction-local provenance.
@@ -1759,6 +1770,301 @@ fn computed_pending_rows_abort_each_failure_before_the_next_valid_row(
         Ok(_) => return Err(TestError::UnexpectedPush),
     }
     recovered_pending_rows_match_control(&candidate, &control)
+}
+
+#[test]
+fn unique_type_edit_changes_payload_without_reminting_stable_identity(
+) -> Result<(), TestError> {
+    let mut tuple = FactSet::new();
+    tuple
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"Edited",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
+        )
+        .map_err(rejected)?;
+    let mut record = FactSet::new();
+    record
+        .push(
+            SemanticFact::new(
+                EntityKind::Alias,
+                b"Edited",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)),
+        )
+        .map_err(rejected)?;
+    let tuple = entity_versions(&tuple)?;
+    let record = entity_versions(&record)?;
+    if tuple[0].stable != record[0].stable || tuple[0].payload == record[0].payload {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn provenance_member_addition_changes_parent_payload_without_reminting_parent(
+) -> Result<(), TestError> {
+    let mut empty = FactSet::new();
+    empty
+        .push(SemanticFact::new(
+            EntityKind::Record,
+            b"Owner",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    empty.mark_parentage_root(0).map_err(lane_fault)?;
+
+    let mut member = FactSet::new();
+    member
+        .push(SemanticFact::new(
+            EntityKind::Record,
+            b"Owner",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    member
+        .push(SemanticFact::new(
+            EntityKind::Field,
+            b"field",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    member.mark_parentage_root(0).map_err(lane_fault)?;
+    member.attach_parent(1, 0).map_err(lane_fault)?;
+
+    let empty = entity_versions(&empty)?;
+    let member = entity_versions(&member)?;
+    if empty[0].stable != member[0].stable || empty[0].payload == member[0].payload {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn bound_child_stable_identity_ignores_parent_payload_edits() -> Result<(), TestError> {
+    let mut tuple_parent = FactSet::new();
+    tuple_parent
+        .push(
+            SemanticFact::new(
+                EntityKind::Record,
+                b"Owner",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
+        )
+        .map_err(rejected)?;
+    tuple_parent
+        .push(SemanticFact::new(
+            EntityKind::Field,
+            b"field",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    tuple_parent.mark_parentage_root(0).map_err(lane_fault)?;
+    tuple_parent.attach_parent(1, 0).map_err(lane_fault)?;
+
+    let mut record_parent = FactSet::new();
+    record_parent
+        .push(
+            SemanticFact::new(
+                EntityKind::Record,
+                b"Owner",
+                SemanticProductConstructor::PRODUCT,
+            )
+            .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)),
+        )
+        .map_err(rejected)?;
+    record_parent
+        .push(SemanticFact::new(
+            EntityKind::Field,
+            b"field",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    record_parent.mark_parentage_root(0).map_err(lane_fault)?;
+    record_parent.attach_parent(1, 0).map_err(lane_fault)?;
+
+    let tuple_parent = entity_versions(&tuple_parent)?;
+    let record_parent = entity_versions(&record_parent)?;
+    if tuple_parent[0].stable != record_parent[0].stable
+        || tuple_parent[0].payload == record_parent[0].payload
+        || tuple_parent[1].stable != record_parent[1].stable
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
+) -> Result<(), TestError> {
+    let mut first = FactSet::new();
+    first
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
+        .map_err(rejected)?;
+    first
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
+        .map_err(rejected)?;
+    let mut reversed = FactSet::new();
+    reversed
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
+        .map_err(rejected)?;
+    reversed
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
+        .map_err(rejected)?;
+    let first_versions = entity_versions(&first)?;
+    let reversed_versions = entity_versions(&reversed)?;
+    if first_versions[0].stable == first_versions[1].stable
+        || first_versions[0].stable != reversed_versions[1].stable
+        || first_versions[1].stable != reversed_versions[0].stable
+    {
+        return Err(TestError::Tail);
+    }
+
+    // Bound overload siblings exercise the formerly undersized fixed scope
+    // buffer. The central scoped-key writer preflights the nested collision
+    // skeleton, so both children stay distinct without a coordinate input.
+    let mut nested = FactSet::new();
+    nested
+        .push(SemanticFact::new(
+            EntityKind::Record,
+            b"Container",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    nested
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)))
+        .map_err(rejected)?;
+    nested
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"overload",
+            SemanticProductConstructor::PRODUCT,
+        )
+        .typed(SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord)))
+        .map_err(rejected)?;
+    nested.mark_parentage_root(0).map_err(lane_fault)?;
+    nested.attach_parent(1, 0).map_err(lane_fault)?;
+    nested.attach_parent(2, 0).map_err(lane_fault)?;
+    let nested_versions = entity_versions(&nested)?;
+    if nested_versions[1].stable == nested_versions[2].stable {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn unrelated_insertion_does_not_remint_unique_siblings() -> Result<(), TestError> {
+    let mut base = FactSet::new();
+    for name in [b"alpha".as_slice(), b"beta"] {
+        base.push(SemanticFact::new(
+            EntityKind::Constant,
+            name,
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    }
+    let mut inserted = FactSet::new();
+    for name in [b"unrelated".as_slice(), b"alpha", b"beta"] {
+        inserted
+            .push(SemanticFact::new(
+                EntityKind::Constant,
+                name,
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+    }
+    let base = entity_versions(&base)?;
+    let inserted = entity_versions(&inserted)?;
+    if base[0].stable != inserted[1].stable || base[1].stable != inserted[2].stable {
+        return Err(TestError::Tail);
+    }
+    Ok(())
+}
+
+#[test]
+fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
+) -> Result<(), TestError> {
+    let mut identical = FactSet::new();
+    for _ in 0..2 {
+        identical
+            .push(
+                SemanticFact::new(
+                    EntityKind::Function,
+                    b"same",
+                    SemanticProductConstructor::PRODUCT,
+                )
+                .typed(SemanticTypeRecord::leaf(SemanticTypeTag::Tuple)),
+            )
+            .map_err(rejected)?;
+    }
+    match entity_versions(&identical) {
+        Err(TestError::Build(BuildError::IndistinguishableDeclarationSiblings {
+            entity,
+            kind: EntityKind::Function,
+            name,
+            count: 2,
+            ..
+        })) if (entity == EntityId::new(0) || entity == EntityId::new(1))
+            && name == PayloadHash::from_canonical_bytes(b"same") => {}
+        Err(_) => return Err(TestError::Tail),
+        Ok(_) => return Err(TestError::UnexpectedPush),
+    }
+
+    let mut root = FactSet::new();
+    root.push(SemanticFact::new(
+        EntityKind::Module,
+        b"Scoped",
+        SemanticProductConstructor::PRODUCT,
+    ))
+    .map_err(rejected)?;
+    root.mark_parentage_root(0).map_err(lane_fault)?;
+    let mut unavailable = FactSet::new();
+    unavailable
+        .push(SemanticFact::new(
+            EntityKind::Module,
+            b"Scoped",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    let root_version = entity_versions(&root)?;
+    let unavailable_version = entity_versions(&unavailable)?;
+    if root_version[0].stable == unavailable_version[0].stable
+        || root.rich_capture().entities[0].parentage != RichParentageCapture::Root
+        || unavailable.rich_capture().entities[0].parentage != RichParentageCapture::Unavailable
+    {
+        return Err(TestError::Tail);
+    }
+    Ok(())
 }
 
 const DIGITS: [u8; 10] = *b"0123456789";

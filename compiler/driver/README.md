@@ -23,3 +23,15 @@ Every currently valid `LowerIr` profile enters a real direct language authority
 does not add a redundant subprocess syntax pass. Native process terminals and
 their caller-owned scratch lease remain isolated for any future route that
 actually requires them.
+
+Declaration stable identity is scoped by the entered declaration scope,
+language profile, and explicit parentage state (`Root`, bound parent stable
+identity, unrepresented authority owner, or unavailable). A structural
+signature is used only for same-scope/kind/name collision siblings; source
+order, spans, and ordinary type/member edits are never stable-key inputs.
+Payload hashing currently covers the declaration's direct semantic basis,
+ordered product/type shapes, and the order-independent set of locally Bound
+member bases. It does not claim authority-complete membership when the
+member-set capture marker is unavailable.
+Documentation, visibility, extensions, source spans, opaque parentage, and
+occurrences are not payload-hashed yet and therefore have no parity claim.

@@ -2239,7 +2239,6 @@ impl StableEntityId {
         &self.0
     }
 }
-
 /// Canonical hash of one declaration payload, excluding containment edges.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -3242,6 +3241,35 @@ pub enum BuildError {
     },
     /// Parentage formed a cycle, so no stable qualified ownership key exists.
     ParentCycle { entity: EntityId },
+    /// One source declaration could not form its validated package/path/kind
+    /// identity key.  The entity coordinate and original vocabulary fault are
+    /// retained instead of being reclassified as a dangling reference.
+    DeclarationKey {
+        entity: EntityId,
+        cause: crate::DeclarationKeyFault,
+    },
+    /// The central scoped declaration-key writer rejected its exact framed
+    /// preimage.  This preserves profile/parentage/collision-width causes.
+    ScopedDeclarationPreimage {
+        entity: EntityId,
+        cause: crate::PreimageOverflow,
+    },
+    /// Same-scope declarations with the same kind and name had the same
+    /// authority structural skeleton.  There is no coordinate-free fact left
+    /// to distinguish them, so assigning an ordinal or span would make the
+    /// collision look representable while destabilizing identity.
+    IndistinguishableDeclarationSiblings {
+        /// One colliding authority row.
+        entity: EntityId,
+        /// Shared declaration-kind fact.
+        kind: EntityKind,
+        /// Canonical digest of the shared exact name bytes.
+        name: PayloadHash,
+        /// Canonical digest of the indistinguishable authority skeleton.
+        skeleton: PayloadHash,
+        /// Number of identical siblings in this collision class.
+        count: u32,
+    },
     DuplicateStableEntity {
         stable: StableEntityId,
     },
@@ -3306,6 +3334,28 @@ impl fmt::Display for BuildError {
             Self::ParentCycle { entity } => {
                 write!(formatter, "entity {} participates in a parent cycle", entity.raw)
             }
+            Self::DeclarationKey { entity, cause } => {
+                write!(formatter, "entity {} has an invalid declaration key: {cause:?}", entity.raw)
+            }
+            Self::ScopedDeclarationPreimage { entity, cause } => write!(
+                formatter,
+                "entity {} has an invalid scoped declaration preimage: {cause:?}",
+                entity.raw
+            ),
+            Self::IndistinguishableDeclarationSiblings {
+                entity,
+                kind,
+                name,
+                skeleton,
+                count,
+            } => write!(
+                formatter,
+                "entity {} is one of {count} indistinguishable {kind:?} siblings \
+                 (name {:02x?}, skeleton {:02x?})",
+                entity.raw,
+                name.as_bytes(),
+                skeleton.as_bytes()
+            ),
             Self::DuplicateStableEntity { stable } => {
                 write!(
                     formatter,
