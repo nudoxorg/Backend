@@ -30,6 +30,7 @@ mod range;
 mod reader;
 mod render;
 mod semantic;
+mod semantic_discovery;
 mod semantic_render;
 mod semantic_data_view;
 mod semantic_extension_section;
@@ -149,6 +150,11 @@ pub use semantic::{
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
     UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
     WildcardBound,
+};
+pub use semantic_discovery::{
+    AvailabilityCensus, EntityAuthorityCensus, LanguageExtensionCensus, ParentageCensus,
+    SemanticDiscoveryError, SemanticDiscoveryReference, SemanticImageCensus,
+    SemanticImageDiscovery,
 };
 pub use semantic_data_view::{
     SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,
