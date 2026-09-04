@@ -18,7 +18,9 @@ use compiler_ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
-use compiler_languages_typescript::{Checker, Report};
+use compiler_languages_typescript::{
+    Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
+};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
@@ -439,6 +441,92 @@ fn plugin_union_keeps_all_forty_literal_members_reachable() {
         .filter(|record| record.record.tag == SemanticTypeTag::Primitive)
         .count();
     assert_eq!(literals, 40);
+}
+
+#[test]
+fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
+    const SOURCE: &[u8] = b"export type added = { +readonly [K in string as number]+?: boolean };\nexport type removed = { -readonly [K in string]-?: boolean };\nexport type preserved = { [K in string]: boolean };";
+    let primitive = |name: &str| TypeTree::Primitive {
+        name: name.to_owned(),
+    };
+    let declaration = |name: &str,
+                       readonly: CheckerMappedModifier,
+                       optional: CheckerMappedModifier,
+                       name_as: bool| {
+        let start = SOURCE
+            .windows(name.len())
+            .position(|window| window == name.as_bytes())
+            .expect("mapped declaration name") as u32;
+        compiler_languages_typescript::Declaration {
+            name_start: start,
+            name_end: start + u32::try_from(name.len()).expect("name width"),
+            origin: compiler_languages_typescript::Origin::Computed,
+            overload_index: None,
+            r#type: Some(TypeTree::Mapped {
+                parameter: "K".to_owned(),
+                constraint: Box::new(primitive("string")),
+                name_as: name_as.then(|| Box::new(primitive("number"))),
+                value: Box::new(primitive("boolean")),
+                readonly,
+                optional,
+            }),
+        }
+    };
+    let mut checker = report(SOURCE);
+    checker.declarations = Box::new([
+        declaration(
+            "added",
+            CheckerMappedModifier::Add,
+            CheckerMappedModifier::Add,
+            true,
+        ),
+        declaration(
+            "removed",
+            CheckerMappedModifier::Remove,
+            CheckerMappedModifier::Remove,
+            false,
+        ),
+        declaration(
+            "preserved",
+            CheckerMappedModifier::Preserve,
+            CheckerMappedModifier::Preserve,
+            false,
+        ),
+    ]);
+    let view = view(SOURCE, Some(&checker));
+    for (name, readonly, optional, children) in [
+        (
+            b"added".as_slice(),
+            compiler_ir::LatticeMappedModifier::Add,
+            compiler_ir::LatticeMappedModifier::Add,
+            3,
+        ),
+        (
+            b"removed".as_slice(),
+            compiler_ir::LatticeMappedModifier::Remove,
+            compiler_ir::LatticeMappedModifier::Remove,
+            2,
+        ),
+        (
+            b"preserved".as_slice(),
+            compiler_ir::LatticeMappedModifier::Absent,
+            compiler_ir::LatticeMappedModifier::Absent,
+            2,
+        ),
+    ] {
+        let owner = named(&view, name).0;
+        let row = facts(&view)
+            .into_iter()
+            .find(|row| {
+                row.owner.raw == owner
+                    && row.segment == compiler_ir::TypeFactSegment::Computed
+                    && row.record.tag == SemanticTypeTag::Mapped
+            })
+            .expect("computed mapped row");
+        assert_eq!(row.record.payload0, u32::from(readonly));
+        assert_eq!(row.record.payload1, u32::from(optional));
+        assert_eq!(row.record.children.length, children);
+    }
 }
 #[test]
 fn empty_source_admits_the_schema1_fragment_without_semantic_data() {

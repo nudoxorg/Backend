@@ -5,8 +5,8 @@
 //! module and never mutates process-global configuration.
 
 use compiler_languages_typescript::{
-    Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, Narrowing, Origin, Report,
-    TypeTree, source_digest,
+    Checker, CheckerError, CheckerIndex, Declaration, LiteralBase, MappedModifier, Narrowing,
+    Origin, Report, TypeTree, source_digest,
 };
 
 const GOLDEN: &str = include_str!("transcripts/golden.json");
@@ -159,6 +159,48 @@ fn golden_transcript_binds_this_type_and_foreign_base() -> Result<(), CheckerErr
             transcript: String::new(),
         })?;
     assert_eq!(foreign, "typescript");
+    Ok(())
+}
+
+#[test]
+fn mapped_report_decodes_modifiers_and_the_optional_as_remap() -> Result<(), CheckerError> {
+    let report = adapter().decode(br#"{
+        "schemaVersion": 1,
+        "sourceDigest": "00",
+        "diagnostics": [],
+        "declarations": [{
+            "nameStart": 0,
+            "nameEnd": 1,
+            "origin": "computed",
+            "type": {
+                "kind": "mapped",
+                "parameter": "K",
+                "constraint": { "kind": "primitive", "name": "string" },
+                "nameAs": { "kind": "primitive", "name": "number" },
+                "value": { "kind": "primitive", "name": "boolean" },
+                "readonly": "add",
+                "optional": "remove"
+            }
+        }],
+        "references": [],
+        "narrowings": []
+    }"#)?;
+    let declaration = report.declarations.first().ok_or(CheckerError::Decode {
+        message: "mapped declaration missing".to_owned(),
+        transcript: String::new(),
+    })?;
+    let Some(TypeTree::Mapped {
+        name_as,
+        readonly,
+        optional,
+        ..
+    }) = declaration.r#type.as_ref()
+    else {
+        panic!("mapped checker type missing");
+    };
+    assert!(name_as.is_some());
+    assert_eq!(*readonly, MappedModifier::Add);
+    assert_eq!(*optional, MappedModifier::Remove);
     Ok(())
 }
 

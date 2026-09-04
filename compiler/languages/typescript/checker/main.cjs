@@ -189,11 +189,13 @@ function objectTypeTree(type, depth) {
     const declaration = type.declaration;
     const parameter = declaration && declaration.typeParameter;
     const constraint = parameter && parameter.constraint;
+    const nameAs = declaration && declaration.nameType;
     const value = declaration && declaration.type;
     return {
       kind: 'mapped',
       parameter: parameter && parameter.name ? parameter.name.text : 'K',
       constraint: constraint ? typeTree(checker.getTypeFromTypeNode(constraint), depth) : { kind: 'other', text: 'unknown' },
+      nameAs: nameAs ? typeTree(checker.getTypeFromTypeNode(nameAs), depth) : undefined,
       value: value ? typeTree(checker.getTypeFromTypeNode(value), depth) : { kind: 'other', text: 'unknown' },
       readonly: mappedModifier(declaration && declaration.readonlyToken),
       optional: mappedModifier(declaration && declaration.questionToken),

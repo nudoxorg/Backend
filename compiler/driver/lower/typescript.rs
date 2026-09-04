@@ -14,7 +14,8 @@ use compiler_ir::{
 };
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    Semantic, Span, SymbolFlags, SymbolId, TemplatePart, TypeTree, Utf8Span, with_analysis,
+    MappedModifier as CheckerMappedModifier, Semantic, Span, SymbolFlags, SymbolId, TemplatePart,
+    TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -2926,23 +2927,30 @@ fn intern_computed_tree<'source>(
         TypeTree::Mapped {
             parameter,
             constraint,
+            name_as,
             value,
             readonly,
             optional,
         } => {
-            let children = intern_computed_children(
-                registry,
-                facts,
-                &[constraint.as_ref().clone(), value.as_ref().clone()],
-                owner,
-                depth,
-                spell,
-            )?;
+            let constraint = intern_computed_tree(registry, facts, constraint, owner, depth, spell)?;
+            let name_as = name_as
+                .as_deref()
+                .map(|name_as| intern_computed_tree(registry, facts, name_as, owner, depth, spell))
+                .transpose()?;
+            let value = intern_computed_tree(registry, facts, value, owner, depth, spell)?;
+            let mut children = [constraint, value, 0];
+            let len = match name_as {
+                Some(name_as) => {
+                    children = [constraint, name_as, value];
+                    3
+                }
+                None => 2,
+            };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Mapped);
             record.text = registry.source_spelling(spell, parameter.as_bytes(), owner);
-            record.payload0 = u32::from(*readonly as u8);
-            record.payload1 = u32::from(*optional as u8);
-            intern_computed_row(registry, facts, record, owner, &children[..2])
+            record.payload0 = checker_mapped_modifier(*readonly);
+            record.payload1 = checker_mapped_modifier(*optional);
+            intern_computed_row(registry, facts, record, owner, &children[..len])
         }
         TypeTree::TemplateLiteral { parts } => {
             // The checker report owns strings, while staging deliberately
@@ -3498,6 +3506,17 @@ fn mapped_optional_modifier(mapped: &[u8]) -> u32 {
         }
         Some(_) => u32::from(LatticeMappedModifier::Add),
         None => u32::from(LatticeMappedModifier::Absent),
+    }
+}
+
+/// Maps the checker protocol's independently ordered modifier vocabulary
+/// into the frozen semantic lattice.  Never cast its Rust discriminant: the
+/// checker uses Preserve/Add/Remove while the wire uses Add/Remove/Absent.
+fn checker_mapped_modifier(modifier: CheckerMappedModifier) -> u32 {
+    match modifier {
+        CheckerMappedModifier::Preserve => u32::from(LatticeMappedModifier::Absent),
+        CheckerMappedModifier::Add => u32::from(LatticeMappedModifier::Add),
+        CheckerMappedModifier::Remove => u32::from(LatticeMappedModifier::Remove),
     }
 }
 

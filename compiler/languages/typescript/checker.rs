@@ -225,10 +225,13 @@ pub enum TypeTree {
         #[serde(rename = "elseType")]
         else_type: Box<TypeTree>,
     },
-    /// A mapped type with its key constraint and value type.
+    /// A mapped type with its key constraint, optional `as` remap, and value type.
     Mapped {
         parameter: String,
         constraint: Box<TypeTree>,
+        /// The optional key remap written after `as`.
+        #[serde(rename = "nameAs", default)]
+        name_as: Option<Box<TypeTree>>,
         value: Box<TypeTree>,
         readonly: MappedModifier,
         optional: MappedModifier,
