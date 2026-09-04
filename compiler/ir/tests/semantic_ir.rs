@@ -5,7 +5,7 @@ use compiler_ir::{
     AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
     DocInput, EntityChangeKind, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
     LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot,
-    StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
+    SourceSpan, StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
     TypeHeader, TypePairPayload, TypeParameter, TypeQuadPayload, TypeScriptFacts,
     TypeTriplePayload, UnknownState, UnknownType, Variance, Visibility,
 };
@@ -339,8 +339,10 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
 }
 
 #[test]
-fn logical_links_are_unique_and_confidence_only_upgrades() -> Result<(), compiler_ir::BuildError> {
+fn logical_links_are_unique_while_occurrence_sites_remain_exact(
+) -> Result<(), compiler_ir::BuildError> {
     let mut builder = IrBuilder::new();
+    let source_file = builder.intern_atom(b"fixture.rs")?;
     let versions = [version(1, 1), version(2, 1)];
     let items = [
         TreeItemInput {
@@ -374,21 +376,28 @@ fn logical_links_are_unique_and_confidence_only_upgrades() -> Result<(), compile
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Heuristic,
-            source: None,
+            source: SourceSpan::new(source_file, 8, 14),
         },
         TreeLinkInput {
             from: TreeEntityId::new(0),
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
-            source: None,
+            source: SourceSpan::new(source_file, 22, 28),
+        },
+        TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Compiler,
+            source: SourceSpan::new(source_file, 16, 20),
         },
         TreeLinkInput {
             from: TreeEntityId::new(0),
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Syntactic,
-            source: None,
+            source: SourceSpan::new(source_file, 36, 42),
         },
     ];
     builder.add_borrowed_tree(BorrowedTree {
@@ -402,6 +411,81 @@ fn logical_links_are_unique_and_confidence_only_upgrades() -> Result<(), compile
         .collect::<Vec<_>>();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].1.confidence, Confidence::Compiler);
+    assert_eq!(retained[0].1.source.map(SourceSpan::start), Some(16));
+    let occurrences = ir
+        .link_occurrences_from(compiler_ir::EntityId::new(0))
+        .collect::<Vec<_>>();
+    assert_eq!(occurrences.len(), 4);
+    assert!(occurrences
+        .iter()
+        .all(|(_, occurrence)| occurrence.link == retained[0].0));
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|(_, occurrence)| occurrence.source.map(SourceSpan::start))
+            .collect::<Vec<_>>(),
+        vec![Some(8), Some(16), Some(22), Some(36)]
+    );
+    assert_eq!(
+        occurrences
+            .iter()
+            .map(|(_, occurrence)| occurrence.confidence)
+            .collect::<Vec<_>>(),
+        vec![
+            Confidence::Heuristic,
+            Confidence::Compiler,
+            Confidence::Compiler,
+            Confidence::Syntactic,
+        ]
+    );
+    let mut reversed_builder = IrBuilder::new();
+    let reversed_file = reversed_builder.intern_atom(b"fixture.rs")?;
+    let reversed_links = [
+        TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Syntactic,
+            source: SourceSpan::new(reversed_file, 36, 42),
+        },
+        TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Compiler,
+            source: SourceSpan::new(reversed_file, 16, 20),
+        },
+        TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Compiler,
+            source: SourceSpan::new(reversed_file, 22, 28),
+        },
+        TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: Confidence::Heuristic,
+            source: SourceSpan::new(reversed_file, 8, 14),
+        },
+    ];
+    reversed_builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &reversed_links,
+    })?;
+    let reversed = reversed_builder.finish()?;
+    let reversed_relation = reversed
+        .links_from(compiler_ir::EntityId::new(0))
+        .next()
+        .ok_or(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Link,
+            raw: 0,
+        })?
+        .1;
+    assert_eq!(reversed_relation.confidence, Confidence::Compiler);
+    assert_eq!(reversed_relation.source.map(SourceSpan::start), Some(16));
     Ok(())
 }
 

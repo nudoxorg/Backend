@@ -22,6 +22,13 @@ pub enum External {}
 /// Marker for a graph-link row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum LinkSpace {}
+/// Marker for one observed occurrence of a canonical graph relation.
+///
+/// A relation is unique by `(from, target, kind)`; an occurrence is not.
+/// Multiple written reference sites can prove the same relation with distinct
+/// spans and confidence, and remain independently queryable through this ID.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum LinkOccurrenceSpace {}
 /// Marker for an entity coordinate local to one borrowed tree submission.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TreeEntity {}
@@ -30,6 +37,8 @@ pub enum TreeEntity {}
 pub type ExternalId = DenseId<External>;
 /// Dense ID of a graph link.
 pub type LinkId = DenseId<LinkSpace>;
+/// Dense ID of one authority-observed graph occurrence site.
+pub type LinkOccurrenceId = DenseId<LinkOccurrenceSpace>;
 /// Entity coordinate local to a [`BorrowedTree`].
 pub type TreeEntityId = DenseId<TreeEntity>;
 /// Interned sequence of semantic types.
@@ -2374,6 +2383,24 @@ pub struct Link {
     pub from: EntityId,
     pub target: LinkTarget,
     pub kind: LinkKind,
+    /// Strongest confidence observed for this canonical relation.
+    pub confidence: Confidence,
+    /// Optional representative source for compatibility queries.
+    ///
+    /// This is never the exhaustive evidence set. Consumers that need source
+    /// truth must use [`LinkOccurrence`] rows, which retain every site.
+    pub source: Option<SourceSpan>,
+}
+
+/// One authority-observed use site of a canonical [`Link`].
+///
+/// `link` names the deduplicated semantic relation. `confidence` and
+/// `source` are intentionally site-local evidence: replacing them with the
+/// relation's strongest observation would lose repeated references such as a
+/// parameter and result both naming the same symbol.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LinkOccurrence {
+    pub link: LinkId,
     pub confidence: Confidence,
     pub source: Option<SourceSpan>,
 }
@@ -2384,6 +2411,26 @@ struct LinkKey {
     from: EntityId,
     target: LinkTarget,
     kind: LinkKind,
+}
+
+/// Selects the deterministic compatibility evidence stored beside one
+/// canonical relation. Captured sites outrank an uncaptured representative;
+/// equal-confidence captured sites sort by `(file, start, end)`. The complete
+/// site set is deliberately held in [`LinkOccurrence`], never inferred here.
+fn canonical_relation_evidence_precedes(candidate: Link, known: Link) -> bool {
+    match candidate.confidence.cmp(&known.confidence) {
+        core::cmp::Ordering::Greater => true,
+        core::cmp::Ordering::Less => false,
+        core::cmp::Ordering::Equal => source_evidence_key(candidate.source) < source_evidence_key(known.source),
+    }
+}
+
+fn source_evidence_key(source: Option<SourceSpan>) -> (u8, u32, u32, u32) {
+    match source {
+        // A captured coordinate is more specific than universal absence.
+        Some(span) => (0, span.file().raw, span.start(), span.end()),
+        None => (1, u32::MAX, u32::MAX, u32::MAX),
+    }
 }
 
 /// Slice-backed entity input. No field owns frontend memory.
@@ -2401,7 +2448,10 @@ pub struct TreeItemInput<'source> {
     pub extension: Option<LanguageExtensionInput<'source>>,
 }
 
-/// Slice-backed local link input.
+/// Slice-backed authority-observed link occurrence input.
+///
+/// Every input becomes exactly one [`LinkOccurrence`]. The owning builder
+/// deduplicates only its canonical relation, never these source sites.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TreeLinkInput {
     pub from: TreeEntityId,
@@ -2502,6 +2552,8 @@ pub enum SemanticSpace {
     Type,
     Entity,
     External,
+    Link,
+    LinkOccurrence,
     TypeList,
     EntityList,
     AtomList,
@@ -2668,6 +2720,7 @@ pub struct IrBuilder {
     extensions: LanguageExtensions,
     link_index: HashIndex,
     links: PackedLinks,
+    link_occurrences: PackedLinkOccurrences,
     entity_scratch: Vec<EntityId>,
     atom_scratch: Vec<AtomId>,
     doc_scratch: Vec<DocFragment>,
@@ -2802,9 +2855,11 @@ impl IrBuilder {
                     raw: ordinal,
                 });
             };
-            // Confidence is a monotonic quality lattice. Keep the strongest
-            // observation and its corresponding source evidence.
-            if link.confidence > known.confidence {
+            // Confidence is a monotonic quality lattice. Equal-confidence
+            // observations join by one total source order, so the legacy
+            // representative column never depends on authority emission
+            // order. Exhaustive evidence remains in LinkOccurrence rows.
+            if canonical_relation_evidence_precedes(link, known) {
                 self.links.replace(id, link)?;
             }
             return Ok(id);
@@ -2816,6 +2871,27 @@ impl IrBuilder {
         self.links.reserve_one(usize::from(link.source.is_some()));
         self.links.push(link)?;
         self.link_index.insert(value_hash, id.raw);
+        Ok(id)
+    }
+
+    /// Records one authority-observed source site and returns its typed
+    /// occurrence coordinate. The relation remains canonical and deduped,
+    /// while this method preserves every observation's span and confidence.
+    pub fn add_link_occurrence(&mut self, link: Link) -> Result<LinkOccurrenceId, BuildError> {
+        let id = LinkOccurrenceId::try_from_index(self.link_occurrences.len()).map_err(|_| {
+            CapacityError {
+                space: crate::CapacitySpace::Value,
+                actual: self.link_occurrences.len(),
+            }
+        })?;
+        self.link_occurrences
+            .reserve_one(usize::from(link.source.is_some()));
+        let occurrence = LinkOccurrence {
+            link: self.add_link(link)?,
+            confidence: link.confidence,
+            source: link.source,
+        };
+        self.link_occurrences.push(occurrence)?;
         Ok(id)
     }
 
@@ -2930,7 +3006,7 @@ impl IrBuilder {
                 TreeLinkTarget::Local(local) => LinkTarget::Local(tree_id(range, local)?),
                 TreeLinkTarget::External(external) => LinkTarget::External(external),
             };
-            self.add_link(Link {
+            self.add_link_occurrence(Link {
                 from: tree_id(range, input.from)?,
                 target,
                 kind: input.kind,
@@ -2950,6 +3026,8 @@ impl IrBuilder {
         self.extensions.reserve(item_count, capacity.extensions);
         let link_source_values = tree.links().filter(|link| link.source.is_some()).count();
         self.links.reserve_exact(link_count, link_source_values);
+        self.link_occurrences
+            .reserve_exact(link_count, link_source_values);
         self.link_index.reserve(link_count);
         self.atoms
             .reserve(capacity.atom_values, capacity.atom_bytes);
@@ -2967,11 +3045,13 @@ impl IrBuilder {
     pub fn finish(self) -> Result<Ir, BuildError> {
         self.validate()?;
         let links = self.links;
+        let link_occurrences = self.link_occurrences;
         let (indices, kind_offsets) = IrIndices::build(
             &self.items,
             &self.items.versions,
             &self.atoms,
             &links,
+            &link_occurrences,
             self.externals.as_slice(),
         )?;
         Ok(Ir {
@@ -2993,6 +3073,7 @@ impl IrBuilder {
             indices,
             kind_offsets,
             links,
+            link_occurrences,
         })
     }
 
@@ -3060,6 +3141,21 @@ impl IrBuilder {
             id(link.from, self.items.len(), SemanticSpace::Entity)?;
             validate_target(self, link.target)?;
             if let Some(source) = link.source {
+                atom(self, source.file())?;
+            }
+        }
+        for raw in 0..self.link_occurrences.len() {
+            let Some(occurrence) = self
+                .link_occurrences
+                .get(LinkOccurrenceId::new(raw as u32))
+            else {
+                return Err(BuildError::Dangling {
+                    space: SemanticSpace::LinkOccurrence,
+                    raw: raw as u32,
+                });
+            };
+            id(occurrence.link, self.links.len(), SemanticSpace::Link)?;
+            if let Some(source) = occurrence.source {
                 atom(self, source.file())?;
             }
         }
@@ -3557,6 +3653,8 @@ struct IrIndices {
     outgoing_offsets: RawColumn<u32>,
     incoming: RawColumn<LinkId>,
     incoming_offsets: RawColumn<u32>,
+    occurrence_outgoing: RawColumn<LinkOccurrenceId>,
+    occurrence_outgoing_offsets: RawColumn<u32>,
 }
 
 impl IrIndices {
@@ -3565,10 +3663,12 @@ impl IrIndices {
         versions: &[EntityVersion],
         atoms: &AtomInterner,
         links: &PackedLinks,
+        link_occurrences: &PackedLinkOccurrences,
         externals: &[ExternalTarget],
     ) -> Result<(Self, [u32; 17]), BuildError> {
         let entity_count = items.len();
         let link_count = links.len();
+        let occurrence_count = link_occurrences.len();
         let local_links = (0..link_count)
             .filter(|raw| {
                 links
@@ -3585,6 +3685,8 @@ impl IrIndices {
         let outgoing_offsets = plan.column::<u32>(entity_count.saturating_add(1));
         let incoming = plan.column::<LinkId>(local_links);
         let incoming_offsets = plan.column::<u32>(entity_count.saturating_add(1));
+        let occurrence_outgoing = plan.column::<LinkOccurrenceId>(occurrence_count);
+        let occurrence_outgoing_offsets = plan.column::<u32>(entity_count.saturating_add(1));
         let slab = plan.allocate();
         let mut indices = Self {
             stable: slab.bind(stable),
@@ -3595,6 +3697,8 @@ impl IrIndices {
             outgoing_offsets: slab.bind(outgoing_offsets),
             incoming: slab.bind(incoming),
             incoming_offsets: slab.bind(incoming_offsets),
+            occurrence_outgoing: slab.bind(occurrence_outgoing),
+            occurrence_outgoing_offsets: slab.bind(occurrence_outgoing_offsets),
             _slab: slab,
         };
         for raw in 0..entity_count {
@@ -3622,9 +3726,17 @@ impl IrIndices {
                 indices.incoming.push(id);
             }
         }
+        for raw in 0..occurrence_count {
+            let raw = u32::try_from(raw).map_err(|_| CapacityError {
+                space: crate::CapacitySpace::Value,
+                actual: raw,
+            })?;
+            indices.occurrence_outgoing.push(LinkOccurrenceId::new(raw));
+        }
         for _ in 0..=entity_count {
             indices.outgoing_offsets.push(0);
             indices.incoming_offsets.push(0);
+            indices.occurrence_outgoing_offsets.push(0);
         }
 
         indices
@@ -3681,6 +3793,12 @@ impl IrIndices {
             indices.incoming_offsets.as_mut_slice(),
             true,
         );
+        sort_occurrence_adjacency(
+            links,
+            link_occurrences,
+            indices.occurrence_outgoing.as_mut_slice(),
+            indices.occurrence_outgoing_offsets.as_mut_slice(),
+        );
         Ok((indices, kind_offsets))
     }
 }
@@ -3727,6 +3845,48 @@ fn sort_adjacency(links: &PackedLinks, order: &mut [LinkId], offsets: &mut [u32]
     prefix_sum(offsets);
 }
 
+/// Sorts every authority-observed occurrence by owner and canonical relation
+/// without collapsing sites. Fully equal sites are intentionally an unordered
+/// multiset: no emission ordinal enters a canonical storage key.
+fn sort_occurrence_adjacency(
+    links: &PackedLinks,
+    occurrences: &PackedLinkOccurrences,
+    order: &mut [LinkOccurrenceId],
+    offsets: &mut [u32],
+) {
+    order.sort_unstable_by_key(|occurrence_id| {
+        let occurrence = occurrences
+            .get(*occurrence_id)
+            .expect("occurrence IDs originate from packed occurrence rows");
+        let relation = links
+            .get(occurrence.link)
+            .expect("occurrence relations were validated before indexing");
+        let (external, target) = match relation.target {
+            LinkTarget::Local(target) => (0, target.raw),
+            LinkTarget::External(target) => (1, target.raw),
+        };
+        (
+            relation.from.raw,
+            external,
+            target,
+            relation.kind,
+            occurrence.source.map_or(u32::MAX, |span| span.file().raw),
+            occurrence.source.map_or(u32::MAX, SourceSpan::start),
+            occurrence.source.map_or(u32::MAX, SourceSpan::end),
+        )
+    });
+    for occurrence_id in order.iter().copied() {
+        let occurrence = occurrences
+            .get(occurrence_id)
+            .expect("occurrence IDs originate from packed occurrence rows");
+        let relation = links
+            .get(occurrence.link)
+            .expect("occurrence relations were validated before indexing");
+        offsets[relation.from.index() + 1] += 1;
+    }
+    prefix_sum(offsets);
+}
+
 /// Dense entity column family. Every slice has the same length and uses
 /// [`EntityId`] as its direct array coordinate.
 #[derive(Clone, Copy, Debug)]
@@ -3765,6 +3925,7 @@ impl SourceColumnsView<'_> {
 /// projection, sorting, or adjacency construction occurs when this view is made.
 #[derive(Clone, Copy, Debug)]
 pub struct GraphColumns<'ir> {
+    /// Canonical relation rows, unique by `(from, target, kind)`.
     pub from: &'ir [EntityId],
     pub targets: &'ir [LinkTarget],
     pub kinds: &'ir [LinkKind],
@@ -3774,6 +3935,19 @@ pub struct GraphColumns<'ir> {
     pub outgoing_offsets: &'ir [u32],
     pub incoming: &'ir [LinkId],
     pub incoming_offsets: &'ir [u32],
+    /// Every observed source occurrence, including repeated sites for one
+    /// canonical relation. Its CSR index is keyed by the relation's `from`.
+    pub occurrences: LinkOccurrenceColumns<'ir>,
+}
+
+/// Typed dense columns for authority-observed graph source sites.
+#[derive(Clone, Copy, Debug)]
+pub struct LinkOccurrenceColumns<'ir> {
+    pub links: &'ir [LinkId],
+    pub confidence: &'ir [Confidence],
+    pub sources: SparseColumnView<'ir, SourceSpan>,
+    pub outgoing: &'ir [LinkOccurrenceId],
+    pub outgoing_offsets: &'ir [u32],
 }
 
 struct PackedLinks {
@@ -3783,6 +3957,89 @@ struct PackedLinks {
     kinds: RawColumn<LinkKind>,
     confidence: RawColumn<Confidence>,
     sources: SparseColumn<SourceSpan>,
+}
+
+/// Compact site-evidence plane parallel to canonical graph links.
+///
+/// This is deliberately not interned: two equal source spans are still two
+/// independent authority observations if they were emitted separately.
+struct PackedLinkOccurrences {
+    _slab: Slab,
+    links: RawColumn<LinkId>,
+    confidence: RawColumn<Confidence>,
+    sources: SparseColumn<SourceSpan>,
+}
+
+impl Default for PackedLinkOccurrences {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
+}
+
+impl PackedLinkOccurrences {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut plan = SlabPlan::default();
+        let links = plan.column::<LinkId>(capacity);
+        let confidence = plan.column::<Confidence>(capacity);
+        let slab = plan.allocate();
+        Self {
+            links: slab.bind(links),
+            confidence: slab.bind(confidence),
+            _slab: slab,
+            sources: SparseColumn::default(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.links.len()
+    }
+
+    fn reserve_exact(&mut self, additional: usize, source_values: usize) {
+        let required = self.len().saturating_add(additional);
+        if required > self.links.capacity() {
+            let mut next = Self::with_capacity(required);
+            next.links.extend_from_slice(&self.links);
+            next.confidence.extend_from_slice(&self.confidence);
+            core::mem::swap(&mut next.sources, &mut self.sources);
+            *self = next;
+        }
+        self.sources.reserve(required, source_values);
+    }
+
+    fn reserve_one(&mut self, source_values: usize) {
+        if self.len() < self.links.capacity() {
+            self.sources
+                .reserve(self.len().saturating_add(1), source_values);
+            return;
+        }
+        let target = self.links.capacity().saturating_mul(2).max(8);
+        self.reserve_exact(target.saturating_sub(self.len()), source_values);
+    }
+
+    fn push(&mut self, occurrence: LinkOccurrence) -> Result<(), CapacityError> {
+        self.links.push(occurrence.link);
+        self.confidence.push(occurrence.confidence);
+        self.sources.push(occurrence.source)
+    }
+
+    fn get(&self, id: LinkOccurrenceId) -> Option<LinkOccurrence> {
+        let index = id.index();
+        Some(LinkOccurrence {
+            link: *self.links.get(index)?,
+            confidence: *self.confidence.get(index)?,
+            source: self.sources.get_index(index).copied(),
+        })
+    }
+
+    fn view(&self) -> LinkOccurrenceColumns<'_> {
+        LinkOccurrenceColumns {
+            links: &self.links,
+            confidence: &self.confidence,
+            sources: self.sources.view(),
+            outgoing: &[],
+            outgoing_offsets: &[],
+        }
+    }
 }
 
 impl Default for PackedLinks {
@@ -3871,7 +4128,7 @@ impl PackedLinks {
         })
     }
 
-    fn view(&self) -> GraphColumns<'_> {
+    fn view(&self, occurrences: LinkOccurrenceColumns<'_>) -> GraphColumns<'_> {
         GraphColumns {
             from: &self.from,
             targets: &self.targets,
@@ -3882,6 +4139,7 @@ impl PackedLinks {
             outgoing_offsets: &[],
             incoming: &[],
             incoming_offsets: &[],
+            occurrences,
         }
     }
 }
@@ -4002,6 +4260,12 @@ impl StorageColumns<'_> {
         add!(self.graph.outgoing_offsets);
         add!(self.graph.incoming);
         add!(self.graph.incoming_offsets);
+        add!(self.graph.occurrences.links);
+        add!(self.graph.occurrences.confidence);
+        add!(self.graph.occurrences.sources.ordinals());
+        add!(self.graph.occurrences.sources.values());
+        add!(self.graph.occurrences.outgoing);
+        add!(self.graph.occurrences.outgoing_offsets);
         add!(self.vcs.versions);
         add!(self.vcs.stable_entities);
         add!(self.vcs.stable_links);
@@ -4032,6 +4296,7 @@ pub struct Ir {
     indices: IrIndices,
     kind_offsets: [u32; 17],
     links: PackedLinks,
+    link_occurrences: PackedLinkOccurrences,
 }
 
 impl Ir {
@@ -4098,11 +4363,13 @@ impl Ir {
     /// Borrows precomputed graph tables and both CSR directions.
     #[must_use]
     pub fn graph_columns(&self) -> GraphColumns<'_> {
-        let mut columns = self.links.view();
+        let mut columns = self.links.view(self.link_occurrences.view());
         columns.outgoing = &self.indices.outgoing;
         columns.outgoing_offsets = &self.indices.outgoing_offsets;
         columns.incoming = &self.indices.incoming;
         columns.incoming_offsets = &self.indices.incoming_offsets;
+        columns.occurrences.outgoing = &self.indices.occurrence_outgoing;
+        columns.occurrences.outgoing_offsets = &self.indices.occurrence_outgoing_offsets;
         columns
     }
 
@@ -4249,6 +4516,46 @@ impl Ir {
     pub fn link(&self, id: LinkId) -> Option<Link> {
         self.links.get(id)
     }
+    /// Returns one authority-observed graph site without widening it into its
+    /// deduplicated relation.
+    #[must_use]
+    pub fn link_occurrence(&self, id: LinkOccurrenceId) -> Option<LinkOccurrence> {
+        self.link_occurrences.get(id)
+    }
+    /// Iterates every source occurrence in authority emission order.
+    #[must_use]
+    pub fn link_occurrences(&self) -> LinkOccurrenceIter<'_> {
+        LinkOccurrenceIter {
+            ir: self,
+            ids: None,
+            next: 0,
+            end: self.link_occurrences.len(),
+        }
+    }
+    /// Iterates source occurrences from one entity through the precomputed
+    /// occurrence CSR index. This never scans unrelated owners or reparses
+    /// the compact occurrence lane.
+    #[must_use]
+    pub fn link_occurrences_from(&self, entity: EntityId) -> LinkOccurrenceIter<'_> {
+        let range = self
+            .indices
+            .occurrence_outgoing_offsets
+            .get(entity.index())
+            .zip(self.indices.occurrence_outgoing_offsets.get(entity.index() + 1));
+        let ids = range
+            .and_then(|(start, end)| {
+                self.indices
+                    .occurrence_outgoing
+                    .get(*start as usize..*end as usize)
+            })
+            .unwrap_or(&[]);
+        LinkOccurrenceIter {
+            ir: self,
+            ids: Some(ids),
+            next: 0,
+            end: ids.len(),
+        }
+    }
     #[must_use]
     pub(crate) fn canonical_link_ids(&self) -> &[LinkId] {
         &self.indices.canonical_links
@@ -4344,6 +4651,12 @@ impl<'ir> ItemView<'ir> {
     pub fn links_from(self) -> LinkIter<'ir> {
         self.ir.links_from(self.id)
     }
+    /// Iterates every authority-observed outgoing source site, including
+    /// repeated uses that share a canonical semantic relation.
+    #[must_use]
+    pub fn link_occurrences_from(self) -> LinkOccurrenceIter<'ir> {
+        self.ir.link_occurrences_from(self.id)
+    }
     #[must_use]
     pub fn links_to(self) -> LinkIter<'ir> {
         self.ir.links_to(self.id)
@@ -4369,6 +4682,38 @@ impl<'ir> Iterator for LinkIter<'ir> {
 }
 impl ExactSizeIterator for LinkIter<'_> {}
 impl core::iter::FusedIterator for LinkIter<'_> {}
+
+/// Exact-size iterator over typed authority-observed graph source sites.
+pub struct LinkOccurrenceIter<'ir> {
+    ir: &'ir Ir,
+    ids: Option<&'ir [LinkOccurrenceId]>,
+    next: usize,
+    end: usize,
+}
+
+impl<'ir> Iterator for LinkOccurrenceIter<'ir> {
+    type Item = (LinkOccurrenceId, LinkOccurrence);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.next;
+        if index == self.end {
+            return None;
+        }
+        self.next += 1;
+        let id = self
+            .ids
+            .and_then(|ids| ids.get(index).copied())
+            .unwrap_or_else(|| LinkOccurrenceId::new(index as u32));
+        self.ir.link_occurrence(id).map(|occurrence| (id, occurrence))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end.saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+impl ExactSizeIterator for LinkOccurrenceIter<'_> {}
+impl core::iter::FusedIterator for LinkOccurrenceIter<'_> {}
 
 /// Exact-size borrowed iterator over entity posting lists.
 pub struct ItemIdIter<'ir> {
