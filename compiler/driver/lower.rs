@@ -45,7 +45,9 @@ pub(super) const MAX_FACT_CHILDREN: usize = 16;
 /// Dense bound of one fact's ordered type-record children.
 pub(super) const MAX_TYPE_CHILDREN: usize = 16;
 /// Dense bound of the occurrence lane committed beside the declarations.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
+/// The driver-internal boxed scratch for this lane costs about 230 KiB per
+/// compile at the authorized 8192-row bound; the fact geometry remains 1024.
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 8192;
 /// Dense bound of the documentation lane committed beside the declarations.
 pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 4096;
 /// Dense bound of extension atoms admitted beside declaration names.
@@ -1572,7 +1574,7 @@ fn live_type<'source>(
             let parameter_count = child_count - usize::from(has_result);
             let mut elements = [TupleElement {
                 label: None,
-                ty: children[0],
+                ty: TypeId::new(0),
                 kind: TupleElementKind::Required,
             }; MAX_TYPE_CHILDREN];
             for position in 0..parameter_count {
@@ -1590,9 +1592,20 @@ fn live_type<'source>(
                 };
             }
             let parameters = tree.intern_tuple_elements(&elements[..parameter_count])?;
+            let result = if has_result {
+                if child_count == 0 {
+                    return Err(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    });
+                }
+                Some(children[child_count - 1])
+            } else {
+                None
+            };
             tree.intern_concrete(ConcreteType::Function {
                 parameters,
-                result: has_result.then_some(children[child_count - 1]),
+                result,
                 abi: None,
                 variadic: false,
                 unsafe_: false,
