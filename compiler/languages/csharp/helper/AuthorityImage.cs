@@ -67,6 +67,36 @@ internal static class AuthorityImage
             var model = compilation.GetSemanticModel(tree);
             foreach (var node in tree.GetRoot().DescendantNodesAndSelf())
             {
+                // A field/event declaration is one syntax container but each
+                // variable is a distinct Roslyn symbol and semantic entity.
+                // Bind the container to the first row for declaration-wide
+                // ownership and each declarator to its own row for references
+                // in initializers. Selecting Variables[0] here would silently
+                // discard every later declarator.
+                if (node is BaseFieldDeclarationSyntax field)
+                {
+                    var first = true;
+                    foreach (var variable in field.Declaration.Variables)
+                    {
+                        var fieldSymbol = model.GetDeclaredSymbol(variable);
+                        if (fieldSymbol is null || !IsEmittable(node, fieldSymbol)) continue;
+                        var fieldRow = declarations.Count;
+                        declarationMap.TryAdd(fieldSymbol, checked((uint)fieldRow));
+                        syntaxMap.Add(variable, checked((uint)fieldRow));
+                        if (first)
+                        {
+                            syntaxMap.Add(node, checked((uint)fieldRow));
+                            first = false;
+                        }
+                        infos.Add(new DeclarationInfo(
+                            fieldSymbol,
+                            node,
+                            null,
+                            variable.Identifier.Span));
+                        declarations.Add(new byte[48]);
+                    }
+                    continue;
+                }
                 var symbol = DeclaredSymbol(model, node);
                 if (symbol is null || !IsEmittable(node, symbol) || syntaxMap.ContainsKey(node))
                     continue;
@@ -118,8 +148,6 @@ internal static class AuthorityImage
             BaseNamespaceDeclarationSyntax n => model.GetDeclaredSymbol(n),
             BaseTypeDeclarationSyntax n => model.GetDeclaredSymbol(n),
             DelegateDeclarationSyntax n => model.GetDeclaredSymbol(n),
-            EventFieldDeclarationSyntax n => model.GetDeclaredSymbol(n.Declaration.Variables[0]),
-            BaseFieldDeclarationSyntax n => model.GetDeclaredSymbol(n.Declaration.Variables[0]),
             EnumMemberDeclarationSyntax n => model.GetDeclaredSymbol(n),
             PropertyDeclarationSyntax n => model.GetDeclaredSymbol(n),
             IndexerDeclarationSyntax n => model.GetDeclaredSymbol(n),
@@ -310,7 +338,32 @@ internal static class AuthorityImage
         private static byte RefKind(ISymbol s) => s is IMethodSymbol method ? RefKind(method.RefKind) : s is IPropertySymbol property && property.ReturnsByRefReadonly ? (byte)4 : s is IPropertySymbol property2 && property2.ReturnsByRef ? (byte)2 : (byte)0;
         private static byte RefKind(RefKind k) => k switch { Microsoft.CodeAnalysis.RefKind.In => 1, Microsoft.CodeAnalysis.RefKind.Ref => 2, Microsoft.CodeAnalysis.RefKind.Out => 3, Microsoft.CodeAnalysis.RefKind.RefReadOnlyParameter => 4, _ => 0 };
         private static byte Flags(ISymbol s, SyntaxNode n) => (byte)((s is IMethodSymbol method && method.IsExtensionMethod ? 1 : 0) | (s is IMethodSymbol asyncMethod && asyncMethod.IsAsync ? 2 : 0) | (s is IMethodSymbol iterator && HasYield(n) ? 4 : 0) | (s is IFieldSymbol field && field.IsConst ? 8 : 0) | (s switch { IMethodSymbol m => m.ExplicitInterfaceImplementations.Length > 0, IPropertySymbol p => p.ExplicitInterfaceImplementations.Length > 0, IEventSymbol e => e.ExplicitInterfaceImplementations.Length > 0, _ => false } ? 16 : 0));
-        private static byte Partial(ISymbol s, SyntaxTree t, SyntaxNode node) => s is INamedTypeSymbol n && n.DeclaringSyntaxReferences.Length > 1 ? (byte)1 : s is IMethodSymbol m && (m.PartialDefinitionPart is not null || m.PartialImplementationPart is not null) ? (byte)(m.PartialDefinitionPart is null || Matches(m.PartialImplementationPart, node) ? 2 : Matches(m.PartialDefinitionPart, node) ? 1 : 0) : (byte)0;
+        private static byte Partial(ISymbol symbol, SyntaxTree tree, SyntaxNode node)
+        {
+            if (symbol is INamedTypeSymbol named && named.DeclaringSyntaxReferences.Length > 1)
+            {
+                // Every independently compiled source fragment retains its
+                // local partial type. When the same tree has several parts,
+                // only its earliest source part is the definition row; later
+                // parts are implementation rows and lower under that owner.
+                var firstLocal = named.DeclaringSyntaxReferences
+                    .Where(reference => reference.SyntaxTree == tree)
+                    .OrderBy(reference => reference.Span.Start)
+                    .FirstOrDefault();
+                return firstLocal is null || firstLocal.Span.Equals(node.Span) ? (byte)1 : (byte)2;
+            }
+            if (symbol is not IMethodSymbol method ||
+                (method.PartialDefinitionPart is null && method.PartialImplementationPart is null))
+                return 0;
+
+            var definition = method.PartialDefinitionPart ??
+                (method.PartialImplementationPart is not null ? method : null);
+            var implementation = method.PartialImplementationPart ??
+                (method.PartialDefinitionPart is not null ? method : null);
+            if (Matches(definition, node)) return 1;
+            if (Matches(implementation, node)) return 2;
+            return 0;
+        }
         private static byte Nullable(ITypeSymbol t) => t.NullableAnnotation switch { NullableAnnotation.Annotated => 1, NullableAnnotation.NotAnnotated when t.IsReferenceType || t.TypeKind == TypeKind.TypeParameter => 2, _ => 0 };
         private static bool HasDefault(IParameterSymbol p) { try { return p.HasExplicitDefaultValue; } catch (InvalidOperationException) { return false; } }
         private static bool AllowsRefLike(ITypeParameterSymbol p) => typeof(ITypeParameterSymbol).GetProperty("AllowsRefLikeType")?.GetValue(p) is true;
