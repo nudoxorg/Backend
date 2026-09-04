@@ -16,7 +16,7 @@ use super::{
     ENTITY_NAME_SCORE_UNITS, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, initialize,
     selected_region,
 };
-use crate::fact::EntityFact;
+use crate::fact::{EntityFact, LinkKinds, SemanticTypeFact};
 
 /// Caller-owned regions for allocation-free semantic-image index projection.
 pub struct SemanticIndexBuildScratch<'output> {
@@ -141,6 +141,25 @@ fn derive_semantic_entities<'opened: 'output, 'semantic: 'output, 'output>(
                     name: entity.name,
                 },
             )?;
+            let semantic_type = match entity.semantic_type {
+                Some(coordinate) => {
+                    let ty = artifact.semantic_image.ty(coordinate).ok_or(
+                        BuildDerivationError::MissingTypeNode {
+                            entity: entity.id,
+                            semantic_type: coordinate,
+                        },
+                    )?;
+                    Some(SemanticTypeFact {
+                        coordinate,
+                        class: ty.tag(),
+                    })
+                }
+                None => None,
+            };
+            let links = artifact
+                .semantic_image
+                .links_from(entity.id)
+                .fold(LinkKinds::NONE, |kinds, (_, link)| kinds.insert(link.kind));
             Ok(EntityFact::new_semantic(
                 EntityDocumentId {
                     artifact: EntityArtifactIdentity::Semantic(image.identity),
@@ -149,7 +168,8 @@ fn derive_semantic_entities<'opened: 'output, 'semantic: 'output, 'output>(
                 entity.id,
                 name,
                 entity.kind,
-                entity.semantic_type,
+                semantic_type,
+                links,
             ))
         },
     )

@@ -13,6 +13,7 @@
 
 mod construct;
 mod error;
+mod facet;
 mod fact;
 mod initialized;
 
@@ -22,7 +23,12 @@ pub use construct::{
     preflight_semantic,
 };
 pub use error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion};
+pub use facet::{
+    FacetCell, FacetExactStanding, FacetHit, FacetHitFact, FacetJoinError, FacetLexicalStanding,
+    FacetTable, FacetTerminal, join_facets,
+};
 pub use fact::{
     ENTITY_VALUE_BYTES, EXACT_ENTITY_KEY_BYTES, EntityFact, EntityFactView, EntityProjection,
     ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView, IndexedType,
+    LinkKinds, SemanticTypeFact,
 };

@@ -1487,6 +1487,21 @@ const fn unknown_from(value: u16) -> Option<UnknownReason> {
 }
 
 impl TypeExpr {
+    /// Returns the closed directory class of this semantic type.
+    ///
+    /// The class is coordinate-free and therefore safe to carry in search
+    /// projections that retain a [`TypeId`] only as a route back into the
+    /// image that owns it.  Rendering and structural traversal must still use
+    /// the owning [`crate::SemanticReader`].
+    #[must_use]
+    pub const fn tag(self) -> TypeTag {
+        match self {
+            Self::Concrete(ty) => ty.tag(),
+            Self::Computed(ty) => ty.tag(),
+            Self::Unknown(_) => TypeTag::Unknown,
+        }
+    }
+
     #[must_use]
     pub const fn is_computed(self) -> bool {
         matches!(self, Self::Computed(_))
@@ -1619,6 +1634,45 @@ pub enum ConcreteType {
     },
 }
 
+impl ConcreteType {
+    /// Returns the closed directory class of this concrete type.
+    #[must_use]
+    pub const fn tag(self) -> TypeTag {
+        match self {
+            Self::Builtin(_) => TypeTag::Builtin,
+            Self::Literal(_) => TypeTag::Literal,
+            Self::Nominal(_) => TypeTag::Nominal,
+            Self::External(_) => TypeTag::External,
+            Self::Parameter(_) => TypeTag::Parameter,
+            Self::Applied { .. } => TypeTag::Applied,
+            Self::Tuple(_) => TypeTag::Tuple,
+            Self::Object(_) => TypeTag::Object,
+            Self::Function { .. } => TypeTag::Function,
+            Self::Reference { .. } => TypeTag::Reference,
+            Self::Pointer { .. } => TypeTag::Pointer,
+            Self::Slice(_) => TypeTag::Slice,
+            Self::Array { .. } => TypeTag::Array,
+            Self::Optional(_) => TypeTag::Optional,
+            Self::Union(_) => TypeTag::Union,
+            Self::Intersection(_) => TypeTag::Intersection,
+            Self::ImplTrait(_) => TypeTag::ImplTrait,
+            Self::DynTrait(_) => TypeTag::DynTrait,
+            Self::Wildcard(_) => TypeTag::Wildcard,
+            Self::Annotated { .. } => TypeTag::Annotated,
+            Self::Inferred(_) => TypeTag::Inferred,
+            Self::QualifiedPath { .. } => TypeTag::QualifiedPath,
+            Self::Map { .. } => TypeTag::Map,
+            Self::Channel { .. } => TypeTag::Channel,
+            Self::CxxReference { .. } => TypeTag::CxxReference,
+            Self::CPointer { .. } => TypeTag::CPointer,
+            Self::CxxMemberPointer { .. } => TypeTag::CxxMemberPointer,
+            Self::CQualified { .. } => TypeTag::CQualified,
+            Self::CBlockPointer { .. } => TypeTag::CBlockPointer,
+            Self::NativeCharacter { .. } => TypeTag::NativeCharacter,
+        }
+    }
+}
+
 /// Closed array extent semantics. Rendering belongs to a language dialect;
 /// it may never guess an extent from a surface spelling shared by languages.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1696,6 +1750,25 @@ pub enum ComputedType {
     },
     Awaited(TypeId),
     This,
+}
+
+impl ComputedType {
+    /// Returns the closed directory class of this unevaluated type program.
+    #[must_use]
+    pub const fn tag(self) -> TypeTag {
+        match self {
+            Self::KeyOf(_) => TypeTag::KeyOf,
+            Self::TypeOf(_) => TypeTag::TypeOf,
+            Self::IndexedAccess { .. } => TypeTag::IndexedAccess,
+            Self::Conditional { .. } => TypeTag::Conditional,
+            Self::Mapped { .. } => TypeTag::Mapped,
+            Self::Infer { .. } => TypeTag::Infer,
+            Self::TemplateLiteral(_) => TypeTag::TemplateLiteral,
+            Self::Import { .. } => TypeTag::Import,
+            Self::Awaited(_) => TypeTag::Awaited,
+            Self::This => TypeTag::This,
+        }
+    }
 }
 
 /// Operand of TypeScript's `typeof` type query.

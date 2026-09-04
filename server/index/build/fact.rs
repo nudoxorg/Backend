@@ -9,6 +9,8 @@ mod value;
 
 pub use entity::{EntityFact, EntityFactView, EntityProjection};
 pub use key::{EXACT_ENTITY_KEY_BYTES, ExactEntityKey};
+pub(crate) use value::type_tag_code;
 pub use value::{
     ENTITY_VALUE_BYTES, ExactEntityValue, ExactEntityValueError, ExactEntityValueView, IndexedType,
+    LinkKinds, SemanticTypeFact,
 };

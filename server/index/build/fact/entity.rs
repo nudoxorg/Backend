@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use super::{ExactEntityKey, ExactEntityValue, IndexedType};
+use super::{ExactEntityKey, ExactEntityValue, IndexedType, LinkKinds, SemanticTypeFact};
 use compiler_ir::EntityId;
 use compiler_ir::{EntityKind, TypeNode};
 use server_index_core::EntityDocumentId;
@@ -55,6 +55,7 @@ impl<'bytes> EntityFact<'bytes> {
                 exact_value: ExactEntityValue::from_facts(
                     kind,
                     IndexedType::Compact(semantic_type),
+                    LinkKinds::NONE,
                 ),
                 name,
             },
@@ -66,7 +67,8 @@ impl<'bytes> EntityFact<'bytes> {
         entity: EntityId,
         name: &'bytes [u8],
         kind: EntityKind,
-        semantic_type: Option<compiler_ir::TypeId>,
+        semantic_type: Option<SemanticTypeFact>,
+        links: LinkKinds,
     ) -> Self {
         Self {
             view: EntityFactView {
@@ -75,6 +77,7 @@ impl<'bytes> EntityFact<'bytes> {
                 exact_value: ExactEntityValue::from_facts(
                     kind,
                     IndexedType::Semantic(semantic_type),
+                    links,
                 ),
                 name,
             },
