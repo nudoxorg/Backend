@@ -1442,11 +1442,12 @@ impl<'source> FactSet<'source> {
     }
 
     /// First pooled position of one fact's type-record children.
+    ///
+    /// Admission records this prefix coordinate with the row. Recursive
+    /// projection therefore performs one indexed lookup instead of summing
+    /// every preceding row's child count for each visit.
     pub(super) fn type_children_base(&self, ordinal: usize) -> usize {
-        self.type_child_counts[..ordinal]
-            .iter()
-            .map(|count| usize::from(*count))
-            .sum()
+        self.type_child_starts[ordinal] as usize
     }
 
     /// One pooled type-record child of a fact row by absolute position.
