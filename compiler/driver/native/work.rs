@@ -128,6 +128,7 @@ pub(super) fn compound_native_work_cleanup<'diagnostic>(
         | CompileFailure::ExtensionAtomUnbound { .. }
         | CompileFailure::FactRejected { .. }
         | CompileFailure::CSharpProjection { .. }
+        | CompileFailure::ClangProjection { .. }
         | CompileFailure::NativeWork {
             phase: NativeWorkPhase::Cleanup,
             ..

@@ -102,6 +102,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
+        CompileFailure::ClangProjection { .. } => "clang-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",
         CompileFailure::Write { .. } => "write",

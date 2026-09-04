@@ -76,7 +76,7 @@ use crate::lower::{
     AdmissionFault, EmissionExtension, FactSet, LEAF_PRODUCT, MAX_FACT_CHILDREN, MAX_TYPE_CHILDREN,
     SemanticFact, StagedSourceSpan, push_fact,
 };
-use crate::types::{FactFault, FactRejection};
+use crate::types::{ClangProjectionFault, FactFault, FactRejection};
 
 /// Exact direct-authority rejection while borrowing libclang facts.
 ///
@@ -93,59 +93,21 @@ pub(crate) enum ClangCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
+    /// Projection rejected one exact direct-authority fact; operands retained.
+    Projection(ClangProjectionFault),
     /// Canonical admission rejected the completed fact image; its cause is retained.
     Admission(AdmissionFault),
 }
 
-/// Exact projection fault retained until the collect boundary folds it into
-/// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership. Admission faults
-/// are preserved as typed terminals; projection faults retain their operands
-/// here while folding to the existing closed terminal.
-#[derive(Debug)]
-enum ProjectionFault {
-    /// An authority span had no exact byte range inside the bound source.
-    Span {
-        /// The rejected authority span.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        span: SourceSpan,
-    },
-    /// An authority declaration name span was absent or empty where the
-    /// lane's nonempty-name law demands bytes.
-    Nameless {
-        /// The rejected declaration fact.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        declaration: DeclarationId,
-    },
-    /// An anonymous type row had no already-pushed owner fact to anchor it.
-    Anchor,
-    /// A bounded projection index overflowed its lane width.
-    IndexCapacity,
-    /// A native override named a foreign USR for which the authority exposed
-    /// neither an emitted local declaration nor a canonical foreign spelling.
-    /// It must not be fabricated as a stable fragment reference.
-    ForeignOverride {
-        #[expect(
-            dead_code,
-            reason = "the exact native identity is retained until the existing closed terminal fold"
-        )]
-        identity: SymbolIdentity,
-    },
-}
+/// The common Clang fault vocabulary is the only projection-terminal route.
+///
+/// It retains authority operands beyond this module; unsupported lowering is
+/// reserved exclusively for a supported authority fact with no language
+/// lowering recipe.
+type ProjectionFault = ClangProjectionFault;
 
-/// Folds one projection fault into the lane's closed terminal. The shared
-/// driver failure match owns the terminal arms and is outside this module's
-/// ownership, so operand-preserving Clang terminals stay folded here; adding
-/// a terminal arm is recorded as a lane criticism in the module's review notes.
 fn terminal(fault: ProjectionFault) -> ClangCollectError {
-    let _ = fault;
-    ClangCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+    ClangCollectError::Projection(fault)
 }
 
 /// Folds one bounded-lane fact rejection into the exact typed rejection. The
@@ -1777,28 +1739,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         reference.owner.and_then(|identity| self.ordinal_of(identity))
     }
 
-    /// Converts a known-but-unemitted override target into the canonical
-    /// self-describing foreign-key lane.  A native identity is not a fragment
-    /// identity: inventing a `StableRef` here would claim a resolvable target
-    /// that no published fragment actually owns.
+    /// Stops on a foreign override whose authority supplied only an opaque
+    /// native identity.
+    ///
+    /// A declaration spelling is presentation, not a foreign declaration
+    /// identity: overloads can share it.  The current compact contract has no
+    /// full-USR field, so publishing a key from that spelling would fabricate
+    /// a target.  Preserve the authority's opaque identity in the exact
+    /// terminal until the schema carries the complete foreign contract.
     fn foreign_override_target(
         &self,
         identity: SymbolIdentity,
     ) -> Result<OccurrenceTarget<'source>, ClangCollectError> {
-        let declaration = self
-            .authority
-            .declarations
-            .iter()
-            .find(|declaration| declaration.identity == Some(identity))
-            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))?;
-        let span = declaration
-            .name
-            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))?;
-        let written = self
-            .slice(span)
-            .map_err(terminal)?;
-        foreign_universe_key(written, None)
-            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))
+        let _ = self;
+        Err(terminal(ProjectionFault::ForeignOverride { identity }))
     }
 
     /// Retrieves the exact source extent for a pushed owner ordinal.
@@ -2795,8 +2749,8 @@ mod tests {
         Ok(())
     }
 
-    /// A source beyond the lane's 128-fact bound is the exact typed
-    /// lowering rejection, never a truncated emission.
+    /// A source beyond the lane's fact bound retains the exact projection
+    /// index terminal, never a truncated emission or a support claim.
     #[test]
     fn capacity_beyond_the_lane_rejects_exactly() -> Result<(), TestError> {
         let mut source = String::new();
@@ -2810,8 +2764,8 @@ mod tests {
             &AtomicBool::new(false),
             &mut facts,
         ) {
-            Err(ClangCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
+            Err(ClangCollectError::Projection(
+                crate::types::ClangProjectionFault::IndexCapacity,
             )) => Ok(()),
             Err(other) => Err(TestError::Collect(other)),
             Ok(()) => Err(TestError::ExpectedRejection),

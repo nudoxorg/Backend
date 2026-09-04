@@ -55,7 +55,7 @@ use crate::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
     MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, push_fact,
 };
-use crate::types::{FactFault, FactRejection};
+use crate::types::{CSharpProjectionFault, FactFault, FactRejection};
 
 /// Exact rejection while lending source-bound Roslyn declaration facts.
 #[derive(Debug)]
@@ -75,65 +75,24 @@ pub(crate) enum CSharpCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
+    /// Projection rejected one exact validated authority fact; operands retained.
+    Projection(CSharpProjectionFault),
 }
 
-/// Exact projection fault retained until the collect boundary folds it into
-/// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership, so every fault
-/// class folds to the same closed terminal as bounded-lane capacity; the
-/// operands remain named here so the collapse site stays typed.
-#[derive(Debug)]
-enum ProjectionFault {
-    /// A validated image plane rejected a coordinate during projection.
-    Image(
-        /// The exact image-plane rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        ImageError,
-    ),
-    /// The recursive type graph exceeded the producer's documented depth budget.
-    Depth,
-    /// A declared name span cannot name the exact bound source bytes.
-    NameSpan {
-        /// The rejected inclusive span start.
-        start: u32,
-        /// The rejected exclusive span end.
-        end: u32,
-    },
-    /// A reference precedes its owner's declaration start, so it has no
-    /// honest owner-relative span cell.
-    OwnerOrder {
-        /// The owning declaration's start coordinate.
-        owner_start: u32,
-        /// The reference's inclusive start coordinate.
-        reference_start: u32,
-    },
-    /// A foreign occurrence key could not be built from its spelling.
-    Foreign,
-    /// The bounded attribute lane overflowed its pooled width.
-    AttributeCapacity {
-        /// The rejected attribute spelling length.
-        spellings: usize,
-    },
-    /// A bounded projection index overflowed its lane width.
-    IndexCapacity,
-}
+/// One C# authority projection fault crossing the collector boundary.
+///
+/// The terminal deliberately retains the fault rather than collapsing it to
+/// a declaration-support claim; support and malformed authority coordinates
+/// are different public outcomes.
+type ProjectionFault = CSharpProjectionFault;
 
-/// Folds one projection fault into the lane's closed terminal. The shared
-/// driver failure match owns the terminal arms and is outside this module's
-/// ownership, so operand-preserving C# terminals stay folded here; adding a
-/// terminal arm is recorded as a lane criticism in the module's review notes.
 fn terminal(fault: ProjectionFault) -> CSharpCollectError {
-    let _ = fault;
-    CSharpCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+    CSharpCollectError::Projection(fault)
 }
 
-/// Folds one bounded-lane fact rejection into the lane's closed terminal.
+/// Retains a non-declaration lane rejection at the projection boundary.
 fn lane_terminal(fault: FactFault) -> CSharpCollectError {
-    let _ = fault;
-    CSharpCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+    terminal(ProjectionFault::Fact(fault))
 }
 
 impl From<ProjectionFault> for CSharpCollectError {

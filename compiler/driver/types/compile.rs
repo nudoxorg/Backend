@@ -861,6 +861,11 @@ fn clang_terminal<'diagnostic>(
             recipe,
             rejected,
         },
+        lower::clang::ClangCollectError::Projection(fault) => CompileFailure::ClangProjection {
+            source_identity,
+            recipe,
+            fault,
+        },
         lower::clang::ClangCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,

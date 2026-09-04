@@ -7,6 +7,7 @@
 //! that produced them.
 
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticTypeFault};
+use compiler_languages_clang::{DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity};
 use compiler_languages_csharp::ImageError;
 
 /// Exact cause for rejecting one emitted fact.
@@ -127,7 +128,7 @@ pub struct FactRejection {
 
 /// Exact C# projection failure retained across the compile terminal.
 #[derive(Debug)]
-pub(crate) enum CSharpProjectionFault {
+pub enum CSharpProjectionFault {
     /// The validated authority image rejected one row while it was lent.
     Image(ImageError),
     /// The recursive authority type graph exceeded its projection budget.
@@ -147,4 +148,23 @@ pub(crate) enum CSharpProjectionFault {
     IndexCapacity,
     /// Canonical fact admission rejected the projected fact.
     Fact(FactFault),
+}
+
+/// Exact Clang projection failure retained across the compile terminal.
+///
+/// These are authority coordinates, not compact emission coordinates: the
+/// driver reports precisely what libclang supplied rather than restating a
+/// rejected native fact as an unsupported language declaration.
+#[derive(Debug)]
+pub enum ClangProjectionFault {
+    /// An authority source span escaped the entered source lease.
+    Span { span: ClangSourceSpan },
+    /// A declaration requiring a name had no nonempty authority name span.
+    Nameless { declaration: ClangDeclarationId },
+    /// An anonymous authority type had no representable owning declaration.
+    Anchor,
+    /// An authority coordinate could not fit the bounded projection index.
+    IndexCapacity,
+    /// An override named a foreign native identity with no exact public key.
+    ForeignOverride { identity: SymbolIdentity },
 }

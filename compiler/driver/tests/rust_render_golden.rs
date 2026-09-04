@@ -163,6 +163,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::NativeRejected { .. } => "native-rejected",
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
+        CompileFailure::ClangProjection { .. } => "clang-projection",
     }
 }
 

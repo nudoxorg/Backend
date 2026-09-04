@@ -216,6 +216,7 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound".to_owned(),
         CompileFailure::FactRejected { .. } => "fact-rejected".to_owned(),
         CompileFailure::CSharpProjection { .. } => "csharp-projection".to_owned(),
+        CompileFailure::ClangProjection { .. } => "clang-projection".to_owned(),
         CompileFailure::Build { .. } => "build".to_owned(),
         CompileFailure::Prepare { .. } => "prepare".to_owned(),
         CompileFailure::Write { .. } => "write".to_owned(),
