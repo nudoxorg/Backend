@@ -17,6 +17,7 @@ mod canonical_data;
 mod columnar;
 mod coordinate;
 mod docs_facts;
+mod discovery;
 mod extension_pools;
 mod interner;
 #[cfg(feature = "mmap")]
@@ -26,6 +27,7 @@ mod prepared;
 mod range;
 mod render;
 mod semantic;
+mod semantic_data_view;
 mod semantic_extension_section;
 mod semantic_facts;
 mod type_facts;
@@ -66,9 +68,10 @@ pub use docs_facts::{
     DecodedDocFact, DocFactCursor, DocFactFault, DocFactInput, DocFragmentInput, DocLinkTarget,
     DocumentationLane,
 };
+pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use extension_pools::{
     DecodedRefList, DecodedTypeParameter, ExtensionPoolFault, ExtensionPoolsLane, ExtensionRefList,
-    ExtensionTypeParameter, ReopenedExtensionPools,
+    ExtensionPoolListLane, ExtensionTypeParameter, ReopenedExtensionPools, reopen_extension_pools,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
@@ -111,6 +114,10 @@ pub use semantic::{
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
     UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
 };
+pub use semantic_data_view::{
+    SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,
+    SemanticDataEntityRoot, SemanticDataView,
+};
 pub use semantic_extension_section::{
     ExtensionSectionInput, ExtensionSectionPlane, ExtensionSectionSource,
     LanguageExtensionCommonBounds, LanguageExtensionDirectoryKind, LanguageExtensionEncodeError,
@@ -124,7 +131,8 @@ pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use type_facts::{
-    DecodedTypeFact, TypeFactCursor, TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment,
+    DecodedTypeFact, DecodedTypeFactChild, TypeFactChildCursor, TypeFactCounts, TypeFactCursor,
+    TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment,
 };
 pub use vcs::{
     Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,

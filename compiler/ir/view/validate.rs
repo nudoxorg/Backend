@@ -12,8 +12,9 @@ use crate::{
     wire::{
         ATOM_RECORD_BYTES, ByteLength, DIRECTORY_ENTRY_LAYOUT, ENTITY_BYTES, FragmentLayout,
         HEADER_LAYOUT, RECIPE_FACT_BYTES, SEMANTIC_CHILD_BYTES, SEMANTIC_CONSTRUCTOR_BYTES,
-        SEMANTIC_DATA_HEADER_BYTES, SEMANTIC_EXTERNAL_TAG, SEMANTIC_LIST_BYTES, SEMANTIC_LOCAL_TAG,
-        SEMANTIC_PRODUCT_BYTES, SOURCE_IDENTITY_BYTES, SectionCount, SectionKind,
+        SEMANTIC_EXTERNAL_TAG, SEMANTIC_LIST_BYTES, SEMANTIC_LOCAL_TAG, SEMANTIC_PRODUCT_BYTES,
+        SOURCE_IDENTITY_BYTES, SectionCount,
+        SectionKind, SemanticDataLayout, semantic_data_header_bytes,
         SectionRequirement, TYPE_NODE_BYTES, atom_fault, decode_entity, decode_recipe_fact,
         decode_source_identity, decode_type_node, entity_fault, entity_name_fault, read_u16,
         read_u32, type_node_fault,
@@ -29,6 +30,7 @@ impl<'fragment> FragmentView<'fragment> {
     pub(crate) fn from_validated_layout(envelope: &'fragment [u8], layout: FragmentLayout) -> Self {
         let entity_lane = &envelope[layout.entities.range()];
         let atom_lane = &envelope[layout.atoms.range()];
+        let semantic_data_lane = layout.semantic_data.map(|lane| &envelope[lane.range()]);
         let occurrence_lane = layout.occurrences.map(|lane| &envelope[lane.range()]);
         let type_fact_lane = layout.type_facts.map(|lane| &envelope[lane.range()]);
         let documentation_lane = layout.documentation.map(|lane| &envelope[lane.range()]);
@@ -42,6 +44,7 @@ impl<'fragment> FragmentView<'fragment> {
             type_nodes: &envelope[layout.type_nodes.range()],
             atoms: atom_lane,
             atom_bytes: &envelope[layout.atom_bytes.range()],
+            semantic_data_lane,
             occurrence_lane,
             type_fact_lane,
             documentation_lane,
@@ -70,6 +73,25 @@ impl<'fragment> FragmentView<'fragment> {
     pub fn type_facts(&self) -> Option<crate::type_facts::TypeFactCursor<'fragment>> {
         self.type_fact_lane
             .map(|payload| crate::type_facts::TypeFactCursor::new(payload, self.layout.schema))
+    }
+
+    /// Opens the validated canonical semantic-product graph.  Schema-3
+    /// values additionally bind each entity to an exact canonical root;
+    /// legacy schema values remain explicitly root-unavailable.
+    #[must_use]
+    pub fn semantic_data(&self) -> Option<crate::SemanticDataView<'fragment>> {
+        self.semantic_data_lane.zip(self.layout.semantic_data_layout).map(
+            |(payload, layout)| crate::SemanticDataView::from_validated(payload, layout),
+        )
+    }
+
+    /// Exact declared/computed geometry of the validated type-fact plane.
+    ///
+    /// Callers reopening extension lists must use this rather than inferring
+    /// a type limit from entity cardinality.
+    #[must_use]
+    pub const fn type_fact_counts(&self) -> Option<crate::TypeFactCounts> {
+        self.layout.type_fact_counts
     }
 
     pub fn type_fact_payload(&self) -> Option<&'fragment [u8]> {
@@ -189,7 +211,7 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         });
     }
     let schema = read_u16(envelope, HEADER_LAYOUT.schema);
-    if schema != 1 && schema != crate::FRAGMENT_SCHEMA {
+    if !(1..=crate::FRAGMENT_SCHEMA).contains(&schema) {
         return Err(FragmentError::Schema { actual: schema });
     }
     let section_count = SectionCount::from(read_u16(envelope, HEADER_LAYOUT.section_count));
@@ -234,8 +256,10 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let mut atom_bytes = None;
     let mut recipe_fact = None;
     let mut semantic_data = None;
+    let mut semantic_data_layout = None;
     let mut occurrences = None;
     let mut type_facts = None;
+    let mut type_fact_counts = None;
     let mut documentation = None;
     let mut language_extensions = None;
     let mut extension_pools = None;
@@ -295,7 +319,18 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
             Ok(SectionKind::SemanticData) => {
                 validate_known_length(&entry, 1)?;
                 require_known(&entry)?;
-                validate_semantic_data(&envelope[entry.lane.range()])?;
+                let entity_count = u32::from(
+                    entities
+                        .ok_or(FragmentError::MissingSection {
+                            section: SectionKind::EntityTypes,
+                        })?
+                        .count,
+                );
+                semantic_data_layout = Some(validate_semantic_data(
+                    &envelope[entry.lane.range()],
+                    schema,
+                    entity_count,
+                )?);
                 semantic_data = Some(entry.lane);
             }
             Ok(SectionKind::Occurrences) => {
@@ -326,13 +361,14 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         })?
                         .count,
                 );
-                crate::type_facts::validate_payload(
+                let counts = crate::type_facts::validate_payload(
                     &envelope[entry.lane.range()],
                     entity_count,
                     schema,
                 )
                 .map_err(|fault| FragmentError::TypeFacts { fault })?;
                 type_facts = Some(entry.lane);
+                type_fact_counts = Some(counts);
             }
             Ok(SectionKind::Documentation) => {
                 validate_known_length(&entry, 1)?;
@@ -373,10 +409,15 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
                         })?
                         .count,
                 );
+                let type_count = type_fact_counts
+                    .map(|counts| counts.total())
+                    .transpose()
+                    .map_err(|fault| FragmentError::TypeFacts { fault })?
+                    .unwrap_or(0);
                 crate::extension_pools::validate_extension_pool_payload(
                     &envelope[entry.lane.range()],
                     atoms_lane_count,
-                    extension_type_count(type_facts.is_some(), entity_count),
+                    type_count,
                     entity_count,
                 )
                 .map_err(|fault| FragmentError::ExtensionPools { fault })?;
@@ -416,6 +457,12 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
     let recipe_fact = recipe_fact.ok_or(FragmentError::MissingSection {
         section: SectionKind::RecipeFact,
     })?;
+    if language_extensions.is_some() != extension_pools.is_some() {
+        return Err(FragmentError::ExtensionPoolPair {
+            extensions: language_extensions.is_some(),
+            pools: extension_pools.is_some(),
+        });
+    }
     let source = decode_source_identity(&envelope[source_identity.range()])
         .map_err(|fault| FragmentError::SourceIdentity { fault })?;
     let recipe = decode_recipe_fact(&envelope[recipe_fact.range()])
@@ -444,8 +491,10 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         source_identity,
         recipe_fact,
         semantic_data,
+        semantic_data_layout,
         occurrences,
         type_facts,
+        type_fact_counts,
         documentation,
         language_extensions,
         extension_pools,
@@ -454,10 +503,6 @@ fn validate_layout(envelope: &[u8]) -> Result<FragmentLayout, FragmentError> {
         output_len: envelope.len(),
         output_wire_len: declared_wire_length,
     })
-}
-
-fn extension_type_count(type_facts_present: bool, entity_count: u32) -> u32 {
-    if type_facts_present { entity_count } else { 0 }
 }
 
 fn require_known(entry: &ParsedDirectoryEntry) -> Result<(), FragmentError> {
@@ -520,11 +565,16 @@ fn validate_known_length(entry: &ParsedDirectoryEntry, width: usize) -> Result<(
 /// five dense lane counts, one length-prefixed canonical atom stream, the
 /// product and constructor lanes, the pooled-list table, and the fixed-width
 /// role-bearing child lane. Every rejection retains the rejected operands.
-fn validate_semantic_data(section: &[u8]) -> Result<(), FragmentError> {
-    if section.len() < SEMANTIC_DATA_HEADER_BYTES {
+fn validate_semantic_data(
+    section: &[u8],
+    schema: u16,
+    entity_count: u32,
+) -> Result<SemanticDataLayout, FragmentError> {
+    let header_bytes = semantic_data_header_bytes(schema);
+    if section.len() < header_bytes {
         return Err(FragmentError::SemanticData {
             fault: SemanticDataFault::Header {
-                required: SEMANTIC_DATA_HEADER_BYTES,
+                required: header_bytes,
                 actual: section.len(),
             },
         });
@@ -535,6 +585,11 @@ fn validate_semantic_data(section: &[u8]) -> Result<(), FragmentError> {
     let constructor_count = read_u32(section, size_of::<u32>() * 2);
     let list_count = read_u32(section, size_of::<u32>() * 3);
     let child_count = read_u32(section, size_of::<u32>() * 4);
+    let entity_root_count = if schema >= 3 {
+        read_u32(section, size_of::<u32>() * 5)
+    } else {
+        0
+    };
     if constructor_count != product_count {
         return Err(FragmentError::SemanticData {
             fault: SemanticDataFault::ConstructorCount {
@@ -544,7 +599,7 @@ fn validate_semantic_data(section: &[u8]) -> Result<(), FragmentError> {
         });
     }
 
-    let mut cursor = SEMANTIC_DATA_HEADER_BYTES;
+    let mut cursor = header_bytes;
     for ordinal in 0..atom_count {
         let Some(length_bytes) = take(section, &mut cursor, size_of::<u32>()) else {
             return Err(semantic_trailing(section, cursor));
@@ -574,7 +629,21 @@ fn validate_semantic_data(section: &[u8]) -> Result<(), FragmentError> {
         section,
     )?;
     let children_offset = advance_offset(lists_offset, list_count, SEMANTIC_LIST_BYTES, section)?;
-    let declared_end = advance_offset(children_offset, child_count, SEMANTIC_CHILD_BYTES, section)?;
+    let children_end =
+        advance_offset(children_offset, child_count, SEMANTIC_CHILD_BYTES, section)?;
+    let declared_end = if schema >= 3 {
+        if entity_root_count != entity_count {
+            return Err(FragmentError::SemanticData {
+                fault: SemanticDataFault::EntityRootCount {
+                    expected: entity_count,
+                    actual: entity_root_count,
+                },
+            });
+        }
+        advance_offset(children_end, entity_root_count, size_of::<u32>(), section)?
+    } else {
+        children_end
+    };
     if declared_end != section.len() {
         return Err(FragmentError::SemanticData {
             fault: SemanticDataFault::Trailing {
@@ -674,7 +743,35 @@ fn validate_semantic_data(section: &[u8]) -> Result<(), FragmentError> {
         };
         validate_child_target(record, child, product_count)?;
     }
-    Ok(())
+    if schema >= 3 {
+        for entity in 0..entity_root_count {
+            let root_at = children_end + usize::try_from(entity).unwrap_or(usize::MAX) * 4;
+            let root = read_u32(section, root_at);
+            if root >= product_count {
+                return Err(FragmentError::SemanticData {
+                    fault: SemanticDataFault::EntityRoot {
+                        entity,
+                        target: root,
+                        product_count,
+                    },
+                });
+            }
+        }
+    }
+    Ok(SemanticDataLayout {
+        atom_count,
+        product_count,
+        constructor_count,
+        list_count,
+        child_count,
+        atom_bytes_start: header_bytes,
+        products_start: products_offset,
+        constructors_start: constructors_offset,
+        lists_start: lists_offset,
+        children_start: children_offset,
+        entity_roots_start: (schema >= 3).then_some(children_end),
+        entity_root_count,
+    })
 }
 
 /// Proves one product-reachable child carries the closed role required by its

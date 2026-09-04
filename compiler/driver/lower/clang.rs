@@ -127,6 +127,16 @@ enum ProjectionFault {
     Anchor,
     /// A bounded projection index overflowed its lane width.
     IndexCapacity,
+    /// A native override named a foreign USR for which the authority exposed
+    /// neither an emitted local declaration nor a canonical foreign spelling.
+    /// It must not be fabricated as a stable fragment reference.
+    ForeignOverride {
+        #[expect(
+            dead_code,
+            reason = "the exact native identity is retained until the existing closed terminal fold"
+        )]
+        identity: SymbolIdentity,
+    },
 }
 
 /// Folds one projection fault into the lane's closed terminal. The shared
@@ -1694,10 +1704,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     )),
                     None => None,
                 },
-                ReferenceTarget::Foreign(identity) => Some((
-                    foreign_symbol(identity),
-                    OccurrenceConfidence::Oracle,
-                )),
+                ReferenceTarget::Foreign(_) => foreign_universe(written, reference.kind)
+                    .map(|target| (target, OccurrenceConfidence::Oracle)),
                 ReferenceTarget::Unresolved => foreign_universe(written, reference.kind)
                     .map(|target| (target, OccurrenceConfidence::Index)),
             };
@@ -1748,10 +1756,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 .push_occurrence(
                     owner,
                     Occurrence {
-                        target: self
-                            .ordinal_of(override_fact.target)
-                            .map(|target| OccurrenceTarget::Local(EntityId::new(target)))
-                            .unwrap_or_else(|| foreign_symbol(override_fact.target)),
+                        target: match self.ordinal_of(override_fact.target) {
+                            Some(target) => OccurrenceTarget::Local(EntityId::new(target)),
+                            None => self.foreign_override_target(override_fact.target)?,
+                        },
                         kind: LaneReferenceKind::Overrides,
                         confidence: OccurrenceConfidence::Oracle,
                         span,
@@ -1767,6 +1775,30 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// would fabricate a relation and an invalid relative span.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
         reference.owner.and_then(|identity| self.ordinal_of(identity))
+    }
+
+    /// Converts a known-but-unemitted override target into the canonical
+    /// self-describing foreign-key lane.  A native identity is not a fragment
+    /// identity: inventing a `StableRef` here would claim a resolvable target
+    /// that no published fragment actually owns.
+    fn foreign_override_target(
+        &self,
+        identity: SymbolIdentity,
+    ) -> Result<OccurrenceTarget<'source>, ClangCollectError> {
+        let declaration = self
+            .authority
+            .declarations
+            .iter()
+            .find(|declaration| declaration.identity == Some(identity))
+            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))?;
+        let span = declaration
+            .name
+            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))?;
+        let written = self
+            .slice(span)
+            .map_err(terminal)?;
+        foreign_universe_key(written, None)
+            .ok_or_else(|| terminal(ProjectionFault::ForeignOverride { identity }))
     }
 
     /// Retrieves the exact source extent for a pushed owner ordinal.
@@ -1913,43 +1945,36 @@ fn foreign_universe<'source>(
     written: &'source [u8],
     kind: ReferenceKind,
 ) -> Option<OccurrenceTarget<'source>> {
-    let path = core::str::from_utf8(written).ok()?;
-    if path.is_empty() {
-        return None;
-    }
     let entity_kind = match kind {
         ReferenceKind::Type | ReferenceKind::Template => Some(EntityKind::Record),
         ReferenceKind::Member => Some(EntityKind::Field),
         _ => None,
     };
-    let key = ForeignKey::new(
-        ForeignOrigin::Universe {
-            ecosystem: ECOSYSTEM,
-        },
-        path,
-        path,
-        entity_kind,
-    )
-    .ok()?;
-    Some(OccurrenceTarget::Foreign(key))
+    foreign_universe_key(written, entity_kind)
 }
 
-/// Binds a resolved native foreign USR to both cells of the canonical stable
-/// target.  The source spelling remains presentation-only; overload identity
-/// and foreign overrides are carried by the authority identity instead.
-fn foreign_symbol(identity: SymbolIdentity) -> OccurrenceTarget<'static> {
-    let mut fragment = [0_u8; 32];
-    fragment[..b"clang.usr.fragment.v1".len()].copy_from_slice(b"clang.usr.fragment.v1");
-    let mut entity = [0_u8; 32];
-    entity[..b"clang.usr.entity.v1".len()].copy_from_slice(b"clang.usr.entity.v1");
-    for (offset, byte) in identity.bytes.iter().copied().enumerate() {
-        fragment[16 + offset] ^= byte;
-        entity[16 + offset] ^= byte;
-    }
-    OccurrenceTarget::Stable(compiler_ir::StableRef {
-        fragment: compiler_ir::ExternalFragmentId::from_canonical_bytes(&fragment),
-        entity: heart_identity::ContentId::from_canonical_bytes(&entity),
-    })
+/// Builds one valid self-describing foreign target. Its path is source text
+/// from the reference site or the authoritative declaration name, never a
+/// hand-minted unresolved `StableRef`.
+fn foreign_universe_key<'source>(
+    written: &'source [u8],
+    kind: Option<EntityKind>,
+) -> Option<OccurrenceTarget<'source>> {
+    let path = core::str::from_utf8(written).ok()?;
+    (!path.is_empty())
+        .then(|| {
+            ForeignKey::new(
+                ForeignOrigin::Universe {
+                    ecosystem: ECOSYSTEM,
+                },
+                path,
+                path,
+                kind,
+            )
+            .ok()
+            .map(OccurrenceTarget::Foreign)
+        })
+        .flatten()
 }
 
 /// The underlying-integer row of one enumeration: the measured width of the

@@ -73,8 +73,22 @@ pub(crate) const ATOM_RECORD_BYTES: usize = size_of::<u32>() * 2;
 pub(crate) const SOURCE_IDENTITY_BYTES: usize = size_of::<u32>() + HASH_BYTES;
 pub(crate) const RECIPE_FACT_BYTES: usize = size_of::<u8>() * 4 + HASH_BYTES * 2;
 
-/// Semantic-data header: atom, product, constructor, list, and child counts.
-pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 5;
+/// Schema-1/2 semantic-data header: atom, product, constructor, list, and
+/// child counts.  Those schemas preserved the canonical graph but did not
+/// retain the entity-to-product roots required to reopen declaration truth.
+pub(crate) const SEMANTIC_DATA_LEGACY_HEADER_BYTES: usize = size_of::<u32>() * 5;
+/// Schema-3 semantic-data header adds an entity-root count.  The following
+/// root map binds each entity row to its canonical product without depending
+/// on a canonicalizer-private source coordinate map.
+pub(crate) const SEMANTIC_DATA_HEADER_BYTES: usize = size_of::<u32>() * 6;
+
+pub(crate) const fn semantic_data_header_bytes(schema: u16) -> usize {
+    if schema >= 3 {
+        SEMANTIC_DATA_HEADER_BYTES
+    } else {
+        SEMANTIC_DATA_LEGACY_HEADER_BYTES
+    }
+}
 /// Semantic product record: head atom and pooled child-list coordinates.
 pub(crate) const SEMANTIC_PRODUCT_BYTES: usize = size_of::<u32>() * 2;
 /// Semantic constructor record: closed tag plus two payload cells.
@@ -237,9 +251,15 @@ pub(crate) struct FragmentLayout {
     pub(crate) recipe_fact: LaneLayout,
     /// Optional canonical semantic-data payload lane.
     pub(crate) semantic_data: Option<LaneLayout>,
+    /// Parsed semantic-data geometry proved during envelope validation.
+    pub(crate) semantic_data_layout: Option<SemanticDataLayout>,
     /// Optional occurrence fact-plane payload lane.
     pub(crate) occurrences: Option<LaneLayout>,
     pub(crate) type_facts: Option<LaneLayout>,
+    /// Validated geometry of the declared and computed type-fact segments.
+    /// This is carried beside the raw lane so every later common-pool reopen
+    /// uses the exact same coordinate bound proven during layout validation.
+    pub(crate) type_fact_counts: Option<crate::TypeFactCounts>,
     /// Optional documentation fact-plane payload lane.
     pub(crate) documentation: Option<LaneLayout>,
     /// Optional language-extension section payload lane.
@@ -250,6 +270,25 @@ pub(crate) struct FragmentLayout {
     pub(crate) recipe: RecipeFact,
     pub(crate) output_len: usize,
     pub(crate) output_wire_len: ByteLength,
+}
+
+/// Offsets and counts of the already-validated semantic-data graph.  This is
+/// intentionally internal wire proof; [`crate::SemanticDataView`] is the
+/// public borrowed semantic surface.
+#[derive(Clone, Copy)]
+pub(crate) struct SemanticDataLayout {
+    pub(crate) atom_count: u32,
+    pub(crate) product_count: u32,
+    pub(crate) constructor_count: u32,
+    pub(crate) list_count: u32,
+    pub(crate) child_count: u32,
+    pub(crate) atom_bytes_start: usize,
+    pub(crate) products_start: usize,
+    pub(crate) constructors_start: usize,
+    pub(crate) lists_start: usize,
+    pub(crate) children_start: usize,
+    pub(crate) entity_roots_start: Option<usize>,
+    pub(crate) entity_root_count: u32,
 }
 
 pub(crate) const fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -472,4 +511,4 @@ pub(crate) fn decode_validated_type_node(record: &[u8]) -> TypeNode {
 /// The fragment envelope magic: `"NXIR"` in every fragment.
 pub const FRAGMENT_MAGIC: [u8; 4] = *b"NXIR";
 /// The fragment envelope schema version.
-pub const FRAGMENT_SCHEMA: u16 = 2;
+pub const FRAGMENT_SCHEMA: u16 = 3;

@@ -52,6 +52,15 @@ impl<'output, 'bytes> CanonicalDataGraph<'output, 'bytes> {
         self.children
     }
 
+    /// Source-product to canonical-product roots in source declaration
+    /// order.  Durable schema-3 fragments serialize this mapping so reopen
+    /// can recover each declaration's canonical graph root after product
+    /// deduplication.
+    #[must_use]
+    pub const fn source_product_roots(&self) -> &'output [u32] {
+        self.product_map
+    }
+
     /// Borrow the canonical pooled-list span table.
     #[must_use]
     pub const fn lists(&self) -> &'output [ListSpan<ProductChildren>] {

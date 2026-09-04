@@ -39,8 +39,38 @@ pub struct TypeFactLane<'bytes> {
     pub children: &'bytes [SemanticTypeChild<'bytes>],
 }
 
+/// Exact geometry of the two dense type-fact segments.
+///
+/// The declared and computed segments deliberately share one type-coordinate
+/// space.  Extension pools, rich discovery, and durable reopen must therefore
+/// use their sum — never the unrelated entity count — when admitting a type
+/// reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeFactCounts {
+    pub declared: u32,
+    pub computed: u32,
+}
+
+impl TypeFactCounts {
+    pub const fn new(declared: u32, computed: u32) -> Self {
+        Self { declared, computed }
+    }
+
+    /// Exact width of the common local type-coordinate space.
+    pub fn total(self) -> Result<u32, TypeFactFault> {
+        self.declared
+            .checked_add(self.computed)
+            .ok_or(TypeFactFault::CountOverflow {
+                declared: self.declared,
+                computed: self.computed,
+            })
+    }
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum TypeFactFault {
+    #[error("type-fact segments {declared}+{computed} overflow the type-coordinate width")]
+    CountOverflow { declared: u32, computed: u32 },
     #[error("type fact {ordinal} names entity {owner:?} outside {entity_count}")]
     Owner {
         ordinal: u32,
@@ -114,6 +144,22 @@ pub enum TypeFactFault {
 }
 
 impl<'bytes> TypeFactLane<'bytes> {
+    /// Measures the complete local type-coordinate space emitted by this
+    /// lane.  This is the only count extension lists may use.
+    pub fn counts(&self) -> Result<TypeFactCounts, TypeFactFault> {
+        let declared = u32::try_from(self.inputs.len()).map_err(|_| TypeFactFault::CountOverflow {
+            declared: u32::MAX,
+            computed: u32::MAX,
+        })?;
+        let computed = u32::try_from(self.computed.len()).map_err(|_| TypeFactFault::CountOverflow {
+            declared,
+            computed: u32::MAX,
+        })?;
+        let counts = TypeFactCounts::new(declared, computed);
+        let _ = counts.total()?;
+        Ok(counts)
+    }
+
     pub fn admit(
         &self,
         entity_count: u32,
@@ -128,10 +174,11 @@ impl<'bytes> TypeFactLane<'bytes> {
         children: &[SemanticTypeChild<'bytes>],
         schema: u16,
     ) -> Result<(), TypeFactFault> {
-        let count = u32::try_from(self.inputs.len()).unwrap_or(u32::MAX);
-        let computed_count = u32::try_from(self.computed.len()).unwrap_or(u32::MAX);
+        let counts = self.counts()?;
+        let count = counts.declared;
+        let computed_count = counts.computed;
         for (ordinal, input) in (0..count).zip(self.inputs.iter().chain(self.computed)) {
-            let computed = schema == 2 && ordinal >= count;
+            let computed = schema >= 2 && ordinal >= count;
             if input.owner.raw >= entity_count {
                 return Err(TypeFactFault::Owner {
                     ordinal,
@@ -168,7 +215,7 @@ impl<'bytes> TypeFactLane<'bytes> {
                 if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                     child.target
                 {
-                    let total = count.saturating_add(if schema == 2 { computed_count } else { 0 });
+                    let total = count.saturating_add(if schema >= 2 { computed_count } else { 0 });
                     if target.raw >= total {
                         return Err(TypeFactFault::ChildTargetOutOfRange {
                             ordinal,
@@ -177,14 +224,14 @@ impl<'bytes> TypeFactLane<'bytes> {
                             record_count: count,
                         });
                     }
-                    if !computed && schema == 2 && target.raw >= count {
+                    if !computed && schema >= 2 && target.raw >= count {
                         return Err(TypeFactFault::ComputedTargetFromDeclared {
                             ordinal,
                             position,
                             target: target.raw,
                         });
                     }
-                    if computed && schema == 2 && target.raw >= count && target.raw >= ordinal {
+                    if computed && schema >= 2 && target.raw >= count && target.raw >= ordinal {
                         return Err(TypeFactFault::ComputedForwardReference {
                             ordinal,
                             position,
@@ -201,7 +248,7 @@ impl<'bytes> TypeFactLane<'bytes> {
                 }
             }
             if let Some(NominalRef::Local(target)) = input.record.nominal {
-                let nominal_count = if schema == 2 { entity_count } else { count };
+                let nominal_count = if schema >= 2 { entity_count } else { count };
                 if target.raw >= nominal_count {
                     return Err(TypeFactFault::NominalOutOfRange {
                         ordinal,
@@ -356,15 +403,16 @@ pub fn validate_payload(
     payload: &[u8],
     entity_count: u32,
     schema: u16,
-) -> Result<(), TypeFactFault> {
+) -> Result<TypeFactCounts, TypeFactFault> {
     let mut reader = Reader {
         bytes: payload,
         at: 0,
         ordinal: 0,
     };
     let declared_count = reader.u32()?;
-    let computed_count = if schema == 2 { reader.u32()? } else { 0 };
-    let count = declared_count.saturating_add(computed_count);
+    let computed_count = if schema >= 2 { reader.u32()? } else { 0 };
+    let counts = TypeFactCounts::new(declared_count, computed_count);
+    let count = counts.total()?;
     for ordinal in 0..count {
         reader.ordinal = ordinal;
         let owner = reader.u32()?;
@@ -434,7 +482,7 @@ pub fn validate_payload(
     }
     let mut records = Reader {
         bytes: payload,
-        at: if schema == 2 { 8 } else { 4 },
+        at: if schema >= 2 { 8 } else { 4 },
         ordinal: 0,
     };
     for ordinal in 0..count {
@@ -479,7 +527,7 @@ pub fn validate_payload(
             if let TypeChildTarget::Type(compiler_ir_vocabulary::TypeRef::Local(target)) =
                 child.target
             {
-                let computed = schema == 2 && ordinal >= declared_count;
+                let computed = schema >= 2 && ordinal >= declared_count;
                 if target.raw >= count {
                     return Err(TypeFactFault::ChildTargetOutOfRange {
                         ordinal,
@@ -488,14 +536,14 @@ pub fn validate_payload(
                         record_count: declared_count,
                     });
                 }
-                if !computed && schema == 2 && target.raw >= declared_count {
+                if !computed && schema >= 2 && target.raw >= declared_count {
                     return Err(TypeFactFault::ComputedTargetFromDeclared {
                         ordinal,
                         position,
                         target: target.raw,
                     });
                 }
-                if computed && schema == 2 && target.raw >= declared_count && target.raw >= ordinal
+                if computed && schema >= 2 && target.raw >= declared_count && target.raw >= ordinal
                 {
                     return Err(TypeFactFault::ComputedForwardReference {
                         ordinal,
@@ -516,7 +564,7 @@ pub fn validate_payload(
     if reader.at != payload.len() {
         return Err(TypeFactFault::TrailingBytes { declared: count });
     }
-    Ok(())
+    Ok(counts)
 }
 
 fn check_nominal(
@@ -526,7 +574,7 @@ fn check_nominal(
     record_count: u32,
     schema: u16,
 ) -> Result<(), TypeFactFault> {
-    let limit = if schema == 2 {
+    let limit = if schema >= 2 {
         entity_count
     } else {
         record_count
@@ -664,6 +712,16 @@ pub struct DecodedTypeFact<'fragment> {
     pub segment: TypeFactSegment,
 }
 
+/// One decoded ordered child from the durable type-fact child pool.
+///
+/// Its ordinal is the common type-child coordinate referenced by each
+/// `SemanticTypeRecord::children` span; it is not an entity or image row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodedTypeFactChild<'fragment> {
+    pub ordinal: u32,
+    pub child: SemanticTypeChild<'fragment>,
+}
+
 pub struct TypeFactCursor<'fragment> {
     payload: &'fragment [u8],
     at: usize,
@@ -678,7 +736,7 @@ impl<'fragment> TypeFactCursor<'fragment> {
             .get(..4)
             .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
             .unwrap_or(0);
-        let computed = if schema == 2 {
+        let computed = if schema >= 2 {
             payload
                 .get(4..8)
                 .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
@@ -688,12 +746,79 @@ impl<'fragment> TypeFactCursor<'fragment> {
         };
         Self {
             payload,
-            at: if schema == 2 { 8 } else { 4 },
+            at: if schema >= 2 { 8 } else { 4 },
             remaining: remaining.saturating_add(computed),
             declared_remaining: remaining,
             schema,
             ordinal: 0,
         }
+    }
+
+    /// Opens the exact common child pool referenced by decoded type-record
+    /// list spans.  The fragment validator has already proved its offset,
+    /// cardinality, tags, and targets; this only establishes a borrowed lazy
+    /// cursor and never reconstructs source syntax.
+    pub fn children(&self) -> Result<TypeFactChildCursor<'fragment>, TypeFactFault> {
+        let declared = self
+            .payload
+            .get(..4)
+            .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+            .unwrap_or(0);
+        let computed = if self.schema >= 2 {
+            self.payload
+                .get(4..8)
+                .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let count = TypeFactCounts::new(declared, computed).total()?;
+        let mut reader = Reader {
+            bytes: self.payload,
+            at: if self.schema >= 2 { 8 } else { 4 },
+            ordinal: 0,
+        };
+        for ordinal in 0..count {
+            reader.ordinal = ordinal;
+            let owner = EntityId::new(reader.u32()?);
+            let _record = decode_record(&mut reader, owner)?;
+        }
+        let child_count = reader.u32()?;
+        Ok(TypeFactChildCursor {
+            payload: self.payload,
+            at: reader.at,
+            remaining: child_count,
+            ordinal: 0,
+        })
+    }
+}
+
+/// Lazy borrowed traversal of the validated common type-child pool.
+pub struct TypeFactChildCursor<'fragment> {
+    payload: &'fragment [u8],
+    at: usize,
+    remaining: u32,
+    ordinal: u32,
+}
+
+impl<'fragment> Iterator for TypeFactChildCursor<'fragment> {
+    type Item = Result<DecodedTypeFactChild<'fragment>, TypeFactFault>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        let ordinal = self.ordinal;
+        self.ordinal += 1;
+        let mut reader = Reader {
+            bytes: self.payload,
+            at: self.at,
+            ordinal,
+        };
+        let child = decode_child(&mut reader, ordinal, 0);
+        self.at = reader.at;
+        Some(child.map(|child| DecodedTypeFactChild { ordinal, child }))
     }
 }
 
@@ -705,7 +830,7 @@ impl<'fragment> Iterator for TypeFactCursor<'fragment> {
             return None;
         }
         self.remaining -= 1;
-        let segment = if self.schema == 2 && self.ordinal >= self.declared_remaining {
+        let segment = if self.schema >= 2 && self.ordinal >= self.declared_remaining {
             TypeFactSegment::Computed
         } else {
             TypeFactSegment::Declared

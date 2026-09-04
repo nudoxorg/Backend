@@ -19,6 +19,7 @@ pub struct FragmentView<'fragment> {
     pub(super) type_nodes: &'fragment [u8],
     pub(super) atoms: &'fragment [u8],
     pub(super) atom_bytes: &'fragment [u8],
+    pub(super) semantic_data_lane: Option<&'fragment [u8]>,
     pub(super) occurrence_lane: Option<&'fragment [u8]>,
     pub(super) type_fact_lane: Option<&'fragment [u8]>,
     pub(super) documentation_lane: Option<&'fragment [u8]>,

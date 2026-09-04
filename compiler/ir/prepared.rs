@@ -95,6 +95,10 @@ pub enum PrepareError {
         products: u32,
         children: u32,
     },
+    #[error(
+        "semantic graph carries {roots} declaration roots for {entities} fragment entities"
+    )]
+    SemanticEntityRoots { roots: u32, entities: u32 },
     #[error("semantic atom {ordinal:?} has {actual} bytes, exceeding the wire length width")]
     SemanticAtomLength {
         ordinal: AtomId,
@@ -322,6 +326,21 @@ impl<'facts> PreparedFragment<'facts> {
         let type_node_count = count(LayoutStep::TypeNodeLane, type_nodes.len())?;
         let atom_count = count(LayoutStep::AtomRecordLane, atoms.len())?;
         let atom_byte_count = atom_byte_count(atoms)?;
+        if let Some(data) = semantic_data {
+            let roots = u32::try_from(data.source_product_roots().len()).map_err(|source| {
+                PrepareError::Count {
+                    lane: LayoutStep::SemanticData,
+                    actual: data.source_product_roots().len(),
+                    source,
+                }
+            })?;
+            if roots != u32::from(entity_count) {
+                return Err(PrepareError::SemanticEntityRoots {
+                    roots,
+                    entities: u32::from(entity_count),
+                });
+            }
+        }
         if let Some(lane) = occurrences {
             lane.admit(u32::from(entity_count))
                 .map_err(|fault| PrepareError::OccurrenceLane {
@@ -329,14 +348,20 @@ impl<'facts> PreparedFragment<'facts> {
                     fault: crate::semantic_facts::occurrence_view_fault(fault),
                 })?;
         }
-        if let Some(lane) = type_facts {
+        let type_fact_counts = if let Some(lane) = type_facts {
             lane.admit_schema(
                 u32::from(entity_count),
                 lane.children,
                 crate::FRAGMENT_SCHEMA,
             )
             .map_err(|fault| PrepareError::TypeFacts { fault })?;
-        }
+            Some(
+                lane.counts()
+                    .map_err(|fault| PrepareError::TypeFacts { fault })?,
+            )
+        } else {
+            None
+        };
         if let Some(lane) = docs {
             lane.admit(u32::from(entity_count))
                 .map_err(|fault| PrepareError::Documentation { fault })?;
@@ -345,11 +370,11 @@ impl<'facts> PreparedFragment<'facts> {
             return Err(PrepareError::ExtensionPoolsMismatch);
         }
         if let Some(lane) = pools {
-            let type_count = if type_facts.is_some() {
-                u32::from(entity_count)
-            } else {
-                0
-            };
+            let type_count = type_fact_counts
+                .map(|counts| counts.total())
+                .transpose()
+                .map_err(|fault| PrepareError::TypeFacts { fault })?
+                .unwrap_or(0);
             lane.admit(u32::from(atom_count), type_count, u32::from(entity_count))
                 .map_err(|fault| PrepareError::ExtensionPools { fault })?;
         }
@@ -596,6 +621,10 @@ fn layout(
     let type_fact_lane = type_facts
         .map(|lane| type_fact_lane(&mut cursor, lane))
         .transpose()?;
+    let type_fact_counts = type_facts
+        .map(|lane| lane.counts())
+        .transpose()
+        .map_err(|fault| PrepareError::TypeFacts { fault })?;
     let documentation_lane = docs
         .map(|lane| byte_lane(&mut cursor, LayoutStep::Documentation, lane.payload_len()))
         .transpose()?;
@@ -629,6 +658,7 @@ fn layout(
             semantic_data: semantic_lane,
             occurrences: occurrence_lane,
             type_facts: type_fact_lane,
+            type_fact_counts,
             documentation: documentation_lane,
             language_extensions: language_extension_lane,
             extension_pools: extension_pool_lane,
@@ -674,6 +704,7 @@ struct FragmentLanes {
     semantic_data: Option<LaneLayout>,
     occurrences: Option<LaneLayout>,
     type_facts: Option<LaneLayout>,
+    type_fact_counts: Option<crate::TypeFactCounts>,
     documentation: Option<LaneLayout>,
     language_extensions: Option<LaneLayout>,
     extension_pools: Option<LaneLayout>,
@@ -764,8 +795,12 @@ impl LayoutCursor {
             source_identity: lanes.source_identity,
             recipe_fact: lanes.recipe_fact,
             semantic_data: lanes.semantic_data,
+            // Prepared fragments use this layout only for writing; reopen
+            // derives the proof-carrying semantic-data offsets from bytes.
+            semantic_data_layout: None,
             occurrences: lanes.occurrences,
             type_facts: lanes.type_facts,
+            type_fact_counts: lanes.type_fact_counts,
             documentation: lanes.documentation,
             language_extensions: lanes.language_extensions,
             extension_pools: lanes.extension_pools,
@@ -934,11 +969,17 @@ fn semantic_data_lane(
     let child_bytes = child_count
         .checked_mul(SEMANTIC_CHILD_BYTES)
         .ok_or_else(overflow)?;
+    let root_bytes = data
+        .source_product_roots()
+        .len()
+        .checked_mul(size_of::<u32>())
+        .ok_or_else(overflow)?;
     payload = payload
         .checked_add(product_bytes)
         .and_then(|payload| payload.checked_add(constructor_bytes))
         .and_then(|payload| payload.checked_add(list_bytes))
         .and_then(|payload| payload.checked_add(child_bytes))
+        .and_then(|payload| payload.checked_add(root_bytes))
         .ok_or_else(overflow)?;
     // One payload cell per byte, matching the fixed-width byte-lane grammar:
     // the directory proves `count * 1 == byte_length`.
@@ -964,6 +1005,11 @@ fn write_semantic_data(
     );
     write_u32(section, size_of::<u32>() * 3, metrics.canonical_list_count);
     write_u32(section, size_of::<u32>() * 4, metrics.canonical_child_count);
+    write_u32(
+        section,
+        size_of::<u32>() * 5,
+        u32::try_from(data.source_product_roots().len()).unwrap_or(u32::MAX),
+    );
 
     let mut cursor = SEMANTIC_DATA_HEADER_BYTES;
     for (ordinal, atom) in (0..u32::MAX).zip(data.atoms()) {
@@ -1013,6 +1059,10 @@ fn write_semantic_data(
             }
         }
         cursor += SEMANTIC_CHILD_BYTES;
+    }
+    for root in data.source_product_roots() {
+        write_u32(section, cursor, *root);
+        cursor += size_of::<u32>();
     }
     Ok(())
 }

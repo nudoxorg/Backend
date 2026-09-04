@@ -180,6 +180,24 @@ pub struct DecodedRefList<'payload> {
     pub words: &'payload [u8],
 }
 
+/// Closed identity of one homogeneous extension reference-list lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtensionPoolListLane {
+    Atoms,
+    Types,
+    Entities,
+}
+
+impl ExtensionPoolListLane {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Atoms => "atom_lists",
+            Self::Types => "type_lists",
+            Self::Entities => "entity_lists",
+        }
+    }
+}
+
 impl DecodedRefList<'_> {
     /// Number of references in the list.
     #[must_use]
@@ -234,6 +252,24 @@ impl<'payload> ReopenedExtensionPools<'payload> {
     #[must_use]
     pub fn type_parameter_count(&self) -> u32 {
         self.type_parameters.1
+    }
+
+    /// Number of pooled atom-reference lists.
+    #[must_use]
+    pub fn atom_list_count(&self) -> u32 {
+        self.atom_lists.1
+    }
+
+    /// Number of pooled type-reference lists.
+    #[must_use]
+    pub fn type_list_count(&self) -> u32 {
+        self.type_lists.1
+    }
+
+    /// Number of pooled entity-reference lists.
+    #[must_use]
+    pub fn entity_list_count(&self) -> u32 {
+        self.entity_lists.1
     }
 
     /// Decodes one pooled type parameter.
@@ -291,6 +327,70 @@ impl<'payload> ReopenedExtensionPools<'payload> {
             .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
         Ok(DecodedRefList { words })
     }
+
+    /// Reads one homogeneous pooled list without admitting a stringly lane
+    /// selection at a render or discovery call site.
+    pub fn list(
+        &self,
+        lane: ExtensionPoolListLane,
+        ordinal: u32,
+    ) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
+        self.reference_list(lane.wire_name(), ordinal)
+    }
+
+    pub fn atom_list(&self, ordinal: u32) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
+        self.list(ExtensionPoolListLane::Atoms, ordinal)
+    }
+
+    pub fn type_list(&self, ordinal: u32) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
+        self.list(ExtensionPoolListLane::Types, ordinal)
+    }
+
+    pub fn entity_list(
+        &self,
+        ordinal: u32,
+    ) -> Result<DecodedRefList<'payload>, ExtensionPoolFault> {
+        self.list(ExtensionPoolListLane::Entities, ordinal)
+    }
+}
+
+/// Reopens the shared extension pools after proving every byte and reference
+/// against the carrying fragment's already-validated common lanes.
+pub fn reopen_extension_pools(
+    payload: &[u8],
+    atom_count: u32,
+    type_count: u32,
+    entity_count: u32,
+) -> Result<ReopenedExtensionPools<'_>, ExtensionPoolFault> {
+    validate_extension_pool_payload(payload, atom_count, type_count, entity_count)?;
+    let type_count = read_u32(payload, 0)?;
+    let mut cursor = 4;
+    let type_parameters = (cursor, type_count);
+    for _ in 0..type_count {
+        cursor = skip_type_parameter(payload, cursor)?;
+    }
+    let atom_count = read_u32(payload, cursor)?;
+    cursor += 4;
+    let atom_lists = (cursor, atom_count);
+    for _ in 0..atom_count {
+        cursor = skip_ref_list(payload, cursor)?;
+    }
+    let type_count = read_u32(payload, cursor)?;
+    cursor += 4;
+    let type_lists = (cursor, type_count);
+    for _ in 0..type_count {
+        cursor = skip_ref_list(payload, cursor)?;
+    }
+    let entity_count = read_u32(payload, cursor)?;
+    cursor += 4;
+    let entity_lists = (cursor, entity_count);
+    Ok(ReopenedExtensionPools {
+        bytes: payload,
+        type_parameters,
+        atom_lists,
+        type_lists,
+        entity_lists,
+    })
 }
 
 /// Validates one pooled-lane payload against the carrying fragment's lane

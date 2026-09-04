@@ -87,6 +87,14 @@ pub enum SemanticDataFault {
         product_count: u32,
         constructor_count: u32,
     },
+    #[error("semantic entity-root count {actual} does not match entity count {expected}")]
+    EntityRootCount { expected: u32, actual: u32 },
+    #[error("semantic entity {entity} root product {target} is outside product count {product_count}")]
+    EntityRoot {
+        entity: u32,
+        target: u32,
+        product_count: u32,
+    },
     #[error("semantic product {product} constructor is invalid: {fault:?}")]
     Constructor {
         product: u32,
@@ -135,6 +143,10 @@ pub enum SemanticDataFault {
 
 #[derive(Debug, Eq, Error, PartialEq)]
 pub enum FragmentError {
+    #[error(
+        "language extensions and extension pools must occur together (extensions={extensions}, pools={pools})"
+    )]
+    ExtensionPoolPair { extensions: bool, pools: bool },
     #[error("documentation lane rejected: {fault}")]
     Documentation {
         #[source]

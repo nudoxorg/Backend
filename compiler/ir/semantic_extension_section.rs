@@ -210,6 +210,14 @@ pub enum LanguageExtensionReopenError {
         kind: LanguageExtensionDirectoryKind,
         fact: u32,
     },
+    /// A sparse row table named a dense fact that an earlier row had already
+    /// claimed.  Sparse columns are canonical only when every fact appears
+    /// exactly once in increasing fact order.
+    DuplicateFact {
+        kind: LanguageExtensionDirectoryKind,
+        row: u32,
+        fact: u32,
+    },
     SharedReference {
         kind: LanguageExtensionDirectoryKind,
         fact: u32,
@@ -872,11 +880,16 @@ pub fn reopen_language_extension_section(
                     fact: next_expected,
                 });
             }
-            if ordinal == next_expected {
-                next_expected = next_expected.checked_add(1).ok_or(
-                    LanguageExtensionReopenError::StructuralOverflow { offset: directory },
-                )?;
+            if ordinal < next_expected {
+                return Err(LanguageExtensionReopenError::DuplicateFact {
+                    kind,
+                    row,
+                    fact: ordinal,
+                });
             }
+            next_expected = next_expected.checked_add(1).ok_or(
+                LanguageExtensionReopenError::StructuralOverflow { offset: directory },
+            )?;
         }
         if next_expected != facts {
             return Err(LanguageExtensionReopenError::CanonicalFact {

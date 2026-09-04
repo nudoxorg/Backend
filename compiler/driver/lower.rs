@@ -2912,7 +2912,9 @@ fn append_type_target_key(
         preimage.extend_from_slice(b"self-type");
     } else {
         preimage.push(1);
-        preimage.extend_from_slice(staged_type_shape_key(facts, target)?.as_ref());
+        preimage.extend_from_slice(
+            staged_type_shape_key(facts, target, owner, cache, visiting)?.as_ref(),
+        );
     }
     Ok(())
 }
@@ -2924,16 +2926,57 @@ fn append_type_target_key(
 fn staged_type_shape_key(
     facts: &FactSet<'_>,
     row: u32,
+    owner: usize,
+    cache: &mut [Option<PayloadHash>],
+    fact_visiting: &mut [bool],
 ) -> Result<PayloadHash, compiler_ir::BuildError> {
-    let (record, child_count) = if row < facts.len as u32 {
+    staged_type_shape_key_inner(facts, row, owner, cache, fact_visiting, &mut Vec::new())
+}
+
+fn staged_type_shape_key_inner(
+    facts: &FactSet<'_>,
+    row: u32,
+    owner: usize,
+    cache: &mut [Option<PayloadHash>],
+    fact_visiting: &mut [bool],
+    type_visiting: &mut Vec<u32>,
+) -> Result<PayloadHash, compiler_ir::BuildError> {
+    // Recursive source types are semantically real.  A cycle marker is
+    // coordinate-free and keeps a self edge distinct from a missing child.
+    if type_visiting.contains(&row) {
+        return Ok(PayloadHash::from_canonical_bytes(b"compiler.type-cycle.v1"));
+    }
+    type_visiting.push(row);
+    let (record, targets, names, flags) = if row < facts.len as u32 {
         let ordinal = row as usize;
-        (facts.type_records[ordinal], usize::from(facts.type_child_counts[ordinal]))
+        let start = facts.type_child_starts[ordinal] as usize;
+        let count = usize::from(facts.type_child_counts[ordinal]);
+        (
+            facts.type_records[ordinal],
+            &facts.type_child_targets[start..start + count],
+            &facts.type_child_names[start..start + count],
+            &facts.type_child_flags[start..start + count],
+        )
     } else if facts.is_anonymous_type_row(row) {
         let ordinal = (row - ANONYMOUS_ROW_BASE) as usize;
-        (facts.anonymous_records[ordinal], usize::from(facts.anonymous_child_counts[ordinal]))
+        let start = facts.anonymous_child_starts[ordinal] as usize;
+        let count = usize::from(facts.anonymous_child_counts[ordinal]);
+        (
+            facts.anonymous_records[ordinal],
+            &facts.anonymous_child_targets[start..start + count],
+            &facts.anonymous_child_names[start..start + count],
+            &facts.anonymous_child_flags[start..start + count],
+        )
     } else if facts.is_computed_type_row(row) {
         let ordinal = (row - COMPUTED_ROW_BASE) as usize;
-        (facts.computed_records[ordinal], usize::from(facts.computed_child_counts[ordinal]))
+        let start = facts.computed_child_starts[ordinal] as usize;
+        let count = usize::from(facts.computed_child_counts[ordinal]);
+        (
+            facts.computed_records[ordinal],
+            &facts.computed_child_targets[start..start + count],
+            &facts.computed_child_names[start..start + count],
+            &facts.computed_child_flags[start..start + count],
+        )
     } else {
         return Err(compiler_ir::BuildError::Dangling {
             space: compiler_ir::SemanticSpace::Type,
@@ -2955,8 +2998,66 @@ fn staged_type_shape_key(
             None => preimage.push(0),
         }
     }
-    preimage.extend_from_slice(&(child_count as u64).to_le_bytes());
-    Ok(PayloadHash::from_canonical_bytes(&preimage))
+    match record.nominal {
+        Some(NominalRef::Local(target)) if target.raw == owner as u32 => {
+            preimage.extend_from_slice(b"owner-nominal");
+        }
+        Some(NominalRef::Local(target)) if target.raw < facts.len as u32 => {
+            preimage.extend_from_slice(
+                scoped_fact_key(facts, target.raw as usize, cache, fact_visiting)?.as_ref(),
+            );
+        }
+        Some(NominalRef::Local(target)) => preimage.extend_from_slice(
+            staged_type_shape_key_inner(
+                facts,
+                target.raw,
+                owner,
+                cache,
+                fact_visiting,
+                type_visiting,
+            )?
+            .as_ref(),
+        ),
+        Some(NominalRef::External(target)) => {
+            preimage.extend_from_slice(target.fragment.as_ref());
+            preimage.extend_from_slice(&target.ordinal.to_le_bytes());
+        }
+        None => preimage.push(0),
+    }
+    preimage.extend_from_slice(&(targets.len() as u64).to_le_bytes());
+    for ((target, name), flags) in targets.iter().zip(names).zip(flags) {
+        match name {
+            Some(name) => {
+                preimage.push(1);
+                preimage.extend_from_slice(&(name.len() as u64).to_le_bytes());
+                preimage.extend_from_slice(name);
+            }
+            None => preimage.push(0),
+        }
+        preimage.push(*flags);
+        if *target == owner as u32 {
+            preimage.extend_from_slice(b"owner-type");
+        } else if *target < facts.len as u32 {
+            preimage.extend_from_slice(
+                scoped_fact_key(facts, *target as usize, cache, fact_visiting)?.as_ref(),
+            );
+        } else {
+            preimage.extend_from_slice(
+                staged_type_shape_key_inner(
+                    facts,
+                    *target,
+                    owner,
+                    cache,
+                    fact_visiting,
+                    type_visiting,
+                )?
+                .as_ref(),
+            );
+        }
+    }
+    let key = PayloadHash::from_canonical_bytes(&preimage);
+    let _ = type_visiting.pop();
+    Ok(key)
 }
 
 const fn item_kind(kind: EntityKind) -> ItemKind {
