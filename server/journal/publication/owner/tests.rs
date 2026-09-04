@@ -164,7 +164,7 @@ fn state(pool: &Arc<CreditPool>) -> PublisherState {
         closed: AtomicBool::new(false),
         credits: Arc::clone(pool),
         published: OnceLock::new(),
-        latest: std::sync::Mutex::new(None),
+        latest: super::super::latest::LatestPublication::empty(),
     }
 }
 

@@ -24,6 +24,7 @@ use super::{
     },
     facts::{PublicationFacts, PublicationLimits, PublicationPaths},
     format::PublicationInput,
+    latest::{LatestPublication, LatestPublicationReadError},
     owner::{Command, OpenMode, OwnerExit, OwnerOutcome, OwnerStorage, owner_thread},
 };
 use crate::CommitError;
@@ -128,7 +129,14 @@ impl DurablePublisher {
 
     /// Returns independently validated current publication facts, if a head is visible.
     pub fn published(&self) -> Result<Option<PublicationFacts>, PublicationOpenError> {
-        Ok(self.state.latest.lock().ok().and_then(|value| *value))
+        self.state.latest.read().map_err(|source| match source {
+            LatestPublicationReadError::Snapshot(source) => {
+                PublicationOpenError::Snapshot(source)
+            }
+            LatestPublicationReadError::Generation(source) => {
+                PublicationOpenError::Generation(source)
+            }
+        })
     }
 
     /// Closes admission, drains accepted commands, and joins the owner exactly once.
@@ -159,7 +167,7 @@ impl DurablePublisher {
             closed: AtomicBool::new(false),
             credits,
             published: OnceLock::new(),
-            latest: std::sync::Mutex::new(None),
+            latest: LatestPublication::empty(),
         });
         let (sender, receiver) = sync_channel(queue_capacity);
         let (startup_sender, startup_receiver) = sync_channel(1);
@@ -205,9 +213,10 @@ impl DurablePublisher {
                     attempted,
                 }))
             })?;
-            if let Ok(mut latest) = state.latest.lock() {
-                *latest = Some(published);
-            }
+            state
+                .latest
+                .replace(published)
+                .map_err(PublicationOpenError::Snapshot)?;
         }
         Ok(Self {
             sender: Some(sender),
@@ -387,7 +396,7 @@ pub(super) struct PublisherState {
     pub(super) closed: AtomicBool,
     pub(super) credits: Arc<CreditPool>,
     pub(super) published: OnceLock<PublicationFacts>,
-    pub(super) latest: std::sync::Mutex<Option<PublicationFacts>>,
+    pub(super) latest: LatestPublication,
 }
 
 pub(super) fn conflict(

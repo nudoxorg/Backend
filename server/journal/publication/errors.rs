@@ -134,6 +134,9 @@ pub enum PublicationFailure {
     /// The write-once published-state cell already retained a different terminal fact.
     #[error("publication write-once state already contains a terminal fact")]
     PublishedStateConflict(Arc<PublicationStateConflict>),
+    /// The latest-publication scalar snapshot rejected an exact state transition.
+    #[error("latest publication snapshot transition failed")]
+    Snapshot(#[source] PublicationSnapshotError),
     /// Independent artifact parsing failed while reconciling an already-created file.
     #[error("publication artifact reconciliation failed")]
     Open(#[source] PublicationOpenError),
@@ -165,6 +168,38 @@ pub struct PublicationStateConflict {
     pub retained: Option<PublicationFacts>,
     /// Fact rejected by the write-once state boundary.
     pub attempted: PublicationFacts,
+}
+
+/// Exact bounded failure from the latest-publication scalar snapshot.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PublicationSnapshotError {
+    /// A reader could not obtain one stable version within the fixed retry budget.
+    #[error(
+        "latest publication snapshot remained contended after {attempts} attempts at version {observed_version}"
+    )]
+    ReadContended {
+        /// Number of complete read attempts made.
+        attempts: u8,
+        /// Last version observed by the reader.
+        observed_version: u64,
+    },
+    /// A second writer attempted to enter the single-owner transition.
+    #[error("latest publication snapshot already has a writer at version {observed_version}")]
+    ConcurrentWriter {
+        /// Odd or newly changed version proving another writer won.
+        observed_version: u64,
+        /// Exact fact that could not become visible.
+        attempted: PublicationFacts,
+    },
+    /// The even snapshot version cannot represent another complete transition.
+    #[error("latest publication snapshot exhausted version {observed_version}")]
+    VersionExhausted {
+        /// Last complete even version.
+        observed_version: u64,
+        /// Exact fact that could not become visible.
+        attempted: PublicationFacts,
+    },
 }
 
 /// The closed set of source-bearing journal failures that can be fanned out.
@@ -349,6 +384,9 @@ pub enum PublicationOpenError {
     /// Startup attempted to replace an already initialized publication fact.
     #[error("publication startup write-once state already contains a terminal fact")]
     PublishedStateConflict(Arc<PublicationStateConflict>),
+    /// The latest-publication scalar snapshot could not be read or initialized.
+    #[error("latest publication snapshot failed")]
+    Snapshot(#[source] PublicationSnapshotError),
 }
 
 /// A shutdown source from the owner or its join boundary.

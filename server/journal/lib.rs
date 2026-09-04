@@ -16,7 +16,8 @@ pub use publication::{
     ArtifactName, CancelError, DurablePublisher, ImmutablePublicationIdentity, PendingPublication,
     PublicationConflict, PublicationError, PublicationFacts, PublicationFailure,
     PublicationGenerationError, PublicationHeadIdentity, PublicationIoStep, PublicationLimitError,
-    PublicationLimits, PublicationOpenError, PublicationPaths, PublicationStateConflict,
+    PublicationLimits, PublicationOpenError, PublicationPaths, PublicationSnapshotError,
+    PublicationStateConflict,
     PublishedGeneration, SharedCommitError, SharedPublicationFailure, ShutdownError, SubmitError,
 };
 

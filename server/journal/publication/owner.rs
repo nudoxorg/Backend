@@ -465,8 +465,14 @@ fn process_group(
                 return;
             }
         }
-        if let Ok(mut latest) = state.latest.lock() {
-            *latest = Some(facts);
+        if let Err(source) = state.latest.replace(facts) {
+            poison_group(
+                poison,
+                PublicationFailure::Snapshot(source),
+                group,
+                state,
+            );
+            return;
         }
         *current = Some(stored);
         *pending = None;

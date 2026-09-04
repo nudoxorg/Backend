@@ -74,7 +74,7 @@ fn poison_closes_admission_before_fanning_out_accepted_commands() -> io::Result<
         closed: AtomicBool::new(false),
         credits: Arc::clone(&pool),
         published: OnceLock::new(),
-        latest: std::sync::Mutex::new(None),
+        latest: super::LatestPublication::empty(),
     };
     let mut poison = None;
     poison_group(
@@ -116,7 +116,7 @@ fn drop_joins_a_panicked_owner_as_last_resort_cleanup() -> io::Result<()> {
         closed: AtomicBool::new(false),
         credits: CreditPool::new(1),
         published: OnceLock::new(),
-        latest: std::sync::Mutex::new(None),
+        latest: super::LatestPublication::empty(),
     });
     let publisher = DurablePublisher {
         sender: None,
