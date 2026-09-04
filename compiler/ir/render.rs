@@ -324,6 +324,31 @@ fn write_concrete_type(
             }
             write_type(output, ir, target, next)
         }
+        ConcreteType::CxxReference { target, category } => {
+            write_type(output, ir, target, next)?;
+            output.write_str(match category {
+                crate::CxxReferenceCategory::Lvalue => "&",
+                crate::CxxReferenceCategory::Rvalue => "&&",
+            })
+        }
+        ConcreteType::CPointer { target } => {
+            write_type(output, ir, target, next)?;
+            output.write_str("*")
+        }
+        ConcreteType::CxxMemberPointer {
+            owner,
+            member,
+        } => {
+            write_type(output, ir, member, next)?;
+            output.write_str(" ")?;
+            write_type(output, ir, owner, next)?;
+            output.write_str("::*")
+        }
+        ConcreteType::CQualified { target, qualifiers } => {
+            write_c_qualifier_prefix(output, qualifiers)?;
+            output.write_str(" ")?;
+            write_type(output, ir, target, next)
+        }
         ConcreteType::Pointer { target, mutability } => {
             output.write_str(if mutability == Mutability::Mutable {
                 "*mut "
@@ -890,8 +915,6 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::Object => "object",
         BuiltinType::Any => "any",
         BuiltinType::Unknown => "unknown",
-        BuiltinType::Int => "int",
-        BuiltinType::UInt => "uint",
         BuiltinType::None_ => "None",
         BuiltinType::List => "list",
         BuiltinType::Dict => "dict",
@@ -906,7 +929,33 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::UniqueSymbol => "unique symbol",
         BuiltinType::Null => "null",
         BuiltinType::Undefined => "undefined",
+        BuiltinType::ArbitraryInteger => "integer",
+        BuiltinType::NativeSignedInteger => "native-int",
+        BuiltinType::NativeUnsignedInteger => "native-uint",
+        BuiltinType::PointerAddressInteger => "pointer-uint",
     }
+}
+
+fn write_c_qualifier_prefix(
+    output: &mut impl fmt::Write,
+    qualifiers: crate::CvQualifiers,
+) -> fmt::Result {
+    let mut separator = "";
+    if qualifiers.const_ {
+        output.write_str(separator)?;
+        output.write_str("const")?;
+        separator = " ";
+    }
+    if qualifiers.volatile {
+        output.write_str(separator)?;
+        output.write_str("volatile")?;
+        separator = " ";
+    }
+    if qualifiers.restrict {
+        output.write_str(separator)?;
+        output.write_str("restrict")?;
+    }
+    Ok(())
 }
 
 const fn unknown_name(reason: crate::UnknownReason) -> &'static str {

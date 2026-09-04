@@ -66,16 +66,16 @@ fn typed_forms_reject_crossed_cardinality_and_foreign_cells() {
 #[test]
 fn every_tag_round_trips_through_its_frozen_discriminant() {
     // Decoding every frozen code and re-encoding the result must be the
-    // identity on 0..31, and 31 must stay outside the registry.
-    for ordinal in 0_u8..31 {
+    // identity on 0..32, and 32 must stay outside the registry.
+    for ordinal in 0_u8..32 {
         assert_eq!(
             SemanticTypeTag::try_from(ordinal).map(u8::from),
             Ok(ordinal)
         );
     }
     assert_eq!(
-        SemanticTypeTag::try_from(31),
-        Err(compiler_ir_vocabulary::SemanticTypeTagError { actual: 31 })
+        SemanticTypeTag::try_from(32),
+        Err(compiler_ir_vocabulary::SemanticTypeTagError { actual: 32 })
     );
 }
 

@@ -99,6 +99,15 @@ pub enum Mutability {
     Mutable,
 }
 
+/// C++ reference category. This is intentionally separate from Rust borrow
+/// mutability and lifetimes: `T&&` is not `&mut T`.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CxxReferenceCategory {
+    Lvalue,
+    Rvalue,
+}
+
 /// Cross-language primitive vocabulary. Language-specific spellings remain atoms.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -134,10 +143,8 @@ pub enum BuiltinType {
     UniqueSymbol,
     Null,
     Undefined,
-    /// Python's architecture-sized signed integer.
-    Int,
     /// Python's singleton none type; the suffix avoids colliding with `Option`-style names.
-    None_,
+    None_ = 30,
     /// Python's heterogeneous growable sequence.
     List,
     /// Python's associative mapping from keys to values.
@@ -146,13 +153,18 @@ pub enum BuiltinType {
     Set,
     /// Python's immutable set.
     FrozenSet,
-    /// Architecture-sized unsigned integer (`usize`, Go `uint`/`uintptr`,
-    /// C# `nuint`); distinct from a fixed-width unsigned primitive.
-    UInt,
     /// Python's exact complex builtin.
-    Complex,
+    Complex = 36,
     /// C# decimal fixed-point builtin.
-    Decimal,
+    Decimal = 37,
+    /// Arbitrary-precision signed integer (`Python int`).
+    ArbitraryInteger = 38,
+    /// Signed target machine word (`isize`, Go `int`, C# `nint`).
+    NativeSignedInteger = 39,
+    /// Unsigned target machine word (`usize`, Go `uint`).
+    NativeUnsignedInteger = 40,
+    /// Unsigned pointer-address integer (`uintptr`, C# `nuint`).
+    PointerAddressInteger = 41,
 }
 
 /// Closed cause for an explicitly unknown semantic type.
@@ -421,6 +433,10 @@ pub enum TypeTag {
     QualifiedPath,
     Map,
     Channel,
+    CxxReference,
+    CPointer,
+    CxxMemberPointer,
+    CQualified,
 }
 
 #[repr(C)]
@@ -542,6 +558,30 @@ impl PackedTypes {
                     mutability as u8,
                     0,
                     self.pair([target.raw, option_raw(lifetime)]),
+                ),
+                ConcreteType::CxxReference { target, category } => header(
+                    TypeTag::CxxReference,
+                    category as u8,
+                    0,
+                    target.raw,
+                ),
+                ConcreteType::CPointer { target } => {
+                    header(TypeTag::CPointer, 0, 0, target.raw)
+                }
+                ConcreteType::CxxMemberPointer {
+                    owner,
+                    member,
+                } => header(
+                    TypeTag::CxxMemberPointer,
+                    0,
+                    0,
+                    self.pair([owner.raw, member.raw]),
+                ),
+                ConcreteType::CQualified { target, qualifiers } => header(
+                    TypeTag::CQualified,
+                    u8::from(qualifiers),
+                    0,
+                    target.raw,
                 ),
                 ConcreteType::Pointer { target, mutability } => {
                     header(TypeTag::Pointer, mutability as u8, 0, target.raw)
@@ -769,6 +809,38 @@ impl PackedTypes {
                     lifetime: raw_option(data[1]).map(AtomId::new),
                 })
             }
+            TypeTag::CxxReference if value.auxiliary == 0 => {
+                TypeExpr::Concrete(ConcreteType::CxxReference {
+                    target: TypeId::new(value.payload),
+                    category: cxx_reference_category_from(value.flags)?,
+                })
+            }
+            TypeTag::CPointer if value.flags == 0 && value.auxiliary == 0 => {
+                TypeExpr::Concrete(ConcreteType::CPointer {
+                    target: TypeId::new(value.payload),
+                })
+            }
+            TypeTag::CxxMemberPointer => {
+                if value.flags != 0 || value.auxiliary != 0 {
+                    return None;
+                }
+                let data = pair(value.payload)?;
+                TypeExpr::Concrete(ConcreteType::CxxMemberPointer {
+                    owner: TypeId::new(data[0]),
+                    member: TypeId::new(data[1]),
+                })
+            }
+            TypeTag::CQualified if value.auxiliary == 0 => {
+                let qualifiers = cxx_qualifiers_from(value.flags)?;
+                if qualifiers.is_empty() {
+                    return None;
+                }
+                TypeExpr::Concrete(ConcreteType::CQualified {
+                    target: TypeId::new(value.payload),
+                    qualifiers,
+                })
+            }
+            TypeTag::CxxReference | TypeTag::CPointer | TypeTag::CQualified => return None,
             TypeTag::Pointer => TypeExpr::Concrete(ConcreteType::Pointer {
                 target: TypeId::new(value.payload),
                 mutability: mutability_from(value.flags)?,
@@ -1013,6 +1085,21 @@ mod packed_type_tests {
                 target: TypeId::new(16),
                 mutability: Mutability::Immutable,
             }),
+            TypeExpr::Concrete(ConcreteType::CxxReference {
+                target: TypeId::new(17),
+                category: CxxReferenceCategory::Rvalue,
+            }),
+            TypeExpr::Concrete(ConcreteType::CPointer {
+                target: TypeId::new(18),
+            }),
+            TypeExpr::Concrete(ConcreteType::CxxMemberPointer {
+                owner: TypeId::new(19),
+                member: TypeId::new(20),
+            }),
+            TypeExpr::Concrete(ConcreteType::CQualified {
+                target: TypeId::new(21),
+                qualifiers: crate::CvQualifiers::new(true, false, false),
+            }),
             TypeExpr::Concrete(ConcreteType::Slice(TypeId::new(17))),
             TypeExpr::Concrete(ConcreteType::Array {
                 element: TypeId::new(18),
@@ -1128,8 +1215,6 @@ mod packed_type_tests {
             BuiltinType::Object,
             BuiltinType::Any,
             BuiltinType::Unknown,
-            BuiltinType::Int,
-            BuiltinType::UInt,
             BuiltinType::None_,
             BuiltinType::List,
             BuiltinType::Dict,
@@ -1144,6 +1229,10 @@ mod packed_type_tests {
             BuiltinType::UniqueSymbol,
             BuiltinType::Null,
             BuiltinType::Undefined,
+            BuiltinType::ArbitraryInteger,
+            BuiltinType::NativeSignedInteger,
+            BuiltinType::NativeUnsignedInteger,
+            BuiltinType::PointerAddressInteger,
         ] {
             types.push(TypeExpr::Concrete(ConcreteType::Builtin(builtin)));
         }
@@ -1165,13 +1254,13 @@ mod packed_type_tests {
             packed.push(ty);
         }
         assert_eq!(packed.headers.len(), types.len());
-        assert_eq!(packed.pairs.len(), 6);
+        assert_eq!(packed.pairs.len(), 7);
         assert_eq!(packed.triples.len(), 3);
         assert_eq!(packed.quads.len(), 3);
         let cold_bytes = core::mem::size_of_val(packed.pairs.as_slice())
             + core::mem::size_of_val(packed.triples.as_slice())
             + core::mem::size_of_val(packed.quads.as_slice());
-        assert_eq!(cold_bytes, 132);
+        assert_eq!(cold_bytes, 140);
         assert!(cold_bytes < 9 * 20);
         for (index, expected) in types.iter().copied().enumerate() {
             let id = TypeId::new(u32::try_from(index).expect("bounded test index"));
@@ -1231,15 +1320,17 @@ const fn builtin_from(value: u16) -> Option<BuiltinType> {
         26 => BuiltinType::UniqueSymbol,
         27 => BuiltinType::Null,
         28 => BuiltinType::Undefined,
-        29 => BuiltinType::Int,
         30 => BuiltinType::None_,
         31 => BuiltinType::List,
         32 => BuiltinType::Dict,
         33 => BuiltinType::Set,
         34 => BuiltinType::FrozenSet,
-        35 => BuiltinType::UInt,
         36 => BuiltinType::Complex,
         37 => BuiltinType::Decimal,
+        38 => BuiltinType::ArbitraryInteger,
+        39 => BuiltinType::NativeSignedInteger,
+        40 => BuiltinType::NativeUnsignedInteger,
+        41 => BuiltinType::PointerAddressInteger,
         _ => return None,
     })
 }
@@ -1250,6 +1341,18 @@ const fn mutability_from(value: u8) -> Option<Mutability> {
         1 => Some(Mutability::Mutable),
         _ => None,
     }
+}
+
+const fn cxx_reference_category_from(value: u8) -> Option<CxxReferenceCategory> {
+    match value {
+        0 => Some(CxxReferenceCategory::Lvalue),
+        1 => Some(CxxReferenceCategory::Rvalue),
+        _ => None,
+    }
+}
+
+fn cxx_qualifiers_from(value: u8) -> Option<crate::CvQualifiers> {
+    crate::CvQualifiers::try_from(u32::from(value)).ok()
 }
 
 const fn modifier_from(value: u8) -> Option<MappedModifier> {
@@ -1344,6 +1447,28 @@ pub enum ConcreteType {
         target: TypeId,
         mutability: Mutability,
         lifetime: Option<AtomId>,
+    },
+    /// A C++ reference category. The target may itself be [`Self::CQualified`]
+    /// so direct cv qualification stays attached to the referent instead of
+    /// becoming Rust mutability.
+    CxxReference {
+        target: TypeId,
+        category: CxxReferenceCategory,
+    },
+    /// A C/C++ raw pointer. Direct qualifier placement is represented only
+    /// by the enclosing [`Self::CQualified`] node.
+    CPointer { target: TypeId },
+    /// A C++ member pointer. The owning class and member type are distinct
+    /// operands and cannot be reconstructed from a display spelling.
+    CxxMemberPointer {
+        owner: TypeId,
+        member: TypeId,
+    },
+    /// One direct C-family cv/restrict wrapper. Empty qualifier sets never
+    /// construct this variant.
+    CQualified {
+        target: TypeId,
+        qualifiers: crate::CvQualifiers,
     },
     Pointer {
         target: TypeId,
@@ -2870,6 +2995,9 @@ pub enum BuildError {
     MissingTypedVariadicParameter { parameter_count: usize },
     /// A qualified type path had no named segments after its self/trait base.
     EmptyQualifiedPath,
+    /// A direct C-family qualifier wrapper was constructed with no qualifier.
+    /// Empty qualification has no source-semantic node and must be omitted.
+    EmptyCxxQualification,
     /// A durable documentation fact was not valid UTF-8, so it cannot enter
     /// the owned text arena without loss.  Callers must retain it in the
     /// compact fragment or surface this exact terminal; silently dropping it
@@ -2925,6 +3053,9 @@ impl fmt::Display for BuildError {
                 write!(formatter, "compound type coordinate {raw} is recursively projected")
             }
             Self::EmptyQualifiedPath => formatter.write_str("qualified type path has no segments"),
+            Self::EmptyCxxQualification => {
+                formatter.write_str("C-family qualifier wrapper is empty")
+            }
             Self::InvalidDocumentationUtf8 { bytes } => {
                 write!(formatter, "documentation fact has {bytes} invalid UTF-8 bytes")
             }
@@ -3753,6 +3884,20 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
                 atom(builder, lifetime)?;
             }
             Ok(())
+        }
+        ConcreteType::CxxReference { target, .. }
+        | ConcreteType::CPointer { target } => {
+            id(target, builder.types.len(), SemanticSpace::Type)
+        }
+        ConcreteType::CxxMemberPointer { owner, member } => {
+            id(owner, builder.types.len(), SemanticSpace::Type)?;
+            id(member, builder.types.len(), SemanticSpace::Type)
+        }
+        ConcreteType::CQualified { target, qualifiers } => {
+            if qualifiers.is_empty() {
+                return Err(BuildError::EmptyCxxQualification);
+            }
+            id(target, builder.types.len(), SemanticSpace::Type)
         }
         ConcreteType::Pointer { target, .. }
         | ConcreteType::Slice(target)

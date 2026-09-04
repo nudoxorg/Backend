@@ -215,10 +215,6 @@ struct TypeTables<'source> {
     typevars: Vec<&'source [u8]>,
 }
 
-/// The bit shift that packs a width cell above the integer signedness bit,
-/// frozen by the lattice's integer-row encoding.
-const INTEGER_WIDTH_SHIFT: u32 = 1;
-
 /// One annotation lowered into its lattice record plus the fact ordinals
 /// its record needs as type-record children (only unions produce any).
 struct LoweredType<'source> {
@@ -1153,7 +1149,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     return self.leaf_row(record, anchor);
                 }
                 match name.as_str() {
-                    "int" => self.leaf_row(integer_arch_signed_record(), anchor),
+                    "int" => self.leaf_row(integer_record(), anchor),
                     "float" => self.leaf_row(float64_record(), anchor),
                     "str" => self.leaf_row(primitive_record(PrimitiveShape::Str, 0), anchor),
                     "bool" => self.leaf_row(primitive_record(PrimitiveShape::Bool, 0), anchor),
@@ -1330,7 +1326,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             })
         };
         match name {
-            "int" => return leaf(integer_arch_signed_record(), true),
+            "int" => return leaf(integer_record(), true),
             "float" => return leaf(float64_record(), true),
             "str" => return leaf(primitive_record(PrimitiveShape::Str, 0), true),
             "bool" => return leaf(primitive_record(PrimitiveShape::Bool, 0), true),
@@ -1522,7 +1518,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return Ok(None);
         };
         match inferred {
-            InferredType::Integer => Ok(Some((integer_arch_signed_record(), Vec::new()))),
+            InferredType::Integer => Ok(Some((integer_record(), Vec::new()))),
             InferredType::Float => Ok(Some((float64_record(), Vec::new()))),
             InferredType::Boolean => Ok(Some((
                 primitive_record(PrimitiveShape::Bool, 0),
@@ -1652,7 +1648,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         anchor: u32,
     ) -> Result<Option<u32>, PythonCollectError> {
         match inferred {
-            InferredType::Integer => self.leaf_row(integer_arch_signed_record(), anchor),
+            InferredType::Integer => self.leaf_row(integer_record(), anchor),
             InferredType::Float => self.leaf_row(float64_record(), anchor),
             InferredType::Boolean => {
                 self.leaf_row(primitive_record(PrimitiveShape::Bool, 0), anchor)
@@ -1782,14 +1778,10 @@ const fn span_contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
-/// The integer row for a bare `int`: architecture-width and signed, packed
-/// per the lattice's frozen integer-cell encoding.
-fn integer_arch_signed_record() -> SemanticTypeRecord<'static> {
-    primitive_record(
-        PrimitiveShape::Integer,
-        (TypeWidth::Arch.to_cell() << INTEGER_WIDTH_SHIFT)
-            | SemanticTypeRecord::INTEGER_SIGNED_FLAG,
-    )
+/// The integer row for a bare `int`: arbitrary precision, not a platform
+/// word. Python's source spelling must never be rendered as `isize`/`nint`.
+fn integer_record() -> SemanticTypeRecord<'static> {
+    primitive_record(PrimitiveShape::ArbitraryInteger, 0)
 }
 
 /// The float row for a bare `float`: CPython's IEEE-754 double.
@@ -1944,7 +1936,7 @@ fn spelled_unknown<'source>(
 fn widened_literal_record(value: &LiteralValue) -> Option<SemanticTypeRecord<'static>> {
     match value {
         LiteralValue::String(_) => Some(primitive_record(PrimitiveShape::Str, 0)),
-        LiteralValue::Integer(_) => Some(integer_arch_signed_record()),
+        LiteralValue::Integer(_) => Some(integer_record()),
         LiteralValue::Float { .. } => Some(float64_record()),
         LiteralValue::Complex { .. } => Some(builtin_record(b"complex")),
         LiteralValue::Boolean(_) => Some(primitive_record(PrimitiveShape::Bool, 0)),

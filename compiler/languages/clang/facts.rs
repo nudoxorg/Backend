@@ -241,6 +241,10 @@ pub enum TypeKind {
     Named,
     /// A pointer type with one pointee edge.
     Pointer,
+    /// A C++ member pointer with independent owning-class and member-type
+    /// edges. It must not be flattened into an ordinary pointer because
+    /// `Field Owner::*` has two source-semantic operands.
+    MemberPointer,
     /// An lvalue reference type with one referent edge.
     LvalueReference,
     /// An rvalue reference type with one referent edge.
@@ -256,6 +260,8 @@ pub enum TypeKind {
 pub enum TypeRelation {
     /// The pointee of a pointer type.
     Pointee,
+    /// The owning class of a C++ member pointer.
+    MemberOwner,
     /// The referent of a C++ reference type.
     Referent,
     /// The element type of an array.

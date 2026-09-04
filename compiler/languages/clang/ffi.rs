@@ -394,6 +394,14 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getPointeeType(type_) }
     }
 
+    /// Returns the owning class type for a C++ member pointer. The direct
+    /// libclang operation is the only authority for this operand; source
+    /// spelling cannot distinguish overloads or nested owners reliably.
+    pub(crate) fn member_pointer_class_type(type_: CXType) -> CXType {
+        // SAFETY: type_ was obtained from this live translation unit.
+        unsafe { clang_sys::clang_Type_getClassType(type_) }
+    }
+
     pub(crate) fn array_element_type(type_: CXType) -> CXType {
         // SAFETY: type_ was obtained from this live translation unit.
         unsafe { clang_sys::clang_getArrayElementType(type_) }
@@ -712,6 +720,7 @@ impl RequiredApi {
                     && clang_sys::clang_isVolatileQualifiedType::is_loaded()
                     && clang_sys::clang_isRestrictQualifiedType::is_loaded()
                     && clang_sys::clang_getPointeeType::is_loaded()
+                    && clang_sys::clang_Type_getClassType::is_loaded()
                     && clang_sys::clang_getArrayElementType::is_loaded()
                     && clang_sys::clang_getArraySize::is_loaded()
                     && clang_sys::clang_getResultType::is_loaded()

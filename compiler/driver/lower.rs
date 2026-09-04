@@ -8,7 +8,8 @@
 //! return typed terminals instead of inspecting source text here.
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
-    AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, DeclarationKey, Disambiguator, DocInput,
+    AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, CvQualifiers,
+    CxxReferenceCategory, DeclarationKey, Disambiguator, DocInput,
     EntityVersion, ExternalTarget, Ir,
     IrBuilder, ItemKind, LanguageExtensionInput, ListSpan, LiteralType, NominalRef, PayloadHash,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
@@ -2738,7 +2739,10 @@ fn live_type<'source>(
                     .erase(),
                 Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
                     (TypeWidth::ARCH_FLAG, 1) => tree
-                        .intern_concrete(ConcreteType::Builtin(BuiltinType::Int))?
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::NativeSignedInteger))?
+                        .erase(),
+                    (TypeWidth::ARCH_FLAG, 0) => tree
+                        .intern_concrete(ConcreteType::Builtin(BuiltinType::NativeUnsignedInteger))?
                         .erase(),
                     (8, 0) => tree
                         .intern_concrete(ConcreteType::Builtin(BuiltinType::U8))?
@@ -2818,6 +2822,39 @@ fn live_type<'source>(
                     })?
                     .erase()
                 }
+                Ok(PrimitiveShape::CPointer) => tree
+                    .intern_concrete(ConcreteType::CPointer {
+                        target: child_type(0)?,
+                    })?
+                    .erase(),
+                Ok(PrimitiveShape::CxxLvalueReference | PrimitiveShape::CxxRvalueReference) => tree
+                    .intern_concrete(ConcreteType::CxxReference {
+                        target: child_type(0)?,
+                        category: if record.payload0 == u32::from(PrimitiveShape::CxxLvalueReference) {
+                            CxxReferenceCategory::Lvalue
+                        } else {
+                            CxxReferenceCategory::Rvalue
+                        },
+                    })?
+                    .erase(),
+                Ok(PrimitiveShape::CxxMemberPointer) => tree
+                    .intern_concrete(ConcreteType::CxxMemberPointer {
+                        owner: child_type(0)?,
+                        member: child_type(1)?,
+                    })?
+                    .erase(),
+                Ok(PrimitiveShape::ArbitraryInteger) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::ArbitraryInteger))?
+                    .erase(),
+                Ok(PrimitiveShape::NativeSignedInteger) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::NativeSignedInteger))?
+                    .erase(),
+                Ok(PrimitiveShape::NativeUnsignedInteger) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::NativeUnsignedInteger))?
+                    .erase(),
+                Ok(PrimitiveShape::PointerAddressInteger) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::PointerAddressInteger))?
+                    .erase(),
                 Ok(PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer) => tree
                     .intern_concrete(ConcreteType::Pointer {
                         target: child_type(0)?,
@@ -3022,6 +3059,17 @@ fn live_type<'source>(
             })?
             .erase()
         }
+        SemanticTypeTag::CQualified if child_count == 1 => tree
+            .intern_concrete(ConcreteType::CQualified {
+                target: child_type(0)?,
+                qualifiers: CvQualifiers::try_from(record.payload0).map_err(|_| {
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    }
+                })?,
+            })?
+            .erase(),
         SemanticTypeTag::Wildcard => {
             let wildcard = match (record.payload0, child_count) {
                 (0, 0) => WildcardBound::Unbounded,
@@ -3282,7 +3330,10 @@ const fn builtin_from_spelling(spelling: &[u8]) -> Option<BuiltinType> {
         b"boolean" | b"bool" | b"Boolean" => Some(BuiltinType::Bool),
         b"number" => Some(BuiltinType::Number),
         b"unknown" => Some(BuiltinType::Unknown),
-        b"usize" | b"uint" | b"uintptr" | b"nuint" => Some(BuiltinType::UInt),
+        b"int" => Some(BuiltinType::ArbitraryInteger),
+        b"isize" | b"nint" => Some(BuiltinType::NativeSignedInteger),
+        b"usize" | b"uint" => Some(BuiltinType::NativeUnsignedInteger),
+        b"uintptr" | b"nuint" => Some(BuiltinType::PointerAddressInteger),
         _ => None,
     }
 }

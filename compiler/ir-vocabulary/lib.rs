@@ -32,7 +32,8 @@ pub use products::{
     ProductList, ProductRef, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
 };
 pub use type_lattice::{
-    AnonRecordForm, AnonRecordFormError, ChildCountLaw, FunctionVariadicForm, MappedModifier, MappedModifierError,
+    AnonRecordForm, AnonRecordFormError, ChildCountLaw, CvQualifiers, CvQualifiersError,
+    FunctionVariadicForm, MappedModifier, MappedModifierError,
     NominalRef, PrimitiveShape, PrimitiveShapeError, SemanticTypeChild, SemanticTypeFault,
     SemanticTypeRecord, SemanticTypeTag, SemanticTypeTagError, TypeCell, TypeChildTarget,
     TypeChildren, TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,

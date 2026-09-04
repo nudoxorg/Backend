@@ -13,9 +13,10 @@
 //! - Declared types project row-by-row from the authority's recursive
 //!   type graph. `int[]` becomes an `Array` row (the payload cell carries
 //!   length+1, zero meaning an unmeasured length), `T*` a
-//!   `Primitive(MutPointer)` over its pointee row, `const T*` a
-//!   `Primitive(ConstPointer)`, `T&`/`T&&` a `Primitive(Reference)` whose
-//!   payload bit marks the rvalue form, and every function type a
+//!   `Primitive(CPointer)`, `const T*` a pointer to a separate
+//!   `CQualified` pointee row, and `T * const` a `CQualified` wrapper over
+//!   the pointer itself,
+//!   `T&`/`T&&` distinct C++ reference forms, and every function type a
 //!   `FunctionPointer` row over its ordered parameter and result rows.
 //!   Named uses resolve to backward nominal rows for pushed declarations,
 //!   `TypeVar` rows for template parameters, and `Apply` rows for
@@ -161,24 +162,21 @@ const SHAPE_FLOAT: u32 = 1;
 const SHAPE_BOOL: u32 = 2;
 /// `PrimitiveShape::Char` wire cell.
 const SHAPE_CHAR: u32 = 3;
-/// `PrimitiveShape::MutPointer` wire cell.
-const SHAPE_MUT_POINTER: u32 = 5;
-/// `PrimitiveShape::ConstPointer` wire cell.
-const SHAPE_CONST_POINTER: u32 = 6;
-/// `PrimitiveShape::Reference` wire cell.
-const SHAPE_REFERENCE: u32 = 7;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
+/// `PrimitiveShape::CPointer` wire cell.
+const SHAPE_C_POINTER: u32 = 9;
+/// `PrimitiveShape::CxxLvalueReference` wire cell.
+const SHAPE_CXX_LVALUE_REFERENCE: u32 = 10;
+/// `PrimitiveShape::CxxRvalueReference` wire cell.
+const SHAPE_CXX_RVALUE_REFERENCE: u32 = 11;
+/// `PrimitiveShape::CxxMemberPointer` wire cell.
+const SHAPE_CXX_MEMBER_POINTER: u32 = 12;
 
 /// Integer signedness bit below the shifted width cell.
 const INTEGER_SIGNED_FLAG: u32 = 1;
 /// Bit offset of the integer width cell above the signedness bit.
 const INTEGER_WIDTH_SHIFT: u32 = 1;
-
-/// `Reference`-shape payload bit marking the rvalue form `T&&`. The cell's
-/// remaining bits are reserved zero by the lattice; the lvalue form `T&`
-/// keeps the cell zero.
-const REFERENCE_RVALUE_FLAG: u32 = INTEGER_SIGNED_FLAG;
 
 /// `void` builtin spelling; the void row is a primitive builtin leaf.
 const VOID_SPELLING: &[u8] = b"void";
@@ -316,6 +314,15 @@ const fn empty_type_edge() -> TypeEdge {
         relation: TypeRelation::Pointee,
         target: AuthorityTypeId { raw: 0 },
     }
+}
+
+/// Packs direct libclang cv/restrict facts only at the vocabulary boundary.
+/// The corresponding row is always a `CQualified` wrapper, so this bit cell
+/// has a single canonical owner and never leaks as generic mutability.
+const fn c_qualifiers(qualifiers: compiler_languages_clang::TypeQualifiers) -> u32 {
+    (if qualifiers.is_const { 1 } else { 0 })
+        | (if qualifiers.is_volatile { 1 << 1 } else { 0 })
+        | (if qualifiers.is_restrict { 1 << 2 } else { 0 })
 }
 
 const fn empty_reference() -> ReferenceFact {
@@ -1183,17 +1190,41 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 None,
             )));
         }
-        match row.kind {
+        let projected = match row.kind {
             TypeKind::Builtin => Ok(self.project_builtin(row)),
             TypeKind::Named => self.project_named(row, type_id, depth),
             TypeKind::Pointer => self.project_pointer(row, depth),
+            TypeKind::MemberPointer => self.project_member_pointer(row, depth),
             TypeKind::LvalueReference | TypeKind::RvalueReference => {
                 self.project_reference(row, depth)
             }
             TypeKind::Array => self.project_array(row, depth),
             TypeKind::Function => self.project_function_type(row, depth),
             TypeKind::Unknown => Ok(Projected::leaf(unknown_record(TypeReason::OracleGap, None))),
+        }?;
+        self.apply_c_qualifiers(row, projected)
+    }
+
+    /// Wraps any directly qualified authority row in one structural C-family
+    /// qualifier node. The wrapper applies to exactly this row; children own
+    /// their own qualifiers, which preserves `const T * const` instead of
+    /// guessing pointee mutability from the outer pointer.
+    fn apply_c_qualifiers(
+        &mut self,
+        row: &TypeFact,
+        projected: Projected<'source>,
+    ) -> Result<Projected<'source>, ClangCollectError> {
+        let qualifiers = c_qualifiers(row.qualifiers);
+        if qualifiers == 0 {
+            return Ok(projected);
         }
+        let child = self.intern_row(projected)?;
+        if child == UNHOSTABLE {
+            return Ok(gap());
+        }
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::CQualified);
+        record.payload0 = qualifiers;
+        Ok(self.finish_row(record, vec![(child, None)]))
     }
 
     /// Projects one builtin row onto its exact width, signedness, and shape
@@ -1308,9 +1339,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(gap())
     }
 
-    /// Projects one pointer row: a function pointee becomes the structural
-    /// `FunctionPointer` row; every other pointee becomes a mutable or const
-    /// raw pointer over its projected pointee row.
+    /// Projects one C-family pointer row. The common wrapper around this
+    /// record owns direct pointer cv qualifiers; the child independently
+    /// retains any pointee qualifier.
     fn project_pointer(
         &mut self,
         row: &TypeFact,
@@ -1319,19 +1350,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let Some(pointee) = self.edge_of(row.id, TypeRelation::Pointee) else {
             return Ok(gap());
         };
-        let pointee_row = self.type_row(pointee);
-        if let Some(pointee) = pointee_row
-            && pointee.kind == TypeKind::Function
-        {
-            return self.project_function_type(pointee, depth);
-        }
-        let is_const = pointee_row.is_some_and(|pointee| pointee.qualifiers.is_const);
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-        record.payload0 = if is_const {
-            SHAPE_CONST_POINTER
-        } else {
-            SHAPE_MUT_POINTER
-        };
+        record.payload0 = SHAPE_C_POINTER;
         let child = match self.project_child(pointee, depth)? {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
@@ -1339,8 +1359,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(self.finish_row(record, vec![(child, None)]))
     }
 
-    /// Projects one reference row: an lvalue or rvalue `Reference` over its
-    /// referent row, the rvalue form marked in the reference payload cell.
+    /// Projects a C++ reference category over its referent. This path never
+    /// converts `T&&` into the Rust borrow mutability bit.
     fn project_reference(
         &mut self,
         row: &TypeFact,
@@ -1350,15 +1370,43 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             return Ok(gap());
         };
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-        record.payload0 = SHAPE_REFERENCE;
-        if row.kind == TypeKind::RvalueReference {
-            record.payload1 = REFERENCE_RVALUE_FLAG;
-        }
+        record.payload0 = if row.kind == TypeKind::RvalueReference {
+            SHAPE_CXX_RVALUE_REFERENCE
+        } else {
+            SHAPE_CXX_LVALUE_REFERENCE
+        };
         let child = match self.project_child(referent, depth)? {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
         Ok(self.finish_row(record, vec![(child, None)]))
+    }
+
+    /// Projects a C++ member pointer with ordered owner then member type.
+    /// Missing either authority edge is an exact projection gap; a member
+    /// pointer must never silently become an ordinary raw pointer.
+    fn project_member_pointer(
+        &mut self,
+        row: &TypeFact,
+        depth: usize,
+    ) -> Result<Projected<'source>, ClangCollectError> {
+        let Some(owner) = self.edge_of(row.id, TypeRelation::MemberOwner) else {
+            return Ok(gap());
+        };
+        let Some(member) = self.edge_of(row.id, TypeRelation::Pointee) else {
+            return Ok(gap());
+        };
+        let owner = match self.project_child(owner, depth)? {
+            UNHOSTABLE => return Ok(gap()),
+            coordinate => coordinate,
+        };
+        let member = match self.project_child(member, depth)? {
+            UNHOSTABLE => return Ok(gap()),
+            coordinate => coordinate,
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        record.payload0 = SHAPE_CXX_MEMBER_POINTER;
+        Ok(self.finish_row(record, vec![(owner, None), (member, None)]))
     }
 
     /// Projects one array row with a typed fixed extent or an explicit

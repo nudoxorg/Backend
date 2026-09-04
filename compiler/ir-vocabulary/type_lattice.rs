@@ -4,8 +4,9 @@
 //! 87,101 Python annotation positions froze: 41.3% of annotated positions
 //! had collapsed onto one dynamic opcode before the lattice split, and every
 //! named [`TypeReason`] below exists because a distinct source fact once
-//! shared an encoding. The variant set is exactly the frozen census lattice
-//! (31 constructors plus seven named unknown reasons), reshaped into dense,
+//! shared an encoding. The variant set extends the frozen census lattice
+//! with exact C-family qualifier placement (32 constructors plus seven named
+//! unknown reasons), reshaped into dense,
 //! borrowed, allocation-free records whose cells each closed tag owns.
 //!
 //! Nesting is expressed the canonical way: child coordinates into a
@@ -110,6 +111,10 @@ pub enum SemanticTypeTag {
     ArrayConstExpression = 29,
     /// An incomplete/dependent C-family array with no known extent.
     ArrayIncomplete = 30,
+    /// A direct C-family cv/restrict qualification wrapper around exactly one
+    /// child. It keeps a pointee's qualifiers separate from a pointer's own
+    /// qualifiers.
+    CQualified = 31,
 }
 
 /// Closed staged callable-tail discriminator carried in a function record's
@@ -232,6 +237,7 @@ impl TryFrom<u8> for SemanticTypeTag {
             28 => Ok(Self::ArrayFixed),
             29 => Ok(Self::ArrayConstExpression),
             30 => Ok(Self::ArrayIncomplete),
+            31 => Ok(Self::CQualified),
             actual => Err(SemanticTypeTagError { actual }),
         }
     }
@@ -340,7 +346,8 @@ impl TryFrom<u32> for TypeReason {
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PrimitiveShape {
-    /// An integer of fixed or architecture width and signedness.
+    /// A legacy or fixed-width integer with signedness. Fresh producers use
+    /// the dedicated native-word shapes instead of the architecture width.
     Integer = 0,
     /// A floating-point width.
     Float = 1,
@@ -361,6 +368,26 @@ pub enum PrimitiveShape {
     Reference = 7,
     /// An arbitrary language builtin spelling; the text cell owns it.
     Builtin = 8,
+    /// A C/C++ raw pointer with one pointee child. Direct qualifiers use the
+    /// single [`SemanticTypeTag::CQualified`] wrapper, so `const T * const`
+    /// has exactly one canonical nesting shape.
+    CPointer = 9,
+    /// A C++ lvalue reference. This is deliberately distinct from the Rust
+    /// borrow shape above: neither mutability nor a Rust lifetime can be
+    /// inferred from `T&`.
+    CxxLvalueReference = 10,
+    /// A C++ rvalue reference (`T&&`), never a mutable Rust borrow.
+    CxxRvalueReference = 11,
+    /// A C++ member pointer with ordered `(owner, member)` children.
+    CxxMemberPointer = 12,
+    /// An arbitrary-precision integer (`Python int`), not a target word.
+    ArbitraryInteger = 13,
+    /// A signed native machine word (`isize`, Go `int`, C# `nint`).
+    NativeSignedInteger = 14,
+    /// An unsigned native machine word (`usize`, Go `uint`).
+    NativeUnsignedInteger = 15,
+    /// An unsigned pointer-address integer (`uintptr`, C# `nuint`).
+    PointerAddressInteger = 16,
 }
 
 /// Exact primitive-shape rejection retaining the observed cell.
@@ -383,6 +410,14 @@ impl From<PrimitiveShape> for u32 {
             PrimitiveShape::ConstPointer => 6,
             PrimitiveShape::Reference => 7,
             PrimitiveShape::Builtin => 8,
+            PrimitiveShape::CPointer => 9,
+            PrimitiveShape::CxxLvalueReference => 10,
+            PrimitiveShape::CxxRvalueReference => 11,
+            PrimitiveShape::CxxMemberPointer => 12,
+            PrimitiveShape::ArbitraryInteger => 13,
+            PrimitiveShape::NativeSignedInteger => 14,
+            PrimitiveShape::NativeUnsignedInteger => 15,
+            PrimitiveShape::PointerAddressInteger => 16,
         }
     }
 }
@@ -403,8 +438,101 @@ impl TryFrom<u32> for PrimitiveShape {
             6 => Ok(Self::ConstPointer),
             7 => Ok(Self::Reference),
             8 => Ok(Self::Builtin),
+            9 => Ok(Self::CPointer),
+            10 => Ok(Self::CxxLvalueReference),
+            11 => Ok(Self::CxxRvalueReference),
+            12 => Ok(Self::CxxMemberPointer),
+            13 => Ok(Self::ArbitraryInteger),
+            14 => Ok(Self::NativeSignedInteger),
+            15 => Ok(Self::NativeUnsignedInteger),
+            16 => Ok(Self::PointerAddressInteger),
             actual => Err(PrimitiveShapeError { actual }),
         }
+    }
+}
+
+/// Closed C-family cv/restrict qualifier set. The set is a property of one
+/// exact type node; pointer qualifiers and pointee qualifiers therefore
+/// occupy different structural nodes instead of sharing a mutability bit.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CvQualifiers {
+    /// `const` applies directly to this node.
+    pub const_: bool,
+    /// `volatile` applies directly to this node.
+    pub volatile: bool,
+    /// `restrict` applies directly to this node.
+    pub restrict: bool,
+}
+
+/// Exact qualifier-bit rejection retaining the unmasked source cell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CvQualifiersError {
+    /// Complete rejected qualifier cell.
+    pub actual: u32,
+}
+
+impl CvQualifiers {
+    /// `const` on the directly represented node.
+    pub const CONST: u8 = 1;
+    /// `volatile` on the directly represented node.
+    pub const VOLATILE: u8 = 1 << 1;
+    /// `restrict` on the directly represented node.
+    pub const RESTRICT: u8 = 1 << 2;
+    /// Every admitted qualifier bit.
+    pub const ALL: u8 = Self::CONST | Self::VOLATILE | Self::RESTRICT;
+
+    /// No qualifiers.
+    pub const NONE: Self = Self {
+        const_: false,
+        volatile: false,
+        restrict: false,
+    };
+
+    /// Builds one closed qualifier set from individual direct facts.
+    #[must_use]
+    pub const fn new(const_: bool, volatile: bool, restrict: bool) -> Self {
+        Self {
+            const_,
+            volatile,
+            restrict,
+        }
+    }
+
+    /// True when no direct qualifier is present.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !self.const_ && !self.volatile && !self.restrict
+    }
+}
+
+impl From<CvQualifiers> for u8 {
+    fn from(value: CvQualifiers) -> Self {
+        (if value.const_ { CvQualifiers::CONST } else { 0 })
+            | (if value.volatile {
+                CvQualifiers::VOLATILE
+            } else {
+                0
+            })
+            | (if value.restrict {
+                CvQualifiers::RESTRICT
+            } else {
+                0
+            })
+    }
+}
+
+impl TryFrom<u32> for CvQualifiers {
+    type Error = CvQualifiersError;
+
+    fn try_from(actual: u32) -> Result<Self, Self::Error> {
+        if actual & !u32::from(Self::ALL) != 0 {
+            return Err(CvQualifiersError { actual });
+        }
+        Ok(Self {
+            const_: actual & u32::from(Self::CONST) != 0,
+            volatile: actual & u32::from(Self::VOLATILE) != 0,
+            restrict: actual & u32::from(Self::RESTRICT) != 0,
+        })
     }
 }
 
@@ -720,6 +848,12 @@ pub enum SemanticTypeFault {
         /// Rejected shape value.
         actual: u32,
     },
+    /// A C-family qualifier cell names bits outside the closed set, or
+    /// claims an empty wrapper that has no structural meaning.
+    CvQualifiers {
+        /// Complete rejected qualifier cell.
+        actual: u32,
+    },
     /// A width cell is malformed; the complete observed cell travels.
     Width {
         /// Complete rejected width cell.
@@ -882,7 +1016,8 @@ impl SemanticTypeRecord<'_> {
             | SemanticTypeTag::ArrayRectangular
             | SemanticTypeTag::ArrayFixed
             | SemanticTypeTag::ArrayConstExpression
-            | SemanticTypeTag::ArrayIncomplete => {
+            | SemanticTypeTag::ArrayIncomplete
+            | SemanticTypeTag::CQualified => {
                 ChildCountLaw { min: 1, max: 1 }
             }
             SemanticTypeTag::Map => ChildCountLaw { min: 2, max: 2 },
@@ -1038,6 +1173,20 @@ impl SemanticTypeRecord<'_> {
             }
             SemanticTypeTag::ArraySequence | SemanticTypeTag::ArrayIncomplete => {
                 self.require_no_cells()?;
+            }
+            SemanticTypeTag::CQualified => {
+                CvQualifiers::try_from(self.payload0).map_err(|error| {
+                    SemanticTypeFault::CvQualifiers {
+                        actual: error.actual,
+                    }
+                })?;
+                if self.payload0 == 0 {
+                    return Err(SemanticTypeFault::CvQualifiers {
+                        actual: self.payload0,
+                    });
+                }
+                self.require_zero_payload1()?;
+                self.require_no_text()?;
             }
             SemanticTypeTag::ArrayRectangular => {
                 if self.payload0 == 0 || self.payload0 > u32::from(u16::MAX) {
@@ -1413,7 +1562,15 @@ impl SemanticTypeRecord<'_> {
             | PrimitiveShape::Char
             | PrimitiveShape::Str
             | PrimitiveShape::MutPointer
-            | PrimitiveShape::ConstPointer => {
+            | PrimitiveShape::ConstPointer
+            | PrimitiveShape::CPointer
+            | PrimitiveShape::CxxLvalueReference
+            | PrimitiveShape::CxxRvalueReference
+            | PrimitiveShape::CxxMemberPointer
+            | PrimitiveShape::ArbitraryInteger
+            | PrimitiveShape::NativeSignedInteger
+            | PrimitiveShape::NativeUnsignedInteger
+            | PrimitiveShape::PointerAddressInteger => {
                 if self.payload1 != 0 {
                     return Err(SemanticTypeFault::ReservedCell {
                         tag,
@@ -1438,11 +1595,25 @@ impl SemanticTypeRecord<'_> {
         )?;
         let owns_child = matches!(
             shape,
-            PrimitiveShape::MutPointer | PrimitiveShape::ConstPointer | PrimitiveShape::Reference
+            PrimitiveShape::MutPointer
+                | PrimitiveShape::ConstPointer
+                | PrimitiveShape::Reference
+                | PrimitiveShape::CPointer
+                | PrimitiveShape::CxxLvalueReference
+                | PrimitiveShape::CxxRvalueReference
         );
-        if owns_child != (child_count == 1) {
+        let expected_children = if shape == PrimitiveShape::CxxMemberPointer {
+            2
+        } else if owns_child {
+            1
+        } else {
+            0
+        };
+        if child_count != expected_children {
             let law = if owns_child {
                 ChildCountLaw { min: 1, max: 1 }
+            } else if shape == PrimitiveShape::CxxMemberPointer {
+                ChildCountLaw { min: 2, max: 2 }
             } else {
                 ChildCountLaw { min: 0, max: 0 }
             };
@@ -1523,5 +1694,32 @@ impl SemanticTypeRecord<'_> {
             CellLaw::Forbidden,
             self.nominal.is_some(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c_family_forms_preserve_closed_arity_and_qualifier_placement() {
+        let mut pointer = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        pointer.payload0 = u32::from(PrimitiveShape::CPointer);
+        assert_eq!(pointer.validate(1), Ok(()));
+        assert!(matches!(pointer.validate(0), Err(SemanticTypeFault::ChildCount { .. })));
+
+        let mut member = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        member.payload0 = u32::from(PrimitiveShape::CxxMemberPointer);
+        assert_eq!(member.validate(2), Ok(()));
+        assert!(matches!(member.validate(1), Err(SemanticTypeFault::ChildCount { .. })));
+
+        let mut qualified = SemanticTypeRecord::leaf(SemanticTypeTag::CQualified);
+        qualified.payload0 = u32::from(u8::from(CvQualifiers::new(true, false, false)));
+        assert_eq!(qualified.validate(1), Ok(()));
+        qualified.payload0 = 0;
+        assert!(matches!(
+            qualified.validate(1),
+            Err(SemanticTypeFault::CvQualifiers { actual: 0 })
+        ));
     }
 }

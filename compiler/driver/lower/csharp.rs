@@ -129,6 +129,10 @@ const SHAPE_STR: u32 = 4;
 const SHAPE_MUT_POINTER: u32 = 5;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
+/// `PrimitiveShape::NativeSignedInteger` wire cell.
+const SHAPE_NATIVE_SIGNED_INTEGER: u32 = 14;
+/// `PrimitiveShape::PointerAddressInteger` wire cell.
+const SHAPE_POINTER_ADDRESS_INTEGER: u32 = 16;
 
 /// Integer signedness bit below the shifted width cell.
 const INTEGER_SIGNED_FLAG: u32 = 1;
@@ -1147,8 +1151,9 @@ fn spelled_unknown<'source>(node: &TypeNode<'source>) -> OwnedNode<'source> {
 }
 
 /// Maps one closed primitive spelling onto its exact width, signedness, and
-/// shape cells: `int` is I32, `nint` the architecture width, `decimal` and
-/// `void` stay builtins, and every other spelling is no primitive at all.
+/// shape cells: `int` is I32, `nint` is a native signed word, `nuint` a
+/// pointer-address word, `decimal` and `void` stay builtins, and every other
+/// spelling is no primitive at all.
 fn primitive_record(spelling: &[u8]) -> Option<SemanticTypeRecord<'static>> {
     let integer = |width: u32, signed: bool| -> SemanticTypeRecord<'static> {
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
@@ -1171,8 +1176,14 @@ fn primitive_record(spelling: &[u8]) -> Option<SemanticTypeRecord<'static>> {
         b"System.UInt32" | b"uint" => Some(integer(32, false)),
         b"System.Int64" | b"long" => Some(integer(64, true)),
         b"System.UInt64" | b"ulong" => Some(integer(64, false)),
-        b"System.IntPtr" | b"nint" => Some(integer(TypeWidth::Arch.to_cell(), true)),
-        b"System.UIntPtr" | b"nuint" => Some(integer(TypeWidth::Arch.to_cell(), false)),
+        b"System.IntPtr" | b"nint" => {
+            record.payload0 = SHAPE_NATIVE_SIGNED_INTEGER;
+            Some(record)
+        }
+        b"System.UIntPtr" | b"nuint" => {
+            record.payload0 = SHAPE_POINTER_ADDRESS_INTEGER;
+            Some(record)
+        }
         b"System.Single" | b"float" => {
             record.payload0 = SHAPE_FLOAT;
             record.payload1 = TypeWidth::Fixed(32).to_cell();
@@ -2338,7 +2349,6 @@ mod tests {
 
     #[test]
     fn exact_widths_map_the_closed_primitive_spellings() -> Result<(), TestError> {
-        use compiler_ir::TypeWidth;
         let source = b"class P { int a0; byte a1; nint a2; double a3; bool a4; string a5; }";
         let mut fix = Fixture::default();
         let widget = fix.class(b"demo.P", source);
@@ -2358,8 +2368,8 @@ mod tests {
             (
                 b"System.IntPtr",
                 b"a2",
-                PrimitiveShape::Integer as u32,
-                (TypeWidth::Arch.to_cell() << 1) | 1,
+                PrimitiveShape::NativeSignedInteger as u32,
+                0,
             ),
             (b"System.Double", b"a3", PrimitiveShape::Float as u32, 64),
             (b"System.Boolean", b"a4", PrimitiveShape::Bool as u32, 0),

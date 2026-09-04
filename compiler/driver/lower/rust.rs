@@ -2273,8 +2273,8 @@ fn builtin_record(builtin: ra_ap_hir::BuiltinType) -> SemanticTypeRecord<'static
         "bool" => primitive_record(PrimitiveShape::Bool, 0),
         "char" => primitive_record(PrimitiveShape::Char, 0),
         "str" => primitive_record(PrimitiveShape::Str, 0),
-        "isize" => integer_record(TypeWidth::Arch, true),
-        "usize" => integer_record(TypeWidth::Arch, false),
+        "isize" => primitive_record(PrimitiveShape::NativeSignedInteger, 0),
+        "usize" => primitive_record(PrimitiveShape::NativeUnsignedInteger, 0),
         "i8" => integer_record(TypeWidth::Fixed(8), true),
         "i16" => integer_record(TypeWidth::Fixed(16), true),
         "i32" => integer_record(TypeWidth::Fixed(32), true),
@@ -2630,10 +2630,10 @@ mod tests {
             return Err(TestError::Missing("i128 width and signedness cells"));
         }
         let usize_row = &rows[3];
-        if usize_row.record.payload1
-            != (compiler_ir::TypeWidth::Arch.to_cell() << INTEGER_WIDTH_SHIFT)
+        if usize_row.record.payload0 != PrimitiveShape::NativeUnsignedInteger as u32
+            || usize_row.record.payload1 != 0
         {
-            return Err(TestError::Missing("usize architecture width cell"));
+            return Err(TestError::Missing("usize native unsigned role"));
         }
         let f32_row = &rows[4];
         if f32_row.record.payload0 != PrimitiveShape::Float as u32

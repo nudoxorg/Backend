@@ -368,6 +368,18 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 TypeRelation::Pointee,
                 TranslationUnit::pointee_type(type_),
             )?,
+            TypeKind::MemberPointer => {
+                self.collect_type_child(
+                    parent,
+                    TypeRelation::MemberOwner,
+                    TranslationUnit::member_pointer_class_type(type_),
+                )?;
+                self.collect_type_child(
+                    parent,
+                    TypeRelation::Pointee,
+                    TranslationUnit::pointee_type(type_),
+                )?;
+            }
             TypeKind::LvalueReference | TypeKind::RvalueReference => {
                 self.collect_type_child(
                     parent,
@@ -659,9 +671,8 @@ const fn source_dependency_kind(kind: NativeCursorKind) -> Option<SourceDependen
 /// Classifies direct native type kinds while retaining unsupported kinds as `Unknown` facts.
 const fn type_kind(kind: CXTypeKind, declaration: Option<SymbolIdentity>) -> TypeKind {
     match kind {
-        clang_sys::CXType_Pointer
-        | clang_sys::CXType_BlockPointer
-        | clang_sys::CXType_MemberPointer => TypeKind::Pointer,
+        clang_sys::CXType_Pointer | clang_sys::CXType_BlockPointer => TypeKind::Pointer,
+        clang_sys::CXType_MemberPointer => TypeKind::MemberPointer,
         clang_sys::CXType_LValueReference => TypeKind::LvalueReference,
         clang_sys::CXType_RValueReference => TypeKind::RvalueReference,
         clang_sys::CXType_ConstantArray
@@ -828,6 +839,7 @@ mod tests {
     fn native_kind_classifiers_preserve_templates_and_recursive_types() -> Result<(), TestError> {
         let template = declaration_kind(clang_sys::CXCursor_FunctionTemplate);
         let pointer = type_kind(clang_sys::CXType_Pointer, None);
+        let member_pointer = type_kind(clang_sys::CXType_MemberPointer, None);
         let named = type_kind(
             clang_sys::CXType_Unexposed,
             Some(SymbolIdentity {
@@ -836,6 +848,7 @@ mod tests {
         );
         if template == DeclarationKind::Template
             && pointer == TypeKind::Pointer
+            && member_pointer == TypeKind::MemberPointer
             && named == TypeKind::Named
         {
             Ok(())

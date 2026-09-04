@@ -202,6 +202,12 @@ const SHAPE_STR: u32 = 4;
 const SHAPE_MUT_POINTER: u32 = 5;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
+/// `PrimitiveShape::NativeSignedInteger` wire cell.
+const SHAPE_NATIVE_SIGNED_INTEGER: u32 = 14;
+/// `PrimitiveShape::NativeUnsignedInteger` wire cell.
+const SHAPE_NATIVE_UNSIGNED_INTEGER: u32 = 15;
+/// `PrimitiveShape::PointerAddressInteger` wire cell.
+const SHAPE_POINTER_ADDRESS_INTEGER: u32 = 16;
 
 /// Integer signedness bit below the shifted width cell.
 const INTEGER_SIGNED_FLAG: u32 = 1;
@@ -1736,8 +1742,12 @@ impl<'x, 'source> Projector<'x, 'source> {
         match row.name {
             b"bool" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_BOOL),
             b"string" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive).with_shape(SHAPE_STR),
-            b"int" => signed(TypeWidth::Arch.to_cell()),
-            b"uint" | b"uintptr" => unsigned(TypeWidth::Arch.to_cell()),
+            b"int" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
+                .with_shape(SHAPE_NATIVE_SIGNED_INTEGER),
+            b"uint" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
+                .with_shape(SHAPE_NATIVE_UNSIGNED_INTEGER),
+            b"uintptr" => SemanticTypeRecord::leaf(SemanticTypeTag::Primitive)
+                .with_shape(SHAPE_POINTER_ADDRESS_INTEGER),
             b"int8" => signed(8),
             b"int16" => signed(16),
             b"int32" | b"rune" => signed(32),
@@ -3034,10 +3044,8 @@ mod tests {
         }
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        let arch =
-            |signed: bool| (TypeWidth::Arch.to_cell() << INTEGER_WIDTH_SHIFT) | u32::from(signed);
         let expected: [(u32, u32, u32); 9] = [
-            (SHAPE_INTEGER, arch(true), 0),
+            (SHAPE_NATIVE_SIGNED_INTEGER, 0, 0),
             (SHAPE_INTEGER, 8 << INTEGER_WIDTH_SHIFT, 0),
             (SHAPE_INTEGER, 8 << INTEGER_WIDTH_SHIFT, 0),
             (SHAPE_INTEGER, (32 << INTEGER_WIDTH_SHIFT) | 1, 0),
