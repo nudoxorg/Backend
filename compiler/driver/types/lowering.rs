@@ -64,7 +64,11 @@ impl SourceSpanFact {
     /// Constructs only a well-ordered half-open source span.
     #[must_use]
     pub const fn new(start: u32, end: u32) -> Option<Self> {
-        (start <= end).then_some(Self { start, end })
+        if start <= end {
+            Some(Self { start, end })
+        } else {
+            None
+        }
     }
 }
 
@@ -157,10 +161,7 @@ pub enum FactFault {
     /// The type-parameter lane is full.
     TypeParameterCapacity,
     /// The ordered type/lifetime bound lane is full.
-    TypeParameterBoundCapacity {
-        requested: usize,
-        available: usize,
-    },
+    TypeParameterBoundCapacity { requested: usize, available: usize },
     /// A pooled reference lane is full.
     RefListCapacity,
     /// A pooled reference list has too many elements.

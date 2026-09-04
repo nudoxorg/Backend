@@ -39,9 +39,9 @@
 //! scanning source text or a native parser fallback.
 
 use compiler_ir::{
-    AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
-    CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
-    ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
+    AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability,
+    CSharpPartialRole, CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind,
+    ForeignKey, ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
     SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
 };
@@ -274,7 +274,9 @@ pub(crate) fn collect<'source>(
         let declared = declaration(&image, coordinate).map_err(terminal)?;
         let owner = declared
             .owner
-            .map(|owner| usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity)))
+            .map(|owner| {
+                usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity))
+            })
             .transpose()?;
         if let Some(owner) = owner
             && let Some(has_child) = owner_has_child.get_mut(owner)
@@ -284,13 +286,16 @@ pub(crate) fn collect<'source>(
         let Some(ordinal) = ordinals.lookup(coordinate) else {
             continue;
         };
-        let span = StagedSourceSpan::new(declared.name_start, declared.name_end).ok_or_else(|| {
-            terminal(ProjectionFault::NameSpan {
-                start: declared.name_start,
-                end: declared.name_end,
-            })
-        })?;
-        facts.attach_source_span(ordinal, span).map_err(lane_terminal)?;
+        let span =
+            StagedSourceSpan::new(declared.name_start, declared.name_end).ok_or_else(|| {
+                terminal(ProjectionFault::NameSpan {
+                    start: declared.name_start,
+                    end: declared.name_end,
+                })
+            })?;
+        facts
+            .attach_source_span(ordinal, span)
+            .map_err(lane_terminal)?;
         // The Roslyn image owns this declaration's XML-doc plane even when
         // the corresponding summary is absent or empty.
         facts
@@ -300,7 +305,9 @@ pub(crate) fn collect<'source>(
             None => facts.mark_parentage_root(ordinal).map_err(lane_terminal)?,
             Some(owner) => {
                 if let Some(parent) = ordinals.lookup(owner) {
-                    facts.attach_parent(ordinal, parent).map_err(lane_terminal)?;
+                    facts
+                        .attach_parent(ordinal, parent)
+                        .map_err(lane_terminal)?;
                 }
             }
         }
@@ -319,7 +326,9 @@ pub(crate) fn collect<'source>(
             continue;
         };
         if !owner_has_child[coordinate] {
-            facts.mark_members_captured(ordinal).map_err(lane_terminal)?;
+            facts
+                .mark_members_captured(ordinal)
+                .map_err(lane_terminal)?;
         }
     }
 
@@ -416,7 +425,9 @@ const fn entity_kind(kind: DeclarationKind, is_const: bool) -> EntityKind {
 const fn constructor(kind: EntityKind) -> SemanticProductConstructor {
     match kind {
         EntityKind::Function => SemanticProductConstructor::function(0, 0),
-        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => SemanticProductConstructor::PRODUCT,
+        EntityKind::Record | EntityKind::Module | EntityKind::Namespace => {
+            SemanticProductConstructor::PRODUCT
+        }
         EntityKind::Trait => SemanticProductConstructor::INTERSECTION,
         EntityKind::Enum => SemanticProductConstructor::UNION,
         EntityKind::Constant
@@ -524,6 +535,10 @@ impl ImageDeclarationId {
             .map(Self)
             .map_err(|_| ProjectionFault::IndexCapacity)
     }
+
+    fn index(self) -> Result<usize, ProjectionFault> {
+        usize::try_from(self.0).map_err(|_| ProjectionFault::IndexCapacity)
+    }
 }
 
 impl StagedTypeFactId {
@@ -603,12 +618,15 @@ fn push_type_root<'source>(
 /// the owner declaration's fact when one exists, otherwise the first pushed
 /// fact. The pooled row lane only admits already-pushed owners, and owner
 /// declarations are always committed in pass one.
-fn anchor_for(ordinals: &Ordinals, declared: &Declaration<'_>) -> u32 {
-    declared
+fn anchor_for(ordinals: &Ordinals, declared: &Declaration<'_>) -> Result<u32, CSharpCollectError> {
+    let owner = declared
         .owner
-        .and_then(|owner| ordinals.lookup(usize::try_from(owner).unwrap_or(usize::MAX)))
+        .map(|owner| usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity)))
+        .transpose()?;
+    Ok(owner
+        .and_then(|owner| ordinals.lookup(owner))
         .or_else(|| ordinals.lookup(0))
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 /// Pushes one delegate: its parameter facts first, then the delegate fact
@@ -622,9 +640,12 @@ fn push_delegate<'source>(
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
-    let anchor = anchor_for(ordinals, declared);
+    let anchor = anchor_for(ordinals, declared)?;
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
+        let parameter = parameter
+            .map_err(ProjectionFault::Image)
+            .map_err(terminal)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
@@ -646,12 +667,15 @@ fn push_member<'source>(
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
     let kind = entity_kind(declared.kind, declared.flags.is_const);
-    let anchor = anchor_for(ordinals, declared);
+    let anchor = anchor_for(ordinals, declared)?;
 
     // Indexer parameters become ordered product members of the member fact.
     let mut parameter_ordinals = Vec::new();
     if declared.kind == DeclarationKind::Indexer {
         for parameter in declared.parameters.iter() {
+            let parameter = parameter
+                .map_err(ProjectionFault::Image)
+                .map_err(terminal)?;
             let ordinal = push_parameter_fact(facts, image, names, ordinals, anchor, parameter)?;
             parameter_ordinals.push(ordinal);
         }
@@ -707,9 +731,12 @@ fn push_executable<'source>(
     declared: &Declaration<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
-    let anchor = anchor_for(ordinals, declared);
+    let anchor = anchor_for(ordinals, declared)?;
     let mut signature = Signature::new();
     for parameter in declared.parameters.iter() {
+        let parameter = parameter
+            .map_err(ProjectionFault::Image)
+            .map_err(terminal)?;
         signature.push_parameter(facts, image, names, ordinals, anchor, parameter)?;
     }
     if let Some(return_type) = declared.declared_type {
@@ -1169,10 +1196,11 @@ fn named_node<'source>(
         });
     }
     let arguments: Vec<_> = node.children.clone().collect();
-    match names
-        .lookup(spelling)
-        .and_then(|coordinate| ordinals.lookup(coordinate))
-    {
+    let local_ordinal = match names.lookup(spelling) {
+        Some(coordinate) => ordinals.lookup(coordinate.index().map_err(terminal)?),
+        None => None,
+    };
+    match local_ordinal {
         Some(ordinal) if arguments.is_empty() => Ok(OwnedNode {
             record: nominal_record(ordinal),
             children: Vec::new(),
@@ -1394,6 +1422,7 @@ fn csharp_facts<'source>(
         .lookup(coordinate)
         .ok_or_else(|| terminal(ProjectionFault::IndexCapacity))?;
     for generic in declared.type_parameters.iter() {
+        let generic = generic.map_err(ProjectionFault::Image).map_err(terminal)?;
         let mut bounds = Vec::with_capacity(generic.constraints.len());
         for child in generic.constraints {
             bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
@@ -2427,8 +2456,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
-    {
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections()
+    -> Result<(), TestError> {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2746,7 +2775,9 @@ mod tests {
                 },
             })
         {
-            return Err(TestError::Missing("covariant class constructor requirements"));
+            return Err(TestError::Missing(
+                "covariant class constructor requirements",
+            ));
         }
         let unmanaged = parameters
             .get(1)
@@ -2885,7 +2916,8 @@ mod tests {
         }
         let method_row = row(&view, 3)?;
         if method_row.record.tag != SemanticTypeTag::FunctionPointer
-            || method_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || method_row.record.payload1
+                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || method_row.record.children.length != 2
         {
             return Err(TestError::Missing("function pointer over carriers"));
@@ -3228,14 +3260,16 @@ mod tests {
         }
         let operator_row = row(&view, 4)?;
         if operator_row.record.tag != SemanticTypeTag::FunctionPointer
-            || operator_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || operator_row.record.payload1
+                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || operator_row.record.children.length != 3
         {
             return Err(TestError::Missing("operator function row"));
         }
         let conversion_row = row(&view, 7)?;
         if conversion_row.record.tag != SemanticTypeTag::FunctionPointer
-            || conversion_row.record.payload1 != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
+            || conversion_row.record.payload1
+                != compiler_ir::SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE
             || conversion_row.record.children.length != 2
         {
             return Err(TestError::Missing("conversion function row"));

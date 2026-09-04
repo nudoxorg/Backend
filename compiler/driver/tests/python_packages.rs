@@ -85,6 +85,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            "extension-type-parameters-unbound"
+        }
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",

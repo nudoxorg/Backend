@@ -214,6 +214,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
             "authority-profile-mismatch".to_owned()
         }
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound".to_owned(),
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            "extension-type-parameters-unbound".to_owned()
+        }
         CompileFailure::FactRejected { .. } => "fact-rejected".to_owned(),
         CompileFailure::CSharpProjection { .. } => "csharp-projection".to_owned(),
         CompileFailure::ClangProjection { .. } => "clang-projection".to_owned(),
@@ -296,7 +299,7 @@ fn compile_row(
         profile: LanguageProfile::Rust(located.project().edition),
         stage: Stage::LowerIr,
         source: &source,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(*tool),
         authority: SemanticAuthorityInput::Rust {
             project: located.project(),
@@ -458,7 +461,7 @@ fn twenty_real_crates_compile_with_decoded_lanes() -> Result<(), TestError> {
                 profile: LanguageProfile::Rust(located.project().edition),
                 stage: Stage::LowerIr,
                 source: &source,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+                declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(resolved),
                 authority: SemanticAuthorityInput::Rust {
                     project: located.project(),

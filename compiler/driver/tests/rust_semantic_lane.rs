@@ -157,7 +157,7 @@ fn compile_body(root: &PathBuf, body: &str) -> Result<Vec<u8>, TestError> {
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source: body.as_bytes(),
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(resolved),
         authority: SemanticAuthorityInput::Rust {
             project: &project,
@@ -205,6 +205,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            "extension-type-parameters-unbound"
+        }
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",

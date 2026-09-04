@@ -5,9 +5,7 @@ use compiler_ir::{FragmentView, PrepareError};
 use compiler_registry::{AdapterRoute, FullRegistry};
 use compiler_vocabulary::{Language, LanguageProfile, Stage};
 
-use crate::{
-    lower::{self, AdmissionFault, typescript::TypeScriptCollectError},
-};
+use crate::lower::{self, AdmissionFault, typescript::TypeScriptCollectError};
 
 use super::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, CompileFailure, CompileOutput,
@@ -81,10 +79,7 @@ pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'outpu
         transaction.permit,
         output.fragment_output,
     )?;
-    Ok(CompiledSemantic {
-        artifact,
-        ir,
-    })
+    Ok(CompiledSemantic { artifact, ir })
 }
 
 /// Materializes a queryable semantic image compatibility projection.
@@ -158,41 +153,50 @@ fn write_fragment<'source, 'cancel, 'diagnostic, 'output>(
     output: &'output mut [u8],
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
     checkpoint(permit, recipe)?;
-    let bytes = lower::admit(
-        facts,
-        source,
-        recipe,
-        recipe.profile,
-        output,
-    )
-    .map_err(|fault| match fault {
-        AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
-            source_identity: source,
-            recipe,
-            cause: PrepareError::SemanticData { cause },
-        },
-        AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
-            source_identity: source,
-            recipe,
-            cause,
-        },
-        AdmissionFault::Write(cause) => CompileFailure::Write {
-            source_identity: source,
-            recipe,
-            cause,
-        },
-        AdmissionFault::ExtensionAtom {
-            row,
-            provisional,
-            atom_count,
-        } => CompileFailure::ExtensionAtomUnbound {
-            source_identity: source,
-            recipe,
-            row,
-            provisional,
-            atom_count,
-        },
-    })?;
+    let bytes =
+        lower::admit(facts, source, recipe, recipe.profile, output).map_err(
+            |fault| match fault {
+                AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
+                    source_identity: source,
+                    recipe,
+                    cause: PrepareError::SemanticData { cause },
+                },
+                AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
+                    source_identity: source,
+                    recipe,
+                    cause,
+                },
+                AdmissionFault::Write(cause) => CompileFailure::Write {
+                    source_identity: source,
+                    recipe,
+                    cause,
+                },
+                AdmissionFault::ExtensionAtom {
+                    row,
+                    provisional,
+                    atom_count,
+                } => CompileFailure::ExtensionAtomUnbound {
+                    source_identity: source,
+                    recipe,
+                    row,
+                    provisional,
+                    atom_count,
+                },
+                AdmissionFault::ExtensionTypeParameters {
+                    row,
+                    start,
+                    length,
+                    element_count,
+                } => CompileFailure::ExtensionTypeParametersUnbound {
+                    source_identity: source,
+                    recipe,
+                    row,
+                    start,
+                    length,
+                    element_count,
+                },
+            },
+        )?;
     let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
         source_identity: source,
         recipe,
@@ -217,7 +221,9 @@ struct PreparedCompile<'source, 'cancel> {
 /// rejected before this value exists, so lowerers receive only their one
 /// meaningful native or checked authority shape.
 enum EnteredAuthority<'source> {
-    Clang { profile: LanguageProfile },
+    Clang {
+        profile: LanguageProfile,
+    },
     TypeScript {
         profile: compiler_vocabulary::TypeScriptSource,
         report: Option<&'source compiler_languages_typescript::Report>,
@@ -280,7 +286,15 @@ struct CSharpSpec;
 macro_rules! seal_specs {
     ($($spec:ty),+ $(,)?) => { $(impl language_spec_seal::Sealed for $spec {})+ };
 }
-seal_specs!(ClangSpec, TypeScriptSpec, PythonSpec, RustSpec, GoSpec, JavaSpec, CSharpSpec);
+seal_specs!(
+    ClangSpec,
+    TypeScriptSpec,
+    PythonSpec,
+    RustSpec,
+    GoSpec,
+    JavaSpec,
+    CSharpSpec
+);
 
 impl LanguageSpec for ClangSpec {
     type Authority<'source> = LanguageProfile;
@@ -292,8 +306,13 @@ impl LanguageSpec for ClangSpec {
         _: Option<&'diagnostic mut [u8]>,
         facts: &mut lower::FactSet<'source>,
     ) -> Result<(), CompileFailure<'diagnostic>> {
-        lower::clang::collect(*profile, prepared.lease.bytes(), prepared.permit.cancelled(), facts)
-            .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))
+        lower::clang::collect(
+            *profile,
+            prepared.lease.bytes(),
+            prepared.permit.cancelled(),
+            facts,
+        )
+        .map_err(|cause| clang_terminal(prepared.source, prepared.recipe, cause))
     }
 }
 
@@ -366,13 +385,14 @@ impl LanguageSpec for PythonSpec {
             None => lower::python::collect(authority.0, source, facts)
                 .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause)),
             Some(report) => {
-                let module = compiler_languages_python::extract(source, authority.0).map_err(|cause| {
-                    python_terminal(
-                        prepared.source,
-                        prepared.recipe,
-                        lower::python::PythonCollectError::Authority(cause),
-                    )
-                })?;
+                let module =
+                    compiler_languages_python::extract(source, authority.0).map_err(|cause| {
+                        python_terminal(
+                            prepared.source,
+                            prepared.recipe,
+                            lower::python::PythonCollectError::Authority(cause),
+                        )
+                    })?;
                 lower::python::collect_with_checker(&module, source, facts, Some(report))
                     .map_err(|cause| python_terminal(prepared.source, prepared.recipe, cause))
             }
@@ -454,10 +474,11 @@ impl LanguageSpec for CSharpSpec {
 fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
 ) -> Result<PreparedCompile<'source, 'cancel>, CompileFailure<'diagnostic>> {
-    let lease = SourceLease::enter(request.source).map_err(|source| CompileFailure::SourceLength {
-        actual: request.source.len(),
-        source,
-    })?;
+    let lease =
+        SourceLease::enter(request.source).map_err(|source| CompileFailure::SourceLength {
+            actual: request.source.len(),
+            source,
+        })?;
     let source = lease.identity();
     let language = Language::from(request.profile);
     let route = FullRegistry
@@ -675,7 +696,9 @@ fn emit_facts<'source, 'cancel, 'diagnostic>(
         EnteredAuthority::Java { profile, image } => {
             JavaSpec::collect(&(*profile, *image), prepared, None, facts)?;
         }
-        EnteredAuthority::CSharp { image, .. } => CSharpSpec::collect(image, prepared, None, facts)?,
+        EnteredAuthority::CSharp { image, .. } => {
+            CSharpSpec::collect(image, prepared, None, facts)?
+        }
     }
     checkpoint(prepared.permit, prepared.recipe)?;
     require_facts(prepared.source, prepared.recipe, facts)
@@ -957,6 +980,19 @@ fn clang_terminal<'diagnostic>(
                 row,
                 provisional,
                 atom_count,
+            },
+            AdmissionFault::ExtensionTypeParameters {
+                row,
+                start,
+                length,
+                element_count,
+            } => CompileFailure::ExtensionTypeParametersUnbound {
+                source_identity,
+                recipe,
+                row,
+                start,
+                length,
+                element_count,
             },
         },
     }

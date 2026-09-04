@@ -13,7 +13,7 @@ use crate::types::{FactFault, ParentageState, SourceSpanFact};
 
 /// The staged primary-source fact used until projection attaches the
 /// request-local source-file atom.
-pub(super) use crate::types::SourceSpanFact as StagedSourceSpan;
+pub(crate) use crate::types::SourceSpanFact as StagedSourceSpan;
 
 /// Whether the authority explicitly enumerated an entity's complete local
 /// member set. The enum prevents root/bound containment from being mistaken
@@ -92,7 +92,11 @@ impl Provenance {
         if child as usize >= fact_count || parent as usize >= fact_count || child == parent {
             return Err(FactFault::RefTarget {
                 lane: "entity_parents",
-                raw: if child as usize >= fact_count { child } else { parent },
+                raw: if child as usize >= fact_count {
+                    child
+                } else {
+                    parent
+                },
                 fact_count,
             });
         }

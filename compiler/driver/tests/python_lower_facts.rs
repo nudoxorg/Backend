@@ -113,6 +113,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            "extension-type-parameters-unbound"
+        }
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",
@@ -238,7 +241,7 @@ fn attempt_fragment(
 /// crosses the join boundary).
 fn with_image<T>(
     source: &'static [u8],
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+    declaration_scope: compiler_driver::DeclarationScope::fixture(),
     label: &'static str,
     then: impl FnOnce(&Ir) -> Result<T, TestError> + Send,
 ) -> Result<T, TestError>
@@ -651,7 +654,9 @@ fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
     }
     let children = type_child_targets(&lane, root)?;
     if children.len() != 2 {
-        return Err(TestError::Falsified("list[T] does not have base and argument rows"));
+        return Err(TestError::Falsified(
+            "list[T] does not have base and argument rows",
+        ));
     }
     let argument = row_at(&lane, children[1])?;
     if argument.record.tag != SemanticTypeTag::TypeVar || argument.record.text != Some(b"T") {

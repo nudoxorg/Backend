@@ -110,6 +110,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
         | Err(CompileFailure::AuthorityInputProfileMismatch { .. })
         | Err(CompileFailure::LoweringUnsupported { .. })
         | Err(CompileFailure::ExtensionAtomUnbound { .. })
+        | Err(CompileFailure::ExtensionTypeParametersUnbound { .. })
         | Err(CompileFailure::FactRejected { .. })
         | Err(CompileFailure::CSharpProjection { .. })
         | Err(CompileFailure::ClangProjection { .. })

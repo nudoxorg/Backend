@@ -8,14 +8,12 @@
 
 use compiler_ir::{
     CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
-    DeclarationParentage, EntityId, EntityKind, EntityVersion, NominalRef,
-    ScopedDeclarationKey, SemanticTypeRecord, VariantFingerprint,
+    DeclarationParentage, EntityId, EntityKind, EntityVersion, NominalRef, ScopedDeclarationKey,
+    SemanticTypeRecord, VariantFingerprint,
 };
 use compiler_vocabulary::LanguageProfile;
 
-use super::{
-    FactSet, SemanticFact, ANONYMOUS_ROW_BASE, COMPUTED_ROW_BASE, STAGED_TEXT_CHILD,
-};
+use super::{ANONYMOUS_ROW_BASE, COMPUTED_ROW_BASE, FactSet, STAGED_TEXT_CHILD, SemanticFact};
 use crate::types::{DeclarationScope, ParentageState};
 
 /// Builds every admitted entity version.  Siblings are sorted and grouped
@@ -45,19 +43,32 @@ pub(super) fn versions(
     let member_payloads = member_payloads(facts, &locators, &variants)?;
     let identities = declaration_identities(facts, scope, profile, &variants)?;
     let mut payloads = vec![None; count].into_boxed_slice();
-    let mut type_shapes = vec![None; facts.len + facts.anonymous_rows + facts.computed_rows]
-        .into_boxed_slice();
+    let mut type_shapes =
+        vec![None; facts.len + facts.anonymous_rows + facts.computed_rows].into_boxed_slice();
     let mut type_visiting = vec![false; type_shapes.len()].into_boxed_slice();
-    (0..count).map(|ordinal| {
-        Ok(EntityVersion {
-            family: identities.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?.family,
-            variant: *variants.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?,
-            core_payload: payload_for(
-                facts, ordinal, &locators, &member_payloads, &mut payloads,
-                &mut type_shapes, &mut type_visiting,
-            )?,
+    (0..count)
+        .map(|ordinal| {
+            Ok(EntityVersion {
+                family: identities
+                    .get(ordinal)
+                    .ok_or_else(|| dangling_entity(ordinal))?
+                    .family,
+                variant: *variants
+                    .get(ordinal)
+                    .ok_or_else(|| dangling_entity(ordinal))?,
+                core_payload: payload_for(
+                    facts,
+                    ordinal,
+                    &locators,
+                    &member_payloads,
+                    &mut payloads,
+                    &mut type_shapes,
+                    &mut type_visiting,
+                )?,
+            })
         })
-    }).collect::<Result<Vec<_>, compiler_ir::BuildError>>().map(Vec::into_boxed_slice)
+        .collect::<Result<Vec<_>, compiler_ir::BuildError>>()
+        .map(Vec::into_boxed_slice)
 }
 
 /// Mints every family with an explicit post-order parent stack. Bound rows
@@ -72,60 +83,99 @@ fn declaration_identities(
     let mut values = vec![None; facts.len].into_boxed_slice();
     let mut state = vec![0_u8; facts.len].into_boxed_slice();
     for root in 0..facts.len {
-        if state[root] == 2 { continue; }
+        if state[root] == 2 {
+            continue;
+        }
         let mut stack = Vec::new();
         stack.push((root, false));
         while let Some((ordinal, exit)) = stack.pop() {
             if exit {
-                let raw_parentage = *facts.provenance.parentage().get(ordinal)
+                let raw_parentage = *facts
+                    .provenance
+                    .parentage()
+                    .get(ordinal)
                     .ok_or_else(|| dangling_entity(ordinal))?;
                 let parentage = match raw_parentage {
                     ParentageState::Root => DeclarationParentage::Root,
                     ParentageState::Unavailable => DeclarationParentage::Unavailable,
-                    ParentageState::UnrepresentedAuthorityOwner { identity } => DeclarationParentage::Unrepresented(identity),
+                    ParentageState::UnrepresentedAuthorityOwner { identity } => {
+                        DeclarationParentage::Unrepresented(identity)
+                    }
                     ParentageState::Bound { parent } => {
-                        let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
-                        DeclarationParentage::Bound(values.get(parent).and_then(|value| *value)
-                            .ok_or_else(|| dangling_entity(parent))?)
+                        let parent =
+                            usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
+                        DeclarationParentage::Bound(
+                            values
+                                .get(parent)
+                                .and_then(|value| *value)
+                                .ok_or_else(|| dangling_entity(parent))?,
+                        )
                     }
                 };
-                let key = DeclarationKey::new(scope.lineage(), scope.path(), facts.kinds[ordinal], facts.names[ordinal])
-                    .map_err(|cause| compiler_ir::BuildError::DeclarationKey {
-                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)), cause,
-                    })?;
+                let key = DeclarationKey::new(
+                    scope.lineage(),
+                    scope.path(),
+                    facts.kinds[ordinal],
+                    facts.names[ordinal],
+                )
+                .map_err(|cause| compiler_ir::BuildError::DeclarationKey {
+                    entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                    cause,
+                })?;
                 let scoped = ScopedDeclarationKey::new(key, profile, parentage);
-                let length = scoped.family_preimage_len().map_err(|cause| compiler_ir::BuildError::ScopedDeclarationPreimage {
-                    entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)), cause,
+                let length = scoped.family_preimage_len().map_err(|cause| {
+                    compiler_ir::BuildError::ScopedDeclarationPreimage {
+                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                        cause,
+                    }
                 })?;
                 let mut preimage = vec![0_u8; length];
-                let family = scoped.family_id(&mut preimage).map_err(|cause| compiler_ir::BuildError::ScopedDeclarationPreimage {
-                    entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)), cause,
+                let family = scoped.family_id(&mut preimage).map_err(|cause| {
+                    compiler_ir::BuildError::ScopedDeclarationPreimage {
+                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                        cause,
+                    }
                 })?;
                 values[ordinal] = Some(DeclarationIdentity {
                     family: DeclarationFamilyId::from_content_id(family),
-                    variant: *variants.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?,
+                    variant: *variants
+                        .get(ordinal)
+                        .ok_or_else(|| dangling_entity(ordinal))?,
                 });
                 state[ordinal] = 2;
                 continue;
             }
             match state[ordinal] {
                 2 => continue,
-                1 => return Err(compiler_ir::BuildError::ParentCycle {
-                    entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
-                }),
+                1 => {
+                    return Err(compiler_ir::BuildError::ParentCycle {
+                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                    });
+                }
                 _ => {}
             }
             state[ordinal] = 1;
             stack.push((ordinal, true));
-            if let ParentageState::Bound { parent } = *facts.provenance.parentage().get(ordinal)
-                .ok_or_else(|| dangling_entity(ordinal))? {
+            if let ParentageState::Bound { parent } = *facts
+                .provenance
+                .parentage()
+                .get(ordinal)
+                .ok_or_else(|| dangling_entity(ordinal))?
+            {
                 let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
-                if parent >= facts.len { return Err(dangling_entity(parent)); }
-                if state[parent] != 2 { stack.push((parent, false)); }
+                if parent >= facts.len {
+                    return Err(dangling_entity(parent));
+                }
+                if state[parent] != 2 {
+                    stack.push((parent, false));
+                }
             }
         }
     }
-    values.into_iter().collect::<Option<Vec<_>>>().map(Vec::into_boxed_slice)
+    values
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
         .ok_or_else(|| dangling_entity(facts.len))
 }
 
@@ -141,19 +191,32 @@ fn member_payloads(
     let empty = CorePayloadHash::from_canonical_bytes(b"compiler.local-members.v2\0");
     let mut summaries = vec![empty; facts.len].into_boxed_slice();
     for parent in 0..facts.len {
-        let start = usize::try_from(facts.child_starts[parent]).map_err(|_| dangling_entity(parent))?;
+        let start =
+            usize::try_from(facts.child_starts[parent]).map_err(|_| dangling_entity(parent))?;
         let count = usize::from(facts.child_counts[parent]);
-        let end = start.checked_add(count).ok_or_else(|| dangling_entity(parent))?;
-        let targets = facts.child_targets.get(start..end).ok_or_else(|| dangling_entity(parent))?;
-        let roles = facts.child_roles.get(start..end).ok_or_else(|| dangling_entity(parent))?;
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| dangling_entity(parent))?;
+        let targets = facts
+            .child_targets
+            .get(start..end)
+            .ok_or_else(|| dangling_entity(parent))?;
+        let roles = facts
+            .child_roles
+            .get(start..end)
+            .ok_or_else(|| dangling_entity(parent))?;
         let count = u32::try_from(targets.len()).map_err(|_| dangling_entity(parent))?;
         let mut preimage = Vec::new();
         preimage.extend_from_slice(b"compiler.local-members.v2");
         preimage.extend_from_slice(&count.to_le_bytes());
         for (target, role) in targets.iter().zip(roles) {
             let child = usize::try_from(*target).map_err(|_| dangling_entity(parent))?;
-            let ParentageState::Bound { parent: bound } = *facts.provenance.parentage().get(child)
-                .ok_or_else(|| dangling_entity(child))? else {
+            let ParentageState::Bound { parent: bound } = *facts
+                .provenance
+                .parentage()
+                .get(child)
+                .ok_or_else(|| dangling_entity(child))?
+            else {
                 return Err(dangling_entity(child));
             };
             if bound.raw as usize != parent {
@@ -161,10 +224,16 @@ fn member_payloads(
             }
             preimage.push(u8::from(*role));
             preimage.extend_from_slice(
-                locators.get(child).ok_or_else(|| dangling_entity(child))?.as_ref(),
+                locators
+                    .get(child)
+                    .ok_or_else(|| dangling_entity(child))?
+                    .as_bytes(),
             );
             preimage.extend_from_slice(
-                variants.get(child).ok_or_else(|| dangling_entity(child))?.as_bytes(),
+                variants
+                    .get(child)
+                    .ok_or_else(|| dangling_entity(child))?
+                    .as_bytes(),
             );
         }
         summaries[parent] = CorePayloadHash::from_canonical_bytes(&preimage);
@@ -180,13 +249,18 @@ fn variant_fingerprints(
     locators: &[CorePayloadHash],
 ) -> Result<Box<[VariantFingerprint]>, compiler_ir::BuildError> {
     let mut shapes = vec![None; facts.len].into_boxed_slice();
-    let mut type_shapes = vec![None; facts.len + facts.anonymous_rows + facts.computed_rows]
-        .into_boxed_slice();
+    let mut type_shapes =
+        vec![None; facts.len + facts.anonymous_rows + facts.computed_rows].into_boxed_slice();
     let mut type_visiting = vec![false; type_shapes.len()].into_boxed_slice();
     (0..facts.len)
         .map(|ordinal| {
             let shape = declaration_variant_for(
-                facts, ordinal, locators, &mut shapes, &mut type_shapes, &mut type_visiting,
+                facts,
+                ordinal,
+                locators,
+                &mut shapes,
+                &mut type_shapes,
+                &mut type_visiting,
             )?;
             Ok(VariantFingerprint::from_raw(*shape.as_bytes()))
         })
@@ -201,15 +275,20 @@ fn lexical_locators(
     facts: &FactSet<'_>,
     parent_bases: &[CorePayloadHash],
 ) -> Result<Box<[CorePayloadHash]>, compiler_ir::BuildError> {
-    let mut values = vec![None; facts.len].into_boxed_slice();
+    let mut values = vec![None::<CorePayloadHash>; facts.len].into_boxed_slice();
     let mut state = vec![0_u8; facts.len].into_boxed_slice();
     for root in 0..facts.len {
-        if state[root] == 2 { continue; }
+        if state[root] == 2 {
+            continue;
+        }
         let mut stack = Vec::new();
         stack.push((root, false));
         while let Some((ordinal, exit)) = stack.pop() {
             if exit {
-                let parentage = *facts.provenance.parentage().get(ordinal)
+                let parentage = *facts
+                    .provenance
+                    .parentage()
+                    .get(ordinal)
                     .ok_or_else(|| dangling_entity(ordinal))?;
                 let mut bytes = Vec::with_capacity(64 + facts.names[ordinal].len());
                 bytes.extend_from_slice(b"compiler.declaration-lexical-locator.v1");
@@ -217,23 +296,35 @@ fn lexical_locators(
                     ParentageState::Root => bytes.push(0),
                     ParentageState::Bound { parent } => {
                         bytes.push(1);
-                        let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
-                        bytes.extend_from_slice(values.get(parent).and_then(|value| *value)
-                            .ok_or_else(|| dangling_entity(parent))?.as_ref());
+                        let parent =
+                            usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
+                        bytes.extend_from_slice(
+                            values
+                                .get(parent)
+                                .and_then(|value| *value)
+                                .ok_or_else(|| dangling_entity(parent))?
+                                .as_bytes(),
+                        );
                         // This caller-selected basis is a full published
                         // variant for durable locators, and a provisional
                         // structural signature only while variants are being
                         // minted. Neither staging ordinal enters the frame.
-                        bytes.extend_from_slice(parent_bases.get(parent)
-                            .ok_or_else(|| dangling_entity(parent))?.as_ref());
+                        bytes.extend_from_slice(
+                            parent_bases
+                                .get(parent)
+                                .ok_or_else(|| dangling_entity(parent))?
+                                .as_bytes(),
+                        );
                     }
                     ParentageState::UnrepresentedAuthorityOwner { identity } => {
-                        bytes.push(2); bytes.extend_from_slice(&identity);
+                        bytes.push(2);
+                        bytes.extend_from_slice(&identity);
                     }
                     ParentageState::Unavailable => bytes.push(3),
                 }
                 bytes.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
-                let length = u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?;
+                let length = u32::try_from(facts.names[ordinal].len())
+                    .map_err(|_| dangling_entity(ordinal))?;
                 bytes.extend_from_slice(&length.to_le_bytes());
                 bytes.extend_from_slice(facts.names[ordinal]);
                 // A root overload has no parent cell to distinguish it. The
@@ -245,7 +336,7 @@ fn lexical_locators(
                     parent_bases
                         .get(ordinal)
                         .ok_or_else(|| dangling_entity(ordinal))?
-                        .as_ref(),
+                        .as_bytes(),
                 );
                 values[ordinal] = Some(CorePayloadHash::from_canonical_bytes(&bytes));
                 state[ordinal] = 2;
@@ -253,20 +344,35 @@ fn lexical_locators(
             }
             match state[ordinal] {
                 2 => continue,
-                1 => return Err(compiler_ir::BuildError::ParentCycle { entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)) }),
+                1 => {
+                    return Err(compiler_ir::BuildError::ParentCycle {
+                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
+                    });
+                }
                 _ => {}
             }
             state[ordinal] = 1;
             stack.push((ordinal, true));
-            if let ParentageState::Bound { parent } = *facts.provenance.parentage().get(ordinal)
-                .ok_or_else(|| dangling_entity(ordinal))? {
+            if let ParentageState::Bound { parent } = *facts
+                .provenance
+                .parentage()
+                .get(ordinal)
+                .ok_or_else(|| dangling_entity(ordinal))?
+            {
                 let parent = usize::try_from(parent.raw).map_err(|_| dangling_entity(ordinal))?;
-                if parent >= facts.len { return Err(dangling_entity(parent)); }
-                if state[parent] != 2 { stack.push((parent, false)); }
+                if parent >= facts.len {
+                    return Err(dangling_entity(parent));
+                }
+                if state[parent] != 2 {
+                    stack.push((parent, false));
+                }
             }
         }
     }
-    values.into_iter().collect::<Option<Vec<_>>>().map(Vec::into_boxed_slice)
+    values
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
         .ok_or_else(|| dangling_entity(facts.len))
 }
 
@@ -329,7 +435,14 @@ fn signature_cycle_markers(
             continue;
         }
         let mut frames = Vec::new();
-        signature_discover(root, &mut discovery, &mut low, &mut active, &mut tarjan, &mut next_discovery)?;
+        signature_discover(
+            root,
+            &mut discovery,
+            &mut low,
+            &mut active,
+            &mut tarjan,
+            &mut next_discovery,
+        )?;
         frames.push(Frame {
             slot: root,
             next: 0,
@@ -348,7 +461,8 @@ fn signature_cycle_markers(
                 let Some(target) = signature_dependency_at(facts, row, position)? else {
                     continue;
                 };
-                let target_slot = staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
+                let target_slot =
+                    staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
                 if discovery[target_slot] == u32::MAX {
                     frame.awaiting = Some(target_slot);
                     signature_discover(
@@ -407,7 +521,9 @@ fn signature_discover(
 ) -> Result<(), compiler_ir::BuildError> {
     let value = *next;
     *next = next.checked_add(1).ok_or_else(|| dangling_entity(slot))?;
-    *discovery.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = value;
+    *discovery
+        .get_mut(slot)
+        .ok_or_else(|| dangling_entity(slot))? = value;
     *low.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = value;
     *active.get_mut(slot).ok_or_else(|| dangling_entity(slot))? = true;
     tarjan.push(slot);
@@ -424,12 +540,18 @@ fn signature_row_from_slot(
     let anonymous_end = facts.len + facts.anonymous_rows;
     if slot < anonymous_end {
         let ordinal = u32::try_from(slot - facts.len).map_err(|_| dangling_entity(slot))?;
-        return ANONYMOUS_ROW_BASE.checked_add(ordinal).ok_or_else(|| dangling_type(ordinal));
+        return ANONYMOUS_ROW_BASE
+            .checked_add(ordinal)
+            .ok_or_else(|| dangling_type(ordinal));
     }
-    let computed = slot.checked_sub(anonymous_end).ok_or_else(|| dangling_entity(slot))?;
+    let computed = slot
+        .checked_sub(anonymous_end)
+        .ok_or_else(|| dangling_entity(slot))?;
     if computed < facts.computed_rows {
         let ordinal = u32::try_from(computed).map_err(|_| dangling_entity(slot))?;
-        return COMPUTED_ROW_BASE.checked_add(ordinal).ok_or_else(|| dangling_type(ordinal));
+        return COMPUTED_ROW_BASE
+            .checked_add(ordinal)
+            .ok_or_else(|| dangling_type(ordinal));
     }
     Err(dangling_entity(slot))
 }
@@ -467,10 +589,7 @@ fn signature_dependency_at(
     Ok((target != STAGED_TEXT_CHILD).then_some(target))
 }
 
-fn signature_has_self_edge(
-    facts: &FactSet<'_>,
-    row: u32,
-) -> Result<bool, compiler_ir::BuildError> {
+fn signature_has_self_edge(facts: &FactSet<'_>, row: u32) -> Result<bool, compiler_ir::BuildError> {
     let count = signature_dependency_count(facts, row)?;
     for position in 0..count {
         if signature_dependency_at(facts, row, position)? == Some(row) {
@@ -503,7 +622,7 @@ fn signature_component_marker(
             .to_le_bytes(),
     );
     for header in headers {
-        preimage.extend_from_slice(header.as_ref());
+        preimage.extend_from_slice(header.as_bytes());
     }
     Ok(CorePayloadHash::from_canonical_bytes(&preimage))
 }
@@ -555,7 +674,8 @@ fn signature_shape(
     let mut stack = Vec::new();
     stack.push((row, false));
     while let Some((current, exit)) = stack.pop() {
-        let current_slot = staged_type_slot(facts, current).ok_or_else(|| dangling_type(current))?;
+        let current_slot =
+            staged_type_slot(facts, current).ok_or_else(|| dangling_type(current))?;
         if cache[current_slot].is_some() {
             continue;
         }
@@ -611,14 +731,7 @@ fn signature_shape(
         for ((target, name), flag) in targets.iter().zip(names).zip(flags) {
             append_optional_signature_text(&mut preimage, *name, current)?;
             preimage.push(*flag);
-            append_signature_target(
-                &mut preimage,
-                facts,
-                current,
-                *target,
-                cache,
-                cycle_markers,
-            )?;
+            append_signature_target(&mut preimage, facts, current, *target, cache, cycle_markers)?;
         }
         cache[current_slot] = Some(CorePayloadHash::from_canonical_bytes(&preimage));
         state[current_slot] = 2;
@@ -650,10 +763,17 @@ fn append_signature_row_header(
 ) -> Result<(), compiler_ir::BuildError> {
     if row < facts.len as u32 {
         let ordinal = usize::try_from(row).map_err(|_| dangling_entity(0))?;
-        let _ = facts.type_records.get(ordinal).ok_or_else(|| dangling_entity(ordinal))?;
+        let _ = facts
+            .type_records
+            .get(ordinal)
+            .ok_or_else(|| dangling_entity(ordinal))?;
         out.push(0);
         out.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
-        out.extend_from_slice(&u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?.to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(facts.names[ordinal].len())
+                .map_err(|_| dangling_entity(ordinal))?
+                .to_le_bytes(),
+        );
         out.extend_from_slice(facts.names[ordinal]);
         return Ok(());
     }
@@ -698,20 +818,19 @@ fn append_signature_target(
     if let Some(marker) = cycle_markers[source_slot] {
         if cycle_markers[target_slot] == Some(marker) {
             out.push(1);
-            out.extend_from_slice(marker.as_ref());
+            out.extend_from_slice(marker.as_bytes());
             // The component marker makes SCC entry/reversal stable; the
             // target's direct header retains labelled edge topology inside
             // that SCC without admitting an ordinal.
-            out.extend_from_slice(signature_direct_header(facts, target)?.as_ref());
+            out.extend_from_slice(signature_direct_header(facts, target)?.as_bytes());
             return Ok(());
         }
     }
     let shape = cache[target_slot].ok_or_else(|| dangling_type(target))?;
     out.push(2);
-    out.extend_from_slice(shape.as_ref());
+    out.extend_from_slice(shape.as_bytes());
     Ok(())
 }
-
 
 /// Direct, coordinate-free material captured when a fact is admitted.  This
 /// is a payload basis, not a declaration stable-key input.  Local targets are
@@ -762,7 +881,11 @@ pub(super) fn fact_payload_basis(fact: &SemanticFact<'_>) -> CorePayloadHash {
     preimage.extend_from_slice(&fact.constructor.payload1.to_le_bytes());
     record(&mut preimage, fact.type_record);
     preimage.push(fact.type_child_count);
-    for child in fact.type_children.iter().take(usize::from(fact.type_child_count)) {
+    for child in fact
+        .type_children
+        .iter()
+        .take(usize::from(fact.type_child_count))
+    {
         optional_bytes(&mut preimage, child.name);
         preimage.push(child.flags);
     }
@@ -794,7 +917,8 @@ fn declaration_variant_for(
     let mut preimage = Vec::with_capacity(48 + MAX_CHILD_SHAPE_BYTES);
     preimage.extend_from_slice(b"compiler.declaration-variant.v2");
     preimage.extend_from_slice(&u16::from(facts.kinds[ordinal]).to_le_bytes());
-    let name_len = u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?;
+    let name_len =
+        u32::try_from(facts.names[ordinal].len()).map_err(|_| dangling_entity(ordinal))?;
     preimage.extend_from_slice(&name_len.to_le_bytes());
     preimage.extend_from_slice(facts.names[ordinal]);
     let record = facts.type_records[ordinal];
@@ -804,7 +928,11 @@ fn declaration_variant_for(
         match text {
             Some(text) => {
                 preimage.push(1);
-                preimage.extend_from_slice(&u32::try_from(text.len()).map_err(|_| dangling_entity(ordinal))?.to_le_bytes());
+                preimage.extend_from_slice(
+                    &u32::try_from(text.len())
+                        .map_err(|_| dangling_entity(ordinal))?
+                        .to_le_bytes(),
+                );
                 preimage.extend_from_slice(text);
             }
             None => preimage.push(0),
@@ -871,12 +999,12 @@ fn payload_for(
         .ok_or_else(|| dangling_entity(ordinal))?;
     let mut preimage = Vec::with_capacity(48 + (MAX_CHILD_SHAPE_BYTES * 2));
     preimage.extend_from_slice(b"compiler.declaration-payload.v3");
-    preimage.extend_from_slice(basis.as_ref());
+    preimage.extend_from_slice(basis.as_bytes());
     preimage.extend_from_slice(
         member_payloads
             .get(ordinal)
             .ok_or_else(|| dangling_entity(ordinal))?
-            .as_ref(),
+            .as_bytes(),
     );
     let child_start = facts.child_starts[ordinal] as usize;
     let child_count = usize::from(facts.child_counts[ordinal]);
@@ -887,7 +1015,7 @@ fn payload_for(
                 .key_digests
                 .get(*child as usize)
                 .ok_or_else(|| dangling_entity(*child as usize))?
-                .as_ref(),
+                .as_bytes(),
         );
     }
     let type_child_start = facts.type_child_starts[ordinal] as usize;
@@ -983,14 +1111,15 @@ fn append_type_target_payload(
     }
     if target < facts.len as u32 {
         preimage.push(0);
-        let locator = locators.get(target as usize)
+        let locator = locators
+            .get(target as usize)
             .ok_or_else(|| dangling_entity(target as usize))?;
-        preimage.extend_from_slice(locator.as_ref());
+        preimage.extend_from_slice(locator.as_bytes());
         return Ok(());
     }
     preimage.push(1);
     preimage.extend_from_slice(
-        type_shape(facts, target, locators, type_shapes, type_visiting)?.as_ref(),
+        type_shape(facts, target, locators, type_shapes, type_visiting)?.as_bytes(),
     );
     Ok(())
 }
@@ -1016,20 +1145,28 @@ fn type_shape(
     let mut stack = Vec::new();
     stack.push((row, false));
     while let Some((current, exit)) = stack.pop() {
-        let current_slot = staged_type_slot(facts, current).ok_or_else(|| dangling_type(current))?;
-        if cache[current_slot].is_some() { continue; }
+        let current_slot =
+            staged_type_slot(facts, current).ok_or_else(|| dangling_type(current))?;
+        if cache[current_slot].is_some() {
+            continue;
+        }
         if !exit {
-            if visiting[current_slot] { continue; }
+            if visiting[current_slot] {
+                continue;
+            }
             visiting[current_slot] = true;
             stack.push((current, true));
             let (_, targets, _, _) = staged_type_row(facts, current)?;
             for target in targets.iter().rev().copied() {
                 if target >= facts.len as u32 && target != STAGED_TEXT_CHILD {
-                    let nested = staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
+                    let nested =
+                        staged_type_slot(facts, target).ok_or_else(|| dangling_type(target))?;
                     if visiting[nested] {
                         return Err(compiler_ir::BuildError::RecursiveType { raw: target });
                     }
-                    if cache[nested].is_none() { stack.push((target, false)); }
+                    if cache[nested].is_none() {
+                        stack.push((target, false));
+                    }
                 }
             }
             continue;
@@ -1041,25 +1178,77 @@ fn type_shape(
         append_tag_owned_scalars(&mut preimage, record);
         for text in [record.text, record.text2] {
             match text {
-                Some(text) => { preimage.push(1); preimage.extend_from_slice(&u32::try_from(text.len()).map_err(|_| dangling_type(current))?.to_le_bytes()); preimage.extend_from_slice(text); }
+                Some(text) => {
+                    preimage.push(1);
+                    preimage.extend_from_slice(
+                        &u32::try_from(text.len())
+                            .map_err(|_| dangling_type(current))?
+                            .to_le_bytes(),
+                    );
+                    preimage.extend_from_slice(text);
+                }
                 None => preimage.push(0),
             }
         }
         match record.nominal {
             None => preimage.push(0),
-            Some(NominalRef::Local(local)) => { preimage.push(1); preimage.push(0); preimage.extend_from_slice(locators.get(local.raw as usize).ok_or_else(|| dangling_entity(local.raw as usize))?.as_ref()); }
-            Some(NominalRef::External(external)) => { preimage.push(1); preimage.push(1); preimage.extend_from_slice(external.fragment.as_ref()); preimage.extend_from_slice(&external.ordinal.to_le_bytes()); }
+            Some(NominalRef::Local(local)) => {
+                preimage.push(1);
+                preimage.push(0);
+                preimage.extend_from_slice(
+                    locators
+                        .get(local.raw as usize)
+                        .ok_or_else(|| dangling_entity(local.raw as usize))?
+                        .as_bytes(),
+                );
+            }
+            Some(NominalRef::External(external)) => {
+                preimage.push(1);
+                preimage.push(1);
+                preimage.extend_from_slice(external.fragment.as_ref());
+                preimage.extend_from_slice(&external.ordinal.to_le_bytes());
+            }
         }
-        preimage.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| dangling_type(current))?.to_le_bytes());
+        preimage.extend_from_slice(
+            &u32::try_from(targets.len())
+                .map_err(|_| dangling_type(current))?
+                .to_le_bytes(),
+        );
         for ((target, name), flag) in targets.iter().zip(names).zip(flags) {
-            match name { Some(name) => { preimage.push(1); preimage.extend_from_slice(&u32::try_from(name.len()).map_err(|_| dangling_type(current))?.to_le_bytes()); preimage.extend_from_slice(name); }, None => preimage.push(0) }
+            match name {
+                Some(name) => {
+                    preimage.push(1);
+                    preimage.extend_from_slice(
+                        &u32::try_from(name.len())
+                            .map_err(|_| dangling_type(current))?
+                            .to_le_bytes(),
+                    );
+                    preimage.extend_from_slice(name);
+                }
+                None => preimage.push(0),
+            }
             preimage.push(*flag);
-            if *target == STAGED_TEXT_CHILD { preimage.push(2); continue; }
-            if *target < facts.len as u32 { preimage.push(0); preimage.extend_from_slice(locators.get(*target as usize).ok_or_else(|| dangling_entity(*target as usize))?.as_ref()); continue; }
+            if *target == STAGED_TEXT_CHILD {
+                preimage.push(2);
+                continue;
+            }
+            if (*target as usize) < facts.len {
+                preimage.push(0);
+                preimage.extend_from_slice(
+                    locators
+                        .get(*target as usize)
+                        .ok_or_else(|| dangling_entity(*target as usize))?
+                        .as_bytes(),
+                );
+                continue;
+            }
             preimage.push(1);
             let nested = staged_type_slot(facts, *target).ok_or_else(|| dangling_type(*target))?;
-            preimage.extend_from_slice(cache[nested]
-                .ok_or(compiler_ir::BuildError::RecursiveType { raw: *target })?.as_ref());
+            preimage.extend_from_slice(
+                cache[nested]
+                    .ok_or(compiler_ir::BuildError::RecursiveType { raw: *target })?
+                    .as_bytes(),
+            );
         }
         cache[current_slot] = Some(CorePayloadHash::from_canonical_bytes(&preimage));
         visiting[current_slot] = false;
@@ -1095,15 +1284,15 @@ fn append_tag_owned_scalars(out: &mut Vec<u8>, record: SemanticTypeRecord<'_>) {
 
 fn staged_type_slot(facts: &FactSet<'_>, row: u32) -> Option<usize> {
     if row < ANONYMOUS_ROW_BASE {
-        return (row as usize < facts.len).then_some(row as usize);
+        return ((row as usize) < facts.len).then_some(row as usize);
     }
     if row >= COMPUTED_ROW_BASE {
         let computed = row - COMPUTED_ROW_BASE;
-        return (computed as usize < facts.computed_rows)
+        return ((computed as usize) < facts.computed_rows)
             .then_some(facts.len + facts.anonymous_rows + computed as usize);
     }
     let anonymous = row - ANONYMOUS_ROW_BASE;
-    (anonymous as usize < facts.anonymous_rows).then_some(facts.len + anonymous as usize)
+    ((anonymous as usize) < facts.anonymous_rows).then_some(facts.len + anonymous as usize)
 }
 
 fn staged_type_row<'facts, 'source>(
@@ -1124,7 +1313,12 @@ fn staged_type_row<'facts, 'source>(
             .type_child_starts
             .get(ordinal)
             .ok_or_else(|| dangling_type(row))? as usize;
-        let count = usize::from(*facts.type_child_counts.get(ordinal).ok_or_else(|| dangling_type(row))?);
+        let count = usize::from(
+            *facts
+                .type_child_counts
+                .get(ordinal)
+                .ok_or_else(|| dangling_type(row))?,
+        );
         return Ok((
             facts.type_records[ordinal],
             &facts.type_child_targets[start..start + count],

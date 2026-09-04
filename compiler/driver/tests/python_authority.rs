@@ -85,6 +85,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => {
+            "extension-type-parameters-unbound"
+        }
         CompileFailure::FactRejected { .. } => "fact-rejected",
         CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",
@@ -470,7 +473,7 @@ fn python_authority_rejects_a_non_python_profile() -> Result<(), TestError> {
                 profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 stage: Stage::LowerIr,
                 source: SOURCE,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+                declaration_scope: compiler_driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(toolchain),
                 authority: SemanticAuthorityInput::Python { report: &report },
                 control: CompileControl {

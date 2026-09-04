@@ -447,6 +447,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
             CompileTerminal::LoweringUnsupported(*cause)
         }
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
+        CompileFailure::ExtensionTypeParametersUnbound { .. } => CompileTerminal::Build,
         CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::CSharpProjection { .. } => CompileTerminal::CSharpProjection,
         CompileFailure::ClangProjection { .. } => CompileTerminal::ClangProjection,

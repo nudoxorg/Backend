@@ -618,7 +618,8 @@ fn csharp_image_phase(cause: &compiler_languages_csharp::ImageError) -> Authorit
         | compiler_languages_csharp::ImageError::DeclarationReserved { .. }
         | compiler_languages_csharp::ImageError::NameRange { .. }
         | compiler_languages_csharp::ImageError::NameUtf8 { .. }
-        | compiler_languages_csharp::ImageError::Span { .. } => AuthorityPhase::Project,
+        | compiler_languages_csharp::ImageError::Span { .. }
+        | compiler_languages_csharp::ImageError::TypeChildCount { .. } => AuthorityPhase::Project,
     }
 }
 

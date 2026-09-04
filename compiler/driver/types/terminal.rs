@@ -412,6 +412,16 @@ pub enum CompileFailure<'diagnostic> {
         provisional: u32,
         atom_count: usize,
     },
+    /// A generic extension named no exact admitted type-parameter list.
+    #[error("{recipe:?} extension facts referenced unadmitted type parameters at row {row}")]
+    ExtensionTypeParametersUnbound {
+        source_identity: SourceIdentity,
+        recipe: CompileRecipeFact,
+        row: usize,
+        start: u32,
+        length: u32,
+        element_count: usize,
+    },
     /// Canonical admission rejected one exact emitted fact; the ordinal,
     /// rejected name length, and full typed cause are retained by value.
     #[error("{recipe:?} rejected emission fact {rejected:?}")]

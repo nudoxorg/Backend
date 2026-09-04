@@ -47,11 +47,11 @@ use core::str;
 use std::collections::HashMap;
 
 use compiler_ir::{
-    AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey, ForeignKeyFault,
-    ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence, OccurrenceConfidence,
-    OccurrenceTarget, PackageLineage, PackageLineageFault, ProductChildRole, ReferenceKind,
-    RelSpan, RelSpanFault, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag,
-    TypeListId, TypeParameterListId, TypeReason, TypeWidth,
+    AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey,
+    ForeignKeyFault, ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence,
+    OccurrenceConfidence, OccurrenceTarget, PackageLineage, PackageLineageFault, ProductChildRole,
+    ReferenceKind, RelSpan, RelSpanFault, SemanticProductConstructor, SemanticTypeChild,
+    SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_go::{
     ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, ImageError, MemberKind, TypeRowKind,
@@ -95,6 +95,8 @@ pub(crate) enum GoCollectError {
 /// failure match and is recorded as a lane criticism in the module review.
 #[derive(Debug)]
 enum ProjectionFault<'image> {
+    /// A bounded coordinate or index cannot be represented by the fixed lane.
+    IndexCapacity,
     /// The recursive type graph exceeded the producer depth budget.
     Depth,
     /// The authority marked a callable variadic without a final typed
@@ -189,7 +191,6 @@ const DEPTH_LIMIT: usize = 64;
 /// type plane carries no spellings for.
 const UNNAMED: &[u8] = b"_";
 
-
 /// `PrimitiveShape::Integer` wire cell.
 const SHAPE_INTEGER: u32 = 0;
 /// `PrimitiveShape::Float` wire cell.
@@ -213,7 +214,6 @@ const SHAPE_POINTER_ADDRESS_INTEGER: u32 = 16;
 const INTEGER_SIGNED_FLAG: u32 = 1;
 /// Bit offset of the integer width cell above the signedness bit.
 const INTEGER_WIDTH_SHIFT: u32 = 1;
-
 
 /// Go ecosystem name of every foreign package lineage.
 const ECOSYSTEM: &str = "go";
@@ -440,8 +440,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// before its push. `FactSet` records this reserved coordinate and proves
     /// it becomes valid when the caller admits that exact next fact.
     fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
-        u32::try_from(self.facts.len())
-            .map_err(|_| ProjectionFault::Anchor)
+        u32::try_from(self.facts.len()).map_err(|_| ProjectionFault::Anchor)
     }
 
     /// Pass one: one named type with its recursive diagonal self-nominal.
@@ -1035,10 +1034,14 @@ impl<'x, 'source> Projector<'x, 'source> {
                 })?;
                 if variadic {
                     let final_parameter = parameters.len().checked_sub(1).ok_or_else(|| {
-                        terminal(ProjectionFault::VariadicWithoutParameter { signature: row_index })
+                        terminal(ProjectionFault::VariadicWithoutParameter {
+                            signature: row_index,
+                        })
                     })?;
                     let parameter = carriers.get_mut(final_parameter).ok_or_else(|| {
-                        terminal(ProjectionFault::VariadicWithoutParameter { signature: row_index })
+                        terminal(ProjectionFault::VariadicWithoutParameter {
+                            signature: row_index,
+                        })
                     })?;
                     record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
                     parameter.flags |= SemanticTypeChild::FLAG_REST;
@@ -1181,8 +1184,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             TypeRowKind::Array => {
                 let children = self.row_children(&row)?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
-                let length = u64::try_from(row.length)
-                    .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+                let length = u64::try_from(row.length).map_err(|_| {
+                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                })?;
                 let bytes = length.to_le_bytes();
                 record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 record.payload1 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
@@ -1521,8 +1525,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             TypeRowKind::Array => {
                 let children = self.row_children(&row)?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
-                let length = u64::try_from(row.length)
-                    .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+                let length = u64::try_from(row.length).map_err(|_| {
+                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                })?;
                 let bytes = length.to_le_bytes();
                 record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 record.payload1 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
@@ -2860,8 +2865,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
-    {
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections()
+    -> Result<(), TestError> {
         let fix = Fixture::new();
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
@@ -3372,8 +3377,8 @@ mod tests {
     }
 
     #[test]
-    fn shared_nonleaf_anonymous_type_is_reinterned_for_each_pending_owner(
-    ) -> Result<(), TestError> {
+    fn shared_nonleaf_anonymous_type_is_reinterned_for_each_pending_owner() -> Result<(), TestError>
+    {
         let mut fix = Fixture::new();
         fix.declaration(KIND_TYPE, b"Key", None);
         let key = fix.named(PACKAGE, b"Key", &[]);

@@ -353,7 +353,7 @@ const fn qualifiers_are_legal(
     kind: TypeKind,
     qualifiers: compiler_languages_clang::TypeQualifiers,
 ) -> bool {
-    if qualifiers.is_restrict && kind != TypeKind::Pointer {
+    if qualifiers.is_restrict && !matches!(kind, TypeKind::Pointer) {
         return false;
     }
     if (qualifiers.is_const || qualifiers.is_volatile)
@@ -942,9 +942,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 continue;
             };
             let span = StagedSourceSpan::new(declaration.span.start, declaration.span.end)
-                .ok_or_else(|| terminal(ProjectionFault::Span {
-                    span: declaration.span,
-                }))?;
+                .ok_or_else(|| {
+                    terminal(ProjectionFault::Span {
+                        span: declaration.span,
+                    })
+                })?;
             let parentage = match declaration.owner {
                 None => ClangParentage::Root,
                 Some(owner) => match self.ordinal_of(owner) {
@@ -983,8 +985,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         // Synthetic carrier rows have no retained declaration identity and
         // are therefore never marked by this conservative postpass.
         for ordinal in self.ordinals.iter().copied().flatten() {
-            let index = usize::try_from(ordinal)
-                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            let index =
+                usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
             if owner_has_child.get(index) == Some(&false) {
                 self.facts
                     .mark_members_captured(ordinal)
@@ -1099,13 +1101,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             return Ok(());
         };
         let extension = self.extension(declaration, 0)?;
-        let fact = SemanticFact::new(
-            EntityKind::Macro,
-            name,
-            constructor(EntityKind::Macro),
-        )
-        .typed(unknown_record(TypeReason::Unannotated, None))
-        .with_extension(EmissionExtension::Clang(extension));
+        let fact = SemanticFact::new(EntityKind::Macro, name, constructor(EntityKind::Macro))
+            .typed(unknown_record(TypeReason::Unannotated, None))
+            .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
         Ok(())
@@ -1359,20 +1357,32 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 };
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
                 record.payload0 = match builtin {
-                    compiler_languages_clang::BuiltinClass::PlainCharSigned => SHAPE_C_PLAIN_SIGNED_CHAR,
-                    compiler_languages_clang::BuiltinClass::PlainCharUnsigned => SHAPE_C_PLAIN_UNSIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::PlainCharSigned => {
+                        SHAPE_C_PLAIN_SIGNED_CHAR
+                    }
+                    compiler_languages_clang::BuiltinClass::PlainCharUnsigned => {
+                        SHAPE_C_PLAIN_UNSIGNED_CHAR
+                    }
                     compiler_languages_clang::BuiltinClass::SignedChar => SHAPE_C_SIGNED_CHAR,
                     compiler_languages_clang::BuiltinClass::UnsignedChar => SHAPE_C_UNSIGNED_CHAR,
                     compiler_languages_clang::BuiltinClass::Utf16CodeUnit => SHAPE_UTF16_CODE_UNIT,
                     compiler_languages_clang::BuiltinClass::Utf32CodeUnit => SHAPE_UTF32_CODE_UNIT,
-                    compiler_languages_clang::BuiltinClass::WideCharSigned => SHAPE_C_WIDE_SIGNED_CHAR,
-                    compiler_languages_clang::BuiltinClass::WideCharUnsigned => SHAPE_C_WIDE_UNSIGNED_CHAR,
-                    compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => SHAPE_C_WIDE_CHAR,
+                    compiler_languages_clang::BuiltinClass::WideCharSigned => {
+                        SHAPE_C_WIDE_SIGNED_CHAR
+                    }
+                    compiler_languages_clang::BuiltinClass::WideCharUnsigned => {
+                        SHAPE_C_WIDE_UNSIGNED_CHAR
+                    }
+                    compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => {
+                        SHAPE_C_WIDE_CHAR
+                    }
                     compiler_languages_clang::BuiltinClass::Void
                     | compiler_languages_clang::BuiltinClass::Bool
                     | compiler_languages_clang::BuiltinClass::Integer { .. }
                     | compiler_languages_clang::BuiltinClass::Float
-                    | compiler_languages_clang::BuiltinClass::Other => unreachable!("character class matched above"),
+                    | compiler_languages_clang::BuiltinClass::Other => {
+                        unreachable!("character class matched above")
+                    }
                 };
                 record.payload1 = width;
                 record
@@ -1541,7 +1551,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let owner_is_record = owner_row.declaration.is_some_and(|identity| {
             self.authority.declarations.iter().any(|declaration| {
-                declaration.identity == Some(identity) && declaration.kind == DeclarationKind::Record
+                declaration.identity == Some(identity)
+                    && declaration.kind == DeclarationKind::Record
             })
         });
         if owner_row.kind != TypeKind::Named || !owner_is_record {
@@ -1941,7 +1952,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
     /// attaching an unowned libclang reference to the innermost declaration
     /// would fabricate a relation and an invalid relative span.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
-        reference.owner.and_then(|identity| self.ordinal_of(identity))
+        reference
+            .owner
+            .and_then(|identity| self.ordinal_of(identity))
     }
 
     /// Stops on a foreign override whose authority supplied only an opaque
@@ -2018,7 +2031,6 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         Ok(())
     }
-
 }
 
 /// Stops on a resolved foreign reference whose authority supplied only the
@@ -2434,10 +2446,7 @@ mod tests {
     }
 
     /// Lends one pooled atom list through the schema-aware pool view.
-    fn pooled_atom_list<'a>(
-        view: &'a FragmentView<'a>,
-        index: u32,
-    ) -> Result<Vec<u32>, TestError> {
+    fn pooled_atom_list<'a>(view: &'a FragmentView<'a>, index: u32) -> Result<Vec<u32>, TestError> {
         let pools = view
             .discover()
             .extension_pools()
@@ -2453,8 +2462,8 @@ mod tests {
     /// An empty source admits the current-schema fragment without semantic
     /// sections: no declarations, no fabricated rows.
     #[test]
-    fn empty_source_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
-    {
+    fn empty_source_admits_the_current_schema_fragment_without_semantic_sections()
+    -> Result<(), TestError> {
         let bytes = lower(b"")?;
         let view = FragmentView::validate(&bytes)?;
         if view.type_facts().is_some() || view.occurrences().is_some() || view.docs().is_some() {
