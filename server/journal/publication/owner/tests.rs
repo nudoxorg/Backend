@@ -462,6 +462,8 @@ fn current_head_conflict_retains_stored_root_and_dep_without_new_bytes()
         &mut storage,
     );
     let publication = published(first_response, "first command")?;
+    assert_eq!(*publication.generation.pinned_root, input.root);
+    assert_eq!(*publication.generation.dep_set, input.dep_set);
     drop(first_lease);
     let conflicting = verified_input(11, 12);
     let (command, response, lease) = command(&pool, conflicting)?;

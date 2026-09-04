@@ -246,9 +246,11 @@ fn warmed_public_admission_and_terminal_have_bounded_thread_local_allocations()
             count_total: 3,
             count_current: 3,
             count_max: 3,
-            bytes_total: 800,
-            bytes_current: 800,
-            bytes_max: 800,
+            // The source-bearing owner terminal enlarged the response-channel packet by
+            // sixteen bytes; allocation count and ownership remain unchanged.
+            bytes_total: 816,
+            bytes_current: 816,
+            bytes_max: 816,
         }
     );
 

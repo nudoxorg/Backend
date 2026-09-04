@@ -2,6 +2,9 @@
 //! This module owns the publication service tests invariants and typed state transitions.
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use super::super::credit::CreditLease;
+use super::super::errors::{
+    MAX_PUBLICATION_OWNER_PANIC_BYTES, PublicationOwnerPanicClass,
+};
 use super::super::owner::poison_group;
 use super::*;
 use std::{
