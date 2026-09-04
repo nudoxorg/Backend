@@ -92,6 +92,45 @@ fn lexical_terminal_retains_derived_snapshot_and_segment_provenance() {
 }
 
 #[test]
+fn snapshot_prefix_ranking_uses_the_same_integer_recipe_across_segments() {
+    let old_rows = [
+        LexicalRow::new(b"alpha", document(1), LexicalScore::from(8)),
+        LexicalRow::new(b"alphabet", document(2), LexicalScore::from(8)),
+    ];
+    let update_rows = [LexicalRow::new(
+        b"alpine",
+        document(3),
+        LexicalScore::from(9),
+    )];
+    let old = LexicalSegment::new(&old_rows).expect("old prefix segment");
+    let update = LexicalSegment::new(&update_rows).expect("update prefix segment");
+    let segments = [update, old];
+    let ids = [update.id, old.id];
+    let snapshot = IndexSnapshot::new(generation(), &[], &ids).expect("prefix snapshot");
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("prefix manifest");
+    let mut scratch = [None; 3];
+    let mut output = [placeholder(update.id); 3];
+    let terminal = manifest
+        .execute(
+            LexicalOperation::prefix(b"al"),
+            LexicalTopK::new(3).expect("bounded prefix top-k"),
+            &mut scratch,
+            &mut output,
+        )
+        .expect("prefix query");
+
+    assert!(matches!(terminal, LexicalTerminal::Complete { .. }));
+    assert_eq!(
+        output.map(|hit| (hit.term, hit.document.entity.raw, u32::from(hit.score))),
+        [
+            (b"alpha".as_slice(), 1, 3),
+            (b"alpine".as_slice(), 3, 3),
+            (b"alphabet".as_slice(), 2, 2),
+        ]
+    );
+}
+
+#[test]
 fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
     let old_rows = [
         LexicalRow::new(b"needle", document(1), LexicalScore::from(10)),

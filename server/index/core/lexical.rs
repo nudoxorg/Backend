@@ -98,6 +98,27 @@ impl Deref for LexicalScore {
     }
 }
 
+impl LexicalScore {
+    /// Discounts a stored score toward a longer matched term.
+    ///
+    /// Equality is the exact match and retains the complete stored score. A longer matching term
+    /// receives `stored * prefix_bytes / term_bytes` integer units, with no floating-point or
+    /// platform-specific ordering.
+    #[must_use]
+    pub fn discounted(
+        stored: LexicalScore,
+        prefix_bytes: usize,
+        term_bytes: usize,
+    ) -> Option<LexicalScore> {
+        if term_bytes <= prefix_bytes {
+            return Some(stored);
+        }
+        let scaled = u64::from(u32::from(stored)).checked_mul(u64::try_from(prefix_bytes).ok()?)?;
+        let scaled = scaled / u64::try_from(term_bytes).ok()?;
+        u32::try_from(scaled).ok().map(LexicalScore::from)
+    }
+}
+
 /// A checked lexical result bound.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -227,18 +248,56 @@ impl<'bytes> LexicalRow<'bytes> {
     }
 }
 
+/// Closed selection grammar for one lexical query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LexicalMatch {
+    /// Select only rows whose term equals the query bytes.
+    Exact,
+    /// Select the contiguous canonical range whose terms start with the query bytes.
+    Prefix,
+}
+
 /// A borrowed lexical term query.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalOperation<'query> {
     /// Query term bytes borrowed from the caller.
     pub term: &'query [u8],
+    /// Closed matching policy.
+    pub match_mode: LexicalMatch,
 }
 
 impl<'query> LexicalOperation<'query> {
-    /// Creates a term query without copying its bytes.
+    /// Creates an exact term query without copying its bytes.
     #[must_use]
     pub const fn new(term: &'query [u8]) -> Self {
-        Self { term }
+        Self {
+            term,
+            match_mode: LexicalMatch::Exact,
+        }
+    }
+
+    /// Creates a prefix term query without copying its bytes.
+    #[must_use]
+    pub const fn prefix(term: &'query [u8]) -> Self {
+        Self {
+            term,
+            match_mode: LexicalMatch::Prefix,
+        }
+    }
+
+    /// Applies this operation's deterministic relevance recipe to one stored row score.
+    #[must_use]
+    pub fn relevance(
+        self,
+        stored: LexicalScore,
+        matched_term_bytes: usize,
+    ) -> Option<LexicalScore> {
+        match self.match_mode {
+            LexicalMatch::Exact => Some(stored),
+            LexicalMatch::Prefix => {
+                LexicalScore::discounted(stored, self.term.len(), matched_term_bytes)
+            }
+        }
     }
 }
 
@@ -548,10 +607,10 @@ impl<'bytes> LexicalSegment<'bytes> {
         }))
     }
 
-    /// Finds all rows for one term as a borrowed contiguous range.
+    /// Finds all rows selected by one operation as a borrowed contiguous range.
     #[must_use]
     pub fn lookup(&self, operation: LexicalOperation<'_>) -> Option<&'bytes [LexicalRow<'bytes>]> {
-        let range = self.term_range(operation.term);
+        let range = self.query_range(operation);
         if range.start == range.end {
             None
         } else {
@@ -559,7 +618,7 @@ impl<'bytes> LexicalSegment<'bytes> {
         }
     }
 
-    /// Ranks up to the checked TopK rows for one term into caller-owned output.
+    /// Ranks up to the checked TopK rows selected by one operation into caller-owned output.
     ///
     /// The capacity check happens before the first output write.  A short
     /// output therefore returns its complete requirement and remains byte-for-
@@ -571,7 +630,7 @@ impl<'bytes> LexicalSegment<'bytes> {
         top_k: LexicalTopK,
         output: &mut [LexicalHit<'bytes>],
     ) -> Result<usize, LexicalOutputError> {
-        let range = self.term_range(operation.term);
+        let range = self.query_range(operation);
         let matches = &self.0.rows[range];
         let required = core::cmp::min(
             matches.iter().filter(|row| !row.is_tombstone()).count(),
@@ -591,7 +650,10 @@ impl<'bytes> LexicalSegment<'bytes> {
         let selected = &mut output[..required];
         let mut selected_len = 0;
         for row in matches.iter().copied() {
-            let Some(score) = row.score() else {
+            let Some(stored) = row.score() else {
+                continue;
+            };
+            let Some(score) = operation.relevance(stored, row.term.len()) else {
                 continue;
             };
             let candidate = LexicalHit::new(row.term, row.document, score);
@@ -611,6 +673,20 @@ impl<'bytes> LexicalSegment<'bytes> {
         let first = lower_bound(self.rows, term);
         let last = upper_bound(self.rows, term);
         first..last
+    }
+
+    fn query_range(&self, operation: LexicalOperation<'_>) -> core::ops::Range<usize> {
+        match operation.match_mode {
+            LexicalMatch::Exact => self.term_range(operation.term),
+            LexicalMatch::Prefix => {
+                let first = lower_bound(self.rows, operation.term);
+                let mut last = first;
+                while last < self.rows.len() && self.rows[last].term.starts_with(operation.term) {
+                    last += 1;
+                }
+                first..last
+            }
+        }
     }
 }
 

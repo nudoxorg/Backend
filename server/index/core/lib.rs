@@ -27,10 +27,10 @@ pub use exact::{
 };
 pub use heart_identity::GenerationId;
 pub use lexical::{
-    LexicalHit, LexicalOperation, LexicalOrderKey, LexicalOutputError, LexicalRow, LexicalRowValue,
-    LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentVerifier, LexicalSegmentView,
-    LexicalSnapshotHit, LexicalTopK, LexicalTopKError, MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS,
-    MAX_LEXICAL_TOP_K,
+    LexicalHit, LexicalMatch, LexicalOperation, LexicalOrderKey, LexicalOutputError, LexicalRow,
+    LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentVerifier,
+    LexicalSegmentView, LexicalSnapshotHit, LexicalTopK, LexicalTopKError,
+    MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
 };
 pub use server_index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 pub use snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotLane, IndexSnapshotView};
@@ -607,8 +607,15 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
                     }
                     seen_documents[emitted_documents] = Some(row.document);
                     emitted_documents += 1;
-                    let Some(score) = row.score() else {
+                    let Some(stored) = row.score() else {
                         continue;
+                    };
+                    let Some(score) = operation.relevance(stored, row.term.len()) else {
+                        return Err(LexicalQueryError::ScoreDiscount {
+                            stored,
+                            prefix_bytes: operation.term.len(),
+                            term_bytes: row.term.len(),
+                        });
                     };
                     let candidate =
                         LexicalSnapshotHit::new(segment.id, row.term, row.document, score);
@@ -691,6 +698,15 @@ pub enum LexicalQueryError {
     },
     /// Caller output could not retain the complete requested ranking.
     OutputCapacity(LexicalOutputError),
+    /// The deterministic relevance recipe could not represent one score discount.
+    ScoreDiscount {
+        /// Complete stored score of the rejected row.
+        stored: LexicalScore,
+        /// Query-prefix width.
+        prefix_bytes: usize,
+        /// Matched-term width.
+        term_bytes: usize,
+    },
 }
 
 /// The one snapshot-pinned terminal for a manifest-wide lexical ranking.
