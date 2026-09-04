@@ -16,9 +16,12 @@ use std::{
 
 use compiler_driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, CompiledFragment, NativeTool,
-    ResolvedToolchain, ToolchainSelection, compile,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_semantic,
 };
-use compiler_ir::{EntityKind, PrimitiveType, TypeNode};
+use compiler_ir::{EntityKind, ImageProvenance, PrimitiveType, TypeNode};
+use compiler_languages_rust::{
+    LoadError, RustAuthorityError, RustFeatureControl, RustProject, RustToolchain, SourceByteLimit,
+};
 use compiler_publication::{
     OpenPublicationScratch, OpenPublishedError, PublicationScratch, PublishCompiledError,
     PublishControl, PublishedCompilation, binding::COMPILATION_BINDING_BYTES, open_published,
@@ -43,8 +46,22 @@ static JOURNEY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 enum TestFailure {
     #[error(transparent)]
     Tooling(#[from] NativeToolingError),
-    #[error("the public Rust compilation unexpectedly failed")]
-    Compile,
+    #[error(transparent)]
+    RustToolchain(#[from] LoadError),
+    #[error(transparent)]
+    RustProject(#[from] RustAuthorityError),
+    #[error("could not create the Rust authority fixture at {path}")]
+    CreateAuthority {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not write the Rust authority fixture at {path}")]
+    WriteAuthority {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("could not create the compiler publication journey directory")]
     CreateJourney(#[source] std::io::Error),
     #[error(transparent)]
@@ -74,14 +91,24 @@ fn distinct_declarations_compile_publish_and_reopen_from_a_stable_receipt()
 
     let host = HostTool::resolve(NativeTool::Rustc)?;
     let toolchain = host.toolchain()?;
+    let authority_toolchain = RustToolchain::discover(host.executable())?;
+    let alpha_authority =
+        RustAuthorityFixture::create("alpha", alpha_source, &authority_toolchain)?;
+    let bravo_authority =
+        RustAuthorityFixture::create("bravo", bravo_source, &authority_toolchain)?;
     let work = NativeWork::create()?;
     let cancelled = AtomicBool::new(false);
     let mut alpha_diagnostic = [0; 4_096];
     let mut bravo_diagnostic = [0; 4_096];
-    let mut alpha_output = [0; 512];
-    let mut bravo_output = [0; 512];
-    let alpha = compile(
-        request(alpha_source, toolchain, &cancelled),
+    let mut alpha_output = [0; 4_096];
+    let mut bravo_output = [0; 4_096];
+    let alpha = compile_semantic(
+        request(
+            alpha_source,
+            &alpha_authority.project,
+            toolchain,
+            &cancelled,
+        ),
         CompileScratch {
             diagnostic_output: &mut alpha_diagnostic,
             native_work: work.path(),
@@ -90,10 +117,15 @@ fn distinct_declarations_compile_publish_and_reopen_from_a_stable_receipt()
             fragment_output: &mut alpha_output,
         },
     )
-    .map_err(|_source| TestFailure::Compile)?;
+    .unwrap_or_else(|source| panic!("alpha compile failed with exact terminal: {source:#?}"));
     work.assert_empty()?;
-    let bravo = compile(
-        request(bravo_source, toolchain, &cancelled),
+    let bravo = compile_semantic(
+        request(
+            bravo_source,
+            &bravo_authority.project,
+            toolchain,
+            &cancelled,
+        ),
         CompileScratch {
             diagnostic_output: &mut bravo_diagnostic,
             native_work: work.path(),
@@ -102,9 +134,19 @@ fn distinct_declarations_compile_publish_and_reopen_from_a_stable_receipt()
             fragment_output: &mut bravo_output,
         },
     )
-    .map_err(|_source| TestFailure::Compile)?;
+    .unwrap_or_else(|source| panic!("bravo compile failed with exact terminal: {source:#?}"));
     work.assert_empty()?;
 
+    assert!(matches!(
+        alpha.ir.image_provenance(),
+        ImageProvenance::Captured { source, .. } if source == alpha.artifact.source
+    ));
+    assert!(matches!(
+        bravo.ir.image_provenance(),
+        ImageProvenance::Captured { source, .. } if source == bravo.artifact.source
+    ));
+    let alpha = alpha.artifact;
+    let bravo = bravo.artifact;
     assert_ne!(alpha.source.identity, bravo.source.identity);
     assert_ne!(alpha.fragment.as_ref(), bravo.fragment.as_ref());
     assert_fragment(&alpha, b"alpha", PrimitiveType::Bool);
@@ -167,7 +209,7 @@ fn assert_opened(
 ) -> Result<(), TestFailure> {
     let mut manifest_output = [0; 1_024];
     let mut manifest_facts = [None; 2];
-    let mut fragment_output = [0; 1_024];
+    let mut fragment_output = [0; 4_096];
     let mut locality_output = [0; 256];
     let opened = open_published(
         journal_owner,
@@ -218,6 +260,7 @@ fn assert_fragment(
 
 fn request<'source, 'toolchain, 'cancel>(
     source: &'source [u8],
+    project: &'source RustProject,
     toolchain: ResolvedToolchain<'toolchain>,
     cancelled: &'cancel AtomicBool,
 ) -> CompileRequest<'source, 'toolchain, 'cancel> {
@@ -227,11 +270,61 @@ fn request<'source, 'toolchain, 'cancel>(
         source,
         declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain),
-        authority: compiler_driver::SemanticAuthorityInput::None,
+        authority: SemanticAuthorityInput::Rust {
+            project,
+            maximum_source_bytes: SourceByteLimit::from(65_536),
+            features: RustFeatureControl::default(),
+        },
         control: CompileControl {
-            deadline: Instant::now() + Duration::from_secs(5),
+            deadline: Instant::now() + Duration::from_secs(120),
             cancelled,
         },
+    }
+}
+
+struct RustAuthorityFixture {
+    root: PathBuf,
+    project: RustProject,
+}
+
+impl RustAuthorityFixture {
+    fn create(name: &str, source: &[u8], toolchain: &RustToolchain) -> Result<Self, TestFailure> {
+        let sequence = JOURNEY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "server-operation-rust-authority-{}-{sequence}",
+            std::process::id()
+        ));
+        let source_directory = root.join("src");
+        fs::create_dir(&root).map_err(|source| TestFailure::CreateAuthority {
+            path: root.clone(),
+            source,
+        })?;
+        fs::create_dir(&source_directory).map_err(|source| TestFailure::CreateAuthority {
+            path: source_directory.clone(),
+            source,
+        })?;
+        let manifest_path = root.join("Cargo.toml");
+        let manifest = format!(
+            "[package]\nname = \"publication-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
+        );
+        fs::write(&manifest_path, manifest).map_err(|source| TestFailure::WriteAuthority {
+            path: manifest_path,
+            source,
+        })?;
+        let source_path = source_directory.join("lib.rs");
+        fs::write(&source_path, source).map_err(|source| TestFailure::WriteAuthority {
+            path: source_path.clone(),
+            source,
+        })?;
+        let project =
+            RustProject::open_with_source(&root, &source_path, toolchain, RustEdition::Rust2024)?;
+        Ok(Self { root, project })
+    }
+}
+
+impl Drop for RustAuthorityFixture {
+    fn drop(&mut self) {
+        let _removed = fs::remove_dir_all(&self.root);
     }
 }
 
