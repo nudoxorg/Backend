@@ -384,9 +384,6 @@ struct AnonymousMemo {
 struct Projector<'x, 'source> {
     image: GoImage<'source>,
     facts: &'x mut FactSet<'source>,
-    /// The image's package import path, the local side of every named
-    /// reference resolution.
-    package: &'source [u8],
     /// Lane ordinal per image declaration index.
     declaration_ordinals: Vec<Option<u32>>,
     /// Lane ordinal per image method row index.
@@ -415,10 +412,6 @@ impl<'x, 'source> Projector<'x, 'source> {
             })
             .collect();
         Self {
-            package: image
-                .declaration(0)
-                .map(|declaration| declaration.package)
-                .unwrap_or(&[]),
             declaration_ordinals: vec![None; image.declaration_count()],
             method_ordinals: vec![None; image.method_count()],
             member_ordinals: vec![None; image.member_count()],
@@ -1380,11 +1373,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         &mut self,
         row: &compiler_languages_go::TypeRow<'source>,
     ) -> Result<RootType<'source>, GoCollectError> {
-        let local = row.package == self.package
-            && !row.package.is_empty()
-            && self.lookup(row.package, row.name).is_some();
-        if local {
-            let base = self.lookup(row.package, row.name).unwrap_or_default();
+        if !row.package.is_empty()
+            && let Some(base) = self.lookup(row.package, row.name)
+        {
             if row.children.1 == 0 {
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
                 record.nominal = Some(NominalRef::Local(EntityId::new(base)));
@@ -1445,12 +1436,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .image
             .type_row(index_of(row_index))
             .map_err(GoCollectError::Image)?;
-        let local_named = matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
-            && row.package == self.package
+        if matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
             && !row.package.is_empty()
-            && self.lookup(row.package, row.name).is_some();
-        if local_named && row.children.1 == 0 {
-            return Ok(self.lookup(row.package, row.name).unwrap_or_default());
+            && row.children.1 == 0
+            && let Some(local) = self.lookup(row.package, row.name)
+        {
+            return Ok(local);
         }
         self.project_anonymous(index_of(row_index), depth)
     }
@@ -3329,6 +3320,28 @@ mod tests {
         if parameters.len() != 1 || parameters[0].0 != b"K".as_slice() || parameters[0].1.is_some()
         {
             return Err(TestError::Missing("pooled parameter row"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn named_type_resolution_uses_each_declarations_package() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"First", None);
+        let second_package = fix.atom(b"example.com/demo/second");
+        let second = fix.declaration(KIND_TYPE, b"Second", None);
+        fix.declarations[second].package = second_package;
+        let reference = fix.named(b"example.com/demo/second", b"Second", &[]);
+        let value = fix.declaration(KIND_VAR, b"Value", Some(reference));
+        fix.declarations[value].package = second_package;
+
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let projected = row(&view, 2)?;
+        if projected.record.tag != SemanticTypeTag::Nominal
+            || projected.record.nominal != Some(NominalRef::Local(EntityId::new(1)))
+        {
+            return Err(TestError::Missing("second-package local nominal"));
         }
         Ok(())
     }
