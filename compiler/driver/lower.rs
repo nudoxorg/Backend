@@ -10,14 +10,15 @@ use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, CvQualifiers,
     CxxReferenceCategory, DocInput, ExternalTarget, Ir,
-    IrBuilder, ItemKind, LanguageExtensionInput, ListSpan, LiteralType, NominalRef, PayloadHash,
+    CorePayloadHash, DeclarationFamilyId, ExternalDeclarationIdentity, IrBuilder, ItemKind,
+    LanguageExtensionInput, ListSpan, LiteralType, NominalRef,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
     ObjectMember, PropertyKey,
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
-    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
     NativeCharacterRole, QualifiedSegments, TypeChildTarget, TypeId, TypeWidth, Visibility,
-    WildcardBound,
+    VariantAvailability, VariantFingerprint, WildcardBound,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -429,7 +430,7 @@ pub(super) struct FactSet<'source> {
     child_counts: Box<[u8]>,
     child_starts: Box<[u32]>,
     extensions: Box<[Option<EmissionExtension>]>,
-    key_digests: Box<[PayloadHash]>,
+    key_digests: Box<[CorePayloadHash]>,
     visibility: Box<[Visibility]>,
     visibility_captured: Box<[bool]>,
     documentation_captured: Box<[bool]>,
@@ -699,7 +700,7 @@ impl<'source> FactSet<'source> {
             child_counts: vec![0; plan.facts].into_boxed_slice(),
             child_starts: vec![0; plan.facts].into_boxed_slice(),
             extensions: vec![None; plan.facts].into_boxed_slice(),
-            key_digests: vec![PayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
+            key_digests: vec![CorePayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
             visibility: vec![Visibility::Unknown; plan.facts].into_boxed_slice(),
             visibility_captured: vec![false; plan.facts].into_boxed_slice(),
             documentation_captured: vec![false; plan.facts].into_boxed_slice(),
@@ -2098,7 +2099,11 @@ impl<'source> FactSet<'source> {
             let occurrence = self.occurrences[index];
             links.push(TreeLinkInput {
                 from: compiler_ir::TreeEntityId::new(owner),
-                target: external_from_occurrence(&mut tree, occurrence.target)?,
+                target: external_from_occurrence(
+                    &mut tree,
+                    compiler_ir::EntityId::new(owner),
+                    occurrence.target,
+                )?,
                 kind: occurrence_link_kind(occurrence.kind),
                 confidence: occurrence_link_confidence(occurrence.confidence),
                 source: occurrence_source_span(self, source_file, owner, occurrence.span)?,
@@ -2341,7 +2346,10 @@ fn doc_input<'source>(
                     let path_id = tree.intern_atom(path)?;
                     let display_id = tree.intern_atom(path)?;
                     TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                        stable: StableEntityId::from_canonical_bytes(&identity),
+                        identity: ExternalDeclarationIdentity {
+                            family: DeclarationFamilyId::from_canonical_bytes(&identity),
+                            variant: VariantAvailability::Unavailable,
+                        },
                         package: Some(package),
                         path: path_id,
                         display: display_id,
@@ -2653,6 +2661,7 @@ fn occurrence_source_span(
 
 fn external_from_occurrence<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    owner: compiler_ir::EntityId,
     target: compiler_ir::OccurrenceTarget<'source>,
 ) -> Result<TreeLinkTarget, compiler_ir::BuildError> {
     match target {
@@ -2665,7 +2674,10 @@ fn external_from_occurrence<'source>(
             identity[32..].copy_from_slice(stable.entity.as_ref());
             let path = tree.intern_atom(b"stable")?;
             Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                stable: StableEntityId::from_canonical_bytes(&identity),
+                identity: ExternalDeclarationIdentity {
+                    family: DeclarationFamilyId::from_canonical_bytes(&identity),
+                    variant: VariantAvailability::Unavailable,
+                },
                 package: None,
                 path,
                 display: path,
@@ -2676,15 +2688,13 @@ fn external_from_occurrence<'source>(
             // The vocabulary owns the domain separation, origin cells, and
             // kind discriminator.  Rebuilding a near-copy here once omitted
             // `ForeignKey::kind`, causing same-path references to collapse.
-            let mut identity = vec![0_u8; foreign.key_preimage_len()];
-            let identity = foreign.key_id(&mut identity).map_err(|_| {
-                // The scratch is sized from `key_preimage_len`, so this is
-                // unreachable unless the vocabulary itself violates its
-                // stated measured-length contract.
-                compiler_ir::BuildError::Dangling {
-                    space: compiler_ir::SemanticSpace::External,
-                    raw: 0,
-                }
+            let target = VariantFingerprint::from_canonical_bytes(foreign.path.as_bytes());
+            let length = foreign.key_preimage_len().map_err(|cause| {
+                compiler_ir::BuildError::ForeignKeyPreimage { owner, target, cause }
+            })?;
+            let mut identity = vec![0_u8; length];
+            let identity = foreign.key_id(&mut identity).map_err(|cause| {
+                compiler_ir::BuildError::ForeignKeyPreimage { owner, target, cause }
             })?;
             let package = match foreign.origin {
                 compiler_ir::ForeignOrigin::Package(lineage) => {
@@ -2702,10 +2712,11 @@ fn external_from_occurrence<'source>(
             };
             let path = tree.intern_atom(foreign.path.as_bytes())?;
             let display = tree.intern_atom(foreign.display.as_bytes())?;
-            let mut stable = [0_u8; 16];
-            stable.copy_from_slice(&identity.as_ref()[..16]);
             Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
-                stable: StableEntityId::from_raw(stable),
+                identity: ExternalDeclarationIdentity {
+                    family: DeclarationFamilyId::from_canonical_bytes(identity.as_ref()),
+                    variant: VariantAvailability::Unavailable,
+                },
                 package,
                 path,
                 display,
@@ -3260,7 +3271,10 @@ fn live_type<'source>(
                 key[..32].copy_from_slice(external.fragment.as_ref());
                 key[32..].copy_from_slice(&external.ordinal.to_le_bytes());
                 let target = tree.intern_external(ExternalTarget {
-                    stable: StableEntityId::from_canonical_bytes(&key),
+                    identity: ExternalDeclarationIdentity {
+                        family: DeclarationFamilyId::from_canonical_bytes(&key),
+                        variant: VariantAvailability::Unavailable,
+                    },
                     package: None,
                     path,
                     display: path,

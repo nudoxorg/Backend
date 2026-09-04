@@ -1964,11 +1964,11 @@ fn foreign_package<'source>(
             Some((head, _)) => head,
             None => path,
         };
+        let Ok(lineage) = PackageLineage::new("pypi", name) else {
+            return foreign_universe(module_spelling);
+        };
         if let Ok(key) = ForeignKey::new(
-            ForeignOrigin::Package(PackageLineage {
-                ecosystem: "pypi",
-                name,
-            }),
+            ForeignOrigin::Package(lineage),
             path,
             display,
             None,

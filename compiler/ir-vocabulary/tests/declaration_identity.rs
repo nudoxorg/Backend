@@ -4,7 +4,7 @@
 //! resolved target or display spelling.
 
 use compiler_ir_vocabulary::{
-    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, Disambiguator, EntityKind,
+    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, EntityKind,
     ForeignKey, ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
     PackageLineageFault, PreimageOverflow, ReferenceKind, RelSpan, RelSpanFault, StableRef,
 };
@@ -64,11 +64,11 @@ fn key(name: &'static [u8]) -> Result<DeclarationKey<'static>, TestFailure> {
 }
 
 fn stable(name: &'static [u8]) -> Result<ContentId<SourceFactDomain>, TestFailure> {
-    Ok(key(name)?.stable_id(Disambiguator::None, &mut [0_u8; 512])?)
+    Ok(key(name)?.stable_id(&mut [0_u8; 512])?)
 }
 
 /// The identity cell order is `(lineage, path, kind, name)` plus an optional
-/// skeleton. Every test below mutates exactly one cell and demands a
+/// family key. Every test below mutates exactly one cell and demands a
 /// different id, then proves the unmutated key is stable.
 #[test]
 fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
@@ -85,7 +85,7 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
     moved.path = "src/ser.rs";
     assert_ne!(
         baseline,
-        moved.stable_id(Disambiguator::None, &mut [0_u8; 512])?
+        moved.stable_id(&mut [0_u8; 512])?
     );
 
     // Mutating the kind alone moves the id.
@@ -93,7 +93,7 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
     kinded.kind = EntityKind::Constant;
     assert_ne!(
         baseline,
-        kinded.stable_id(Disambiguator::None, &mut [0_u8; 512])?
+        kinded.stable_id(&mut [0_u8; 512])?
     );
 
     // Mutating the package lineage alone moves the id.
@@ -101,7 +101,7 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
     packaged.lineage = lineage("cargo", "serde_json")?;
     assert_ne!(
         baseline,
-        packaged.stable_id(Disambiguator::None, &mut [0_u8; 512])?
+        packaged.stable_id(&mut [0_u8; 512])?
     );
 
     // Mutating the ecosystem alone moves the id.
@@ -109,7 +109,7 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
     ecosystem.lineage = lineage("pypi", "serde")?;
     assert_ne!(
         baseline,
-        ecosystem.stable_id(Disambiguator::None, &mut [0_u8; 512])?
+        ecosystem.stable_id(&mut [0_u8; 512])?
     );
 
     Ok(())
@@ -118,54 +118,27 @@ fn identity_keys_on_the_exact_four_cells() -> Result<(), TestFailure> {
 /// The measured old-system defect: 32,339 identity groups collapsed because
 /// siblings that minted the same id were separated by declaration ordinal.
 /// The key here has no ordinal cell — sibling declarations with the same
-/// key and no disambiguator mint the *same* id, and a skeleton is the only
-/// legal separator. A later declaration must never change an earlier one.
+/// key mint the same family id. A later declaration must never change an
+/// earlier family; local variants are framed by compiler-ir.
 #[test]
 fn sibling_identity_never_depends_on_declaration_order() -> Result<(), TestFailure> {
     let first = key(b"serialize")?;
-    let id_first = first.stable_id(Disambiguator::None, &mut [0_u8; 512])?;
+    let id_first = first.stable_id(&mut [0_u8; 512])?;
     // "Emitting" two more declarations afterwards cannot move the first id:
     // the minting function takes no ordinal, no count, and no neighbor.
-    let id_again = first.stable_id(Disambiguator::None, &mut [0_u8; 512])?;
+    let id_again = first.stable_id(&mut [0_u8; 512])?;
     assert_eq!(id_first, id_again);
     Ok(())
 }
 
-/// Overloads sharing `(package, path, kind, name)` separate by skeleton
-/// content — and two overloads with the same skeleton bytes are honestly
-/// the same overload, not silently distinct ids.
-#[test]
-fn overload_siblings_separate_by_skeleton_content() -> Result<(), TestFailure> {
-    let bare = key(b"combine_latest")?.stable_id(Disambiguator::None, &mut [0_u8; 512])?;
-    let first = key(b"combine_latest")?.stable_id(
-        Disambiguator::Skeleton(b"(Observable, Observable)"),
-        &mut [0_u8; 512],
-    )?;
-    let second = key(b"combine_latest")?.stable_id(
-        Disambiguator::Skeleton(b"(Observable, Observable, Observable)"),
-        &mut [0_u8; 512],
-    )?;
-    assert_ne!(bare, first);
-    assert_ne!(bare, second);
-    assert_ne!(first, second);
-    // Same skeleton bytes, same overload, same id.
-    let repeat = key(b"combine_latest")?.stable_id(
-        Disambiguator::Skeleton(b"(Observable, Observable)"),
-        &mut [0_u8; 512],
-    )?;
-    assert_eq!(first, repeat);
-    Ok(())
-}
-
-/// The preimage writer refuses to truncate: a short output is a typed
 /// rejection retaining both widths, and the buffer is left untouched.
 #[test]
 fn short_preimage_output_is_typed_and_lossless() -> Result<(), TestFailure> {
     let key = key(b"serialize")?;
-    let needed = key.preimage_len(Disambiguator::None);
+    let needed = key.preimage_len()?;
     let mut out = vec![0_u8; needed - 1];
     assert_eq!(
-        key.write_preimage(Disambiguator::None, &mut out),
+        key.write_preimage(&mut out),
         Err(PreimageOverflow::OutputShort {
             needed,
             actual: needed - 1,
@@ -175,7 +148,7 @@ fn short_preimage_output_is_typed_and_lossless() -> Result<(), TestFailure> {
     // The exact width succeeds.
     let mut out = vec![0_u8; needed];
     assert_eq!(
-        key.write_preimage(Disambiguator::None, &mut out),
+        key.write_preimage(&mut out),
         Ok(needed)
     );
     Ok(())

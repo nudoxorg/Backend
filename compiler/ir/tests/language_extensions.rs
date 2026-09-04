@@ -3,15 +3,17 @@ use compiler_ir::{
     CSharpReferenceKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, Confidence,
     EntityId, EntityVersion, GoFacts, GoSignature, Ir, IrBuilder, Item, ItemKind, JavaFacts,
     LanguageExtensionInput, LanguageExtensionReopenError, LanguageExtensionWireFact,
-    LanguageProfile, PayloadHash, PythonFacts, PythonParameterKind, RustFacts, RustOwnership,
-    StableEntityId, TreeItemInput, TypeScriptFacts, Visibility, encode_language_extension_section,
+    CorePayloadHash, DeclarationFamilyId, LanguageProfile, PythonFacts, PythonParameterKind,
+    RustFacts, RustOwnership, TreeItemInput, TypeScriptFacts, VariantFingerprint, Visibility,
+    encode_language_extension_section,
     language_extension_section_len, reopen_language_extension_section,
 };
 
 fn version() -> EntityVersion {
     EntityVersion {
-        stable: StableEntityId::from_raw([1; 16]),
-        payload: PayloadHash::from_raw([2; 16]),
+        family: DeclarationFamilyId::from_raw([1; 16]),
+        variant: VariantFingerprint::from_raw([2; 16]),
+        core_payload: CorePayloadHash::from_raw([3; 16]),
     }
 }
 

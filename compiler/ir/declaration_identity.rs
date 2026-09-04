@@ -1,35 +1,34 @@
 //! Typed declaration stable-key framing.
 //!
-//! This module owns the profile and parentage preimage law.  A collision
-//! skeleton is deliberately delegated to the vocabulary disambiguator only
-//! after a caller has proven a same-scope sibling collision.
+//! This module owns only the profile and closed-parentage family preimage.
+//! Structural variants are framed outside this key and never enter it.
 
 use compiler_vocabulary::LanguageProfile;
 use heart_identity::{ContentId, SourceFactDomain};
 
-use crate::semantic::StableEntityId;
+use crate::semantic::{DeclarationFamilyId, DeclarationIdentity};
 
 /// Purpose tag for declaration keys whose language profile and closed
-/// containment fact are part of stable identity.  These facts are not an
-/// overload skeleton: unique declarations retain `Disambiguator::None`.
-const SCOPED_DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.scoped-declaration.v1";
-const SCOPED_DECLARATION_KEY_PURPOSE_LEN: u32 = 31;
+/// containment fact are part of the declaration family. Variants are not
+/// accepted by this writer.
+const SCOPED_DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.declaration-family.v2";
+const SCOPED_DECLARATION_KEY_PURPOSE_LEN: u32 = 30;
 const _: () = assert!(
     SCOPED_DECLARATION_KEY_PURPOSE.len() == SCOPED_DECLARATION_KEY_PURPOSE_LEN as usize
 );
-const SCOPED_KEY_TAIL_BYTES: usize = 8;
 
 /// Closed containment fact retained by one [`ScopedDeclarationKey`].
 ///
-/// A bound parent uses its stable identity rather than any payload. Root and
+/// A bound parent uses its exact composite declaration identity rather than
+/// any payload. Root and
 /// unavailable use distinct tags; an unrepresented authority owner carries
 /// the exact opaque identity instead of being collapsed into either state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeclarationParentage {
     /// The authority proved that this declaration is a root.
     Root,
-    /// The authority bound this declaration to one local parent's stable id.
-    Bound(StableEntityId),
+    /// The authority bound this declaration to one exact local parent instance.
+    Bound(DeclarationIdentity),
     /// The authority supplied a non-local owner identity.
     Unrepresented([u8; 16]),
     /// The authority did not supply parentage.
@@ -46,19 +45,18 @@ impl DeclarationParentage {
         }
     }
 
-    const fn payload(self) -> Option<[u8; 16]> {
+    const fn payload_len(self) -> usize {
         match self {
-            Self::Bound(parent) => Some(*parent.as_bytes()),
-            Self::Unrepresented(identity) => Some(identity),
-            Self::Root | Self::Unavailable => None,
+            Self::Bound(_) => 32,
+            Self::Unrepresented(_) => 16,
+            Self::Root | Self::Unavailable => 0,
         }
     }
 }
 
-/// Typed declaration stable-key input.  The profile remains a
-/// `LanguageProfile`, so callers cannot mint a key from an arbitrary raw
-/// profile code.  [`crate::Disambiguator::Skeleton`] remains exclusively for
-/// a structural overload/implementation collision.
+/// Typed declaration-family key input. The profile remains a
+/// `LanguageProfile`, so callers cannot mint a family from an arbitrary raw
+/// profile code. Variant framing is deliberately separate from this scope key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScopedDeclarationKey<'bytes> {
     /// Validated package/path/kind/name fact.
@@ -85,37 +83,33 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
         }
     }
 
-    /// Complete output width with saturating arithmetic.  An unrepresentable
-    /// aggregate becomes `usize::MAX`, causing `write_preimage` to reject a
-    /// normal caller buffer before the first byte is mutated.
+    /// Complete checked family-preimage width. Every nested fixed-width cell and the
+    /// aggregate are proved before a caller allocates or this writer mutates
+    /// a byte.
     #[must_use]
-    pub fn preimage_len(&self, disambiguator: crate::Disambiguator<'bytes>) -> usize {
+    pub fn family_preimage_len(&self) -> Result<usize, crate::PreimageOverflow> {
         let nested = self
             .declaration
-            .preimage_len(crate::Disambiguator::None);
-        let mut length = 4_usize.saturating_add(SCOPED_DECLARATION_KEY_PURPOSE.len());
-        length = length.saturating_add(4).saturating_add(nested);
-        length = length.saturating_add(2);
-        length = length.saturating_add(1);
-        if self.parentage.payload().is_some() {
-            length = length.saturating_add(16);
-        }
-        length = length.saturating_add(SCOPED_KEY_TAIL_BYTES);
-        if let crate::Disambiguator::Skeleton(skeleton) = disambiguator {
-            length = length.saturating_add(4).saturating_add(skeleton.len());
-        }
-        length
+            .preimage_len()?;
+        let _ = u32::try_from(nested).map_err(|_| crate::PreimageOverflow::CellTooLong {
+            actual: nested,
+        })?;
+        let mut length = checked_length(4, SCOPED_DECLARATION_KEY_PURPOSE.len())?;
+        length = checked_length(length, 4)?;
+        length = checked_length(length, nested)?;
+        length = checked_length(length, 2)?;
+        length = checked_length(length, 1)?;
+        length = checked_length(length, self.parentage.payload_len())?;
+        Ok(length)
     }
 
-    /// Writes the fully framed key after proving all capacity and fixed-width
-    /// cells.  This owns profile/parentage framing centrally; callers only
-    /// provide an overload skeleton when a collision has already been proven.
-    pub fn write_preimage(
+    /// Writes the fully framed declaration family after proving all capacity
+    /// and fixed-width cells. Structural variants are never accepted here.
+    pub fn write_family_preimage(
         &self,
-        disambiguator: crate::Disambiguator<'bytes>,
         out: &mut [u8],
     ) -> Result<usize, crate::PreimageOverflow> {
-        let needed = self.preimage_len(disambiguator);
+        let needed = self.family_preimage_len()?;
         if out.len() < needed {
             return Err(crate::PreimageOverflow::OutputShort {
                 needed,
@@ -124,18 +118,10 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
         }
         let nested_len = self
             .declaration
-            .preimage_len(crate::Disambiguator::None);
+            .preimage_len()?;
         let nested_length = u32::try_from(nested_len).map_err(|_| {
             crate::PreimageOverflow::CellTooLong { actual: nested_len }
         })?;
-        let skeleton_length = match disambiguator {
-            crate::Disambiguator::None => 0,
-            crate::Disambiguator::Skeleton(skeleton) => u32::try_from(skeleton.len()).map_err(
-                |_| crate::PreimageOverflow::SkeletonTooLong {
-                    actual: skeleton.len(),
-                },
-            )?,
-        };
         let profile: [u8; 2] = self.profile.into();
         let mut cursor = 0;
         out[cursor..cursor + 4]
@@ -146,53 +132,51 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
         cursor += SCOPED_DECLARATION_KEY_PURPOSE.len();
         out[cursor..cursor + 4].copy_from_slice(&nested_length.to_le_bytes());
         cursor += 4;
-        let written = self.declaration.write_preimage(
-            crate::Disambiguator::None,
-            &mut out[cursor..cursor + nested_len],
-        )?;
+        let written = self.declaration.write_preimage(&mut out[cursor..cursor + nested_len])?;
         debug_assert_eq!(written, nested_len);
         cursor += nested_len;
         out[cursor..cursor + profile.len()].copy_from_slice(&profile);
         cursor += profile.len();
         out[cursor] = self.parentage.tag();
         cursor += 1;
-        if let Some(parentage) = self.parentage.payload() {
-            out[cursor..cursor + parentage.len()].copy_from_slice(&parentage);
-            cursor += parentage.len();
-        }
-        let mut tail = [0_u8; SCOPED_KEY_TAIL_BYTES];
-        tail[0] = match disambiguator {
-            crate::Disambiguator::None => 0,
-            crate::Disambiguator::Skeleton(_) => 1,
-        };
-        tail[1..5].copy_from_slice(&skeleton_length.to_le_bytes());
-        out[cursor..cursor + SCOPED_KEY_TAIL_BYTES].copy_from_slice(&tail);
-        cursor += SCOPED_KEY_TAIL_BYTES;
-        if let crate::Disambiguator::Skeleton(skeleton) = disambiguator {
-            let length = u32::try_from(skeleton.len()).map_err(|_| {
-                crate::PreimageOverflow::SkeletonTooLong {
-                    actual: skeleton.len(),
-                }
-            })?;
-            out[cursor..cursor + 4].copy_from_slice(&length.to_le_bytes());
-            cursor += 4;
-            out[cursor..cursor + skeleton.len()].copy_from_slice(skeleton);
-            cursor += skeleton.len();
+        match self.parentage {
+            DeclarationParentage::Bound(parent) => {
+                out[cursor..cursor + 16].copy_from_slice(parent.family.as_bytes());
+                cursor += 16;
+                out[cursor..cursor + 16].copy_from_slice(parent.variant.as_bytes());
+                cursor += 16;
+            }
+            DeclarationParentage::Unrepresented(identity) => {
+                out[cursor..cursor + 16].copy_from_slice(&identity);
+                cursor += 16;
+            }
+            DeclarationParentage::Root | DeclarationParentage::Unavailable => {}
         }
         Ok(cursor)
     }
 
-    /// Mints this scoped source-fact identity through the central domain
-    /// conventions, retaining the complete 32-byte hash until the owned IR
-    /// narrows it to its compact stable-id lane.
-    pub fn stable_id(
+    /// Mints this scoped declaration family through the central domain
+    /// conventions, retaining the full 32-byte digest until the owned IR
+    /// narrows it to its compact family lane.
+    pub fn family_id(
         &self,
-        disambiguator: crate::Disambiguator<'bytes>,
         out: &mut [u8],
     ) -> Result<ContentId<SourceFactDomain>, crate::PreimageOverflow> {
-        let written = self.write_preimage(disambiguator, out)?;
+        let written = self.write_family_preimage(out)?;
         Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(
             &out[..written],
         ))
     }
+}
+
+fn checked_length(
+    accumulated: usize,
+    additional: usize,
+) -> Result<usize, crate::PreimageOverflow> {
+    accumulated
+        .checked_add(additional)
+        .ok_or(crate::PreimageOverflow::AggregateTooLong {
+            accumulated,
+            additional,
+        })
 }

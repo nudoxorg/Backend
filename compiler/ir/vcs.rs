@@ -6,7 +6,11 @@
 
 use core::{cmp::Ordering, fmt, iter::Peekable};
 
-use crate::{Ir, ItemIdIter, ItemView, Link, LinkId, LinkKind, LinkTarget, StableEntityId};
+use crate::{
+    CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationLinkTarget, Ir, ItemIdIter, ItemView, Link, LinkId,
+    LinkKind, LinkTarget,
+    VariantFingerprint,
+};
 
 /// Content identity of one complete immutable IR generation.
 #[repr(transparent)]
@@ -45,34 +49,33 @@ impl fmt::Debug for Snapshot<'_> {
     }
 }
 
-/// Classification of one stable declaration across two generations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntityChangeKind {
-    Introduced,
-    Deleted,
-    PayloadChanged,
-    Moved,
-    PayloadChangedAndMoved,
+pub enum Delta<T> {
+    Unchanged,
+    Changed { before: T, after: T },
 }
 
-/// One allocation-free declaration delta.
 #[derive(Clone, Copy)]
-pub struct EntityChange<'before, 'after> {
-    pub stable: StableEntityId,
-    pub kind: EntityChangeKind,
-    pub before: Option<ItemView<'before>>,
-    pub after: Option<ItemView<'after>>,
+pub enum EntityChange<'before, 'after> {
+    Introduced { identity: DeclarationIdentity, after: ItemView<'after> },
+    Deleted { identity: DeclarationIdentity, before: ItemView<'before> },
+    Retained {
+        family: DeclarationFamilyId,
+        before: ItemView<'before>,
+        after: ItemView<'after>,
+        variant: Delta<VariantFingerprint>,
+        core_payload: Delta<CorePayloadHash>,
+        parent: Delta<Option<DeclarationIdentity>>,
+    },
 }
 
 impl fmt::Debug for EntityChange<'_, '_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("EntityChange")
-            .field("stable", &self.stable)
-            .field("kind", &self.kind)
-            .field("before", &self.before.map(ItemView::id))
-            .field("after", &self.after.map(ItemView::id))
-            .finish()
+        match self {
+            Self::Introduced { identity, after } => formatter.debug_struct("Introduced").field("identity", identity).field("after", &after.id()).finish(),
+            Self::Deleted { identity, before } => formatter.debug_struct("Deleted").field("identity", identity).field("before", &before.id()).finish(),
+            Self::Retained { family, before, after, variant, core_payload, parent } => formatter.debug_struct("Retained").field("family", family).field("before", &before.id()).field("after", &after.id()).field("variant", variant).field("core_payload", core_payload).field("parent", parent).finish(),
+        }
     }
 }
 
@@ -102,7 +105,7 @@ impl<'before, 'after> Iterator for EntityChanges<'before, 'after> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let ordering = match (self.left.peek(), self.right.peek()) {
-                (Some(left), Some(right)) => left.version().stable.cmp(&right.version().stable),
+                (Some(left), Some(right)) => left.version().family.cmp(&right.version().family),
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
                 (None, None) => return None,
@@ -110,57 +113,75 @@ impl<'before, 'after> Iterator for EntityChanges<'before, 'after> {
             match ordering {
                 Ordering::Less => {
                     let before = self.left.next()?;
-                    return Some(EntityChange {
-                        stable: before.version().stable,
-                        kind: EntityChangeKind::Deleted,
-                        before: Some(before),
-                        after: None,
-                    });
+                    return Some(EntityChange::Deleted { identity: before.version().identity(), before });
                 }
                 Ordering::Greater => {
                     let after = self.right.next()?;
-                    return Some(EntityChange {
-                        stable: after.version().stable,
-                        kind: EntityChangeKind::Introduced,
-                        before: None,
-                        after: Some(after),
-                    });
+                    return Some(EntityChange::Introduced { identity: after.version().identity(), after });
                 }
                 Ordering::Equal => {
+                    let family = self.left.peek()?.version().family;
+                    let singleton = self.before.ir.family_items(family).len() == 1
+                        && self.after.ir.family_items(family).len() == 1;
+                    if singleton {
+                        let before = self.left.next()?;
+                        let after = self.right.next()?;
+                        if let Some(change) = retained_change(self.before.ir, self.after.ir, before, after) { return Some(change); }
+                        continue;
+                    }
+                    let identities = self.left.peek()?.version().identity()
+                        .cmp(&self.right.peek()?.version().identity());
+                    if identities != Ordering::Equal {
+                        if identities == Ordering::Less {
+                            let before = self.left.next()?;
+                            return Some(EntityChange::Deleted { identity: before.version().identity(), before });
+                        }
+                        let after = self.right.next()?;
+                        return Some(EntityChange::Introduced { identity: after.version().identity(), after });
+                    }
                     let before = self.left.next()?;
                     let after = self.right.next()?;
-                    let payload_changed = before.version().payload != after.version().payload;
-                    let moved = stable_parent(self.before.ir, before)
-                        != stable_parent(self.after.ir, after);
-                    let kind = match (payload_changed, moved) {
-                        (false, false) => continue,
-                        (true, false) => EntityChangeKind::PayloadChanged,
-                        (false, true) => EntityChangeKind::Moved,
-                        (true, true) => EntityChangeKind::PayloadChangedAndMoved,
-                    };
-                    return Some(EntityChange {
-                        stable: before.version().stable,
-                        kind,
-                        before: Some(before),
-                        after: Some(after),
-                    });
+                    if let Some(change) = retained_change(self.before.ir, self.after.ir, before, after) { return Some(change); }
+                    continue;
                 }
             }
         }
     }
 }
 
-fn stable_parent(ir: &Ir, item: ItemView<'_>) -> Option<StableEntityId> {
+fn retained_change<'before, 'after>(
+    before_ir: &Ir,
+    after_ir: &Ir,
+    before: ItemView<'before>,
+    after: ItemView<'after>,
+) -> Option<EntityChange<'before, 'after>> {
+    let variant = delta(before.version().variant, after.version().variant);
+    let core_payload = delta(before.version().core_payload, after.version().core_payload);
+    let parent = delta(stable_parent(before_ir, before), stable_parent(after_ir, after));
+    if matches!(variant, Delta::Unchanged)
+        && matches!(core_payload, Delta::Unchanged)
+        && matches!(parent, Delta::Unchanged)
+    {
+        return None;
+    }
+    Some(EntityChange::Retained { family: before.version().family, before, after, variant, core_payload, parent })
+}
+
+fn delta<T: Eq>(before: T, after: T) -> Delta<T> {
+    if before == after { Delta::Unchanged } else { Delta::Changed { before, after } }
+}
+
+fn stable_parent(ir: &Ir, item: ItemView<'_>) -> Option<DeclarationIdentity> {
     item.parent()
         .and_then(|parent| ir.version(parent))
-        .map(|version| version.stable)
+        .map(|version| version.identity())
 }
 
 /// Canonical identity of a directed graph link.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StableLinkKey {
-    pub from: StableEntityId,
-    pub target: StableEntityId,
+    pub from: DeclarationIdentity,
+    pub target: DeclarationLinkTarget,
     pub kind: LinkKind,
 }
 
@@ -302,10 +323,10 @@ impl<'before, 'after> Iterator for LinkChanges<'before, 'after> {
 }
 
 fn stable_link_key(ir: &Ir, link: Link) -> Option<StableLinkKey> {
-    let from = ir.version(link.from)?.stable;
+    let from = ir.version(link.from)?.identity();
     let target = match link.target {
-        LinkTarget::Local(entity) => ir.version(entity)?.stable,
-        LinkTarget::External(external) => ir.external(external)?.stable,
+        LinkTarget::Local(entity) => DeclarationLinkTarget::Local(ir.version(entity)?.identity()),
+        LinkTarget::External(external) => DeclarationLinkTarget::External(ir.external(external)?.identity),
     };
     Some(StableLinkKey {
         from,

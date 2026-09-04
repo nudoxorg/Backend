@@ -1,7 +1,7 @@
 //! Cross-fragment reference and declaration-identity vocabulary.
 //!
 //! A declaration's stable identity is minted from producer-visible facts
-//! alone — `(package lineage, path, kind, name, disambiguator)` — hashed
+//! alone — `(package lineage, path, kind, name)` — hashed
 //! through the central `heart/identity` domain conventions
 //! (`ContentId<SourceFactDomain>`). There is deliberately **no ordinal
 //! disambiguator and no span disambiguator**: the old system's measured
@@ -15,6 +15,8 @@
 //! target**: sealing with and without dependencies loaded is byte-identical,
 //! so `display` is excluded from the key digest.
 
+use core::ops::Deref;
+
 use heart_identity::{ContentId, SourceFactDomain};
 
 use crate::coordinates::EntityId;
@@ -23,7 +25,7 @@ use crate::entity::EntityKind;
 /// Purpose tag naming the declaration-key preimage inside the shared source
 /// fact domain. Source identities hash raw source bytes in the same domain;
 /// this prefix keeps the two preimage families non-colliding by construction.
-const DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.declaration.v1";
+const DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.declaration.v2";
 /// Purpose tag naming the foreign-key digest preimage inside the shared
 /// source fact domain.
 const FOREIGN_KEY_PURPOSE: &[u8] = b"compiler.foreign-key.v1";
@@ -33,13 +35,19 @@ const FOREIGN_KEY_PURPOSE: &[u8] = b"compiler.foreign-key.v1";
 /// keys declaration identities, so identities never depend on the fragment
 /// bytes they are later embedded in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PackageLineage<'bytes> {
+pub struct PackageLineageView<'bytes> {
     /// Ecosystem registry name (`cargo`, `npm`, `pypi`, `go`, `nuget`,
     /// `maven`, ...).
     pub ecosystem: &'bytes str,
     /// Package name inside that ecosystem.
     pub name: &'bytes str,
 }
+
+/// Validated package lineage used by every identity-bearing key.  The raw
+/// fields live in [`PackageLineageView`], which can only enter this owner
+/// through [`PackageLineage::new`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageLineage<'bytes>(PackageLineageView<'bytes>);
 
 /// Exact lineage rejection retaining the offending part.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,7 +93,15 @@ impl<'bytes> PackageLineage<'bytes> {
         if contains_backslash(name.as_bytes()) {
             return Err(PackageLineageFault::Backslash { segment: 1 });
         }
-        Ok(Self { ecosystem, name })
+        Ok(Self(PackageLineageView { ecosystem, name }))
+    }
+}
+
+impl<'bytes> Deref for PackageLineage<'bytes> {
+    type Target = PackageLineageView<'bytes>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -106,41 +122,6 @@ const fn contains_byte(bytes: &[u8], needle: u8) -> bool {
         index += 1;
     }
     false
-}
-
-/// Collision-scoped disambiguator for sibling declarations that share the
-/// complete `(lineage, path, kind, name)` key.
-///
-/// `None` is the common unique case, so a unique declaration's identity is
-/// signature-stable. `Skeleton` carries producer-authored structural bytes
-/// (generics, wheres, overload signature shape) that keep real overloads and
-/// impls distinct.
-///
-/// There is deliberately **no ordinal variant** (identities must survive
-/// declaration reordering — the measured 32,339-group defect) and **no span
-/// variant** (spans are presentation, and degenerate `0..0` spans once
-/// collapsed ~24,000 declaration groups).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Disambiguator<'bytes> {
-    /// The unique, signature-stable case.
-    None,
-    /// Producer-authored structural skeleton bytes (for example an overload
-    /// or impl skeleton) that distinguish same-key siblings by content.
-    Skeleton(&'bytes [u8]),
-}
-
-impl<'bytes> Disambiguator<'bytes> {
-    const NONE_TAG: u8 = 0;
-    const SKELETON_TAG: u8 = 1;
-
-    /// The stable preimage tag of this disambiguator.
-    #[must_use]
-    pub const fn tag(self) -> u8 {
-        match self {
-            Self::None => Self::NONE_TAG,
-            Self::Skeleton(_) => Self::SKELETON_TAG,
-        }
-    }
 }
 
 /// Exact declaration-path rejection retaining the observed operand.
@@ -181,15 +162,19 @@ pub enum PreimageOverflow {
         /// Output width the caller actually supplied.
         actual: usize,
     },
-    /// The skeleton exceeds the fixed `u32` length cell.
-    SkeletonTooLong {
-        /// Observed skeleton byte length.
-        actual: usize,
-    },
     /// A nested canonical byte cell exceeds its fixed `u32` length field.
     CellTooLong {
         /// Observed nested-cell byte length.
         actual: usize,
+    },
+    /// Adding one validated cell would overflow the platform's addressable
+    /// preimage width.  The exact partial total and requested cell width are
+    /// retained before any caller allocates scratch.
+    AggregateTooLong {
+        /// Canonical bytes already accounted for.
+        accumulated: usize,
+        /// Width of the next complete cell or fixed segment.
+        additional: usize,
     },
 }
 
@@ -202,6 +187,9 @@ impl<'bytes> DeclarationKey<'bytes> {
         kind: EntityKind,
         name: &'bytes [u8],
     ) -> Result<Self, DeclarationKeyFault> {
+        // `PackageLineage` is an opaque validated owner.  Keep this explicit
+        // constructor boundary so every declaration key remains the one
+        // place that proves its package fact before it can mint identity.
         if path.is_empty() {
             return Err(DeclarationKeyFault::Path(DeclarationPathFault::Empty));
         }
@@ -219,19 +207,15 @@ impl<'bytes> DeclarationKey<'bytes> {
         })
     }
 
-    /// Complete canonical preimage length for `disambiguator`.
+    /// Complete family-only canonical preimage length.
     #[must_use]
-    pub const fn preimage_len(&self, disambiguator: Disambiguator<'bytes>) -> usize {
-        let mut length = str_cell_len(DECLARATION_KEY_PURPOSE);
-        length += str_cell_len(self.lineage.ecosystem.as_bytes());
-        length += str_cell_len(self.lineage.name.as_bytes());
-        length += str_cell_len(self.path.as_bytes());
-        length += str_cell_len(self.name);
-        length += KEY_TAIL_BYTES;
-        if let Disambiguator::Skeleton(skeleton) = disambiguator {
-            length += str_cell_len(skeleton);
-        }
-        length
+    pub fn preimage_len(&self) -> Result<usize, PreimageOverflow> {
+        let mut length = cell_len(DECLARATION_KEY_PURPOSE)?;
+        length = add_preimage_len(length, cell_len(self.lineage.ecosystem.as_bytes())?)?;
+        length = add_preimage_len(length, cell_len(self.lineage.name.as_bytes())?)?;
+        length = add_preimage_len(length, cell_len(self.path.as_bytes())?)?;
+        length = add_preimage_len(length, cell_len(self.name)?)?;
+        add_preimage_len(length, KEY_TAIL_BYTES)
     }
 
     /// Writes the complete canonical preimage into `out` and returns the
@@ -241,10 +225,9 @@ impl<'bytes> DeclarationKey<'bytes> {
     /// preflight; a short output leaves every byte untouched.
     pub fn write_preimage(
         &self,
-        disambiguator: Disambiguator<'bytes>,
         out: &mut [u8],
     ) -> Result<usize, PreimageOverflow> {
-        let needed = self.preimage_len(disambiguator);
+        let needed = self.preimage_len()?;
         if out.len() < needed {
             return Err(PreimageOverflow::OutputShort {
                 needed,
@@ -257,29 +240,9 @@ impl<'bytes> DeclarationKey<'bytes> {
         cursor = write_str_cell(out, cursor, self.lineage.name.as_bytes())?;
         cursor = write_str_cell(out, cursor, self.path.as_bytes())?;
         cursor = write_str_cell(out, cursor, self.name)?;
-        // Fixed tail: kind discriminant, disambiguator tag, one reserved
-        // zero byte, skeleton length cell. Reserved zero keeps the tail
-        // width-stable if a second skeleton-class disambiguator ever lands.
-        let (tag, skeleton_len): (u8, u32) = match disambiguator {
-            Disambiguator::None => (Disambiguator::NONE_TAG, 0),
-            Disambiguator::Skeleton(skeleton) => {
-                let Ok(len) = u32::try_from(skeleton.len()) else {
-                    return Err(PreimageOverflow::SkeletonTooLong {
-                        actual: skeleton.len(),
-                    });
-                };
-                (Disambiguator::SKELETON_TAG, len)
-            }
-        };
-        let mut tail = [0_u8; KEY_TAIL_BYTES];
-        tail[..2].copy_from_slice(&u16::from(self.kind).to_le_bytes());
-        tail[2] = tag;
-        tail[4..].copy_from_slice(&skeleton_len.to_le_bytes());
-        out[cursor..cursor + KEY_TAIL_BYTES].copy_from_slice(&tail);
+        out[cursor..cursor + KEY_TAIL_BYTES]
+            .copy_from_slice(&u16::from(self.kind).to_le_bytes());
         cursor += KEY_TAIL_BYTES;
-        if let Disambiguator::Skeleton(skeleton) = disambiguator {
-            cursor = write_str_cell(out, cursor, skeleton)?;
-        }
         Ok(cursor)
     }
 
@@ -289,10 +252,9 @@ impl<'bytes> DeclarationKey<'bytes> {
     /// for the exact width requirement.
     pub fn stable_id(
         &self,
-        disambiguator: Disambiguator<'bytes>,
         out: &mut [u8],
     ) -> Result<ContentId<SourceFactDomain>, PreimageOverflow> {
-        let written = self.write_preimage(disambiguator, out)?;
+        let written = self.write_preimage(out)?;
         Ok(ContentId::<SourceFactDomain>::from_canonical_bytes(
             &out[..written],
         ))
@@ -422,33 +384,32 @@ impl<'bytes> ForeignKey<'bytes> {
 
     /// Complete canonical key-digest preimage length.
     #[must_use]
-    pub fn key_preimage_len(&self) -> usize {
-        let mut length = str_cell_len(FOREIGN_KEY_PURPOSE);
-        length += ORIGIN_CELL;
+    pub fn key_preimage_len(&self) -> Result<usize, PreimageOverflow> {
+        let mut length = cell_len(FOREIGN_KEY_PURPOSE)?;
+        length = add_preimage_len(length, ORIGIN_CELL)?;
         match self.origin {
             ForeignOrigin::Package(lineage) => {
-                length += str_cell_len(lineage.ecosystem.as_bytes());
-                length += str_cell_len(lineage.name.as_bytes());
+                length = add_preimage_len(length, cell_len(lineage.ecosystem.as_bytes())?)?;
+                length = add_preimage_len(length, cell_len(lineage.name.as_bytes())?)?;
             }
             ForeignOrigin::Namespace {
                 ecosystem,
                 namespace,
             } => {
-                length += str_cell_len(ecosystem.as_bytes());
-                length += str_cell_len(namespace.as_bytes());
+                length = add_preimage_len(length, cell_len(ecosystem.as_bytes())?)?;
+                length = add_preimage_len(length, cell_len(namespace.as_bytes())?)?;
             }
             ForeignOrigin::Universe { ecosystem } => {
-                length += str_cell_len(ecosystem.as_bytes());
+                length = add_preimage_len(length, cell_len(ecosystem.as_bytes())?)?;
             }
         }
-        length += str_cell_len(self.path.as_bytes());
-        length
+        add_preimage_len(length, cell_len(self.path.as_bytes())?)
     }
 
     /// Writes the canonical key-digest preimage, excluding `display`.
     /// Output is written only after the total-length preflight.
     pub fn write_key_preimage(&self, out: &mut [u8]) -> Result<usize, PreimageOverflow> {
-        let needed = self.key_preimage_len();
+        let needed = self.key_preimage_len()?;
         if out.len() < needed {
             return Err(PreimageOverflow::OutputShort {
                 needed,
@@ -547,13 +508,26 @@ pub struct Occurrence<'bytes> {
     pub span: crate::occurrence::RelSpan,
 }
 
-/// Byte width of one length-prefixed string cell: u32 length + bytes.
-const fn str_cell_len(bytes: &[u8]) -> usize {
-    4 + bytes.len()
+/// Checked byte width of one length-prefixed string cell.
+fn cell_len(bytes: &[u8]) -> Result<usize, PreimageOverflow> {
+    if u32::try_from(bytes.len()).is_err() {
+        return Err(PreimageOverflow::CellTooLong { actual: bytes.len() });
+    }
+    add_preimage_len(4, bytes.len())
 }
-/// Byte width of the fixed key tail: kind u16 + tag u8 + reserved u8 +
-/// skeleton length u32.
-const KEY_TAIL_BYTES: usize = 8;
+
+/// Adds one already-validated canonical segment without allowing platform
+/// width wraparound to become an undersized caller allocation.
+fn add_preimage_len(accumulated: usize, additional: usize) -> Result<usize, PreimageOverflow> {
+    accumulated
+        .checked_add(additional)
+        .ok_or(PreimageOverflow::AggregateTooLong {
+            accumulated,
+            additional,
+        })
+}
+/// Byte width of the family-only fixed key tail: kind u16.
+const KEY_TAIL_BYTES: usize = 2;
 /// Byte width of the fixed origin cell: origin tag u8 + kind cell u16 +
 /// reserved u8.
 const ORIGIN_CELL: usize = 4;
@@ -563,7 +537,7 @@ const ORIGIN_CELL: usize = 4;
 /// below are proven in bounds; a failed check names the exact shortfall.
 fn write_str_cell(out: &mut [u8], cursor: usize, bytes: &[u8]) -> Result<usize, PreimageOverflow> {
     let Ok(len) = u32::try_from(bytes.len()) else {
-        return Err(PreimageOverflow::SkeletonTooLong {
+        return Err(PreimageOverflow::CellTooLong {
             actual: bytes.len(),
         });
     };

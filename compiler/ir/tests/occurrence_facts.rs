@@ -400,13 +400,11 @@ fn foreign_occurrences_survive_the_reopen_with_their_key_cells() -> Result<(), T
             assert_eq!(foreign.path, "lodash/map");
             assert_eq!(foreign.display, "lodash.map");
             assert_eq!(foreign.kind, Some(EntityKind::Function));
-            assert!(matches!(
-                foreign.origin,
-                ForeignOrigin::Package(PackageLineage {
-                    ecosystem: "npm",
-                    name: "lodash",
-                })
-            ));
+            let ForeignOrigin::Package(lineage) = foreign.origin else {
+                panic!("foreign occurrence retained a non-package origin")
+            };
+            assert_eq!(lineage.ecosystem, "npm");
+            assert_eq!(lineage.name, "lodash");
         }
         OccurrenceTarget::Stable(_) | OccurrenceTarget::Local(_) => {
             panic!("first admitted fact is foreign")

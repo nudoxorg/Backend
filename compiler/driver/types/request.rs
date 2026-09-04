@@ -44,14 +44,14 @@ impl<'source> DeclarationScope<'source> {
     /// so corpus fixtures can exercise the mandatory production field; real
     /// callers must enter their package lineage and source path with `new`.
     #[doc(hidden)]
-    pub const fn fixture() -> DeclarationScope<'static> {
-        DeclarationScope {
-            lineage: PackageLineage {
-                ecosystem: "fixture",
-                name: "fixture",
-            },
-            path: "fixture/source",
-        }
+    pub fn fixture() -> DeclarationScope<'static> {
+        let Ok(lineage) = PackageLineage::new("fixture", "fixture") else {
+            unreachable!("fixed fixture package lineage is valid");
+        };
+        let Ok(scope) = DeclarationScope::new(lineage, "fixture/source") else {
+            unreachable!("fixed fixture declaration scope is valid");
+        };
+        scope
     }
 }
 

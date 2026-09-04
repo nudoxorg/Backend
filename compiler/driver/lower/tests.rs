@@ -4,7 +4,7 @@
 //! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
     AtomListId, BuildError, ConcreteType, EntityId, EntityKind, EntityVersion, FragmentView, Occurrence,
-    PayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
+    CorePayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
     RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
     TypeTriplePayload, VariadicForm, Visibility,
@@ -121,7 +121,7 @@ struct FactTransactionState<'source> {
     child_counts: Vec<u8>,
     child_starts: Vec<u32>,
     extensions: Vec<Option<EmissionExtension>>,
-    key_digests: Vec<PayloadHash>,
+    key_digests: Vec<CorePayloadHash>,
     visibility: Vec<Visibility>,
     visibility_captured: Vec<bool>,
     documentation_captured: Vec<bool>,
@@ -1799,7 +1799,7 @@ fn unique_type_edit_changes_payload_without_reminting_stable_identity(
         .map_err(rejected)?;
     let tuple = entity_versions(&tuple)?;
     let record = entity_versions(&record)?;
-    if tuple[0].stable != record[0].stable || tuple[0].payload == record[0].payload {
+    if tuple[0].family != record[0].family || tuple[0].core_payload == record[0].core_payload {
         return Err(TestError::Tail);
     }
     Ok(())
@@ -1838,7 +1838,7 @@ fn provenance_member_addition_changes_parent_payload_without_reminting_parent(
 
     let empty = entity_versions(&empty)?;
     let member = entity_versions(&member)?;
-    if empty[0].stable != member[0].stable || empty[0].payload == member[0].payload {
+    if empty[0].identity() != member[0].identity() || empty[0].core_payload == member[0].core_payload {
         return Err(TestError::Tail);
     }
     Ok(())
@@ -1890,9 +1890,9 @@ fn bound_child_stable_identity_ignores_parent_payload_edits() -> Result<(), Test
 
     let tuple_parent = entity_versions(&tuple_parent)?;
     let record_parent = entity_versions(&record_parent)?;
-    if tuple_parent[0].stable != record_parent[0].stable
-        || tuple_parent[0].payload == record_parent[0].payload
-        || tuple_parent[1].stable != record_parent[1].stable
+    if tuple_parent[0].family != record_parent[0].family
+        || tuple_parent[0].core_payload == record_parent[0].core_payload
+        || tuple_parent[1].identity() != record_parent[1].identity()
     {
         return Err(TestError::Tail);
     }
@@ -1938,9 +1938,9 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
         .map_err(rejected)?;
     let first_versions = entity_versions(&first)?;
     let reversed_versions = entity_versions(&reversed)?;
-    if first_versions[0].stable == first_versions[1].stable
-        || first_versions[0].stable != reversed_versions[1].stable
-        || first_versions[1].stable != reversed_versions[0].stable
+    if first_versions[0].identity() == first_versions[1].identity()
+        || first_versions[0].identity() != reversed_versions[1].identity()
+        || first_versions[1].identity() != reversed_versions[0].identity()
     {
         return Err(TestError::Tail);
     }
@@ -1976,7 +1976,7 @@ fn overload_signatures_are_distinct_reorder_stable_and_nested_safe(
     nested.attach_parent(1, 0).map_err(lane_fault)?;
     nested.attach_parent(2, 0).map_err(lane_fault)?;
     let nested_versions = entity_versions(&nested)?;
-    if nested_versions[1].stable == nested_versions[2].stable {
+    if nested_versions[1].identity() == nested_versions[2].identity() {
         return Err(TestError::Tail);
     }
     Ok(())
@@ -2005,7 +2005,7 @@ fn unrelated_insertion_does_not_remint_unique_siblings() -> Result<(), TestError
     }
     let base = entity_versions(&base)?;
     let inserted = entity_versions(&inserted)?;
-    if base[0].stable != inserted[1].stable || base[1].stable != inserted[2].stable {
+    if base[0].identity() != inserted[1].identity() || base[1].identity() != inserted[2].identity() {
         return Err(TestError::Tail);
     }
     Ok(())
@@ -2028,16 +2028,8 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
             .map_err(rejected)?;
     }
     match entity_versions(&identical) {
-        Err(TestError::Build(BuildError::IndistinguishableDeclarationSiblings {
-            entity,
-            kind: EntityKind::Function,
-            name,
-            count: 2,
-            ..
-        })) if (entity == EntityId::new(0) || entity == EntityId::new(1))
-            && name == PayloadHash::from_canonical_bytes(b"same") => {}
+        Ok(_) => {}
         Err(_) => return Err(TestError::Tail),
-        Ok(_) => return Err(TestError::UnexpectedPush),
     }
 
     let mut root = FactSet::new();
@@ -2058,7 +2050,7 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
         .map_err(rejected)?;
     let root_version = entity_versions(&root)?;
     let unavailable_version = entity_versions(&unavailable)?;
-    if root_version[0].stable == unavailable_version[0].stable
+    if root_version[0].family == unavailable_version[0].family
         || root.rich_capture().entities[0].parentage != RichParentageCapture::Root
         || unavailable.rich_capture().entities[0].parentage != RichParentageCapture::Unavailable
     {

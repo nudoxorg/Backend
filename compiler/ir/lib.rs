@@ -45,11 +45,11 @@ pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
     AnnotationKind, AnonRecordForm, AnonRecordFormError, ChildCountLaw, CvQualifiers,
-    CvQualifiersError, DeclarationKey, DeclarationKeyFault, DeclarationPathFault, Disambiguator,
+    CvQualifiersError, DeclarationKey, DeclarationKeyFault, DeclarationPathFault,
     ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
     ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
     ChannelDirection, FunctionVariadicForm, ListSpan,
-    NativeCharacterRole, NominalRef, Occurrence, OccurrenceTarget, PackageLineage,
+    NativeCharacterRole, NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
     PackageLineageFault, PooledListError,
     PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
     ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
@@ -111,24 +111,28 @@ pub use semantic::{
     CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
     ComputedTypeId, ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId,
-    DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion, External, ExternalId,
-    ExternalTarget, FrontendTree, GoExtension, GoFacts, GoSignature, GraphColumns, GuardedType, Ir,
+    DeclarationFamilyId, DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion,
+    External, ExternalDeclarationIdentity, ExternalId, ExternalTarget, FrontendTree, GoExtension,
+    GoFacts, GoSignature, GraphColumns, GuardedType, Ir,
     IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension, JavaFacts,
     LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
     LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkOccurrence,
     LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
     LinkTarget, LiteralType,
-    MappedModifier, Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash,
+    CorePayloadCoverage, CorePayloadHash, CorePayloadPlane, DeclarationIdentity,
+    DeclarationLinkTarget, MappedModifier,
+    Mutability, ObjectMember, ObjectMemberListId, OptionalId,
     PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
     RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
-    SparseColumnView, StableEntityId, StorageColumns, TemplatePart, TemplatePartListId,
+    SparseColumnView, StorageColumns, TemplatePart, TemplatePartListId,
     TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
     TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
     TypeListId, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterBoundListId,
     TypeParameterInference, TypeParameterKind, TypeParameterListId, TypeParameterPrimaryRequirement,
     TypeParameterRequirements, TypeQuadPayload, TypeQuery, VariadicForm,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
-    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VariantAvailability,
+    VariantFingerprint, VcsColumns, Visibility,
     WildcardBound,
 };
 pub use semantic_data_view::{
@@ -152,7 +156,7 @@ pub use type_facts::{
     TypeFactFault, TypeFactInput, TypeFactLane, TypeFactSegment,
 };
 pub use vcs::{
-    Diff, EntityChange, EntityChangeKind, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
+    Delta, Diff, EntityChange, EntityChanges, GenerationId, LinkChange, LinkChangeKind,
     LinkChanges, Snapshot, StableLink, StableLinkKey, StableLinks,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;

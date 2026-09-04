@@ -2142,10 +2142,9 @@ pub enum LinkTarget {
 /// Everything needed to render and later resolve a foreign symbol.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ExternalTarget {
-    /// Stable cross-generation identity. Unresolved targets derive this from
-    /// their canonical package/path key, so VCS link identity never uses a
-    /// generation-local external-table coordinate.
-    pub stable: StableEntityId,
+    /// Cross-package identity. Unresolved targets retain `Unavailable`
+    /// variant knowledge instead of inventing an overload discriminator.
+    pub identity: ExternalDeclarationIdentity,
     pub package: Option<AtomId>,
     pub path: AtomId,
     pub display: AtomId,
@@ -2215,12 +2214,15 @@ impl SourceSpan {
     }
 }
 
-/// Cross-generation declaration identity used by IR-VCS and external links.
 #[repr(transparent)]
+/// Coordinate-free declaration family identity.  It binds package/file
+/// scope, language profile, closed parentage family, kind, and name, but no
+/// signature or generation payload.  Several overload instances may share
+/// one family.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct StableEntityId([u8; 16]);
+pub struct DeclarationFamilyId([u8; 16]);
 
-impl StableEntityId {
+impl DeclarationFamilyId {
     #[must_use]
     pub const fn from_raw(bytes: [u8; 16]) -> Self {
         Self(bytes)
@@ -2240,15 +2242,115 @@ impl StableEntityId {
     }
 }
 
-/// Canonical hash of one declaration payload.  It excludes identity scope and
-/// optional provenance planes, but may include the order-independent basis of
-/// locally Bound members where that topology is part of the declaration's
-/// admitted semantic payload.
+/// Coordinate-free structural fingerprint for one declaration instance.
+///
+/// Every admitted row has one fingerprint, including a currently unique
+/// callable.  It is paired with [`DeclarationFamilyId`] to form the unambiguous
+/// current-generation [`DeclarationIdentity`]; it is not a generation
+/// payload hash.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PayloadHash([u8; 16]);
+pub struct VariantFingerprint([u8; 16]);
 
-impl PayloadHash {
+impl VariantFingerprint {
+    #[must_use]
+    pub const fn from_raw(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+    #[must_use]
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Self {
+        let hash = blake3::hash(bytes);
+        let bytes = hash.as_bytes();
+        Self([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ])
+    }
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Exact current-generation declaration instance identity.  The pair, not a
+/// family alone, is used by canonical indexes, parent bindings, and local
+/// link keys whenever overloads are possible.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DeclarationIdentity {
+    pub family: DeclarationFamilyId,
+    pub variant: VariantFingerprint,
+}
+
+/// Variant knowledge retained for a foreign declaration. A foreign package
+/// key may prove its family while honestly lacking an overload signature.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum VariantAvailability {
+    Known(VariantFingerprint),
+    Unavailable,
+}
+
+/// Cross-package declaration identity without a fabricated local variant.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ExternalDeclarationIdentity {
+    pub family: DeclarationFamilyId,
+    pub variant: VariantAvailability,
+}
+
+/// Exact identity used to order a graph endpoint. Local endpoints always
+/// retain both family and variant; foreign endpoints retain unavailable
+/// variant knowledge explicitly rather than borrowing a local convention.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DeclarationLinkTarget {
+    Local(DeclarationIdentity),
+    External(ExternalDeclarationIdentity),
+}
+
+/// Whether one semantic plane participates in [`CorePayloadHash`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CorePayloadPlane {
+    /// Included in the current canonical core-payload contract.
+    Included,
+    /// Deliberately excluded until the plane has one durable authority
+    /// contract; absence here must never be reported as semantic parity.
+    ExcludedPendingAuthority,
+}
+
+/// Honest coverage of the current core declaration payload.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CorePayloadCoverage {
+    pub declaration_shape: CorePayloadPlane,
+    pub type_structure: CorePayloadPlane,
+    pub ordered_product_children: CorePayloadPlane,
+    pub ordered_local_members: CorePayloadPlane,
+    pub documentation: CorePayloadPlane,
+    pub visibility: CorePayloadPlane,
+    pub language_extension: CorePayloadPlane,
+    pub source_provenance: CorePayloadPlane,
+    pub occurrences: CorePayloadPlane,
+    pub opaque_parentage: CorePayloadPlane,
+}
+
+/// Canonical hash of the currently admitted core semantic declaration
+/// payload. It is intentionally not an authority-complete payload hash.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CorePayloadHash([u8; 16]);
+
+impl CorePayloadHash {
+    /// Exact plane coverage of every value minted by this type.
+    pub const COVERAGE: CorePayloadCoverage = CorePayloadCoverage {
+        declaration_shape: CorePayloadPlane::Included,
+        type_structure: CorePayloadPlane::Included,
+        ordered_product_children: CorePayloadPlane::Included,
+        ordered_local_members: CorePayloadPlane::Included,
+        documentation: CorePayloadPlane::ExcludedPendingAuthority,
+        visibility: CorePayloadPlane::ExcludedPendingAuthority,
+        language_extension: CorePayloadPlane::ExcludedPendingAuthority,
+        source_provenance: CorePayloadPlane::ExcludedPendingAuthority,
+        occurrences: CorePayloadPlane::ExcludedPendingAuthority,
+        opaque_parentage: CorePayloadPlane::ExcludedPendingAuthority,
+    };
+
     #[must_use]
     pub const fn from_raw(bytes: [u8; 16]) -> Self {
         Self(bytes)
@@ -2271,8 +2373,25 @@ impl PayloadHash {
 /// Cold VCS columns aligned with one hot entity row.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct EntityVersion {
-    pub stable: StableEntityId,
-    pub payload: PayloadHash,
+    /// Stable declaration family.  VCS can match a singleton family across a
+    /// signature edit without pretending that an overload group is singular.
+    pub family: DeclarationFamilyId,
+    /// Structural fingerprint distinguishing current instances in one family.
+    pub variant: VariantFingerprint,
+    /// Current core-only semantic payload hash; see [`CorePayloadHash::COVERAGE`].
+    pub core_payload: CorePayloadHash,
+}
+
+impl EntityVersion {
+    /// The exact local declaration instance key. A family alone is a range,
+    /// never a singular graph or index key.
+    #[must_use]
+    pub const fn identity(self) -> DeclarationIdentity {
+        DeclarationIdentity {
+            family: self.family,
+            variant: self.variant,
+        }
+    }
 }
 
 /// One compact entity row. All variable-size data is an interned typed-list ID.
@@ -3258,24 +3377,15 @@ pub enum BuildError {
         entity: EntityId,
         cause: crate::PreimageOverflow,
     },
-    /// Same-scope declarations with the same kind and name had the same
-    /// authority structural skeleton.  There is no coordinate-free fact left
-    /// to distinguish them, so assigning an ordinal or span would make the
-    /// collision look representable while destabilizing identity.
-    IndistinguishableDeclarationSiblings {
-        /// One colliding authority row.
-        entity: EntityId,
-        /// Shared declaration-kind fact.
-        kind: EntityKind,
-        /// Canonical digest of the shared exact name bytes.
-        name: PayloadHash,
-        /// Canonical digest of the indistinguishable authority skeleton.
-        skeleton: PayloadHash,
-        /// Number of identical siblings in this collision class.
-        count: u32,
+    /// A foreign-key preimage could not be measured or written. The owner
+    /// and compact foreign-path digest retain the exact failing endpoint.
+    ForeignKeyPreimage {
+        owner: EntityId,
+        target: VariantFingerprint,
+        cause: crate::PreimageOverflow,
     },
-    DuplicateStableEntity {
-        stable: StableEntityId,
+    DuplicateDeclarationIdentity {
+        identity: DeclarationIdentity,
     },
     TreeVersionCount {
         versions: usize,
@@ -3346,25 +3456,18 @@ impl fmt::Display for BuildError {
                 "entity {} has an invalid scoped declaration preimage: {cause:?}",
                 entity.raw
             ),
-            Self::IndistinguishableDeclarationSiblings {
-                entity,
-                kind,
-                name,
-                skeleton,
-                count,
-            } => write!(
+            Self::ForeignKeyPreimage { owner, target, cause } => write!(
                 formatter,
-                "entity {} is one of {count} indistinguishable {kind:?} siblings \
-                 (name {:02x?}, skeleton {:02x?})",
-                entity.raw,
-                name.as_bytes(),
-                skeleton.as_bytes()
+                "entity {} has an invalid foreign key preimage for {:02x?}: {cause:?}",
+                owner.raw,
+                target.as_bytes()
             ),
-            Self::DuplicateStableEntity { stable } => {
+            Self::DuplicateDeclarationIdentity { identity } => {
                 write!(
                     formatter,
-                    "stable entity identity {:02x?} is duplicated",
-                    stable.as_bytes()
+                    "declaration family {:02x?} variant {:02x?} is duplicated",
+                    identity.family.as_bytes(),
+                    identity.variant.as_bytes()
                 )
             }
             Self::TreeVersionCount { versions, items } => {
@@ -4508,7 +4611,7 @@ fn list_or_dangling<T: Copy + Eq + Hash>(
 
 struct IrIndices {
     _slab: Slab,
-    stable: RawColumn<EntityId>,
+    instances: RawColumn<EntityId>,
     kind: RawColumn<EntityId>,
     name: RawColumn<EntityId>,
     canonical_links: RawColumn<LinkId>,
@@ -4540,7 +4643,7 @@ impl IrIndices {
             })
             .count();
         let mut plan = SlabPlan::default();
-        let stable = plan.column::<EntityId>(entity_count);
+        let instances = plan.column::<EntityId>(entity_count);
         let kind = plan.column::<EntityId>(entity_count);
         let name = plan.column::<EntityId>(entity_count);
         let canonical_links = plan.column::<LinkId>(link_count);
@@ -4552,7 +4655,7 @@ impl IrIndices {
         let occurrence_outgoing_offsets = plan.column::<u32>(entity_count.saturating_add(1));
         let slab = plan.allocate();
         let mut indices = Self {
-            stable: slab.bind(stable),
+            instances: slab.bind(instances),
             kind: slab.bind(kind),
             name: slab.bind(name),
             canonical_links: slab.bind(canonical_links),
@@ -4570,7 +4673,7 @@ impl IrIndices {
                 actual: raw,
             })?;
             let id = EntityId::new(raw);
-            indices.stable.push(id);
+            indices.instances.push(id);
             indices.kind.push(id);
             indices.name.push(id);
         }
@@ -4603,13 +4706,13 @@ impl IrIndices {
         }
 
         indices
-            .stable
+            .instances
             .as_mut_slice()
-            .sort_unstable_by_key(|id| versions[id.index()].stable);
-        for pair in indices.stable.windows(2) {
-            if versions[pair[0].index()].stable == versions[pair[1].index()].stable {
-                return Err(BuildError::DuplicateStableEntity {
-                    stable: versions[pair[0].index()].stable,
+            .sort_unstable_by_key(|id| versions[id.index()].identity());
+        for pair in indices.instances.windows(2) {
+            if versions[pair[0].index()].identity() == versions[pair[1].index()].identity() {
+                return Err(BuildError::DuplicateDeclarationIdentity {
+                    identity: versions[pair[0].index()].identity(),
                 });
             }
         }
@@ -4617,7 +4720,7 @@ impl IrIndices {
         indices
             .kind
             .as_mut_slice()
-            .sort_unstable_by_key(|id| (items.kinds[id.index()], versions[id.index()].stable));
+            .sort_unstable_by_key(|id| (items.kinds[id.index()], versions[id.index()].identity()));
         let mut kind_offsets = [0_u32; 17];
         for kind in items.kinds.iter() {
             kind_offsets[*kind as usize + 1] += 1;
@@ -4627,8 +4730,8 @@ impl IrIndices {
         indices.name.as_mut_slice().sort_unstable_by(|left, right| {
             let left_name = atoms.get(items.names[left.index()]).unwrap_or(&[]);
             let right_name = atoms.get(items.names[right.index()]).unwrap_or(&[]);
-            (left_name, versions[left.index()].stable)
-                .cmp(&(right_name, versions[right.index()].stable))
+            (left_name, versions[left.index()].identity())
+                .cmp(&(right_name, versions[right.index()].identity()))
         });
         indices
             .canonical_links
@@ -4637,10 +4740,14 @@ impl IrIndices {
                 let link = links
                     .get(*id)
                     .expect("canonical IDs originate from packed links");
-                let from = versions[link.from.index()].stable;
+                let from = versions[link.from.index()].identity();
                 let target = match link.target {
-                    LinkTarget::Local(entity) => versions[entity.index()].stable,
-                    LinkTarget::External(external) => externals[external.index()].stable,
+                    LinkTarget::Local(entity) => {
+                        DeclarationLinkTarget::Local(versions[entity.index()].identity())
+                    }
+                    LinkTarget::External(external) => {
+                        DeclarationLinkTarget::External(externals[external.index()].identity)
+                    }
                 };
                 (from, target, link.kind)
             });
@@ -5011,7 +5118,8 @@ impl PackedLinks {
 #[derive(Clone, Copy, Debug)]
 pub struct VcsColumns<'ir> {
     pub versions: &'ir [EntityVersion],
-    pub stable_entities: &'ir [EntityId],
+    /// Canonical exact local instance order, by `(family, variant)`.
+    pub declaration_instances: &'ir [EntityId],
     pub stable_links: &'ir [LinkId],
 }
 
@@ -5133,7 +5241,7 @@ impl StorageColumns<'_> {
         add!(self.graph.occurrences.outgoing);
         add!(self.graph.occurrences.outgoing_offsets);
         add!(self.vcs.versions);
-        add!(self.vcs.stable_entities);
+        add!(self.vcs.declaration_instances);
         add!(self.vcs.stable_links);
         add!(self.kind_entities);
         add!(self.kind_offsets);
@@ -5246,7 +5354,7 @@ impl Ir {
     pub fn vcs_columns(&self) -> VcsColumns<'_> {
         VcsColumns {
             versions: &self.items.versions,
-            stable_entities: &self.indices.stable,
+            declaration_instances: &self.indices.instances,
             stable_links: &self.indices.canonical_links,
         }
     }
@@ -5306,22 +5414,33 @@ impl Ir {
     pub fn version(&self, id: EntityId) -> Option<EntityVersion> {
         self.items.versions.get(id.index()).copied()
     }
-    /// Binary-searches the canonical VCS identity index.
+    /// Binary-searches the exact canonical declaration-instance index.
     #[must_use]
-    pub fn find_stable(&self, stable: StableEntityId) -> Option<ItemView<'_>> {
+    pub fn find_declaration(&self, identity: DeclarationIdentity) -> Option<ItemView<'_>> {
         let index = self
             .indices
-            .stable
-            .binary_search_by_key(&stable, |id| self.items.versions[id.index()].stable)
+            .instances
+            .binary_search_by_key(&identity, |id| self.items.versions[id.index()].identity())
             .ok()?;
-        self.item(self.indices.stable[index])
+        self.item(self.indices.instances[index])
     }
-    /// Iterates declarations in canonical VCS identity order.
+    /// Iterates every current instance in one declaration family.
+    #[must_use]
+    pub fn family_items(&self, family: DeclarationFamilyId) -> ItemIdIter<'_> {
+        let start = self.indices.instances.partition_point(|id| {
+            self.items.versions[id.index()].family < family
+        });
+        let end = start + self.indices.instances[start..].partition_point(|id| {
+            self.items.versions[id.index()].family == family
+        });
+        ItemIdIter { ir: self, ids: &self.indices.instances[start..end] }
+    }
+    /// Iterates declarations in canonical exact-instance order.
     #[must_use]
     pub fn canonical_items(&self) -> ItemIdIter<'_> {
         ItemIdIter {
             ir: self,
-            ids: &self.indices.stable,
+            ids: &self.indices.instances,
         }
     }
     /// Iterates one declaration kind through its Trustfall-friendly posting index.

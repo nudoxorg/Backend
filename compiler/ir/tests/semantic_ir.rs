@@ -3,9 +3,10 @@
 use allocation_counter::{AllocationInfo, measure};
 use compiler_ir::{
     AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
-    DocInput, EntityChangeKind, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
-    LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot,
-    SourceSpan, StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
+    DocInput, EntityChange, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
+    LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, Snapshot,
+    SourceSpan, DeclarationFamilyId, CorePayloadHash, VariantFingerprint, TreeEntityId,
+    TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
     TypeHeader, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterInference,
     TypeParameterKind, TypeParameterRequirements, TypeQuadPayload, TypeScriptFacts,
     TypeTriplePayload, UnknownState, UnknownType, Variance, Visibility,
@@ -15,8 +16,9 @@ use core::{fmt, hint::black_box};
 
 fn version(identity: u8, payload: u8) -> EntityVersion {
     EntityVersion {
-        stable: StableEntityId::from_raw([identity; 16]),
-        payload: PayloadHash::from_raw([payload; 16]),
+        family: DeclarationFamilyId::from_raw([identity; 16]),
+        variant: VariantFingerprint::from_raw([identity; 16]),
+        core_payload: CorePayloadHash::from_raw([payload; 16]),
     }
 }
 
@@ -103,8 +105,9 @@ fn measured_stream_build(count: usize) -> AllocationInfo {
         .map(|index| {
             let bytes = index.to_le_bytes();
             EntityVersion {
-                stable: StableEntityId::from_canonical_bytes(&bytes),
-                payload: PayloadHash::from_canonical_bytes(&bytes),
+                family: DeclarationFamilyId::from_canonical_bytes(&bytes),
+                variant: VariantFingerprint::from_canonical_bytes(&bytes),
+                core_payload: CorePayloadHash::from_canonical_bytes(&bytes),
             }
         })
         .collect::<Vec<_>>();
@@ -167,8 +170,9 @@ fn transparent_state_terms_pack_directly_without_interning_allocations() {
         .map(|index| {
             let bytes = index.to_le_bytes();
             EntityVersion {
-                stable: StableEntityId::from_canonical_bytes(&bytes),
-                payload: PayloadHash::from_canonical_bytes(&bytes),
+                family: DeclarationFamilyId::from_canonical_bytes(&bytes),
+                variant: VariantFingerprint::from_canonical_bytes(&bytes),
+                core_payload: CorePayloadHash::from_canonical_bytes(&bytes),
             }
         })
         .collect::<Vec<_>>();
@@ -515,14 +519,11 @@ fn vcs_diffs_the_same_ir_without_lowering_or_archiving() -> Result<(), compiler_
         ir: &after,
     };
     let diff = Diff::between(before, after);
-    let entity_changes = diff.entities.map(|change| change.kind).collect::<Vec<_>>();
-    assert_eq!(
-        entity_changes,
-        vec![
-            EntityChangeKind::PayloadChangedAndMoved,
-            EntityChangeKind::Introduced
-        ]
-    );
+    let entity_changes = diff.entities.collect::<Vec<_>>();
+    assert!(matches!(entity_changes.as_slice(), [
+        EntityChange::Retained { .. },
+        EntityChange::Introduced { .. },
+    ]));
     let link_changes = diff.links.map(|change| change.kind).collect::<Vec<_>>();
     assert_eq!(link_changes, vec![LinkChangeKind::Removed]);
     Ok(())

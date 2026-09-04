@@ -20,8 +20,8 @@ pub use coordinates::{
 };
 pub use entity::{EntityKind, EntityKindCodeError};
 pub use identity::{
-    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, Disambiguator, ForeignKey,
-    ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage,
+    DeclarationKey, DeclarationKeyFault, DeclarationPathFault, ForeignKey,
+    ForeignKeyFault, ForeignOrigin, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
     PackageLineageFault, PreimageOverflow, Resolution, StableRef,
 };
 pub use occurrence::{
