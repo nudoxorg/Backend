@@ -9,16 +9,17 @@
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
     AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, CvQualifiers,
-    CxxReferenceCategory, DocInput, ExternalTarget, Ir,
+    CxxReferenceCategory, DocInput, EntityAuthorityFacts, ExternalTarget, FactAvailability, Ir,
     CorePayloadHash, DeclarationFamilyId, ExternalDeclarationIdentity, IrBuilder, ItemKind,
-    LanguageExtensionInput, ListSpan, LiteralType, NominalRef,
+    LanguageExtensionInput, ListSpan, LiteralType, NominalRef, ParentageAuthority,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
     ObjectMember, PropertyKey,
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
     NativeCharacterRole, QualifiedSegments, TypeChildTarget, TypeId, TypeWidth, Visibility,
-    VariantAvailability, VariantFingerprint, WildcardBound,
+    OccurrenceAuthorityFacts, UnrepresentedAuthorityOwner, VariantAvailability, VariantFingerprint,
+    WildcardBound,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -801,91 +802,84 @@ impl<'source> FactSet<'source> {
         self.len
     }
 
-    /// Makes authority availability explicit beside optional owned-IR fields.
-    /// A `None` inside `Ir` is never promoted to proof that the source lacked
-    /// that fact: this sidecar names which authority planes were unavailable.
-    pub(super) fn rich_capture(&self) -> crate::types::RichIrCapture {
-        let capture = |captured| {
-            if captured {
-                crate::types::RichCapture::Captured
-            } else {
-                crate::types::RichCapture::Unavailable
+    /// Projects one admitted staging row's authority truth directly into the
+    /// owned IR tree input.  This is part of the same build transaction as
+    /// the semantic row itself; no driver-owned capture sidecar survives it.
+    fn entity_authority(
+        &self,
+        ordinal: usize,
+        versions: &[compiler_ir::EntityVersion],
+    ) -> Result<EntityAuthorityFacts, compiler_ir::BuildError> {
+        let unavailable = FactAvailability::Unavailable;
+        let captured = FactAvailability::Captured;
+        let source_present = self
+            .provenance
+            .source_spans()
+            .get(ordinal)
+            .copied()
+            .flatten()
+            .is_some();
+        let parentage = match *self.provenance.parentage().get(ordinal).ok_or(
+            compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Entity,
+                raw: u32::try_from(ordinal).unwrap_or(u32::MAX),
+            },
+        )? {
+            ParentageState::Unavailable => ParentageAuthority::Unavailable,
+            ParentageState::Root => ParentageAuthority::Root,
+            ParentageState::Bound { parent } => ParentageAuthority::Bound(
+                versions
+                    .get(parent.index())
+                    .copied()
+                    .ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Entity,
+                        raw: parent.raw,
+                    })?
+                    .identity(),
+            ),
+            ParentageState::UnrepresentedAuthorityOwner { identity } => {
+                ParentageAuthority::UnrepresentedAuthorityOwner(
+                    UnrepresentedAuthorityOwner::new(identity),
+                )
             }
         };
-        let entities = (0..self.len)
-            .map(|ordinal| {
-                let source = self.provenance.source_spans()[ordinal].is_some();
-                let attributes = self.extensions[ordinal]
-                    .as_ref()
-                    .and_then(extension_item_attributes)
-                    .is_some();
-                crate::types::RichEntityCapture {
-                    parentage: match self.provenance.parentage()[ordinal] {
-                        ParentageState::Unavailable => {
-                            crate::types::RichParentageCapture::Unavailable
-                        }
-                        ParentageState::Root => crate::types::RichParentageCapture::Root,
-                        ParentageState::Bound { .. } => crate::types::RichParentageCapture::Bound,
-                        ParentageState::UnrepresentedAuthorityOwner { identity } => {
-                            crate::types::RichParentageCapture::UnrepresentedAuthorityOwner {
-                                identity,
-                            }
-                        }
-                    },
-                    source: if source {
-                        crate::types::RichCapture::Captured
-                    } else {
-                        crate::types::RichCapture::Unavailable
-                    },
-                    source_file: if source {
-                        crate::types::RichCapture::Captured
-                    } else {
-                        crate::types::RichCapture::Unavailable
-                    },
-                    members: if self.provenance.member_sets()[ordinal]
-                        == MemberSetCapture::Captured
-                    {
-                        crate::types::RichCapture::Captured
-                    } else {
-                        crate::types::RichCapture::Unavailable
-                    },
-                    // Every admitted semantic fact has a closed type record;
-                    // an explicit `Unknown` record is truth, not absence.
-                    semantic_type: crate::types::RichCapture::Captured,
-                    documentation: capture(self.documentation_captured[ordinal]),
-                    visibility: capture(self.visibility_captured[ordinal]),
-                    attributes: if attributes {
-                        crate::types::RichCapture::Captured
-                    } else {
-                        crate::types::RichCapture::Unavailable
-                    },
-                    extension: if self.extensions[ordinal].is_some() {
-                        crate::types::RichCapture::Captured
-                    } else {
-                        crate::types::RichCapture::Unavailable
-                    },
-                }
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let occurrences = self.occurrence_owners[..self.occurrence_len]
-            .iter()
-            .map(|owner| {
-                // Span rows may attach after references in a two-pass native
-                // authority. Capture derives from final staging truth, not
-                // the push-time order of those passes.
-                if self.provenance.source_spans()[*owner as usize].is_some() {
-                    crate::types::RichCapture::Captured
-                } else {
-                    crate::types::RichCapture::Unavailable
-                }
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        crate::types::RichIrCapture {
-            entities,
-            occurrences,
-        }
+        let attributes = self
+            .extensions
+            .get(ordinal)
+            .and_then(Option::as_ref)
+            .and_then(extension_item_attributes)
+            .is_some();
+        Ok(EntityAuthorityFacts {
+            parentage,
+            source: if source_present { captured } else { unavailable },
+            source_file: if source_present { captured } else { unavailable },
+            members: if self.provenance.member_sets().get(ordinal)
+                == Some(&MemberSetCapture::Captured)
+            {
+                captured
+            } else {
+                unavailable
+            },
+            // Each admitted staging fact has one closed semantic record; an
+            // explicit `Unknown` record remains captured semantic truth.
+            semantic_type: captured,
+            documentation: if self.documentation_captured.get(ordinal) == Some(&true) {
+                captured
+            } else {
+                unavailable
+            },
+            visibility: if self.visibility_captured.get(ordinal) == Some(&true) {
+                captured
+            } else {
+                unavailable
+            },
+            attributes: if attributes { captured } else { unavailable },
+            language_extension: if self.extensions.get(ordinal).is_some_and(Option::is_some) {
+                captured
+            } else {
+                unavailable
+            },
+        })
     }
 
     /// Interns one anonymous type row owned by an already-pushed fact: the
@@ -1691,22 +1685,29 @@ impl<'source> FactSet<'source> {
         }
     }
 
-    /// Materializes the rich compatibility view directly from this exact
-    /// admitted lane. The compact fragment and this view therefore cannot
+    /// Materializes the owned semantic image directly from this exact
+    /// admitted lane. The compact fragment and image therefore cannot
     /// diverge on declaration names, kinds, or primitive facts.
     ///
     /// Facts not supplied by this lane remain explicit `Unknown` visibility
-    /// or absent fields; this view never manufactures visibility, members,
+    /// or absent fields; the image never manufactures visibility, members,
     /// documentation, source spans, or language extensions.
     pub(super) fn build_ir(
         &self,
         profile: compiler_vocabulary::LanguageProfile,
         source: compiler_ir::SourceIdentity,
+        recipe: compiler_vocabulary::CompileRecipeFact,
         declaration_scope: crate::types::DeclarationScope<'source>,
     ) -> Result<Ir, compiler_ir::BuildError> {
         let fact_count = self.len;
         let mut builder = IrBuilder::new();
         builder.set_language_profile(profile)?;
+        builder.set_image_provenance(
+            source,
+            recipe,
+            declaration_scope.lineage(),
+            declaration_scope.path(),
+        )?;
 
         let versions = identity::versions(self, declaration_scope, profile)?;
         let mut tree = builder.reserve_tree(&versions[..fact_count])?;
@@ -1961,15 +1962,21 @@ impl<'source> FactSet<'source> {
                 None => {}
             }
         }
-        // Parent edges arrive as authority facts.  Prefix/scatter them once
-        // into a compact child pool, preserving declaration order and making
-        // the `parent` and `members` projections mutual inverses.
+        // Member lists enter owned IR only when the authority explicitly
+        // captured that parent's complete local set. A bound child alone is
+        // containment evidence, never permission to manufacture a partial
+        // member list from parentage.
         let mut member_counts = vec![0_usize; fact_count];
         for parent in self.provenance.parentage()[..fact_count]
             .iter()
             .copied()
             .filter_map(local_parent)
         {
+            if self.provenance.member_sets().get(parent.index())
+                != Some(&MemberSetCapture::Captured)
+            {
+                continue;
+            }
             let Some(count) = member_counts.get_mut(parent.raw as usize) else {
                 return Err(compiler_ir::BuildError::Dangling {
                     space: compiler_ir::SemanticSpace::Entity,
@@ -1994,6 +2001,11 @@ impl<'source> FactSet<'source> {
             let Some(parent) = local_parent(parentage) else {
                 continue;
             };
+            if self.provenance.member_sets().get(parent.index())
+                != Some(&MemberSetCapture::Captured)
+            {
+                continue;
+            }
             let slot = member_cursors[parent.raw as usize];
             members[slot] = compiler_ir::TreeEntityId::new(child as u32);
             member_cursors[parent.raw as usize] += 1;
@@ -2042,6 +2054,7 @@ impl<'source> FactSet<'source> {
             name: b"",
             kind: ItemKind::Function,
             visibility: Visibility::Unknown,
+            authority: EntityAuthorityFacts::default(),
             parent: None,
             semantic_type: None,
             members: &[],
@@ -2080,6 +2093,7 @@ impl<'source> FactSet<'source> {
                 name: self.names[ordinal],
                 kind: item_kind(self.kinds[ordinal]),
                 visibility: self.visibility[ordinal],
+                authority: self.entity_authority(ordinal, &versions[..fact_count])?,
                 parent: local_parent(self.provenance.parentage()[ordinal])
                     .map(|parent| compiler_ir::TreeEntityId::new(parent.raw)),
                 semantic_type: semantic_types[ordinal],
@@ -2097,6 +2111,7 @@ impl<'source> FactSet<'source> {
         for index in 0..self.occurrence_len {
             let owner = self.occurrence_owners[index];
             let occurrence = self.occurrences[index];
+            let source = occurrence_source_span(self, source_file, owner, occurrence.span)?;
             links.push(TreeLinkInput {
                 from: compiler_ir::TreeEntityId::new(owner),
                 target: external_from_occurrence(
@@ -2106,7 +2121,14 @@ impl<'source> FactSet<'source> {
                 )?,
                 kind: occurrence_link_kind(occurrence.kind),
                 confidence: occurrence_link_confidence(occurrence.confidence),
-                source: occurrence_source_span(self, source_file, owner, occurrence.span)?,
+                authority: OccurrenceAuthorityFacts {
+                    source: if source.is_some() {
+                        FactAvailability::Captured
+                    } else {
+                        FactAvailability::Unavailable
+                    },
+                },
+                source,
             });
         }
         tree.commit(&items[..fact_count], &links)?;

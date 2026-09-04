@@ -151,88 +151,25 @@ pub struct CompiledFragment<'artifact> {
 
 /// One fused public semantic result from exactly one authority traversal.
 ///
-/// `artifact` is the sole holder of the request's source and recipe facts;
-/// the owned `ir` and its availability sidecar therefore cannot disagree
-/// through duplicated result metadata. Only the compact fragment borrows the
-/// caller's output buffer. If authority entry, lowering, owned-tree build,
-/// compact write, or fragment validation fails, this value is not returned.
+/// `ir` owns the exact source/recipe/scope header and every entity authority
+/// plane from that transaction. `artifact` is its validated compact
+/// projection. Only the compact fragment borrows caller output. If authority
+/// entry, lowering, owned-tree build, compact write, or fragment validation
+/// fails, this value is not returned.
 pub struct CompiledSemantic<'artifact> {
     /// Validated compact artifact written after the owned semantic image built.
     pub artifact: CompiledFragment<'artifact>,
     /// Owned semantic image from the artifact's exact admitted fact lane.
     pub ir: Ir,
-    /// Exact availability facts aligned with `ir`, from that same lane.
-    pub capture: RichIrCapture,
 }
 
 /// Queryable semantic image materialized directly from the same admitted fact
 /// lane that writes the durable canonical fragment. It contains no second
 /// frontend lowering or serialized intermediary.
 pub struct CompiledIr {
-    pub source: SourceIdentity,
-    pub recipe: CompileRecipeFact,
+    /// The image owns its source, recipe, scope, profile, and entity
+    /// authority facts. No driver-side capture or provenance sidecar exists.
     pub ir: Ir,
-    /// Per-row truth availability for fields whose `Ir` representation is
-    /// optional.  `None` in the owned tree is never silently promoted to a
-    /// source-language absence: callers can distinguish an authority that
-    /// captured an empty field from one that did not expose that plane.
-    pub capture: RichIrCapture,
-}
-
-/// Whether an authority supplied one optional rich-IR plane for a row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RichCapture {
-    /// The authority supplied this plane; an empty value is semantically real.
-    Captured,
-    /// The authority did not expose this plane, so the owned IR does not infer absence.
-    Unavailable,
-}
-
-/// Availability rows aligned with [`Ir`] entity order and the source
-/// occurrence lane, respectively.  An owned `Ir` may deduplicate identical
-/// links, so the latter deliberately is not described as an edge index.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RichIrCapture {
-    pub entities: Box<[RichEntityCapture]>,
-    pub occurrences: Box<[RichCapture]>,
-}
-
-/// An authority's exact containment result for an emitted declaration.
-///
-/// `UnrepresentedAuthorityOwner` is intentionally not folded into `Root`:
-/// a native image may prove an owner whose declaration was filtered or has
-/// no representable canonical row.  The sixteen bytes are the authority's
-/// opaque identity cell, retained for diagnosis rather than reinterpreted as
-/// a fragment coordinate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RichParentageCapture {
-    Unavailable,
-    Root,
-    Bound,
-    UnrepresentedAuthorityOwner { identity: [u8; 16] },
-}
-
-/// Availability of optional item fields for one entity ordinal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RichEntityCapture {
-    pub parentage: RichParentageCapture,
-    pub source: RichCapture,
-    /// Whether the authority supplied the primary-file identity for `source`.
-    pub source_file: RichCapture,
-    /// Whether membership was supplied as an authority relation rather than
-    /// inferred from a renderer or declaration order.
-    pub members: RichCapture,
-    /// Whether the semantic type is authority-backed (including an explicit
-    /// `Unknown` reason) rather than absent from the source image.
-    pub semantic_type: RichCapture,
-    /// Whether documentation was captured for this row. `Unavailable` never
-    /// means an empty documentation list.
-    pub documentation: RichCapture,
-    /// Whether the visibility value is an authority observation.
-    pub visibility: RichCapture,
-    pub attributes: RichCapture,
-    /// Whether the language extension plane was supplied for this row.
-    pub extension: RichCapture,
 }
 
 /// Exact compile terminal with source-bearing native causes and bounded diagnostic facts.

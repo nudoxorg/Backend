@@ -1,7 +1,8 @@
 use compiler_ir::{
     BuildError, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
     CSharpReferenceKind, ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, Confidence,
-    EntityId, EntityVersion, GoFacts, GoSignature, Ir, IrBuilder, Item, ItemKind, JavaFacts,
+    EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability, GoFacts, GoSignature, Ir,
+    IrBuilder, Item, ItemKind, JavaFacts,
     LanguageExtensionInput, LanguageExtensionReopenError, LanguageExtensionWireFact,
     CorePayloadHash, DeclarationFamilyId, LanguageProfile, PythonFacts, PythonParameterKind,
     RustFacts, RustOwnership, TreeItemInput, TypeScriptFacts, VariantFingerprint, Visibility,
@@ -30,7 +31,16 @@ fn add_extension(builder: &mut IrBuilder, extension: LanguageExtensionInput<'_>)
         source: None,
     };
     builder
-        .add_item(version(), item, Some(extension))
+        .add_item(
+            version(),
+            item,
+            Some(extension),
+            EntityAuthorityFacts {
+                visibility: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+        )
         .expect("profile-compatible extension");
 }
 
@@ -107,6 +117,11 @@ fn typed_csharp_plane_is_profile_bound_canonical_and_reopens() {
                 name: b"member",
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    visibility: FactAvailability::Captured,
+                    language_extension: FactAvailability::Captured,
+                    ..EntityAuthorityFacts::default()
+                },
                 parent: None,
                 semantic_type: None,
                 members: &[],
@@ -216,7 +231,12 @@ fn extension_language_cannot_cross_the_image_profile() {
         builder.add_item(
             version(),
             item,
-            Some(LanguageExtensionInput::CSharp(&facts))
+            Some(LanguageExtensionInput::CSharp(&facts)),
+            EntityAuthorityFacts {
+                visibility: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
         ),
         Err(compiler_ir::BuildError::LanguageProfileMismatch { .. })
     ));
@@ -543,7 +563,17 @@ fn common_only_images_encode_zero_bytes_for_every_empty_plane() {
         attributes: builder.intern_attributes(&[]).expect("attributes"),
         source: None,
     };
-    builder.add_item(version(), item, None).expect("common row");
+    builder
+        .add_item(
+            version(),
+            item,
+            None,
+            EntityAuthorityFacts {
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+        )
+        .expect("common row");
     let ir = builder.finish().expect("common IR");
     let bytes = encode(&ir);
     assert_eq!(bytes.len(), 156);

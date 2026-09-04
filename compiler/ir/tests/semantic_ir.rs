@@ -3,9 +3,12 @@
 use allocation_counter::{AllocationInfo, measure};
 use compiler_ir::{
     AtomId, BorrowedTree, ComputedState, ComputedType, ConcreteState, ConcreteType, Confidence, Diff,
-    DocInput, EntityChange, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
+    DocInput, EntityAuthorityFacts, EntityChange, EntityVersion, FactAvailability, FrontendTree,
+    GuardedType, Ir, IrBuilder, ItemKind,
     LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, Snapshot,
-    SourceSpan, DeclarationFamilyId, CorePayloadHash, VariantFingerprint, TreeEntityId,
+    SourceIdentity, SourceSpan, DeclarationFamilyId, CorePayloadHash, OccurrenceAuthorityFacts,
+    PackageLineage, ParentageAuthority,
+    UnrepresentedAuthorityOwner, VariantFingerprint, TreeEntityId,
     TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
     TypeHeader, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterInference,
     TypeParameterKind, TypeParameterRequirements, TypeQuadPayload, TypeScriptFacts,
@@ -13,12 +16,23 @@ use compiler_ir::{
 };
 use core::mem::{size_of, size_of_val};
 use core::{fmt, hint::black_box};
+use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
+use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
 fn version(identity: u8, payload: u8) -> EntityVersion {
     EntityVersion {
         family: DeclarationFamilyId::from_raw([identity; 16]),
         variant: VariantFingerprint::from_raw([identity; 16]),
         core_payload: CorePayloadHash::from_raw([payload; 16]),
+    }
+}
+
+fn unavailable_authority() -> EntityAuthorityFacts {
+    EntityAuthorityFacts {
+        // Test rows choose a concrete visibility value, so that value is an
+        // explicit observed fact even when every optional plane is absent.
+        visibility: FactAvailability::Captured,
+        ..EntityAuthorityFacts::default()
     }
 }
 
@@ -65,6 +79,7 @@ impl FrontendTree for NativeTree<'_> {
             name,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
+            authority: unavailable_authority(),
             parent: None,
             semantic_type: None,
             members: &[],
@@ -97,6 +112,243 @@ fn native_frontend_stream_needs_no_compatibility_row_array() -> Result<(), compi
             .map(|item| item.name()),
         Some(b"two".as_slice())
     );
+    Ok(())
+}
+
+#[test]
+fn authority_captured_empty_and_unavailable_remain_distinct() -> Result<(), compiler_ir::BuildError> {
+    let versions = [version(1, 1), version(2, 1)];
+    let items = [
+        TreeItemInput {
+            name: b"captured-empty",
+            kind: ItemKind::Module,
+            visibility: Visibility::Private,
+            authority: EntityAuthorityFacts {
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                attributes: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                visibility: FactAvailability::Captured,
+                ..unavailable_authority()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"unavailable-empty",
+            kind: ItemKind::Module,
+            visibility: Visibility::Private,
+            authority: unavailable_authority(),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+    ];
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    let ir = builder.finish()?;
+    let facts = ir.entity_authority_columns();
+    assert_eq!(ir.item(compiler_ir::EntityId::new(0)).expect("first").members(), &[]);
+    assert_eq!(ir.item(compiler_ir::EntityId::new(1)).expect("second").members(), &[]);
+    assert_eq!(facts.members, &[FactAvailability::Captured, FactAvailability::Unavailable]);
+    assert_eq!(
+        facts.documentation,
+        &[FactAvailability::Captured, FactAvailability::Unavailable]
+    );
+    assert_eq!(facts.attributes, &[FactAvailability::Captured, FactAvailability::Unavailable]);
+    assert_eq!(
+        facts.language_extension,
+        &[FactAvailability::Captured, FactAvailability::Unavailable]
+    );
+    Ok(())
+}
+
+#[test]
+fn authority_parentage_states_are_closed_and_exact() -> Result<(), compiler_ir::BuildError> {
+    let versions = [version(1, 1), version(2, 1), version(3, 1), version(4, 1)];
+    let items = [
+        TreeItemInput {
+            name: b"root",
+            kind: ItemKind::Module,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                ..unavailable_authority()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"child",
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Bound(versions[0].identity()),
+                ..unavailable_authority()
+            },
+            parent: Some(TreeEntityId::new(0)),
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"foreign-owner",
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::UnrepresentedAuthorityOwner(
+                    UnrepresentedAuthorityOwner::new([0x55; 16]),
+                ),
+                ..unavailable_authority()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"unknown-owner",
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: unavailable_authority(),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+    ];
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    let ir = builder.finish()?;
+    let parentage = ir.entity_authority_columns().parentage;
+    assert_eq!(parentage[0], ParentageAuthority::Root);
+    assert_eq!(parentage[1], ParentageAuthority::Bound(versions[0].identity()));
+    assert_eq!(
+        parentage[2],
+        ParentageAuthority::UnrepresentedAuthorityOwner(UnrepresentedAuthorityOwner::new([0x55; 16]))
+    );
+    assert_eq!(parentage[3], ParentageAuthority::Unavailable);
+    Ok(())
+}
+
+#[test]
+fn authority_parentage_and_source_conflicts_retain_exact_facts() -> Result<(), compiler_ir::BuildError> {
+    let versions = [version(1, 1), version(2, 1)];
+    let items = [
+        TreeItemInput {
+            name: b"parent",
+            kind: ItemKind::Module,
+            visibility: Visibility::Public,
+            authority: unavailable_authority(),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+        TreeItemInput {
+            name: b"bad-child",
+            kind: ItemKind::Record,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                ..unavailable_authority()
+            },
+            parent: Some(TreeEntityId::new(0)),
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        },
+    ];
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &[],
+    })?;
+    assert!(matches!(
+        builder.finish(),
+        Err(compiler_ir::BuildError::AuthorityFacts {
+            entity,
+            cause: compiler_ir::AuthorityFactFault::Parentage {
+                claimed: ParentageAuthority::Root,
+                local_parent: Some(identity),
+            },
+        }) if entity == compiler_ir::EntityId::new(1) && identity == versions[0].identity()
+    ));
+
+    let mut builder = IrBuilder::new();
+    let source = builder.intern_atom(b"source.rs")?;
+    let Some(span) = SourceSpan::new(source, 0, 1) else {
+        return Ok(());
+    };
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions[..1],
+        items: &[TreeItemInput {
+            name: b"bad-source",
+            kind: ItemKind::Constant,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Unavailable,
+                ..unavailable_authority()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: Some(span),
+            extension: None,
+        }],
+        links: &[],
+    })?;
+    assert!(matches!(
+        builder.finish(),
+        Err(compiler_ir::BuildError::AuthorityFacts {
+            entity,
+            cause: compiler_ir::AuthorityFactFault::SourceFileWithoutSource {
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Unavailable,
+            },
+        }) if entity == compiler_ir::EntityId::new(0)
+    ));
     Ok(())
 }
 
@@ -261,6 +513,13 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
             name: &[0xff, b'N'],
             kind: ItemKind::TypeAlias,
             visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                semantic_type: FactAvailability::Captured,
+                members: FactAvailability::Captured,
+                documentation: FactAvailability::Captured,
+                language_extension: FactAvailability::Captured,
+                ..unavailable_authority()
+            },
             parent: None,
             semantic_type: Some(mapped.erase()),
             members: &members,
@@ -273,6 +532,11 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
             name: b"field",
             kind: ItemKind::Field,
             visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Bound(versions[0].identity()),
+                semantic_type: FactAvailability::Captured,
+                ..unavailable_authority()
+            },
             parent: Some(TreeEntityId::new(0)),
             semantic_type: Some(string.erase()),
             members: &[],
@@ -287,6 +551,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
         target: TreeLinkTarget::Local(TreeEntityId::new(0)),
         kind: LinkKind::TypeReference,
         confidence: Confidence::Compiler,
+        authority: OccurrenceAuthorityFacts::default(),
         source: None,
     }];
     tree.commit(&items, &links)?;
@@ -348,6 +613,49 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
 }
 
 #[test]
+fn image_provenance_rebind_is_coordinate_free_and_non_mutating()
+-> Result<(), compiler_ir::BuildError> {
+    let source = SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"semantic-image"),
+        byte_len: 14,
+    };
+    let recipe = CompileRecipeFact::derive(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        Stage::LowerIr,
+        NativeTool::Rustc,
+        source.identity,
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"semantic-image-toolchain"),
+    );
+    let lineage = PackageLineage::new("cargo", "authority-image")
+        .expect("fixed authority image lineage is valid");
+    let mut builder = IrBuilder::new();
+    builder.set_image_provenance(source, recipe, lineage, "src/lib.rs")?;
+    // Equal claims are idempotent and cannot grow the image atom arena.
+    builder.set_image_provenance(source, recipe, lineage, "src/lib.rs")?;
+    assert!(matches!(
+        builder.set_image_provenance(source, recipe, lineage, "src/other.rs"),
+        Err(compiler_ir::BuildError::ImageProvenanceRebind { existing, requested })
+            if existing.source == source
+                && existing.recipe == recipe
+                && requested.source == source
+                && requested.recipe == recipe
+                && existing.scope != requested.scope
+    ));
+    let ir = builder.finish()?;
+    let compiler_ir::ImageProvenance::Captured { source: retained_source, recipe: retained_recipe, scope, .. } =
+        ir.image_provenance()
+    else {
+        panic!("compiled image provenance must remain captured");
+    };
+    assert_eq!(retained_source, source);
+    assert_eq!(retained_recipe, recipe);
+    assert_eq!(ir.atom(scope.ecosystem), Some(b"cargo".as_slice()));
+    assert_eq!(ir.atom(scope.package), Some(b"authority-image".as_slice()));
+    assert_eq!(ir.atom(scope.path), Some(b"src/lib.rs".as_slice()));
+    Ok(())
+}
+
+#[test]
 fn logical_links_are_unique_while_occurrence_sites_remain_exact(
 ) -> Result<(), compiler_ir::BuildError> {
     let mut builder = IrBuilder::new();
@@ -358,6 +666,7 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             name: b"source",
             kind: ItemKind::Function,
             visibility: Visibility::Public,
+            authority: unavailable_authority(),
             parent: None,
             semantic_type: None,
             members: &[],
@@ -370,6 +679,7 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             name: b"target",
             kind: ItemKind::Function,
             visibility: Visibility::Public,
+            authority: unavailable_authority(),
             parent: None,
             semantic_type: None,
             members: &[],
@@ -385,6 +695,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Heuristic,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(source_file, 8, 14),
         },
         TreeLinkInput {
@@ -392,6 +705,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(source_file, 22, 28),
         },
         TreeLinkInput {
@@ -399,6 +715,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(source_file, 16, 20),
         },
         TreeLinkInput {
@@ -406,6 +725,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Syntactic,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(source_file, 36, 42),
         },
     ];
@@ -447,6 +769,15 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             Confidence::Syntactic,
         ]
     );
+    assert_eq!(
+        ir.occurrence_authority_columns().source,
+        &[
+            FactAvailability::Captured,
+            FactAvailability::Captured,
+            FactAvailability::Captured,
+            FactAvailability::Captured,
+        ]
+    );
     let mut reversed_builder = IrBuilder::new();
     let reversed_file = reversed_builder.intern_atom(b"fixture.rs")?;
     let reversed_links = [
@@ -455,6 +786,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Syntactic,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(reversed_file, 36, 42),
         },
         TreeLinkInput {
@@ -462,6 +796,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(reversed_file, 16, 20),
         },
         TreeLinkInput {
@@ -469,6 +806,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(reversed_file, 22, 28),
         },
         TreeLinkInput {
@@ -476,6 +816,9 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
             target: TreeLinkTarget::Local(TreeEntityId::new(1)),
             kind: LinkKind::Calls,
             confidence: Confidence::Heuristic,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
             source: SourceSpan::new(reversed_file, 8, 14),
         },
     ];
@@ -495,6 +838,52 @@ fn logical_links_are_unique_while_occurrence_sites_remain_exact(
         .1;
     assert_eq!(reversed_relation.confidence, Confidence::Compiler);
     assert_eq!(reversed_relation.source.map(SourceSpan::start), Some(16));
+    Ok(())
+}
+
+#[test]
+fn occurrence_source_authority_mismatch_retains_the_exact_site()
+-> Result<(), compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let source_file = builder.intern_atom(b"occurrence.rs")?;
+    let versions = [version(1, 1)];
+    let items = [TreeItemInput {
+        name: b"owner",
+        kind: ItemKind::Function,
+        visibility: Visibility::Public,
+        authority: unavailable_authority(),
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    }];
+    let links = [TreeLinkInput {
+        from: TreeEntityId::new(0),
+        target: TreeLinkTarget::Local(TreeEntityId::new(0)),
+        kind: LinkKind::Calls,
+        confidence: Confidence::Syntactic,
+        authority: OccurrenceAuthorityFacts::default(),
+        source: SourceSpan::new(source_file, 0, 1),
+    }];
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &items,
+        links: &links,
+    })?;
+    assert!(matches!(
+        builder.finish(),
+        Err(compiler_ir::BuildError::OccurrenceAuthorityFacts {
+            occurrence,
+            cause: compiler_ir::AuthorityFactFault::Availability {
+                plane: compiler_ir::AuthorityFactPlane::OccurrenceSource,
+                claimed: FactAvailability::Unavailable,
+                present: true,
+            },
+        }) if occurrence == compiler_ir::LinkOccurrenceId::new(0)
+    ));
     Ok(())
 }
 
@@ -540,6 +929,7 @@ fn simple_ir(
         name: b"root",
         kind: ItemKind::Module,
         visibility: Visibility::Public,
+        authority: unavailable_authority(),
         parent: None,
         semantic_type: None,
         members: &[],
@@ -553,6 +943,12 @@ fn simple_ir(
             name: if index == 0 { b"child" } else { b"added" },
             kind: ItemKind::Record,
             visibility: Visibility::Public,
+            authority: parent
+                .map(|parent| EntityAuthorityFacts {
+                    parentage: ParentageAuthority::Bound(versions[parent.index()].identity()),
+                    ..unavailable_authority()
+                })
+                .unwrap_or_else(unavailable_authority),
             parent: *parent,
             semantic_type: None,
             members: &[],
@@ -567,6 +963,7 @@ fn simple_ir(
         target: TreeLinkTarget::Local(TreeEntityId::new(1)),
         kind: LinkKind::TypeReference,
         confidence: Confidence::Compiler,
+        authority: OccurrenceAuthorityFacts::default(),
         source: None,
     }];
     builder.add_borrowed_tree(BorrowedTree {
@@ -590,6 +987,10 @@ fn unknown_types_are_neither_concrete_nor_computed() -> Result<(), compiler_ir::
             name: b"value",
             kind: ItemKind::Constant,
             visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                semantic_type: FactAvailability::Captured,
+                ..unavailable_authority()
+            },
             parent: None,
             semantic_type: Some(ty),
             members: &[],

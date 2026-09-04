@@ -23,7 +23,7 @@ pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
 pub use request::{CompileControl, CompileRequest, CompileScratch, DeclarationScope, SemanticAuthorityInput};
 pub use terminal::{
     CompileFailure, CompileOutput, CompiledFragment, CompiledIr, CompiledSemantic, NativeDiagnostic, NativeWorkError,
-    NativeWorkPrimary, RichCapture, RichEntityCapture, RichIrCapture, RichParentageCapture,
+    NativeWorkPrimary,
 };
 pub use toolchain::{
     ResolvedToolchain, ResolvedToolchainView, ToolchainResolutionError, ToolchainSelection,

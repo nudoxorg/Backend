@@ -14,6 +14,7 @@ extern crate std;
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
 mod canonical_data;
+mod authority;
 mod columnar;
 mod coordinate;
 mod declaration_identity;
@@ -40,6 +41,12 @@ pub use canonical_data::{
     CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
+};
+pub use authority::{
+    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
+    FactAvailability, ImageProvenance, ImageProvenanceClaim, ParentageAuthority, SemanticScopeClaim,
+    SemanticScopeFacts,
+    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, UnrepresentedAuthorityOwner,
 };
 pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;

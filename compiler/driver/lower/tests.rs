@@ -4,7 +4,8 @@
 //! and cause, and an empty fact set must retain its exact current schema form.
 use compiler_ir::{
     AtomListId, BuildError, ConcreteType, EntityId, EntityKind, EntityVersion, FragmentView, Occurrence,
-    CorePayloadHash, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
+    CorePayloadHash, EntityAuthorityFacts, FactAvailability, ParentageAuthority, PrepareError,
+    PreparedFragment, ReopenedTypeParameterList, RustFacts,
     RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
     SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
     TypeTriplePayload, VariadicForm, Visibility,
@@ -19,7 +20,7 @@ use super::{
     MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS, MAX_FACT_CHILDREN,
     EmissionExtension, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
 };
-use crate::types::{ParentageState, RichCapture, RichParentageCapture, SourceSpanFact};
+use crate::types::{ParentageState, SourceSpanFact};
 
 const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 512;
@@ -44,7 +45,7 @@ enum TestError {
     Prepare(#[from] PrepareError),
     #[error("fixture write failed")]
     Write(#[from] compiler_ir::WriteError),
-    #[error("rich projection failed")]
+    #[error("owned image projection failed")]
     Build(#[from] BuildError),
     #[error("fragment output tail changed")]
     Tail,
@@ -247,6 +248,7 @@ fn owned_type_projection(facts: &FactSet<'_>) -> Result<OwnedTypeProjection, Tes
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
+        recipe(),
         crate::types::DeclarationScope::fixture(),
     )?;
     let columns = ir.storage_columns();
@@ -264,6 +266,7 @@ fn entity_versions(facts: &FactSet<'_>) -> Result<Vec<EntityVersion>, TestError>
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
+        recipe(),
         crate::types::DeclarationScope::fixture(),
     )?;
     Ok(ir.items().map(|item| item.version()).collect())
@@ -283,6 +286,7 @@ fn owned_topology_projection(facts: &FactSet<'_>) -> Result<OwnedTopologyProject
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
+        recipe(),
         crate::types::DeclarationScope::fixture(),
     )?;
     Ok(OwnedTopologyProjection {
@@ -293,6 +297,36 @@ fn owned_topology_projection(facts: &FactSet<'_>) -> Result<OwnedTopologyProject
         parents: ir.items().map(|item| item.parent()).collect(),
         members: ir.items().map(|item| item.members().to_vec()).collect(),
     })
+}
+
+/// Exact cold authority facts from the same owned-tree transaction. Tests use
+/// the public column views directly rather than a driver compatibility copy.
+fn owned_authority_projection(
+    facts: &FactSet<'_>,
+) -> Result<Vec<EntityAuthorityFacts>, TestError> {
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        identity()?,
+        recipe(),
+        crate::types::DeclarationScope::fixture(),
+    )?;
+    let columns = ir.entity_authority_columns();
+    if columns.parentage.len() != ir.entity_count() {
+        return Err(TestError::Tail);
+    }
+    Ok((0..columns.row_count())
+        .map(|index| EntityAuthorityFacts {
+            parentage: columns.parentage[index],
+            source: columns.source[index],
+            source_file: columns.source_file[index],
+            members: columns.members[index],
+            semantic_type: columns.semantic_type[index],
+            documentation: columns.documentation[index],
+            visibility: columns.visibility[index],
+            attributes: columns.attributes[index],
+            language_extension: columns.language_extension[index],
+        })
+        .collect())
 }
 
 fn pending_plan() -> FactSet<'static> {
@@ -511,6 +545,7 @@ fn rich_projection_reuses_exact_compound_scratch_without_placeholder_ids(
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
+        recipe(),
         crate::types::DeclarationScope::fixture(),
     )?;
     assert_eq!(ir.items().len(), 12);
@@ -603,6 +638,7 @@ fn nested_compounds_plan_a_depth_first_scratch_bound() -> Result<(), TestError> 
     let ir = facts.build_ir(
         LanguageProfile::Rust(RustEdition::Rust2024),
         identity()?,
+        recipe(),
         crate::types::DeclarationScope::fixture(),
     )?;
     assert!(ir.items().all(|item| item.semantic_type().is_some()));
@@ -1274,10 +1310,10 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
     }
     // Neither root nor a bound relation declares that all local members were
     // enumerated. The root's actual child makes that distinction observable.
-    let capture = candidate.rich_capture();
-    if capture.entities.get(0).map(|row| row.members) != Some(RichCapture::Unavailable)
-        || capture.entities.get(1).map(|row| row.members) != Some(RichCapture::Unavailable)
-        || capture.entities.get(2).map(|row| row.members) != Some(RichCapture::Unavailable)
+    let authority = owned_authority_projection(&candidate)?;
+    if authority.get(0).map(|row| row.members) != Some(FactAvailability::Unavailable)
+        || authority.get(1).map(|row| row.members) != Some(FactAvailability::Unavailable)
+        || authority.get(2).map(|row| row.members) != Some(FactAvailability::Unavailable)
     {
         return Err(TestError::Tail);
     }
@@ -1287,8 +1323,8 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
     candidate.mark_members_captured(2).map_err(lane_fault)?;
     candidate.mark_members_captured(2).map_err(lane_fault)?;
     control.mark_members_captured(2).map_err(lane_fault)?;
-    if candidate.rich_capture().entities.get(2).map(|row| row.members)
-        != Some(RichCapture::Captured)
+    if owned_authority_projection(&candidate)?.get(2).map(|row| row.members)
+        != Some(FactAvailability::Captured)
     {
         return Err(TestError::Tail);
     }
@@ -1363,7 +1399,7 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture(
 }
 
 #[test]
-fn rich_capture_marks_empty_documentation_and_private_visibility_when_supplied(
+fn authority_facts_mark_empty_documentation_and_private_visibility_when_supplied(
 ) -> Result<(), TestError> {
     let mut facts = FactSet::new();
     facts
@@ -1389,17 +1425,17 @@ fn rich_capture_marks_empty_documentation_and_private_visibility_when_supplied(
         ))
         .map_err(rejected)?;
 
-    let capture = facts.rich_capture();
-    let Some(documented) = capture.entities.first() else {
+    let authority = owned_authority_projection(&facts)?;
+    let Some(documented) = authority.first() else {
         return Err(TestError::Tail);
     };
-    let Some(unavailable) = capture.entities.get(1) else {
+    let Some(unavailable) = authority.get(1) else {
         return Err(TestError::Tail);
     };
-    if documented.documentation != RichCapture::Captured
-        || documented.visibility != RichCapture::Captured
-        || unavailable.documentation != RichCapture::Unavailable
-        || unavailable.visibility != RichCapture::Unavailable
+    if documented.documentation != FactAvailability::Captured
+        || documented.visibility != FactAvailability::Captured
+        || unavailable.documentation != FactAvailability::Unavailable
+        || unavailable.visibility != FactAvailability::Unavailable
     {
         return Err(TestError::Tail);
     }
@@ -2051,8 +2087,9 @@ fn identical_sibling_collision_and_root_unavailable_scope_remain_exact(
     let root_version = entity_versions(&root)?;
     let unavailable_version = entity_versions(&unavailable)?;
     if root_version[0].family == unavailable_version[0].family
-        || root.rich_capture().entities[0].parentage != RichParentageCapture::Root
-        || unavailable.rich_capture().entities[0].parentage != RichParentageCapture::Unavailable
+        || owned_authority_projection(&root)?[0].parentage != ParentageAuthority::Root
+        || owned_authority_projection(&unavailable)?[0].parentage
+            != ParentageAuthority::Unavailable
     {
         return Err(TestError::Tail);
     }

@@ -71,7 +71,10 @@ must not be used as an intermediate by new semantic, graph, rendering, or VCS
 code.
 
 `Ir::storage_columns()` exposes the actual typed backing slices for atoms,
-lists, entity/source/language columns, graph CSR, render data, and VCS order.
+lists, entity/source/language columns, cold semantic-authority facts, graph
+CSR, render data, and VCS order. `Ir::image_provenance()` retains a compiled
+source/recipe/package-scope header when one authority transaction built the
+image; manually assembled images state `Unavailable` explicitly.
 It is not a second wire schema. `IrVectorColumn` in `server-index-graph-vector`
 adds model coordinates through the same `EntityId`-aligned ordinal pattern and
 queries them without constructing point or segment rows. `embedding_text()`

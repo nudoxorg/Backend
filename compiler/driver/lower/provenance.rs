@@ -2,8 +2,8 @@
 //!
 //! This module owns the closed state transitions for facts whose truth comes
 //! from authority topology rather than the declaration/type payload lanes.
-//! The parent collector binds these facts to owned and rich-capture
-//! projections after all transitions have succeeded. Compact fragment bytes
+//! The parent collector binds these facts to the owned semantic image after
+//! all transitions have succeeded. Compact fragment bytes
 //! are used only as a non-mutation control in this slice; durable provenance
 //! serialization remains deliberately out of scope.
 

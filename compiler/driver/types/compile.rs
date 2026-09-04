@@ -40,11 +40,12 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
 /// Compiles the one coherent public semantic result.
 ///
 /// Authority entry and lowering run exactly once. The owned [`compiler_ir::Ir`]
-/// and capture sidecar are built from that one fact lane before the compact
-/// artifact is written and validated, so a failure returns no partial result.
+/// and its IR-owned authority facts are built from that one fact lane before
+/// the compact artifact is written and validated, so a failure returns no
+/// partial result.
 /// The returned value borrows only `output.fragment_output`; source bytes,
 /// authority input, scratch storage, cancellation control, and deadline do
-/// not escape. A retained-permit checkpoint runs after owned `Ir` and capture
+/// not escape. A retained-permit checkpoint runs after owned `Ir`
 /// materialization but before fragment admission mutates caller output; the
 /// writer repeats that gate at its admission linearization point. Cancellation
 /// or deadline observed there returns the exact borrowed diagnostic terminal
@@ -58,13 +59,17 @@ pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'outpu
     let transaction = collect_transaction(request, scratch)?;
     let ir = transaction
         .facts
-        .build_ir(request.profile, transaction.source, request.declaration_scope)
+        .build_ir(
+            request.profile,
+            transaction.source,
+            transaction.recipe,
+            request.declaration_scope,
+        )
         .map_err(|cause| CompileFailure::Build {
             source_identity: transaction.source,
             recipe: transaction.recipe,
             cause,
         })?;
-    let capture = transaction.facts.rich_capture();
     // This observes the retained permit immediately after owned truth exists
     // and before the fragment writer can mutate the caller's lease. The
     // writer repeats the gate as its admission linearization point.
@@ -79,7 +84,6 @@ pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'outpu
     Ok(CompiledSemantic {
         artifact,
         ir,
-        capture,
     })
 }
 
@@ -97,20 +101,19 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     let transaction = collect_transaction(request, scratch)?;
     let ir = transaction
         .facts
-        .build_ir(request.profile, transaction.source, request.declaration_scope)
+        .build_ir(
+            request.profile,
+            transaction.source,
+            transaction.recipe,
+            request.declaration_scope,
+        )
         .map_err(|cause| CompileFailure::Build {
             source_identity: transaction.source,
             recipe: transaction.recipe,
             cause,
         })?;
-    let capture = transaction.facts.rich_capture();
     checkpoint(transaction.permit, transaction.recipe)?;
-    Ok(super::CompiledIr {
-        source: transaction.source,
-        recipe: transaction.recipe,
-        ir,
-        capture,
-    })
+    Ok(super::CompiledIr { ir })
 }
 
 /// One private authority-to-facts transaction shared by every public result
@@ -1094,12 +1097,12 @@ mod lifecycle_tests {
         let ir = match facts.build_ir(
             LanguageProfile::Rust(RustEdition::Rust2024),
             source,
+            recipe,
             super::super::DeclarationScope::fixture(),
         ) {
             Ok(ir) => ir,
             Err(_) => panic!("fixture owned image must build"),
         };
-        let capture = facts.rich_capture();
         cancelled.store(true, Ordering::Release);
         let permit = WorkPermit::new(
             source,
@@ -1117,7 +1120,7 @@ mod lifecycle_tests {
             _ => panic!("fused pre-write cancellation must retain its exact terminal"),
         }
         assert!(fused_output.iter().all(|byte| *byte == 0xa5));
-        drop((ir, capture));
+        drop(ir);
 
         // Compact compatibility path reaches the identical writer boundary;
         // a deadline there is likewise observed before any output byte moves.

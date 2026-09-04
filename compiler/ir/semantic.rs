@@ -6,12 +6,16 @@
 //! in an entity, type, document, or link owns a box or string.
 
 use alloc::vec::Vec;
-use compiler_vocabulary::{Language, LanguageProfile};
+use compiler_vocabulary::{CompileRecipeFact, Language, LanguageProfile};
 use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
 
 use crate::{
-    AtomId, AtomInterner, AtomTable, AtomTableView, CapacityError, DenseId, EntityId, Interner,
-    ListId, ListInterner, ListTable, ListTableView, TextId, Type, TypeId,
+    AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityColumns, AuthorityFactFault,
+    AuthorityFactPlane, CapacityError, DenseId, EntityAuthorityColumns, EntityAuthorityFacts,
+    DeclarationKey, EntityId, FactAvailability, ImageProvenance, ImageProvenanceClaim, Interner, ListId, ListInterner,
+    ListTable, ListTableView, OccurrenceAuthorityColumn, OccurrenceAuthorityColumns,
+    OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts,
+    SourceIdentity, TextId, Type, TypeId,
     columnar::{RawColumn, Slab, SlabPlan},
     interner::{HashIndex, hash},
 };
@@ -2844,6 +2848,16 @@ impl LanguageExtensions {
         }
         Ok(())
     }
+
+    fn has_entity(&self, entity: EntityId) -> bool {
+        self.typescript.get(entity).is_some()
+            || self.csharp.get(entity).is_some()
+            || self.go.get(entity).is_some()
+            || self.rust.get(entity).is_some()
+            || self.python.get(entity).is_some()
+            || self.java.get(entity).is_some()
+            || self.clang.get(entity).is_some()
+    }
 }
 
 fn validate_type_parameters(
@@ -3165,6 +3179,8 @@ pub struct TreeItemInput<'source> {
     pub name: &'source [u8],
     pub kind: ItemKind,
     pub visibility: Visibility,
+    /// Exact authority availability and containment truth for this row.
+    pub authority: EntityAuthorityFacts,
     pub parent: Option<TreeEntityId>,
     pub semantic_type: Option<TypeId>,
     pub members: &'source [TreeEntityId],
@@ -3184,6 +3200,8 @@ pub struct TreeLinkInput {
     pub target: TreeLinkTarget,
     pub kind: LinkKind,
     pub confidence: Confidence,
+    /// Exact authority availability for this occurrence's source site.
+    pub authority: OccurrenceAuthorityFacts,
     pub source: Option<SourceSpan>,
 }
 
@@ -3228,6 +3246,7 @@ impl FrontendTree for BorrowedTree<'_> {
             name: item.name,
             kind: item.kind,
             visibility: item.visibility,
+            authority: item.authority,
             parent: item.parent,
             semantic_type: item.semantic_type,
             members: item.members,
@@ -3391,6 +3410,52 @@ pub enum BuildError {
         versions: usize,
         items: usize,
     },
+    /// The cold semantic-authority lanes no longer matched the owned entity
+    /// row count. This is an internal admission invariant, retained as an
+    /// exact terminal instead of truncating or padding authority truth.
+    AuthorityRowCount {
+        entities: usize,
+        authority_rows: usize,
+    },
+    /// The cold occurrence-authority lane no longer matched observed graph
+    /// occurrence rows.
+    OccurrenceAuthorityRowCount {
+        occurrences: usize,
+        authority_rows: usize,
+    },
+    /// One authority row contradicted its corresponding owned entity facts.
+    AuthorityFacts {
+        entity: EntityId,
+        cause: AuthorityFactFault,
+    },
+    /// One authority row contradicted its corresponding graph occurrence.
+    OccurrenceAuthorityFacts {
+        occurrence: LinkOccurrenceId,
+        cause: AuthorityFactFault,
+    },
+    /// An image provenance scope could not form the same validated
+    /// package/path declaration key required by every entity family.
+    ImageProvenanceScope {
+        cause: crate::DeclarationKeyFault,
+    },
+    /// The validated image scope could not allocate or write its canonical
+    /// declaration-key claim.
+    ImageProvenanceScopePreimage {
+        cause: PreimageOverflow,
+    },
+    /// The image header's recipe was not derived from its exact source and
+    /// advertised recipe facts.
+    ImageProvenanceRecipe {
+        source: SourceIdentity,
+        recipe: CompileRecipeFact,
+    },
+    /// A second image provenance claim differed from the already-bound
+    /// header. Equal claims are idempotent; neither source nor recipe truth
+    /// is silently overwritten.
+    ImageProvenanceRebind {
+        existing: ImageProvenanceClaim,
+        requested: ImageProvenanceClaim,
+    },
     LanguageExtension {
         language: Language,
         entity: EntityId,
@@ -3476,6 +3541,45 @@ impl fmt::Display for BuildError {
                     "borrowed tree has {versions} versions for {items} items"
                 )
             }
+            Self::AuthorityRowCount {
+                entities,
+                authority_rows,
+            } => write!(
+                formatter,
+                "semantic authority has {authority_rows} rows for {entities} entities"
+            ),
+            Self::OccurrenceAuthorityRowCount {
+                occurrences,
+                authority_rows,
+            } => write!(
+                formatter,
+                "occurrence authority has {authority_rows} rows for {occurrences} occurrences"
+            ),
+            Self::AuthorityFacts { entity, cause } => write!(
+                formatter,
+                "semantic authority for entity {} is inconsistent: {cause:?}",
+                entity.raw
+            ),
+            Self::OccurrenceAuthorityFacts { occurrence, cause } => write!(
+                formatter,
+                "semantic authority for occurrence {} is inconsistent: {cause:?}",
+                occurrence.raw
+            ),
+            Self::ImageProvenanceScope { cause } => {
+                write!(formatter, "semantic image provenance scope is invalid: {cause:?}")
+            }
+            Self::ImageProvenanceScopePreimage { cause } => write!(
+                formatter,
+                "semantic image provenance scope preimage is invalid: {cause:?}"
+            ),
+            Self::ImageProvenanceRecipe { source, recipe } => write!(
+                formatter,
+                "semantic image recipe {recipe:?} does not bind source {source:?}"
+            ),
+            Self::ImageProvenanceRebind { existing, requested } => write!(
+                formatter,
+                "semantic image provenance {requested:?} cannot replace {existing:?}"
+            ),
             Self::LanguageExtension {
                 language,
                 entity,
@@ -3514,6 +3618,7 @@ impl core::error::Error for BuildError {}
 #[derive(Default)]
 pub struct IrBuilder {
     authority: SemanticImageAuthority,
+    provenance: ImageProvenance,
     atoms: AtomInterner,
     types: TypeInterner,
     externals: Interner<ExternalTarget, External>,
@@ -3527,11 +3632,13 @@ pub struct IrBuilder {
     type_parameter_bounds: ListInterner<TypeParameterBound>,
     type_parameters: ListInterner<TypeParameter>,
     items: ItemColumns,
+    authority_facts: AuthorityColumns,
     sources: SourceColumns,
     extensions: LanguageExtensions,
     link_index: HashIndex,
     links: PackedLinks,
     link_occurrences: PackedLinkOccurrences,
+    occurrence_authority: OccurrenceAuthorityColumn,
     entity_scratch: Vec<EntityId>,
     atom_scratch: Vec<AtomId>,
     doc_scratch: Vec<DocFragment>,
@@ -3552,6 +3659,78 @@ impl IrBuilder {
             });
         }
         self.authority = requested;
+        Ok(())
+    }
+    /// Binds one owned compile provenance header before entity materialization.
+    ///
+    /// The header is unavailable for manually assembled images. A compiled
+    /// image retains the exact source, recipe, and validated package/file
+    /// scope in the same arena as its semantic facts, so driver scratch never
+    /// remains the only source of reader-visible authority.
+    pub fn set_image_provenance(
+        &mut self,
+        source: SourceIdentity,
+        recipe: CompileRecipeFact,
+        lineage: PackageLineage<'_>,
+        path: &str,
+    ) -> Result<(), BuildError> {
+        let expected = CompileRecipeFact::derive(
+            recipe.profile,
+            recipe.stage,
+            recipe.tool,
+            source.identity,
+            recipe.toolchain,
+        );
+        if expected != recipe {
+            return Err(BuildError::ImageProvenanceRecipe { source, recipe });
+        }
+        let scope_key = DeclarationKey::new(lineage, path, ItemKind::Module, b"_")
+            .map_err(|cause| BuildError::ImageProvenanceScope { cause })?;
+        let scope_preimage_len = scope_key
+            .preimage_len()
+            .map_err(|cause| BuildError::ImageProvenanceScopePreimage { cause })?;
+        let mut scope_preimage = vec![0_u8; scope_preimage_len];
+        let requested = ImageProvenanceClaim {
+            source,
+            recipe,
+            scope: SemanticScopeClaim {
+                declaration_key: scope_key
+                    .stable_id(&mut scope_preimage)
+                    .map_err(|cause| BuildError::ImageProvenanceScopePreimage { cause })?,
+            },
+        };
+        if let ImageProvenance::Captured {
+            source: existing_source,
+            recipe: existing_recipe,
+            claim: existing_scope,
+            ..
+        } = self.provenance
+        {
+            let existing = ImageProvenanceClaim {
+                source: existing_source,
+                recipe: existing_recipe,
+                scope: existing_scope,
+            };
+            if existing == requested {
+                return Ok(());
+            }
+            return Err(BuildError::ImageProvenanceRebind {
+                existing,
+                requested,
+            });
+        }
+        self.set_language_profile(recipe.profile)?;
+        let scope = SemanticScopeFacts {
+            ecosystem: self.intern_atom(lineage.ecosystem.as_bytes())?,
+            package: self.intern_atom(lineage.name.as_bytes())?,
+            path: self.intern_atom(path.as_bytes())?,
+        };
+        self.provenance = ImageProvenance::Captured {
+            source,
+            recipe,
+            claim: requested.scope,
+            scope,
+        };
         Ok(())
     }
     pub fn intern_atom(&mut self, bytes: &[u8]) -> Result<AtomId, BuildError> {
@@ -3634,6 +3813,7 @@ impl IrBuilder {
         version: EntityVersion,
         item: Item,
         extension: Option<LanguageExtensionInput<'_>>,
+        authority_facts: EntityAuthorityFacts,
     ) -> Result<EntityId, BuildError> {
         if let Some(extension) = extension
             && self.authority.language() != Some(extension.language())
@@ -3648,8 +3828,10 @@ impl IrBuilder {
             actual: self.items.len(),
         })?;
         self.items.reserve_one();
+        self.authority_facts.reserve(1);
         self.sources.push(item.source);
         self.items.push(version, item);
+        self.authority_facts.push(authority_facts);
         self.extensions.push(extension)?;
         Ok(id)
     }
@@ -3694,7 +3876,11 @@ impl IrBuilder {
     /// Records one authority-observed source site and returns its typed
     /// occurrence coordinate. The relation remains canonical and deduped,
     /// while this method preserves every observation's span and confidence.
-    pub fn add_link_occurrence(&mut self, link: Link) -> Result<LinkOccurrenceId, BuildError> {
+    pub fn add_link_occurrence(
+        &mut self,
+        link: Link,
+        authority: OccurrenceAuthorityFacts,
+    ) -> Result<LinkOccurrenceId, BuildError> {
         let id = LinkOccurrenceId::try_from_index(self.link_occurrences.len()).map_err(|_| {
             CapacityError {
                 space: crate::CapacitySpace::Value,
@@ -3703,12 +3889,14 @@ impl IrBuilder {
         })?;
         self.link_occurrences
             .reserve_one(usize::from(link.source.is_some()));
+        self.occurrence_authority.reserve(1);
         let occurrence = LinkOccurrence {
             link: self.add_link(link)?,
             confidence: link.confidence,
             source: link.source,
         };
         self.link_occurrences.push(occurrence)?;
+        self.occurrence_authority.push(authority);
         Ok(id)
     }
 
@@ -3815,6 +4003,7 @@ impl IrBuilder {
                     source: input.source,
                 },
                 input.extension,
+                input.authority,
             )?;
         }
 
@@ -3829,7 +4018,7 @@ impl IrBuilder {
                 kind: input.kind,
                 confidence: input.confidence,
                 source: input.source,
-            })?;
+            }, input.authority)?;
         }
         Ok(range)
     }
@@ -3839,12 +4028,14 @@ impl IrBuilder {
         let item_count = tree.items().len();
         let link_count = tree.links().len();
         self.items.reserve_exact(item_count);
+        self.authority_facts.reserve(item_count);
         self.sources.reserve(item_count, capacity.source_values);
         self.extensions.reserve(item_count, capacity.extensions);
         let link_source_values = tree.links().filter(|link| link.source.is_some()).count();
         self.links.reserve_exact(link_count, link_source_values);
         self.link_occurrences
             .reserve_exact(link_count, link_source_values);
+        self.occurrence_authority.reserve(link_count);
         self.link_index.reserve(link_count);
         self.atoms
             .reserve(capacity.atom_values, capacity.atom_bytes);
@@ -3873,6 +4064,7 @@ impl IrBuilder {
         )?;
         Ok(Ir {
             authority: self.authority,
+            provenance: self.provenance,
             atoms: self.atoms.freeze(),
             types: self.types.freeze(),
             externals: self.externals.into_values(),
@@ -3886,16 +4078,57 @@ impl IrBuilder {
             type_parameter_bounds: self.type_parameter_bounds.freeze(),
             type_parameters: self.type_parameters.freeze(),
             items: self.items,
+            authority_facts: self.authority_facts,
             sources: self.sources,
             extensions: self.extensions,
             indices,
             kind_offsets,
             links,
             link_occurrences,
+            occurrence_authority: self.occurrence_authority,
         })
     }
 
     fn validate(&self) -> Result<(), BuildError> {
+        if !self.authority_facts.aligned(self.items.len()) {
+            return Err(BuildError::AuthorityRowCount {
+                entities: self.items.len(),
+                authority_rows: self.authority_facts.len(),
+            });
+        }
+        if self.occurrence_authority.len() != self.link_occurrences.len() {
+            return Err(BuildError::OccurrenceAuthorityRowCount {
+                occurrences: self.link_occurrences.len(),
+                authority_rows: self.occurrence_authority.len(),
+            });
+        }
+        if let ImageProvenance::Captured {
+            source,
+            recipe,
+            scope,
+            ..
+        } = self.provenance
+        {
+            let expected = CompileRecipeFact::derive(
+                recipe.profile,
+                recipe.stage,
+                recipe.tool,
+                source.identity,
+                recipe.toolchain,
+            );
+            if expected != recipe {
+                return Err(BuildError::ImageProvenanceRecipe { source, recipe });
+            }
+            atom(self, scope.ecosystem)?;
+            atom(self, scope.package)?;
+            atom(self, scope.path)?;
+            if self.authority != SemanticImageAuthority::Language(recipe.profile) {
+                return Err(BuildError::LanguageProfileRebind {
+                    existing: self.authority,
+                    requested: recipe.profile,
+                });
+            }
+        }
         for raw in 0..self.types.len() {
             let Some(ty) = self.types.get(TypeId::new(raw as u32)) else {
                 return Err(BuildError::Dangling {
@@ -3913,6 +4146,7 @@ impl IrBuilder {
             }
         }
         for index in 0..self.items.len() {
+            let entity = EntityId::new(index as u32);
             atom(self, self.items.names[index])?;
             optional_id(
                 self.items.parents[index].get(),
@@ -3927,27 +4161,49 @@ impl IrBuilder {
             if let Some(source) = self.sources.get(index) {
                 atom(self, source.file())?;
             }
-            self.extensions
-                .validate_entity(self, EntityId::new(index as u32))?;
-            for member in list_or_dangling(
+            self.extensions.validate_entity(self, entity)?;
+            let members = list_or_dangling(
                 &self.entity_lists,
                 self.items.members[index],
                 SemanticSpace::EntityList,
-            )? {
+            )?;
+            for member in members {
                 id(*member, self.items.len(), SemanticSpace::Entity)?;
             }
-            for attribute in list_or_dangling(
+            let attributes = list_or_dangling(
                 &self.atom_lists,
                 self.items.attributes[index],
                 SemanticSpace::AtomList,
-            )? {
+            )?;
+            for attribute in attributes {
                 atom(self, *attribute)?;
             }
-            for fragment in
-                list_or_dangling(&self.docs, self.items.docs[index], SemanticSpace::Docs)?
-            {
+            let docs = list_or_dangling(&self.docs, self.items.docs[index], SemanticSpace::Docs)?;
+            for fragment in docs {
                 validate_doc(self, *fragment)?;
             }
+            let facts = self.authority_facts.facts(index).ok_or(
+                BuildError::AuthorityRowCount {
+                    entities: self.items.len(),
+                    authority_rows: self.authority_facts.len(),
+                },
+            )?;
+            let local_parent = self.items.parents[index]
+                .get()
+                .and_then(|parent| self.items.versions.get(parent.index()).copied())
+                .map(EntityVersion::identity);
+            validate_entity_authority(
+                entity,
+                facts,
+                local_parent,
+                self.sources.get(index).is_some(),
+                !members.is_empty(),
+                self.items.semantic_types[index].get().is_some(),
+                !docs.is_empty(),
+                self.items.visibility[index] != Visibility::Unknown,
+                !attributes.is_empty(),
+                self.extensions.has_entity(entity),
+            )?;
         }
         for raw in 0..self.links.len() {
             let Some(link) = self.links.get(LinkId::new(raw as u32)) else {
@@ -3976,9 +4232,152 @@ impl IrBuilder {
             if let Some(source) = occurrence.source {
                 atom(self, source.file())?;
             }
+            let authority = self.occurrence_authority.get(raw).ok_or(
+                BuildError::OccurrenceAuthorityRowCount {
+                    occurrences: self.link_occurrences.len(),
+                    authority_rows: self.occurrence_authority.len(),
+                },
+            )?;
+            let present = occurrence.source.is_some();
+            if matches!(authority.source, FactAvailability::Captured) != present {
+                return Err(BuildError::OccurrenceAuthorityFacts {
+                    occurrence: LinkOccurrenceId::new(raw as u32),
+                    cause: AuthorityFactFault::Availability {
+                        plane: AuthorityFactPlane::OccurrenceSource,
+                        claimed: authority.source,
+                        present,
+                    },
+                });
+            }
         }
         Ok(())
     }
+}
+
+/// Validates one cold authority row against the corresponding owned entity
+/// facts. List capture is intentionally not inferred from list cardinality:
+/// captured-empty and unavailable-empty are distinct authority observations.
+fn validate_entity_authority(
+    entity: EntityId,
+    facts: EntityAuthorityFacts,
+    local_parent: Option<DeclarationIdentity>,
+    has_source: bool,
+    has_members: bool,
+    has_semantic_type: bool,
+    has_documentation: bool,
+    has_visibility: bool,
+    has_attributes: bool,
+    has_extension: bool,
+) -> Result<(), BuildError> {
+    let parentage_matches = match facts.parentage {
+        ParentageAuthority::Root => local_parent.is_none(),
+        ParentageAuthority::Bound(parent) => local_parent == Some(parent),
+        ParentageAuthority::UnrepresentedAuthorityOwner(_) | ParentageAuthority::Unavailable => {
+            local_parent.is_none()
+        }
+    };
+    if !parentage_matches {
+        return Err(BuildError::AuthorityFacts {
+            entity,
+            cause: AuthorityFactFault::Parentage {
+                claimed: facts.parentage,
+                local_parent,
+            },
+        });
+    }
+    validate_authority_availability(entity, AuthorityFactPlane::Source, facts.source, has_source)?;
+    if facts.source != facts.source_file {
+        return Err(BuildError::AuthorityFacts {
+            entity,
+            cause: AuthorityFactFault::SourceFileWithoutSource {
+                source: facts.source,
+                source_file: facts.source_file,
+            },
+        });
+    }
+    validate_authority_availability(
+        entity,
+        AuthorityFactPlane::SourceFile,
+        facts.source_file,
+        has_source,
+    )?;
+    validate_authority_availability(
+        entity,
+        AuthorityFactPlane::SemanticType,
+        facts.semantic_type,
+        has_semantic_type,
+    )?;
+    validate_list_authority_availability(
+        entity,
+        AuthorityFactPlane::Members,
+        facts.members,
+        has_members,
+    )?;
+    // Documentation and attributes can be Captured with empty lists. A
+    // nonempty value, however, cannot claim an unavailable authority plane.
+    validate_list_authority_availability(
+        entity,
+        AuthorityFactPlane::Documentation,
+        facts.documentation,
+        has_documentation,
+    )?;
+    validate_list_authority_availability(
+        entity,
+        AuthorityFactPlane::Visibility,
+        facts.visibility,
+        has_visibility,
+    )?;
+    validate_list_authority_availability(
+        entity,
+        AuthorityFactPlane::Attributes,
+        facts.attributes,
+        has_attributes,
+    )?;
+    validate_list_authority_availability(
+        entity,
+        AuthorityFactPlane::LanguageExtension,
+        facts.language_extension,
+        has_extension,
+    )
+}
+
+fn validate_authority_availability(
+    entity: EntityId,
+    plane: AuthorityFactPlane,
+    claimed: FactAvailability,
+    present: bool,
+) -> Result<(), BuildError> {
+    let matches = matches!(claimed, FactAvailability::Captured) == present;
+    if matches {
+        return Ok(());
+    }
+    Err(BuildError::AuthorityFacts {
+        entity,
+        cause: AuthorityFactFault::Availability {
+            plane,
+            claimed,
+            present,
+        },
+    })
+}
+
+fn validate_list_authority_availability(
+    entity: EntityId,
+    plane: AuthorityFactPlane,
+    claimed: FactAvailability,
+    present: bool,
+) -> Result<(), BuildError> {
+    if !present || claimed == FactAvailability::Captured {
+        return Ok(());
+    }
+    Err(BuildError::AuthorityFacts {
+        entity,
+        cause: AuthorityFactFault::Availability {
+            plane,
+            claimed,
+            present,
+        },
+    })
 }
 
 #[derive(Default)]
@@ -5131,6 +5530,8 @@ pub struct VcsColumns<'ir> {
 #[derive(Clone, Copy, Debug)]
 pub struct StorageColumns<'ir> {
     pub authority: SemanticImageAuthority,
+    /// Image-level source, recipe, and scope authority when compiled.
+    pub provenance: ImageProvenance,
     pub atoms: AtomTableView<'ir>,
     pub types: TypeColumns<'ir>,
     pub externals: &'ir [ExternalTarget],
@@ -5144,6 +5545,10 @@ pub struct StorageColumns<'ir> {
     pub type_parameter_bounds: ListTableView<'ir, TypeParameterBound>,
     pub type_parameters: ListTableView<'ir, TypeParameter>,
     pub entities: EntityColumns<'ir>,
+    /// Cold authority facts aligned exactly with `entities`.
+    pub entity_authority: EntityAuthorityColumns<'ir>,
+    /// Cold source availability aligned exactly with graph occurrences.
+    pub occurrence_authority: OccurrenceAuthorityColumns<'ir>,
     pub sources: SourceColumnsView<'ir>,
     pub language_extensions: LanguageExtensionsView<'ir>,
     pub graph: GraphColumns<'ir>,
@@ -5200,6 +5605,16 @@ impl StorageColumns<'_> {
         add!(self.entities.members);
         add!(self.entities.docs);
         add!(self.entities.attributes);
+        add!(self.entity_authority.parentage);
+        add!(self.entity_authority.source);
+        add!(self.entity_authority.source_file);
+        add!(self.entity_authority.members);
+        add!(self.entity_authority.semantic_type);
+        add!(self.entity_authority.documentation);
+        add!(self.entity_authority.visibility);
+        add!(self.entity_authority.attributes);
+        add!(self.entity_authority.language_extension);
+        add!(self.occurrence_authority.source);
         add!(self.sources.files);
         add!(self.sources.starts);
         add!(self.sources.ends);
@@ -5253,6 +5668,7 @@ impl StorageColumns<'_> {
 /// Immutable condensed semantic IR.
 pub struct Ir {
     authority: SemanticImageAuthority,
+    provenance: ImageProvenance,
     atoms: AtomTable,
     types: PackedTypes,
     externals: Vec<ExternalTarget>,
@@ -5266,12 +5682,14 @@ pub struct Ir {
     type_parameter_bounds: ListTable<TypeParameterBound>,
     type_parameters: ListTable<TypeParameter>,
     items: ItemColumns,
+    authority_facts: AuthorityColumns,
     sources: SourceColumns,
     extensions: LanguageExtensions,
     indices: IrIndices,
     kind_offsets: [u32; 17],
     links: PackedLinks,
     link_occurrences: PackedLinkOccurrences,
+    occurrence_authority: OccurrenceAuthorityColumn,
 }
 
 impl Ir {
@@ -5281,12 +5699,35 @@ impl Ir {
         self.items.len()
     }
 
+    /// Returns the image-level source, recipe, and scope authority when this
+    /// image was built by one compiled authority transaction.
+    #[must_use]
+    pub const fn image_provenance(&self) -> ImageProvenance {
+        self.provenance
+    }
+
+    /// Borrows cold per-entity authority facts aligned with the entity rows.
+    #[must_use]
+    pub fn entity_authority_columns(&self) -> EntityAuthorityColumns<'_> {
+        self.authority_facts.view()
+    }
+
+    /// Borrows cold authority source availability aligned with every observed
+    /// graph occurrence. The current two-state lane is exact: `Captured`
+    /// means `LinkOccurrence::source` is present, while `Unavailable` means
+    /// no source site was supplied.
+    #[must_use]
+    pub fn occurrence_authority_columns(&self) -> OccurrenceAuthorityColumns<'_> {
+        self.occurrence_authority.view()
+    }
+
     /// Borrows every canonical column as typed slices, with no semantic
     /// conversion, hashing, directory construction, or allocation.
     #[must_use]
     pub fn storage_columns(&self) -> StorageColumns<'_> {
         StorageColumns {
             authority: self.authority,
+            provenance: self.provenance,
             atoms: self.atoms.view(),
             types: self.types.columns(),
             externals: &self.externals,
@@ -5300,6 +5741,8 @@ impl Ir {
             type_parameter_bounds: self.type_parameter_bounds.view(),
             type_parameters: self.type_parameters.view(),
             entities: self.entity_columns(),
+            entity_authority: self.entity_authority_columns(),
+            occurrence_authority: self.occurrence_authority_columns(),
             sources: self.source_columns(),
             language_extensions: self.language_extensions(),
             graph: self.graph_columns(),

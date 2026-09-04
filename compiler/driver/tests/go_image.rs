@@ -10,7 +10,7 @@ use std::{
 
 use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
-    ResolvedToolchain, RichCapture, SemanticAuthorityInput, ToolchainSelection,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
     ToolchainResolutionError, compile, compile_semantic,
 };
 use compiler_ir::EntityKind;
@@ -142,18 +142,18 @@ fn fused_go_authority_result_binds_owned_and_compact_truth_once() -> Result<(), 
     {
         return Err(TestError::Binding);
     }
+    match compiled.ir.image_provenance() {
+        compiler_ir::ImageProvenance::Captured { source, recipe, .. }
+            if source == compiled.artifact.source && recipe == compiled.artifact.recipe => {}
+        _ => return Err(TestError::Binding),
+    }
     let census = compiled.artifact.fragment.discover().census();
     if census.entities != u32::try_from(compiled.ir.items().len()).unwrap_or(u32::MAX)
         || census.entities != 1
         || census.canonical_entity_roots != 1
-        || compiled.capture.entities.len() != compiled.ir.items().len()
-        || compiled.capture.occurrences.len() != 0
-        || compiled
-            .capture
-            .entities
-            .first()
-            .map(|row| row.semantic_type)
-            != Some(RichCapture::Captured)
+        || compiled.ir.entity_authority_columns().row_count() != compiled.ir.items().len()
+        || compiled.ir.entity_authority_columns().semantic_type.first()
+            != Some(&compiler_ir::FactAvailability::Captured)
         || !compiled.ir.items().any(|item| item.name() == b"Brew")
     {
         return Err(TestError::FusedCensus);
