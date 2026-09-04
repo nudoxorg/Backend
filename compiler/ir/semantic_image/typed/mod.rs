@@ -35,6 +35,20 @@ impl<'image> TypedDependencyPlan<'image> {
         self.canonical_node(model::TypedPlanNode::AtomList(id))
     }
 
+    pub(super) fn canonical_type_list(
+        &self,
+        id: crate::TypeListId,
+    ) -> Result<u32, TypedPlanError> {
+        self.canonical_node(model::TypedPlanNode::TypeList(id))
+    }
+
+    pub(super) fn canonical_type_parameters(
+        &self,
+        id: crate::TypeParameterListId,
+    ) -> Result<u32, TypedPlanError> {
+        self.canonical_node(model::TypedPlanNode::TypeParameters(id))
+    }
+
     pub(super) fn canonical(&self) -> &CanonicalFullPlan<'image> {
         &self.canonical
     }

@@ -8,6 +8,7 @@
 //! exposed.
 
 mod entities;
+mod extensions;
 mod graph;
 mod lists;
 mod model;
@@ -23,7 +24,7 @@ pub(super) use model::FullPlanError;
 
 use graph::GraphPlanBuildError;
 use lists::CoreTerminalError;
-use model::{FullEntityPlan, GraphPlan};
+use model::{ExtensionPlans, FullEntityPlan, GraphPlan};
 use lists::TerminalPools;
 
 /// Measured private plan for every completed common full-image plane.
@@ -32,6 +33,7 @@ pub(super) struct FullSemanticPlan<'image> {
     pub(super) terminal: TerminalPools,
     pub(super) entities: FullEntityPlan,
     pub(super) graph: GraphPlan,
+    pub(super) extensions: ExtensionPlans,
 }
 
 impl<'image> FullSemanticPlan<'image> {
@@ -43,7 +45,8 @@ impl<'image> FullSemanticPlan<'image> {
         let terminal = TerminalPools::build(ir, typed.canonical()).map_err(map_terminal)?;
         let entities = FullEntityPlan::build(ir, &typed, &terminal)?;
         let graph = GraphPlan::build(ir, typed.canonical()).map_err(map_graph)?;
-        Ok(Self { typed, terminal, entities, graph })
+        let extensions = ExtensionPlans::build(ir, &typed, &terminal)?;
+        Ok(Self { typed, terminal, entities, graph, extensions })
     }
 }
 

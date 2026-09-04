@@ -3,7 +3,10 @@
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
-use crate::{ArenaRange, EntityId, FactAvailability, LinkId, LinkOccurrenceId};
+use crate::{
+    ArenaRange, EntityId, FactAvailability, Language, LinkId, LinkOccurrenceId,
+    SemanticImageAuthority,
+};
 
 use super::super::fault::CoreSemanticImageFault;
 use super::super::typed::TypedPlanError;
@@ -47,6 +50,33 @@ pub(super) enum GraphPlanFault {
     },
 }
 
+/// Exact sparse-extension canonicalization rejection. The closed `Language`
+/// operand prevents a generic tagged-union error from erasing which of the
+/// seven named sparse planes was malformed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExtensionPlanFault {
+    GeometryOverflow { language: Language, rows: usize },
+    KeyLengthOverflow { language: Language, fact: u32 },
+    MissingFact { language: Language, fact: u32, count: u32 },
+    DuplicateCanonicalKey { language: Language, first: u32, second: u32 },
+    UnboundFact { language: Language, fact: u32 },
+    SparseBinding { language: Language, entity: EntityId, fact: u32, count: u32 },
+    Profile {
+        language: Language,
+        authority: SemanticImageAuthority,
+    },
+    MultiplePlanes {
+        entity: EntityId,
+        first: Language,
+        second: Language,
+    },
+    Authority {
+        entity: EntityId,
+        claimed: FactAvailability,
+        present: bool,
+    },
+}
+
 /// Full planner failure keeps common-plan, typed-graph, terminal-pool, entity,
 /// and graph causes distinct rather than collapsing them to an image error.
 #[derive(Debug)]
@@ -56,6 +86,7 @@ pub(super) enum FullPlanError {
     Terminal(TerminalPoolFault),
     Entity(FullEntityFault),
     Graph(GraphPlanFault),
+    Extension(ExtensionPlanFault),
 }
 
 impl fmt::Display for FullPlanError {
@@ -66,6 +97,7 @@ impl fmt::Display for FullPlanError {
             Self::Terminal(cause) => write!(formatter, "terminal semantic-image plan rejected: {cause:?}"),
             Self::Entity(cause) => write!(formatter, "entity semantic-image plan rejected: {cause:?}"),
             Self::Graph(cause) => write!(formatter, "graph semantic-image plan rejected: {cause:?}"),
+            Self::Extension(cause) => write!(formatter, "extension semantic-image plan rejected: {cause:?}"),
         }
     }
 }
@@ -85,6 +117,9 @@ impl From<FullEntityFault> for FullPlanError {
 }
 impl From<GraphPlanFault> for FullPlanError {
     fn from(value: GraphPlanFault) -> Self { Self::Graph(value) }
+}
+impl From<ExtensionPlanFault> for FullPlanError {
+    fn from(value: ExtensionPlanFault) -> Self { Self::Extension(value) }
 }
 
 /// Flat, domain-framed key arena for one terminal pooled-list space.
@@ -234,4 +269,33 @@ pub(super) struct GraphPlan {
     pub(super) relations: Vec<LinkId>,
     pub(super) relation_remap: Vec<u32>,
     pub(super) occurrences: Vec<LinkOccurrenceId>,
+}
+
+/// One entity-to-canonical-fact sparse binding. Both coordinates are already
+/// canonical image lanes, never builder/interner ordinals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ExtensionBinding {
+    pub(super) entity: u32,
+    pub(super) fact: u32,
+}
+
+/// Flat canonical facts and sparse entity bindings for one named language
+/// plane. Keys are retained only for later explicit wire rows/validation;
+/// facts remain typed values in the owned IR and are never serialized here.
+pub(super) struct ExtensionPlanePlan {
+    pub(super) order: Vec<u32>,
+    pub(super) bindings: Vec<ExtensionBinding>,
+    pub(super) key_bytes: Vec<u8>,
+    pub(super) key_ranges: Vec<ArenaRange>,
+}
+
+/// Seven named plans, intentionally not an erased per-row payload union.
+pub(super) struct ExtensionPlans {
+    pub(super) typescript: ExtensionPlanePlan,
+    pub(super) csharp: ExtensionPlanePlan,
+    pub(super) go: ExtensionPlanePlan,
+    pub(super) rust: ExtensionPlanePlan,
+    pub(super) python: ExtensionPlanePlan,
+    pub(super) java: ExtensionPlanePlan,
+    pub(super) clang: ExtensionPlanePlan,
 }
