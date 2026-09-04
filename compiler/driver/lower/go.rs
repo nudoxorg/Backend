@@ -368,6 +368,16 @@ struct AnonRow<'image> {
     children: Vec<TypeChild<'image>>,
 }
 
+/// One owner-qualified anonymous-row memo entry. The coordinate is valid only
+/// for the declaration whose pending transaction admitted it; a later owner
+/// must never inherit that row's type-fact ownership merely because the image
+/// type coordinate happens to be shared.
+#[derive(Clone, Copy)]
+struct AnonymousMemo {
+    owner: u32,
+    coordinate: u32,
+}
+
 /// The two-pass Go projector over one validated authority image.
 struct Projector<'x, 'source> {
     image: GoImage<'source>,
@@ -385,8 +395,10 @@ struct Projector<'x, 'source> {
     names: Vec<(&'source [u8], &'source [u8], u32)>,
     /// Image declaration coordinates by their package-qualified name.
     declaration_indices: HashMap<(&'source [u8], &'source [u8]), usize>,
-    /// Memoized anonymous-context coordinates per image type row.
-    anonymous: Vec<Option<u32>>,
+    /// Memoized anonymous-context coordinates per image type row. Entries are
+    /// valid only for the current declaration transaction and are replaced
+    /// when the next owner reaches the same image coordinate.
+    anonymous: Vec<Option<AnonymousMemo>>,
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
@@ -429,19 +441,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map(|(_, _, ordinal)| *ordinal)
     }
 
-    /// The already-pushed fact that owns anonymous rows interned for the
-    /// fact currently being built.
+    /// The pending fact that owns anonymous rows being built immediately
+    /// before its push. `FactSet` records this reserved coordinate and proves
+    /// it becomes valid when the caller admits that exact next fact.
     fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
         u32::try_from(self.facts.len())
-            .ok()
-            .and_then(|len| {
-                if len == 0 {
-                    Some(0)
-                } else {
-                    len.checked_sub(1)
-                }
-            })
-            .ok_or(ProjectionFault::Anchor)
+            .map_err(|_| ProjectionFault::Anchor)
     }
 
     /// Pass one: one named type with its recursive diagonal self-nominal.
@@ -1438,13 +1443,15 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// only earlier anonymous rows, because the frozen wire orders the pool
     /// before the fact rows and rejects forward child targets.
     fn project_anonymous(&mut self, row_index: usize, depth: usize) -> Result<u32, GoCollectError> {
-        if let Some(memoized) = self.anonymous.get(row_index).copied().flatten() {
-            return Ok(memoized);
-        }
         if depth == 0 {
             return Err(terminal(ProjectionFault::Depth));
         }
         let anchor = self.anchor().map_err(terminal)?;
+        if let Some(memoized) = self.anonymous.get(row_index).copied().flatten() {
+            if memoized.owner == anchor {
+                return Ok(memoized.coordinate);
+            }
+        }
         let row = self
             .image
             .type_row(row_index)
@@ -1686,7 +1693,10 @@ impl<'x, 'source> Projector<'x, 'source> {
             .intern_anonymous(anchor, &built)
             .map_err(lane_terminal)?;
         if let Some(slot) = self.anonymous.get_mut(row_index) {
-            *slot = Some(coordinate);
+            *slot = Some(AnonymousMemo {
+                owner: anchor,
+                coordinate,
+            });
         }
         Ok(coordinate)
     }
@@ -3302,6 +3312,66 @@ mod tests {
         if parameters.len() != 1 || parameters[0].0 != b"K".as_slice() || parameters[0].1.is_some()
         {
             return Err(TestError::Missing("pooled parameter row"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pending_compound_rows_bind_to_the_fact_pushed_next() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Anchor", None);
+        let int = fix.basic(b"int");
+        let slice = fix.unary(ROW_SLICE, int);
+        let map = fix.map(int, slice);
+        let value = fix.declaration(KIND_VAR, b"value", Some(map));
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut rows = view.type_facts().ok_or(TestError::Missing("type facts"))?;
+        let slice = rows
+            .find_map(|row| match row {
+                Ok(row) if row.record.tag == SemanticTypeTag::Slice => Some(Ok(row)),
+                Ok(_) => None,
+                Err(error) => Some(Err(TestError::from(error))),
+            })
+            .transpose()?
+            .ok_or(TestError::Missing("pending slice row"))?;
+        if slice.owner.raw != u32::try_from(value).map_err(TestError::from)? {
+            return Err(TestError::Missing("pending compound owner"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_nonleaf_anonymous_type_is_reinterned_for_each_pending_owner(
+    ) -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Key", None);
+        let key = fix.named(PACKAGE, b"Key", &[]);
+        let int = fix.basic(b"int");
+        let slice = fix.unary(ROW_SLICE, int);
+        let first = fix.map(key, slice);
+        let second = fix.map(key, slice);
+        let first_owner = fix.declaration(KIND_VAR, b"first", Some(first));
+        let second_owner = fix.declaration(KIND_VAR, b"second", Some(second));
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let owners = view
+            .type_facts()
+            .ok_or(TestError::Missing("type facts"))?
+            .filter_map(|row| match row {
+                Ok(row) if row.record.tag == SemanticTypeTag::Slice => Some(Ok(row.owner.raw)),
+                Ok(_) => None,
+                Err(error) => Some(Err(TestError::from(error))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let first_owner = u32::try_from(first_owner).map_err(TestError::from)?;
+        let second_owner = u32::try_from(second_owner).map_err(TestError::from)?;
+        if owners.len() != 2
+            || !owners.contains(&first_owner)
+            || !owners.contains(&second_owner)
+            || first_owner == second_owner
+        {
+            return Err(TestError::Missing("owner-qualified shared anonymous rows"));
         }
         Ok(())
     }

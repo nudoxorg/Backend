@@ -160,18 +160,16 @@ impl<'fragment> FragmentDiscovery<'fragment> {
                 documentation_fragments = documentation_fragments.saturating_add(1);
             }
         }
+        let canonical_entity_roots = self.semantic_data().map_or(0, |graph| {
+            count_captured_entity_roots(self.entities().len(), |entity| graph.entity_root(entity))
+        });
         SemanticCensus {
             entities: self.entities().len() as u32,
             atoms: self.atoms().len() as u32,
             compact_type_nodes: self.compact_type_nodes().len() as u32,
             canonical_products: self.semantic_data().map_or(0, |graph| graph.counts().products),
             canonical_product_children: self.semantic_data().map_or(0, |graph| graph.counts().children),
-            canonical_entity_roots: self
-                .semantic_data()
-                .map_or(0, |graph| match graph.entity_root(crate::EntityId::new(0)) {
-                    Some(crate::SemanticDataEntityRoot::Captured(_)) => self.entities().len() as u32,
-                    _ => 0,
-                }),
+            canonical_entity_roots,
             occurrences,
             declared_type_facts,
             computed_type_facts,
@@ -179,6 +177,49 @@ impl<'fragment> FragmentDiscovery<'fragment> {
             language_extension_section: self.view.language_extension_payload().is_some(),
             extension_pool_section: self.view.extension_pool_payload().is_some(),
         }
+    }
+}
+
+/// Counts captured declaration roots by reopening each entity coordinate. The
+/// enum deliberately keeps legacy provenance and absent coordinates distinct
+/// from a captured schema-3-and-later root.
+fn count_captured_entity_roots(
+    entity_count: usize,
+    mut root: impl FnMut(crate::EntityId) -> Option<crate::SemanticDataEntityRoot>,
+) -> u32 {
+    u32::try_from(
+        (0..entity_count)
+            .filter_map(|ordinal| u32::try_from(ordinal).ok())
+            .filter(|raw| {
+                matches!(
+                    root(crate::EntityId::new(*raw)),
+                    Some(crate::SemanticDataEntityRoot::Captured(_))
+                )
+            })
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_captured_entity_roots;
+    use crate::{ProductId, SemanticDataEntityRoot};
+
+    #[test]
+    fn root_census_counts_each_entity_instead_of_inferring_from_first() {
+        let roots = [
+            Some(SemanticDataEntityRoot::UnavailableInLegacySchema),
+            Some(SemanticDataEntityRoot::Captured(ProductId::new(3))),
+            None,
+            Some(SemanticDataEntityRoot::Captured(ProductId::new(7))),
+        ];
+        let captured = count_captured_entity_roots(roots.len(), |entity| {
+            usize::try_from(entity.raw)
+                .ok()
+                .and_then(|ordinal| roots.get(ordinal).copied().flatten())
+        });
+        assert_eq!(captured, 2);
     }
 }
 

@@ -3816,7 +3816,7 @@ fn staged_type_shape_key_inner(
         return Ok(PayloadHash::from_canonical_bytes(b"compiler.type-cycle.v1"));
     }
     type_visiting.push(row);
-    let (record, targets, names, flags) = if row < facts.len as u32 {
+    let (record, targets, names, flags, row_owner) = if row < facts.len as u32 {
         let ordinal = row as usize;
         let start = facts.type_child_starts[ordinal] as usize;
         let count = usize::from(facts.type_child_counts[ordinal]);
@@ -3825,26 +3825,41 @@ fn staged_type_shape_key_inner(
             &facts.type_child_targets[start..start + count],
             &facts.type_child_names[start..start + count],
             &facts.type_child_flags[start..start + count],
+            ordinal,
         )
     } else if facts.is_anonymous_type_row(row) {
         let ordinal = (row - ANONYMOUS_ROW_BASE) as usize;
         let start = facts.anonymous_child_starts[ordinal] as usize;
         let count = usize::from(facts.anonymous_child_counts[ordinal]);
+        let row_owner = usize::try_from(facts.anonymous_owners[ordinal]).map_err(|_| {
+            compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Entity,
+                raw: facts.anonymous_owners[ordinal],
+            }
+        })?;
         (
             facts.anonymous_records[ordinal],
             &facts.anonymous_child_targets[start..start + count],
             &facts.anonymous_child_names[start..start + count],
             &facts.anonymous_child_flags[start..start + count],
+            row_owner,
         )
     } else if facts.is_computed_type_row(row) {
         let ordinal = (row - COMPUTED_ROW_BASE) as usize;
         let start = facts.computed_child_starts[ordinal] as usize;
         let count = usize::from(facts.computed_child_counts[ordinal]);
+        let row_owner = usize::try_from(facts.computed_owners[ordinal]).map_err(|_| {
+            compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Entity,
+                raw: facts.computed_owners[ordinal],
+            }
+        })?;
         (
             facts.computed_records[ordinal],
             &facts.computed_child_targets[start..start + count],
             &facts.computed_child_names[start..start + count],
             &facts.computed_child_flags[start..start + count],
+            row_owner,
         )
     } else {
         return Err(compiler_ir::BuildError::Dangling {
@@ -3852,8 +3867,27 @@ fn staged_type_shape_key_inner(
             raw: row,
         });
     };
+    if row_owner >= facts.len {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Entity,
+            raw: u32::try_from(row_owner).unwrap_or(u32::MAX),
+        });
+    }
     let mut preimage = Vec::with_capacity(48);
     preimage.extend_from_slice(b"compiler.staged-type-shape.v1");
+    // A staged compound belongs to the declaration that admitted it. Its
+    // physical row coordinate is deliberately excluded, but its owner's
+    // coordinate-free scoped key must remain part of the shape whenever a
+    // different declaration reaches it. The same-owner marker avoids a
+    // recursive key lookup while preserving that self relationship.
+    preimage.extend_from_slice(b"compiler.staged-type-owner.v1");
+    if row_owner == owner {
+        preimage.extend_from_slice(b"self-owner");
+    } else {
+        preimage.extend_from_slice(
+            scoped_fact_key(facts, row_owner, cache, fact_visiting)?.as_ref(),
+        );
+    }
     preimage.push(u8::from(record.tag));
     preimage.extend_from_slice(&record.payload0.to_le_bytes());
     preimage.extend_from_slice(&record.payload1.to_le_bytes());
@@ -3868,7 +3902,7 @@ fn staged_type_shape_key_inner(
         }
     }
     match record.nominal {
-        Some(NominalRef::Local(target)) if target.raw == owner as u32 => {
+        Some(NominalRef::Local(target)) if target.raw == row_owner as u32 => {
             preimage.extend_from_slice(b"owner-nominal");
         }
         Some(NominalRef::Local(target)) if target.raw < facts.len as u32 => {
@@ -3880,7 +3914,7 @@ fn staged_type_shape_key_inner(
             staged_type_shape_key_inner(
                 facts,
                 target.raw,
-                owner,
+                row_owner,
                 cache,
                 fact_visiting,
                 type_visiting,
@@ -3908,7 +3942,7 @@ fn staged_type_shape_key_inner(
             // Exact bytes and flags were framed above. This sentinel is never
             // a type row and therefore never enters recursive shape lookup.
             preimage.extend_from_slice(b"template-text");
-        } else if *target == owner as u32 {
+        } else if *target == row_owner as u32 {
             preimage.extend_from_slice(b"owner-type");
         } else if *target < facts.len as u32 {
             preimage.extend_from_slice(
@@ -3919,7 +3953,7 @@ fn staged_type_shape_key_inner(
                 staged_type_shape_key_inner(
                     facts,
                     *target,
-                    owner,
+                    row_owner,
                     cache,
                     fact_visiting,
                     type_visiting,
