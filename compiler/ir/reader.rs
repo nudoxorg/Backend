@@ -164,6 +164,12 @@ pub trait SemanticReader: SemanticCoreReader {
     type TypeParameterBounds<'image>: ExactSizeIterator<Item = TypeParameterBound> + FusedIterator
     where
         Self: 'image;
+    type CanonicalTypes<'image>: ExactSizeIterator<Item = (TypeId, TypeExpr)> + FusedIterator
+    where
+        Self: 'image;
+    type CanonicalExternals<'image>: ExactSizeIterator<Item = (ExternalId, ExternalTarget)> + FusedIterator
+    where
+        Self: 'image;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity>;
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity>;
@@ -186,6 +192,14 @@ pub trait SemanticReader: SemanticCoreReader {
     ) -> Option<Self::TypeParameterBounds<'_>>;
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_>;
+    /// Enumerates every stored type coordinate exactly once.  A fully
+    /// validated semantic image emits these coordinates in canonical typed
+    /// order; owned `Ir` exposes its finalized image coordinates without
+    /// making native storage layout part of the trait.
+    fn canonical_types(&self) -> Self::CanonicalTypes<'_>;
+    /// Enumerates every external endpoint exactly once in this image's
+    /// validated coordinate order.
+    fn canonical_externals(&self) -> Self::CanonicalExternals<'_>;
     fn links_from(&self, entity: EntityId) -> Self::Links<'_>;
     fn link_occurrences(&self) -> Self::Occurrences<'_>;
     fn typescript_extensions(&self) -> Self::TypeScriptExtensions<'_>;
@@ -195,6 +209,17 @@ pub trait SemanticReader: SemanticCoreReader {
     fn python_extensions(&self) -> Self::PythonExtensions<'_>;
     fn java_extensions(&self) -> Self::JavaExtensions<'_>;
     fn clang_extensions(&self) -> Self::ClangExtensions<'_>;
+
+    /// Looks up one declaration's TypeScript facts without scanning the
+    /// sparse plane.  Named scans above remain available for whole-image
+    /// traversal; this accessor is the rendering/indexing hot path.
+    fn typescript_extension(&self, entity: EntityId) -> Option<TypeScriptFacts>;
+    fn csharp_extension(&self, entity: EntityId) -> Option<CSharpFacts>;
+    fn go_extension(&self, entity: EntityId) -> Option<GoFacts>;
+    fn rust_extension(&self, entity: EntityId) -> Option<RustFacts>;
+    fn python_extension(&self, entity: EntityId) -> Option<PythonFacts>;
+    fn java_extension(&self, entity: EntityId) -> Option<JavaFacts>;
+    fn clang_extension(&self, entity: EntityId) -> Option<ClangFacts>;
 }
 
 /// Exact-size canonical entity iterator backed by `Ir`'s declaration index.
@@ -207,6 +232,20 @@ pub struct IrCanonicalEntities<'image> {
 pub struct IrCanonicalCoreEntities<'image> {
     ir: &'image Ir,
     items: crate::ItemIdIter<'image>,
+}
+
+/// Exact-size complete type census over finalized `Ir` coordinates.
+pub struct IrCanonicalTypes<'image> {
+    ir: &'image Ir,
+    next: usize,
+    end: usize,
+}
+
+/// Exact-size complete external-endpoint census over finalized `Ir`
+/// coordinates.
+pub struct IrCanonicalExternals<'image> {
+    values: &'image [ExternalTarget],
+    next: usize,
 }
 
 impl Iterator for IrCanonicalCoreEntities<'_> {
@@ -234,6 +273,43 @@ impl Iterator for IrCanonicalEntities<'_> {
 }
 impl ExactSizeIterator for IrCanonicalEntities<'_> {}
 impl FusedIterator for IrCanonicalEntities<'_> {}
+
+impl Iterator for IrCanonicalTypes<'_> {
+    type Item = (TypeId, TypeExpr);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.next;
+        self.next = self.next.checked_add(1)?;
+        if raw >= self.end { return None; }
+        let id = TypeId::new(u32::try_from(raw).ok()?);
+        Some((id, self.ir.ty(id)?))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end.saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+impl ExactSizeIterator for IrCanonicalTypes<'_> {}
+impl FusedIterator for IrCanonicalTypes<'_> {}
+
+impl Iterator for IrCanonicalExternals<'_> {
+    type Item = (ExternalId, ExternalTarget);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.next;
+        self.next = self.next.checked_add(1)?;
+        let value = *self.values.get(raw)?;
+        Some((ExternalId::new(u32::try_from(raw).ok()?), value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.values.len().saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+impl ExactSizeIterator for IrCanonicalExternals<'_> {}
+impl FusedIterator for IrCanonicalExternals<'_> {}
 
 /// Exact-size iterator over one present-only language-extension sparse plane.
 /// It retains no union payload and never walks the other six planes.
@@ -327,6 +403,8 @@ impl SemanticReader for Ir {
     type TemplateParts<'image> = SemanticCursor<'image, TemplatePart>;
     type TypeParameters<'image> = SemanticCursor<'image, TypeParameter>;
     type TypeParameterBounds<'image> = SemanticCursor<'image, TypeParameterBound>;
+    type CanonicalTypes<'image> = IrCanonicalTypes<'image>;
+    type CanonicalExternals<'image> = IrCanonicalExternals<'image>;
 
     fn entity(&self, id: EntityId) -> Option<SemanticEntity> { Ir::semantic_entity(self, id) }
     fn entity_by_identity(&self, identity: DeclarationIdentity) -> Option<SemanticEntity> {
@@ -351,6 +429,12 @@ impl SemanticReader for Ir {
     fn type_parameter_bounds(&self, id: TypeParameterBoundListId) -> Option<Self::TypeParameterBounds<'_>> { Ir::type_parameter_bounds(self, id).map(|rows| rows.iter().copied()) }
 
     fn canonical_entities(&self) -> Self::CanonicalEntities<'_> { IrCanonicalEntities { ir: self, items: Ir::canonical_items(self) } }
+    fn canonical_types(&self) -> Self::CanonicalTypes<'_> {
+        IrCanonicalTypes { ir: self, next: 0, end: self.storage_columns().types.headers.len() }
+    }
+    fn canonical_externals(&self) -> Self::CanonicalExternals<'_> {
+        IrCanonicalExternals { values: self.storage_columns().externals, next: 0 }
+    }
     fn links_from(&self, entity: EntityId) -> Self::Links<'_> { Ir::links_from(self, entity) }
     fn link_occurrences(&self) -> Self::Occurrences<'_> { Ir::link_occurrences(self) }
     fn typescript_extensions(&self) -> Self::TypeScriptExtensions<'_> {
@@ -380,5 +464,26 @@ impl SemanticReader for Ir {
     fn clang_extensions(&self) -> Self::ClangExtensions<'_> {
         let plane = self.language_extensions().clang;
         IrExtensionRows::new(plane)
+    }
+    fn typescript_extension(&self, entity: EntityId) -> Option<TypeScriptFacts> {
+        self.language_extensions().typescript.get(entity).copied()
+    }
+    fn csharp_extension(&self, entity: EntityId) -> Option<CSharpFacts> {
+        self.language_extensions().csharp.get(entity).copied()
+    }
+    fn go_extension(&self, entity: EntityId) -> Option<GoFacts> {
+        self.language_extensions().go.get(entity).copied()
+    }
+    fn rust_extension(&self, entity: EntityId) -> Option<RustFacts> {
+        self.language_extensions().rust.get(entity).copied()
+    }
+    fn python_extension(&self, entity: EntityId) -> Option<PythonFacts> {
+        self.language_extensions().python.get(entity).copied()
+    }
+    fn java_extension(&self, entity: EntityId) -> Option<JavaFacts> {
+        self.language_extensions().java.get(entity).copied()
+    }
+    fn clang_extension(&self, entity: EntityId) -> Option<ClangFacts> {
+        self.language_extensions().clang.get(entity).copied()
     }
 }
