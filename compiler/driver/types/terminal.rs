@@ -149,6 +149,22 @@ pub struct CompiledFragment<'artifact> {
     pub fragment: FragmentView<'artifact>,
 }
 
+/// One fused public semantic result from exactly one authority traversal.
+///
+/// `artifact` is the sole holder of the request's source and recipe facts;
+/// the owned `ir` and its availability sidecar therefore cannot disagree
+/// through duplicated result metadata. Only the compact fragment borrows the
+/// caller's output buffer. If authority entry, lowering, owned-tree build,
+/// compact write, or fragment validation fails, this value is not returned.
+pub struct CompiledSemantic<'artifact> {
+    /// Validated compact artifact written after the owned semantic image built.
+    pub artifact: CompiledFragment<'artifact>,
+    /// Owned semantic image from the artifact's exact admitted fact lane.
+    pub ir: Ir,
+    /// Exact availability facts aligned with `ir`, from that same lane.
+    pub capture: RichIrCapture,
+}
+
 /// Queryable semantic image materialized directly from the same admitted fact
 /// lane that writes the durable canonical fragment. It contains no second
 /// frontend lowering or serialized intermediary.

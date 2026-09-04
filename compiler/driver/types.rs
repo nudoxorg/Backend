@@ -14,7 +14,7 @@ pub use authority::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, AuthorityFailureProjection,
     AuthorityProfileMismatch,
 };
-pub use compile::{compile, compile_ir};
+pub use compile::{compile, compile_ir, compile_semantic};
 pub use lowering::{
     CSharpProjectionFault, ClangProjectionFault, FactFault, FactRejection, ParentageState,
     SourceSpanFact,
@@ -22,7 +22,7 @@ pub use lowering::{
 pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
 pub use request::{CompileControl, CompileRequest, CompileScratch, DeclarationScope, SemanticAuthorityInput};
 pub use terminal::{
-    CompileFailure, CompileOutput, CompiledFragment, CompiledIr, NativeDiagnostic, NativeWorkError,
+    CompileFailure, CompileOutput, CompiledFragment, CompiledIr, CompiledSemantic, NativeDiagnostic, NativeWorkError,
     NativeWorkPrimary, RichCapture, RichEntityCapture, RichIrCapture, RichParentageCapture,
 };
 pub use toolchain::{

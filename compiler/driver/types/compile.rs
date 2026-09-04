@@ -11,61 +11,149 @@ use crate::{
 
 use super::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, CompileFailure, CompileOutput,
-    CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, NativeDiagnostic,
-    NativeRecipe, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, SourceLease,
+    CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, CompiledSemantic,
+    NativeDiagnostic, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, SourceLease,
     ToolchainSelection, ToolchainSelectionFact, WorkPermit, WorkStopped,
 };
 
+/// Compiles the compact fragment compatibility projection.
+///
+/// This is deliberately a compact-only view: a later [`compile_ir`] call
+/// repeats authority traversal, so two independent compatibility calls do
+/// not prove that their fragment and owned image were fused from one fact
+/// transaction. Use [`compile_semantic`] when that coherence is required.
 pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
     output: CompileOutput<'output>,
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::with_primary_source(lower::ResourcePlan::for_source(
-        request.profile,
-        request.source.len(),
-    ), u32::try_from(request.source.len()).unwrap_or(u32::MAX));
-    let prepared = match prepare(request)? {
-        PreparedRoute::Direct(prepared) => {
-            emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
-            prepared
-        }
-        PreparedRoute::Native {
-            prepared,
-            native_recipe,
-        } => {
-            crate::native::parse_with_native_tool(
-                native_recipe,
-                prepared.source,
-                prepared.recipe,
-                scratch,
-                prepared.permit.control(),
-            )?;
-            emit_facts(&prepared, None, &mut facts)?;
-            prepared
-        }
-    };
-    let bytes = lower::admit(
-        &facts,
-        prepared.source,
-        prepared.recipe,
-        request.profile,
+    let transaction = collect_transaction(request, scratch)?;
+    write_fragment(
+        transaction.source,
+        transaction.recipe,
+        &transaction.facts,
         output.fragment_output,
+    )
+}
+
+/// Compiles the one coherent public semantic result.
+///
+/// Authority entry and lowering run exactly once. The owned [`compiler_ir::Ir`]
+/// and capture sidecar are built from that one fact lane before the compact
+/// artifact is written and validated, so a failure returns no partial result.
+/// The returned value borrows only `output.fragment_output`; source bytes,
+/// authority input, scratch storage, cancellation control, and deadline do
+/// not escape. Cancellation or deadline at either transaction checkpoint
+/// returns the exact borrowed diagnostic terminal and no fragment or IR.
+pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
+    request: CompileRequest<'source, 'toolchain, 'cancel>,
+    scratch: CompileScratch<'diagnostic, 'work>,
+    output: CompileOutput<'output>,
+) -> Result<CompiledSemantic<'output>, CompileFailure<'diagnostic>> {
+    let transaction = collect_transaction(request, scratch)?;
+    let ir = transaction
+        .facts
+        .build_ir(request.profile, transaction.source, request.declaration_scope)
+        .map_err(|cause| CompileFailure::Build {
+            source_identity: transaction.source,
+            recipe: transaction.recipe,
+            cause,
+        })?;
+    let capture = transaction.facts.rich_capture();
+    let artifact = write_fragment(
+        transaction.source,
+        transaction.recipe,
+        &transaction.facts,
+        output.fragment_output,
+    )?;
+    Ok(CompiledSemantic {
+        artifact,
+        ir,
+        capture,
+    })
+}
+
+/// Materializes a queryable semantic image compatibility projection.
+///
+/// This owned-only view does not validate a compact artifact. A separate
+/// [`compile`] call repeats authority traversal and therefore cannot prove
+/// cross-call coherence; use [`compile_semantic`] for the fused parity result.
+pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
+    request: CompileRequest<'source, 'toolchain, 'cancel>,
+    scratch: CompileScratch<'diagnostic, 'work>,
+) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
+    let transaction = collect_transaction(request, scratch)?;
+    let ir = transaction
+        .facts
+        .build_ir(request.profile, transaction.source, request.declaration_scope)
+        .map_err(|cause| CompileFailure::Build {
+            source_identity: transaction.source,
+            recipe: transaction.recipe,
+            cause,
+        })?;
+    Ok(super::CompiledIr {
+        source: transaction.source,
+        recipe: transaction.recipe,
+        ir,
+        capture: transaction.facts.rich_capture(),
+    })
+}
+
+/// One private authority-to-facts transaction shared by every public result
+/// projection. Its fact lane may borrow entered source and authority input,
+/// but successful callers immediately materialize an owned IR and/or the
+/// caller output fragment, so no such staging borrow crosses the public
+/// boundary.
+struct CollectedFacts<'source> {
+    source: SourceIdentity,
+    recipe: CompileRecipeFact,
+    facts: lower::FactSet<'source>,
+}
+
+fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
+    request: CompileRequest<'source, 'toolchain, 'cancel>,
+    scratch: CompileScratch<'diagnostic, 'work>,
+) -> Result<CollectedFacts<'source>, CompileFailure<'diagnostic>> {
+    let prepared = prepare(request)?;
+    let mut facts = lower::FactSet::with_primary_source(
+        lower::ResourcePlan::for_source(request.profile, request.source.len()),
+        u32::try_from(request.source.len()).unwrap_or(u32::MAX),
+    );
+    emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
+    Ok(CollectedFacts {
+        source: prepared.source,
+        recipe: prepared.recipe,
+        facts,
+    })
+}
+
+fn write_fragment<'source, 'diagnostic, 'output>(
+    source: SourceIdentity,
+    recipe: CompileRecipeFact,
+    facts: &lower::FactSet<'source>,
+    output: &'output mut [u8],
+) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
+    let bytes = lower::admit(
+        facts,
+        source,
+        recipe,
+        recipe.profile,
+        output,
     )
     .map_err(|fault| match fault {
         AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
+            source_identity: source,
+            recipe,
             cause: PrepareError::SemanticData { cause },
         },
         AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
+            source_identity: source,
+            recipe,
             cause,
         },
         AdmissionFault::Write(cause) => CompileFailure::Write {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
+            source_identity: source,
+            recipe,
             cause,
         },
         AdmissionFault::ExtensionAtom {
@@ -73,67 +161,22 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
             provisional,
             atom_count,
         } => CompileFailure::ExtensionAtomUnbound {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
+            source_identity: source,
+            recipe,
             row,
             provisional,
             atom_count,
         },
     })?;
     let fragment = FragmentView::validate(bytes).map_err(|cause| CompileFailure::Validate {
-        source_identity: prepared.source,
-        recipe: prepared.recipe,
+        source_identity: source,
+        recipe,
         cause,
     })?;
     Ok(CompiledFragment {
-        source: prepared.source,
-        recipe: prepared.recipe,
+        source,
+        recipe,
         fragment,
-    })
-}
-
-/// Materializes a queryable semantic image from the exact admission lane used
-/// to write the durable canonical fragment.
-pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
-    request: CompileRequest<'source, 'toolchain, 'cancel>,
-    scratch: CompileScratch<'diagnostic, 'work>,
-) -> Result<super::CompiledIr, CompileFailure<'diagnostic>> {
-    let mut facts = lower::FactSet::with_primary_source(lower::ResourcePlan::for_source(
-        request.profile,
-        request.source.len(),
-    ), u32::try_from(request.source.len()).unwrap_or(u32::MAX));
-    let prepared = match prepare(request)? {
-        PreparedRoute::Direct(prepared) => {
-            emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;
-            prepared
-        }
-        PreparedRoute::Native {
-            prepared,
-            native_recipe,
-        } => {
-            crate::native::parse_with_native_tool(
-                native_recipe,
-                prepared.source,
-                prepared.recipe,
-                scratch,
-                prepared.permit.control(),
-            )?;
-            emit_facts(&prepared, None, &mut facts)?;
-            prepared
-        }
-    };
-    let ir = facts
-        .build_ir(request.profile, prepared.source, request.declaration_scope)
-        .map_err(|cause| CompileFailure::Build {
-            source_identity: prepared.source,
-            recipe: prepared.recipe,
-            cause,
-        })?;
-    Ok(super::CompiledIr {
-        source: prepared.source,
-        recipe: prepared.recipe,
-        ir,
-        capture: facts.rich_capture(),
     })
 }
 
@@ -143,14 +186,6 @@ struct PreparedCompile<'source, 'cancel> {
     lease: SourceLease<'source>,
     permit: WorkPermit<'cancel>,
     authority: EnteredAuthority<'source>,
-}
-
-enum PreparedRoute<'source, 'toolchain, 'cancel> {
-    Direct(PreparedCompile<'source, 'cancel>),
-    Native {
-        prepared: PreparedCompile<'source, 'cancel>,
-        native_recipe: NativeRecipe<'source, 'toolchain>,
-    },
 }
 
 /// Closed authority after source entry.  Profile/input mismatches are
@@ -393,7 +428,7 @@ impl LanguageSpec for CSharpSpec {
 
 fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
-) -> Result<PreparedRoute<'source, 'toolchain, 'cancel>, CompileFailure<'diagnostic>> {
+) -> Result<PreparedCompile<'source, 'cancel>, CompileFailure<'diagnostic>> {
     let lease = SourceLease::enter(request.source).map_err(|source| CompileFailure::SourceLength {
         actual: request.source.len(),
         source,
@@ -454,13 +489,13 @@ fn prepare<'source, 'toolchain, 'cancel, 'diagnostic>(
     let authority = enter_authority(request.profile, request.authority, source, recipe)?;
     let permit = WorkPermit::new(source, request.control);
     checkpoint(permit, recipe)?;
-    Ok(PreparedRoute::Direct(PreparedCompile {
+    Ok(PreparedCompile {
         source,
         recipe,
         lease,
         permit,
         authority,
-    }))
+    })
 }
 
 fn checkpoint<'diagnostic>(

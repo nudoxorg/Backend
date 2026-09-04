@@ -9,8 +9,9 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
-    SemanticAuthorityInput, ToolchainResolutionError, ToolchainSelection, compile,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, RichCapture, SemanticAuthorityInput, ToolchainSelection,
+    ToolchainResolutionError, compile, compile_semantic,
 };
 use compiler_ir::EntityKind;
 use compiler_vocabulary::{GoVersion, LanguageProfile, Stage};
@@ -31,6 +32,14 @@ enum TestError {
     MissingAtom,
     #[error("configured Go authority declaration was absent after compact admission")]
     Declaration,
+    #[error("fused artifact source or recipe differed from its validated fragment")]
+    Binding,
+    #[error("fused owned image, capture, and compact census did not agree")]
+    FusedCensus,
+    #[error("fused fragment modified the caller output tail")]
+    OutputTail,
+    #[error("pre-entry cancellation did not retain the exact cancellation terminal")]
+    Cancelled,
 }
 
 #[test]
@@ -50,6 +59,7 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
             profile: LanguageProfile::Go(GoVersion::Go125),
             stage: Stage::LowerIr,
             source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(resolved),
             authority: SemanticAuthorityInput::Go { image: &image },
             control: CompileControl {
@@ -85,6 +95,121 @@ fn configured_go_authority_image_admits_without_native_scanner_dispatch() -> Res
         }
     }
     Err(TestError::Declaration)
+}
+
+/// The fused entrypoint has one structural authority dispatch: this fixed
+/// binary image has no counting hook, so the absence of a second transaction
+/// is proved by the shared private transaction rather than global test state.
+#[test]
+fn fused_go_authority_result_binds_owned_and_compact_truth_once() -> Result<(), TestError> {
+    let source = b"package demo\nfunc Brew() {}\n";
+    let image = fixture(source);
+    let resolved = ResolvedToolchain::from_version(
+        NativeTool::GoCompiler,
+        Path::new("/usr/bin/true"),
+        b"configured-go-authority-image",
+    )?;
+    let cancelled = AtomicBool::new(false);
+    let mut diagnostic = [];
+    let mut output = [0xa5; 65_536];
+    let compiled = compile_semantic(
+        CompileRequest {
+            profile: LanguageProfile::Go(GoVersion::Go125),
+            stage: Stage::LowerIr,
+            source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+            toolchain: ToolchainSelection::ResolvedNative(resolved),
+            authority: SemanticAuthorityInput::Go { image: &image },
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(2),
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: Path::new("/private/tmp"),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    )
+    .map_err(|failure| TestError::Compile {
+        cause: format!("{failure:?}"),
+    })?;
+
+    if compiled.artifact.source != compiled.artifact.fragment.source
+        || compiled.artifact.recipe != compiled.artifact.fragment.recipe
+    {
+        return Err(TestError::Binding);
+    }
+    let census = compiled.artifact.fragment.discover().census();
+    if census.entities != u32::try_from(compiled.ir.items().len()).unwrap_or(u32::MAX)
+        || census.entities != 1
+        || census.canonical_entity_roots != 1
+        || compiled.capture.entities.len() != compiled.ir.items().len()
+        || compiled.capture.occurrences.len() != 0
+        || compiled
+            .capture
+            .entities
+            .first()
+            .map(|row| row.semantic_type)
+            != Some(RichCapture::Captured)
+        || !compiled.ir.items().any(|item| item.name() == b"Brew")
+    {
+        return Err(TestError::FusedCensus);
+    }
+    let length = compiled.artifact.fragment.as_ref().len();
+    // The returned view borrows the entire output lease. Drop it before
+    // inspecting the untouched suffix through the caller's original buffer.
+    drop(compiled);
+    if !output[length..].iter().all(|byte| *byte == 0xa5) {
+        return Err(TestError::OutputTail);
+    }
+    Ok(())
+}
+
+#[test]
+fn fused_go_authority_preentry_cancellation_exposes_no_result_or_output() -> Result<(), TestError> {
+    let source = b"package demo\nfunc Brew() {}\n";
+    let image = fixture(source);
+    let resolved = ResolvedToolchain::from_version(
+        NativeTool::GoCompiler,
+        Path::new("/usr/bin/true"),
+        b"configured-go-authority-image",
+    )?;
+    let cancelled = AtomicBool::new(true);
+    let mut diagnostic = [];
+    let mut output = [0xa5; 65_536];
+    let result = compile_semantic(
+        CompileRequest {
+            profile: LanguageProfile::Go(GoVersion::Go125),
+            stage: Stage::LowerIr,
+            source,
+            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+            toolchain: ToolchainSelection::ResolvedNative(resolved),
+            authority: SemanticAuthorityInput::Go { image: &image },
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(2),
+                cancelled: &cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: Path::new("/private/tmp"),
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    );
+    match result {
+        Err(CompileFailure::Cancelled { diagnostic, .. })
+            if diagnostic.bytes.is_empty() && diagnostic.observed == 0 && !diagnostic.truncated => {}
+        _ => return Err(TestError::Cancelled),
+    }
+    if !output.iter().all(|byte| *byte == 0xa5) {
+        return Err(TestError::OutputTail);
+    }
+    Ok(())
 }
 
 /// Builds one minimal but fully valid format-v5 Go authority image: a single
