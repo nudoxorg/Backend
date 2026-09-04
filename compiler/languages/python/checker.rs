@@ -35,7 +35,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use compiler_vocabulary::PythonVersion;
+use compiler_vocabulary::{NativeWorker, NativeWorkerPanic, PythonVersion};
 use thiserror::Error;
 
 use crate::{Annotation, AnnotationPosition, DeclarationKind, ModuleFacts, Span, TypeReason};
@@ -79,6 +79,14 @@ pub enum CheckerError {
         stream: &'static str,
         /// Underlying I/O failure.
         source: std::io::Error,
+    },
+    /// A bounded stream reader panicked; the exact worker and supported
+    /// payload facts survive the join boundary.
+    #[error("pyrefly stream worker panicked: {cause}")]
+    WorkerPanic {
+        /// Bounded original join payload.
+        #[source]
+        cause: NativeWorkerPanic,
     },
     /// The child exited with an unusable status, retaining its stderr tail.
     #[error("pyrefly exited with {status}; stderr tail: {stderr}")]
@@ -496,13 +504,17 @@ impl Pyrefly {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        let out = out_thread.join().map_err(|_| CheckerError::Pipe {
-            stream: "stdout",
-            source: std::io::Error::other("reader panicked"),
+        let out = out_thread.join().map_err(|payload| CheckerError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardOutputReader,
+                payload.as_ref(),
+            ),
         })?;
-        let err = err_thread.join().map_err(|_| CheckerError::Pipe {
-            stream: "stderr",
-            source: std::io::Error::other("reader panicked"),
+        let err = err_thread.join().map_err(|payload| CheckerError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardErrorReader,
+                payload.as_ref(),
+            ),
         })?;
         if let Some((stream, source)) = out.error.or(err.error) {
             return Err(CheckerError::Pipe { stream, source });

@@ -2,6 +2,9 @@
 //! This crate describes requests and failures but deliberately performs no compilation or I/O.
 //! Stable numeric conversions belong here because those values participate in canonical identities.
 #![no_std]
+extern crate alloc;
+
+use alloc::string::String;
 use heart_identity::{CompileRecipeDomain, ContentId, SourceFactDomain, ToolchainDomain};
 use thiserror::Error;
 
@@ -311,6 +314,64 @@ pub struct NativeWorkerPanic {
     /// Bounded exact message facts, empty only for an opaque payload.
     pub message: NativeWorkerPanicMessage,
 }
+
+impl NativeWorkerPanic {
+    /// Captures the standard library's opaque join payload without allocating
+    /// or discarding its supported message class. The retained prefix always
+    /// ends at a UTF-8 boundary; `truncated` distinguishes it from the exact
+    /// complete message.
+    #[must_use]
+    pub fn capture(
+        worker: NativeWorker,
+        payload: &(dyn core::any::Any + Send),
+    ) -> Self {
+        let (class, message) = if let Some(message) = payload.downcast_ref::<&'static str>() {
+            (NativeWorkerPanicClass::StaticMessage, *message)
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            (NativeWorkerPanicClass::OwnedMessage, message.as_str())
+        } else {
+            (NativeWorkerPanicClass::Opaque, "")
+        };
+        let mut retained = message.len().min(MAX_NATIVE_WORKER_PANIC_BYTES);
+        while !message.is_char_boundary(retained) {
+            retained -= 1;
+        }
+        let mut bytes = [0_u8; MAX_NATIVE_WORKER_PANIC_BYTES];
+        bytes[..retained].copy_from_slice(&message.as_bytes()[..retained]);
+        Self {
+            worker,
+            class,
+            message: NativeWorkerPanicMessage {
+                bytes,
+                byte_len: retained,
+                truncated: message.len() > retained,
+            },
+        }
+    }
+}
+
+impl core::fmt::Display for NativeWorkerPanic {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "native worker {:?} panicked with {:?} payload",
+            self.worker, self.class
+        )?;
+        if let Some(bytes) = self.message.bytes.get(..self.message.byte_len) {
+            if let Ok(message) = core::str::from_utf8(bytes) {
+                if !message.is_empty() {
+                    write!(formatter, ": {message}")?;
+                }
+            }
+        }
+        if self.message.truncated {
+            formatter.write_str(" (truncated)")?;
+        }
+        Ok(())
+    }
+}
+
+impl core::error::Error for NativeWorkerPanic {}
 
 /// Closed semantic terminal for syntax-native source whose declaration facts lack a compact recipe.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

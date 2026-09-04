@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_vocabulary::TypeScriptSource;
+use compiler_vocabulary::{NativeWorker, NativeWorkerPanic, TypeScriptSource};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -55,6 +55,14 @@ pub enum CheckerError {
         /// The operating system's spawn failure.
         #[source]
         source: std::io::Error,
+    },
+    /// A bounded stream reader panicked; its exact worker and supported
+    /// payload facts survive the join boundary.
+    #[error("TypeScript checker stream worker panicked: {cause}")]
+    WorkerPanic {
+        /// Bounded original join payload.
+        #[source]
+        cause: NativeWorkerPanic,
     },
     /// The checker tool itself is unavailable on this machine.
     #[error("TypeScript checker tooling unavailable ({tool}): {source}")]
@@ -896,13 +904,17 @@ impl Checker {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        let out_bytes = out_thread.join().map_err(|_| CheckerError::Pipe {
-            stream: "stdout",
-            source: std::io::Error::other("reader panicked"),
+        let out_bytes = out_thread.join().map_err(|payload| CheckerError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardOutputReader,
+                payload.as_ref(),
+            ),
         })?;
-        let err_bytes = err_thread.join().map_err(|_| CheckerError::Pipe {
-            stream: "stderr",
-            source: std::io::Error::other("reader panicked"),
+        let err_bytes = err_thread.join().map_err(|payload| CheckerError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardErrorReader,
+                payload.as_ref(),
+            ),
         })?;
         if let Some((stream, cause)) = out_bytes.error.or(err_bytes.error) {
             return Err(CheckerError::Pipe {

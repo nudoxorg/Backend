@@ -1361,6 +1361,7 @@ dependencies = [
 name = "compiler-languages-go"
 version = "0.1.0"
 dependencies = [
+ "compiler-vocabulary",
  "serde",
  "serde_json",
  "sha2",

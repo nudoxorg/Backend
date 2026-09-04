@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 
+use compiler_vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
 
 const DIAGNOSTIC_PREFIX_LIMIT: usize = 4096;
@@ -695,6 +696,14 @@ pub enum OracleError {
         #[source]
         source: std::io::Error,
     },
+    /// A bounded stream reader panicked; its exact worker and supported
+    /// payload facts survive the join boundary.
+    #[error("Go oracle stream worker panicked: {cause}")]
+    WorkerPanic {
+        /// Bounded original join payload.
+        #[source]
+        cause: NativeWorkerPanic,
+    },
 }
 
 /// Configurable subprocess adapter for the vendored Go oracle.
@@ -841,13 +850,17 @@ impl GoOracle {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
-        let stdout = out_thread.join().map_err(|_| OracleError::Pipe {
-            stream: "stdout",
-            source: std::io::Error::other("reader panicked"),
+        let stdout = out_thread.join().map_err(|payload| OracleError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardOutputReader,
+                payload.as_ref(),
+            ),
         })?;
-        let stderr = err_thread.join().map_err(|_| OracleError::Pipe {
-            stream: "stderr",
-            source: std::io::Error::other("reader panicked"),
+        let stderr = err_thread.join().map_err(|payload| OracleError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(
+                NativeWorker::StandardErrorReader,
+                payload.as_ref(),
+            ),
         })?;
         if let Some((stream, source)) = stdout.error.or(stderr.error) {
             return Err(OracleError::Pipe { stream, source });

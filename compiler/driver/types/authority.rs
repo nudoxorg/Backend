@@ -569,7 +569,8 @@ fn go_phase(cause: &compiler_languages_go::OracleError) -> AuthorityPhase {
         | compiler_languages_go::OracleError::Exit { .. }
         | compiler_languages_go::OracleError::OutputLimit { .. }
         | compiler_languages_go::OracleError::Timeout { .. }
-        | compiler_languages_go::OracleError::Pipe { .. } => AuthorityPhase::Open,
+        | compiler_languages_go::OracleError::Pipe { .. }
+        | compiler_languages_go::OracleError::WorkerPanic { .. } => AuthorityPhase::Open,
     }
 }
 

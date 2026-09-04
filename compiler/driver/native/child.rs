@@ -9,9 +9,8 @@ use std::{
 };
 
 use crate::types::{
-    CompileControl, CompileFailure, CompileRecipeFact, MAX_NATIVE_WORKER_PANIC_BYTES,
-    NativeDiagnostic, NativeRecipe, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
-    NativeWorkerPanicMessage, SourceIdentity,
+    CompileControl, CompileFailure, CompileRecipeFact, NativeDiagnostic, NativeRecipe,
+    NativeWorker, NativeWorkerPanic, SourceIdentity,
 };
 
 use super::{
@@ -19,31 +18,6 @@ use super::{
     frontend::NativeFrontend,
     terminal::{ChildTerminal, missing_diagnostic, missing_input, wait_for_terminal, write_source},
 };
-
-macro_rules! native_worker_panic {
-    ($worker:expr, $payload:expr) => {{
-        let payload = $payload;
-        let (class, message) = if let Some(message) = payload.downcast_ref::<&'static str>() {
-            (NativeWorkerPanicClass::StaticMessage, *message)
-        } else if let Some(message) = payload.downcast_ref::<String>() {
-            (NativeWorkerPanicClass::OwnedMessage, message.as_str())
-        } else {
-            (NativeWorkerPanicClass::Opaque, "")
-        };
-        let retained = message.len().min(MAX_NATIVE_WORKER_PANIC_BYTES);
-        let mut bytes = [0_u8; MAX_NATIVE_WORKER_PANIC_BYTES];
-        bytes[..retained].copy_from_slice(&message.as_bytes()[..retained]);
-        NativeWorkerPanic {
-            worker: $worker,
-            class,
-            message: NativeWorkerPanicMessage {
-                bytes,
-                byte_len: retained,
-                truncated: message.len() > retained,
-            },
-        }
-    }};
-}
 
 pub(super) fn drive_child<
     'source,
@@ -149,8 +123,10 @@ pub(super) fn drive_child<
             Ok(Ok(())) => {}
             Ok(Err(cause)) => input_cause = Some(cause),
             Err(payload) => {
-                worker_panic_cause =
-                    Some(native_worker_panic!(NativeWorker::SourceWriter, payload));
+                worker_panic_cause = Some(NativeWorkerPanic::capture(
+                    NativeWorker::SourceWriter,
+                    payload.as_ref(),
+                ));
             }
         }
         for (worker, reader) in [
@@ -158,7 +134,9 @@ pub(super) fn drive_child<
             (NativeWorker::StandardOutputReader, stdout_reader),
         ] {
             if let Err(payload) = reader.join() {
-                worker_panic_cause.get_or_insert_with(|| native_worker_panic!(worker, payload));
+                worker_panic_cause.get_or_insert_with(|| {
+                    NativeWorkerPanic::capture(worker, payload.as_ref())
+                });
             }
         }
         if let Some(cause) = worker_panic_cause {
