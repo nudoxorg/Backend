@@ -344,15 +344,15 @@ struct Projector<'x, 'report, 'source> {
     source: &'source str,
     facts: &'x mut FactSet<'source>,
     /// Binding-name span start per pushed fact (`UNSET` when unregistered).
-    name_starts: [u32; MAX_EMISSION_FACTS],
-    name_ends: [u32; MAX_EMISSION_FACTS],
+    name_starts: Box<[u32]>,
+    name_ends: Box<[u32]>,
     /// Declaring-node span start per pushed fact.
-    decl_starts: [u32; MAX_EMISSION_FACTS],
-    decl_ends: [u32; MAX_EMISSION_FACTS],
-    fact_kinds: [EntityKind; MAX_EMISSION_FACTS],
+    decl_starts: Box<[u32]>,
+    decl_ends: Box<[u32]>,
+    fact_kinds: Box<[EntityKind]>,
     /// One row per import-binding fact: the module and imported-name spans
     /// its foreign keys are built from.
-    import_modules: [ImportModule; MAX_EMISSION_FACTS],
+    import_modules: Box<[ImportModule]>,
     import_module_len: usize,
     /// The span-bound checker report, when the authority ran.
     checker: Option<CheckerIndex<'report>>,
@@ -361,7 +361,7 @@ struct Projector<'x, 'report, 'source> {
     pending_type_parameters: u32,
     /// Pooled type-parameter start per pushed fact, retained so the checker
     /// pass can re-attach a completed extension with the computed cell.
-    extension_type_parameters: [u32; MAX_EMISSION_FACTS],
+    extension_type_parameters: Box<[u32]>,
     /// The computed-cell proof mint: one session builder whose computed
     /// arena allocates exactly one node per computed type row, in lane
     /// order, so every minted coordinate equals the row's final type-lane
@@ -1564,16 +1564,16 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             },
             source,
             facts,
-            name_starts: [UNSET; MAX_EMISSION_FACTS],
-            name_ends: [UNSET; MAX_EMISSION_FACTS],
-            decl_starts: [UNSET; MAX_EMISSION_FACTS],
-            decl_ends: [UNSET; MAX_EMISSION_FACTS],
-            fact_kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
-            import_modules: [ImportModule::unset(); MAX_EMISSION_FACTS],
+            name_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            name_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            decl_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            decl_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            fact_kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
+            import_modules: vec![ImportModule::unset(); MAX_EMISSION_FACTS].into_boxed_slice(),
             import_module_len: 0,
             checker: index,
             pending_type_parameters: 0,
-            extension_type_parameters: [0; MAX_EMISSION_FACTS],
+            extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             mint: ComputedMint {
                 builder: IrBuilder::new(),
                 count: 0,

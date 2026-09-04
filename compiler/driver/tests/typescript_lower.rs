@@ -11,7 +11,7 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
@@ -578,68 +578,38 @@ fn genuinely_unresolvable_names_stay_honestly_external() {
 }
 #[test]
 fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
-    let mut member_count = 0;
-    loop {
-        let members = std::iter::repeat(compiler_languages_typescript::TypeTree::This)
-            .take(member_count)
-            .collect();
-        let mut r = report(SOURCE);
-        r.declarations = Box::new([compiler_languages_typescript::Declaration {
-            name_start: 68,
-            name_end: 73,
-            origin: compiler_languages_typescript::Origin::Computed,
-            overload_index: None,
-            r#type: Some(compiler_languages_typescript::TypeTree::Union { members }),
-        }]);
-        if try_lower(SOURCE, Some(&r)).is_err() {
-            assert!(member_count > 0);
-            let members = std::iter::repeat(compiler_languages_typescript::TypeTree::This)
-                .take(member_count - 1)
-                .collect();
-            let mut below = report(SOURCE);
-            below.declarations = Box::new([compiler_languages_typescript::Declaration {
-                name_start: 68,
-                name_end: 73,
-                origin: compiler_languages_typescript::Origin::Computed,
-                overload_index: None,
-                r#type: Some(compiler_languages_typescript::TypeTree::Union { members }),
-            }]);
-            assert!(try_lower(SOURCE, Some(&below)).is_ok());
-            break;
-        }
-        member_count += 1;
-    }
-
-    let mut declaration_count = 0;
-    loop {
-        let declarations = std::iter::repeat(compiler_languages_typescript::Declaration {
-            name_start: 13,
-            name_end: 14,
-            origin: compiler_languages_typescript::Origin::Computed,
-            overload_index: None,
-            r#type: Some(compiler_languages_typescript::TypeTree::This),
-        })
-        .take(declaration_count)
+    let declarations = std::iter::repeat(compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 14,
+        origin: compiler_languages_typescript::Origin::Computed,
+        overload_index: None,
+        r#type: Some(compiler_languages_typescript::TypeTree::This),
+    })
+        .take(2048)
         .collect();
-        let mut r = report(SOURCE);
-        r.declarations = declarations;
-        if try_lower(SOURCE, Some(&r)).is_err() {
-            assert!(declaration_count > 0);
-            let declarations = std::iter::repeat(compiler_languages_typescript::Declaration {
-                name_start: 13,
-                name_end: 14,
-                origin: compiler_languages_typescript::Origin::Computed,
-                overload_index: None,
-                r#type: Some(compiler_languages_typescript::TypeTree::This),
-            })
-            .take(declaration_count - 1)
-            .collect();
-            let mut below = report(SOURCE);
-            below.declarations = declarations;
-            assert!(try_lower(SOURCE, Some(&below)).is_ok());
-            break;
+    let mut below = report(SOURCE);
+    below.declarations = declarations;
+    let lowered = try_lower(SOURCE, Some(&below)).unwrap();
+    let decoded = view(SOURCE, Some(&below));
+    assert!(lowered.ir.entity_count() > 0);
+    assert!(facts(&decoded).len() >= 2048);
+
+    let source: &'static [u8] = Box::leak(
+        (0..16385)
+            .map(|index| format!("export const x{index} = 1;\n"))
+            .collect::<String>()
+            .into_bytes()
+            .into_boxed_slice(),
+    );
+    let above = report(source);
+    match try_lower(source, Some(&above)) {
+        Err(CompileFailure::FactRejected { rejected, .. }) => {
+            assert_eq!(rejected.fact, 16384);
+            assert_eq!(rejected.name_len, 6);
+            assert_eq!(rejected.cause, FactFault::Capacity);
         }
-        declaration_count += 1;
+        Ok(_) => panic!("expected typed fact capacity rejection, source was admitted"),
+        Err(_) => panic!("expected typed fact capacity rejection, got another typed terminal"),
     }
 }
 

@@ -41,11 +41,14 @@ pub(crate) mod typescript;
 /// a source with more declarations is a typed lane rejection, never a
 /// truncated emission. The bound also fixes every canonicalization scratch,
 /// output, and resource reservation below.
-pub(super) const MAX_EMISSION_FACTS: usize = 1024;
+/// 16,384 slots × 4-byte `u32` coordinate = 64 KiB; measured high-water 6,882 facts. Roll back to 8,192 if every target package stays below 4,096 facts.
+pub(super) const MAX_EMISSION_FACTS: usize = 16384;
 /// Dense bound of one fact's ordered product children.
-pub(super) const MAX_FACT_CHILDREN: usize = 16;
+/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 244 pooled children. Roll back to 32 if it stays below 16 per fact.
+pub(super) const MAX_FACT_CHILDREN: usize = 64;
 /// Dense bound of one fact's ordered type-record children.
-pub(super) const MAX_TYPE_CHILDREN: usize = 16;
+/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
+pub(super) const MAX_TYPE_CHILDREN: usize = 64;
 /// Dense bound of the occurrence lane committed beside the declarations.
 pub(super) const MAX_EMISSION_OCCURRENCES: usize = 1024;
 /// Dense bound of the documentation lane committed beside the declarations.
@@ -61,12 +64,16 @@ pub(super) const MAX_REF_LIST_ELEMENTS: usize = 16;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
-pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 2048;
+/// 8,192 slots × 4-byte `u32` owner = 32 KiB; measured target high-water 0 rows. Roll back to 2,048 if it stays below 1,024.
+pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
 /// Dense bound of checker-computed type rows in the schema-2 segment.
-pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 1024;
+/// 32,768 slots × 4-byte `u32` owner = 128 KiB; measured target high-water 23,037 rows. Roll back to 16,384 if every target stays below 8,192.
+pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 32768;
 /// Total type-row budget: one record per fact plus the anonymous pool.
 pub(super) const MAX_TYPE_ROWS: usize =
     MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
+const _: () = assert!(MAX_EMISSION_FACTS <= u32::MAX as usize);
+const _: () = assert!(MAX_TYPE_ROWS <= u32::MAX as usize);
 /// First pool-local ordinal of an anonymous type row.
 const ANONYMOUS_ROW_BASE: u32 = MAX_EMISSION_FACTS as u32;
 /// First pool-local ordinal of a computed type row.
@@ -292,21 +299,21 @@ impl RejectedFact<'_> {
 pub(super) struct FactSet<'source> {
     len: usize,
     total_children: usize,
-    kinds: [EntityKind; MAX_EMISSION_FACTS],
+    kinds: Box<[EntityKind]>,
     names: Box<[&'source [u8]]>,
     type_records: Box<[SemanticTypeRecord<'source>]>,
     type_child_targets: Box<[u32]>,
     type_child_names: Box<[Option<&'source [u8]>]>,
     type_child_flags: Box<[u8]>,
-    type_child_counts: [u8; MAX_EMISSION_FACTS],
+    type_child_counts: Box<[u8]>,
     total_type_children: usize,
-    constructors: [SemanticProductConstructor; MAX_EMISSION_FACTS],
+    constructors: Box<[SemanticProductConstructor]>,
     child_roles: Box<[ProductChildRole]>,
     child_targets: Box<[u32]>,
-    child_counts: [u8; MAX_EMISSION_FACTS],
+    child_counts: Box<[u8]>,
     extensions: Box<[Option<EmissionExtension>; MAX_EMISSION_FACTS]>,
-    key_digests: [u64; MAX_EMISSION_FACTS],
-    visibility: [Visibility; MAX_EMISSION_FACTS],
+    key_digests: Box<[u64]>,
+    visibility: Box<[Visibility]>,
     occurrence_owners: Box<[u32; MAX_EMISSION_OCCURRENCES]>,
     occurrences: Box<[Occurrence<'source>]>,
     occurrence_len: usize,
@@ -358,25 +365,25 @@ impl<'source> FactSet<'source> {
         Self {
             len: 0,
             total_children: 0,
-            kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
+            kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
             names: vec![empty_name; MAX_EMISSION_FACTS].into_boxed_slice(),
             type_records: vec![opaque_record(); MAX_EMISSION_FACTS].into_boxed_slice(),
             type_child_targets: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
             type_child_names: vec![None; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
             type_child_flags: vec![0; MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_counts: [0; MAX_EMISSION_FACTS],
+            type_child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             total_type_children: 0,
-            constructors: [SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS],
+            constructors: vec![SemanticProductConstructor::PRODUCT; MAX_EMISSION_FACTS].into_boxed_slice(),
             child_roles: vec![
                 ProductChildRole::ProductMember;
                 MAX_EMISSION_FACTS * MAX_FACT_CHILDREN
             ]
             .into_boxed_slice(),
             child_targets: vec![0; MAX_EMISSION_FACTS * MAX_FACT_CHILDREN].into_boxed_slice(),
-            child_counts: [0; MAX_EMISSION_FACTS],
+            child_counts: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             extensions: Box::new([None; MAX_EMISSION_FACTS]),
-            key_digests: [0; MAX_EMISSION_FACTS],
-            visibility: [Visibility::Unknown; MAX_EMISSION_FACTS],
+            key_digests: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+            visibility: vec![Visibility::Unknown; MAX_EMISSION_FACTS].into_boxed_slice(),
             occurrence_owners: Box::new([0; MAX_EMISSION_OCCURRENCES]),
             occurrences: vec![
                 Occurrence {
@@ -916,8 +923,8 @@ impl<'source> FactSet<'source> {
             );
         }
         let mut tree = builder.reserve_tree(&versions[..fact_count])?;
-        let mut type_ids = [TypeId::new(0); MAX_TYPE_ROWS];
-        let mut type_seen = [false; MAX_TYPE_ROWS];
+        let mut type_ids = vec![TypeId::new(0); MAX_TYPE_ROWS].into_boxed_slice();
+        let mut type_seen = vec![false; MAX_TYPE_ROWS].into_boxed_slice();
         let mut semantic_types = vec![None; MAX_EMISSION_FACTS].into_boxed_slice();
         for (ordinal, semantic_type) in semantic_types.iter_mut().take(fact_count).enumerate() {
             *semantic_type = live_type(
@@ -1328,8 +1335,8 @@ fn live_type<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     facts: &FactSet<'source>,
     row: u32,
-    ids: &mut [TypeId; MAX_TYPE_ROWS],
-    seen: &mut [bool; MAX_TYPE_ROWS],
+    ids: &mut [TypeId],
+    seen: &mut [bool],
     top_level: bool,
 ) -> Result<Option<TypeId>, compiler_ir::BuildError> {
     let index = row as usize;
