@@ -834,6 +834,9 @@ impl ShellState {
                     state: (*state).into(),
                 };
             }
+            ReplyBody::Snapshot(_) | ReplyBody::Retrieval(_) | ReplyBody::IndexRemoved(_) => {
+                self.projection.index.set_resolved(result);
+            }
         }
     }
 
@@ -849,6 +852,9 @@ impl ShellState {
                 if let Some(status) = self.status_for(*capability) {
                     status.set_failed(diagnostic.code);
                 }
+            }
+            DiagnosticDetail::Retrieval(_) => {
+                self.projection.index.set_failed(diagnostic.code);
             }
             DiagnosticDetail::Text(_)
             | DiagnosticDetail::Limit { .. }

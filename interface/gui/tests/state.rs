@@ -19,7 +19,8 @@ use interface_core::{
     CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
     GenerateRequest, GenerateTarget, GeneratedArtifact, GenerationAuthority, GenerationId,
     IndexSnapshotId, InputText, InputTextError, OperationBudget, Pin, Pressure,
-    PublicationAuthority, ReplyBody, ResourceBudget, RetryBudget, SourceAuthority, SourceText,
+    PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
+    RetryBudget, SnapshotFacts, SourceAuthority, SourceText,
 };
 use interface_gui::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
@@ -622,6 +623,73 @@ fn unavailable_lower_plane_is_typed_and_bounded() -> Result<(), TestError> {
         state.summaries()[5].state,
         ProjectionState::Degraded(Capability::Vector)
     );
+    Ok(())
+}
+
+#[test]
+fn retrieval_facts_and_terminal_project_to_index_without_reifying_a_provider()
+-> Result<(), TestError> {
+    let snapshot = text("library")?;
+    let mut state = ShellState::default();
+    apply(
+        &mut state,
+        reply(
+            35,
+            &ReplyBody::Snapshot(SnapshotFacts {
+                snapshot,
+                resident: false,
+            }),
+        ),
+    )?;
+    assert_eq!(
+        state.index,
+        SurfaceStatus::Resolved(ApplicationDisposition::Complete { emitted: 1 })
+    );
+    assert!(matches!(
+        state.last_reply.as_ref(),
+        Some(ApplicationReply {
+            outcome: ApplicationOutcome::Resolved(ReplyBody::Snapshot(SnapshotFacts {
+                snapshot: observed,
+                resident: false,
+            })),
+            ..
+        }) if *observed == snapshot
+    ));
+
+    apply(
+        &mut state,
+        ApplicationReply {
+            correlation: CorrelationId(36),
+            outcome: ApplicationOutcome::Failed {
+                diagnostic: Diagnostic {
+                    code: DiagnosticCode::RetrievalFailed,
+                    detail: DiagnosticDetail::Retrieval(RetrievalCause::QueryRejected {
+                        reason: RetrievalQueryCause::Empty,
+                    }),
+                },
+            },
+        },
+    )?;
+    assert_eq!(
+        state.index,
+        SurfaceStatus::Failed {
+            code: DiagnosticCode::RetrievalFailed,
+        }
+    );
+    assert!(matches!(
+        state.last_reply.as_ref(),
+        Some(ApplicationReply {
+            outcome: ApplicationOutcome::Failed {
+                diagnostic: Diagnostic {
+                    detail: DiagnosticDetail::Retrieval(RetrievalCause::QueryRejected {
+                        reason: RetrievalQueryCause::Empty,
+                    }),
+                    ..
+                },
+            },
+            ..
+        })
+    ));
     Ok(())
 }
 
