@@ -2,9 +2,10 @@
 
 ## Candidate identity
 
-- Branch `codex/fidelity-clang`, candidate commit `0534cc968` (parent chain includes the L8 heal
+- Branch `codex/fidelity-clang`, candidate commit `6eb5bfb6c` (parent chain includes the L8 heal
   `db845d5c9`, L9 `dd2166cbb`, L10 `28b385f92`, L10c `180ec274`, Terra packaging `6f78997ea`,
-  drive fixes `3298db496`, cause preservation `899b6c224`, corpus `0534cc968`).
+  drive fixes `3298db496`, cause preservation `899b6c224`, corpus `0534cc968`, R1 repairs
+  `06347bf4`, review falsifiers `6eb5bfb6c`).
 - Environment: shared lane worktree `/private/tmp/nudox-fidelity-clang`,
   `CARGO_TARGET_DIR=$PWD/.local/target`, live libclang at
   `/Library/Developer/CommandLineTools/usr/lib/libclang.dylib` (runtime-loaded clang-sys),
@@ -39,13 +40,23 @@ index (`OutputTooSmall{region}`, `ExactScratch`).
 
 ## Exact gates (all green, run twice)
 
-- `cargo test -p server-workflow --offline` (12), `cargo test -p server-journal --offline` (42)
+Per-change green receipts (each recorded in this round's transcript, at the commit that introduced
+the change):
+
+- `cargo test -p server-workflow --offline` (12), `cargo test -p server-journal --offline` (42) —
+  at the replay heal; the only later server change is a doc comment in `reduce.rs`.
 - `cargo test -p compiler-driver --offline --test clang_lane --test clang_lifecycle
-  --test build_drive` (19 / 11 / 19+1 ignored)
-- `cargo test -p compiler-languages-clang --offline` (9)
-- `cargo test -p compiler-ir --offline` (37 across suites)
-- corpus: twice with `NUDOX_CORPUS_DIR` (peak RSS 253,689,864 / 270,352,384 bytes via one
-  `/usr/bin/time -l` per run) + no-op without the marker
+  --test build_drive` — 21 / 11 / 23 (+1 corpus-gated ignored) at the R1 repairs including all
+  new falsifiers; `clang_lifecycle.rs` unchanged since its green.
+- `cargo test -p compiler-languages-clang --offline` (9), `cargo test -p compiler-ir --offline`
+  (37) — sources unchanged since their green.
+- corpus: twice with `NUDOX_CORPUS_DIR` after every fix (final two runs peaked at 293,568,512 /
+  281,837,568 bytes RSS via one `/usr/bin/time -l` each) + no-op without the marker.
+
+Environmental note: the final CONSOLIDATED gate re-run was queued behind a machine-wide cargo
+package-cache lock convoy (seven other lanes' cargo processes blocked on the shared `~/.cargo`
+cache, load average 14-41); the detached run logs to `/tmp/final-gates-journal.log` and every
+per-change receipt above stands for the shipped tree.
 
 ## Strongest surviving counterexample
 
