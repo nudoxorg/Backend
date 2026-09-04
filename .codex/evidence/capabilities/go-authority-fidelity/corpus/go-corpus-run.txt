@@ -1,0 +1,395 @@
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:401:5
+    |
+401 |     WrongScheme { purl: &'url str },
+    |     ^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:401:19
+    |
+401 |     WrongScheme { purl: &'url str },
+    |                   ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:403:5
+    |
+403 |     MissingVersion { purl: &'url str },
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:403:22
+    |
+403 |     MissingVersion { purl: &'url str },
+    |                      ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:405:5
+    |
+405 |     EmptyName { purl: &'url str },
+    |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:405:17
+    |
+405 |     EmptyName { purl: &'url str },
+    |                 ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:407:5
+    |
+407 |     MalformedVersion { purl: &'url str, version: &'url str },
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:407:24
+    |
+407 |     MalformedVersion { purl: &'url str, version: &'url str },
+    |                        ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:407:41
+    |
+407 |     MalformedVersion { purl: &'url str, version: &'url str },
+    |                                         ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:409:5
+    |
+409 |     WorkspaceRoot {
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:410:9
+    |
+410 |         path: PathBuf,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:412:9
+    |
+412 |         source: RustAuthorityError,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:415:5
+    |
+415 |     VersionMismatch {
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:416:9
+    |
+416 |         requested_name: &'url str,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:417:9
+    |
+417 |         requested_version: &'url str,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:418:9
+    |
+418 |         observed_versions: Vec<String>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:421:5
+    |
+421 |     RegistryAbsent { searched_root: PathBuf },
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:421:22
+    |
+421 |     RegistryAbsent { searched_root: PathBuf },
+    |                      ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:423:5
+    |
+423 |     InvalidManifestPath { path: PathBuf },
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:423:27
+    |
+423 |     InvalidManifestPath { path: PathBuf },
+    |                           ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:425:5
+    |
+425 |     Project {
+    |     ^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:426:9
+    |
+426 |         path: PathBuf,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:428:9
+    |
+428 |         source: RustAuthorityError,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:431:5
+    |
+431 |     Cancelled,
+    |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:433:5
+    |
+433 |     MetadataIo(#[source] std::io::Error),
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:435:5
+    |
+435 |     MetadataTooLarge { bytes: usize },
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:435:24
+    |
+435 |     MetadataTooLarge { bytes: usize },
+    |                        ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:437:5
+    |
+437 |     MetadataFailed {
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:438:9
+    |
+438 |         status: Option<i32>,
+    |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:439:9
+    |
+439 |         stderr: Vec<u8>,
+    |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:442:5
+    |
+442 |     MetadataJson(#[source] serde_json::Error),
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:444:5
+    |
+444 |     MissingPackages,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:446:5
+    |
+446 |     MissingPackageField { field: &'static str },
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:446:27
+    |
+446 |     MissingPackageField { field: &'static str },
+    |                           ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:448:5
+    |
+448 |     UnknownEdition { spelling: String },
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:448:22
+    |
+448 |     UnknownEdition { spelling: String },
+    |                      ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> compiler/languages/rust/purl.rs:450:5
+    |
+450 |     ManifestIo {
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:451:9
+    |
+451 |         path: PathBuf,
+    |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> compiler/languages/rust/purl.rs:453:9
+    |
+453 |         source: std::io::Error,
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `compiler-languages-rust` (lib) generated 39 warnings
+warning: unused variable: `opener`
+    --> compiler/driver/lower/clang.rs:1669:10
+     |
+1669 |     let (opener, closer) = match open {
+     |          ^^^^^^ help: if this is intentional, prefix it with an underscore: `_opener`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `type_text_child` is never used
+   --> compiler/driver/lower.rs:231:19
+    |
+153 | impl<'source> SemanticFact<'source> {
+    | ----------------------------------- method in this implementation
+...
+231 |     pub(super) fn type_text_child(mut self, text: &'source [u8]) -> Self {
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variants `Depth` and `Key` are never constructed
+   --> compiler/driver/lower/clang.rs:117:5
+    |
+ 96 | enum ProjectionFault<'source> {
+    |      --------------- variants in this enum
+...
+117 |     Depth {
+    |     ^^^^^
+...
+130 |     Key {
+    |     ^^^
+    |
+    = note: `ProjectionFault` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `anonymous_rows` is never read
+   --> compiler/driver/lower/clang.rs:491:5
+    |
+473 | struct Projector<'authority, 'scratch, 'source> {
+    |        --------- field in this struct
+...
+491 |     anonymous_rows: Vec<(usize, u32)>,
+    |     ^^^^^^^^^^^^^^
+
+warning: method `types` is never used
+   --> compiler/driver/lower/clang.rs:563:8
+    |
+503 | impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
+    | ---------------------------------------------------------------------------- method in this implementation
+...
+563 |     fn types(&self) -> &'scratch [TypeFact] {
+    |        ^^^^^
+
+warning: fields `owner_start` and `reference_start` are never read
+   --> compiler/driver/lower/csharp.rs:109:9
+    |
+107 |     OwnerOrder {
+    |     ---------- fields in this variant
+108 |         /// The owning declaration's start coordinate.
+109 |         owner_start: u32,
+    |         ^^^^^^^^^^^
+110 |         /// The reference's inclusive start coordinate.
+111 |         reference_start: u32,
+    |         ^^^^^^^^^^^^^^^
+    |
+    = note: `ProjectionFault` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `spellings` is never read
+   --> compiler/driver/lower/csharp.rs:118:9
+    |
+116 |     AttributeCapacity {
+    |     ----------------- field in this variant
+117 |         /// The rejected attribute spelling length.
+118 |         spellings: usize,
+    |         ^^^^^^^^^
+    |
+    = note: `ProjectionFault` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variant `NameSpan` is never constructed
+  --> compiler/driver/lower/csharp.rs:99:5
+   |
+86 | enum ProjectionFault {
+   |      --------------- variant in this enum
+...
+99 |     NameSpan {
+   |     ^^^^^^^^
+   |
+   = note: `ProjectionFault` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `collect_syntax_only` is never used
+  --> compiler/driver/lower/python.rs:92:15
+   |
+92 | pub(crate) fn collect_syntax_only<'source>(
+   |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `collect` is never used
+    --> compiler/driver/lower/typescript.rs:1347:15
+     |
+1347 | pub(crate) fn collect<'source>(
+     |               ^^^^^^^
+
+warning: this lint expectation is unfulfilled
+   --> compiler/driver/lower/clang.rs:120:13
+    |
+120 |             dead_code,
+    |             ^^^^^^^^^
+    |
+    = note: operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal
+    = note: `#[warn(unfulfilled_lint_expectations)]` on by default
+
+warning: this lint expectation is unfulfilled
+   --> compiler/driver/lower/clang.rs:133:13
+    |
+133 |             dead_code,
+    |             ^^^^^^^^^
+    |
+    = note: operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal
+
+warning: method `append_group` is never used
+   --> server/journal/journal.rs:122:19
+    |
+ 91 | impl FileJournal {
+    | ---------------- method in this implementation
+...
+122 |     pub(crate) fn append_group(
+    |                   ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `compiler-driver` (lib) generated 12 warnings (run `cargo fix --lib -p compiler-driver` to apply 1 suggestion)
+warning: `server-journal` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running tests/go_corpus.rs (.target/debug/deps/go_corpus-35801fe9bfb4b1c7)
+
+running 2 tests
+test go_support::tests::proxy_escapes_uppercase_only ... ok
+golang:github.com/google/uuid@v1.6.0 outcome=CapacityTerminal entities=411 wall_ms=1378 oracle_ms=626
+golang:gopkg.in/yaml.v3@v3.0.1 outcome=CapacityTerminal entities=1774 wall_ms=1989 oracle_ms=493
+golang:github.com/gorilla/mux@v1.8.1 outcome=CapacityTerminal entities=694 wall_ms=1704 oracle_ms=731
+golang:github.com/google/go-cmp@v0.6.0 outcome=CapacityTerminal entities=2461 wall_ms=2444 oracle_ms=525
+golang:golang.org/x/sync@v0.10.0 outcome=CapacityTerminal entities=334 wall_ms=1334 oracle_ms=708
+golang:golang.org/x/mod@v0.17.0 outcome=CapacityTerminal entities=2284 wall_ms=3116 oracle_ms=715
+golang:golang.org/x/time@v0.5.0 outcome=Complete entities=253 wall_ms=1049 oracle_ms=443
+golang:golang.org/x/tools@v0.30.0 outcome=AuthorityRefusal entities=0 wall_ms=4754 oracle_ms=1726
+golang:github.com/pelletier/go-toml/v2@v2.2.2 outcome=CapacityTerminal entities=3135 wall_ms=4925 oracle_ms=838
+golang:github.com/oklog/ulid/v2@v2.1.0 outcome=CapacityTerminal entities=257 wall_ms=1303 oracle_ms=622
+golang:github.com/cespare/xxhash/v2@v2.3.0 outcome=Complete entities=159 wall_ms=1306 oracle_ms=515
+golang:github.com/BurntSushi/toml@v1.4.0 outcome=CapacityTerminal entities=1624 wall_ms=2154 oracle_ms=560
+golang:github.com/zeebo/xxh3@v1.0.2 outcome=CapacityTerminal entities=283 wall_ms=1296 oracle_ms=491
+golang:github.com/minio/highwayhash@v1.0.2 outcome=Complete entities=184 wall_ms=1188 oracle_ms=481
+golang:github.com/julienschmidt/httprouter@v1.3.0 outcome=Complete entities=256 wall_ms=1407 oracle_ms=726
+golang:github.com/go-chi/chi/v5@v5.0.12 outcome=CapacityTerminal entities=1162 wall_ms=2002 oracle_ms=796
+golang:github.com/rs/zerolog@v1.33.0 outcome=CapacityTerminal entities=2987 wall_ms=4415 oracle_ms=720
+golang:github.com/davecgh/go-spew@v1.1.1 outcome=CapacityTerminal entities=571 wall_ms=1344 oracle_ms=537
+golang:github.com/pkg/errors@v0.9.1 outcome=CapacityTerminal entities=263 wall_ms=983 oracle_ms=453
+golang:github.com/mitchellh/go-homedir@v1.1.0 outcome=Complete entities=27 wall_ms=923 oracle_ms=446
+golang:rsc.io/quote@v1.5.2 outcome=Complete entities=18 wall_ms=1147 oracle_ms=470
+test twenty_one_real_modules_have_decoded_source_truth ... ok
+
+ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.21s

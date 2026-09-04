@@ -2154,7 +2154,7 @@ mod tests {
             ContentId::<SourceFactDomain>::from_canonical_bytes(source),
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"csharp-authority-toolchain"),
         );
-        let mut output = vec![0xa5_u8; 65_536];
+        let mut output = vec![0xa5_u8; 4 * 1024 * 1024];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)?.len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
@@ -3038,9 +3038,10 @@ mod tests {
         let image = over.encode(&source)?;
         let mut facts = FactSet::new();
         match collect(&source, &image, &mut facts) {
-            Err(CSharpCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            Err(CSharpCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.name_len == 4
+                    && rejection.cause == crate::types::FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }

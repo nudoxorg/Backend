@@ -1882,6 +1882,9 @@ const fn empty_go_facts() -> compiler_ir::GoFacts {
         fields: compiler_ir::EntityListId::new(0),
         method_set: compiler_ir::EntityListId::new(0),
         build_constraints: compiler_ir::AtomListId::new(0),
+        constant_value: compiler_ir::AtomListId::new(0),
+        constant_group: 0,
+        constant_flags: 0,
     }
 }
 

@@ -27,12 +27,12 @@
 //! Positions the lane cannot host fold to typed `Unknown` rows that keep
 //! their reason cell: universe and foreign nominals (`error`, `comparable`,
 //! other packages), unconstrained inline interfaces, and depth-limit
-//! truncation. Image rows carry no parameter-name plane, so carrier facts
-//! use Go's blank identifier; receiver spelling and pointer-receiver bits
-//! have no `GoFacts` cell and stay image-only facts. The same holds for the
-//! v4 authority planes the frozen `GoFacts` row cannot host: exact constant
-//! values with their const-group identity and iota flag, and package-level
-//! doc comments (the lane owns no package entity) stay image-only facts.
+//! truncation. Parameter and result carriers borrow exact names from the
+//! v5 signature-parameter plane, projecting a blank image name as `_`;
+//! receiver spelling and pointer-receiver bits have no `GoFacts` cell and
+//! stay image-only. Foreign method-set entries, module metadata, exact
+//! constant values, and receiver spellings remain image-only; local
+//! method-set entries and package rows are projected below.
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
@@ -44,6 +44,7 @@
 //! owner-relative span at the owner's start.
 
 use core::str;
+use std::collections::HashMap;
 
 use compiler_ir::{
     AtomListId, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey, ForeignKeyFault,
@@ -147,16 +148,6 @@ enum ProjectionFault<'image> {
         )]
         owner: u32,
     },
-    /// A satisfaction edge named an in-package interface no pushed
-    /// declaration declares.
-    SatisfactionUnresolved {
-        /// The unresolved interface spelling.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        target: &'image [u8],
-    },
 }
 
 /// Folds one projection fault into the lane's closed terminal. The shared
@@ -253,7 +244,7 @@ pub(crate) fn collect<'source>(
     for index in 0..go.image.declaration_count() {
         let declaration = go.image.declaration(index).map_err(GoCollectError::Image)?;
         if declaration.kind == DeclarationKind::Alias {
-            go.alias(&declaration)?;
+            go.alias(index, &declaration)?;
         }
     }
     // Pass two: member planes, executables, and values in producer order.
@@ -261,7 +252,7 @@ pub(crate) fn collect<'source>(
         let declaration = go.image.declaration(index).map_err(GoCollectError::Image)?;
         match declaration.kind {
             DeclarationKind::Type => go.type_family(index, &declaration)?,
-            DeclarationKind::Function => go.function(&declaration)?,
+            DeclarationKind::Function => go.function(index, &declaration)?,
             DeclarationKind::Constant | DeclarationKind::Static => go.value(&declaration)?,
             DeclarationKind::Alias => {}
         }
@@ -385,13 +376,24 @@ struct Projector<'x, 'source> {
     /// Lane ordinal per image member row index.
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
-    names: Vec<(&'source [u8], u32)>,
+    names: Vec<(&'source [u8], &'source [u8], u32)>,
+    /// Image declaration coordinates by their package-qualified name.
+    declaration_indices: HashMap<(&'source [u8], &'source [u8]), usize>,
     /// Memoized anonymous-context coordinates per image type row.
     anonymous: Vec<Option<u32>>,
 }
 
 impl<'x, 'source> Projector<'x, 'source> {
     fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>) -> Self {
+        let declaration_indices = image
+            .declarations()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                declaration
+                    .ok()
+                    .map(|declaration| ((declaration.package, declaration.name), index))
+            })
+            .collect();
         Self {
             package: image
                 .declaration(0)
@@ -404,20 +406,21 @@ impl<'x, 'source> Projector<'x, 'source> {
             image,
             facts,
             names: Vec::new(),
+            declaration_indices,
         }
     }
 
     /// Records one pushed declaration name for later resolution.
-    fn record_name(&mut self, name: &'source [u8], ordinal: u32) {
-        self.names.push((name, ordinal));
+    fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
+        self.names.push((package, name, ordinal));
     }
 
     /// Resolves one declared name to its pushed fact ordinal.
-    fn lookup(&self, name: &[u8]) -> Option<u32> {
+    fn lookup(&self, package: &[u8], name: &[u8]) -> Option<u32> {
         self.names
             .iter()
-            .find(|(known, _)| *known == name)
-            .map(|(_, ordinal)| *ordinal)
+            .find(|(known_package, known, _)| *known_package == package && *known == name)
+            .map(|(_, _, ordinal)| *ordinal)
     }
 
     /// The already-pushed fact that owns anonymous rows interned for the
@@ -425,7 +428,13 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
         u32::try_from(self.facts.len())
             .ok()
-            .and_then(|len| len.checked_sub(1))
+            .and_then(|len| {
+                if len == 0 {
+                    Some(0)
+                } else {
+                    len.checked_sub(1)
+                }
+            })
             .ok_or(ProjectionFault::Anchor)
     }
 
@@ -445,14 +454,18 @@ impl<'x, 'source> Projector<'x, 'source> {
         .typed(nominal_record(own));
         let ordinal = push(self.facts, fact)?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.name, ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
     /// Pass one: one alias whose declared type is its projected target.
     /// Targets referencing later declarations fold to typed unknowns
     /// because the lane admits strictly backward references only.
-    fn alias(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
+    fn alias(
+        &mut self,
+        index: usize,
+        declaration: &Declaration<'source>,
+    ) -> Result<(), GoCollectError> {
         let root = self.root(declaration.type_root, TypeReason::OracleGap)?;
         let fact = root.attach(SemanticFact::new(
             EntityKind::Alias,
@@ -460,7 +473,8 @@ impl<'x, 'source> Projector<'x, 'source> {
             constructor(EntityKind::Alias),
         ));
         let ordinal = push(self.facts, fact)?;
-        self.record_name(declaration.name, ordinal);
+        self.declaration_ordinals[index] = Some(ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -493,6 +507,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
         }
         let mut methods = Vec::new();
+        let mut method_names = Vec::new();
         for method_index in 0..self.image.method_count() {
             let method = self
                 .image
@@ -509,7 +524,30 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             let ordinal = self.executable(method.name, method.type_root, receiver_start)?;
             methods.push(ordinal);
+            method_names.push(method.name);
             self.method_ordinals[method_index] = Some(ordinal);
+        }
+        for (ordinal, name) in interface_methods {
+            methods.push(ordinal);
+            method_names.push(name);
+        }
+        for method_set_index in 0..self.image.method_set_count() {
+            let method_set = self
+                .image
+                .method_set(method_set_index)
+                .map_err(GoCollectError::Image)?;
+            if usize::try_from(method_set.owner).is_ok_and(|owner| owner != index)
+                || method_set.package != declaration.package
+                || method_names.contains(&method_set.name)
+            {
+                continue;
+            }
+            methods.push(self.executable(
+                method_set.name,
+                method_set.type_root,
+                parameter_start,
+            )?);
+            method_names.push(method_set.name);
         }
         let fields_list = self.entity_list(&fields)?;
         let method_set = self.entity_list(&methods)?;
@@ -526,6 +564,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                     fields: fields_list,
                     method_set,
                     build_constraints: AtomListId::new(0),
+                    constant_value: AtomListId::new(0),
+                    constant_group: 0,
+                    constant_flags: 0,
                 }),
             )
             .map_err(lane_terminal)?;
@@ -537,6 +578,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// named row; inline interface constraints have no fact to name and
     /// stay empty on the pooled row.
     fn type_parameters(&mut self, index: usize) -> Result<(), GoCollectError> {
+        let own_package = self
+            .image
+            .declaration(index)
+            .map_err(GoCollectError::Image)?
+            .package;
         for parameter_index in 0..self.image.type_parameter_count() {
             let row = self
                 .image
@@ -551,9 +597,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .filter(|row| {
                     matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
                         && row.children.1 == 0
-                        && row.package == self.package
+                        && row.package == own_package
                 })
-                .and_then(|row| self.lookup(row.name));
+                .and_then(|row| self.lookup(row.package, row.name));
             self.facts
                 .push_type_parameter(row.name, constraint, None)
                 .map_err(lane_terminal)?;
@@ -593,7 +639,7 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn interface_methods(
         &mut self,
         row: &compiler_languages_go::TypeRow<'source>,
-        methods: &mut Vec<u32>,
+        methods: &mut Vec<(u32, &'source [u8])>,
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -605,36 +651,23 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             let start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
             let ordinal = self.executable(member.name, member.type_root, start)?;
-            methods.push(ordinal);
+            methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
         }
         Ok(())
     }
 
     /// Pass two: one package-level function.
-    fn function(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
-        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
-        self.type_parameters_fn(declaration)?;
-        let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
-        self.record_name(declaration.name, ordinal);
-        Ok(())
-    }
-
-    /// Pushes the pooled type-parameter rows of one function declaration.
-    fn type_parameters_fn(
+    fn function(
         &mut self,
+        index: usize,
         declaration: &Declaration<'source>,
     ) -> Result<(), GoCollectError> {
-        for index in 0..self.image.declaration_count() {
-            let declared = self
-                .image
-                .declaration(index)
-                .map_err(GoCollectError::Image)?;
-            if declared.name != declaration.name || declared.kind != declaration.kind {
-                continue;
-            }
-            return self.type_parameters(index);
-        }
+        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+        self.type_parameters(index)?;
+        let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
+        self.declaration_ordinals[index] = Some(ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -642,9 +675,51 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn value(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
         let kind = entity_kind(declaration.kind);
         let root = self.root(declaration.type_root, TypeReason::Unannotated)?;
-        let fact = root.attach(SemanticFact::new(kind, declaration.name, constructor(kind)));
+        let (constant_value, constant_group, constant_flags) = if kind == EntityKind::Constant {
+            if declaration.value.is_empty() {
+                (
+                    AtomListId::new(0),
+                    declaration.const_group,
+                    u32::from(declaration.iota),
+                )
+            } else {
+                let atom = self
+                    .facts
+                    .intern_atom(declaration.value)
+                    .map_err(lane_terminal)?;
+                let list = self
+                    .facts
+                    .intern_atom_list(core::slice::from_ref(&atom))
+                    .map_err(lane_terminal)?;
+                (list, declaration.const_group, u32::from(declaration.iota))
+            }
+        } else {
+            (AtomListId::new(0), 0, 0)
+        };
+        let fact = root
+            .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
+            .with_extension(EmissionExtension::Go(GoFacts {
+                signature: GoSignature {
+                    parameters: TypeListId::new(0),
+                    results: TypeListId::new(0),
+                    variadic: false,
+                },
+                type_parameters: TypeParameterListId::new(0),
+                fields: EntityListId::new(0),
+                method_set: EntityListId::new(0),
+                build_constraints: AtomListId::new(0),
+                constant_value,
+                constant_group,
+                constant_flags,
+            }));
         let ordinal = push(self.facts, fact)?;
-        self.record_name(declaration.name, ordinal);
+        let index = self
+            .declaration_indices
+            .get(&(declaration.package, declaration.name))
+            .copied()
+            .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: 0 }))?;
+        self.declaration_ordinals[index] = Some(ordinal);
+        self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
     }
 
@@ -685,6 +760,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                         fields: EntityListId::new(0),
                         method_set: EntityListId::new(0),
                         build_constraints: list,
+                        constant_value: AtomListId::new(0),
+                        constant_group: 0,
+                        constant_flags: 0,
                     }));
                 push(self.facts, fact)?;
             }
@@ -747,7 +825,22 @@ impl<'x, 'source> Projector<'x, 'source> {
                 })
             })?;
             let target = if row.target_package.is_empty() {
-                let ordinal = self.lookup(row.target).ok_or_else(|| {
+                let package = if row.owner_is_declaration {
+                    self.image
+                        .declaration(index_of(row.owner_row))
+                        .map_err(GoCollectError::Image)?
+                        .package
+                } else {
+                    let method = self
+                        .image
+                        .method(index_of(row.owner_row))
+                        .map_err(GoCollectError::Image)?;
+                    self.image
+                        .declaration(index_of(method.owner))
+                        .map_err(GoCollectError::Image)?
+                        .package
+                };
+                let ordinal = self.lookup(package, row.target).ok_or_else(|| {
                     terminal(ProjectionFault::OrphanTarget {
                         function: row.target,
                     })
@@ -808,16 +901,20 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .copied()
                 .flatten()
                 .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: row.subject }))?;
-            // Local resolution follows the call-occurrence convention: a
-            // name in the projector's primary package resolves to its pushed
-            // nominal ordinal; every other package routes as a foreign `go`
-            // lineage key that preserves the exact package and interface
-            // name.
-            let local = row.target_package.is_empty() || row.target_package == self.package;
-            let target = if local {
-                let ordinal = self.lookup(row.target).ok_or_else(|| {
-                    terminal(ProjectionFault::SatisfactionUnresolved { target: row.target })
-                })?;
+            // Satisfaction targets are declared in the target package, not
+            // necessarily in the satisfying subject's package. An absent
+            // target package means the subject's declaration package.
+            let subject_package = self
+                .image
+                .declaration(index_of(row.subject))
+                .map_err(GoCollectError::Image)?
+                .package;
+            let target_package = if row.target_package.is_empty() {
+                subject_package
+            } else {
+                row.target_package
+            };
+            let target = if let Some(ordinal) = self.lookup(target_package, row.target) {
                 OccurrenceTarget::Local(EntityId::new(ordinal))
             } else {
                 let package = str::from_utf8(row.target_package)
@@ -881,8 +978,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let param_count = usize::try_from(row.param_count)
                     .unwrap_or(0)
                     .min(children.len());
-                for child in children.iter().take(param_count) {
-                    let ordinal = self.carrier(*child)?;
+                for (ordinal_in_signature, child) in children.iter().take(param_count).enumerate() {
+                    let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
+                    let ordinal = self.carrier(*child, name)?;
                     parameters.push(ordinal);
                     carriers.push(TypeChild {
                         target: ordinal,
@@ -890,8 +988,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                         flags: 0,
                     });
                 }
-                for child in children.iter().skip(param_count) {
-                    let ordinal = self.carrier(*child)?;
+                for (ordinal_in_signature, child) in children.iter().skip(param_count).enumerate() {
+                    let ordinal_in_signature = param_count + ordinal_in_signature;
+                    let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
+                    let ordinal = self.carrier(*child, name)?;
                     results.push(ordinal);
                     carriers.push(TypeChild {
                         target: ordinal,
@@ -934,6 +1034,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             fields: EntityListId::new(0),
             method_set: EntityListId::new(0),
             build_constraints: AtomListId::new(0),
+            constant_value: AtomListId::new(0),
+            constant_group: 0,
+            constant_flags: 0,
         }));
         for ordinal in parameters {
             fact = fact.child(ProductChildRole::FunctionParameter, ordinal);
@@ -950,13 +1053,34 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Pushes one parameter or result carrier fact whose root record is the
     /// projected parameter type.
-    fn carrier(&mut self, row_index: u32) -> Result<u32, GoCollectError> {
+    fn signature_parameter_name(
+        &self,
+        owner: u32,
+        ordinal: usize,
+    ) -> Result<&'source [u8], GoCollectError> {
+        let parameter = self
+            .image
+            .signature_parameters()
+            .enumerate()
+            .find_map(|(_, row)| match row {
+                Ok(row) if row.owner == owner && row.ordinal == ordinal as u32 => {
+                    Some(Ok(row.name))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(GoCollectError::Image(error))),
+            })
+            .transpose()?
+            .unwrap_or(UNNAMED);
+        Ok(if parameter.is_empty() {
+            UNNAMED
+        } else {
+            parameter
+        })
+    }
+
+    fn carrier(&mut self, row_index: u32, name: &'source [u8]) -> Result<u32, GoCollectError> {
         let root = self.root(Some(row_index), TypeReason::OracleGap)?;
-        let fact = root.attach(SemanticFact::new(
-            EntityKind::Parameter,
-            UNNAMED,
-            LEAF_PRODUCT,
-        ));
+        let fact = root.attach(SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT));
         push(self.facts, fact)
     }
 
@@ -1208,9 +1332,9 @@ impl<'x, 'source> Projector<'x, 'source> {
     ) -> Result<RootType<'source>, GoCollectError> {
         let local = row.package == self.package
             && !row.package.is_empty()
-            && self.lookup(row.name).is_some();
+            && self.lookup(row.package, row.name).is_some();
         if local {
-            let base = self.lookup(row.name).unwrap_or_default();
+            let base = self.lookup(row.package, row.name).unwrap_or_default();
             if row.children.1 == 0 {
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
                 record.nominal = Some(NominalRef::Local(EntityId::new(base)));
@@ -1274,9 +1398,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         let local_named = matches!(row.kind, TypeRowKind::Named | TypeRowKind::Alias)
             && row.package == self.package
             && !row.package.is_empty()
-            && self.lookup(row.name).is_some();
+            && self.lookup(row.package, row.name).is_some();
         if local_named && row.children.1 == 0 {
-            return Ok(self.lookup(row.name).unwrap_or_default());
+            return Ok(self.lookup(row.package, row.name).unwrap_or_default());
         }
         self.project_anonymous(index_of(row_index), depth)
     }
@@ -1541,7 +1665,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             self.facts
                 .anonymous_type_child(child.target, child.name, child.flags)?;
         }
-        self.facts.intern_anonymous_type_row(anchor, row.record)
+        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
+            self.facts.intern_anonymous_type_row(anchor, row.record)
+        } else {
+            self.facts
+                .intern_reserved_anchor_type_row(anchor, row.record)
+        }
     }
 
     /// Interns one synthetic builtin leaf row (`map`, channel directions).
@@ -1550,7 +1679,11 @@ impl<'x, 'source> Projector<'x, 'source> {
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_BUILTIN;
         record.text = Some(spelling);
-        self.facts.intern_anonymous_type_row(anchor, record)
+        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
+            self.facts.intern_anonymous_type_row(anchor, record)
+        } else {
+            self.facts.intern_reserved_anchor_type_row(anchor, record)
+        }
     }
 
     /// The exact lattice cells of one basic row: exact integer and float
@@ -1729,13 +1862,15 @@ fn push_doc_lines<'source>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lower::{FactSet, MAX_EMISSION_FACTS, MAX_REF_LISTS};
+    use crate::types::FactFault;
     use compiler_ir::{FragmentView, LanguageExtensionWireFact, SourceIdentity};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    const HEADER_BYTES: usize = 124;
+    const HEADER_BYTES: usize = 136;
     const NONE: u32 = u32::MAX;
-    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v4\0";
+    const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
     const FILE: &[u8] = b"main.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
@@ -1846,6 +1981,7 @@ mod tests {
         methods: Vec<MethodF>,
         parameters: Vec<ParameterF>,
         members: Vec<MemberF>,
+        method_sets: Vec<MethodSetF>,
         docs: Vec<DocF>,
         references: Vec<RefF>,
         constraints: Vec<ConstraintF>,
@@ -1902,6 +2038,14 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct MethodSetF {
+        owner: u32,
+        name: Cell,
+        type_root: Option<u32>,
+        package: Cell,
+    }
+
+    #[derive(Clone)]
     struct DocF {
         owner_kind: u8,
         owner: u32,
@@ -1935,7 +2079,12 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            Self::default()
+            let mut fixture = Self::default();
+            fixture.atom(FILE);
+            fixture.atom(b"demo");
+            fixture.atom(b"main.go\0");
+            fixture.atom(PACKAGE);
+            fixture
         }
 
         fn atom(&mut self, text: &[u8]) -> Cell {
@@ -2101,6 +2250,17 @@ mod tests {
             );
         }
 
+        fn method_set(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            let name = self.atom(name);
+            let package = self.atom(PACKAGE);
+            self.method_sets.push(MethodSetF {
+                owner,
+                name,
+                type_root,
+                package,
+            });
+        }
+
         fn declaration(&mut self, kind: u8, name: &[u8], type_root: Option<u32>) -> usize {
             let spelled = self.atom(name);
             let package = self.atom(PACKAGE);
@@ -2236,7 +2396,6 @@ mod tests {
             let cell =
                 |borrowed: Cell| (borrowed.offset.to_le_bytes(), borrowed.length.to_le_bytes());
             let file = self.file_cell();
-            let file = self.file_cell();
             let mut declarations = Vec::new();
             for row in &self.declarations {
                 let (name, name_len) = cell(row.name);
@@ -2314,6 +2473,8 @@ mod tests {
                 members.extend_from_slice(&0_u32.to_le_bytes());
                 members.extend_from_slice(&0_u32.to_le_bytes());
                 members.extend_from_slice(&0_u32.to_le_bytes());
+                members.extend_from_slice(&0_u32.to_le_bytes());
+                members.extend_from_slice(&0_u32.to_le_bytes());
             }
             let mut docs = Vec::new();
             for row in &self.docs {
@@ -2369,6 +2530,114 @@ mod tests {
                 children.extend_from_slice(&target.to_le_bytes());
                 children.extend_from_slice(&0_u32.to_le_bytes());
             }
+            // The fixture has no resolved module metadata.  Keep the module
+            // plane absent, as required by its zero header count; packages
+            // therefore begin immediately after satisfactions.
+            let module = Vec::new();
+            let mut packages = Vec::new();
+            let import_path = self.atom_cell(PACKAGE);
+            let package_name = self.atom_cell(b"demo");
+            let files = self.atom_cell(b"main.go\0");
+            packages.extend_from_slice(&import_path.offset.to_le_bytes());
+            packages.extend_from_slice(&import_path.length.to_le_bytes());
+            packages.extend_from_slice(&package_name.offset.to_le_bytes());
+            packages.extend_from_slice(&package_name.length.to_le_bytes());
+            packages.extend_from_slice(&files.offset.to_le_bytes());
+            packages.extend_from_slice(&files.length.to_le_bytes());
+            packages.extend_from_slice(&1_u32.to_le_bytes());
+            if let Some(extra_path) = self
+                .declarations
+                .iter()
+                .map(|declaration| declaration.package)
+                .find(|package| {
+                    let package_end = usize::try_from(package.offset).ok().and_then(|offset| {
+                        usize::try_from(package.length)
+                            .ok()
+                            .and_then(|length| offset.checked_add(length))
+                    });
+                    let import_end = usize::try_from(import_path.offset).ok().and_then(|offset| {
+                        usize::try_from(import_path.length)
+                            .ok()
+                            .and_then(|length| offset.checked_add(length))
+                    });
+                    match (package_end, import_end) {
+                        (Some(package_end), Some(import_end)) => {
+                            self.atom_bytes.get(package.offset as usize..package_end)
+                                != self.atom_bytes.get(import_path.offset as usize..import_end)
+                        }
+                        _ => false,
+                    }
+                })
+            {
+                let extra_name = self.atom_cell(b"Extra");
+                packages.extend_from_slice(&extra_path.offset.to_le_bytes());
+                packages.extend_from_slice(&extra_path.length.to_le_bytes());
+                packages.extend_from_slice(&extra_name.offset.to_le_bytes());
+                packages.extend_from_slice(&extra_name.length.to_le_bytes());
+                packages.extend_from_slice(&files.offset.to_le_bytes());
+                packages.extend_from_slice(&files.length.to_le_bytes());
+                packages.extend_from_slice(&1_u32.to_le_bytes());
+            }
+            let package_count = u32::try_from(packages.len() / 28).map_err(TestError::from)?;
+
+            let mut signature_parameters = Vec::new();
+            for (owner, row) in self.types.iter().enumerate() {
+                if row.kind != ROW_FUNC {
+                    continue;
+                }
+                for ordinal in 0..row.children.1 {
+                    signature_parameters.extend_from_slice(
+                        &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
+                    );
+                    signature_parameters.extend_from_slice(&ordinal.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&0_u32.to_le_bytes());
+                    signature_parameters.extend_from_slice(&NONE.to_le_bytes());
+                }
+            }
+
+            let mut method_sets = Vec::new();
+            if self.method_sets.is_empty() {
+                for (owner, row) in self.types.iter().enumerate() {
+                    if row.kind != ROW_INTERFACE {
+                        continue;
+                    }
+                    let start = usize::try_from(row.members.0).map_err(TestError::from)?;
+                    let end = start
+                        .checked_add(usize::try_from(row.members.1).map_err(TestError::from)?)
+                        .ok_or(TestError::Tail)?;
+                    for member in self.members.get(start..end).ok_or(TestError::Tail)? {
+                        if member.kind != 1 {
+                            continue;
+                        }
+                        let (name, name_len) = cell(member.name);
+                        method_sets.extend_from_slice(
+                            &u32::try_from(owner).map_err(TestError::from)?.to_le_bytes(),
+                        );
+                        method_sets.extend_from_slice(&name);
+                        method_sets.extend_from_slice(&name_len);
+                        method_sets
+                            .extend_from_slice(&member.type_root.unwrap_or(NONE).to_le_bytes());
+                        let package = self.atom_cell(PACKAGE);
+                        method_sets.extend_from_slice(&package.offset.to_le_bytes());
+                        method_sets.extend_from_slice(&package.length.to_le_bytes());
+                    }
+                }
+            } else {
+                for row in &self.method_sets {
+                    let (name, name_len) = cell(row.name);
+                    method_sets.extend_from_slice(&row.owner.to_le_bytes());
+                    method_sets.extend_from_slice(&name);
+                    method_sets.extend_from_slice(&name_len);
+                    method_sets.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
+                    let package = row.package;
+                    method_sets.extend_from_slice(&package.offset.to_le_bytes());
+                    method_sets.extend_from_slice(&package.length.to_le_bytes());
+                }
+            }
+
             let sections = [
                 declarations,
                 types,
@@ -2379,6 +2648,10 @@ mod tests {
                 references,
                 constraints,
                 satisfactions,
+                module,
+                packages,
+                signature_parameters,
+                method_sets,
                 children,
                 self.atom_bytes.clone(),
             ];
@@ -2396,7 +2669,7 @@ mod tests {
             let body = sections.iter().map(Vec::len).sum::<usize>();
             let mut image = vec![0_u8; HEADER_BYTES];
             image[..4].copy_from_slice(b"NGAI");
-            image[4..6].copy_from_slice(&4_u16.to_le_bytes());
+            image[4..6].copy_from_slice(&5_u16.to_le_bytes());
             image[6..8].copy_from_slice(
                 &u16::try_from(HEADER_BYTES)
                     .map_err(TestError::from)?
@@ -2407,13 +2680,17 @@ mod tests {
             image[16..20].copy_from_slice(&count(body)?.to_le_bytes());
             image[20..52].copy_from_slice(Sha256::digest(source).as_slice());
             image[84..88].copy_from_slice(&counts[1].to_le_bytes());
-            image[88..92].copy_from_slice(&counts[2].to_le_bytes());
-            image[92..96].copy_from_slice(&counts[3].to_le_bytes());
-            image[96..100].copy_from_slice(&counts[4].to_le_bytes());
-            image[100..104].copy_from_slice(&counts[5].to_le_bytes());
-            image[104..108].copy_from_slice(&counts[6].to_le_bytes());
+            image[88..92].copy_from_slice(&counts[6].to_le_bytes());
+            image[92..96].copy_from_slice(&counts[2].to_le_bytes());
+            image[96..100].copy_from_slice(&counts[3].to_le_bytes());
+            image[100..104].copy_from_slice(&counts[4].to_le_bytes());
+            image[104..108].copy_from_slice(&counts[5].to_le_bytes());
             image[108..112].copy_from_slice(&counts[7].to_le_bytes());
             image[112..116].copy_from_slice(&counts[8].to_le_bytes());
+            image[116..120].copy_from_slice(&0_u32.to_le_bytes());
+            image[120..124].copy_from_slice(&package_count.to_le_bytes());
+            image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
+            image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
             let mut digest = Sha256::new();
             digest.update(IMAGE_DOMAIN);
             digest.update(&image[..52]);
@@ -2479,7 +2756,7 @@ mod tests {
 
     /// Decodes the Go extension row of one fact: a 16-byte header, one
     /// 20-byte directory per plane (Go is the third), then the row table and
-    /// the 28-byte fact pool.
+    /// the 44-byte fact pool.
     fn go_extension(
         view: &FragmentView<'_>,
         ordinal: usize,
@@ -2500,7 +2777,7 @@ mod tests {
             return Err(TestError::Missing("go extension row"));
         }
         let at =
-            offset + rows * 4 + usize::try_from(row_ordinal).map_err(|_| TestError::Tail)? * 28;
+            offset + rows * 4 + usize::try_from(row_ordinal).map_err(|_| TestError::Tail)? * 44;
         compiler_ir::GoFacts::decode(payload, at).ok_or(TestError::Missing("go facts"))
     }
 
@@ -2625,12 +2902,14 @@ mod tests {
         let payload = view
             .type_fact_payload()
             .ok_or(TestError::Missing("type payload"))?;
-        let mut cursor = 4_usize;
-        let rows = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
+        let mut cursor = 8_usize;
+        let declared = usize::try_from(word(payload, 0)?).map_err(|_| TestError::Tail)?;
+        let computed = usize::try_from(word(payload, 4)?).map_err(|_| TestError::Tail)?;
+        let rows = declared.checked_add(computed).ok_or(TestError::Tail)?;
         let mut positions = Vec::new();
         for _ in 0..rows {
             cursor += 4 + 1 + 4 + 4;
-            for cell in 0..2 {
+            for _cell in 0..2 {
                 match payload.get(cursor).copied() {
                     Some(0) => cursor += 1,
                     Some(1) => {
@@ -2639,9 +2918,6 @@ mod tests {
                         cursor += 5 + length;
                     }
                     _ => return Err(TestError::Missing("text cell")),
-                }
-                if cell == 0 {
-                    break;
                 }
             }
             let nominal = payload
@@ -2652,22 +2928,57 @@ mod tests {
             if nominal == 1 {
                 cursor += 4;
             } else if nominal == 2 {
-                cursor += 16 + 4;
+                cursor += 32 + 4;
             }
             cursor += 8;
         }
+        cursor += 4;
         let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Tail)?;
         let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Tail)?;
-        for _ in 0..start {
-            // Local tag + u32 + empty name cell + flags.
-            cursor += 1 + 4 + 1 + 1;
-        }
-        for _ in 0..length {
-            if payload.get(cursor).copied() != Some(0) {
-                return Err(TestError::Missing("local child"));
+        let end = start.checked_add(length).ok_or(TestError::Tail)?;
+        for child_index in 0..end {
+            let tag = payload
+                .get(cursor)
+                .copied()
+                .ok_or(TestError::Missing("child tag"))?;
+            cursor += 1;
+            let target = match tag {
+                0 => {
+                    let target = word(payload, cursor)?;
+                    cursor += 4;
+                    Some(target)
+                }
+                1 => {
+                    cursor = cursor.checked_add(32 + 4).ok_or(TestError::Tail)?;
+                    None
+                }
+                2 => None,
+                _ => return Err(TestError::Missing("child tag")),
+            };
+            if child_index >= start {
+                if let Some(target) = target {
+                    positions.push(
+                        target
+                            .checked_sub(MAX_EMISSION_FACTS as u32)
+                            .unwrap_or(target),
+                    );
+                } else {
+                    return Err(TestError::Missing("local child"));
+                }
             }
-            positions.push(word(payload, cursor + 1)?);
-            cursor += 1 + 4 + 1 + 1;
+            let present = payload
+                .get(cursor)
+                .copied()
+                .ok_or(TestError::Missing("child name cell"))?;
+            cursor += 1;
+            if present == 1 {
+                let name_length =
+                    usize::try_from(word(payload, cursor)?).map_err(|_| TestError::Tail)?;
+                cursor = cursor.checked_add(4 + name_length).ok_or(TestError::Tail)?;
+            } else if present != 0 {
+                return Err(TestError::Missing("child name cell"));
+            }
+            cursor = cursor.checked_add(1).ok_or(TestError::Tail)?;
         }
         Ok(positions)
     }
@@ -2692,7 +3003,8 @@ mod tests {
         }
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        let arch = |signed: bool| (TypeWidth::Arch.to_cell()) | u32::from(signed);
+        let arch =
+            |signed: bool| (TypeWidth::Arch.to_cell() << INTEGER_WIDTH_SHIFT) | u32::from(signed);
         let expected: [(u32, u32, u32); 9] = [
             (SHAPE_INTEGER, arch(true), 0),
             (SHAPE_INTEGER, 8 << INTEGER_WIDTH_SHIFT, 0),
@@ -2803,16 +3115,16 @@ mod tests {
                 return Err(TestError::Missing("carrier row"));
             }
         }
-        let error_carrier = row(&view, 3)?;
+        let error_carrier = row(&view, 4)?;
         if error_carrier.record.tag != SemanticTypeTag::Unknown
             || error_carrier.record.text != Some(b"error".as_slice())
         {
             return Err(TestError::Missing("universe error fold"));
         }
-        let brew = row(&view, 4)?;
+        let brew = row(&view, 5)?;
         if brew.record.tag != SemanticTypeTag::FunctionPointer
             || brew.record.payload1 != SemanticTypeRecord::RESULT_FLAG
-            || field_children(&view, &brew)? != vec![0, 1, 2, 3]
+            || field_children(&view, &brew)? != vec![1, 2, 3, 4]
         {
             return Err(TestError::Missing("brew function pointer"));
         }
@@ -2823,7 +3135,7 @@ mod tests {
         {
             return Err(TestError::Missing("brew signature lists"));
         }
-        let variadic_row = row(&view, 6)?;
+        let variadic_row = row(&view, 7)?;
         if variadic_row.record.payload1 != 0 {
             return Err(TestError::Missing("void variadic result flag"));
         }
@@ -2870,6 +3182,11 @@ mod tests {
         if store_facts.method_set.raw != 3 || pooled_list(&view, 2, 3)? != vec![9] {
             return Err(TestError::Missing("store method set"));
         }
+        let mut with_plane_row = fix.clone();
+        with_plane_row.method_set(iface_row, b"Put", Some(put));
+        if lower(&with_plane_row, b"package demo\n")? != bytes {
+            return Err(TestError::Missing("method-set duplicate"));
+        }
         let get_row = row(&view, 6)?;
         if get_row.record.tag != SemanticTypeTag::FunctionPointer
             || get_row.record.payload1 != SemanticTypeRecord::RESULT_FLAG
@@ -2888,6 +3205,47 @@ mod tests {
             return Err(TestError::Missing("empty bag extension"));
         }
         Ok(())
+    }
+
+    #[test]
+    fn method_set_bound_covers_seventeen_and_rejects_thirty_three() -> Result<(), TestError> {
+        let fixture = |count: usize| {
+            let mut fix = Fixture::new();
+            let owner = fix.declaration(KIND_TYPE, b"Authority", None);
+            let authority = fix.start_row(ROW_INTERFACE);
+            fix.declarations[owner].type_root = Some(authority);
+            for index in 0..count {
+                let name = format!("M{index:03}");
+                fix.method_set(owner as u32, name.as_bytes(), None);
+            }
+            fix
+        };
+
+        for count in 33..=128 {
+            let legal = fixture(count);
+            let bytes = lower(&legal, b"package demo\ntype Authority struct{}\n")?;
+            let view = FragmentView::validate(&bytes)?;
+            let facts = go_extension(&view, 0)?;
+            if pooled_list(
+                &view,
+                2,
+                usize::try_from(facts.method_set.raw).map_err(|_| TestError::Tail)?,
+            )?
+            .len()
+                != count
+            {
+                return Err(TestError::Missing("method-set declarations through width"));
+            }
+        }
+
+        let beyond_width = fixture(129);
+        match lower(&beyond_width, b"package demo\ntype Authority struct{}\n") {
+            Err(TestError::Collect(GoCollectError::Lowering(
+                LoweringUnsupported::NoSupportedDeclaration,
+            ))) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(TestError::Missing("method-set capacity rejection")),
+        }
     }
 
     #[test]
@@ -2979,7 +3337,7 @@ mod tests {
         // 2 slice. The wire forbids anonymous-to-fact references, so the
         // nested named slice element folds to the typed unknown that
         // retains its spelling while the chan and slice shapes stay exact.
-        let channel_row = row(&view, 1)?;
+        let channel_row = row(&view, 4)?;
         if channel_row.record.tag != SemanticTypeTag::Apply
             || field_children(&view, &channel_row)? != vec![0, 2]
         {
@@ -3022,6 +3380,11 @@ mod tests {
         let c_decl = fix.declaration(KIND_ALIAS, b"C", Some(int));
         let _ = c_decl;
         let _ = b_decl;
+        fix.doc(
+            DOC_DECLARATION,
+            u32::try_from(a_decl).map_err(TestError::from)?,
+            b"Alias documentation",
+        );
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 B, 1 A, 2 C.
@@ -3036,6 +3399,14 @@ mod tests {
             || primitive.record.payload0 != SHAPE_INTEGER
         {
             return Err(TestError::Missing("alias primitive target"));
+        }
+        let mut docs = view.docs().ok_or(TestError::Missing("docs"))?;
+        let doc = docs.next().ok_or(TestError::Missing("alias doc"))??;
+        if doc.owner.raw != 1 || doc.fragment != DocFragmentInput::Text(b"Alias documentation") {
+            return Err(TestError::Missing("alias doc owner"));
+        }
+        if docs.next().is_some() {
+            return Err(TestError::Missing("exact alias docs"));
         }
         Ok(())
     }
@@ -3172,7 +3543,7 @@ mod tests {
             return Err(TestError::Missing("constraint atom list"));
         }
         let listed = pooled_list(&view, 0, 1)?;
-        if listed != vec![0] {
+        if listed != vec![1] {
             return Err(TestError::Missing("constraint atom coordinate"));
         }
         Ok(())
@@ -3181,7 +3552,7 @@ mod tests {
     #[test]
     fn capacity_beyond_the_lane_rejects_exactly() -> Result<(), TestError> {
         let mut fix = Fixture::new();
-        for index in 0..(crate::lower::MAX_EMISSION_FACTS + 1) {
+        for index in 0..crate::lower::MAX_EMISSION_FACTS {
             let mut spelling = b"t".to_vec();
             spelling.extend_from_slice(index.to_string().as_bytes());
             let name = fix.atom(&spelling);
@@ -3189,8 +3560,8 @@ mod tests {
                 kind: KIND_TYPE,
                 name,
                 package: Cell {
-                    offset: 0,
-                    length: 0,
+                    offset: fix.atom_cell(PACKAGE).offset,
+                    length: fix.atom_cell(PACKAGE).length,
                 },
                 type_root: None,
                 value: Cell {
@@ -3201,12 +3572,36 @@ mod tests {
                 iota: false,
             });
         }
+        let exact_image = fix.encode(b"package demo\n")?;
+        let mut exact_facts = FactSet::new();
+        collect(b"package demo\n", &exact_image, &mut exact_facts).map_err(TestError::Collect)?;
+
+        let index = crate::lower::MAX_EMISSION_FACTS;
+        let mut spelling = b"t".to_vec();
+        spelling.extend_from_slice(index.to_string().as_bytes());
+        let name = fix.atom(&spelling);
+        fix.declarations.push(DeclRow {
+            kind: KIND_TYPE,
+            name,
+            package: Cell {
+                offset: fix.atom_cell(PACKAGE).offset,
+                length: fix.atom_cell(PACKAGE).length,
+            },
+            type_root: None,
+            value: Cell {
+                offset: 0,
+                length: 0,
+            },
+            const_group: 0,
+            iota: false,
+        });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
         match collect(b"package demo\n", &image, &mut facts) {
-            Err(GoCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            Err(GoCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.name_len == 1 + index.to_string().len()
+                    && rejection.cause == FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }
@@ -3296,25 +3691,104 @@ mod tests {
     }
 
     #[test]
-    fn constant_values_stay_image_only_without_changing_the_projection() -> Result<(), TestError> {
+    fn satisfaction_target_resolves_in_declaring_package() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let keeper = fix.declaration(KIND_TYPE, b"Keeper", None);
+        let keeper_type = fix.start_row(ROW_INTERFACE);
+        fix.declarations[keeper].type_root = Some(keeper_type);
+        let subject = fix.declaration(KIND_TYPE, b"Extra", None);
+        fix.declarations[subject].package = fix.atom(b"example.com/demo/extra");
+        fix.satisfaction(subject, b"Keeper", PACKAGE);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("satisfaction occurrence"))??;
+        if occurrence.owner.raw != 1
+            || occurrence.occurrence.target != OccurrenceTarget::Local(EntityId::new(0))
+            || occurrence.occurrence.kind != ReferenceKind::TypeReference
+            || occurrence.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("declaring-package satisfaction target"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact satisfaction occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projected_constant_facts_carry_exact_value_group_and_iota() -> Result<(), TestError> {
         let mut fix = Fixture::new();
         let int = fix.basic(b"int");
         fix.constant(b"First", Some(int), b"0", 1);
         let with_values = lower(&fix, b"package demo\nconst First = 0\n")?;
         let view = FragmentView::validate(&with_values)?;
-        if view
-            .docs()
-            .is_some_and(|mut cursor| cursor.next().is_some())
-        {
-            return Err(TestError::Missing("no value doc fragments"));
+        let facts = go_extension(&view, 0)?;
+        if facts.constant_group != 1 || facts.constant_flags != 1 {
+            return Err(TestError::Missing("constant group and iota"));
         }
-        // The exact constant value has no GoFacts cell: the same fact set
-        // with a different value cell must commit byte-identical fragments.
+        if facts.constant_value.raw != 1 {
+            return Err(TestError::Missing("constant value atom list"));
+        }
+        let listed = pooled_list(&view, 0, facts.constant_value.raw as usize)?;
+        if listed.len() != 1 {
+            return Err(TestError::Missing("one constant value atom"));
+        }
+        let atom = view
+            .atoms()
+            .nth(usize::try_from(listed[0]).map_err(|_| TestError::Tail)?)
+            .ok_or(TestError::Missing("constant value atom"))?;
+        if atom.bytes != b"0" {
+            return Err(TestError::Missing("exact constant value"));
+        }
+        // Falsifier: changing the image value changes the projected fragment.
         let mut mutated = fix.clone();
         mutated.declarations[0].value = mutated.atom(b"255");
         let other = lower(&mutated, b"package demo\nconst First = 0\n")?;
-        if other != with_values {
-            return Err(TestError::Missing("value-free projection"));
+        if other == with_values {
+            return Err(TestError::Missing("value-sensitive projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn constants_outside_groups_and_nonconstants_keep_zero_constant_cells() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let ungrouped_index = fix.constant(b"Ungrouped", Some(int), b"7", 0);
+        fix.declarations[ungrouped_index].iota = false;
+        fix.declaration(KIND_TYPE, b"Named", None);
+        fix.declaration(KIND_FUNC, b"run", None);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let named = go_extension(&view, 0)?;
+        if named.constant_value.raw != 0 || named.constant_group != 0 || named.constant_flags != 0 {
+            return Err(TestError::Missing("type constant cells"));
+        }
+        let function = go_extension(&view, 2)?;
+        if function.constant_value.raw != 0
+            || function.constant_group != 0
+            || function.constant_flags != 0
+        {
+            return Err(TestError::Missing("function constant cells"));
+        }
+        let ungrouped = go_extension(&view, 1)?;
+        if ungrouped.constant_value.raw != 1 {
+            return Err(TestError::Missing("ungrouped value coordinate"));
+        }
+        if ungrouped.constant_group != 0 {
+            return Err(TestError::Missing("ungrouped group"));
+        }
+        if ungrouped.constant_flags != 0 {
+            return Err(TestError::Missing("ungrouped flags"));
+        }
+        if pooled_list(&view, 0, ungrouped.constant_value.raw as usize)?.len() != 1 {
+            return Err(TestError::Missing("ungrouped value atom"));
         }
         Ok(())
     }
@@ -3331,6 +3805,39 @@ mod tests {
             .is_some_and(|mut cursor| cursor.next().is_some())
         {
             return Err(TestError::Missing("package doc projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pooled_entity_lists_admit_the_exact_measured_bound_then_reject() -> Result<(), TestError> {
+        let mut facts = FactSet::new();
+        for _ in 0..MAX_REF_LISTS - 1 {
+            if facts
+                .push(SemanticFact::new(
+                    EntityKind::Record,
+                    b"row",
+                    SemanticProductConstructor::PRODUCT,
+                ))
+                .is_err()
+            {
+                return Err(TestError::Missing("fact setup capacity"));
+            }
+        }
+
+        for index in 0..MAX_REF_LISTS - 1 {
+            if facts.intern_entity_list(&[index as u32]).is_err() {
+                return Err(TestError::Missing("pooled entity list setup"));
+            }
+        }
+        if facts.intern_entity_list(&[0, 1]).is_err() {
+            return Err(TestError::Missing("exact pooled entity-list bound"));
+        }
+        if !matches!(
+            facts.intern_entity_list(&[0, 1, 2]),
+            Err(FactFault::RefListCapacity)
+        ) {
+            return Err(TestError::Missing("pooled entity-list capacity rejection"));
         }
         Ok(())
     }

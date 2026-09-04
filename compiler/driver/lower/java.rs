@@ -2396,9 +2396,10 @@ mod tests {
         let image = fix.bind(b"")?;
         let mut facts = FactSet::new();
         match collect(ProfileRelease::Java21, b"", &image, &mut facts) {
-            Err(JavaCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            )) => {}
+            Err(JavaCollectError::Rejected(rejection))
+                if rejection.fact == crate::lower::MAX_EMISSION_FACTS
+                    && rejection.name_len == 6
+                    && rejection.cause == FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
         }

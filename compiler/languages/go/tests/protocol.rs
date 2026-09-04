@@ -237,13 +237,11 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go oracle e2e: {compiler:?} is unavailable; set COMPILER_GO_COMPILER");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let output = adapter().run(&fixture)?;
@@ -451,13 +449,11 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module");
     let source = fixture.join("demo.go");
@@ -531,6 +527,31 @@ fn authority_image_round_trips_the_full_output() -> Result<(), OracleError> {
         declaration_cursor,
         "the declaration plane must hold exactly the transcript's declarations"
     );
+
+    // A method call is owned by its receiver declaration, while its resolved
+    // span remains attached to the method row for containment.
+    let inner_index = (0..image.declaration_count())
+        .find(|&index| image.declaration(index).unwrap().name == b"Inner")
+        .expect("Inner declaration") as u32;
+    let references = image
+        .references()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?;
+    for row in &references {
+        let owner = image.declaration(row.owner as usize).map_err(image_fault)?;
+        assert_ne!(owner.name, b"init", "implicit init must not own a reference row");
+    }
+    let method_reference = references
+        .into_iter()
+        .find(|row| row.target == b"helper" && row.receiver == b"Inner")
+        .expect("Inner method reference to helper");
+    assert_eq!(method_reference.owner, inner_index);
+    assert!(!method_reference.owner_is_declaration);
+    let method = image
+        .method(method_reference.owner_row as usize)
+        .map_err(image_fault)?;
+    assert_eq!(method.owner, inner_index);
+    assert_eq!(method.name, b"CallsHelper");
 
     // Signature-parameter plane: one row per func parameter/result with the
     // exact source names (empty for unnamed).
@@ -641,13 +662,11 @@ fn authority_image_carries_parameter_names_and_embedded_method_sets() -> Result<
         .lock()
         .unwrap();
     let compiler = std::env::var("COMPILER_GO_COMPILER").unwrap_or_else(|_| "go".to_owned());
-    if std::process::Command::new(&compiler)
-        .arg("version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipping Go authority-image e2e: {compiler:?} is unavailable");
-        return Ok(());
+    if let Err(source) = std::process::Command::new(&compiler).arg("version").output() {
+        return Err(OracleError::ToolingUnavailable {
+            tool: "COMPILER_GO_COMPILER",
+            source,
+        });
     }
     let root = std::env::temp_dir().join(format!("nudox-go-image-v5-{}", std::process::id()));
     fs::create_dir_all(root.join("api")).expect("temp module directory");
@@ -1153,5 +1172,160 @@ mod mutation_battery {
         let mut image = build();
         image[SIGPARAMS_AT + 8] ^= 0xff;
         assert_eq!(open(&image), ImageError::Digest);
+    }
+}
+
+/// Reference rows are ordered by source file first, then by call start.  This
+/// fixture keeps the owner checks real while making the cross-file reset
+/// explicit: the second file's first call starts before the first file's last
+/// call.
+mod reference_order {
+    use compiler_languages_go::{GoImage, ImageError};
+    use sha2::{Digest, Sha256};
+
+    const DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v5\0";
+    const HEADER: usize = 136;
+    const DECLS: usize = HEADER;
+    const REFS: usize = DECLS + 2 * 56;
+    const PACKAGES: usize = REFS + 3 * 48;
+    const ATOMS: usize = PACKAGES + 28;
+    const ATOM_BYTES: &[u8] = b"example.com/demo\0demo\0first.go\0second.go\0one\0two\0three\0";
+
+    fn cell(value: u32) -> [u8; 4] {
+        value.to_le_bytes()
+    }
+
+    fn atom(bytes: &[u8], needle: &[u8]) -> [u32; 2] {
+        let start = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap();
+        [start as u32, needle.len() as u32]
+    }
+
+    fn declaration(name: [u32; 2], package: [u32; 2], file: [u32; 2], span: (u32, u32)) -> Vec<u8> {
+        let mut row = Vec::with_capacity(56);
+        for value in [
+            3 | (1 << 8),
+            name[0],
+            name[1],
+            package[0],
+            package[1],
+            u32::MAX,
+            span.0,
+            span.1,
+            file[0],
+            file[1],
+            0,
+            0,
+            0,
+            0,
+        ] {
+            row.extend_from_slice(&cell(value));
+        }
+        row
+    }
+
+    fn reference(owner: usize, file: [u32; 2], start: u32, target: [u32; 2]) -> Vec<u8> {
+        let mut row = Vec::with_capacity(48);
+        for value in [
+            owner as u32,
+            target[0],
+            target[1],
+            0,
+            0,
+            start,
+            start + 1,
+            file[0],
+            file[1],
+            0,
+            0,
+            0,
+        ] {
+            row.extend_from_slice(&cell(value));
+        }
+        row
+    }
+
+    fn build(order: &[(usize, usize, u32)]) -> Vec<u8> {
+        let first = atom(ATOM_BYTES, b"first.go");
+        let second = atom(ATOM_BYTES, b"second.go");
+        let target = atom(ATOM_BYTES, b"one");
+        let package = atom(ATOM_BYTES, b"example.com/demo");
+        let package_name = atom(ATOM_BYTES, b"demo");
+        let body = 2 * 56 + 3 * 48 + 28 + ATOM_BYTES.len();
+        let mut image = vec![0; HEADER + body];
+        image[..4].copy_from_slice(b"NGAI");
+        image[4..6].copy_from_slice(&5_u16.to_le_bytes());
+        image[6..8].copy_from_slice(&(HEADER as u16).to_le_bytes());
+        image[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        image[12..16].copy_from_slice(&(ATOM_BYTES.len() as u32).to_le_bytes());
+        image[16..20].copy_from_slice(&(body as u32).to_le_bytes());
+        image[84..88].copy_from_slice(&0_u32.to_le_bytes());
+        image[88..92].copy_from_slice(&3_u32.to_le_bytes());
+        image[120..124].copy_from_slice(&1_u32.to_le_bytes());
+
+        let declarations = [
+            declaration(atom(ATOM_BYTES, b"two"), package, first, (0, 100)),
+            declaration(atom(ATOM_BYTES, b"three"), package, second, (0, 100)),
+        ];
+        image[DECLS..DECLS + 112].copy_from_slice(&declarations.concat());
+        let rows = order
+            .iter()
+            .map(|&(owner, file, start)| {
+                reference(owner, if file == 0 { first } else { second }, start, target)
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        image[REFS..REFS + 144].copy_from_slice(&rows);
+        let mut package_row = Vec::new();
+        for value in [
+            package[0],
+            package[1],
+            package_name[0],
+            package_name[1],
+            0,
+            0,
+            0,
+        ] {
+            package_row.extend_from_slice(&cell(value));
+        }
+        image[PACKAGES..PACKAGES + 28].copy_from_slice(&package_row);
+        image[ATOMS..].copy_from_slice(ATOM_BYTES);
+        reseal(&mut image);
+        image
+    }
+
+    fn reseal(image: &mut [u8]) {
+        let mut digest = Sha256::new();
+        digest.update(DOMAIN);
+        digest.update(&image[..52]);
+        digest.update(&image[84..HEADER]);
+        digest.update(&image[HEADER..]);
+        image[52..84].copy_from_slice(digest.finalize().as_slice());
+    }
+
+    #[test]
+    fn ascending_cross_file_order_opens_with_offset_reset() {
+        let image = build(&[(0, 0, 10), (0, 0, 20), (1, 1, 5)]);
+        GoImage::open(&image).expect("canonical cross-file references must open");
+    }
+
+    #[test]
+    fn swapping_files_rejects_reference_index_two() {
+        let image = build(&[(0, 0, 10), (1, 1, 5), (0, 0, 20)]);
+        assert!(matches!(
+            GoImage::open(&image),
+            Err(ImageError::ReferenceSort { index: 2 })
+        ));
+    }
+
+    #[test]
+    fn swapping_starts_within_one_file_rejects_reference_index_one() {
+        let image = build(&[(0, 0, 20), (0, 0, 10), (1, 1, 5)]);
+        assert!(matches!(
+            GoImage::open(&image),
+            Err(ImageError::ReferenceSort { index: 1 })
+        ));
     }
 }

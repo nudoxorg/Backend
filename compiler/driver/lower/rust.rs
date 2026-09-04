@@ -2391,7 +2391,8 @@ mod tests {
         FragmentView, Occurrence, OccurrenceConfidence, OccurrenceFault, ReferenceKind,
         SourceIdentity, TypeFactFault,
     };
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use compiler_languages_rust::{RustAuthorityError, RustProject, RustToolchain};
+    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use std::{
         fs,
@@ -2415,8 +2416,10 @@ mod tests {
         },
         #[error(transparent)]
         Authority(#[from] RustAuthorityError),
+        #[error("Rust authority collection failed: {0:?}")]
+        Collection(RustCollectError),
         #[error("lane admission rejected the fact set: {0:?}")]
-        Admission(#[from] AdmissionFault),
+        Admission(AdmissionFault),
         #[error("fragment validation rejected the bytes: {0:?}")]
         Validate(#[from] FragmentError),
         #[error("type fact cursor rejected: {0:?}")]
@@ -2492,11 +2495,13 @@ mod tests {
         let mut facts = FactSet::new();
         collect(
             &project,
-            SourceByteLimit::from(65_536),
+            SourceByteLimit::from(u32::MAX),
+            RustFeatureControl::default(),
             &cancelled,
             source.as_bytes(),
             &mut facts,
-        )?;
+        )
+        .map_err(TestError::Collection)?;
         let identity = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
             byte_len: u32::try_from(source.len())?,
@@ -2510,7 +2515,7 @@ mod tests {
         );
         let mut output = vec![0xa5_u8; 65_536];
         let length = admit(&facts, identity, recipe, recipe.profile, &mut output)
-            .map_err(TestError::from)?
+            .map_err(TestError::Admission)?
             .len();
         if !output[length..].iter().all(|byte| *byte == 0xa5) {
             return Err(TestError::Tail);
@@ -2525,7 +2530,9 @@ mod tests {
     }
 
     /// Decodes one validated fragment's type rows into owned snapshots.
-    fn rows(view: &FragmentView<'_>) -> Result<Vec<compiler_ir::DecodedTypeFact<'_>>, TestError> {
+    fn rows<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+    ) -> Result<Vec<compiler_ir::DecodedTypeFact<'fragment>>, TestError> {
         view.type_facts()
             .ok_or(TestError::Missing("type facts"))?
             .map(|fact| fact.map_err(TestError::from))
@@ -2564,7 +2571,7 @@ mod tests {
         let directory = 16 + 20 * 3;
         let row_count = word(directory + 4)?;
         let fact_count = word(directory + 8)?;
-        let base = usize::try_from(word(directory + 12))?;
+        let base = usize::try_from(word(directory + 12)?)?;
         if fact_count == 0 {
             return Ok(None);
         }
@@ -2586,7 +2593,9 @@ mod tests {
     }
 
     /// Collects every decoded occurrence.
-    fn occurrences(view: &FragmentView<'_>) -> Result<Vec<(u32, Occurrence<'_>)>, TestError> {
+    fn occurrences<'fragment>(
+        view: &'fragment FragmentView<'fragment>,
+    ) -> Result<Vec<(u32, Occurrence<'fragment>)>, TestError> {
         view.occurrences()
             .ok_or(TestError::Missing("occurrences"))?
             .map(|fact| {
@@ -2952,9 +2961,9 @@ mod tests {
         }
         let outcome = lower_bytes(&source);
         match outcome {
-            Err(TestError::Authority(RustAuthorityError::Admission {
-                cause: compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration,
-            })) => Ok(()),
+            Err(TestError::Collection(RustCollectError::Lowering(
+                compiler_vocabulary::LoweringUnsupported::FactRejected { fact },
+            ))) if fact == crate::lower::MAX_EMISSION_FACTS as u32 => Ok(()),
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),
         }

@@ -172,6 +172,7 @@ pub(super) enum CompileTerminal {
     AuthorityInputRequired,
     AuthorityInputProfileMismatch,
     LoweringUnsupported(LoweringUnsupported),
+    FactRejected,
     Build,
     Prepare,
     Write,
@@ -444,6 +445,7 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
+        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,

@@ -1085,19 +1085,18 @@ func buildAuthorityPlan(output *Output) (*imagePlan, error) {
 				return nil, fmt.Errorf("go/types emitted a missing reference")
 			}
 			owner, ok := local[reference.Owner]
-			if !ok {
-				return nil, fmt.Errorf(
-					"go/types emitted a reference from undeclared owner %q",
-					reference.Owner)
-			}
 			if reference.OwnerRecv != "" {
-				receiver, ok := local[reference.OwnerRecv]
-				if !ok {
+				receiver, receiverOK := local[reference.OwnerRecv]
+				if !receiverOK {
 					return nil, fmt.Errorf(
 						"go/types emitted a reference from undeclared receiver %q",
 						reference.OwnerRecv)
 				}
 				owner = receiver
+			} else if !ok {
+				return nil, fmt.Errorf(
+					"go/types emitted a reference from undeclared owner %q",
+					reference.Owner)
 			}
 			target, err := p.atom(reference.Target)
 			if err != nil {
@@ -1526,6 +1525,9 @@ func (p *imagePlan) marshal(sourceDigest [32]byte) ([]byte, error) {
 // writeAuthorityImage emits the complete authority image for one
 // caller-selected source file onto destination.
 func writeAuthorityImage(destination io.Writer, sourcePath string, output *Output) error {
+	if len(output.Errors) > 0 {
+		return fmt.Errorf("refusing Go authority image: package load error: %s", output.Errors[0])
+	}
 	source, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return fmt.Errorf("read authority source %s: %w", sourcePath, err)

@@ -1938,7 +1938,7 @@ impl<'image> GoImage<'image> {
         for index in 0..self.reference_count {
             let row = self.reference(index)?;
             if previous.is_some_and(|(previous_file, previous_start)| {
-                row.file > previous_file
+                row.file < previous_file
                     || (row.file == previous_file && row.span.0 < previous_start)
             }) {
                 return Err(ImageError::ReferenceSort { index });
