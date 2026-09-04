@@ -1870,8 +1870,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     )),
                     None => None,
                 },
-                ReferenceTarget::Foreign(_) => foreign_universe(written, reference.kind)
-                    .map(|target| (target, OccurrenceConfidence::Oracle)),
+                ReferenceTarget::Foreign(identity) => {
+                    return Err(foreign_reference_terminal(identity));
+                }
                 ReferenceTarget::Unresolved => foreign_universe(written, reference.kind)
                     .map(|target| (target, OccurrenceConfidence::Index)),
             };
@@ -1975,7 +1976,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
 
     /// Streams every declaration's raw doxygen comment into the
     /// documentation lane as text lines with soft breaks and `@ref`/`\ref`
-    /// links whose targets name pushed declarations locally.
+    /// links. libclang's raw comment text does not prove link resolution, so
+    /// every parsed link remains an explicit foreign spelling.
     fn push_docs(&mut self) -> Result<(), ClangCollectError> {
         let declarations = self.authority.declarations;
         for index in 0..declarations.len() {
@@ -2001,19 +2003,13 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 let fragment = match fragment {
                     CommentFragment::Text(bytes) => DocFragmentInput::Text(bytes),
                     CommentFragment::SoftBreak => DocFragmentInput::SoftBreak,
-                    CommentFragment::Link { target, label } => {
-                        let resolved = match self.link_target(target) {
-                            Some(ordinal) => DocLinkTarget::Local(EntityId::new(ordinal)),
-                            None => DocLinkTarget::Foreign {
-                                ecosystem: ECOSYSTEM.as_bytes(),
-                                path: target,
-                            },
-                        };
-                        DocFragmentInput::Link {
-                            label,
-                            target: resolved,
-                        }
-                    }
+                    CommentFragment::Link { target, label } => DocFragmentInput::Link {
+                        label,
+                        target: DocLinkTarget::Foreign {
+                            ecosystem: ECOSYSTEM.as_bytes(),
+                            path: target,
+                        },
+                    },
                 };
                 self.facts
                     .push_doc(ordinal, fragment)
@@ -2023,31 +2019,14 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
-    /// Resolves one doc-link target spelling: exact or `::`-suffix matches
-    /// against pushed declaration names.
-    fn link_target(&self, target: &[u8]) -> Option<u32> {
-        for (index, ordinal) in self.ordinals.iter().enumerate() {
-            let Some(ordinal) = *ordinal else {
-                continue;
-            };
-            let Some(declaration) = self.declaration(index) else {
-                continue;
-            };
-            let Ok(name) = self.name_of(declaration) else {
-                continue;
-            };
-            if name == target {
-                return Some(ordinal);
-            }
-            if let Some(boundary) = name.len().checked_sub(target.len() + 2)
-                && name.get(boundary..boundary + 2) == Some(b"::")
-                && name.get(boundary + 2..) == Some(target)
-            {
-                return Some(ordinal);
-            }
-        }
-        None
-    }
+}
+
+/// Stops on a resolved foreign reference whose authority supplied only the
+/// compact native identity. The written use-site spelling is not a canonical
+/// path and cannot distinguish overloads, so it must not become an oracle
+/// foreign target.
+fn foreign_reference_terminal(identity: SymbolIdentity) -> ClangCollectError {
+    terminal(ProjectionFault::ForeignReference { identity })
 }
 
 /// True when `outer` fully contains `inner`.
@@ -2259,12 +2238,15 @@ mod tests {
         FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeTag, SourceIdentity, TypeReason,
     };
-    use compiler_languages_clang::{IncludeFact, SourceSpan};
+    use compiler_languages_clang::{IncludeFact, SourceSpan, SymbolIdentity};
     use compiler_vocabulary::{CStandard, CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use thiserror::Error;
 
-    use super::{ClangCollectError, FactSet, collect, include_spelling, owner_relative_span};
+    use super::{
+        ClangCollectError, FactSet, collect, foreign_reference_terminal, include_spelling,
+        owner_relative_span,
+    };
 
     /// Identifies the one direct native fact a live authority proof requires.
     #[derive(Debug, Error)]
@@ -2859,10 +2841,11 @@ mod tests {
         Ok(())
     }
 
-    /// Raw doxygen comments become text lines and inline `@ref` links;
-    /// targets naming pushed declarations link locally.
+    /// Raw doxygen comments become text lines and inline `@ref` links. A
+    /// spelling collision with a pushed declaration never fabricates native
+    /// link authority: without a resolved comment target it remains foreign.
     #[test]
-    fn doxygen_comments_split_into_text_and_local_ref_links() -> Result<(), TestError> {
+    fn doxygen_comments_keep_unresolved_ref_links_foreign() -> Result<(), TestError> {
         let source = b"/// Adds one.\n/// See @ref add and foreign things.\nint add(int a);\n";
         let bytes = lower(source)?;
         let view = FragmentView::validate(&bytes)?;
@@ -2875,13 +2858,10 @@ mod tests {
                 if label != &&b"add"[..] {
                     return Err(TestError::Absent);
                 }
-                let compiler_ir::DocLinkTarget::Local(local) = target else {
+                let compiler_ir::DocLinkTarget::Foreign { ecosystem, path } = target else {
                     return Err(TestError::Absent);
                 };
-                let entities = entity_rows(&view);
-                if entities.get(local.raw as usize).copied()
-                    != Some((&b"add"[..], EntityKind::Function))
-                {
+                if ecosystem != &&b"c"[..] || path != &&b"add"[..] {
                     return Err(TestError::Absent);
                 }
             }
@@ -2891,6 +2871,19 @@ mod tests {
             return Err(TestError::Absent);
         }
         Ok(())
+    }
+
+    /// Foreign native identities survive the projection terminal by value;
+    /// use-site spelling is never substituted for exact authority.
+    #[test]
+    fn foreign_reference_projection_retains_exact_native_identity() -> Result<(), TestError> {
+        let identity = SymbolIdentity { bytes: [0xA5; 16] };
+        match foreign_reference_terminal(identity) {
+            ClangCollectError::Projection(
+                crate::types::ClangProjectionFault::ForeignReference { identity: observed },
+            ) if observed == identity => Ok(()),
+            other => Err(TestError::Collect(other)),
+        }
     }
 
     /// A macro definition becomes a constant fact and its use site becomes

@@ -272,6 +272,13 @@ pub enum ClangProjectionFault {
     IndexCapacity,
     /// An override named a foreign native identity with no exact public key.
     ForeignOverride { identity: SymbolIdentity },
+    /// A reference named a foreign native identity with no exact public key.
+    ///
+    /// Its source spelling is presentation, not identity: overloaded native
+    /// declarations may share it. Until the authority schema carries the
+    /// complete native key, lowering stops with the supplied identity rather
+    /// than manufacturing a foreign path from use-site text.
+    ForeignReference { identity: SymbolIdentity },
     /// Direct `const`/`volatile`/`restrict` facts named a native shape on
     /// which those qualifiers are not semantically legal. The full authority
     /// row operands remain inspectable; no qualifier is silently relocated.
