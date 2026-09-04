@@ -233,7 +233,7 @@ fn every_language_plane_round_trips_through_its_typed_column() {
             .intern_type_parameters(&[])
             .expect("type parameters"),
         declared: None,
-        computed: None,
+        observed: None,
     };
     add_extension(
         &mut builder,

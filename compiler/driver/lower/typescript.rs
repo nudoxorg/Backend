@@ -5,12 +5,12 @@
 //! Contains no token reconstruction, fallback collector, or declaration guessing.
 
 use compiler_ir::{
-    AnonRecordForm, ComputedType, ComputedTypeId, DocFragmentInput, DocLinkTarget, EntityId,
-    EntityKind, ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, IrBuilder,
+    AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
+    ExternalFragmentId, ForeignKey, ForeignOrigin,
     LatticeMappedModifier, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
     SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
-    TypeParameterListId, TypeQuery, TypeReason, TypeWidth,
+    TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
@@ -362,42 +362,6 @@ struct Projector<'x, 'report, 'source> {
     /// Pooled type-parameter start per pushed fact, retained so the checker
     /// pass can re-attach a completed extension with the computed cell.
     extension_type_parameters: Box<[u32]>,
-    /// The computed-cell proof mint: one session builder whose computed
-    /// arena allocates exactly one node per computed type row, in lane
-    /// order, so every minted coordinate equals the row's final type-lane
-    /// ordinal (anonymous rows remap to `row - ANONYMOUS_ROW_BASE`).
-    mint: ComputedMint,
-}
-
-/// The session computed-cell mint. Every mint interns one genuine computed
-/// node into its own arena at the next dense coordinate, so a minted proof's
-/// coordinate is exactly the number of computed rows interned before it.
-struct ComputedMint {
-    builder: IrBuilder,
-    count: u32,
-}
-
-impl ComputedMint {
-    fn mint(&mut self, row: u32) -> Result<ComputedTypeId, TypeScriptCollectError> {
-        while self.count < row {
-            self.intern(self.count)?;
-            self.count = self.count.checked_add(1).ok_or_else(lane_rejection)?;
-        }
-        if self.count != row {
-            // A row behind the mint cursor cannot mint again; the lane order
-            // is violated and the computed cell stays unfabricated.
-            return Err(lane_rejection());
-        }
-        let proof = self.intern(row)?;
-        self.count = row.checked_add(1).ok_or_else(lane_rejection)?;
-        Ok(proof)
-    }
-
-    fn intern(&mut self, row: u32) -> Result<ComputedTypeId, TypeScriptCollectError> {
-        self.builder
-            .intern_computed(ComputedType::TypeOf(TypeQuery::Entity(EntityId::new(row))))
-            .map_err(|_| lane_rejection())
-    }
 }
 
 /// The immutable registration view one computed lowering needs: the source
@@ -456,7 +420,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             compiler_ir::TypeScriptFacts {
                 type_parameters: TypeParameterListId::new(type_parameter_start),
                 declared: Some(TypeId::new(declared)),
-                computed: None,
+                observed: None,
             },
         ))
     }
@@ -1580,10 +1544,6 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             checker: index,
             pending_type_parameters: 0,
             extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
-            mint: ComputedMint {
-                builder: IrBuilder::new(),
-                count: 0,
-            },
         };
         projector.run()
     })
@@ -2051,15 +2011,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Pass three: the checker's computed type plane. Every checker-computed
-    /// declaration whose name binds to a published fact receives one computed
-    /// type row in the anonymous row pool — compound shapes interning their
-    /// children first so the pooled lane stays topologically backward — and
-    /// a completed extension whose computed cell carries the row's coordinate.
-    ///
-    /// The computed cell's proof is minted through the session builder, which
-    /// allocates exactly one computed node per computed row in lane order, so
-    /// every minted coordinate equals that row's final type-lane ordinal
-    /// (anonymous rows remap to `row - ANONYMOUS_ROW_BASE` at admission).
+    /// declaration whose name binds to a published fact receives one observed
+    /// type row — compound shapes intern their children first so the pool
+    /// stays topologically backward — and a completed extension whose
+    /// observation names that exact staged row. No compatibility node is
+    /// minted: concrete checker observations stay concrete.
     fn pass_checker(&mut self) -> Result<(), TypeScriptCollectError> {
         let Some(checker) = self.checker.as_ref() else {
             return Ok(());
@@ -2095,10 +2051,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             let row =
                 intern_computed_tree(&registry, self.facts, tree, owner, 0, SpellDomain::Owner)?;
-            let ordinal = row
+            let _ordinal = row
                 .checked_sub(COMPUTED_ROW_BASE)
                 .ok_or_else(lane_rejection)?;
-            let proof = self.mint.mint(ordinal)?;
             let type_parameters = self
                 .extension_type_parameters
                 .get(owner_index)
@@ -2107,7 +2062,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let extension = EmissionExtension::TypeScript(compiler_ir::TypeScriptFacts {
                 type_parameters: TypeParameterListId::new(type_parameters),
                 declared: Some(TypeId::new(owner)),
-                computed: Some(proof),
+                observed: Some(TypeId::new(row)),
             });
             self.facts
                 .attach_extension(owner_index, extension)
@@ -2120,7 +2075,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// narrowing whose declaration name binds to a published fact receives
     /// one extra owned computed row in the anonymous pool — the
     /// control-flow-sensitive type at that exact assignment site, a fact
-    /// the syntax plane cannot see. The extension's computed cell keeps
+    /// the syntax plane cannot see. The extension's observed cell keeps
     /// the declaration-time type; narrowing rows carry no computed-cell
     /// proof because they extend rather than replace it.
     fn pass_narrowings(&mut self) -> Result<(), TypeScriptCollectError> {

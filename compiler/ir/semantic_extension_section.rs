@@ -956,12 +956,11 @@ impl LanguageExtensionWireFact for crate::TypeScriptFacts {
     fn decode(bytes: &[u8], offset: usize) -> Option<Self> {
         let type_parameters = crate::TypeParameterListId::new(read_word(bytes, offset)?);
         let declared = optional_type(read_word(bytes, offset + 4)?);
-        let computed = optional_type(read_word(bytes, offset + 8)?)
-            .map(crate::semantic::reopened_computed_type);
+        let observed = optional_type(read_word(bytes, offset + 8)?);
         Some(Self {
             type_parameters,
             declared,
-            computed,
+            observed,
         })
     }
 }
@@ -1356,7 +1355,7 @@ fn encode_typescript(
         output,
         base,
         2,
-        facts.computed.map_or(NONE, |id| id.erase().raw),
+        facts.observed.map_or(NONE, |id| id.raw),
     )
 }
 fn encode_csharp(

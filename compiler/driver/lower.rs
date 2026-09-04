@@ -13,8 +13,8 @@ use compiler_ir::{
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
-    TemplatePart, TreeItemInput, TreeLinkTarget, TupleElement, TupleElementKind, TypeChildTarget,
-    TypeId, TypeWidth, Visibility,
+    TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
+    TypeChildTarget, TypeId, TypeWidth, Visibility,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -696,6 +696,90 @@ impl<'source> FactSet<'source> {
         )
     }
 
+    /// Returns one staged type row without exposing its storage plane.  The
+    /// declared, anonymous, and observed-computed planes deliberately share
+    /// this one projection boundary: consumers cannot accidentally treat a
+    /// computed coordinate as an anonymous coordinate.
+    fn staged_type_record(
+        &self,
+        row: u32,
+    ) -> Result<SemanticTypeRecord<'source>, compiler_ir::BuildError> {
+        let index = usize::try_from(row).map_err(|_| compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        })?;
+        if index < self.len {
+            return Ok(self.type_records[index]);
+        }
+        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
+        if index < anonymous_end {
+            return Ok(self.anonymous_records[index - ANONYMOUS_ROW_BASE as usize]);
+        }
+        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
+        if index < computed_end {
+            return Ok(self.computed_records[index - COMPUTED_ROW_BASE as usize]);
+        }
+        Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        })
+    }
+
+    /// Returns one staged child together with its exact text/tag payload.
+    fn staged_type_child(
+        &self,
+        row: u32,
+        position: usize,
+    ) -> Option<(u32, Option<&'source [u8]>, u8)> {
+        let index = usize::try_from(row).ok()?;
+        if index < self.len {
+            return (position < usize::from(self.type_child_counts[index]))
+                .then(|| self.type_child_flat(self.type_children_base(index) + position));
+        }
+        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
+        if index < anonymous_end {
+            let anonymous = index - ANONYMOUS_ROW_BASE as usize;
+            return (position < usize::from(self.anonymous_child_counts[anonymous])).then(|| {
+                let start = self.anonymous_child_starts[anonymous] as usize;
+                (
+                    self.anonymous_child_targets[start + position],
+                    self.anonymous_child_names[start + position],
+                    self.anonymous_child_flags[start + position],
+                )
+            });
+        }
+        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
+        if index < computed_end {
+            let computed = index - COMPUTED_ROW_BASE as usize;
+            return (position < usize::from(self.computed_child_counts[computed])).then(|| {
+                let start = self.computed_child_starts[computed] as usize;
+                (
+                    self.computed_child_targets[start + position],
+                    self.computed_child_names[start + position],
+                    self.computed_child_flags[start + position],
+                )
+            });
+        }
+        None
+    }
+
+    fn staged_type_child_count(&self, row: u32) -> Option<usize> {
+        let index = usize::try_from(row).ok()?;
+        if index < self.len {
+            return Some(usize::from(self.type_child_counts[index]));
+        }
+        let anonymous_end = ANONYMOUS_ROW_BASE as usize + self.anonymous_rows;
+        if index < anonymous_end {
+            return Some(usize::from(
+                self.anonymous_child_counts[index - ANONYMOUS_ROW_BASE as usize],
+            ));
+        }
+        let computed_end = COMPUTED_ROW_BASE as usize + self.computed_rows;
+        (index < computed_end).then(|| {
+            usize::from(self.computed_child_counts[index - COMPUTED_ROW_BASE as usize])
+        })
+    }
+
     /// Interns one extension atom spelling, returning its provisional
     /// coordinate. Identical spellings share one atom so committed bytes
     /// stay canonical.
@@ -965,105 +1049,151 @@ impl<'source> FactSet<'source> {
             }
             doc_ranges[ordinal] = (start, count);
         }
-        // Rewrite FactSet-local TypeScript parameter starts into live list ids
-        // before the tree commits its extension plane.
-        let mut rewritten_typescript =
-            vec![empty_typescript_facts(); MAX_EMISSION_FACTS].into_boxed_slice();
+        // Every sparse language plane is materialized from the same staged
+        // rows as the durable fragment.  There is intentionally no
+        // TypeScript-only rewrite path: a compact fact can never disappear
+        // merely because a caller asks for the owned IR view.
+        let mut rewritten_typescript = vec![empty_typescript_facts(); fact_count];
+        let mut rewritten_csharp = vec![empty_csharp_facts(); fact_count];
+        let mut rewritten_go = vec![empty_go_facts(); fact_count];
+        let mut rewritten_rust = vec![empty_rust_facts(); fact_count];
+        let mut rewritten_python = vec![empty_python_facts(); fact_count];
+        let mut rewritten_java = vec![empty_java_facts(); fact_count];
+        let mut rewritten_clang = vec![empty_clang_facts(); fact_count];
         for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
-            let Some(EmissionExtension::TypeScript(value)) = extension else {
-                continue;
-            };
-            let start = value.type_parameters.raw as usize;
-            let end = self.extensions[..fact_count]
-                .iter()
-                .filter_map(|extension| match extension {
-                    Some(EmissionExtension::TypeScript(value)) => {
-                        let candidate = value.type_parameters.raw as usize;
-                        (candidate > start).then_some(candidate)
-                    }
-                    _ => None,
-                })
-                .min()
-                .unwrap_or(self.type_parameter_len);
-            let parameters =
-                self.type_parameters
-                    .get(start..end)
-                    .ok_or(compiler_ir::BuildError::Dangling {
-                        space: compiler_ir::SemanticSpace::TypeParameters,
-                        raw: value.type_parameters.raw,
-                    })?;
-            let mut live_parameters = [compiler_ir::TypeParameter {
-                name: AtomId::new(0),
-                constraint: None,
-                default: None,
-                variance: compiler_ir::Variance::Invariant,
-                is_const: false,
-            }; MAX_TYPE_PARAMETERS];
-            for (index, parameter) in parameters.iter().enumerate() {
-                live_parameters[index] = compiler_ir::TypeParameter {
-                    name: tree.intern_atom(parameter.name)?,
-                    constraint: parameter
-                        .constraint
-                        .map(|row| {
-                            live_type(&mut tree, self, row, &mut type_ids, &mut type_seen, false)
-                        })
-                        .transpose()?
-                        .flatten(),
-                    default: parameter
-                        .default
-                        .map(|row| {
-                            live_type(&mut tree, self, row, &mut type_ids, &mut type_seen, false)
-                        })
-                        .transpose()?
-                        .flatten(),
-                    variance: compiler_ir::Variance::Invariant,
-                    is_const: false,
-                };
+            match extension {
+                Some(EmissionExtension::TypeScript(value)) => {
+                    rewritten_typescript[ordinal] = compiler_ir::TypeScriptFacts {
+                        type_parameters: live_type_parameters(
+                            &mut tree,
+                            self,
+                            value.type_parameters,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        declared: value
+                            .declared
+                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen, false))
+                            .transpose()?
+                            .flatten(),
+                        observed: value
+                            .observed
+                            .map(|id| live_type(&mut tree, self, id.raw, &mut type_ids, &mut type_seen, false))
+                            .transpose()?
+                            .flatten(),
+                    };
+                }
+                Some(EmissionExtension::CSharp(value)) => {
+                    rewritten_csharp[ordinal] = compiler_ir::CSharpFacts {
+                        constraints: live_type_parameters(
+                            &mut tree,
+                            self,
+                            value.constraints,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        attributes: live_atom_list(&mut tree, self, value.attributes)?,
+                        xml_provenance: value
+                            .xml_provenance
+                            .map(|span| live_extension_span(&mut tree, self, span))
+                            .transpose()?,
+                        ..*value
+                    };
+                }
+                Some(EmissionExtension::Go(value)) => {
+                    rewritten_go[ordinal] = compiler_ir::GoFacts {
+                        signature: compiler_ir::GoSignature {
+                            parameters: live_type_list(
+                                &mut tree,
+                                self,
+                                value.signature.parameters,
+                                &mut type_ids,
+                                &mut type_seen,
+                            )?,
+                            results: live_type_list(
+                                &mut tree,
+                                self,
+                                value.signature.results,
+                                &mut type_ids,
+                                &mut type_seen,
+                            )?,
+                            ..value.signature
+                        },
+                        type_parameters: live_type_parameters(
+                            &mut tree,
+                            self,
+                            value.type_parameters,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        fields: live_entity_list(&mut tree, self, value.fields)?,
+                        method_set: live_entity_list(&mut tree, self, value.method_set)?,
+                        build_constraints: live_atom_list(
+                            &mut tree,
+                            self,
+                            value.build_constraints,
+                        )?,
+                        constant_value: live_atom_list(
+                            &mut tree,
+                            self,
+                            value.constant_value,
+                        )?,
+                        ..*value
+                    };
+                }
+                Some(EmissionExtension::Rust(value)) => {
+                    rewritten_rust[ordinal] = compiler_ir::RustFacts {
+                        lifetimes: live_atom_list(&mut tree, self, value.lifetimes)?,
+                        where_clauses: live_type_parameters(
+                            &mut tree,
+                            self,
+                            value.where_clauses,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        macros: live_atom_list(&mut tree, self, value.macros)?,
+                        ..*value
+                    };
+                }
+                Some(EmissionExtension::Python(value)) => {
+                    rewritten_python[ordinal] = compiler_ir::PythonFacts {
+                        decorators: live_atom_list(&mut tree, self, value.decorators)?,
+                        ..*value
+                    };
+                }
+                Some(EmissionExtension::Java(value)) => {
+                    rewritten_java[ordinal] = compiler_ir::JavaFacts {
+                        throws: live_type_list(
+                            &mut tree,
+                            self,
+                            value.throws,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        annotations: live_atom_list(&mut tree, self, value.annotations)?,
+                        overloads: live_entity_list(&mut tree, self, value.overloads)?,
+                        record_components: live_entity_list(
+                            &mut tree,
+                            self,
+                            value.record_components,
+                        )?,
+                    };
+                }
+                Some(EmissionExtension::Clang(value)) => {
+                    rewritten_clang[ordinal] = compiler_ir::ClangFacts {
+                        templates: live_type_parameters(
+                            &mut tree,
+                            self,
+                            value.templates,
+                            &mut type_ids,
+                            &mut type_seen,
+                        )?,
+                        includes: live_atom_list(&mut tree, self, value.includes)?,
+                        ..*value
+                    };
+                }
+                None => {}
             }
-            let computed = value.computed.and_then(|id| {
-                let row = id.erase().raw as usize;
-                self.computed_records.get(row).and_then(|record| {
-                    match (record.tag, PrimitiveShape::try_from(record.payload0)) {
-                        (SemanticTypeTag::Primitive, Ok(PrimitiveShape::Str)) => Some(
-                            tree.intern_computed(compiler_ir::ComputedType::KeyOf(TypeId::new(0))),
-                        ),
-                        (SemanticTypeTag::SelfType, _) => {
-                            Some(tree.intern_computed(compiler_ir::ComputedType::This))
-                        }
-                        // Every other computed row carries the checker's
-                        // derivation for its owning declaration; the live cell
-                        // projects that relation truthfully as typeof owner.
-                        _ => {
-                            let owner = *self.computed_owners.get(row)?;
-                            Some(tree.intern_computed(compiler_ir::ComputedType::TypeOf(
-                                compiler_ir::TypeQuery::Entity(compiler_ir::EntityId::new(owner)),
-                            )))
-                        }
-                    }
-                })
-            });
-            let computed = computed.transpose()?;
-            let declared = value
-                .declared
-                .map(|id| {
-                    live_type(
-                        &mut tree,
-                        self,
-                        id.raw,
-                        &mut type_ids,
-                        &mut type_seen,
-                        false,
-                    )
-                })
-                .transpose()?
-                .flatten();
-            rewritten_typescript[ordinal] = compiler_ir::TypeScriptFacts {
-                type_parameters: tree
-                    .intern_type_parameters(&live_parameters[..parameters.len()])?,
-                declared,
-                computed,
-                ..*value
-            };
         }
         let empty_item = TreeItemInput {
             name: b"",
@@ -1083,8 +1213,25 @@ impl<'source> FactSet<'source> {
                 Some(EmissionExtension::TypeScript(_)) => Some(LanguageExtensionInput::TypeScript(
                     &rewritten_typescript[ordinal],
                 )),
-                // Other lanes retain provisional atom coordinates until fragment admission.
-                Some(_) | None => None,
+                Some(EmissionExtension::CSharp(_)) => {
+                    Some(LanguageExtensionInput::CSharp(&rewritten_csharp[ordinal]))
+                }
+                Some(EmissionExtension::Go(_)) => {
+                    Some(LanguageExtensionInput::Go(&rewritten_go[ordinal]))
+                }
+                Some(EmissionExtension::Rust(_)) => {
+                    Some(LanguageExtensionInput::Rust(&rewritten_rust[ordinal]))
+                }
+                Some(EmissionExtension::Python(_)) => {
+                    Some(LanguageExtensionInput::Python(&rewritten_python[ordinal]))
+                }
+                Some(EmissionExtension::Java(_)) => {
+                    Some(LanguageExtensionInput::Java(&rewritten_java[ordinal]))
+                }
+                Some(EmissionExtension::Clang(_)) => {
+                    Some(LanguageExtensionInput::Clang(&rewritten_clang[ordinal]))
+                }
+                None => None,
             };
             *item = TreeItemInput {
                 name: self.names[ordinal],
@@ -1099,7 +1246,23 @@ impl<'source> FactSet<'source> {
                 extension,
             };
         }
-        tree.commit(&items[..fact_count], &[])?;
+        let mut links = Vec::with_capacity(self.occurrence_len);
+        for index in 0..self.occurrence_len {
+            let owner = self.occurrence_owners[index];
+            let occurrence = self.occurrences[index];
+            links.push(TreeLinkInput {
+                from: compiler_ir::TreeEntityId::new(owner),
+                target: external_from_occurrence(&mut tree, occurrence.target)?,
+                kind: occurrence_link_kind(occurrence.kind),
+                confidence: occurrence_link_confidence(occurrence.confidence),
+                // Occurrence spans are owner-relative while `Ir` link spans
+                // are source-file absolute.  The staged declaration lane has
+                // no declaration span yet, so preserve the link fact without
+                // fabricating an absolute coordinate.
+                source: None,
+            });
+        }
+        tree.commit(&items[..fact_count], &links)?;
         builder.finish()
     }
 
@@ -1336,6 +1499,283 @@ fn doc_input<'source>(
     }
 }
 
+/// All language planes use the same provisional type-parameter pool.  A
+/// list ID is a start coordinate until the semantic transaction interns it;
+/// the next greater start closes its half-open range.  Keeping this logic in
+/// one place prevents TypeScript from receiving privileged projection rules.
+fn type_parameter_end(facts: &FactSet<'_>, start: usize) -> usize {
+    facts.extensions[..facts.len]
+        .iter()
+        .filter_map(extension_type_parameter_starts)
+        .map(|candidate| candidate.raw as usize)
+        .filter(|candidate| *candidate > start)
+        .min()
+        .unwrap_or(facts.type_parameter_len)
+}
+
+fn extension_type_parameter_starts(
+    extension: &Option<EmissionExtension>,
+) -> impl Iterator<Item = compiler_ir::TypeParameterListId> {
+    let mut starts = [None; 2];
+    match extension {
+        Some(EmissionExtension::TypeScript(facts)) => starts[0] = Some(facts.type_parameters),
+        Some(EmissionExtension::CSharp(facts)) => starts[0] = Some(facts.constraints),
+        Some(EmissionExtension::Go(facts)) => starts[0] = Some(facts.type_parameters),
+        Some(EmissionExtension::Rust(facts)) => starts[0] = Some(facts.where_clauses),
+        Some(EmissionExtension::Python(_)) | Some(EmissionExtension::Java(_)) => {}
+        Some(EmissionExtension::Clang(facts)) => starts[0] = Some(facts.templates),
+        None => {}
+    }
+    starts.into_iter().flatten()
+}
+
+fn live_type_parameters<'source>(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'source>,
+    start: compiler_ir::TypeParameterListId,
+    ids: &mut [TypeId],
+    seen: &mut [bool],
+) -> Result<compiler_ir::TypeParameterListId, compiler_ir::BuildError> {
+    let start = start.raw as usize;
+    if facts.type_parameter_len == 0 && start == 0 {
+        return tree.intern_type_parameters(&[]);
+    }
+    let end = type_parameter_end(facts, start);
+    let parameters = facts.type_parameters.get(start..end).ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::TypeParameters,
+            raw: start as u32,
+        },
+    )?;
+    let mut materialized = Vec::with_capacity(parameters.len());
+    for parameter in parameters {
+        materialized.push(compiler_ir::TypeParameter {
+            name: tree.intern_atom(parameter.name)?,
+            constraint: parameter
+                .constraint
+                .map(|row| live_type(tree, facts, row, ids, seen, false))
+                .transpose()?
+                .flatten(),
+            default: parameter
+                .default
+                .map(|row| live_type(tree, facts, row, ids, seen, false))
+                .transpose()?
+                .flatten(),
+            variance: compiler_ir::Variance::Invariant,
+            is_const: false,
+        });
+    }
+    tree.intern_type_parameters(&materialized)
+}
+
+fn live_atom_list<'source>(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'source>,
+    id: compiler_ir::AtomListId,
+) -> Result<compiler_ir::AtomListId, compiler_ir::BuildError> {
+    let index = id.raw as usize;
+    if facts.atom_list_len == 0 && index == 0 {
+        return tree.intern_attributes(&[]);
+    }
+    let length = facts.atom_list_lengths.get(index).copied().ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::AtomList,
+            raw: id.raw,
+        },
+    )?;
+    if index >= facts.atom_list_len {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::AtomList,
+            raw: id.raw,
+        });
+    }
+    let mut atoms = Vec::with_capacity(usize::from(length));
+    for provisional in &facts.atom_lists[index][..usize::from(length)] {
+        let bytes = facts
+            .extension_atoms
+            .get(*provisional as usize)
+            .copied()
+            .ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Atom,
+                raw: *provisional,
+            })?;
+        atoms.push(tree.intern_atom(bytes)?);
+    }
+    tree.intern_attributes(&atoms)
+}
+
+fn live_type_list<'source>(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'source>,
+    id: compiler_ir::TypeListId,
+    ids: &mut [TypeId],
+    seen: &mut [bool],
+) -> Result<compiler_ir::TypeListId, compiler_ir::BuildError> {
+    let index = id.raw as usize;
+    if facts.type_list_len == 0 && index == 0 {
+        return tree.intern_types(&[]);
+    }
+    if index >= facts.type_list_len {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::TypeList,
+            raw: id.raw,
+        });
+    }
+    let length = usize::from(facts.type_list_lengths[index]);
+    let mut types = Vec::with_capacity(length);
+    for row in &facts.type_lists[index][..length] {
+        types.push(
+            live_type(tree, facts, *row, ids, seen, false)?.ok_or(
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: *row,
+                },
+            )?,
+        );
+    }
+    tree.intern_types(&types)
+}
+
+fn live_entity_list(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'_>,
+    id: compiler_ir::EntityListId,
+) -> Result<compiler_ir::EntityListId, compiler_ir::BuildError> {
+    let index = id.raw as usize;
+    if facts.entity_list_len == 0 && index == 0 {
+        return tree.intern_members(&[]);
+    }
+    if index >= facts.entity_list_len {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::EntityList,
+            raw: id.raw,
+        });
+    }
+    let length = usize::from(facts.entity_list_lengths[index]);
+    let mut entities = Vec::with_capacity(length);
+    for raw in &facts.entity_lists[index][..length] {
+        let local = compiler_ir::TreeEntityId::new(*raw);
+        entities.push(tree.entities().get(local).ok_or(
+            compiler_ir::BuildError::InvalidTreeEntity {
+                raw: *raw,
+                count: facts.len as u32,
+            },
+        )?);
+    }
+    tree.intern_members(&entities)
+}
+
+fn live_extension_span<'source>(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    facts: &FactSet<'source>,
+    span: compiler_ir::SourceSpan,
+) -> Result<compiler_ir::SourceSpan, compiler_ir::BuildError> {
+    let file = facts
+        .extension_atoms
+        .get(span.file().raw as usize)
+        .copied()
+        .ok_or(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Atom,
+            raw: span.file().raw,
+        })?;
+    compiler_ir::SourceSpan::new(tree.intern_atom(file)?, span.start(), span.end()).ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Atom,
+            raw: span.file().raw,
+        },
+    )
+}
+
+const fn occurrence_link_kind(kind: compiler_ir::ReferenceKind) -> compiler_ir::LinkKind {
+    match kind {
+        compiler_ir::ReferenceKind::FunctionCall => compiler_ir::LinkKind::Calls,
+        compiler_ir::ReferenceKind::MethodCall => compiler_ir::LinkKind::MethodCall,
+        compiler_ir::ReferenceKind::TypeReference => compiler_ir::LinkKind::TypeReference,
+        compiler_ir::ReferenceKind::VariableUse => compiler_ir::LinkKind::Reads,
+        compiler_ir::ReferenceKind::MacroInvocation => compiler_ir::LinkKind::Calls,
+        compiler_ir::ReferenceKind::FieldAccess => compiler_ir::LinkKind::Reads,
+        compiler_ir::ReferenceKind::Import => compiler_ir::LinkKind::Imports,
+        compiler_ir::ReferenceKind::Overrides => compiler_ir::LinkKind::Overrides,
+    }
+}
+
+const fn occurrence_link_confidence(
+    confidence: compiler_ir::OccurrenceConfidence,
+) -> compiler_ir::Confidence {
+    match confidence {
+        compiler_ir::OccurrenceConfidence::Syntactic => compiler_ir::Confidence::Syntactic,
+        compiler_ir::OccurrenceConfidence::Suffix => compiler_ir::Confidence::Heuristic,
+        compiler_ir::OccurrenceConfidence::Index => compiler_ir::Confidence::Indexed,
+        compiler_ir::OccurrenceConfidence::Import => compiler_ir::Confidence::Imported,
+        compiler_ir::OccurrenceConfidence::Oracle => compiler_ir::Confidence::Compiler,
+    }
+}
+
+fn external_from_occurrence<'source>(
+    tree: &mut compiler_ir::TreeBuilder<'_, '_>,
+    target: compiler_ir::OccurrenceTarget<'source>,
+) -> Result<TreeLinkTarget, compiler_ir::BuildError> {
+    match target {
+        compiler_ir::OccurrenceTarget::Local(local) => {
+            Ok(TreeLinkTarget::Local(compiler_ir::TreeEntityId::new(local.raw)))
+        }
+        compiler_ir::OccurrenceTarget::Stable(stable) => {
+            let mut identity = [0_u8; 64];
+            identity[..32].copy_from_slice(stable.fragment.as_ref());
+            identity[32..].copy_from_slice(stable.entity.as_ref());
+            let path = tree.intern_atom(b"stable")?;
+            Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
+                stable: StableEntityId::from_canonical_bytes(&identity),
+                package: None,
+                path,
+                display: path,
+                kind: None,
+            })?))
+        }
+        compiler_ir::OccurrenceTarget::Foreign(foreign) => {
+            let mut identity = Vec::with_capacity(
+                32usize.saturating_add(foreign.path.len()).saturating_add(foreign.display.len()),
+            );
+            identity.extend_from_slice(b"compiler.ir.occurrence.foreign.v1");
+            let package = match foreign.origin {
+                compiler_ir::ForeignOrigin::Package(lineage) => {
+                    identity.extend_from_slice(b"package\0");
+                    identity.extend_from_slice(lineage.ecosystem.as_bytes());
+                    identity.push(0);
+                    identity.extend_from_slice(lineage.name.as_bytes());
+                    Some(tree.intern_atom(lineage.name.as_bytes())?)
+                }
+                compiler_ir::ForeignOrigin::Namespace {
+                    ecosystem,
+                    namespace,
+                } => {
+                    identity.extend_from_slice(b"namespace\0");
+                    identity.extend_from_slice(ecosystem.as_bytes());
+                    identity.push(0);
+                    identity.extend_from_slice(namespace.as_bytes());
+                    Some(tree.intern_atom(namespace.as_bytes())?)
+                }
+                compiler_ir::ForeignOrigin::Universe { ecosystem } => {
+                    identity.extend_from_slice(b"universe\0");
+                    identity.extend_from_slice(ecosystem.as_bytes());
+                    Some(tree.intern_atom(ecosystem.as_bytes())?)
+                }
+            };
+            identity.push(0);
+            identity.extend_from_slice(foreign.path.as_bytes());
+            let path = tree.intern_atom(foreign.path.as_bytes())?;
+            let display = tree.intern_atom(foreign.display.as_bytes())?;
+            Ok(TreeLinkTarget::External(tree.intern_external(ExternalTarget {
+                stable: StableEntityId::from_canonical_bytes(&identity),
+                package,
+                path,
+                display,
+                kind: foreign.kind.map(item_kind),
+            })?))
+        }
+    }
+}
+
 fn live_type<'source>(
     tree: &mut compiler_ir::TreeBuilder<'_, '_>,
     facts: &FactSet<'source>,
@@ -1344,42 +1784,32 @@ fn live_type<'source>(
     seen: &mut [bool],
     top_level: bool,
 ) -> Result<Option<TypeId>, compiler_ir::BuildError> {
-    let index = row as usize;
+    let index = usize::try_from(row).map_err(|_| compiler_ir::BuildError::Dangling {
+        space: compiler_ir::SemanticSpace::Type,
+        raw: row,
+    })?;
+    if index >= ids.len() {
+        return Err(compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        });
+    }
     if seen[index] {
         return Ok(Some(ids[index]));
     }
-    let record = if index < facts.len {
-        facts.type_records[index]
-    } else {
-        facts.anonymous_records[index - ANONYMOUS_ROW_BASE as usize]
-    };
+    let record = facts.staged_type_record(row)?;
     let top_level_excluded = index < facts.len && record.tag == SemanticTypeTag::Unknown;
     if top_level_excluded && top_level {
         return Ok(None);
     }
-    let child = |position: usize| -> Option<(u32, Option<&'source [u8]>, u8)> {
-        if index < facts.len {
-            let start = facts.type_children_base(index);
-            (position < facts.type_child_counts[index] as usize)
-                .then(|| facts.type_child_flat(start + position))
-        } else {
-            let anonymous = index - ANONYMOUS_ROW_BASE as usize;
-            (position < facts.anonymous_child_counts[anonymous] as usize).then(|| {
-                let start = facts.anonymous_child_starts[anonymous] as usize;
-                (
-                    facts.anonymous_child_targets[start + position],
-                    facts.anonymous_child_names[start + position],
-                    facts.anonymous_child_flags[start + position],
-                )
-            })
-        }
-    };
+    let child = |position: usize| facts.staged_type_child(row, position);
     let mut children = [TypeId::new(0); MAX_TYPE_CHILDREN];
-    let child_count = if index < facts.len {
-        facts.type_child_counts[index] as usize
-    } else {
-        facts.anonymous_child_counts[index - ANONYMOUS_ROW_BASE as usize] as usize
-    };
+    let child_count = facts.staged_type_child_count(row).ok_or(
+        compiler_ir::BuildError::Dangling {
+            space: compiler_ir::SemanticSpace::Type,
+            raw: row,
+        },
+    )?;
     for position in 0..child_count {
         if child(position).is_some_and(|item| item.0 == u32::MAX) {
             continue;
@@ -1577,7 +2007,17 @@ fn live_type<'source>(
         SemanticTypeTag::TemplateLiteral => {
             let mut parts = [TemplatePart::Placeholder(TypeId::new(0)); MAX_TYPE_CHILDREN];
             for position in 0..child_count {
-                parts[position] = TemplatePart::Placeholder(children[position]);
+                let (target, text, _) = child(position).ok_or(
+                    compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    },
+                )?;
+                parts[position] = if target == u32::MAX {
+                    TemplatePart::Bytes(tree.intern_atom(text.unwrap_or_default())?)
+                } else {
+                    TemplatePart::Placeholder(children[position])
+                };
             }
             let parts = tree.intern_template_parts(&parts[..child_count])?;
             tree.intern_computed(ComputedType::TemplateLiteral(parts))?
@@ -1591,17 +2031,28 @@ fn live_type<'source>(
             let atom = tree.intern_atom(spelling)?;
             tree.intern_concrete(ConcreteType::Parameter(atom))?.erase()
         }
-        SemanticTypeTag::Nominal => tree
-            .intern_concrete(ConcreteType::Nominal(match record.nominal {
-                Some(NominalRef::Local(id)) => id,
-                _ => {
-                    return Ok(Some(
-                        tree.intern_unknown(compiler_ir::UnknownType::Unsupported)?
-                            .erase(),
-                    ));
-                }
-            }))?
-            .erase(),
+        SemanticTypeTag::Nominal => match record.nominal {
+            Some(NominalRef::Local(id)) => tree
+                .intern_concrete(ConcreteType::Nominal(id))?
+                .erase(),
+            Some(NominalRef::External(external)) => {
+                let path = tree.intern_atom(record.text.unwrap_or(b"foreign"))?;
+                let mut key = [0_u8; 36];
+                key[..32].copy_from_slice(external.fragment.as_ref());
+                key[32..].copy_from_slice(&external.ordinal.to_le_bytes());
+                let target = tree.intern_external(ExternalTarget {
+                    stable: StableEntityId::from_canonical_bytes(&key),
+                    package: None,
+                    path,
+                    display: path,
+                    kind: None,
+                })?;
+                tree.intern_concrete(ConcreteType::External(target))?.erase()
+            }
+            None => tree
+                .intern_unknown(compiler_ir::UnknownType::Unsupported)?
+                .erase(),
+        },
         SemanticTypeTag::Tuple => {
             if child_count == 0 {
                 tree.intern_concrete(ConcreteType::Builtin(BuiltinType::Unit))?
@@ -1863,7 +2314,7 @@ const fn empty_typescript_facts() -> compiler_ir::TypeScriptFacts {
     compiler_ir::TypeScriptFacts {
         type_parameters: compiler_ir::TypeParameterListId::new(0),
         declared: None,
-        computed: None,
+        observed: None,
     }
 }
 
@@ -2306,6 +2757,18 @@ pub(super) fn admit<'source, 'output>(
         children: &type_children[..type_pooled_cursor],
     };
 
+    // Compact type facts place anonymous rows first, declared rows second,
+    // and observed-computed rows last.  Every extension type coordinate is
+    // rewritten through this one mapping before it reaches the durable
+    // schema; raw staging coordinates never leak across this boundary.
+    let remap_staged_type = |raw: u32| {
+        if raw >= COMPUTED_ROW_BASE {
+            declared_count as u32 + raw - COMPUTED_ROW_BASE
+        } else {
+            remap(raw)
+        }
+    };
+
     // Language-extension section: dense per-plane fact pools plus their row
     // tables, with provisional atom coordinates rewritten to final lane
     // positions. Pooled lists keep provisional atom coordinates until the
@@ -2335,7 +2798,14 @@ pub(super) fn admit<'source, 'output>(
     for (ordinal, extension) in facts.extensions[..fact_count].iter().enumerate() {
         match extension {
             Some(EmissionExtension::TypeScript(value)) => {
-                typescript_pool[typescript_len] = *value;
+                let mut rewritten = *value;
+                rewritten.declared = rewritten
+                    .declared
+                    .map(|id| TypeId::new(remap_staged_type(id.raw)));
+                rewritten.observed = rewritten
+                    .observed
+                    .map(|id| TypeId::new(remap_staged_type(id.raw)));
+                typescript_pool[typescript_len] = rewritten;
                 typescript_rows[ordinal] = typescript_len as u32;
                 typescript_len += 1;
             }
@@ -2450,13 +2920,20 @@ pub(super) fn admit<'source, 'output>(
             elements: &atom_list_elements[index][..usize::from(*length)],
         };
     }
+    let mut type_list_elements = vec![[0; MAX_REF_LIST_ELEMENTS]; MAX_REF_LISTS].into_boxed_slice();
     let mut pooled_type_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];
     for (index, length) in facts.type_list_lengths[..facts.type_list_len]
         .iter()
         .enumerate()
     {
+        for (offset, raw) in facts.type_lists[index][..usize::from(*length)]
+            .iter()
+            .enumerate()
+        {
+            type_list_elements[index][offset] = remap_staged_type(*raw);
+        }
         pooled_type_lists[index] = ExtensionRefList {
-            elements: &facts.type_lists[index][..usize::from(*length)],
+            elements: &type_list_elements[index][..usize::from(*length)],
         };
     }
     let mut pooled_entity_lists = [ExtensionRefList { elements: &[] }; MAX_REF_LISTS];

@@ -245,7 +245,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
     let typescript = TypeScriptFacts {
         type_parameters: parameters,
         declared: Some(string.erase()),
-        computed: Some(mapped),
+        observed: Some(mapped.erase()),
     };
     let items = [
         TreeItemInput {
@@ -303,7 +303,7 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
         Some(TypeScriptFacts {
             type_parameters: parameters,
             declared: Some(string.erase()),
-            computed: Some(mapped),
+            observed: Some(mapped.erase()),
         })
     );
     assert_eq!(

@@ -289,7 +289,7 @@ fn build_ir_populates_the_typescript_extension_plane() -> Result<(), CheckerErro
     })?;
     let plane = ir.ir.storage_columns().language_extensions.typescript;
     assert!(!plane.facts.is_empty());
-    assert!(plane.facts.iter().any(|facts| facts.computed.is_some()));
+    assert!(plane.facts.iter().any(|facts| facts.observed.is_some()));
     assert!(plane.ids.row_count() > 0);
     Ok(())
 }

@@ -103,9 +103,9 @@ fn declared_unknown_with_computed_type(ir: &Ir, name: &'static str, kind: ItemKi
             .language_extensions
             .typescript
             .get(id)
-            .and_then(|facts| facts.computed)
+            .and_then(|facts| facts.observed)
             .is_some(),
-        "{name} computed type must remain in the TypeScript extension plane"
+        "{name} observed type must remain in the TypeScript extension plane"
     );
 }
 
@@ -252,8 +252,8 @@ fn forward_nominal_render_truth_names_the_later_class() {
         .language_extensions
         .typescript
         .get(a)
-        .and_then(|facts| facts.computed)
-        .expect("forward nominal computed type");
+        .and_then(|facts| facts.observed)
+        .expect("forward nominal observed type");
     let b = item(&ir, "B", ItemKind::Record);
     let b_type = ir
         .item(b)

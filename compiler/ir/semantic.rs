@@ -1230,7 +1230,11 @@ pub enum Variance {
 pub struct TypeScriptFacts {
     pub type_parameters: TypeParameterListId,
     pub declared: Option<TypeId>,
-    pub computed: Option<ComputedTypeId>,
+    /// Exact checker-observed type.  This is deliberately a general
+    /// [`TypeId`]: an observation may be a concrete, computed, or unknown
+    /// type.  Narrowing it to `ComputedTypeId` used to force lowerers to mint
+    /// a false `typeof owner` node merely to satisfy the static marker.
+    pub observed: Option<TypeId>,
 }
 
 /// Marker for TypeScript-only extension facts.
@@ -2004,20 +2008,7 @@ impl LanguageExtensions {
         if let Some(facts) = self.typescript.get(entity).copied() {
             validate_type_parameters(builder, facts.type_parameters)?;
             optional_id(facts.declared, builder.types.len(), SemanticSpace::Type)?;
-            optional_id(
-                facts.computed.map(TypedTypeId::erase),
-                builder.types.len(),
-                SemanticSpace::Type,
-            )?;
-            if facts.computed.is_some_and(|id| {
-                !matches!(builder.types.get(id.erase()), Some(TypeExpr::Computed(_)))
-            }) {
-                return Err(BuildError::LanguageExtension {
-                    language: Language::TypeScript,
-                    entity,
-                    violation: LanguageExtensionViolation::ComputedType,
-                });
-            }
+            optional_id(facts.observed, builder.types.len(), SemanticSpace::Type)?;
         }
         if let Some(facts) = self.csharp.get(entity).copied() {
             validate_type_parameters(builder, facts.constraints)?;
@@ -3106,6 +3097,19 @@ impl TreeBuilder<'_, '_> {
         parameters: &[TypeParameter],
     ) -> Result<TypeParameterListId, BuildError> {
         self.builder.intern_type_parameters(parameters)
+    }
+    /// Interns an entity list while the reserved tree range keeps local
+    /// entity identities branded to this one transaction.
+    pub fn intern_members(&mut self, members: &[EntityId]) -> Result<EntityListId, BuildError> {
+        self.builder.intern_members(members)
+    }
+    /// Interns an atom list while the reserved tree range owns its semantic
+    /// extension projection.
+    pub fn intern_attributes(
+        &mut self,
+        attributes: &[AtomId],
+    ) -> Result<AtomListId, BuildError> {
+        self.builder.intern_attributes(attributes)
     }
     pub fn intern_external(&mut self, target: ExternalTarget) -> Result<ExternalId, BuildError> {
         self.builder.intern_external(target)

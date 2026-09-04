@@ -515,9 +515,9 @@ fn computed_reference_to_earlier_fact_resolves_locally() {
             .language_extensions
             .typescript
             .get(made_id)
-            .and_then(|facts| facts.computed)
+            .and_then(|facts| facts.observed)
             .is_some(),
-        "the computed made -> Box reference must remain in the TypeScript extension plane"
+        "the observed made -> Box reference must remain in the TypeScript extension plane"
     );
     assert_ne!(box_id, made_id);
 }
@@ -674,7 +674,7 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
         .get(a.id())
         .unwrap();
     assert_eq!(
-        ir_tag_shape(&lowered.ir, extension.computed.unwrap().erase()),
+        ir_tag_shape(&lowered.ir, extension.observed.unwrap()),
         (SemanticTypeTag::Nominal, 1)
     );
     let decoded = view(SOURCE, Some(&checker));
@@ -998,8 +998,8 @@ fn golden_lowered_facts_match_the_frozen_table() {
         let extension = typescript.get(item.id()).unwrap();
         let declared = ir_tag_shape(&compiled.ir, extension.declared.unwrap());
         let computed = extension
-            .computed
-            .map(|id| ir_tag_shape(&compiled.ir, id.erase()));
+            .observed
+            .map(|id| ir_tag_shape(&compiled.ir, id));
         assert_eq!(declared.0, row.declared, "row {row_index} {:?}", row.name);
         assert_eq!(
             computed.is_some(),

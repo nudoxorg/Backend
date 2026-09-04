@@ -171,11 +171,6 @@ fn exported_rlib_keeps_views_private_typed_and_caller_borrowing() -> Result<(), 
             symbols: &["Entity", "Type"],
         },
         RejectedProbe {
-            source: b"use compiler_ir::{BuiltinType, ConcreteType, IrBuilder, TypeScriptFacts}; fn bad(builder: &mut IrBuilder, mut facts: TypeScriptFacts) { let concrete = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::String)).unwrap(); facts.computed = Some(concrete); }",
-            code: "error[E0308]",
-            symbols: &["ComputedState", "ConcreteState"],
-        },
-        RejectedProbe {
             source: b"use compiler_ir::{ComputedType, ConcreteState, GuardedType}; fn bad() { let _: GuardedType<ConcreteState> = GuardedType::computed(ComputedType::This); }",
             code: "error[E0308]",
             symbols: &["ComputedState", "ConcreteState"],
