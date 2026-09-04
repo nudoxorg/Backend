@@ -414,3 +414,43 @@ fn foreign_occurrences_survive_the_reopen_with_their_key_cells() -> Result<(), T
     }
     Ok(())
 }
+
+/// Reopen applies the same nonempty foreign-path law as admission.  Merely
+/// decoding a zero-length wire cell would otherwise lend a key no producer
+/// can create.
+#[test]
+fn empty_foreign_path_is_rejected_on_reopen() -> Result<(), TestFailure> {
+    let identity = source();
+    let inputs = foreign_lane_inputs();
+    let lane = OccurrenceLane { inputs: &inputs };
+    let prepared = PreparedFragment::prepare_with_occurrences(
+        identity,
+        recipe(identity.identity),
+        &ENTITIES,
+        &[TypeNode::Primitive(PrimitiveType::Bool)],
+        &ATOMS,
+        None,
+        &lane,
+    )?;
+    let mut output = vec![0_u8; prepared.required_capacity()];
+    let written = prepared.write_into(&mut output)?;
+    let view = FragmentView::validate(written)?;
+    let payload = view.occurrence_payload().expect("foreign lane is present");
+    let path_start = payload
+        .windows(b"lodash/map".len())
+        .position(|bytes| bytes == b"lodash/map")
+        .expect("foreign path cell")
+        .checked_sub(4)
+        .expect("path length prefix");
+    let section_start = payload.as_ptr() as usize - written.as_ptr() as usize;
+    let length = section_start + path_start;
+    let mut mutated = written.to_vec();
+    mutated[length..length + 4].fill(0);
+    assert!(matches!(
+        FragmentView::validate(&mutated),
+        Err(FragmentError::Occurrences {
+            fault: compiler_ir::OccurrenceViewFault::EmptyPath { ordinal: 1 }
+        })
+    ));
+    Ok(())
+}

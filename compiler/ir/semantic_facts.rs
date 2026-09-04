@@ -413,7 +413,10 @@ pub(crate) fn validate_occurrence_payload(
                         actual: kind_cell,
                     });
                 }
-                reader.read_cell()?;
+                let path = reader.read_cell()?;
+                if path.is_empty() {
+                    return Err(OccurrenceFault::EmptyPath { ordinal });
+                }
                 reader.read_cell()?;
                 match origin_tag {
                     ForeignOrigin::PACKAGE_TAG => {
