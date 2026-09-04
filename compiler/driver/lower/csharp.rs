@@ -53,7 +53,7 @@ use sha2::{Digest, Sha256};
 
 use crate::lower::{
     EmissionExtension, FactSet, LEAF_PRODUCT, MAX_EMISSION_FACTS, MAX_REF_LIST_ELEMENTS,
-    MAX_TYPE_CHILDREN, SemanticFact, push_fact,
+    MAX_TYPE_CHILDREN, SemanticFact, StagedSourceSpan, push_fact,
 };
 use crate::types::{FactFault, FactRejection};
 
@@ -291,6 +291,36 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Conversion => {
                 let ordinal = push_executable(facts, &image, &names, &ordinals, source, &declared)?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
+            }
+        }
+    }
+
+    // The Roslyn image owns both containment and identifier coordinates.
+    // Bind only relationships whose owner survived emission: partial
+    // implementation rows deliberately have no local ordinal and therefore
+    // remain explicit `Unavailable`, never fabricated roots. The image does
+    // not retain a declaration-end coordinate, so capture the exact named
+    // identifier span rather than pretending its start/name-end interval is
+    // the whole declaration.
+    for coordinate in 0..total {
+        let Some(ordinal) = ordinals.lookup(coordinate) else {
+            continue;
+        };
+        let declared = declaration(&image, coordinate).map_err(terminal)?;
+        let span = StagedSourceSpan::new(declared.name_start, declared.name_end).ok_or_else(|| {
+            terminal(ProjectionFault::NameSpan {
+                start: declared.name_start,
+                end: declared.name_end,
+            })
+        })?;
+        facts.attach_source_span(ordinal, span).map_err(lane_terminal)?;
+        match declared.owner {
+            None => facts.mark_parentage_root(ordinal).map_err(lane_terminal)?,
+            Some(owner) => {
+                let owner = usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+                if let Some(parent) = ordinals.lookup(owner) {
+                    facts.attach_parent(ordinal, parent).map_err(lane_terminal)?;
+                }
             }
         }
     }
