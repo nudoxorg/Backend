@@ -145,10 +145,6 @@ impl<'output> ByteWriter<'output> {
         Self { output, written: 0 }
     }
 
-    pub(super) fn written(&self) -> &[u8] {
-        &self.output[..self.written]
-    }
-
     pub(super) const fn written_len(&self) -> usize {
         self.written
     }

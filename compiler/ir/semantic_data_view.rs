@@ -10,7 +10,7 @@ use heart_identity::{ContentId, IrFragmentDomain};
 
 use crate::{
     AtomId, EntityId, ExternalProductRef, ProductChildRole, ProductId, ProductListId, ProductRef,
-    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+    SemanticAtom, SemanticProduct, SemanticProductConstructor,
     wire::{
         SEMANTIC_CHILD_BYTES, SEMANTIC_CONSTRUCTOR_BYTES, SEMANTIC_EXTERNAL_TAG,
         SEMANTIC_LIST_BYTES, SEMANTIC_LOCAL_TAG, SEMANTIC_PRODUCT_BYTES, SemanticDataLayout,

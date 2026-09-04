@@ -5,21 +5,23 @@
 //! and graph adjacency is compressed into forward/reverse CSR indices. Nothing
 //! in an entity, type, document, or link owns a box or string.
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use compiler_vocabulary::{CompileRecipeFact, Language, LanguageProfile};
 use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
 use heart_identity::{ContentId, SemanticScopeDomain};
 
 use crate::{
-    AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityColumns, AuthorityFactFault,
-    AuthorityFactPlane, CapacityError, DenseId, EntityAuthorityColumns, EntityAuthorityFacts,
+    AnnotationKind, AtomId, AtomInterner, AtomTable, AtomTableView, AuthorityFactFault,
+    AuthorityFactPlane, CapacityError, ChannelDirection, DenseId, EntityAuthorityColumns,
+    EntityAuthorityFacts,
     DeclarationFamilyId, DeclarationIdentity, DeclarationKey, EntityId,
     ExternalDeclarationIdentity, ExternalEntityRef, FactAvailability, ImageProvenance, ImageProvenanceClaim,
     Interner, ListId, ListInterner,
-    ListTable, ListTableView, OccurrenceAuthorityColumn, OccurrenceAuthorityColumns,
+    ListTable, ListTableView, OccurrenceAuthorityColumns,
     OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, PreimageOverflow, SemanticScopeClaim, SemanticScopeFacts,
-    SourceIdentity, StableRef, TextId, Type, TypeId, VariantAvailability,
+    SourceIdentity, StableRef, TextId, Type, TypeId,
     VariantFingerprint,
+    authority::{AuthorityColumns, OccurrenceAuthorityColumn},
     columnar::{RawColumn, Slab, SlabPlan},
     interner::{HashIndex, hash},
 };
@@ -3436,6 +3438,26 @@ impl fmt::Display for BuildError {
             Self::RecursiveType { raw } => {
                 write!(formatter, "compound type coordinate {raw} is recursively projected")
             }
+            Self::CallableElement {
+                role,
+                position,
+                kind,
+            } => write!(
+                formatter,
+                "callable {role:?} element at position {position} has illegal {kind:?} form"
+            ),
+            Self::MissingTypedVariadicParameter { parameter_count } => write!(
+                formatter,
+                "typed variadic callable has {parameter_count} parameters but no final rest parameter"
+            ),
+            Self::TypeParameterRequirements {
+                list,
+                position,
+                requirements,
+            } => write!(
+                formatter,
+                "type-parameter list {list} position {position} has inconsistent requirements {requirements:?}"
+            ),
             Self::EmptyQualifiedPath => formatter.write_str("qualified type path has no segments"),
             Self::EmptyCxxQualification => {
                 formatter.write_str("C-family qualifier wrapper is empty")
@@ -5102,10 +5124,20 @@ impl IrIndices {
             (left_name, versions[left.index()].identity())
                 .cmp(&(right_name, versions[right.index()].identity()))
         });
-        indices
-            .canonical_links
-            .as_mut_slice()
-            .sort_unstable_by_key(|id| {
+        for id in indices.canonical_links.iter() {
+            let link = links
+                .get(*id)
+                .expect("canonical IDs originate from packed links");
+            if let LinkTarget::External(external) = link.target {
+                externals
+                    .get(external.index())
+                    .ok_or(BuildError::Dangling {
+                        space: SemanticSpace::External,
+                        raw: external.raw,
+                    })?;
+            }
+        }
+        indices.canonical_links.as_mut_slice().sort_unstable_by_key(|id| {
                 let link = links
                     .get(*id)
                     .expect("canonical IDs originate from packed links");
@@ -5115,10 +5147,9 @@ impl IrIndices {
                         DeclarationLinkTarget::Local(versions[entity.index()].identity())
                     }
                     LinkTarget::External(external) => declaration_link_target(
-                        *externals.get(external.index()).ok_or(BuildError::Dangling {
-                            space: SemanticSpace::External,
-                            raw: external.raw,
-                        })?,
+                        *externals
+                            .get(external.index())
+                            .expect("external coordinate was validated before canonical sorting"),
                     ),
                 };
                 (from, target, link.kind)
@@ -5478,7 +5509,10 @@ impl PackedLinks {
         })
     }
 
-    fn view(&self, occurrences: LinkOccurrenceColumns<'_>) -> GraphColumns<'_> {
+    fn view<'ir>(
+        &'ir self,
+        occurrences: LinkOccurrenceColumns<'ir>,
+    ) -> GraphColumns<'ir> {
         GraphColumns {
             from: &self.from,
             targets: &self.targets,
@@ -5887,7 +5921,7 @@ impl Ir {
         let authority = self.authority_facts.facts(id.index())?;
         Some(crate::CoreSemanticEntity {
             id,
-            name: item.name(),
+            name: *self.items.names.get(id.index())?,
             kind: item.kind(),
             visibility: item.visibility(),
             parent: item.parent(),

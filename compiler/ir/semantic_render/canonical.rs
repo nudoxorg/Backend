@@ -168,23 +168,26 @@ impl<Reader: SemanticReader + ?Sized> PreparedCanonicalType<'_, Reader> {
                 available: output.len(),
             });
         }
-        let mut writer = ByteWriter::new(output);
-        emit_type(
-            self.reader,
-            self.root,
-            self.root,
-            1,
-            self.limits,
-            &mut writer,
-        )?;
-        if writer.written_len() != self.encoded_len {
-            return Err(CanonicalTypeRenderError::PreparedLengthMismatch {
-                root: self.root,
-                promised: self.encoded_len,
-                written: writer.written_len(),
-            });
-        }
-        str::from_utf8(writer.written()).map_err(|source| {
+        let written = {
+            let mut writer = ByteWriter::new(output);
+            emit_type(
+                self.reader,
+                self.root,
+                self.root,
+                1,
+                self.limits,
+                &mut writer,
+            )?;
+            if writer.written_len() != self.encoded_len {
+                return Err(CanonicalTypeRenderError::PreparedLengthMismatch {
+                    root: self.root,
+                    promised: self.encoded_len,
+                    written: writer.written_len(),
+                });
+            }
+            writer.written_len()
+        };
+        str::from_utf8(&output[..written]).map_err(|source| {
             CanonicalTypeRenderError::OutputEncoding {
                 root: self.root,
                 valid_up_to: source.valid_up_to(),

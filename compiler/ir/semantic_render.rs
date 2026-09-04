@@ -108,15 +108,18 @@ impl<'image, R: SemanticCoreReader + ?Sized> PreparedNeutral<'image, R> {
                 required_at_least: self.encoded_len,
             });
         }
-        let mut writer = SliceWriter::new(output);
-        if write_neutral(&mut writer, self.entity, self.name).is_err() {
-            return Err(RenderFailure::PreparedLengthMismatch {
-                entity: self.entity.id,
-                promised: self.encoded_len,
-                written: writer.written_len(),
-            });
-        }
-        str::from_utf8(writer.written()).map_err(|source| RenderFailure::OutputEncoding {
+        let written = {
+            let mut writer = SliceWriter::new(output);
+            if write_neutral(&mut writer, self.entity, self.name).is_err() {
+                return Err(RenderFailure::PreparedLengthMismatch {
+                    entity: self.entity.id,
+                    promised: self.encoded_len,
+                    written: writer.written_len(),
+                });
+            }
+            writer.written_len()
+        };
+        str::from_utf8(&output[..written]).map_err(|source| RenderFailure::OutputEncoding {
             valid_up_to: source.valid_up_to(),
             source,
         })
@@ -314,7 +317,6 @@ impl<'output> SliceWriter<'output> {
     fn new(output: &'output mut [u8]) -> Self {
         Self { output, written: 0 }
     }
-    fn written(&self) -> &[u8] { &self.output[..self.written] }
     const fn written_len(&self) -> usize { self.written }
 }
 

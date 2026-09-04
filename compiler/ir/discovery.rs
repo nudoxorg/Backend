@@ -14,7 +14,7 @@ use crate::{
 
 /// Exact reopen failure while joining the typed extension plane to its shared
 /// durable pools.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum FragmentDiscoveryError {
     MissingExtensionPools,
     TypeFacts(crate::TypeFactFault),
