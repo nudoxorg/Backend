@@ -16,8 +16,11 @@ use crate::{
     TypeQuery, WildcardBound,
 };
 
+#[path = "canonical/names.rs"]
 mod names;
+#[path = "canonical/output.rs"]
 mod output;
+#[path = "canonical/traverse.rs"]
 mod traverse;
 
 use names::*;
