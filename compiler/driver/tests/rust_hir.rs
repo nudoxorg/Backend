@@ -109,6 +109,7 @@ fn real_rust_analyzer_project_admits_source_backed_declarations() -> Result<(), 
         | Err(CompileFailure::LoweringUnsupported { .. })
         | Err(CompileFailure::ExtensionAtomUnbound { .. })
         | Err(CompileFailure::FactRejected { .. })
+        | Err(CompileFailure::CSharpProjection { .. })
         | Err(CompileFailure::Build { .. })
         | Err(CompileFailure::Prepare { .. })
         | Err(CompileFailure::Write { .. })

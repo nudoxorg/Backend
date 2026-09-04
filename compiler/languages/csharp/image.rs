@@ -503,20 +503,25 @@ pub struct Parameter<'image> {
 }
 
 impl<'image> Parameter<'image> {
-    fn decode(image: CSharpImage<'image>, index: usize) -> Self {
+    fn decode(image: CSharpImage<'image>, index: usize) -> Result<Self, ImageError> {
         let row = image.row(Section::Parameters, index);
-        Self {
+        let ref_kind = RefKind::decode(row[8]).ok_or(ImageError::DeclarationKind {
+            index,
+            found: row[8],
+            plane: Section::Parameters,
+        })?;
+        Ok(Self {
             name: Atom {
                 bytes: image.atom_bytes(u32_at(row, 4)),
             },
             ty: TypeRef(u32_at(row, 0)),
-            ref_kind: RefKind::decode(row[8]).unwrap_or(RefKind::Value),
+            ref_kind,
             is_params: row[9] & 0x1 != 0,
             has_default: row[9] & 0x2 != 0,
             default: image.optional_atom(u32_at(row, 12)),
             name_start: u32_at(row, 16),
             name_end: u32_at(row, 20),
-        }
+        })
     }
 }
 
@@ -544,15 +549,24 @@ pub struct GenericParameter<'image> {
 }
 
 impl<'image> GenericParameter<'image> {
-    fn decode(image: CSharpImage<'image>, index: usize) -> Self {
+    fn decode(image: CSharpImage<'image>, index: usize) -> Result<Self, ImageError> {
         let row = image.row(Section::TypeParameters, index);
-        let constraint_start = usize::try_from(u32_at(row, 4)).unwrap_or(0);
+        let constraint_start = usize::try_from(u32_at(row, 4)).map_err(|_| ImageError::Span {
+            index,
+            start: u32_at(row, 4),
+            end: u32::try_from(image.section(Section::TypeConstraints).count).unwrap_or(u32::MAX),
+        })?;
         let constraint_count = usize::from(u16_at(row, 8));
-        Self {
+        let variance = VarianceTag::decode(row[10]).ok_or(ImageError::DeclarationKind {
+            index,
+            found: row[10],
+            plane: Section::TypeParameters,
+        })?;
+        Ok(Self {
             name: Atom {
                 bytes: image.atom_bytes(u32_at(row, 0)),
             },
-            variance: VarianceTag::decode(row[10]).unwrap_or(VarianceTag::Invariant),
+            variance,
             constraints: ConstraintIter {
                 image,
                 next: constraint_start,
@@ -564,7 +578,7 @@ impl<'image> GenericParameter<'image> {
             unmanaged: row[11] & 0x8 != 0,
             constructor: row[11] & 0x10 != 0,
             allows_ref_like: row[11] & 0x20 != 0,
-        }
+        })
     }
 }
 
@@ -686,7 +700,7 @@ pub struct ParamIter<'image> {
 }
 
 impl<'image> Iterator for ParamIter<'image> {
-    type Item = Parameter<'image>;
+    type Item = Result<Parameter<'image>, ImageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next == self.end {
@@ -750,7 +764,7 @@ pub struct GenericIter<'image> {
 }
 
 impl<'image> Iterator for GenericIter<'image> {
-    type Item = GenericParameter<'image>;
+    type Item = Result<GenericParameter<'image>, ImageError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next == self.end {
@@ -888,17 +902,32 @@ impl<'image> CSharpImage<'image> {
             self.section(Section::Types).count,
         )?;
         let row = self.row(Section::Types, index);
-        let child_start = usize::try_from(u32_at(row, 8)).unwrap_or(0);
-        let child_count = usize::try_from(u32_at(row, 12)).unwrap_or(0);
+        let child_start = self.range_start(u32_at(row, 8), Section::TypeChildren, index)?;
+        let child_count = usize::try_from(u32_at(row, 12)).map_err(|_| ImageError::Span {
+            index,
+            start: u32::try_from(child_start).unwrap_or(u32::MAX),
+            end: u32::try_from(self.section(Section::TypeChildren).count).unwrap_or(u32::MAX),
+        })?;
+        let child_end = self.range_end(child_start, child_count, Section::TypeChildren, index)?;
+        let kind = TypeNodeKind::decode(row[0]).ok_or(ImageError::DeclarationKind {
+            index,
+            found: row[0],
+            plane: Section::Types,
+        })?;
+        let nullable = NullabilityCell::decode(row[1]).ok_or(ImageError::DeclarationKind {
+            index,
+            found: row[1],
+            plane: Section::Types,
+        })?;
         Ok(TypeNode {
-            kind: TypeNodeKind::decode(row[0]).unwrap_or(TypeNodeKind::Error),
-            nullable: NullabilityCell::decode(row[1]).unwrap_or(NullabilityCell::None),
+            kind,
+            nullable,
             has_return: row[3] & 0x1 != 0,
             spelling: self.optional_atom(u32_at(row, 4)),
             children: TypeChildIter {
                 image: self,
                 next: child_start,
-                end: child_start + child_count,
+                end: child_end,
             },
         })
     }
@@ -1070,10 +1099,16 @@ impl<'image> CSharpImage<'image> {
                 self.section(Section::Types).count,
             )?;
             self.atom(u32_at(row, 4))?;
-            if RefKind::decode(row[8]).is_none() || row[9] & !0x3 != 0 {
+            if RefKind::decode(row[8]).is_none() {
                 return Err(ImageError::DeclarationKind {
                     index,
                     found: row[8],
+                    plane: Section::Parameters,
+                });
+            }
+            if row[9] & !0x3 != 0 {
+                return Err(ImageError::DeclarationReserved {
+                    index,
                     plane: Section::Parameters,
                 });
             }
@@ -1100,10 +1135,16 @@ impl<'image> CSharpImage<'image> {
             let start = self.range_start(u32_at(row, 4), Section::TypeConstraints, index)?;
             let count = usize::from(u16_at(row, 8));
             let _ = self.range_end(start, count, Section::TypeConstraints, index)?;
-            if VarianceTag::decode(row[10]).is_none() || row[11] & !0x3f != 0 {
+            if VarianceTag::decode(row[10]).is_none() {
                 return Err(ImageError::DeclarationKind {
                     index,
                     found: row[10],
+                    plane: Section::TypeParameters,
+                });
+            }
+            if row[11] & !0x3f != 0 {
+                return Err(ImageError::DeclarationReserved {
+                    index,
                     plane: Section::TypeParameters,
                 });
             }
@@ -1125,14 +1166,23 @@ impl<'image> CSharpImage<'image> {
     fn validate_types(self) -> Result<(), ImageError> {
         for index in 0..self.section(Section::Types).count {
             let row = self.row(Section::Types, index);
-            if TypeNodeKind::decode(row[0]).is_none()
-                || NullabilityCell::decode(row[1]).is_none()
-                || row[2] != 0
-                || row[3] & !0x1 != 0
-            {
+            if TypeNodeKind::decode(row[0]).is_none() {
                 return Err(ImageError::DeclarationKind {
                     index,
                     found: row[0],
+                    plane: Section::Types,
+                });
+            }
+            if NullabilityCell::decode(row[1]).is_none() {
+                return Err(ImageError::DeclarationKind {
+                    index,
+                    found: row[1],
+                    plane: Section::Types,
+                });
+            }
+            if row[2] != 0 || row[3] & !0x1 != 0 {
+                return Err(ImageError::DeclarationReserved {
+                    index,
                     plane: Section::Types,
                 });
             }

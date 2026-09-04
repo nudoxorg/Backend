@@ -564,6 +564,107 @@ fn image_rejects_checksum_and_post_checksum_structural_mutations() -> Result<(),
 }
 
 #[test]
+fn image_rejects_every_signature_and_type_vocabulary_mutation() -> Result<(), ImageTestError> {
+    let mut fix = Fixture::default();
+    let class = fix.class(b"Demo.Widget", 6, 12);
+    let method_name = fix.atom(b"M");
+    let parameter_name = fix.atom(b"value");
+    let type_name = fix.atom(b"System.Int32");
+    let type_row = u32::try_from(fix.types.len()).unwrap_or(u32::MAX);
+    fix.types.push(TypeRow {
+        kind: TypeNodeKind::Named as u8,
+        nullable: NullabilityCell::None as u8,
+        spelling: Some(type_name),
+        children: Vec::new(),
+    });
+    let generic_name = fix.atom(b"T");
+    fix.declarations[0].generics.push(GenericRow {
+        name: generic_name,
+        constraints: Vec::new(),
+        variance: 0,
+        flags: 0,
+    });
+    fix.declarations.push(DeclarationRow {
+        kind: DeclarationKind::Method as u8,
+        flags: 0,
+        partial: PartialRole::None as u8,
+        ref_kind: RefKind::Value as u8,
+        name: method_name,
+        qualified: None,
+        owner: Some(class),
+        declared_type: Some(type_row),
+        decl_start: 15,
+        name_start: 15,
+        name_end: 16,
+        params: vec![ParamRow {
+            ty: type_row,
+            name: parameter_name,
+            ref_kind: RefKind::Value as u8,
+            flags: 0,
+            default: None,
+            name_start: 17,
+            name_end: 22,
+        }],
+        generics: Vec::new(),
+        doc: None,
+    });
+    let source = b"class Widget { void M(int value) {} }";
+    let valid = fix.encode(source)?;
+
+    let parameters = plane_offset(&valid, Section::Parameters)?;
+    let mut parameter_mutant = valid.clone();
+    parameter_mutant[parameters + 8] = 200;
+    checksum(&mut parameter_mutant);
+    assert_eq!(
+        CSharpImage::open(&parameter_mutant),
+        Err(ImageError::DeclarationKind {
+            index: 0,
+            found: 200,
+            plane: Section::Parameters,
+        })
+    );
+
+    let type_parameters = plane_offset(&valid, Section::TypeParameters)?;
+    let mut generic_mutant = valid.clone();
+    generic_mutant[type_parameters + 10] = 200;
+    checksum(&mut generic_mutant);
+    assert_eq!(
+        CSharpImage::open(&generic_mutant),
+        Err(ImageError::DeclarationKind {
+            index: 0,
+            found: 200,
+            plane: Section::TypeParameters,
+        })
+    );
+
+    let types = plane_offset(&valid, Section::Types)?;
+    let mut kind_mutant = valid.clone();
+    kind_mutant[types] = 200;
+    checksum(&mut kind_mutant);
+    assert_eq!(
+        CSharpImage::open(&kind_mutant),
+        Err(ImageError::DeclarationKind {
+            index: 0,
+            found: 200,
+            plane: Section::Types,
+        })
+    );
+
+    let mut nullability_mutant = valid;
+    nullability_mutant[types + 1] = 200;
+    checksum(&mut nullability_mutant);
+    assert_eq!(
+        CSharpImage::open(&nullability_mutant),
+        Err(ImageError::DeclarationKind {
+            index: 0,
+            found: 200,
+            plane: Section::Types,
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestError> {
     let mut fix = Fixture::default();
     let widget = fix.class(b"Demo.Widget", 6, 12);
@@ -622,6 +723,7 @@ fn image_carries_signatures_partial_roles_and_flags() -> Result<(), ImageTestErr
         .parameters
         .iter()
         .next()
+        .transpose()?
         .ok_or(ImageTestError::Missing { fact: "parameter" })?;
     if parameter.name.bytes != b"count"
         || parameter.ref_kind != RefKind::Ref
@@ -728,9 +830,12 @@ fn image_carries_generic_constraints_and_tuple_children() -> Result<(), ImageTes
     };
     let class = image.declaration(0).map_err(ImageTestError::Image)?;
     let mut generics = class.type_parameters.iter();
-    let generic = generics.next().ok_or(ImageTestError::Missing {
-        fact: "generic parameter",
-    })?;
+    let generic = generics
+        .next()
+        .transpose()?
+        .ok_or(ImageTestError::Missing {
+            fact: "generic parameter",
+        })?;
     if generic.name.bytes != b"T"
         || generic.variance != compiler_languages_csharp::VarianceTag::Invariant
         || !generic.reference_type

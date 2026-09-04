@@ -1,0 +1,102 @@
+# csharp-roslyn-fidelity capability index
+
+capability = "csharp-roslyn-fidelity"
+branch = "codex/fidelity-csharp"
+worktree = "/private/tmp/nudox-fidelity-csharp"
+baseline_commit = "309acc8f1da8fba1f33858ee7cbb7cf03d7b28f3"
+baseline_note = "frozen independently of git status; per-file (lines, sha256-16)"
+manager_role = "terra_csharp_fidelity"
+
+[[baseline]]
+file = "compiler/languages/csharp/lib.rs"
+lines = 20
+sha16 = "54196aab55826b45"
+
+[[baseline]]
+file = "compiler/languages/csharp/image.rs"
+lines = 1786
+sha16 = "121249ab1fcd6458"
+
+[[baseline]]
+file = "compiler/languages/csharp/oracle.rs"
+lines = 767
+sha16 = "98feaa1c6e78005a"
+
+[[baseline]]
+file = "compiler/languages/csharp/Cargo.toml"
+lines = 19
+sha16 = "8f16ab61078c4a79"
+
+[[baseline]]
+file = "compiler/languages/csharp/tests/protocol.rs"
+lines = 306
+sha16 = "7d318111ca8aa0ea"
+
+[[baseline]]
+file = "compiler/languages/csharp/tests/image.rs"
+lines = 872
+sha16 = "10bb9d434df672d6"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/Program.cs"
+lines = 316
+sha16 = "36b9c920e732cb12"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/Extractor.cs"
+lines = 1349
+sha16 = "8bc0240dec98f669"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/SourceLoader.cs"
+lines = 973
+sha16 = "7b408d23cccf3844"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/AuthorityImage.cs"
+lines = 152
+sha16 = "4a0ecbe087ae32c1"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/TypeSigWriter.cs"
+lines = 357
+sha16 = "4fde526909f359e7"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/DocComments.cs"
+lines = 267
+sha16 = "5b2abdd56847ac9c"
+
+[[baseline]]
+file = "compiler/languages/csharp/helper/oracle.csproj"
+lines = 43
+sha16 = "310bed0346a6aea7"
+
+[[baseline]]
+file = "compiler/driver/lower/csharp.rs"
+lines = 3091
+sha16 = "845b1ae638a44a79"
+
+[[baseline]]
+file = "compiler/driver/native/csharp.rs"
+lines = 125
+sha16 = "45025f2f29eb522c"
+
+[[baseline]]
+file = "compiler/driver/tests/csharp_image.rs"
+lines = 203
+sha16 = "45cb471e3e298a20"
+
+# Environment receipts (resolved once, recorded before dispatch)
+[environment]
+dotnet = "/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/dotnet-sdk/dotnet (sdk 8.0.424 + 10.0.400)"
+node = "/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/node-v22.14.0-darwin-arm64/bin/node (v22.14.0)"
+node_typescript_module = "NODE_PATH=/Users/mileswirht/Downloads/backend/node_modules (vendored checker require('typescript') resolves there)"
+cargo_target_dir = "/private/tmp/nudox-fidelity-csharp/.local/target-csharp (lane-private; shared .local/target showed stale-artifact contamination from a concurrent agent build)"
+network = "nuget.org flat-container reachable (HTTP 200); azuresearch-usnc.nuget.org search reachable"
+
+# Worker dispatch ledger
+[[workers]]
+card = "C1-producer-v3"
+role = "nudox_luna_implementer"
+status = "dispatched"

@@ -16,6 +16,7 @@ pub use authority::{
 };
 pub use compile::{compile, compile_ir};
 pub use lowering::{FactFault, FactRejection};
+pub(crate) use lowering::CSharpProjectionFault;
 pub(crate) use request::NativeRecipe;
 pub use request::{CompileControl, CompileRequest, CompileScratch, SemanticAuthorityInput};
 pub use terminal::{

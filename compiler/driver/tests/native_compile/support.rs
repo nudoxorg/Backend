@@ -168,17 +168,16 @@ pub(super) enum CompileTerminal {
     DeadlineExceeded,
     DiagnosticLimit,
     NativeRejected,
-    FactRejected,
     Authority,
     AuthorityInputRequired,
     AuthorityInputProfileMismatch,
     LoweringUnsupported(LoweringUnsupported),
-    FactRejected,
     Build,
     Prepare,
     Write,
     Validate,
     FactRejected,
+    CSharpProjection,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -438,7 +437,6 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::DeadlineExceeded { .. } => CompileTerminal::DeadlineExceeded,
         CompileFailure::DiagnosticLimit { .. } => CompileTerminal::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminal::NativeRejected,
-        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::Authority { .. } => CompileTerminal::Authority,
         CompileFailure::AuthorityInputRequired { .. } => CompileTerminal::AuthorityInputRequired,
         CompileFailure::AuthorityInputProfileMismatch { .. } => {
@@ -447,13 +445,13 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::LoweringUnsupported { cause, .. } => {
             CompileTerminal::LoweringUnsupported(*cause)
         }
-        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
+        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
+        CompileFailure::CSharpProjection { .. } => CompileTerminal::CSharpProjection,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,
         CompileFailure::Write { .. } => CompileTerminal::Write,
         CompileFailure::Validate { .. } => CompileTerminal::Validate,
-        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
     }
 }
 
