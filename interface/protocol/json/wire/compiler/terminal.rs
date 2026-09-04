@@ -4,7 +4,8 @@
 use std::time::Duration;
 
 use compiler_vocabulary::{
-    AuthorityDiagnosticClass, AuthorityPhase, Language, LoweringUnsupported, NativeTool, Stage,
+    AuthorityDiagnosticClass, AuthorityPhase, JavaProjectionFaultClass, JavaProjectionOwner,
+    JavaProjectionText, Language, LoweringUnsupported, NativeTool, Stage,
 };
 use interface_core::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, FragmentCause, PublicationCause,
@@ -117,6 +118,7 @@ pub(crate) enum LoweringUnsupportedWire {
     },
     RustFunction,
     RustConstantType,
+    RustGenericParameter,
     PythonAssignmentName,
     PythonAssignmentValue,
     ClangDeclarationForm,
@@ -127,6 +129,47 @@ pub(crate) enum LoweringUnsupportedWire {
     GoDeclarationForm,
     GoDeclarationType,
     JavaDeclarationForm,
+    JavaProjection {
+        #[serde(serialize_with = "serialize_java_projection_class")]
+        class: JavaProjectionFaultClass,
+        #[serde(serialize_with = "serialize_java_projection_text")]
+        declaration: JavaProjectionText,
+        #[serde(serialize_with = "serialize_java_projection_owner")]
+        owner: JavaProjectionOwner,
+    },
+}
+
+fn serialize_java_projection_class<Output: Serializer>(
+    class: &JavaProjectionFaultClass,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    serializer.serialize_str(match class {
+        JavaProjectionFaultClass::Image => "image",
+        JavaProjectionFaultClass::Depth => "depth",
+        JavaProjectionFaultClass::Malformed => "malformed",
+        JavaProjectionFaultClass::Primitive => "primitive",
+        JavaProjectionFaultClass::Utf8 => "utf8",
+        JavaProjectionFaultClass::SourceUtf8 => "source_utf8",
+        JavaProjectionFaultClass::Utf16 => "utf16",
+        JavaProjectionFaultClass::OrphanOwner => "orphan_owner",
+        JavaProjectionFaultClass::ForeignKey => "foreign_key",
+        JavaProjectionFaultClass::SiblingCapacity => "sibling_capacity",
+        JavaProjectionFaultClass::IndexCapacity => "index_capacity",
+    })
+}
+
+fn serialize_java_projection_text<Output: Serializer>(
+    text: &JavaProjectionText,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    serializer.collect_str(text)
+}
+
+fn serialize_java_projection_owner<Output: Serializer>(
+    owner: &JavaProjectionOwner,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    serializer.collect_str(owner)
 }
 
 /// Closed compact-IR failure vocabulary projected as the value of a named `cause` field.

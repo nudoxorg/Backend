@@ -556,6 +556,10 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
             correlation,
             snapshot: owned(arguments, 2, AdapterField::Snapshot)?,
         })),
+        "remove-index" => Ok(RawApplicationCommand::RemoveIndex(RawSnapshot {
+            correlation,
+            snapshot: owned(arguments, 2, AdapterField::Snapshot)?,
+        })),
         "health" => Ok(RawApplicationCommand::Health(RawHealth { correlation })),
         "recover-local" => raw_recover_command(arguments, correlation),
         "recover-inconsistent" => raw_inconsistent_policy_command(arguments, correlation),
@@ -579,7 +583,7 @@ fn expected_fields(action: &str) -> Option<usize> {
     match action {
         "generate" | "generate-file" | "search" => Some(5),
         "generate-stdin" | "graph" | "vector" => Some(4),
-        "status" | "locality" | "poll-execution" | "cancel" => Some(3),
+        "status" | "locality" | "remove-index" | "poll-execution" | "cancel" => Some(3),
         "health" => Some(2),
         "recover-local" | "release-local" => Some(12),
         "recover-inconsistent" => Some(14),
@@ -666,6 +670,7 @@ impl TryFrom<RawApplicationCommand> for ApplicationInput {
             RawApplicationCommand::Graph(raw) => graph_input(raw),
             RawApplicationCommand::Vector(raw) => vector_input(raw),
             RawApplicationCommand::Locality(raw) => locality_input(raw),
+            RawApplicationCommand::RemoveIndex(raw) => remove_index_input(raw),
             RawApplicationCommand::Health(raw) => Ok(ApplicationInput::Health {
                 correlation: CorrelationId(raw.correlation),
             }),
@@ -798,6 +803,13 @@ fn vector_input(raw: RawRetrieval) -> Result<ApplicationInput, AdapterError> {
 
 fn locality_input(raw: RawSnapshot) -> Result<ApplicationInput, AdapterError> {
     Ok(ApplicationInput::Locality {
+        correlation: CorrelationId(raw.correlation),
+        snapshot: input_text(raw.snapshot, AdapterField::Snapshot)?,
+    })
+}
+
+fn remove_index_input(raw: RawSnapshot) -> Result<ApplicationInput, AdapterError> {
+    Ok(ApplicationInput::RemoveIndex {
         correlation: CorrelationId(raw.correlation),
         snapshot: input_text(raw.snapshot, AdapterField::Snapshot)?,
     })

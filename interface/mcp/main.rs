@@ -10,8 +10,8 @@ use interface_core::{
     ExecutionReply, OperationKey, ReplyBody,
 };
 use interface_protocol::{
-    CancellationTarget, McpDecode, McpRequest, McpRequestId, decode_mcp, mcp_error, mcp_reply,
-    read_frame, write_frame,
+    CancellationTarget, McpDecode, McpRequest, McpRequestId, decode_mcp, mcp_error, mcp_initialize,
+    mcp_pong, mcp_reply, mcp_tools_list, read_frame, write_frame,
 };
 
 /// The concrete application service permits one active adaptive effect, so one inline mapping is
@@ -106,6 +106,30 @@ fn main() -> io::Result<()> {
                             continue;
                         };
                         serde_json::to_vec(&mcp_reply(id, reply)).map_err(io::Error::other)?
+                    }
+                    McpRequest::Initialize(_) => {
+                        let Some(id) = envelope.id.as_ref() else {
+                            continue;
+                        };
+                        serde_json::to_vec(&mcp_initialize(id)).map_err(io::Error::other)?
+                    }
+                    McpRequest::Initialized => {
+                        let Some(id) = envelope.id.as_ref() else {
+                            continue;
+                        };
+                        serde_json::to_vec(&mcp_pong(id)).map_err(io::Error::other)?
+                    }
+                    McpRequest::ListTools => {
+                        let Some(id) = envelope.id.as_ref() else {
+                            continue;
+                        };
+                        serde_json::to_vec(&mcp_tools_list(id)).map_err(io::Error::other)?
+                    }
+                    McpRequest::Ping => {
+                        let Some(id) = envelope.id.as_ref() else {
+                            continue;
+                        };
+                        serde_json::to_vec(&mcp_pong(id)).map_err(io::Error::other)?
                     }
                     McpRequest::Cancellation(target) => {
                         let Some((operation, correlation)) = active_requests.resolve(&target)

@@ -18,6 +18,8 @@ heart-identity = { path = "../../heart/identity" }
 heart-observe = { path = "../../heart/observe" }
 [dev-dependencies]
 allocation-counter.workspace = true
+compiler-ir = { path = "../../compiler/ir" }
+server-index-core = { path = "../../server/index/core" }
 
 [lints]
 workspace = true

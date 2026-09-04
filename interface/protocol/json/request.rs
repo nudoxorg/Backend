@@ -10,8 +10,6 @@
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::command::RawApplicationCommand;
-
 /// Presence-aware JSON-RPC identity field used for both requests and cancellation parameters.
 ///
 /// A missing identity and an explicit `null` identity have different JSON-RPC meaning: the former
@@ -48,9 +46,9 @@ pub(super) struct RequestDto {
     /// Method token, mapped to the closed method vocabulary by the adapter.
     #[serde(default)]
     pub(super) method: Option<String>,
-    /// Closed method parameter record.
+    /// Raw method parameters; each closed method owns its typed decode.
     #[serde(default)]
-    pub(super) params: Option<ParamsDto>,
+    pub(super) params: Option<Value>,
 }
 
 /// Identity-only fallback used when a later typed field rejects. It lets the process retain the
@@ -62,18 +60,25 @@ pub(super) struct RequestIdentityDto {
     pub(super) id: RequestIdField,
 }
 
-/// MCP method parameters. The method determines which subset is meaningful; unknown keys are
-/// rejected by serde before any application operation is constructed.
+/// MCP `tools/call` and cancellation parameters.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ParamsDto {
-    /// Fixed application tool name for `tools/call`.
+    /// Registry tool name or the compatibility application tool name.
     #[serde(default)]
     pub(super) name: Option<String>,
-    /// Shared closed raw application command for `tools/call`.
+    /// Raw arguments decoded by the shared command grammar after registry action injection.
     #[serde(default)]
-    pub(super) arguments: Option<RawApplicationCommand>,
+    pub(super) arguments: Option<Value>,
     /// Original request identity for `$/cancelRequest`.
     #[serde(default, rename = "requestId")]
     pub(super) request_id: RequestIdField,
+}
+
+/// Bounded lifecycle parameters retained from `initialize` when supplied.
+#[derive(Debug, Deserialize)]
+pub(super) struct InitializeParams {
+    /// Requested MCP revision; unknown fields remain client-owned lifecycle facts.
+    #[serde(default, rename = "protocolVersion")]
+    pub(super) protocol_version: Option<String>,
 }

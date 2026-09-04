@@ -5,7 +5,8 @@ use compiler_vocabulary::{Language, Stage};
 use heart_adaptive::CapabilityDomain;
 use interface_core::{
     CapabilityHealth, CapabilityTransition, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    ExecutionReply, ExecutionState, GeneratedArtifact, ReplyBody,
+    DocSection, ExecutionReply, ExecutionState, GeneratedArtifact, ReplyBody, RetrievalCause,
+    RetrievalMode, RetrievalPhase, RetrievalQueryCause, RetrievalRow, SignatureToken, TokenKind,
 };
 use serde::Serialize;
 
@@ -37,6 +38,17 @@ pub(super) enum ReplyBodyWire {
     },
     Execution {
         state: ExecutionReplyWire,
+    },
+    Snapshot {
+        snapshot: Text,
+        resident: bool,
+    },
+    Retrieval {
+        rows: Vec<RetrievalRowWire>,
+    },
+    IndexRemoved {
+        snapshot: Text,
+        removed: bool,
     },
     /// Legacy body slot retained by the external envelope for a diagnostic-only outcome.
     Rejected,
@@ -82,6 +94,7 @@ enum DiagnosticCodeWire {
     AdaptivePolicyRejected,
     CompilerTerminal,
     ExecutionFailed,
+    RetrievalFailed,
 }
 
 #[derive(Serialize)]
@@ -121,6 +134,78 @@ enum DiagnosticDetailWire {
     Execution {
         state: ExecutionStateWire,
     },
+    Retrieval {
+        cause: RetrievalCauseWire,
+    },
+}
+
+#[derive(Serialize)]
+pub(super) struct RetrievalRowWire {
+    document: Text,
+    term: Text,
+    start: Option<u32>,
+    end: Option<u32>,
+    score: u32,
+    mode: RetrievalModeWire,
+    signature: Option<Vec<SignatureTokenWire>>,
+    section: DocSectionWire,
+}
+
+#[derive(Serialize)]
+struct SignatureTokenWire {
+    kind: TokenKindWire,
+    text: Text,
+    target: Option<Text>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TokenKindWire {
+    Keyword,
+    Name,
+    Type,
+    Punctuation,
+    Text,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RetrievalModeWire {
+    Exact,
+    Lexical,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DocSectionWire {
+    Summary,
+    Members,
+    Fields,
+    Source,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RetrievalCauseWire {
+    SnapshotUnknown { snapshot: Text },
+    QueryRejected { reason: RetrievalQueryCauseWire },
+    Backend { phase: RetrievalPhaseWire },
+    RowTableFull { rejected: RetrievalRowWire },
+    JournalFull { rejected: Text },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RetrievalQueryCauseWire {
+    Empty,
+    Unsupported { observed: Text },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RetrievalPhaseWire {
+    Scan,
+    Rank,
 }
 
 #[derive(Serialize)]
@@ -211,6 +296,17 @@ impl From<ReplyBody> for ReplyBodyWire {
             ReplyBody::Execution(state) => Self::Execution {
                 state: state.into(),
             },
+            ReplyBody::Snapshot(facts) => Self::Snapshot {
+                snapshot: Text(facts.snapshot),
+                resident: facts.resident,
+            },
+            ReplyBody::Retrieval(rows) => Self::Retrieval {
+                rows: rows.iter().copied().map(Into::into).collect(),
+            },
+            ReplyBody::IndexRemoved(receipt) => Self::IndexRemoved {
+                snapshot: Text(receipt.snapshot),
+                removed: receipt.removed,
+            },
         }
     }
 }
@@ -235,6 +331,7 @@ impl From<DiagnosticCode> for DiagnosticCodeWire {
             DiagnosticCode::AdaptivePolicyRejected => Self::AdaptivePolicyRejected,
             DiagnosticCode::CompilerTerminal => Self::CompilerTerminal,
             DiagnosticCode::ExecutionFailed => Self::ExecutionFailed,
+            DiagnosticCode::RetrievalFailed => Self::RetrievalFailed,
         }
     }
 }
@@ -269,6 +366,110 @@ impl From<DiagnosticDetail> for DiagnosticDetailWire {
             DiagnosticDetail::Execution(state) => Self::Execution {
                 state: state.into(),
             },
+            DiagnosticDetail::Retrieval(cause) => Self::Retrieval {
+                cause: cause.into(),
+            },
+        }
+    }
+}
+
+impl From<RetrievalRow> for RetrievalRowWire {
+    fn from(row: RetrievalRow) -> Self {
+        Self {
+            document: Text(row.document),
+            term: Text(row.term),
+            start: row.span.map(|span| span.start),
+            end: row.span.map(|span| span.end),
+            score: row.score,
+            mode: row.mode.into(),
+            signature: row
+                .signature
+                .map(|tokens| tokens.iter().copied().map(Into::into).collect()),
+            section: row.section.into(),
+        }
+    }
+}
+
+impl From<SignatureToken> for SignatureTokenWire {
+    fn from(token: SignatureToken) -> Self {
+        Self {
+            kind: token.kind.into(),
+            text: Text(token.text),
+            target: token.target.map(Text),
+        }
+    }
+}
+
+impl From<TokenKind> for TokenKindWire {
+    fn from(kind: TokenKind) -> Self {
+        match kind {
+            TokenKind::Keyword => Self::Keyword,
+            TokenKind::Name => Self::Name,
+            TokenKind::Type => Self::Type,
+            TokenKind::Punctuation => Self::Punctuation,
+            TokenKind::Text => Self::Text,
+        }
+    }
+}
+
+impl From<RetrievalMode> for RetrievalModeWire {
+    fn from(mode: RetrievalMode) -> Self {
+        match mode {
+            RetrievalMode::Exact => Self::Exact,
+            RetrievalMode::Lexical => Self::Lexical,
+        }
+    }
+}
+
+impl From<DocSection> for DocSectionWire {
+    fn from(section: DocSection) -> Self {
+        match section {
+            DocSection::Summary => Self::Summary,
+            DocSection::Members => Self::Members,
+            DocSection::Fields => Self::Fields,
+            DocSection::Source => Self::Source,
+        }
+    }
+}
+
+impl From<RetrievalCause> for RetrievalCauseWire {
+    fn from(cause: RetrievalCause) -> Self {
+        match cause {
+            RetrievalCause::SnapshotUnknown { snapshot } => Self::SnapshotUnknown {
+                snapshot: Text(snapshot),
+            },
+            RetrievalCause::QueryRejected { reason } => Self::QueryRejected {
+                reason: reason.into(),
+            },
+            RetrievalCause::Backend { phase } => Self::Backend {
+                phase: phase.into(),
+            },
+            RetrievalCause::RowTableFull { rejected } => Self::RowTableFull {
+                rejected: rejected.into(),
+            },
+            RetrievalCause::JournalFull { rejected } => Self::JournalFull {
+                rejected: Text(rejected),
+            },
+        }
+    }
+}
+
+impl From<RetrievalQueryCause> for RetrievalQueryCauseWire {
+    fn from(reason: RetrievalQueryCause) -> Self {
+        match reason {
+            RetrievalQueryCause::Empty => Self::Empty,
+            RetrievalQueryCause::Unsupported { observed } => Self::Unsupported {
+                observed: Text(observed),
+            },
+        }
+    }
+}
+
+impl From<RetrievalPhase> for RetrievalPhaseWire {
+    fn from(phase: RetrievalPhase) -> Self {
+        match phase {
+            RetrievalPhase::Scan => Self::Scan,
+            RetrievalPhase::Rank => Self::Rank,
         }
     }
 }

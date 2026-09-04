@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed application vocabulary and bounded reply storage.
 
-use crate::{InputText, SourceText};
+use crate::{InputText, RetrievalCause, RetrievalRows, SnapshotFacts, SourceText, UnloadReceipt};
 use compiler_vocabulary::{FrontendError, LanguageProfile, Stage};
 use heart_adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
@@ -108,6 +108,13 @@ pub enum ApplicationInput {
         /// Unvalidated snapshot selector.
         snapshot: InputText,
     },
+    /// Unload one snapshot through the journaled, idempotent retrieval seam.
+    RemoveIndex {
+        /// Request correlation.
+        correlation: CorrelationId,
+        /// Unvalidated snapshot selector.
+        snapshot: InputText,
+    },
     /// Inspect local and unavailable capability health without inventing backend success.
     Health {
         /// Request correlation.
@@ -164,6 +171,7 @@ impl ApplicationInput {
             | Self::Graph { correlation, .. }
             | Self::Vector { correlation, .. }
             | Self::Locality { correlation, .. }
+            | Self::RemoveIndex { correlation, .. }
             | Self::Health { correlation }
             | Self::RecoverLocal { correlation, .. }
             | Self::ReleaseLocal { correlation, .. }
@@ -357,6 +365,8 @@ pub enum DiagnosticCode {
     CompilerTerminal,
     /// A local capability execution failed at one exact external phase.
     ExecutionFailed,
+    /// The configured retrieval capability returned one exact typed cause.
+    RetrievalFailed,
 }
 
 /// Exact rejected operand/cause retained by a business diagnostic.
@@ -392,6 +402,8 @@ pub enum DiagnosticDetail {
     Compiler(CompilerTerminal),
     /// Exact local capability execution that failed before its intended transition applied.
     Execution(ExecutionState),
+    /// Exact retrieval capability cause retained without a string projection.
+    Retrieval(RetrievalCause),
 }
 
 /// One source-preserving service diagnostic.
@@ -426,6 +438,12 @@ pub enum ReplyBody {
     },
     /// One non-failure poll or fused terminal from the service-owned execution future.
     Execution(ExecutionReply),
+    /// Honest residency facts for one snapshot selector.
+    Snapshot(SnapshotFacts),
+    /// Fixed-capacity retrieval rows in capability rank order.
+    Retrieval(RetrievalRows),
+    /// Journaled idempotent receipt for a requested index unload.
+    IndexRemoved(UnloadReceipt),
 }
 
 /// Closed request result that makes success and diagnostic facts mutually exclusive.
@@ -525,6 +543,10 @@ impl From<&ReplyBody> for ApplicationDisposition {
             ReplyBody::Execution(ExecutionReply::Cancelled { .. }) => {
                 Self::Cancelled { emitted: 0 }
             }
+            ReplyBody::Snapshot(_) | ReplyBody::IndexRemoved(_) => Self::Complete { emitted: 1 },
+            ReplyBody::Retrieval(rows) => Self::Complete {
+                emitted: rows.len(),
+            },
         }
     }
 }

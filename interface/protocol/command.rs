@@ -203,6 +203,8 @@ pub(crate) enum RawApplicationCommand {
     Vector(RawRetrieval),
     /// Locality request.
     Locality(RawSnapshot),
+    /// Journaled, idempotent removal of one local snapshot.
+    RemoveIndex(RawSnapshot),
     /// Capability health request.
     Health(RawHealth),
     /// Local recovery policy request.

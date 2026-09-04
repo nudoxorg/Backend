@@ -22,18 +22,21 @@ use crate::{
     Capability, CapabilityHealth, CapabilityTransition, CompilerCapability, CompilerReadiness,
     CompilerRequest, CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail,
     ExecutionReply, ExecutionState, GenerateRequest, InconsistentRecovery, InputText,
-    MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody, UnavailableCompiler,
+    MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody, RetrievalCapability,
+    RetrievalReadiness, RetrievalRequest, UnavailableCompiler, UnavailableRetrieval,
     execution::LocalCapabilityExecution,
 };
 
-/// One monomorphized service that owns at most one bounded adaptive effect and compiler seam.
+/// One monomorphized service that owns the compiler and retrieval capability seams.
 ///
 /// The default [`UnavailableCompiler`] keeps process and UI clients portable. A configured
 /// specialization carries a concrete compiler capability without dynamic dispatch, global lookup,
 /// or a heavy compiler dependency in this crate.
-pub struct ApplicationService<Compiler = UnavailableCompiler> {
+pub struct ApplicationService<Compiler = UnavailableCompiler, Retrieval = UnavailableRetrieval> {
     /// Concrete compiler capability owned by this monomorphized service specialization.
     pub compiler: Compiler,
+    /// Concrete retrieval capability owned by this specialization.
+    pub retrieval: Retrieval,
     active_bundle: Option<ActiveBundle>,
     execution: Option<ActiveExecution>,
     last_execution: Option<ExecutionState>,
@@ -58,6 +61,7 @@ impl<Compiler> ApplicationService<Compiler> {
     pub const fn with_compiler(compiler: Compiler) -> Self {
         Self {
             compiler,
+            retrieval: UnavailableRetrieval,
             active_bundle: None,
             execution: None,
             last_execution: None,
@@ -74,7 +78,22 @@ impl ApplicationService<UnavailableCompiler> {
     }
 }
 
-impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
+impl<Compiler: CompilerCapability, Retrieval: RetrievalCapability>
+    ApplicationService<Compiler, Retrieval>
+{
+    /// Creates a service specialized to one compiler and one retrieval capability.
+    #[must_use]
+    pub const fn with_capabilities(compiler: Compiler, retrieval: Retrieval) -> Self {
+        Self {
+            compiler,
+            retrieval,
+            active_bundle: None,
+            execution: None,
+            last_execution: None,
+            next_operation: 1,
+        }
+    }
+
     /// Executes one request with disabled typed tracing.
     #[must_use]
     pub fn execute(&mut self, input: &ApplicationInput) -> ApplicationReply {
@@ -131,13 +150,17 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
             | ApplicationInput::Locality {
                 correlation,
                 snapshot,
-            } => Self::index_unavailable(*correlation, *snapshot),
+            } => self.snapshot_facts(*correlation, snapshot),
             ApplicationInput::Search {
                 correlation,
                 snapshot,
                 query,
                 limit,
-            } => Self::search_unavailable(*correlation, *snapshot, *query, *limit),
+            } => self.search(*correlation, snapshot, query, *limit),
+            ApplicationInput::RemoveIndex {
+                correlation,
+                snapshot,
+            } => self.remove_index(*correlation, snapshot),
             ApplicationInput::Graph {
                 correlation,
                 snapshot,
@@ -201,32 +224,89 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
         }
     }
 
-    fn index_unavailable(
+    fn snapshot_facts(
+        &self,
         correlation: crate::CorrelationId,
-        snapshot: InputText,
+        snapshot: &InputText,
     ) -> ApplicationReply {
-        if let Some(diagnostic) = Self::text_bound(snapshot) {
+        if let Some(diagnostic) = Self::text_bound(*snapshot) {
             return Self::rejected(correlation, diagnostic);
         }
-        Self::dependency_unavailable(correlation, Capability::Index)
+        if self.retrieval.readiness() == RetrievalReadiness::Unavailable {
+            return Self::dependency_unavailable(correlation, Capability::Index);
+        }
+        match self.retrieval.snapshot_status(snapshot) {
+            Ok(facts) => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Snapshot(facts)),
+            },
+            Err(cause) => Self::retrieval_terminal(correlation, cause),
+        }
     }
 
-    fn search_unavailable(
+    fn search(
+        &self,
         correlation: crate::CorrelationId,
-        snapshot: InputText,
-        query: InputText,
+        snapshot: &InputText,
+        query: &InputText,
         limit: u8,
     ) -> ApplicationReply {
         if let Some(diagnostic) = Self::limit(limit) {
             return Self::rejected(correlation, diagnostic);
         }
-        if let Some(diagnostic) = Self::text_bound(snapshot) {
+        if let Some(diagnostic) = Self::text_bound(*snapshot) {
             return Self::rejected(correlation, diagnostic);
         }
-        if let Some(diagnostic) = Self::text_bound(query) {
+        if let Some(diagnostic) = Self::text_bound(*query) {
             return Self::rejected(correlation, diagnostic);
         }
-        Self::dependency_unavailable(correlation, Capability::Index)
+        if self.retrieval.readiness() == RetrievalReadiness::Unavailable {
+            return Self::dependency_unavailable(correlation, Capability::Index);
+        }
+        match self.retrieval.search(RetrievalRequest {
+            snapshot,
+            query,
+            limit,
+        }) {
+            Ok(rows) => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::Retrieval(rows)),
+            },
+            Err(cause) => Self::retrieval_terminal(correlation, cause),
+        }
+    }
+
+    fn remove_index(
+        &mut self,
+        correlation: crate::CorrelationId,
+        snapshot: &InputText,
+    ) -> ApplicationReply {
+        if let Some(diagnostic) = Self::text_bound(*snapshot) {
+            return Self::rejected(correlation, diagnostic);
+        }
+        if self.retrieval.readiness() == RetrievalReadiness::Unavailable {
+            return Self::dependency_unavailable(correlation, Capability::Index);
+        }
+        match self.retrieval.unload(snapshot) {
+            Ok(receipt) => ApplicationReply {
+                correlation,
+                outcome: ApplicationOutcome::Resolved(ReplyBody::IndexRemoved(receipt)),
+            },
+            Err(cause) => Self::retrieval_terminal(correlation, cause),
+        }
+    }
+
+    const fn retrieval_terminal(
+        correlation: crate::CorrelationId,
+        cause: crate::RetrievalCause,
+    ) -> ApplicationReply {
+        Self::rejected(
+            correlation,
+            Diagnostic {
+                code: DiagnosticCode::RetrievalFailed,
+                detail: DiagnosticDetail::Retrieval(cause),
+            },
+        )
     }
 
     fn remote_unavailable(
@@ -271,7 +351,12 @@ impl<Compiler: CompilerCapability> ApplicationService<Compiler> {
             outcome: ApplicationOutcome::Resolved(ReplyBody::Health([
                 CapabilityHealth::LocalReady(Capability::CompilerRegistry),
                 compiler,
-                CapabilityHealth::Unavailable(Capability::Index),
+                match self.retrieval.readiness() {
+                    RetrievalReadiness::Ready => CapabilityHealth::LocalReady(Capability::Index),
+                    RetrievalReadiness::Unavailable => {
+                        CapabilityHealth::Unavailable(Capability::Index)
+                    }
+                },
                 CapabilityHealth::Unavailable(Capability::Graph),
                 CapabilityHealth::Unavailable(Capability::Vector),
                 analyzer,

@@ -69,6 +69,11 @@ pub(crate) struct GoldenCompilerAttempt {
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum GoldenCompilerCause {
+    Authority {
+        phase: GoldenAuthorityPhase,
+        class: GoldenAuthorityDiagnosticClass,
+        diagnostic: Option<GoldenCompilerDiagnostic>,
+    },
     NativeWork {
         cause: GoldenNativeWorkCause,
     },
@@ -100,8 +105,17 @@ pub(crate) enum GoldenCompilerCause {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GoldenLoweringCause {
     NoSupportedDeclaration,
+    ExtensionAtomUnbound {
+        row: u32,
+        provisional: u32,
+        atom_count: u32,
+    },
+    FactRejected {
+        fact: u32,
+    },
     RustFunction,
     RustConstantType,
+    RustGenericParameter,
     PythonAssignmentName,
     PythonAssignmentValue,
     ClangDeclarationForm,
@@ -112,6 +126,31 @@ pub(crate) enum GoldenLoweringCause {
     GoDeclarationForm,
     GoDeclarationType,
     JavaDeclarationForm,
+    JavaProjection {
+        class: String,
+        declaration: String,
+        owner: String,
+    },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAuthorityPhase {
+    Open,
+    Parse,
+    Resolve,
+    TypeCheck,
+    Project,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAuthorityDiagnosticClass {
+    Syntax,
+    Binding,
+    Type,
+    Authority,
+    Projection,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -204,6 +243,39 @@ impl From<CompilerTerminal> for GoldenCompilerTerminal {
 impl From<CompilerCause> for GoldenCompilerCause {
     fn from(cause: CompilerCause) -> Self {
         match cause {
+            CompilerCause::Authority {
+                phase,
+                class,
+                diagnostic,
+            } => Self::Authority {
+                phase: match phase {
+                    compiler_vocabulary::AuthorityPhase::Open => GoldenAuthorityPhase::Open,
+                    compiler_vocabulary::AuthorityPhase::Parse => GoldenAuthorityPhase::Parse,
+                    compiler_vocabulary::AuthorityPhase::Resolve => GoldenAuthorityPhase::Resolve,
+                    compiler_vocabulary::AuthorityPhase::TypeCheck => {
+                        GoldenAuthorityPhase::TypeCheck
+                    }
+                    compiler_vocabulary::AuthorityPhase::Project => GoldenAuthorityPhase::Project,
+                },
+                class: match class {
+                    compiler_vocabulary::AuthorityDiagnosticClass::Syntax => {
+                        GoldenAuthorityDiagnosticClass::Syntax
+                    }
+                    compiler_vocabulary::AuthorityDiagnosticClass::Binding => {
+                        GoldenAuthorityDiagnosticClass::Binding
+                    }
+                    compiler_vocabulary::AuthorityDiagnosticClass::Type => {
+                        GoldenAuthorityDiagnosticClass::Type
+                    }
+                    compiler_vocabulary::AuthorityDiagnosticClass::Authority => {
+                        GoldenAuthorityDiagnosticClass::Authority
+                    }
+                    compiler_vocabulary::AuthorityDiagnosticClass::Projection => {
+                        GoldenAuthorityDiagnosticClass::Projection
+                    }
+                },
+                diagnostic: diagnostic.map(Into::into),
+            },
             CompilerCause::NativeWork(cause) => Self::NativeWork {
                 cause: cause.into(),
             },
@@ -241,8 +313,19 @@ impl From<LoweringUnsupported> for GoldenLoweringCause {
     fn from(cause: LoweringUnsupported) -> Self {
         match cause {
             LoweringUnsupported::NoSupportedDeclaration => Self::NoSupportedDeclaration,
+            LoweringUnsupported::ExtensionAtomUnbound {
+                row,
+                provisional,
+                atom_count,
+            } => Self::ExtensionAtomUnbound {
+                row,
+                provisional,
+                atom_count,
+            },
+            LoweringUnsupported::FactRejected { fact } => Self::FactRejected { fact },
             LoweringUnsupported::RustFunction => Self::RustFunction,
             LoweringUnsupported::RustConstantType => Self::RustConstantType,
+            LoweringUnsupported::RustGenericParameter => Self::RustGenericParameter,
             LoweringUnsupported::PythonAssignmentName => Self::PythonAssignmentName,
             LoweringUnsupported::PythonAssignmentValue => Self::PythonAssignmentValue,
             LoweringUnsupported::ClangDeclarationForm => Self::ClangDeclarationForm,
@@ -253,6 +336,32 @@ impl From<LoweringUnsupported> for GoldenLoweringCause {
             LoweringUnsupported::GoDeclarationForm => Self::GoDeclarationForm,
             LoweringUnsupported::GoDeclarationType => Self::GoDeclarationType,
             LoweringUnsupported::JavaDeclarationForm => Self::JavaDeclarationForm,
+            LoweringUnsupported::JavaProjection {
+                class,
+                declaration,
+                owner,
+            } => Self::JavaProjection {
+                class: match class {
+                    compiler_vocabulary::JavaProjectionFaultClass::Image => "image",
+                    compiler_vocabulary::JavaProjectionFaultClass::Depth => "depth",
+                    compiler_vocabulary::JavaProjectionFaultClass::Malformed => "malformed",
+                    compiler_vocabulary::JavaProjectionFaultClass::Primitive => "primitive",
+                    compiler_vocabulary::JavaProjectionFaultClass::Utf8 => "utf8",
+                    compiler_vocabulary::JavaProjectionFaultClass::SourceUtf8 => "source_utf8",
+                    compiler_vocabulary::JavaProjectionFaultClass::Utf16 => "utf16",
+                    compiler_vocabulary::JavaProjectionFaultClass::OrphanOwner => "orphan_owner",
+                    compiler_vocabulary::JavaProjectionFaultClass::ForeignKey => "foreign_key",
+                    compiler_vocabulary::JavaProjectionFaultClass::SiblingCapacity => {
+                        "sibling_capacity"
+                    }
+                    compiler_vocabulary::JavaProjectionFaultClass::IndexCapacity => {
+                        "index_capacity"
+                    }
+                }
+                .to_owned(),
+                declaration: declaration.to_string(),
+                owner: owner.to_string(),
+            },
         }
     }
 }

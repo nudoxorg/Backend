@@ -180,6 +180,7 @@ pub(crate) enum GoldenDiagnosticCode {
     AdaptivePolicyRejected,
     CompilerTerminal,
     ExecutionFailed,
+    RetrievalFailed,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -458,6 +459,9 @@ fn project_body(body: &ReplyBody) -> Result<GoldenBody, GoldenError> {
             state: execution_reply(state),
         }),
         ReplyBody::Adaptive(_) => Err(GoldenError::Unexpected("adaptive body")),
+        ReplyBody::Snapshot(_) | ReplyBody::Retrieval(_) | ReplyBody::IndexRemoved(_) => {
+            Err(GoldenError::Unexpected("retrieval body"))
+        }
     }
 }
 
@@ -516,6 +520,7 @@ fn diagnostic(diagnostic: Diagnostic) -> Result<GoldenDiagnostic, GoldenError> {
                 state: execution_state(state),
             },
         }),
+        DiagnosticDetail::Retrieval(_) => Err(GoldenError::Unexpected("retrieval diagnostic")),
         DiagnosticDetail::Text(_)
         | DiagnosticDetail::Limit { .. }
         | DiagnosticDetail::TextLength { .. }
@@ -636,6 +641,7 @@ impl From<DiagnosticCode> for GoldenDiagnosticCode {
             DiagnosticCode::AdaptivePolicyRejected => Self::AdaptivePolicyRejected,
             DiagnosticCode::CompilerTerminal => Self::CompilerTerminal,
             DiagnosticCode::ExecutionFailed => Self::ExecutionFailed,
+            DiagnosticCode::RetrievalFailed => Self::RetrievalFailed,
         }
     }
 }

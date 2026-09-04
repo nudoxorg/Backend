@@ -10,7 +10,10 @@ mod cli;
 mod command;
 mod field;
 mod frame;
+mod human;
 mod json;
+/// Static MCP registry and lifecycle projection vocabulary.
+pub mod mcp_tools;
 mod source;
 
 pub use cli::{
@@ -22,9 +25,11 @@ pub use field::AdapterField;
 pub use frame::{
     MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,
 };
+pub use human::write_human;
 pub use json::{
-    CancellationTarget, McpDecode, McpDecodeError, McpEnvelope, McpError, McpReply, McpRequest,
-    McpRequestId, decode_mcp, encode_cli_adapter_error, encode_cli_reply, mcp_error, mcp_reply,
+    CancellationTarget, InitializeParams, McpDecode, McpDecodeError, McpEnvelope, McpError,
+    McpLifecycle, McpReply, McpRequest, McpRequestId, decode_mcp, encode_cli_adapter_error,
+    encode_cli_reply, mcp_error, mcp_initialize, mcp_pong, mcp_reply, mcp_tools_list,
 };
 pub use source::{
     CliCommand, SourceEncodingError, SourceIngressPhase, SourceIngressRole, SourceIoFact,

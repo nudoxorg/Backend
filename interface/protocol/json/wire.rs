@@ -10,4 +10,4 @@ mod envelope;
 mod scalar;
 
 pub(crate) use envelope::{AdapterErrorEnvelope, ApplicationReplyWire};
-pub use envelope::{McpError, McpReply};
+pub use envelope::{McpError, McpLifecycle, McpReply, mcp_initialize, mcp_pong, mcp_tools_list};

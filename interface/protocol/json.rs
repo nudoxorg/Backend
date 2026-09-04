@@ -9,12 +9,14 @@ use interface_core::{ApplicationInput, ApplicationReply, InputText};
 use request::{RequestDto, RequestIdField, RequestIdentityDto};
 use serde_json::Value;
 
-use crate::{AdapterError, AdapterErrorCode, AdapterField};
+use crate::{
+    AdapterError, AdapterErrorCode, AdapterField, command::RawApplicationCommand, mcp_tools,
+};
 
 mod request;
 mod wire;
 
-pub use wire::{McpError, McpReply};
+pub use wire::{McpError, McpLifecycle, McpReply, mcp_initialize, mcp_pong, mcp_tools_list};
 
 /// Decoded MCP request identity plus one typed request for the application process.
 #[derive(Debug, PartialEq)]
@@ -36,6 +38,21 @@ pub enum McpRequest {
     Application(ApplicationInput),
     /// A standard JSON-RPC cancellation target that still needs operation resolution.
     Cancellation(CancellationTarget),
+    /// The lifecycle handshake; the process responds with fixed protocol facts.
+    Initialize(InitializeParams),
+    /// Post-initialize lifecycle notification with no application side effect.
+    Initialized,
+    /// Deterministic registry enumeration.
+    ListTools,
+    /// Liveness request.
+    Ping,
+}
+
+/// Bounded lifecycle handshake facts retained from an accepted request.
+#[derive(Debug, Eq, PartialEq)]
+pub struct InitializeParams {
+    /// Client-requested protocol revision, when it fits the shared text bound.
+    pub protocol_version: Option<InputText>,
 }
 
 /// Standard `$/cancelRequest` target before the MCP process resolves it to a service operation.
@@ -136,19 +153,25 @@ pub fn decode_mcp(body: &[u8]) -> McpDecode {
     if request.jsonrpc.as_deref() != Some("2.0") {
         return McpDecode::Rejected(McpDecodeError::new(id, malformed(AdapterField::JsonRpc)));
     }
-    let Some(method) = request.method.as_deref() else {
+    let Some(method) = request.method else {
         return McpDecode::Rejected(McpDecodeError::new(id, malformed(AdapterField::Method)));
     };
-    let Some(params) = request.params else {
-        return McpDecode::Rejected(McpDecodeError::new(id, missing(AdapterField::Params)));
-    };
-    let request = match method {
-        "tools/call" => tool_input(params).map(McpRequest::Application),
-        "$/cancelRequest" if id.is_none() => {
-            cancellation_input(params).map(McpRequest::Cancellation)
-        }
+    let params = request.params;
+    let request = match method.as_str() {
+        "tools/call" => params
+            .ok_or_else(|| missing(AdapterField::Params))
+            .and_then(tool_input)
+            .map(McpRequest::Application),
+        "initialize" => initialize_input(params).map(McpRequest::Initialize),
+        "notifications/initialized" => Ok(McpRequest::Initialized),
+        "tools/list" => Ok(McpRequest::ListTools),
+        "ping" => Ok(McpRequest::Ping),
+        "$/cancelRequest" if id.is_none() => params
+            .ok_or_else(|| missing(AdapterField::Params))
+            .and_then(cancellation_input)
+            .map(McpRequest::Cancellation),
         "$/cancelRequest" => Err(malformed(AdapterField::Id)),
-        _ => Err(unknown(method)),
+        _ => Err(unknown(&method)),
     };
     match request {
         Ok(request) => McpDecode::Accepted(McpEnvelope {
@@ -190,17 +213,40 @@ pub fn encode_cli_adapter_error(error: &AdapterError) -> io::Result<Vec<u8>> {
     serde_json::to_vec(&wire::AdapterErrorEnvelope::from(error)).map_err(io::Error::other)
 }
 
-fn tool_input(params: request::ParamsDto) -> Result<ApplicationInput, AdapterError> {
-    if params.name.as_deref() != Some("interface.application") {
-        return Err(unknown("tool"));
+fn tool_input(params: Value) -> Result<ApplicationInput, AdapterError> {
+    let params: request::ParamsDto = serde_json::from_value(params)
+        .map_err(|source| AdapterError::invalid_json(AdapterField::Params, source))?;
+    if params.name.as_deref() == Some("interface.application") {
+        let arguments = params
+            .arguments
+            .ok_or_else(|| missing(AdapterField::Arguments))?;
+        let command: RawApplicationCommand = serde_json::from_value(arguments)
+            .map_err(|source| AdapterError::invalid_json(AdapterField::Request, source))?;
+        return command.try_into();
     }
-    let arguments = params
-        .arguments
-        .ok_or_else(|| missing(AdapterField::Arguments))?;
-    arguments.try_into()
+    let name = params
+        .name
+        .as_deref()
+        .ok_or_else(|| missing(AdapterField::Action))?;
+    let tool = mcp_tools::find(name).ok_or_else(|| unknown(name))?;
+    mcp_tools::inject(tool, params.arguments)?.try_into()
 }
 
-fn cancellation_input(params: request::ParamsDto) -> Result<CancellationTarget, AdapterError> {
+fn initialize_input(params: Option<Value>) -> Result<InitializeParams, AdapterError> {
+    let params = params.unwrap_or(Value::Object(serde_json::Map::new()));
+    let params: request::InitializeParams = serde_json::from_value(params)
+        .map_err(|source| AdapterError::invalid_json(AdapterField::Params, source))?;
+    let protocol_version = params
+        .protocol_version
+        .map(|value| InputText::try_from_str(&value))
+        .transpose()
+        .map_err(|source| AdapterError::field_too_long(AdapterField::Request, source))?;
+    Ok(InitializeParams { protocol_version })
+}
+
+fn cancellation_input(params: Value) -> Result<CancellationTarget, AdapterError> {
+    let params: request::ParamsDto = serde_json::from_value(params)
+        .map_err(|source| AdapterError::invalid_json(AdapterField::Params, source))?;
     // MCP's cancellation notification identifies the original request, not the service's
     // internal operation key. The process resolves this typed target through its bounded active
     // request table before constructing the core cancellation input.

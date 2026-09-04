@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::application::{DiagnosticWire, ReplyBodyWire, TerminalWire};
-use crate::{AdapterError, AdapterErrorCode, AdapterField};
+use crate::{AdapterError, AdapterErrorCode, AdapterField, mcp_tools};
 
 #[derive(Serialize)]
 /// JSON-RPC error envelope that borrows the caller's request identifier.
@@ -30,6 +30,18 @@ pub struct McpReply<'value> {
     id: &'value Value,
     result: McpResult,
 }
+
+/// JSON-RPC lifecycle response with a typed registry or handshake result.
+#[derive(Serialize)]
+pub struct McpLifecycle<'value, Result> {
+    jsonrpc: &'static str,
+    id: &'value Value,
+    result: Result,
+}
+
+/// Empty JSON object used only by the typed ping response.
+#[derive(Serialize)]
+pub struct McpPong {}
 
 #[derive(Serialize)]
 struct McpResult {
@@ -109,6 +121,36 @@ impl<'value> McpReply<'value> {
                 structured_content: reply.into(),
             },
         }
+    }
+}
+
+/// Projects the deterministic MCP initialize facts.
+#[must_use]
+pub fn mcp_initialize(id: &Value) -> McpLifecycle<'_, mcp_tools::InitializeResult> {
+    McpLifecycle {
+        jsonrpc: "2.0",
+        id,
+        result: mcp_tools::initialize_result(),
+    }
+}
+
+/// Projects the single closed MCP tool registry.
+#[must_use]
+pub fn mcp_tools_list(id: &Value) -> McpLifecycle<'_, mcp_tools::ToolsResult> {
+    McpLifecycle {
+        jsonrpc: "2.0",
+        id,
+        result: mcp_tools::tools_result(),
+    }
+}
+
+/// Projects a JSON-RPC ping result.
+#[must_use]
+pub const fn mcp_pong(id: &Value) -> McpLifecycle<'_, McpPong> {
+    McpLifecycle {
+        jsonrpc: "2.0",
+        id,
+        result: McpPong {},
     }
 }
 
