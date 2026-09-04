@@ -2822,43 +2822,27 @@ mod tests {
         compiler_ir::GoFacts::decode(payload, at).ok_or(TestError::Missing("go facts"))
     }
 
-    /// Decodes one pooled reference list from the pools payload, skipping
-    /// the type-parameter section and the two earlier lanes.
-    fn pooled_list(
-        view: &FragmentView<'_>,
-        lane: usize,
-        ordinal: usize,
+    /// Lends one pooled reference list through its closed wire lane rather
+    /// than advancing over type-parameter rows with a historical byte stride.
+    fn pooled_list<'a>(
+        view: &'a FragmentView<'a>,
+        lane: compiler_ir::ExtensionPoolListLane,
+        ordinal: u32,
     ) -> Result<Vec<u32>, TestError> {
-        let pool = view
-            .extension_pool_payload()
+        let pools = view
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Tail)?
             .ok_or(TestError::Missing("pool payload"))?;
-        let mut cursor = 4_usize;
-        let parameters = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Tail)?;
-        for _ in 0..parameters {
-            let length = usize::try_from(word(pool, cursor + 1)?).map_err(|_| TestError::Tail)?;
-            cursor += 5 + length + 10;
-        }
-        for index in 0..=lane {
-            let lists = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Tail)?;
-            cursor += 4;
-            for list in 0..lists {
-                let length = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Tail)?;
-                cursor += 4;
-                if index == lane && list == ordinal {
-                    let mut elements = Vec::new();
-                    for position in 0..length {
-                        elements.push(word(pool, cursor + position * 4)?);
-                    }
-                    return Ok(elements);
-                }
-                cursor += length * 4;
-            }
-        }
-        Err(TestError::Missing("pooled list"))
+        Ok(pools
+            .reference_list(lane, ordinal)
+            .map_err(|_| TestError::Missing("pooled list"))?
+            .iter()
+            .collect())
     }
 
     #[test]
-    fn empty_image_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let fix = Fixture::new();
         let bytes = lower(&fix, b"package demo\n")?;
@@ -3206,14 +3190,20 @@ mod tests {
         // Facts: 0 Node, 1 Store, 2 Bag, 3 Name, 4 Size, 5 int result, 6 Get,
         // 7 int param, 8 error result, 9 Put.
         let node_facts = go_extension(&view, 0)?;
-        if node_facts.fields.raw != 1 || pooled_list(&view, 2, 1)? != vec![3, 4] {
+        if node_facts.fields.raw != 1
+            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 1)? != vec![3, 4]
+        {
             return Err(TestError::Missing("node field list"));
         }
-        if node_facts.method_set.raw != 2 || pooled_list(&view, 2, 2)? != vec![6] {
+        if node_facts.method_set.raw != 2
+            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 2)? != vec![6]
+        {
             return Err(TestError::Missing("node method set"));
         }
         let store_facts = go_extension(&view, 1)?;
-        if store_facts.method_set.raw != 3 || pooled_list(&view, 2, 3)? != vec![9] {
+        if store_facts.method_set.raw != 3
+            || pooled_list(&view, compiler_ir::ExtensionPoolListLane::Entities, 3)? != vec![9]
+        {
             return Err(TestError::Missing("store method set"));
         }
         let mut with_plane_row = fix.clone();
@@ -3262,8 +3252,8 @@ mod tests {
             let facts = go_extension(&view, 0)?;
             if pooled_list(
                 &view,
-                2,
-                usize::try_from(facts.method_set.raw).map_err(|_| TestError::Tail)?,
+                compiler_ir::ExtensionPoolListLane::Entities,
+                facts.method_set.raw,
             )?
             .len()
                 != count
@@ -3316,43 +3306,31 @@ mod tests {
         Ok(())
     }
 
-    /// Decodes every pooled type parameter's (name, constraint) from the
-    /// pools payload.
+    /// Decodes every pooled type parameter's first type bound through the
+    /// schema-aware borrowed pool view, never by assuming a byte stride.
     fn pooled_type_parameters<'a>(
         view: &'a FragmentView<'a>,
     ) -> Result<Vec<(&'a [u8], Option<u32>)>, TestError> {
-        let pool = view
-            .extension_pool_payload()
+        let pools = view
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Tail)?
             .ok_or(TestError::Missing("pool payload"))?;
-        let count = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Tail)?;
-        let mut cursor = 4_usize;
         let mut parameters = Vec::new();
-        for _ in 0..count {
-            if pool.get(cursor).copied() != Some(1) {
-                return Err(TestError::Missing("parameter presence"));
-            }
-            let length = usize::try_from(word(pool, cursor + 1)?).map_err(|_| TestError::Tail)?;
-            let name = pool
-                .get(cursor + 5..cursor + 5 + length)
-                .ok_or(TestError::Missing("parameter name"))?;
-            cursor += 5 + length;
-            let constraint = match pool.get(cursor).copied() {
-                Some(0) => {
-                    cursor += 1;
-                    None
-                }
-                Some(1) => {
-                    let raw = word(pool, cursor + 1)?;
-                    cursor += 5;
-                    Some(raw)
-                }
-                _ => return Err(TestError::Missing("constraint cell")),
+        for ordinal in 0..pools.type_parameter_count() {
+            let parameter = pools.type_parameter(ordinal).map_err(|_| TestError::Tail)?;
+            let constraint = match parameter.semantics {
+                compiler_ir::DecodedTypeParameterSemantics::Exact { .. } => pools
+                    .type_parameter_bounds(parameter)
+                    .map_err(|_| TestError::Tail)?
+                    .and_then(|bounds| bounds.get(0).ok())
+                    .and_then(|bound| match bound {
+                        compiler_ir::DecodedTypeParameterBound::Type(raw) => Some(raw),
+                        compiler_ir::DecodedTypeParameterBound::Lifetime(_) => None,
+                    }),
+                compiler_ir::DecodedTypeParameterSemantics::Legacy { constraint } => constraint,
             };
-            if pool.get(cursor).copied() != Some(0) {
-                return Err(TestError::Missing("default cell"));
-            }
-            cursor += 1;
-            parameters.push((name, constraint));
+            parameters.push((parameter.name, constraint));
         }
         Ok(parameters)
     }
@@ -3576,7 +3554,7 @@ mod tests {
         if facts.build_constraints.raw != 1 {
             return Err(TestError::Missing("constraint atom list"));
         }
-        let listed = pooled_list(&view, 0, 1)?;
+        let listed = pooled_list(&view, compiler_ir::ExtensionPoolListLane::Atoms, 1)?;
         if listed != vec![1] {
             return Err(TestError::Missing("constraint atom coordinate"));
         }
@@ -3768,7 +3746,11 @@ mod tests {
         if facts.constant_value.raw != 1 {
             return Err(TestError::Missing("constant value atom list"));
         }
-        let listed = pooled_list(&view, 0, facts.constant_value.raw as usize)?;
+        let listed = pooled_list(
+            &view,
+            compiler_ir::ExtensionPoolListLane::Atoms,
+            facts.constant_value.raw,
+        )?;
         if listed.len() != 1 {
             return Err(TestError::Missing("one constant value atom"));
         }
@@ -3821,7 +3803,14 @@ mod tests {
         if ungrouped.constant_flags != 0 {
             return Err(TestError::Missing("ungrouped flags"));
         }
-        if pooled_list(&view, 0, ungrouped.constant_value.raw as usize)?.len() != 1 {
+        if pooled_list(
+            &view,
+            compiler_ir::ExtensionPoolListLane::Atoms,
+            ungrouped.constant_value.raw,
+        )?
+        .len()
+            != 1
+        {
             return Err(TestError::Missing("ungrouped value atom"));
         }
         Ok(())

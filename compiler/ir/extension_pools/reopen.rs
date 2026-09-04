@@ -1,273 +1,19 @@
-//! Admission, wire encoding, and trusted reopen validation of the pooled
+//! Trusted reopen validation and borrowed discovery for pooled extension
 //! reference lanes shared by a fragment's language-extension section.
 //!
-//! The extension section's typed facts reference five pooled lanes by dense
-//! coordinate: type-parameter elements, type-parameter ranges, atom lists,
-//! type lists, and entity lists.
+//! The extension section's typed facts reference six pooled lanes by dense
+//! coordinate: type-parameter elements, ordered type-parameter bounds,
+//! type-parameter ranges, atom lists, type lists, and entity lists.
 //! This plane carries those lanes and proves every reference stays inside
 //! the carrying fragment's atom, type-fact, and entity lanes.
 
 use core::ops::Deref;
 
-use thiserror::Error;
+use super::{grammar::*, model::*};
+use crate::{
+    TypeParameterInference, TypeParameterPrimaryRequirement, TypeParameterRequirements, Variance,
+};
 
-const PRESENCE_NONE: u8 = 0;
-const PRESENCE_SOME: u8 = 1;
-
-/// One borrowed type parameter: a name plus optional constraint and default
-/// type references into the fragment's type-fact lane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtensionTypeParameter<'bytes> {
-    /// Parameter name spelling.
-    pub name: &'bytes [u8],
-    /// Constraint type-fact ordinal, when the source wrote one.
-    pub constraint: Option<u32>,
-    /// Default type-fact ordinal, when the source wrote one.
-    pub default: Option<u32>,
-}
-
-/// One exact dense run in the pooled type-parameter element lane.
-///
-/// `TypeParameterListId` names this table in schema 4 and later.  The range
-/// is deliberately distinct from an element offset: `(0, 0)` is a real empty
-/// list and cannot alias a later nonempty list that happens to begin at zero.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtensionTypeParameterRange {
-    /// First pooled type-parameter element.
-    pub start: u32,
-    /// Number of elements in this list.
-    pub length: u32,
-}
-
-/// One borrowed pooled reference list.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtensionRefList<'bytes> {
-    /// Ordered references into the atom, type-fact, or entity lane.
-    pub elements: &'bytes [u32],
-}
-
-/// The admitted pooled lanes of one fragment's extension section.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtensionPoolsLane<'bytes> {
-    /// Pooled type parameters.
-    pub type_parameters: &'bytes [ExtensionTypeParameter<'bytes>],
-    /// Exact type-parameter list ranges.  Fresh schema-4 fragments address
-    /// this dense table through `TypeParameterListId`.
-    pub type_parameter_lists: &'bytes [ExtensionTypeParameterRange],
-    /// Pooled atom-reference lists.
-    pub atom_lists: &'bytes [ExtensionRefList<'bytes>],
-    /// Pooled type-reference lists.
-    pub type_lists: &'bytes [ExtensionRefList<'bytes>],
-    /// Pooled entity-reference lists.
-    pub entity_lists: &'bytes [ExtensionRefList<'bytes>],
-}
-
-/// Exact pooled-lane rejection retaining the offending ordinal and operand.
-#[derive(Debug, Error, Eq, PartialEq)]
-pub enum ExtensionPoolFault {
-    #[error("type parameter {ordinal} has an empty name")]
-    EmptyName { ordinal: u32 },
-    #[error("type parameter {ordinal} {field:?} references type fact {raw} outside {limit}")]
-    TypeReference {
-        ordinal: u32,
-        field: TypeParameterField,
-        raw: u32,
-        limit: u32,
-    },
-    #[error(
-        "type-parameter list {list} range start {start} length {length} exceeds {element_count} pooled elements"
-    )]
-    TypeParameterRange {
-        list: u32,
-        start: u32,
-        length: u32,
-        element_count: u32,
-    },
-    #[error("type-parameter list {list} is outside {count} exact ranges")]
-    TypeParameterList {
-        list: u32,
-        count: u32,
-    },
-    #[error("type-parameter element {ordinal} is outside {count} pooled elements")]
-    TypeParameterElement { ordinal: u32, count: u32 },
-    #[error("type-parameter list member {position} is outside its length {length}")]
-    TypeParameterPosition { position: u32, length: u32 },
-    #[error("legacy type-parameter start {start} is outside {element_count} pooled elements")]
-    LegacyTypeParameterStart {
-        start: u32,
-        element_count: u32,
-    },
-    #[error("{lane:?} list {list} element {position} references {raw} outside {limit}")]
-    Reference {
-        lane: ExtensionPoolListLane,
-        list: u32,
-        position: u32,
-        raw: u32,
-        limit: u32,
-    },
-    #[error("pooled-lane payload is truncated before {needed} bytes")]
-    Truncated { needed: usize },
-    #[error("pooled-lane payload carries trailing bytes after its declared lanes")]
-    TrailingBytes,
-    #[error("pooled-lane payload carries an unknown presence tag {actual}")]
-    Presence { actual: u8 },
-    #[error("pooled-lane cursor arithmetic overflowed at byte {at}")]
-    StructuralOverflow { at: usize },
-}
-
-/// Closed optional type-reference field in one type-parameter element.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TypeParameterField {
-    Constraint,
-    Default,
-}
-
-/// Exact reference bound interpretation exposed by a reopened pool section.
-///
-/// Schema 1--3 stored type-parameter *element starts* in extension facts.
-/// Those starts do not encode a list length, particularly for empty lists, so
-/// legacy fragments are intentionally not upgraded to an exact list view.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TypeParameterListBounds {
-    /// Schema 4+ dense range-table IDs.
-    ExactRanges { count: u32 },
-    /// Schema 1--3 start-only coordinates into the element lane.
-    LegacyStarts { element_count: u32 },
-}
-
-impl<'bytes> ExtensionPoolsLane<'bytes> {
-    /// Admits the schema-4 pooled lanes against the carrying fragment's lane
-    /// counts. Legacy schemas are reopen-only and cannot be encoded through
-    /// this current-write input.
-    pub fn admit(
-        &self,
-        atom_count: u32,
-        type_count: u32,
-        entity_count: u32,
-    ) -> Result<(), ExtensionPoolFault> {
-        for (ordinal, parameter) in self.type_parameters.iter().enumerate() {
-            let ordinal = u32::try_from(ordinal).unwrap_or(u32::MAX);
-            if parameter.name.is_empty() {
-                return Err(ExtensionPoolFault::EmptyName { ordinal });
-            }
-            for (field, raw) in [
-                (TypeParameterField::Constraint, parameter.constraint),
-                (TypeParameterField::Default, parameter.default),
-            ] {
-                if raw.is_some_and(|raw| raw >= type_count) {
-                    return Err(ExtensionPoolFault::TypeReference {
-                        ordinal,
-                        field,
-                        raw: raw.unwrap_or_default(),
-                        limit: type_count,
-                    });
-                }
-            }
-        }
-        let element_count = u32::try_from(self.type_parameters.len()).unwrap_or(u32::MAX);
-        for (list, range) in self.type_parameter_lists.iter().enumerate() {
-            let list = u32::try_from(list).unwrap_or(u32::MAX);
-            let end = range.start.checked_add(range.length).ok_or(
-                ExtensionPoolFault::TypeParameterRange {
-                    list,
-                    start: range.start,
-                    length: range.length,
-                    element_count,
-                },
-            )?;
-            if end > element_count {
-                return Err(ExtensionPoolFault::TypeParameterRange {
-                    list,
-                    start: range.start,
-                    length: range.length,
-                    element_count,
-                });
-            }
-        }
-        for (lane, lists, limit) in [
-            (ExtensionPoolListLane::Atoms, self.atom_lists, atom_count),
-            (ExtensionPoolListLane::Types, self.type_lists, type_count),
-            (ExtensionPoolListLane::Entities, self.entity_lists, entity_count),
-        ] {
-            for (list, refs) in lists.iter().enumerate() {
-                let list = u32::try_from(list).unwrap_or(u32::MAX);
-                for (position, raw) in refs.elements.iter().enumerate() {
-                    if *raw >= limit {
-                        return Err(ExtensionPoolFault::Reference {
-                            lane,
-                            list,
-                            position: u32::try_from(position).unwrap_or(u32::MAX),
-                            raw: *raw,
-                            limit,
-                        });
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The exact schema-4 serialized payload length for these pooled lanes.
-    #[must_use]
-    pub fn payload_len(&self) -> usize {
-        let mut length = 4;
-        for parameter in self.type_parameters {
-            length += 5 + parameter.name.len();
-            length += optional_len(parameter.constraint);
-            length += optional_len(parameter.default);
-        }
-        length += 4 + 8 * self.type_parameter_lists.len();
-        for lane in [self.atom_lists, self.type_lists, self.entity_lists] {
-            length += 4;
-            for list in lane {
-                length += 4 + 4 * list.elements.len();
-            }
-        }
-        length
-    }
-
-    /// Serializes the schema-4 pooled lanes in canonical order. The caller-provided
-    /// payload must measure exactly [`ExtensionPoolsLane::payload_len`];
-    /// admission proved every cell.
-    pub fn write_payload(&self, payload: &mut [u8]) {
-        let mut cursor = write_u32(
-            payload,
-            0,
-            u32::try_from(self.type_parameters.len()).unwrap_or(u32::MAX),
-        );
-        for parameter in self.type_parameters {
-            cursor = write_cell(payload, cursor, parameter.name);
-            cursor = write_optional(payload, cursor, parameter.constraint);
-            cursor = write_optional(payload, cursor, parameter.default);
-        }
-        cursor = write_u32(
-            payload,
-            cursor,
-            u32::try_from(self.type_parameter_lists.len()).unwrap_or(u32::MAX),
-        );
-        for range in self.type_parameter_lists {
-            cursor = write_u32(payload, cursor, range.start);
-            cursor = write_u32(payload, cursor, range.length);
-        }
-        for lane in [self.atom_lists, self.type_lists, self.entity_lists] {
-            cursor = write_u32(
-                payload,
-                cursor,
-                u32::try_from(lane.len()).unwrap_or(u32::MAX),
-            );
-            for list in lane {
-                cursor = write_u32(
-                    payload,
-                    cursor,
-                    u32::try_from(list.elements.len()).unwrap_or(u32::MAX),
-                );
-                for raw in list.elements {
-                    cursor = write_u32(payload, cursor, *raw);
-                }
-            }
-        }
-    }
-}
 
 /// One decoded pooled reference list, read back in bounded pieces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,13 +22,6 @@ pub struct DecodedRefList<'payload> {
     pub words: &'payload [u8],
 }
 
-/// Closed identity of one homogeneous extension reference-list lane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExtensionPoolListLane {
-    Atoms,
-    Types,
-    Entities,
-}
 
 impl DecodedRefList<'_> {
     /// Number of references in the list.
@@ -319,17 +58,127 @@ impl DecodedRefList<'_> {
 pub struct DecodedTypeParameter<'payload> {
     /// Parameter name spelling.
     pub name: &'payload [u8],
-    /// Constraint type-fact ordinal, when present.
-    pub constraint: Option<u32>,
     /// Default type-fact ordinal, when present.
     pub default: Option<u32>,
+    /// Schema-aware semantic payload. Legacy wire rows deliberately expose
+    /// only what they actually encoded rather than fabricating modern facts.
+    pub semantics: DecodedTypeParameterSemantics,
 }
 
-/// One exact borrowed type-parameter list reopened from a schema-4 range
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodedTypeParameterSemantics {
+    Exact {
+        bounds: ExtensionTypeParameterBoundRange,
+        variance: Variance,
+        kind: DecodedTypeParameterKind,
+        requirements: TypeParameterRequirements,
+    },
+    Legacy { constraint: Option<u32> },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodedTypeParameterKind {
+    Type { inference: TypeParameterInference },
+    ConstValue { value_type: u32 },
+    Lifetime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodedTypeParameterBound<'payload> {
+    Type(u32),
+    Lifetime(&'payload [u8]),
+}
+
+/// Borrowed exact range of ordered generic bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodedTypeParameterBoundList<'payload> {
+    bytes: &'payload [u8],
+    bounds_start: usize,
+    bound_count: u32,
+    range: ExtensionTypeParameterBoundRange,
+}
+
+impl<'payload> DecodedTypeParameterBoundList<'payload> {
+    pub fn get(
+        &self,
+        position: u32,
+    ) -> Result<DecodedTypeParameterBound<'payload>, ExtensionPoolFault> {
+        if position >= self.range.length {
+            return Err(ExtensionPoolFault::TypeParameterBoundPosition {
+                position,
+                length: self.range.length,
+            });
+        }
+        let ordinal = self.range.start.checked_add(position).ok_or(
+            ExtensionPoolFault::StructuralOverflow {
+                at: self.bounds_start,
+            },
+        )?;
+        decode_type_parameter_bound(
+            self.bytes,
+            self.bounds_start,
+            self.bound_count,
+            ordinal,
+        )
+    }
+
+    /// Opens one allocation-free cursor. It seeks the range start once and
+    /// decodes every variable-width bound exactly once thereafter.
+    pub fn cursor(&self) -> Result<DecodedTypeParameterBoundCursor<'payload>, ExtensionPoolFault> {
+        let mut cursor = self.bounds_start;
+        for _ in 0..self.range.start {
+            cursor = skip_type_parameter_bound(self.bytes, cursor)?;
+        }
+        Ok(DecodedTypeParameterBoundCursor {
+            bytes: self.bytes,
+            cursor,
+            remaining: self.range.length,
+        })
+    }
+}
+
+impl Deref for DecodedTypeParameterBoundList<'_> {
+    type Target = ExtensionTypeParameterBoundRange;
+
+    fn deref(&self) -> &Self::Target {
+        &self.range
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DecodedTypeParameterBoundCursor<'payload> {
+    bytes: &'payload [u8],
+    cursor: usize,
+    remaining: u32,
+}
+
+impl<'payload> Iterator for DecodedTypeParameterBoundCursor<'payload> {
+    type Item = Result<DecodedTypeParameterBound<'payload>, ExtensionPoolFault>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        match decode_type_parameter_bound_at(self.bytes, self.cursor) {
+            Ok((bound, next)) => {
+                self.cursor = next;
+                self.remaining -= 1;
+                Some(Ok(bound))
+            }
+            Err(fault) => {
+                self.remaining = 0;
+                Some(Err(fault))
+            }
+        }
+    }
+}
+
+/// One exact borrowed type-parameter list reopened from a schema-4+ range
 /// table.  Its `get` method proves the returned member stays in the captured
 /// range; callers never infer an end from a global element cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodedTypeParameterList<'payload> {
+    schema: u16,
     bytes: &'payload [u8],
     elements_start: usize,
     element_count: u32,
@@ -356,6 +205,7 @@ impl<'payload> DecodedTypeParameterList<'payload> {
                 at: self.elements_start,
             })?;
         decode_type_parameter(
+            self.schema,
             self.bytes,
             self.elements_start,
             self.element_count,
@@ -369,9 +219,10 @@ impl<'payload> DecodedTypeParameterList<'payload> {
     pub fn cursor(&self) -> Result<DecodedTypeParameterCursor<'payload>, ExtensionPoolFault> {
         let mut cursor = self.elements_start;
         for _ in 0..self.range.start {
-            cursor = skip_type_parameter(self.bytes, cursor)?;
+            cursor = skip_type_parameter(self.schema, self.bytes, cursor)?;
         }
         Ok(DecodedTypeParameterCursor {
+            schema: self.schema,
             bytes: self.bytes,
             cursor,
             remaining: self.range.length,
@@ -390,6 +241,7 @@ impl Deref for DecodedTypeParameterList<'_> {
 /// Fallible sequential view of one validated exact type-parameter range.
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedTypeParameterCursor<'payload> {
+    schema: u16,
     bytes: &'payload [u8],
     cursor: usize,
     remaining: u32,
@@ -402,7 +254,7 @@ impl<'payload> Iterator for DecodedTypeParameterCursor<'payload> {
         if self.remaining == 0 {
             return None;
         }
-        let decoded = decode_type_parameter_at(self.bytes, self.cursor);
+        let decoded = decode_type_parameter_at(self.schema, self.bytes, self.cursor);
         match decoded {
             Ok((parameter, next)) => {
                 self.cursor = next;
@@ -431,8 +283,10 @@ pub enum ReopenedTypeParameterList<'payload> {
 /// A once-validated reopened pooled-lane section.
 #[derive(Clone, Copy, Debug)]
 pub struct ReopenedExtensionPools<'payload> {
+    schema: u16,
     bytes: &'payload [u8],
     type_parameters: (usize, u32),
+    type_parameter_bounds: Option<(usize, u32)>,
     type_parameter_lists: TypeParameterListLayout,
     atom_lists: (usize, u32),
     type_lists: (usize, u32),
@@ -500,11 +354,51 @@ impl<'payload> ReopenedExtensionPools<'payload> {
         ordinal: u32,
     ) -> Result<DecodedTypeParameter<'payload>, ExtensionPoolFault> {
         decode_type_parameter(
+            self.schema,
             self.bytes,
             self.type_parameters.0,
             self.type_parameters.1,
             ordinal,
         )
+    }
+
+    /// Reopens the exact ordered bounds owned by one schema-5 type parameter.
+    /// Legacy parameter records retain only their explicit singleton optional
+    /// constraint and intentionally cannot masquerade as an ordered list.
+    pub fn type_parameter_bounds(
+        &self,
+        parameter: DecodedTypeParameter<'payload>,
+    ) -> Result<Option<DecodedTypeParameterBoundList<'payload>>, ExtensionPoolFault> {
+        let DecodedTypeParameterSemantics::Exact { bounds: range, .. } = parameter.semantics else {
+            return Ok(None);
+        };
+        let Some((start, count)) = self.type_parameter_bounds else {
+            return Err(ExtensionPoolFault::StructuralOverflow {
+                at: self.type_parameters.0,
+            });
+        };
+        let end = range.start.checked_add(range.length).ok_or(
+            ExtensionPoolFault::TypeParameterBounds {
+                ordinal: 0,
+                start: range.start,
+                length: range.length,
+                bound_count: count,
+            },
+        )?;
+        if end > count {
+            return Err(ExtensionPoolFault::TypeParameterBounds {
+                ordinal: 0,
+                start: range.start,
+                length: range.length,
+                bound_count: count,
+            });
+        }
+        Ok(Some(DecodedTypeParameterBoundList {
+            bytes: self.bytes,
+            bounds_start: start,
+            bound_count: count,
+            range,
+        }))
     }
 
     /// Reopens one `TypeParameterListId` under the schema's explicit
@@ -537,6 +431,7 @@ impl<'payload> ReopenedExtensionPools<'payload> {
                     )?,
                 };
                 Ok(ReopenedTypeParameterList::Exact(DecodedTypeParameterList {
+                    schema: self.schema,
                     bytes: self.bytes,
                     elements_start: self.type_parameters.0,
                     element_count: self.type_parameters.1,
@@ -647,8 +542,19 @@ pub(crate) fn reopen_validated_extension_pools(
     let mut cursor = 4;
     let type_parameters = (cursor, type_count);
     for _ in 0..type_count {
-        cursor = skip_type_parameter(payload, cursor)?;
+        cursor = skip_type_parameter(schema, payload, cursor)?;
     }
+    let type_parameter_bounds = if schema >= 5 {
+        let count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        let start = cursor;
+        for _ in 0..count {
+            cursor = skip_type_parameter_bound(payload, cursor)?;
+        }
+        Some((start, count))
+    } else {
+        None
+    };
     let type_parameter_lists = if schema >= 4 {
         let count = read_u32(payload, cursor)?;
         cursor = advance(cursor, 4)?;
@@ -678,8 +584,10 @@ pub(crate) fn reopen_validated_extension_pools(
     cursor = advance(cursor, 4)?;
     let entity_lists = (cursor, entity_count);
     Ok(ReopenedExtensionPools {
+        schema,
         bytes: payload,
         type_parameters,
+        type_parameter_bounds,
         type_parameter_lists,
         atom_lists,
         type_lists,
@@ -711,20 +619,150 @@ pub(crate) fn validate_extension_pool_payload(
             return Err(ExtensionPoolFault::EmptyName { ordinal });
         }
         let mut at = name_end;
-        for field in [TypeParameterField::Constraint, TypeParameterField::Default] {
-            let Some(raw) = read_optional(payload, &mut at)? else {
-                continue;
+        if schema >= 5 {
+            let bounds = ExtensionTypeParameterBoundRange {
+                start: read_u32(payload, at)?,
+                length: read_u32(payload, advance(at, 4)?)?,
             };
-            if raw >= type_count {
+            at = advance(at, 8)?;
+            let default = read_optional(payload, &mut at)?;
+            if let Some(raw) = default
+                && raw >= type_count
+            {
                 return Err(ExtensionPoolFault::TypeReference {
                     ordinal,
-                    field,
+                    field: TypeParameterField::Default,
                     raw,
                     limit: type_count,
                 });
             }
+            let variance = payload.get(at).copied().ok_or(ExtensionPoolFault::Truncated { needed: at })?;
+            let _ = decode_variance(ordinal, variance)?;
+            at = advance(at, 1)?;
+            let kind = payload.get(at).copied().ok_or(ExtensionPoolFault::Truncated { needed: at })?;
+            at = advance(at, 1)?;
+            if kind == TYPE_PARAMETER_KIND_CONST_VALUE {
+                let raw = read_u32(payload, at)?;
+                if raw >= type_count {
+                    return Err(ExtensionPoolFault::TypeReference {
+                        ordinal,
+                        field: TypeParameterField::ConstValueType,
+                        raw,
+                        limit: type_count,
+                    });
+                }
+                at = advance(at, 4)?;
+            } else if !matches!(
+                kind,
+                TYPE_PARAMETER_KIND_TYPE
+                    | TYPE_PARAMETER_KIND_CONST_INFERENCE
+                    | TYPE_PARAMETER_KIND_LIFETIME
+            ) {
+                return Err(ExtensionPoolFault::TypeParameterTag {
+                    ordinal,
+                    field: TypeParameterTagField::Kind,
+                    actual: kind,
+                });
+            }
+            let primary = payload.get(at).copied().ok_or(ExtensionPoolFault::Truncated { needed: at })?;
+            let primary = decode_primary_requirement(ordinal, primary)?;
+            at = advance(at, 1)?;
+            let flags = payload.get(at).copied().ok_or(ExtensionPoolFault::Truncated { needed: at })?;
+            let requirements = TypeParameterRequirements {
+                primary,
+                ..decode_requirement_flags(ordinal, flags)?
+            };
+            if !requirements.is_valid() {
+                return Err(ExtensionPoolFault::TypeParameterRequirements {
+                    ordinal,
+                    primary: requirements.primary,
+                    constructor: requirements.constructor,
+                    allows_ref_like: requirements.allows_ref_like,
+                });
+            }
+            at = advance(at, 1)?;
+            // Bound ranges are checked after their flat lane is decoded.
+            let _ = bounds;
+        } else {
+            let constraint = read_optional(payload, &mut at)?;
+            let default = read_optional(payload, &mut at)?;
+            for (field, raw) in [
+                (TypeParameterField::Default, default),
+                // The legacy schema called this a constraint; retain the
+                // exact operand but name it as a generic type reference here.
+                (TypeParameterField::LegacyConstraint, constraint),
+            ] {
+                if let Some(raw) = raw
+                    && raw >= type_count
+                {
+                    return Err(ExtensionPoolFault::TypeReference {
+                        ordinal,
+                        field,
+                        raw,
+                        limit: type_count,
+                    });
+                }
+            }
         }
         cursor = at;
+    }
+    if schema >= 5 {
+        let bound_count = read_u32(payload, cursor)?;
+        cursor = advance(cursor, 4)?;
+        for position in 0..bound_count {
+            let (bound, next) = decode_type_parameter_bound_at(payload, cursor)?;
+            match bound {
+                DecodedTypeParameterBound::Type(raw) if raw >= type_count => {
+                    return Err(ExtensionPoolFault::BoundTypeReference {
+                        bound: position,
+                        raw,
+                        limit: type_count,
+                    });
+                }
+                DecodedTypeParameterBound::Lifetime(name) if name.is_empty() => {
+                    return Err(ExtensionPoolFault::EmptyLifetime { bound: position });
+                }
+                DecodedTypeParameterBound::Type(_) | DecodedTypeParameterBound::Lifetime(_) => {}
+            }
+            cursor = next;
+        }
+        // Re-read the compact parameter header rows only to prove every
+        // range. The pool is bounded and this occurs once at reopen.
+        let mut parameter_cursor = 4;
+        for ordinal in 0..type_parameter_count {
+            let (parameter, next) = decode_type_parameter_at(schema, payload, parameter_cursor)?;
+            if let DecodedTypeParameterSemantics::Exact {
+                bounds,
+                requirements,
+                ..
+            } = parameter.semantics {
+                if !requirements.is_valid() {
+                    return Err(ExtensionPoolFault::TypeParameterRequirements {
+                        ordinal,
+                        primary: requirements.primary,
+                        constructor: requirements.constructor,
+                        allows_ref_like: requirements.allows_ref_like,
+                    });
+                }
+                let end = bounds.start.checked_add(bounds.length).ok_or(
+                    ExtensionPoolFault::TypeParameterBounds {
+                        ordinal,
+                        start: bounds.start,
+                        length: bounds.length,
+                        bound_count,
+                    },
+                )?;
+                if end > bound_count {
+                    return Err(ExtensionPoolFault::TypeParameterBounds {
+                        ordinal,
+                        start: bounds.start,
+                        length: bounds.length,
+                        bound_count,
+                    });
+                }
+            }
+            parameter_cursor = next;
+        }
     }
     if schema >= 4 {
         let range_count = read_u32(payload, cursor)?;
@@ -803,7 +841,11 @@ fn read_u32(bytes: &[u8], at: usize) -> Result<u32, ExtensionPoolFault> {
     Ok(u32::from_le_bytes(word))
 }
 
-fn skip_type_parameter(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPoolFault> {
+fn skip_type_parameter(
+    schema: u16,
+    bytes: &[u8],
+    cursor: usize,
+) -> Result<usize, ExtensionPoolFault> {
     if bytes.get(cursor).copied() != Some(PRESENCE_SOME) {
         return Err(ExtensionPoolFault::Presence {
             actual: bytes.get(cursor).copied().unwrap_or(PRESENCE_NONE),
@@ -812,12 +854,41 @@ fn skip_type_parameter(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPo
     let name_len = usize::try_from(read_u32(bytes, advance(cursor, 1)?)?)
         .map_err(|_| ExtensionPoolFault::Truncated { needed: cursor })?;
     let mut next = advance(advance(cursor, 5)?, name_len)?;
-    // Optional operands are variable-width: `None` occupies its tag only,
-    // while `Some` carries four more bytes. Reuse the same parser used by the
-    // public decoder rather than embedding a false fixed stride here.
-    let _ = read_optional(bytes, &mut next)?;
-    let _ = read_optional(bytes, &mut next)?;
+    if schema >= 5 {
+        next = advance(next, 8)?;
+        let _ = read_optional(bytes, &mut next)?;
+        let _variance = bytes.get(next).ok_or(ExtensionPoolFault::Truncated { needed: next })?;
+        next = advance(next, 1)?;
+        let kind = *bytes.get(next).ok_or(ExtensionPoolFault::Truncated { needed: next })?;
+        next = advance(next, 1)?;
+        if kind == TYPE_PARAMETER_KIND_CONST_VALUE {
+            next = advance(next, 4)?;
+        }
+        next = advance(next, 2)?;
+    } else {
+        // Optional operands are variable-width: `None` occupies its tag only,
+        // while `Some` carries four more bytes.
+        let _ = read_optional(bytes, &mut next)?;
+        let _ = read_optional(bytes, &mut next)?;
+    }
     Ok(next)
+}
+
+fn skip_type_parameter_bound(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPoolFault> {
+    match bytes.get(cursor).copied() {
+        Some(TYPE_PARAMETER_BOUND_TYPE) => advance(cursor, 5),
+        Some(TYPE_PARAMETER_BOUND_LIFETIME) => {
+            let name_len = usize::try_from(read_u32(bytes, advance(cursor, 2)?)?)
+                .map_err(|_| ExtensionPoolFault::Truncated { needed: cursor })?;
+            advance(cursor, 6 + name_len)
+        }
+        Some(actual) => Err(ExtensionPoolFault::TypeParameterTag {
+            ordinal: 0,
+            field: TypeParameterTagField::Bound,
+            actual,
+        }),
+        None => Err(ExtensionPoolFault::Truncated { needed: cursor }),
+    }
 }
 
 fn skip_ref_list(bytes: &[u8], cursor: usize) -> Result<usize, ExtensionPoolFault> {
@@ -852,6 +923,7 @@ fn advance(at: usize, width: usize) -> Result<usize, ExtensionPoolFault> {
 }
 
 fn decode_type_parameter<'payload>(
+    schema: u16,
     bytes: &'payload [u8],
     start: usize,
     count: u32,
@@ -865,12 +937,13 @@ fn decode_type_parameter<'payload>(
     }
     let mut cursor = start;
     for _ in 0..ordinal {
-        cursor = skip_type_parameter(bytes, cursor)?;
+        cursor = skip_type_parameter(schema, bytes, cursor)?;
     }
-    decode_type_parameter_at(bytes, cursor).map(|(parameter, _)| parameter)
+    decode_type_parameter_at(schema, bytes, cursor).map(|(parameter, _)| parameter)
 }
 
 fn decode_type_parameter_at<'payload>(
+    schema: u16,
     bytes: &'payload [u8],
     cursor: usize,
 ) -> Result<(DecodedTypeParameter<'payload>, usize), ExtensionPoolFault> {
@@ -882,49 +955,173 @@ fn decode_type_parameter_at<'payload>(
         .get(name_start..name_end)
         .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
     let mut at = name_end;
-    let constraint = read_optional(bytes, &mut at)?;
+    if schema < 5 {
+        let constraint = read_optional(bytes, &mut at)?;
+        let default = read_optional(bytes, &mut at)?;
+        return Ok((
+            DecodedTypeParameter {
+                name,
+                default,
+                semantics: DecodedTypeParameterSemantics::Legacy { constraint },
+            },
+            at,
+        ));
+    }
+    let bounds = ExtensionTypeParameterBoundRange {
+        start: read_u32(bytes, at)?,
+        length: read_u32(bytes, advance(at, 4)?)?,
+    };
+    at = advance(at, 8)?;
     let default = read_optional(bytes, &mut at)?;
+    let variance = decode_variance(
+        0,
+        *bytes.get(at).ok_or(ExtensionPoolFault::Truncated { needed: at })?,
+    )?;
+    at = advance(at, 1)?;
+    let kind_tag = *bytes.get(at).ok_or(ExtensionPoolFault::Truncated { needed: at })?;
+    at = advance(at, 1)?;
+    let kind = match kind_tag {
+        TYPE_PARAMETER_KIND_TYPE => DecodedTypeParameterKind::Type {
+            inference: TypeParameterInference::Ordinary,
+        },
+        TYPE_PARAMETER_KIND_CONST_INFERENCE => DecodedTypeParameterKind::Type {
+            inference: TypeParameterInference::Const,
+        },
+        TYPE_PARAMETER_KIND_CONST_VALUE => {
+            let value_type = read_u32(bytes, at)?;
+            at = advance(at, 4)?;
+            DecodedTypeParameterKind::ConstValue { value_type }
+        }
+        TYPE_PARAMETER_KIND_LIFETIME => DecodedTypeParameterKind::Lifetime,
+        actual => {
+            return Err(ExtensionPoolFault::TypeParameterTag {
+                ordinal: 0,
+                field: TypeParameterTagField::Kind,
+                actual,
+            });
+        }
+    };
+    let primary = decode_primary_requirement(
+        0,
+        *bytes.get(at).ok_or(ExtensionPoolFault::Truncated { needed: at })?,
+    )?;
+    at = advance(at, 1)?;
+    let requirements = decode_requirement_flags(
+        0,
+        *bytes.get(at).ok_or(ExtensionPoolFault::Truncated { needed: at })?,
+    )?;
+    at = advance(at, 1)?;
     Ok((
         DecodedTypeParameter {
             name,
-            constraint,
             default,
+            semantics: DecodedTypeParameterSemantics::Exact {
+                bounds,
+                variance,
+                kind,
+                requirements: TypeParameterRequirements { primary, ..requirements },
+            },
         },
         at,
     ))
 }
 
-fn write_u32(payload: &mut [u8], at: usize, value: u32) -> usize {
-    payload[at..at + 4].copy_from_slice(&value.to_le_bytes());
-    at + 4
+fn decode_type_parameter_bound<'payload>(
+    bytes: &'payload [u8],
+    start: usize,
+    count: u32,
+    ordinal: u32,
+) -> Result<DecodedTypeParameterBound<'payload>, ExtensionPoolFault> {
+    if ordinal >= count {
+        return Err(ExtensionPoolFault::TypeParameterElement { ordinal, count });
+    }
+    let mut cursor = start;
+    for _ in 0..ordinal {
+        cursor = skip_type_parameter_bound(bytes, cursor)?;
+    }
+    decode_type_parameter_bound_at(bytes, cursor).map(|(bound, _)| bound)
 }
 
-/// Exact serialized width of one optional type-reference cell.
-const fn optional_len(value: Option<u32>) -> usize {
-    match value {
-        None => 1,
-        Some(_) => 5,
+fn decode_type_parameter_bound_at<'payload>(
+    bytes: &'payload [u8],
+    cursor: usize,
+) -> Result<(DecodedTypeParameterBound<'payload>, usize), ExtensionPoolFault> {
+    match bytes.get(cursor).copied() {
+        Some(TYPE_PARAMETER_BOUND_TYPE) => Ok((
+            DecodedTypeParameterBound::Type(read_u32(bytes, advance(cursor, 1)?)?),
+            advance(cursor, 5)?,
+        )),
+        Some(TYPE_PARAMETER_BOUND_LIFETIME) => {
+            let name_len = usize::try_from(read_u32(bytes, advance(cursor, 2)?)?)
+                .map_err(|_| ExtensionPoolFault::Truncated { needed: cursor })?;
+            let start = advance(cursor, 6)?;
+            let end = advance(start, name_len)?;
+            let name = bytes
+                .get(start..end)
+                .ok_or(ExtensionPoolFault::Truncated { needed: cursor })?;
+            Ok((DecodedTypeParameterBound::Lifetime(name), end))
+        }
+        Some(actual) => Err(ExtensionPoolFault::TypeParameterTag {
+            ordinal: 0,
+            field: TypeParameterTagField::Bound,
+            actual,
+        }),
+        None => Err(ExtensionPoolFault::Truncated { needed: cursor }),
     }
 }
 
-fn write_cell(payload: &mut [u8], cursor: usize, bytes: &[u8]) -> usize {
-    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-    payload[cursor] = PRESENCE_SOME;
-    payload[cursor + 1..cursor + 5].copy_from_slice(&len.to_le_bytes());
-    payload[cursor + 5..cursor + 5 + bytes.len()].copy_from_slice(bytes);
-    cursor + 5 + bytes.len()
+fn decode_variance(ordinal: u32, actual: u8) -> Result<Variance, ExtensionPoolFault> {
+    match actual {
+        VARIANCE_INVARIANT => Ok(Variance::Invariant),
+        VARIANCE_COVARIANT => Ok(Variance::Covariant),
+        VARIANCE_CONTRAVARIANT => Ok(Variance::Contravariant),
+        VARIANCE_BIVARIANT => Ok(Variance::Bivariant),
+        _ => Err(ExtensionPoolFault::TypeParameterTag {
+            ordinal,
+            field: TypeParameterTagField::Variance,
+            actual,
+        }),
+    }
 }
 
-fn write_optional(payload: &mut [u8], cursor: usize, value: Option<u32>) -> usize {
-    match value {
-        None => {
-            payload[cursor] = PRESENCE_NONE;
-            cursor + 1
+fn decode_primary_requirement(
+    ordinal: u32,
+    actual: u8,
+) -> Result<TypeParameterPrimaryRequirement, ExtensionPoolFault> {
+    match actual {
+        PRIMARY_REQUIREMENT_NONE => Ok(TypeParameterPrimaryRequirement::None),
+        PRIMARY_REQUIREMENT_REFERENCE => {
+            Ok(TypeParameterPrimaryRequirement::Reference { nullable: false })
         }
-        Some(raw) => {
-            payload[cursor] = PRESENCE_SOME;
-            payload[cursor + 1..cursor + 5].copy_from_slice(&raw.to_le_bytes());
-            cursor + 5
+        PRIMARY_REQUIREMENT_NULLABLE_REFERENCE => {
+            Ok(TypeParameterPrimaryRequirement::Reference { nullable: true })
         }
+        PRIMARY_REQUIREMENT_VALUE => Ok(TypeParameterPrimaryRequirement::Value),
+        PRIMARY_REQUIREMENT_UNMANAGED => Ok(TypeParameterPrimaryRequirement::Unmanaged),
+        PRIMARY_REQUIREMENT_NOT_NULL => Ok(TypeParameterPrimaryRequirement::NotNull),
+        PRIMARY_REQUIREMENT_DEFAULT => Ok(TypeParameterPrimaryRequirement::Default),
+        _ => Err(ExtensionPoolFault::TypeParameterTag {
+            ordinal,
+            field: TypeParameterTagField::PrimaryRequirement,
+            actual,
+        }),
     }
+}
+
+fn decode_requirement_flags(
+    ordinal: u32,
+    actual: u8,
+) -> Result<TypeParameterRequirements, ExtensionPoolFault> {
+    if actual & !(REQUIREMENT_CONSTRUCTOR | REQUIREMENT_ALLOWS_REF_LIKE) != 0 {
+        return Err(ExtensionPoolFault::TypeParameterTag {
+            ordinal,
+            field: TypeParameterTagField::RequirementFlags,
+            actual,
+        });
+    }
+    Ok(TypeParameterRequirements {
+        primary: TypeParameterPrimaryRequirement::None,
+        constructor: actual & REQUIREMENT_CONSTRUCTOR != 0,
+        allows_ref_like: actual & REQUIREMENT_ALLOWS_REF_LIKE != 0,
+    })
 }

@@ -2399,63 +2399,44 @@ mod tests {
         compiler_ir::ClangFacts::decode(payload, at).ok_or(TestError::Extension { ordinal })
     }
 
-    /// Reads one pooled type parameter from the extension-pool payload: a
-    /// u32 count, then (presence byte, u32 length, bytes, two optionals).
-    fn pooled_type_parameter(pool: &[u8], index: usize) -> Result<Option<&[u8]>, TestError> {
-        let count = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Tail)?;
-        if index >= count {
-            return Err(TestError::Missing("type parameter"));
-        }
-        let mut cursor = 4_usize;
-        for ordinal in 0..count {
-            if pool.get(cursor).copied() != Some(1) {
-                return Err(TestError::Tail);
-            }
-            let length = usize::try_from(word(pool, cursor + 1)?).map_err(|_| TestError::Tail)?;
-            let name = pool
-                .get(cursor + 5..cursor + 5 + length)
-                .ok_or(TestError::Tail)?;
-            cursor += 5 + length + 10;
-            if ordinal == index {
-                return Ok(Some(name));
-            }
-        }
-        Err(TestError::Missing("type parameter"))
+    /// Lends one pooled parameter through the schema-aware view. Tests never
+    /// derive a row stride from a historical payload grammar.
+    fn pooled_type_parameter<'a>(
+        view: &'a FragmentView<'a>,
+        index: u32,
+    ) -> Result<&'a [u8], TestError> {
+        let pools = view
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Tail)?
+            .ok_or(TestError::Missing("pools"))?;
+        pools
+            .type_parameter(index)
+            .map(|parameter| parameter.name)
+            .map_err(|_| TestError::Missing("type parameter"))
     }
 
-    /// Reads one pooled atom list from the extension-pool payload: a u32
-    /// type-parameter count (present in this lane), then the atom-list lane
-    /// of (length, u32 words) rows.
-    fn pooled_atom_list(pool: &[u8], index: usize) -> Result<Vec<u32>, TestError> {
-        let parameters = usize::try_from(word(pool, 0)?).map_err(|_| TestError::Tail)?;
-        let mut cursor = 4_usize;
-        for _ in 0..parameters {
-            let present = pool.get(cursor).copied().ok_or(TestError::Tail)?;
-            let length = usize::try_from(word(pool, cursor + 1)?).map_err(|_| TestError::Tail)?;
-            cursor += 5 + length + 10;
-            let _ = present;
-        }
-        let list_count = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Tail)?;
-        cursor += 4;
-        for list in 0..list_count {
-            let length = usize::try_from(word(pool, cursor)?).map_err(|_| TestError::Tail)?;
-            cursor += 4;
-            if list == index {
-                let mut words = Vec::new();
-                for offset in 0..length {
-                    words.push(word(pool, cursor + offset * 4)?);
-                }
-                return Ok(words);
-            }
-            cursor += length * 4;
-        }
-        Err(TestError::Missing("atom list"))
+    /// Lends one pooled atom list through the schema-aware pool view.
+    fn pooled_atom_list<'a>(
+        view: &'a FragmentView<'a>,
+        index: u32,
+    ) -> Result<Vec<u32>, TestError> {
+        let pools = view
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Tail)?
+            .ok_or(TestError::Missing("pools"))?;
+        Ok(pools
+            .atom_list(index)
+            .map_err(|_| TestError::Missing("atom list"))?
+            .iter()
+            .collect())
     }
 
-    /// An empty source admits the schema-4 fragment without semantic
+    /// An empty source admits the current-schema fragment without semantic
     /// sections: no declarations, no fabricated rows.
     #[test]
-    fn empty_source_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_source_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let bytes = lower(b"")?;
         let view = FragmentView::validate(&bytes)?;
@@ -2704,11 +2685,8 @@ mod tests {
             .position(|(name, _)| *name == &b"Box"[..])
             .ok_or(TestError::Absent)?;
         let extension = clang_extension(&view, box_ordinal)?;
-        let pool = view
-            .extension_pool_payload()
-            .ok_or(TestError::Missing("pools"))?;
-        let parameter = pooled_type_parameter(pool, extension.templates.raw as usize)?;
-        if parameter != Some(&b"T"[..]) {
+        let parameter = pooled_type_parameter(&view, extension.templates.raw)?;
+        if parameter != b"T" {
             return Err(TestError::Missing("template parameter T"));
         }
         // The field typed `T` carries a TypeVar row with the written name.
@@ -2829,10 +2807,7 @@ mod tests {
             return Err(TestError::Missing("include atoms"));
         }
         let extension = clang_extension(&view, 0)?;
-        let pool = view
-            .extension_pool_payload()
-            .ok_or(TestError::Missing("pools"))?;
-        let list = pooled_atom_list(pool, extension.includes.raw as usize)?;
+        let list = pooled_atom_list(&view, extension.includes.raw)?;
         if list.len() != 2 {
             return Err(TestError::Count {
                 expected: 2,

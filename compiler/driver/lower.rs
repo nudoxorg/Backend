@@ -62,6 +62,10 @@ pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 pub(super) const MAX_EXTENSION_ATOMS: usize = 2048;
 /// Dense bound of pooled type parameters.
 pub(super) const MAX_TYPE_PARAMETERS: usize = 512;
+/// Dense bound of ordered type/lifetime bounds across one request.
+/// Each bound has written source evidence, so the request geometry scales
+/// with entered bytes rather than allocating a language-wide maximum.
+pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_REF_LIST_ELEMENTS;
 /// Dense bound of pooled reference lists per lane kind.
 pub(super) const MAX_REF_LISTS: usize = 512;
 /// Dense bound of one pooled reference list.
@@ -108,6 +112,7 @@ pub(crate) struct ResourcePlan {
     docs: usize,
     extension_atoms: usize,
     type_parameters: usize,
+    type_parameter_bounds: usize,
     ref_lists: usize,
     anonymous_rows: usize,
     computed_rows: usize,
@@ -122,6 +127,7 @@ impl ResourcePlan {
             docs: MAX_EMISSION_DOC_FRAGMENTS,
             extension_atoms: MAX_EXTENSION_ATOMS,
             type_parameters: MAX_TYPE_PARAMETERS,
+            type_parameter_bounds: MAX_TYPE_PARAMETER_BOUNDS,
             ref_lists: MAX_REF_LISTS,
             anonymous_rows: MAX_ANONYMOUS_TYPE_ROWS,
             computed_rows: MAX_COMPUTED_TYPE_ROWS,
@@ -157,6 +163,7 @@ impl ResourcePlan {
             docs: bounded(units.saturating_add(8), MAX_EMISSION_DOC_FRAGMENTS),
             extension_atoms: bounded(units / 2 + 8, MAX_EXTENSION_ATOMS),
             type_parameters: bounded(units / 2 + 8, MAX_TYPE_PARAMETERS),
+            type_parameter_bounds: bounded(units, MAX_TYPE_PARAMETER_BOUNDS),
             ref_lists: bounded(facts, MAX_REF_LISTS),
             anonymous_rows: bounded(
                 units.saturating_mul(multiplier).saturating_add(8),
@@ -421,6 +428,8 @@ pub(super) struct FactSet<'source> {
     extension_atom_len: usize,
     type_parameters: Box<[ExtensionTypeParameter<'source>]>,
     type_parameter_len: usize,
+    type_parameter_bounds: Box<[compiler_ir::ExtensionTypeParameterBound<'source>]>,
+    type_parameter_bound_len: usize,
     type_parameter_ranges: Box<[Option<StagedTypeParameterRange>]>,
     atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
     atom_list_lengths: Box<[u8]>,
@@ -696,13 +705,27 @@ impl<'source> FactSet<'source> {
             type_parameters: vec![
                 ExtensionTypeParameter {
                     name: &[],
-                    constraint: None,
+                    bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                        start: 0,
+                        length: 0,
+                    },
                     default: None,
+                    variance: compiler_ir::Variance::Invariant,
+                    kind: compiler_ir::ExtensionTypeParameterKind::Type {
+                        inference: compiler_ir::TypeParameterInference::Ordinary,
+                    },
+                    requirements: compiler_ir::TypeParameterRequirements::none(),
                 };
                 plan.type_parameters
             ]
             .into_boxed_slice(),
             type_parameter_len: 0,
+            type_parameter_bounds: vec![
+                compiler_ir::ExtensionTypeParameterBound::Type(0);
+                plan.type_parameter_bounds
+            ]
+            .into_boxed_slice(),
+            type_parameter_bound_len: 0,
             type_parameter_ranges: vec![None; plan.facts].into_boxed_slice(),
             atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
             atom_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
@@ -1486,11 +1509,46 @@ impl<'source> FactSet<'source> {
         constraint: Option<u32>,
         default: Option<u32>,
     ) -> Result<u32, FactFault> {
-        for raw in constraint.iter().chain(default.iter()) {
-            if *raw >= self.len as u32 && !self.is_anonymous_type_row(*raw) {
+        let bound = constraint.map(compiler_ir::ExtensionTypeParameterBound::Type);
+        self.push_type_parameter_with_bounds(
+            name,
+            bound.as_slice(),
+            default,
+            compiler_ir::ExtensionTypeParameterKind::Type {
+                inference: compiler_ir::TypeParameterInference::Ordinary,
+            },
+            compiler_ir::Variance::Invariant,
+            compiler_ir::TypeParameterRequirements::none(),
+        )
+    }
+
+    /// Appends one generic parameter together with its exact written bound
+    /// sequence. The copied prefix is owned by this admission transaction;
+    /// no producer can retain a temporary vector or infer an end later.
+    pub(super) fn push_type_parameter_with_bounds(
+        &mut self,
+        name: &'source [u8],
+        bounds: &[compiler_ir::ExtensionTypeParameterBound<'source>],
+        default: Option<u32>,
+        kind: compiler_ir::ExtensionTypeParameterKind,
+        variance: compiler_ir::Variance,
+        requirements: compiler_ir::TypeParameterRequirements,
+    ) -> Result<u32, FactFault> {
+        for raw in bounds.iter().filter_map(|bound| match bound {
+            compiler_ir::ExtensionTypeParameterBound::Type(raw) => Some(*raw),
+            compiler_ir::ExtensionTypeParameterBound::Lifetime(_) => None,
+        }).chain(default).chain(match kind {
+            compiler_ir::ExtensionTypeParameterKind::Type { .. }
+            | compiler_ir::ExtensionTypeParameterKind::Lifetime => None,
+            compiler_ir::ExtensionTypeParameterKind::ConstValue { value_type } => Some(value_type),
+        }) {
+            if raw >= self.len as u32
+                && !self.is_anonymous_type_row(raw)
+                && !self.is_computed_type_row(raw)
+            {
                 return Err(FactFault::RefTarget {
                     lane: "type_parameters",
-                    raw: *raw,
+                    raw,
                     fact_count: self.len,
                 });
             }
@@ -1498,12 +1556,33 @@ impl<'source> FactSet<'source> {
         if self.type_parameter_len == self.plan.type_parameters {
             return Err(FactFault::TypeParameterCapacity);
         }
+        let start = self.type_parameter_bound_len;
+        let end = start
+            .checked_add(bounds.len())
+            .ok_or(FactFault::TypeParameterBoundCapacity {
+                requested: usize::MAX,
+                available: self.plan.type_parameter_bounds,
+            })?;
+        if end > self.plan.type_parameter_bounds {
+            return Err(FactFault::TypeParameterBoundCapacity {
+                requested: end,
+                available: self.plan.type_parameter_bounds,
+            });
+        }
+        self.type_parameter_bounds[start..end].copy_from_slice(bounds);
         self.type_parameters[self.type_parameter_len] = ExtensionTypeParameter {
             name,
-            constraint,
+            bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                start: u32::try_from(start).map_err(|_| FactFault::TypeParameterCapacity)?,
+                length: u32::try_from(bounds.len()).map_err(|_| FactFault::TypeParameterCapacity)?,
+            },
             default,
+            variance,
+            kind,
+            requirements,
         };
         self.type_parameter_len += 1;
+        self.type_parameter_bound_len = end;
         Ok((self.type_parameter_len - 1) as u32)
     }
 
@@ -2289,18 +2368,57 @@ fn live_type_parameters<'source>(
     )?;
     let mut materialized = Vec::with_capacity(parameters.len());
     for parameter in parameters {
+        let bound_end = parameter
+            .bounds
+            .start
+            .checked_add(parameter.bounds.length)
+            .ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::TypeParameterBounds,
+                raw: parameter.bounds.start,
+            })? as usize;
+        let bounds = facts
+            .type_parameter_bounds
+            .get(parameter.bounds.start as usize..bound_end)
+            .ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::TypeParameterBounds,
+                raw: parameter.bounds.start,
+            })?;
+        let mut live_bounds = Vec::with_capacity(bounds.len());
+        for bound in bounds {
+            live_bounds.push(match bound {
+                compiler_ir::ExtensionTypeParameterBound::Type(row) => {
+                    compiler_ir::TypeParameterBound::Type(live_type(
+                        tree, facts, *row, ids, seen, scratch,
+                    )?)
+                }
+                compiler_ir::ExtensionTypeParameterBound::Lifetime(name) => {
+                    compiler_ir::TypeParameterBound::Lifetime(tree.intern_atom(name)?)
+                }
+            });
+        }
+        let kind = match parameter.kind {
+            compiler_ir::ExtensionTypeParameterKind::Type { inference } => {
+                compiler_ir::TypeParameterKind::Type { inference }
+            }
+            compiler_ir::ExtensionTypeParameterKind::ConstValue { value_type } => {
+                compiler_ir::TypeParameterKind::ConstValue {
+                    value_type: live_type(tree, facts, value_type, ids, seen, scratch)?,
+                }
+            }
+            compiler_ir::ExtensionTypeParameterKind::Lifetime => {
+                compiler_ir::TypeParameterKind::Lifetime
+            }
+        };
         materialized.push(compiler_ir::TypeParameter {
             name: tree.intern_atom(parameter.name)?,
-            constraint: parameter
-                .constraint
-                .map(|row| live_type(tree, facts, row, ids, seen, scratch))
-                .transpose()?,
+            bounds: tree.intern_type_parameter_bounds(&live_bounds)?,
             default: parameter
                 .default
                 .map(|row| live_type(tree, facts, row, ids, seen, scratch))
                 .transpose()?,
-            variance: compiler_ir::Variance::Invariant,
-            is_const: false,
+            variance: parameter.variance,
+            kind,
+            requirements: parameter.requirements,
         });
     }
     tree.intern_type_parameters(&materialized)
@@ -4274,8 +4392,10 @@ pub(super) fn admit<'source, 'output>(
     .into_boxed_slice();
     // Lane order: anonymous rows first (topological by construction), then
     // fact rows — every fact-row child and anonymous child points backward.
-    let mut remap = |target: u32| -> u32 {
-        if target >= ANONYMOUS_ROW_BASE && target < COMPUTED_ROW_BASE {
+    let remap = |target: u32| -> u32 {
+        if target >= COMPUTED_ROW_BASE {
+            declared_count as u32 + target - COMPUTED_ROW_BASE
+        } else if target >= ANONYMOUS_ROW_BASE {
             target - ANONYMOUS_ROW_BASE
         } else {
             target + anonymous_rows as u32
@@ -4284,17 +4404,47 @@ pub(super) fn admit<'source, 'output>(
     let mut type_parameters = vec![
         ExtensionTypeParameter {
             name: &[],
-            constraint: None,
+            bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                start: 0,
+                length: 0,
+            },
             default: None,
+            variance: compiler_ir::Variance::Invariant,
+            kind: compiler_ir::ExtensionTypeParameterKind::Type {
+                inference: compiler_ir::TypeParameterInference::Ordinary,
+            },
+            requirements: compiler_ir::TypeParameterRequirements::none(),
         };
         facts.type_parameter_len
     ]
     .into_boxed_slice();
     type_parameters[..facts.type_parameter_len]
         .copy_from_slice(&facts.type_parameters[..facts.type_parameter_len]);
+    let mut type_parameter_bounds = vec![
+        compiler_ir::ExtensionTypeParameterBound::Type(0);
+        facts.type_parameter_bound_len
+    ]
+    .into_boxed_slice();
+    for (index, bound) in facts.type_parameter_bounds[..facts.type_parameter_bound_len]
+        .iter()
+        .enumerate()
+    {
+        type_parameter_bounds[index] = match bound {
+            compiler_ir::ExtensionTypeParameterBound::Type(raw) => {
+                compiler_ir::ExtensionTypeParameterBound::Type(remap(*raw))
+            }
+            compiler_ir::ExtensionTypeParameterBound::Lifetime(name) => {
+                compiler_ir::ExtensionTypeParameterBound::Lifetime(name)
+            }
+        };
+    }
     for parameter in type_parameters[..facts.type_parameter_len].iter_mut() {
-        parameter.constraint = parameter.constraint.map(&mut remap);
-        parameter.default = parameter.default.map(&mut remap);
+        parameter.default = parameter.default.map(remap);
+        if let compiler_ir::ExtensionTypeParameterKind::ConstValue { value_type } = parameter.kind {
+            parameter.kind = compiler_ir::ExtensionTypeParameterKind::ConstValue {
+                value_type: remap(value_type),
+            };
+        }
     }
     let mut type_pooled_cursor = 0_usize;
     for (index, record) in facts.anonymous_records[..anonymous_rows].iter().enumerate() {
@@ -4375,13 +4525,8 @@ pub(super) fn admit<'source, 'output>(
                 target: if raw == STAGED_TEXT_CHILD {
                     TypeChildTarget::Text
                 } else {
-                    let target = if raw >= COMPUTED_ROW_BASE {
-                        declared_count as u32 + raw - COMPUTED_ROW_BASE
-                    } else {
-                        remap(raw)
-                    };
                     TypeChildTarget::Type(compiler_ir::TypeRef::Local(
-                        compiler_ir::TypeId::new(target),
+                        compiler_ir::TypeId::new(remap(raw)),
                     ))
                 },
                 name: facts.computed_child_names[base + offset],
@@ -4404,15 +4549,9 @@ pub(super) fn admit<'source, 'output>(
     // and observed-computed rows last.  Every extension type coordinate is
     // rewritten through this one mapping before it reaches the durable
     // schema; raw staging coordinates never leak across this boundary.
-    let remap_staged_type = |raw: u32| {
-        if raw >= COMPUTED_ROW_BASE {
-            declared_count as u32 + raw - COMPUTED_ROW_BASE
-        } else {
-            remap(raw)
-        }
-    };
+    let remap_staged_type = remap;
 
-    // Schema-4 type-parameter list table: generic extensions name dense
+    // Schema-4+ type-parameter list table: generic extensions name dense
     // `(start, length)` rows rather than staging element starts.  We retain a
     // distinct row even for every explicit empty declaration, so an empty
     // generic before the first nonempty declaration cannot alias it.
@@ -4695,6 +4834,7 @@ pub(super) fn admit<'source, 'output>(
     }
     let extension_pools = ExtensionPoolsLane {
         type_parameters: &type_parameters[..facts.type_parameter_len],
+        type_parameter_bounds: &type_parameter_bounds[..facts.type_parameter_bound_len],
         type_parameter_lists:
             &durable_type_parameter_ranges[..durable_type_parameter_range_len],
         atom_lists: &pooled_atom_lists[..facts.atom_list_len],

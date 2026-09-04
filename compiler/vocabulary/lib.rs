@@ -342,6 +342,12 @@ pub enum LoweringUnsupported {
     /// Rust constant type is outside the closed Bool/I32/String recipe set.
     #[error("Rust constant type is not represented")]
     RustConstantType,
+    /// Rust generic syntax needs a lossless declaration-scope transaction
+    /// (including merged `where` predicates and forward local bounds) that
+    /// this lowering pass has not yet entered. It is never folded into a
+    /// name-only parameter or an external nominal.
+    #[error("Rust generic parameter recipe is not represented")]
+    RustGenericParameter,
     /// Python assignment has no nonempty identifier fact.
     #[error("Python assignment identifier is not represented")]
     PythonAssignmentName,

@@ -6,7 +6,8 @@ use compiler_ir::{
     DocInput, EntityChangeKind, EntityVersion, FrontendTree, GuardedType, Ir, IrBuilder, ItemKind,
     LanguageExtensionInput, LinkChangeKind, LinkKind, MappedModifier, PayloadHash, Snapshot,
     SourceSpan, StableEntityId, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget, TypeExpr,
-    TypeHeader, TypePairPayload, TypeParameter, TypeQuadPayload, TypeScriptFacts,
+    TypeHeader, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterInference,
+    TypeParameterKind, TypeParameterRequirements, TypeQuadPayload, TypeScriptFacts,
     TypeTriplePayload, UnknownState, UnknownType, Variance, Visibility,
 };
 use core::mem::{size_of, size_of_val};
@@ -227,12 +228,16 @@ fn borrowed_tree_keeps_binary_atoms_and_renders_computed_typescript()
         readonly: MappedModifier::Add,
         optional: MappedModifier::Remove,
     })?;
+    let parameter_bounds = tree.intern_type_parameter_bounds(&[TypeParameterBound::Type(keys.erase())])?;
     let parameters = tree.intern_type_parameters(&[TypeParameter {
         name: key_name,
-        constraint: Some(keys.erase()),
+        bounds: parameter_bounds,
         default: None,
         variance: Variance::Invariant,
-        is_const: false,
+        kind: TypeParameterKind::Type {
+            inference: TypeParameterInference::Ordinary,
+        },
+        requirements: TypeParameterRequirements::none(),
     }])?;
     let members = [TreeEntityId::new(1)];
     let docs = [

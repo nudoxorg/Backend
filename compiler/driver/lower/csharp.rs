@@ -9,9 +9,10 @@
 //! attributes, nullability cells, reference kinds, member-effect flags,
 //! partial roles, and generic constraints.
 //!
-//! Two Roslyn facts the image retains have no lane cell and stay
-//! image-retained: declaration-site generic variance and the `params`
-//! modifier (the parameter's explicit array type still lands in full).
+//! The `params` modifier has no canonical callable-element cell yet (its
+//! explicit array type still lands in full). Declaration-site generic
+//! variance and closed special constraints travel through the shared generic
+//! parameter algebra.
 //! Pattern-based locals are absent from the producer's fact surface, so the
 //! projection records none rather than inventing any.
 //!
@@ -46,7 +47,7 @@ use compiler_ir::{
 };
 use compiler_languages_csharp::{
     CSharpImage, Declaration, DeclarationKind, ImageError, NullabilityCell, Parameter, PartialRole,
-    RefKind, ReferenceTag, ResolvedReference, TypeNode, TypeNodeKind, TypeRef,
+    RefKind, ReferenceTag, ResolvedReference, TypeNode, TypeNodeKind, TypeRef, VarianceTag,
 };
 use compiler_vocabulary::LoweringUnsupported;
 use sha2::{Digest, Sha256};
@@ -1348,22 +1349,63 @@ fn csharp_facts<'source>(
         extension.nullability = lane_nullability(node.nullable);
     }
 
-    // Constraints: one pooled row per declaration-site parameter, carrying
-    // the first in-file nominal constraint ordinal when one resolves.
+    // Constraints: one pooled row per declaration-site parameter preserving
+    // every resolvable constraint in source order. A generic contract is not
+    // a first-match slot.
     let start = facts.type_parameter_len;
     let start = u32::try_from(start).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let anchor = ordinals
+        .lookup(coordinate)
+        .ok_or_else(|| terminal(ProjectionFault::IndexCapacity))?;
     for generic in declared.type_parameters.iter() {
-        let constraints: Vec<_> = generic.constraints.clone().collect();
-        let constraint = constraints.iter().find_map(|child| {
-            let node = image.type_node(*child).ok()?;
-            let spelling = node.spelling?;
-            staged_type_for_named_image_declaration(names, ordinals, spelling.bytes)
-        });
+        let mut bounds = Vec::with_capacity(generic.constraints.len());
+        for child in generic.constraints {
+            bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
+                child_target(
+                    facts,
+                    image,
+                    names,
+                    ordinals,
+                    anchor,
+                    child,
+                    MAX_TYPE_CHILDREN,
+                )?,
+            ));
+        }
+        // The authority's current `reference_type` bit distinguishes `class`
+        // but not `class?`; we retain only the proved non-nullable form here
+        // and must extend the producer before claiming nullable-reference
+        // constraint fidelity.
+        let primary = if generic.unmanaged {
+            compiler_ir::TypeParameterPrimaryRequirement::Unmanaged
+        } else if generic.reference_type {
+            compiler_ir::TypeParameterPrimaryRequirement::Reference { nullable: false }
+        } else if generic.value_type {
+            compiler_ir::TypeParameterPrimaryRequirement::Value
+        } else if generic.not_null {
+            compiler_ir::TypeParameterPrimaryRequirement::NotNull
+        } else {
+            compiler_ir::TypeParameterPrimaryRequirement::None
+        };
+        let variance = match generic.variance {
+            VarianceTag::Invariant => compiler_ir::Variance::Invariant,
+            VarianceTag::Out => compiler_ir::Variance::Covariant,
+            VarianceTag::In => compiler_ir::Variance::Contravariant,
+        };
         facts
-            .push_type_parameter(
+            .push_type_parameter_with_bounds(
                 generic.name.bytes,
-                constraint.map(StagedTypeFactId::raw),
+                &bounds,
                 None,
+                compiler_ir::ExtensionTypeParameterKind::Type {
+                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                },
+                variance,
+                compiler_ir::TypeParameterRequirements {
+                    primary,
+                    constructor: generic.constructor,
+                    allows_ref_like: generic.allows_ref_like,
+                },
             )
             .map_err(lane_terminal)?;
     }
@@ -1792,6 +1834,10 @@ mod tests {
     const REF_INVOCATION: u8 = 1;
     const REF_IMPL_BINDING: u8 = 5;
     const FLAG_EXPLICIT_INTERFACE: u8 = 0x10;
+    const GENERIC_REFERENCE_TYPE: u8 = 0x1;
+    const GENERIC_VALUE_TYPE: u8 = 0x2;
+    const GENERIC_UNMANAGED: u8 = 0x8;
+    const GENERIC_CONSTRUCTOR: u8 = 0x10;
 
     #[derive(Debug, thiserror::Error)]
     enum TestError {
@@ -1835,6 +1881,14 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct GenericRow {
+        name: usize,
+        constraints: Vec<u32>,
+        variance: u8,
+        requirements: u8,
+    }
+
+    #[derive(Clone)]
     struct Decl {
         kind: u8,
         flags: u8,
@@ -1847,7 +1901,7 @@ mod tests {
         name_start: u32,
         name_end: u32,
         params: Vec<ParamRow>,
-        generics: Vec<(usize, Vec<u32>)>,
+        generics: Vec<GenericRow>,
         doc: Option<usize>,
     }
 
@@ -1907,8 +1961,19 @@ mod tests {
             self
         }
 
-        fn generic(mut self, name: usize, constraints: Vec<u32>) -> Self {
-            self.generics.push((name, constraints));
+        fn generic_with_requirements(
+            mut self,
+            name: usize,
+            constraints: Vec<u32>,
+            variance: VarianceTag,
+            requirements: u8,
+        ) -> Self {
+            self.generics.push(GenericRow {
+                name,
+                constraints,
+                variance: variance as u8,
+                requirements,
+            });
             self
         }
 
@@ -2069,20 +2134,20 @@ mod tests {
                     params.extend_from_slice(&cell(param.name)?.to_le_bytes());
                 }
                 let generic_start = cell(tparam_rows.len() / 12)?;
-                for (name, constraints) in &row.generics {
+                for generic in &row.generics {
                     let constraint_start = cell(tconstraint_rows.len() / 4)?;
-                    for constraint in constraints {
+                    for constraint in &generic.constraints {
                         tconstraint_rows.extend_from_slice(&constraint.to_le_bytes());
                     }
-                    tparam_rows.extend_from_slice(&cell(*name)?.to_le_bytes());
+                    tparam_rows.extend_from_slice(&cell(generic.name)?.to_le_bytes());
                     tparam_rows.extend_from_slice(&constraint_start.to_le_bytes());
                     tparam_rows.extend_from_slice(
-                        &u16::try_from(constraints.len())
+                        &u16::try_from(generic.constraints.len())
                             .map_err(|_| TestError::Num)?
                             .to_le_bytes(),
                     );
-                    tparam_rows.push(0);
-                    tparam_rows.push(0);
+                    tparam_rows.push(generic.variance);
+                    tparam_rows.push(generic.requirements);
                 }
                 declarations.push(row.kind);
                 declarations.push(row.flags);
@@ -2326,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;
@@ -2553,46 +2618,122 @@ mod tests {
 
     #[test]
     fn generic_application_and_constraint_pool_carry_backward_ordinals() -> Result<(), TestError> {
-        let source = b"interface IPart {} class Widget<T> where T : IPart {}";
+        let source = b"interface IPart {} interface IOther {} interface Widget<out T, U> {}";
         let mut fix = Fixture::default();
         let part = fix.class(b"demo.IPart", source);
+        let other = fix.class(b"demo.IOther", source);
         let widget = fix.class(b"demo.Widget", source);
         let generic_name = fix.atom(b"T");
+        let unmanaged_name = fix.atom(b"U");
         let part_type = fix.named(b"demo.IPart");
-        fix.declarations[widget as usize].generics = vec![(generic_name, vec![part_type])];
+        let other_type = fix.named(b"demo.IOther");
+        let declaration = fix.declarations[widget as usize]
+            .clone()
+            .generic_with_requirements(
+                generic_name,
+                vec![part_type, other_type],
+                VarianceTag::Out,
+                GENERIC_REFERENCE_TYPE | GENERIC_CONSTRUCTOR,
+            )
+            // Roslyn reports `unmanaged` alongside its implied value-type
+            // bit. The shared primary requirement must retain `unmanaged`,
+            // not let the weaker implied bit win.
+            .generic_with_requirements(
+                unmanaged_name,
+                Vec::new(),
+                VarianceTag::Invariant,
+                GENERIC_VALUE_TYPE | GENERIC_UNMANAGED,
+            );
+        fix.declarations[widget as usize] = declaration;
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
-        // Facts: 0 IPart, 1 Widget.
-        let extension = csharp_extension(&view, 1)?;
+        // Facts: 0 IPart, 1 IOther, 2 Widget.
+        let extension = csharp_extension(&view, 2)?;
         if extension.constraints.raw != 0 {
             return Err(TestError::Missing("constraint list start"));
         }
-        // The pooled type-parameter row carries the name and the constraint
-        // fact ordinal of the already-pushed IPart.
+        // The reopened schema-5 pool owns both the parameter row and its
+        // source-ordered bound range; raw byte offsets never stand in for a
+        // generic contract.
         let pools = view
-            .extension_pool_payload()
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Missing("pools"))?
             .ok_or(TestError::Missing("pools"))?;
-        let word = |at: usize| -> Result<u32, TestError> {
-            let bytes: [u8; 4] = pools
-                .get(at..at + 4)
-                .ok_or(TestError::Missing("pool word"))?
-                .try_into()
-                .map_err(|_| TestError::Missing("pool word"))?;
-            Ok(u32::from_le_bytes(bytes))
+        let compiler_ir::ReopenedTypeParameterList::Exact(parameters) = pools
+            .type_parameter_list(extension.constraints)
+            .map_err(|_| TestError::Missing("parameter list"))?
+        else {
+            return Err(TestError::Missing("exact parameter list"));
         };
-        if word(0)? != 1 {
-            return Err(TestError::Missing("one pooled type parameter"));
+        if parameters.length != 2 {
+            return Err(TestError::Missing("two generic parameters"));
         }
-        if pools.get(4) != Some(&1) {
-            return Err(TestError::Missing("parameter presence"));
-        }
-        let name_len = usize::try_from(word(5)?).map_err(|_| TestError::Num)?;
-        if pools.get(9..9 + name_len) != Some(&b"T"[..]) {
+        let parameter = parameters
+            .get(0)
+            .map_err(|_| TestError::Missing("parameter"))?;
+        if parameter.name != b"T" {
             return Err(TestError::Missing("pooled parameter name"));
         }
-        let at = 9 + name_len;
-        if pools.get(at) != Some(&1) || word(at + 1)? != part {
-            return Err(TestError::Missing("constraint ordinal"));
+        let bounds = pools
+            .type_parameter_bounds(parameter)
+            .map_err(|_| TestError::Missing("bounds"))?
+            .ok_or(TestError::Missing("exact bounds"))?;
+        if bounds.length != 2
+            || bounds
+                .get(0)
+                .map_err(|_| TestError::Missing("constraint"))?
+                != compiler_ir::DecodedTypeParameterBound::Type(part)
+            || bounds
+                .get(1)
+                .map_err(|_| TestError::Missing("second constraint"))?
+                != compiler_ir::DecodedTypeParameterBound::Type(other)
+        {
+            return Err(TestError::Missing("constraint ordinals"));
+        }
+        if parameter.semantics
+            != (compiler_ir::DecodedTypeParameterSemantics::Exact {
+                bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                    start: 0,
+                    length: 2,
+                },
+                variance: compiler_ir::Variance::Covariant,
+                kind: compiler_ir::DecodedTypeParameterKind::Type {
+                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                },
+                requirements: compiler_ir::TypeParameterRequirements {
+                    primary: compiler_ir::TypeParameterPrimaryRequirement::Reference {
+                        nullable: false,
+                    },
+                    constructor: true,
+                    allows_ref_like: false,
+                },
+            })
+        {
+            return Err(TestError::Missing("covariant class constructor requirements"));
+        }
+        let unmanaged = parameters
+            .get(1)
+            .map_err(|_| TestError::Missing("unmanaged parameter"))?;
+        if unmanaged.name != b"U"
+            || unmanaged.semantics
+                != (compiler_ir::DecodedTypeParameterSemantics::Exact {
+                    bounds: compiler_ir::ExtensionTypeParameterBoundRange {
+                        start: 2,
+                        length: 0,
+                    },
+                    variance: compiler_ir::Variance::Invariant,
+                    kind: compiler_ir::DecodedTypeParameterKind::Type {
+                        inference: compiler_ir::TypeParameterInference::Ordinary,
+                    },
+                    requirements: compiler_ir::TypeParameterRequirements {
+                        primary: compiler_ir::TypeParameterPrimaryRequirement::Unmanaged,
+                        constructor: false,
+                        allows_ref_like: false,
+                    },
+                })
+        {
+            return Err(TestError::Missing("unmanaged requirement precedence"));
         }
         Ok(())
     }
@@ -2848,22 +2989,17 @@ mod tests {
         let view = FragmentView::validate(&bytes)?;
         let extension = csharp_extension(&view, 0)?;
         let pools = view
-            .extension_pool_payload()
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Missing("pools"))?
             .ok_or(TestError::Missing("pools"))?;
-        let word = |at: usize| -> Result<u32, TestError> {
-            let bytes: [u8; 4] = pools
-                .get(at..at + 4)
-                .ok_or(TestError::Missing("pool word"))?
-                .try_into()
-                .map_err(|_| TestError::Missing("pool word"))?;
-            Ok(u32::from_le_bytes(bytes))
-        };
-        // Pools layout: [type-parameter count][rows][atom list count][rows].
-        let at = 4;
-        if word(at)? != 1 {
+        let attributes = pools
+            .atom_list(extension.attributes.raw)
+            .map_err(|_| TestError::Missing("attribute list ordinal"))?;
+        if attributes.len() != 1 {
             return Err(TestError::Missing("attribute list ordinal"));
         }
-        if word(at + 4)? != 1 {
+        if attributes.iter().next() != Some(obsolete as u32) {
             return Err(TestError::Missing("one attribute spelling"));
         }
         // Falsifier: removing the attribute changes the committed bytes and

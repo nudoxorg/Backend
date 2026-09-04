@@ -57,6 +57,12 @@ pub type ObjectMemberListId = ListId<ObjectMember>;
 pub type TemplatePartListId = ListId<TemplatePart>;
 /// Interned sequence of generic parameter declarations.
 pub type TypeParameterListId = ListId<TypeParameter>;
+/// Interned source-ordered bounds of one generic parameter.
+///
+/// A bound is deliberately not just a type ID: Rust lifetime bounds occupy
+/// the same written sequence as trait bounds, and a renderer/discovery view
+/// must never recover their order from language-specific side tables.
+pub type TypeParameterBoundListId = ListId<TypeParameterBound>;
 
 /// Complete declaration vocabulary shared across language frontends.
 #[repr(u16)]
@@ -1783,14 +1789,100 @@ pub enum TemplatePart {
     Placeholder(TypeId),
 }
 
+/// One source-ordered generic bound.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TypeParameterBound {
+    /// A semantic type bound such as `T: Display` or `T extends Base`.
+    Type(TypeId),
+    /// A lifetime bound such as `T: 'scope`.
+    Lifetime(AtomId),
+}
+
+/// The declaration role of a generic parameter.
+///
+/// A Rust `const N: usize` is a value parameter with a declared value type;
+/// it is not a synthetic `Const` bound on a type parameter.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TypeParameterKind {
+    /// An ordinary type parameter, optionally carrying TypeScript's `const`
+    /// inference modifier. This is distinct from a Rust const-value parameter.
+    Type { inference: TypeParameterInference },
+    /// A Rust-style const value parameter and its declared value type.
+    ConstValue { value_type: TypeId },
+    /// A Rust lifetime parameter. Its ordered lifetime/type bounds remain in
+    /// the shared bound list rather than a parallel Rust-only side table.
+    Lifetime,
+}
+
+/// The inference mode of a type parameter.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TypeParameterInference {
+    Ordinary,
+    Const,
+}
+
+/// The one primary C# generic requirement. These source facts are mutually
+/// exclusive and therefore cannot be represented by independent booleans.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TypeParameterPrimaryRequirement {
+    None,
+    Reference { nullable: bool },
+    Value,
+    Unmanaged,
+    NotNull,
+    Default,
+}
+
+/// Closed special requirements which are orthogonal to ordered bounds.
+///
+/// The primary requirement retains C#'s distinct `class`, `class?`, `struct`,
+/// `unmanaged`, `notnull`, and `default` facts. Constructor and
+/// `allows ref struct` remain orthogonal rather than becoming a stringly
+/// constraint or lossy boolean collection.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TypeParameterRequirements {
+    pub primary: TypeParameterPrimaryRequirement,
+    pub constructor: bool,
+    pub allows_ref_like: bool,
+}
+
+impl TypeParameterRequirements {
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            primary: TypeParameterPrimaryRequirement::None,
+            constructor: false,
+            allows_ref_like: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        !(self.constructor
+            && matches!(
+                self.primary,
+                TypeParameterPrimaryRequirement::Value
+                    | TypeParameterPrimaryRequirement::Unmanaged
+                    | TypeParameterPrimaryRequirement::Default
+            ))
+            && !(self.allows_ref_like
+                && matches!(
+                    self.primary,
+                    TypeParameterPrimaryRequirement::Reference { .. }
+                ))
+    }
+}
+
 /// Generic declaration retained separately from a parameter reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TypeParameter {
     pub name: AtomId,
-    pub constraint: Option<TypeId>,
+    /// Source-ordered type and lifetime bounds.
+    pub bounds: TypeParameterBoundListId,
     pub default: Option<TypeId>,
     pub variance: Variance,
-    pub is_const: bool,
+    pub kind: TypeParameterKind,
+    pub requirements: TypeParameterRequirements,
 }
 
 #[repr(u8)]
@@ -2636,17 +2728,37 @@ fn validate_type_parameters(
     builder: &IrBuilder,
     parameters: TypeParameterListId,
 ) -> Result<(), BuildError> {
-    for parameter in list_or_dangling(
+    for (position, parameter) in list_or_dangling(
         &builder.type_parameters,
         parameters,
         SemanticSpace::TypeParameters,
-    )? {
+    )?
+    .iter()
+    .enumerate()
+    {
         atom(builder, parameter.name)?;
-        optional_id(
-            parameter.constraint,
-            builder.types.len(),
-            SemanticSpace::Type,
-        )?;
+        for bound in list_or_dangling(
+            &builder.type_parameter_bounds,
+            parameter.bounds,
+            SemanticSpace::TypeParameterBounds,
+        )? {
+            match bound {
+                TypeParameterBound::Type(ty) => {
+                    id(*ty, builder.types.len(), SemanticSpace::Type)?;
+                }
+                TypeParameterBound::Lifetime(name) => atom(builder, *name)?,
+            }
+        }
+        if let TypeParameterKind::ConstValue { value_type } = parameter.kind {
+            id(value_type, builder.types.len(), SemanticSpace::Type)?;
+        }
+        if !parameter.requirements.is_valid() {
+            return Err(BuildError::TypeParameterRequirements {
+                list: parameters.raw,
+                position: u32::try_from(position).unwrap_or(u32::MAX),
+                requirements: parameter.requirements,
+            });
+        }
         optional_id(parameter.default, builder.types.len(), SemanticSpace::Type)?;
     }
     Ok(())
@@ -3053,6 +3165,7 @@ pub enum SemanticSpace {
     TupleElements,
     ObjectMembers,
     TemplateParts,
+    TypeParameterBounds,
     TypeParameters,
 }
 
@@ -3095,6 +3208,13 @@ pub enum BuildError {
     MissingTypedVariadicParameter { parameter_count: usize },
     /// A qualified type path had no named segments after its self/trait base.
     EmptyQualifiedPath,
+    /// A publicly constructible generic requirement set combined mutually
+    /// exclusive C# primary constraints with `new()`.
+    TypeParameterRequirements {
+        list: u32,
+        position: u32,
+        requirements: TypeParameterRequirements,
+    },
     /// A direct C-family qualifier wrapper was constructed with no qualifier.
     /// Empty qualification has no source-semantic node and must be omitted.
     EmptyCxxQualification,
@@ -3247,6 +3367,7 @@ pub struct IrBuilder {
     tuple_elements: ListInterner<TupleElement>,
     object_members: ListInterner<ObjectMember>,
     template_parts: ListInterner<TemplatePart>,
+    type_parameter_bounds: ListInterner<TypeParameterBound>,
     type_parameters: ListInterner<TypeParameter>,
     items: ItemColumns,
     sources: SourceColumns,
@@ -3338,6 +3459,12 @@ impl IrBuilder {
         parts: &[TemplatePart],
     ) -> Result<TemplatePartListId, BuildError> {
         self.template_parts.intern(parts).map_err(Into::into)
+    }
+    pub fn intern_type_parameter_bounds(
+        &mut self,
+        bounds: &[TypeParameterBound],
+    ) -> Result<TypeParameterBoundListId, BuildError> {
+        self.type_parameter_bounds.intern(bounds).map_err(Into::into)
     }
     pub fn intern_type_parameters(
         &mut self,
@@ -3599,6 +3726,7 @@ impl IrBuilder {
             tuple_elements: self.tuple_elements.freeze(),
             object_members: self.object_members.freeze(),
             template_parts: self.template_parts.freeze(),
+            type_parameter_bounds: self.type_parameter_bounds.freeze(),
             type_parameters: self.type_parameters.freeze(),
             items: self.items,
             sources: self.sources,
@@ -3826,6 +3954,12 @@ impl TreeBuilder<'_, '_> {
         parts: &[TemplatePart],
     ) -> Result<TemplatePartListId, BuildError> {
         self.builder.intern_template_parts(parts)
+    }
+    pub fn intern_type_parameter_bounds(
+        &mut self,
+        bounds: &[TypeParameterBound],
+    ) -> Result<TypeParameterBoundListId, BuildError> {
+        self.builder.intern_type_parameter_bounds(bounds)
     }
     pub fn intern_type_parameters(
         &mut self,
@@ -4845,6 +4979,7 @@ pub struct StorageColumns<'ir> {
     pub tuple_elements: ListTableView<'ir, TupleElement>,
     pub object_members: ListTableView<'ir, ObjectMember>,
     pub template_parts: ListTableView<'ir, TemplatePart>,
+    pub type_parameter_bounds: ListTableView<'ir, TypeParameterBound>,
     pub type_parameters: ListTableView<'ir, TypeParameter>,
     pub entities: EntityColumns<'ir>,
     pub sources: SourceColumnsView<'ir>,
@@ -4891,6 +5026,8 @@ impl StorageColumns<'_> {
         add!(self.object_members.ranges);
         add!(self.template_parts.elements);
         add!(self.template_parts.ranges);
+        add!(self.type_parameter_bounds.elements);
+        add!(self.type_parameter_bounds.ranges);
         add!(self.type_parameters.elements);
         add!(self.type_parameters.ranges);
         add!(self.entities.names);
@@ -4964,6 +5101,7 @@ pub struct Ir {
     tuple_elements: ListTable<TupleElement>,
     object_members: ListTable<ObjectMember>,
     template_parts: ListTable<TemplatePart>,
+    type_parameter_bounds: ListTable<TypeParameterBound>,
     type_parameters: ListTable<TypeParameter>,
     items: ItemColumns,
     sources: SourceColumns,
@@ -4997,6 +5135,7 @@ impl Ir {
             tuple_elements: self.tuple_elements.view(),
             object_members: self.object_members.view(),
             template_parts: self.template_parts.view(),
+            type_parameter_bounds: self.type_parameter_bounds.view(),
             type_parameters: self.type_parameters.view(),
             entities: self.entity_columns(),
             sources: self.source_columns(),
@@ -5097,6 +5236,13 @@ impl Ir {
     #[must_use]
     pub fn type_parameters(&self, id: TypeParameterListId) -> Option<&[TypeParameter]> {
         self.type_parameters.get(id)
+    }
+    #[must_use]
+    pub fn type_parameter_bounds(
+        &self,
+        id: TypeParameterBoundListId,
+    ) -> Option<&[TypeParameterBound]> {
+        self.type_parameter_bounds.get(id)
     }
     #[must_use]
     pub fn external(&self, id: ExternalId) -> Option<&ExternalTarget> {

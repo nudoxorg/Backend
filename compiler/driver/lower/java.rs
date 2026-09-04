@@ -1787,7 +1787,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_image_admits_the_schema4_fragment_without_semantic_sections() -> Result<(), TestError>
+    fn empty_image_admits_the_current_schema_fragment_without_semantic_sections() -> Result<(), TestError>
     {
         let fix = Fixture::default();
         let bytes = lower(&fix, b"")?;
@@ -2054,13 +2054,10 @@ mod tests {
         // The overload sibling lists travel in the pooled lanes: the first
         // brew carries the empty list and the second lists the first's fact
         // ordinal.
-        let pools = view
-            .extension_pool_payload()
-            .ok_or(TestError::Missing("pools"))?;
-        if !entity_list(pools, 0)?.is_empty() {
+        if !entity_list(&view, 0)?.is_empty() {
             return Err(TestError::Missing("first overload has no siblings"));
         }
-        let listed = entity_list(pools, 1)?;
+        let listed = entity_list(&view, 1)?;
         if listed != vec![3] {
             return Err(TestError::Missing("overload sibling ordinal"));
         }
@@ -2073,51 +2070,29 @@ mod tests {
             return Err(TestError::Tail);
         }
         let view = FragmentView::validate(&other)?;
-        let pools = view
-            .extension_pool_payload()
-            .ok_or(TestError::Missing("pools"))?;
         // The renamed method joins no sibling list: every list is empty and
         // only the deduplicated empty row remains in the pool.
-        if !entity_list(pools, 0)?.is_empty() || entity_list(pools, 1).is_ok() {
+        if !entity_list(&view, 0)?.is_empty() || entity_list(&view, 1).is_ok() {
             return Err(TestError::Missing("renamed method has no siblings"));
         }
         Ok(())
     }
 
-    /// Reads one pooled entity reference list back out of the pools payload.
-    /// With no type parameters the layout is four lane counts plus rows.
-    fn entity_list(pools: &[u8], ordinal: usize) -> Result<Vec<u32>, TestError> {
-        let word = |at: usize| -> Result<u32, TestError> {
-            let raw = pools
-                .get(at..at + 4)
-                .ok_or(TestError::Missing("pool word"))?;
-            let bytes: [u8; 4] = raw
-                .try_into()
-                .map_err(|_| TestError::Missing("pool word"))?;
-            Ok(u32::from_le_bytes(bytes))
-        };
-        let width = |length: u32| -> Result<usize, TestError> {
-            let length = usize::try_from(length)?;
-            length.checked_mul(4).ok_or(TestError::Missing("pool word"))
-        };
-        let mut cursor = 4; // type parameter count (zero)
-        for lane in 0..3u32 {
-            let count = word(cursor)?;
-            cursor += 4;
-            for list in 0..count {
-                let length = word(cursor)?;
-                if lane == 2 && usize::try_from(list)? == ordinal {
-                    let mut elements = Vec::new();
-                    for position in 0..length {
-                        let at = cursor + 4 + width(position)?;
-                        elements.push(word(at)?);
-                    }
-                    return Ok(elements);
-                }
-                cursor += 4 + width(length)?;
-            }
-        }
-        Err(TestError::Missing("entity list"))
+    /// Lends one pooled entity list through the schema-aware pool view.
+    fn entity_list<'a>(
+        view: &'a FragmentView<'a>,
+        ordinal: u32,
+    ) -> Result<Vec<u32>, TestError> {
+        let pools = view
+            .discover()
+            .extension_pools()
+            .map_err(|_| TestError::Tail)?
+            .ok_or(TestError::Missing("pools"))?;
+        Ok(pools
+            .entity_list(ordinal)
+            .map_err(|_| TestError::Missing("entity list"))?
+            .iter()
+            .collect())
     }
 
     #[test]

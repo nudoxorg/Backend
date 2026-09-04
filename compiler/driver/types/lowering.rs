@@ -88,6 +88,11 @@ pub enum FactFault {
     ExtensionAtomCapacity,
     /// The type-parameter lane is full.
     TypeParameterCapacity,
+    /// The ordered type/lifetime bound lane is full.
+    TypeParameterBoundCapacity {
+        requested: usize,
+        available: usize,
+    },
     /// A pooled reference lane is full.
     RefListCapacity,
     /// A pooled reference list has too many elements.

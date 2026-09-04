@@ -106,8 +106,9 @@ impl<'fragment> FragmentDiscovery<'fragment> {
     }
 
     /// Opens the schema-aware shared extension pools from the fragment proof.
-    /// Schema-4 callers receive exact type-parameter list ranges; legacy
-    /// callers receive only the explicitly typed start-only interpretation.
+    /// Schema 5 lends exact generic metadata; schema 4 retains its exact
+    /// parameter membership but exposes only legacy parameter cells; schemas
+    /// 1--3 retain the explicitly typed start-only interpretation.
     pub fn extension_pools(
         self,
     ) -> Result<Option<crate::ReopenedExtensionPools<'fragment>>, FragmentDiscoveryError> {

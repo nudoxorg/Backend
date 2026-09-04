@@ -685,7 +685,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
 }
 
 #[test]
-fn empty_fact_list_writes_the_exact_schema4_fragment_without_semantic_data() -> Result<(), TestError>
+fn empty_fact_list_writes_the_exact_current_schema_fragment_without_semantic_data() -> Result<(), TestError>
 {
     let empty = FactSet::new();
     let mut output = [0xa5_u8; OUTPUT_CAPACITY];
@@ -693,7 +693,7 @@ fn empty_fact_list_writes_the_exact_schema4_fragment_without_semantic_data() -> 
         .map_err(TestError::Admission)?
         .len();
 
-    // Byte-exact schema-4 baseline: the empty lane is the prepared fragment
+    // Byte-exact current-schema baseline: the empty lane is the prepared fragment
     // with no SemanticData section at all.
     let prepared = PreparedFragment::prepare(identity()?, recipe(), &[], &[], &[])?;
     let mut reference = [0_u8; OUTPUT_CAPACITY];

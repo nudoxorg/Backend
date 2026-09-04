@@ -178,6 +178,16 @@ fn admission() -> RustAuthorityError {
     }
 }
 
+/// Refuses generic syntax whose declaration-scoped binding cannot yet be
+/// preserved exactly. In particular, a later local trait or a `where`
+/// predicate must not be downgraded to an external nominal or duplicated as
+/// a second parameter row.
+fn unsupported_generic() -> RustAuthorityError {
+    RustAuthorityError::Admission {
+        cause: LoweringUnsupported::RustGenericParameter,
+    }
+}
+
 /// Widenes one bounded lane coordinate; unreachable past the lane's fixed
 /// bounds, but never silently truncated.
 fn coordinate(value: usize) -> Result<u32, RustAuthorityError> {
@@ -1001,14 +1011,12 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.facts.intern_atom_list(&atoms).map_err(|_| admission())
     }
 
-    /// Pushes one pooled where-clause row for every written type bound and
-    /// reports whether the declaration wrote any bound at all. Local traits
-    /// name their declaration fact; foreign traits are interned as deduplicated
-    /// anonymous unknown leaves owned by the declaration fact being emitted.
-    /// An unresolved bound still gets a row, but has no constraint ordinal.
+    /// Pushes exactly one pooled row per written generic parameter. Its bound
+    /// run preserves `T: A + B` and lifetime bounds in source order; a const
+    /// parameter remains a value parameter with its own declared type.
     fn where_rows(&mut self, syntax: &SyntaxNode) -> Result<Option<u32>, RustAuthorityError> {
         let start = coordinate(self.facts.type_parameter_len)?;
-        let mut bounds_written = false;
+        let mut parameters_written = false;
         let Some(generics) = ast::AnyHasGenericParams::cast(syntax.clone()) else {
             return Ok(None);
         };
@@ -1020,66 +1028,132 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                             continue;
                         };
                         let name = self.bytes_of_node(name.syntax())?;
-                        let bound_list = param.type_bound_list();
-                        let bounds = bound_list
-                            .as_ref()
+                        let bounds = param
+                            .type_bound_list()
                             .map(|bounds| bounds.bounds().collect::<Vec<_>>())
                             .unwrap_or_default();
-                        let default = match param.default_type() {
-                            Some(default) => self.local_adt_target(&default)?,
-                            None => None,
-                        };
-                        let has_bounds = !bounds.is_empty();
-                        bounds_written |= has_bounds || default.is_some();
+                        // A default must bind the declaration-scoped
+                        // parameter it augments. The present pool has no
+                        // scoped parameter reference, so accepting even a
+                        // resolvable default would claim a relationship it
+                        // cannot encode exactly.
+                        if param.default_type().is_some() {
+                            return Err(unsupported_generic());
+                        }
+                        let mut staged_bounds = Vec::with_capacity(bounds.len());
                         for bound in bounds {
-                            let constraint = bound
-                                .ty()
-                                .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
-                                .transpose()?
-                                .flatten();
-                            self.facts
-                                .push_type_parameter(name, constraint, None)
-                                .map_err(|_| admission())?;
+                            if let Some(lifetime) = bound.lifetime() {
+                                staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Lifetime(
+                                    self.bytes_of_node(lifetime.syntax())?,
+                                ));
+                            } else if let Some(bound_ty) = bound.ty() {
+                                staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Type(
+                                    self.generic_type_bound_target(&bound_ty)?,
+                                ));
+                            } else {
+                                return Err(unsupported_generic());
+                            }
                         }
-                        if !has_bounds && default.is_some() {
-                            self.facts
-                                .push_type_parameter(name, None, default)
-                                .map_err(|_| admission())?;
-                        }
+                        self.facts
+                            .push_type_parameter_with_bounds(
+                                name,
+                                &staged_bounds,
+                                None,
+                                compiler_ir::ExtensionTypeParameterKind::Type {
+                                    inference: compiler_ir::TypeParameterInference::Ordinary,
+                                },
+                                compiler_ir::Variance::Invariant,
+                                compiler_ir::TypeParameterRequirements::none(),
+                            )
+                            .map_err(|_| admission())?;
+                        parameters_written = true;
                     }
-                    ast::GenericParam::ConstParam(_) | ast::GenericParam::LifetimeParam(_) => {}
+                    ast::GenericParam::ConstParam(param) => {
+                        let Some(name) = param.name() else {
+                            continue;
+                        };
+                        if self.bytes_of_node(param.syntax())?.contains(&b'=') {
+                            // A const value default is not a type default. Do
+                            // not write it through `Option<TypeId>`; the next
+                            // scoped-generic transaction gives it a distinct
+                            // value-expression fact.
+                            return Err(unsupported_generic());
+                        }
+                        let Some(value_type) = param.ty() else {
+                            continue;
+                        };
+                        let spelling = self.bytes_of_node(value_type.syntax())?;
+                        let value_type = self
+                            .host(
+                                Lowered::leaf(unknown_record(
+                                    TypeReason::NoIrRepresentation,
+                                    Some(spelling),
+                                )),
+                                Some(&value_type),
+                            )?
+                            .ok_or_else(admission)?;
+                        self.facts
+                            .push_type_parameter_with_bounds(
+                                self.bytes_of_node(name.syntax())?,
+                                &[],
+                                None,
+                                compiler_ir::ExtensionTypeParameterKind::ConstValue { value_type },
+                                compiler_ir::Variance::Invariant,
+                                compiler_ir::TypeParameterRequirements::none(),
+                            )
+                            .map_err(|_| admission())?;
+                        parameters_written = true;
+                    }
+                    ast::GenericParam::LifetimeParam(param) => {
+                        let Some(lifetime) = param.lifetime() else {
+                            continue;
+                        };
+                        let bounds = param
+                            .type_bound_list()
+                            .map(|bounds| bounds.bounds().collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        let mut staged_bounds = Vec::with_capacity(bounds.len());
+                        for bound in bounds {
+                            let Some(bound_lifetime) = bound.lifetime() else {
+                                return Err(unsupported_generic());
+                            };
+                            staged_bounds.push(compiler_ir::ExtensionTypeParameterBound::Lifetime(
+                                self.bytes_of_node(bound_lifetime.syntax())?,
+                            ));
+                        }
+                        self.facts
+                            .push_type_parameter_with_bounds(
+                                self.bytes_of_node(lifetime.syntax())?,
+                                &staged_bounds,
+                                None,
+                                compiler_ir::ExtensionTypeParameterKind::Lifetime,
+                                compiler_ir::Variance::Invariant,
+                                compiler_ir::TypeParameterRequirements::none(),
+                            )
+                            .map_err(|_| admission())?;
+                        parameters_written = true;
+                    }
                 }
             }
         }
-        if let Some(where_clause) = generics.where_clause() {
-            for predicate in where_clause.predicates() {
-                let Some(bounded) = predicate.ty() else {
-                    continue;
-                };
-                let name = self.bytes_of_node(bounded.syntax())?;
-                let bounds = predicate
-                    .type_bound_list()
-                    .map(|bounds| bounds.bounds().collect::<Vec<_>>())
-                    .unwrap_or_default();
-                bounds_written |= !bounds.is_empty();
-                for bound in bounds {
-                    let constraint = bound
-                        .ty()
-                        .map(|bound_ty| self.trait_bound_constraint(&bound_ty))
-                        .transpose()?
-                        .flatten();
-                    self.facts
-                        .push_type_parameter(name, constraint, None)
-                        .map_err(|_| admission())?;
-                }
-            }
+        if generics
+            .where_clause()
+            .is_some_and(|where_clause| where_clause.predicates().next().is_some())
+        {
+            // A `where` predicate augments a declaration-site parameter; it
+            // is never a second generic declaration. Until the scoped
+            // transaction can merge both ordered runs (and reserve forward
+            // roots), retain an exact unsupported terminal rather than
+            // duplicate `T` or erase a predicate.
+            return Err(unsupported_generic());
         }
-        Ok(bounds_written.then_some(start))
+        Ok(parameters_written.then_some(start))
     }
 
-    /// Resolves one written trait bound to its local fact or to the shared
-    /// pooled foreign leaf table. The declaration fact is the reserved owner
-    /// while this extension is built, immediately before that fact is pushed.
+    /// Resolves one written trait bound to an already committed local fact.
+    /// The scoped generic transaction owns both forward and foreign binding;
+    /// this provisional path refuses either unresolved case instead of
+    /// inventing an external target.
     fn trait_bound_constraint(
         &mut self,
         bound_ty: &ast::Type,
@@ -1098,30 +1172,25 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if let Some(ordinal) = self.ordinal_of_trait(trait_) {
             return Ok(Some(ordinal));
         }
-        let Some(text) = self.written_type_name(Some(bound_ty)) else {
-            return Ok(None);
-        };
-        let row = self.host(
-            Lowered::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(text))),
-            Some(bound_ty),
-        );
-        row
+        // A local trait that has not been committed is a forward root, not
+        // an external symbol. The generic transaction must reserve roots
+        // before it can bind this coordinate.
+        Err(unsupported_generic())
     }
 
-    /// Resolves one written default type to a lane-local record ordinal.
-    fn local_adt_target(&self, default: &ast::Type) -> Result<Option<u32>, RustAuthorityError> {
-        let ast::Type::PathType(path_type) = default else {
-            return Ok(None);
-        };
-        let Some(path) = path_type.path() else {
-            return Ok(None);
-        };
-        if let Some((ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Adt(adt)), _)) =
-            self.authority.resolve_path(&path)
-        {
-            return Ok(self.ordinal_of_adt(adt));
+    /// Preserves every non-lifetime bound. A form the HIR does not expose as
+    /// `Type` retains its exact written spelling as an explicit unknown;
+    /// unresolved path targets are rejected by `trait_bound_constraint`.
+    fn generic_type_bound_target(&mut self, bound: &ast::Type) -> Result<u32, RustAuthorityError> {
+        if let Some(target) = self.trait_bound_constraint(bound)? {
+            return Ok(target);
         }
-        Ok(None)
+        let spelling = self.bytes_of_node(bound.syntax())?;
+        self.host(
+            Lowered::leaf(unknown_record(TypeReason::NoIrRepresentation, Some(spelling))),
+            Some(bound),
+        )?
+        .ok_or_else(unsupported_generic)
     }
 
     /// Registers one pushed declaration row, its HIR definition ordinal, and

@@ -73,11 +73,14 @@ pub use docs_facts::{
 };
 pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use extension_pools::{
-    DecodedRefList, DecodedTypeParameter, DecodedTypeParameterCursor, DecodedTypeParameterList,
+    DecodedRefList, DecodedTypeParameter, DecodedTypeParameterBound,
+    DecodedTypeParameterBoundCursor, DecodedTypeParameterBoundList, DecodedTypeParameterCursor,
+    DecodedTypeParameterKind, DecodedTypeParameterList, DecodedTypeParameterSemantics,
     ExtensionPoolFault,
     ExtensionPoolListLane, ExtensionPoolsLane, ExtensionRefList, ExtensionTypeParameter,
+    ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange, ExtensionTypeParameterKind,
     ExtensionTypeParameterRange, ReopenedExtensionPools, ReopenedTypeParameterList,
-    TypeParameterField, TypeParameterListBounds, reopen_extension_pools,
+    TypeParameterField, TypeParameterListBounds, TypeParameterTagField, reopen_extension_pools,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
@@ -119,8 +122,9 @@ pub use semantic::{
     SparseColumnView, StableEntityId, StorageColumns, TemplatePart, TemplatePartListId,
     TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
     TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
-    TypeListId, TypePairPayload, TypeParameter, TypeParameterListId, TypeQuadPayload, TypeQuery,
-    VariadicForm,
+    TypeListId, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterBoundListId,
+    TypeParameterInference, TypeParameterKind, TypeParameterListId, TypeParameterPrimaryRequirement,
+    TypeParameterRequirements, TypeQuadPayload, TypeQuery, VariadicForm,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
     UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
     WildcardBound,
