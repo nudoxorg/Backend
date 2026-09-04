@@ -115,7 +115,9 @@ pub enum BuiltinType {
     Unit,
     Never,
     Bool,
-    Char,
+    /// Historical under-specified character role retained only for fragment
+    /// compatibility. Fresh producers use [`NativeCharacterRole`].
+    LegacyChar,
     I8,
     I16,
     I32,
@@ -165,6 +167,35 @@ pub enum BuiltinType {
     NativeUnsignedInteger = 40,
     /// Unsigned pointer-address integer (`uintptr`, C# `nuint`).
     PointerAddressInteger = 41,
+}
+
+/// Closed semantic role of a character scalar/code-unit node. The concrete
+/// node also carries an exact measured width, so C target facts never
+/// collapse into Rust/Java/C# spelling coincidences.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum NativeCharacterRole {
+    /// Rust's Unicode scalar value (`char`).
+    UnicodeScalar,
+    /// Java/C# `char` and C++ `char16_t`.
+    Utf16CodeUnit,
+    /// C++ `char32_t`.
+    Utf32CodeUnit,
+    /// Plain C/C++ `char` where the native authority reports signed form.
+    CPlainSigned,
+    /// Plain C/C++ `char` where the native authority reports unsigned form.
+    CPlainUnsigned,
+    /// Explicit C/C++ `signed char`.
+    CSigned,
+    /// Explicit C/C++ `unsigned char`.
+    CUnsigned,
+    /// `wchar_t` with signed representation verified by native authority.
+    CWideSigned,
+    /// `wchar_t` with unsigned representation verified by native authority.
+    CWideUnsigned,
+    /// `wchar_t` where libclang retained no signedness authority. This is a
+    /// real unavailable fact, never an invented signed integer.
+    CWideSignednessUnavailable,
 }
 
 /// Closed cause for an explicitly unknown semantic type.
@@ -437,6 +468,8 @@ pub enum TypeTag {
     CPointer,
     CxxMemberPointer,
     CQualified,
+    CBlockPointer,
+    NativeCharacter,
 }
 
 #[repr(C)]
@@ -583,6 +616,12 @@ impl PackedTypes {
                     0,
                     target.raw,
                 ),
+                ConcreteType::CBlockPointer { target } => {
+                    header(TypeTag::CBlockPointer, 0, 0, target.raw)
+                }
+                ConcreteType::NativeCharacter { role, width } => {
+                    header(TypeTag::NativeCharacter, role as u8, width.get(), 0)
+                }
                 ConcreteType::Pointer { target, mutability } => {
                     header(TypeTag::Pointer, mutability as u8, 0, target.raw)
                 }
@@ -840,7 +879,22 @@ impl PackedTypes {
                     qualifiers,
                 })
             }
-            TypeTag::CxxReference | TypeTag::CPointer | TypeTag::CQualified => return None,
+            TypeTag::CBlockPointer if value.flags == 0 && value.auxiliary == 0 => {
+                TypeExpr::Concrete(ConcreteType::CBlockPointer {
+                    target: TypeId::new(value.payload),
+                })
+            }
+            TypeTag::NativeCharacter if value.payload == 0 => {
+                TypeExpr::Concrete(ConcreteType::NativeCharacter {
+                    role: native_character_role_from(value.flags)?,
+                    width: NonZeroU16::new(value.auxiliary)?,
+                })
+            }
+            TypeTag::CxxReference
+            | TypeTag::CPointer
+            | TypeTag::CQualified
+            | TypeTag::CBlockPointer
+            | TypeTag::NativeCharacter => return None,
             TypeTag::Pointer => TypeExpr::Concrete(ConcreteType::Pointer {
                 target: TypeId::new(value.payload),
                 mutability: mutability_from(value.flags)?,
@@ -1196,7 +1250,7 @@ mod packed_type_tests {
             BuiltinType::Unit,
             BuiltinType::Never,
             BuiltinType::Bool,
-            BuiltinType::Char,
+            BuiltinType::LegacyChar,
             BuiltinType::I8,
             BuiltinType::I16,
             BuiltinType::I32,
@@ -1235,6 +1289,23 @@ mod packed_type_tests {
             BuiltinType::PointerAddressInteger,
         ] {
             types.push(TypeExpr::Concrete(ConcreteType::Builtin(builtin)));
+        }
+        for role in [
+            NativeCharacterRole::UnicodeScalar,
+            NativeCharacterRole::Utf16CodeUnit,
+            NativeCharacterRole::Utf32CodeUnit,
+            NativeCharacterRole::CPlainSigned,
+            NativeCharacterRole::CPlainUnsigned,
+            NativeCharacterRole::CSigned,
+            NativeCharacterRole::CUnsigned,
+            NativeCharacterRole::CWideSigned,
+            NativeCharacterRole::CWideUnsigned,
+            NativeCharacterRole::CWideSignednessUnavailable,
+        ] {
+            types.push(TypeExpr::Concrete(ConcreteType::NativeCharacter {
+                role,
+                width: NonZeroU16::new(16).expect("fixed character width"),
+            }));
         }
         for reason in [
             UnknownType::new(UnknownReason::Unannotated),
@@ -1294,7 +1365,7 @@ const fn builtin_from(value: u16) -> Option<BuiltinType> {
         0 => BuiltinType::Unit,
         1 => BuiltinType::Never,
         2 => BuiltinType::Bool,
-        3 => BuiltinType::Char,
+        3 => BuiltinType::LegacyChar,
         4 => BuiltinType::I8,
         5 => BuiltinType::I16,
         6 => BuiltinType::I32,
@@ -1347,6 +1418,22 @@ const fn cxx_reference_category_from(value: u8) -> Option<CxxReferenceCategory> 
     match value {
         0 => Some(CxxReferenceCategory::Lvalue),
         1 => Some(CxxReferenceCategory::Rvalue),
+        _ => None,
+    }
+}
+
+const fn native_character_role_from(value: u8) -> Option<NativeCharacterRole> {
+    match value {
+        0 => Some(NativeCharacterRole::UnicodeScalar),
+        1 => Some(NativeCharacterRole::Utf16CodeUnit),
+        2 => Some(NativeCharacterRole::Utf32CodeUnit),
+        3 => Some(NativeCharacterRole::CPlainSigned),
+        4 => Some(NativeCharacterRole::CPlainUnsigned),
+        5 => Some(NativeCharacterRole::CSigned),
+        6 => Some(NativeCharacterRole::CUnsigned),
+        7 => Some(NativeCharacterRole::CWideSigned),
+        8 => Some(NativeCharacterRole::CWideUnsigned),
+        9 => Some(NativeCharacterRole::CWideSignednessUnavailable),
         _ => None,
     }
 }
@@ -1471,6 +1558,17 @@ pub enum ConcreteType {
     CQualified {
         target: TypeId,
         qualifiers: crate::CvQualifiers,
+    },
+    /// An Objective-C block pointer, whose callable/signature target is
+    /// structurally distinct from a C pointer. A C declarator dialect owns
+    /// its exact `^` placement.
+    CBlockPointer { target: TypeId },
+    /// A source-level character role plus its exact measured code-unit or
+    /// scalar width. This is deliberately not `BuiltinType`: `char`,
+    /// `wchar_t`, and Java/C# `char` have incompatible semantics.
+    NativeCharacter {
+        role: NativeCharacterRole,
+        width: NonZeroU16,
     },
     Pointer {
         target: TypeId,
@@ -3000,6 +3098,17 @@ pub enum BuildError {
     /// A direct C-family qualifier wrapper was constructed with no qualifier.
     /// Empty qualification has no source-semantic node and must be omitted.
     EmptyCxxQualification,
+    /// A direct C-family qualifier wrapper named a structural target on
+    /// which its exact native qualifiers are illegal. The wrapper is never
+    /// silently moved to a pointee or referent.
+    IllegalCQualifierTarget {
+        target: TypeId,
+        qualifiers: crate::CvQualifiers,
+    },
+    /// A C++ member pointer's first operand was not a record/class nominal
+    /// (or an application of one). Such a pair cannot be rendered truthfully
+    /// as `Member Owner::*`.
+    IllegalCxxMemberPointerOwner { owner: TypeId },
     /// A durable documentation fact was not valid UTF-8, so it cannot enter
     /// the owned text arena without loss.  Callers must retain it in the
     /// compact fragment or surface this exact terminal; silently dropping it
@@ -3058,6 +3167,16 @@ impl fmt::Display for BuildError {
             Self::EmptyCxxQualification => {
                 formatter.write_str("C-family qualifier wrapper is empty")
             }
+            Self::IllegalCQualifierTarget { target, qualifiers } => write!(
+                formatter,
+                "C-family qualifiers {qualifiers:?} are illegal on type {}",
+                target.raw
+            ),
+            Self::IllegalCxxMemberPointerOwner { owner } => write!(
+                formatter,
+                "C++ member pointer owner type {} is not a record nominal",
+                owner.raw
+            ),
             Self::InvalidDocumentationUtf8 { bytes } => {
                 write!(formatter, "documentation fact has {bytes} invalid UTF-8 bytes")
             }
@@ -3888,18 +4007,41 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
             Ok(())
         }
         ConcreteType::CxxReference { target, .. }
-        | ConcreteType::CPointer { target } => {
+        | ConcreteType::CPointer { target }
+        | ConcreteType::CBlockPointer { target } => {
             id(target, builder.types.len(), SemanticSpace::Type)
         }
+        ConcreteType::NativeCharacter { .. } => Ok(()),
         ConcreteType::CxxMemberPointer { owner, member } => {
             id(owner, builder.types.len(), SemanticSpace::Type)?;
             id(member, builder.types.len(), SemanticSpace::Type)
+                ?;
+            if !is_cxx_record_owner(builder, owner) {
+                return Err(BuildError::IllegalCxxMemberPointerOwner { owner });
+            }
+            Ok(())
         }
         ConcreteType::CQualified { target, qualifiers } => {
             if qualifiers.is_empty() {
                 return Err(BuildError::EmptyCxxQualification);
             }
-            id(target, builder.types.len(), SemanticSpace::Type)
+            id(target, builder.types.len(), SemanticSpace::Type)?;
+            let target_type = builder.types.get(target).ok_or(BuildError::Dangling {
+                space: SemanticSpace::Type,
+                raw: target.raw,
+            })?;
+            let legal = match target_type.concrete() {
+                Some(ConcreteType::CPointer { .. }) => true,
+                Some(ConcreteType::Function { .. })
+                | Some(ConcreteType::CxxReference { .. }) => {
+                    !qualifiers.const_ && !qualifiers.volatile && !qualifiers.restrict
+                }
+                _ => !qualifiers.restrict,
+            };
+            if !legal {
+                return Err(BuildError::IllegalCQualifierTarget { target, qualifiers });
+            }
+            Ok(())
         }
         ConcreteType::Pointer { target, .. }
         | ConcreteType::Slice(target)
@@ -3954,6 +4096,30 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
             id(element, builder.types.len(), SemanticSpace::Type)
         }
     }
+}
+
+/// A C++ member-pointer owner is a class/record nominal or one generic
+/// application whose constructor is such a nominal. This deliberately does
+/// not accept a source spelling, enum, pointer, or unrelated type variable.
+fn is_cxx_record_owner(builder: &IrBuilder, owner: TypeId) -> bool {
+    let Some(TypeExpr::Concrete(owner)) = builder.types.get(owner) else {
+        return false;
+    };
+    let nominal = match owner {
+        ConcreteType::Nominal(entity) => Some(entity),
+        ConcreteType::Applied { constructor, .. } => match builder.types.get(constructor) {
+            Some(TypeExpr::Concrete(ConcreteType::Nominal(entity))) => Some(entity),
+            _ => None,
+        },
+        _ => None,
+    };
+    nominal.is_some_and(|entity| {
+        builder
+            .items
+            .kinds
+            .get(entity.index())
+            .is_some_and(|kind| *kind == ItemKind::Record)
+    })
 }
 
 fn validate_computed_type(builder: &IrBuilder, ty: ComputedType) -> Result<(), BuildError> {

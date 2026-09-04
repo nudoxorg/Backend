@@ -17,7 +17,8 @@ use compiler_ir::{
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
-    QualifiedSegments, TypeChildTarget, TypeId, TypeWidth, Visibility, WildcardBound,
+    NativeCharacterRole, QualifiedSegments, TypeChildTarget, TypeId, TypeWidth, Visibility,
+    WildcardBound,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -2155,7 +2156,7 @@ fn builtin_type(record: SemanticTypeRecord<'_>) -> Option<BuiltinType> {
     }
     match PrimitiveShape::try_from(record.payload0) {
         Ok(PrimitiveShape::Bool) if record.payload1 == 0 => Some(BuiltinType::Bool),
-        Ok(PrimitiveShape::Char) if record.payload1 == 0 => Some(BuiltinType::Char),
+        Ok(PrimitiveShape::LegacyChar) if record.payload1 == 0 => Some(BuiltinType::LegacyChar),
         Ok(PrimitiveShape::Integer) => match (record.payload1 >> 1, record.payload1 & 1) {
             (8, 0) => Some(BuiltinType::U8),
             (8, 1) => Some(BuiltinType::I8),
@@ -2827,9 +2828,45 @@ fn live_type<'source>(
                 Ok(PrimitiveShape::Bool) => tree
                     .intern_concrete(ConcreteType::Builtin(BuiltinType::Bool))?
                     .erase(),
-                Ok(PrimitiveShape::Char) => tree
-                    .intern_concrete(ConcreteType::Builtin(BuiltinType::Char))?
+                Ok(PrimitiveShape::LegacyChar) => tree
+                    .intern_concrete(ConcreteType::Builtin(BuiltinType::LegacyChar))?
                     .erase(),
+                Ok(
+                    PrimitiveShape::UnicodeScalar
+                    | PrimitiveShape::Utf16CodeUnit
+                    | PrimitiveShape::Utf32CodeUnit
+                    | PrimitiveShape::CPlainSignedChar
+                    | PrimitiveShape::CPlainUnsignedChar
+                    | PrimitiveShape::CSignedChar
+                    | PrimitiveShape::CUnsignedChar
+                    | PrimitiveShape::CWideChar
+                    | PrimitiveShape::CWideSignedChar
+                    | PrimitiveShape::CWideUnsignedChar,
+                ) => {
+                    let width = match TypeWidth::try_from_cell(record.payload1) {
+                        Ok(TypeWidth::Fixed(width)) => NonZeroU16::new(width),
+                        Ok(TypeWidth::Arch) | Err(_) => None,
+                    }
+                    .ok_or(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    })?;
+                    let role = match PrimitiveShape::try_from(record.payload0) {
+                        Ok(PrimitiveShape::UnicodeScalar) => NativeCharacterRole::UnicodeScalar,
+                        Ok(PrimitiveShape::Utf16CodeUnit) => NativeCharacterRole::Utf16CodeUnit,
+                        Ok(PrimitiveShape::Utf32CodeUnit) => NativeCharacterRole::Utf32CodeUnit,
+                        Ok(PrimitiveShape::CPlainSignedChar) => NativeCharacterRole::CPlainSigned,
+                        Ok(PrimitiveShape::CPlainUnsignedChar) => NativeCharacterRole::CPlainUnsigned,
+                        Ok(PrimitiveShape::CSignedChar) => NativeCharacterRole::CSigned,
+                        Ok(PrimitiveShape::CUnsignedChar) => NativeCharacterRole::CUnsigned,
+                        Ok(PrimitiveShape::CWideChar) => NativeCharacterRole::CWideSignednessUnavailable,
+                        Ok(PrimitiveShape::CWideSignedChar) => NativeCharacterRole::CWideSigned,
+                        Ok(PrimitiveShape::CWideUnsignedChar) => NativeCharacterRole::CWideUnsigned,
+                        _ => unreachable!("character shape matched above"),
+                    };
+                    tree.intern_concrete(ConcreteType::NativeCharacter { role, width })?
+                        .erase()
+                }
                 Ok(PrimitiveShape::Str) => tree
                     .intern_concrete(ConcreteType::Builtin(BuiltinType::String))?
                     .erase(),
@@ -2920,6 +2957,11 @@ fn live_type<'source>(
                 }
                 Ok(PrimitiveShape::CPointer) => tree
                     .intern_concrete(ConcreteType::CPointer {
+                        target: child_type(0)?,
+                    })?
+                    .erase(),
+                Ok(PrimitiveShape::CBlockPointer) => tree
+                    .intern_concrete(ConcreteType::CBlockPointer {
                         target: child_type(0)?,
                     })?
                     .erase(),

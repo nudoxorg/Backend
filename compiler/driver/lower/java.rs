@@ -187,8 +187,8 @@ const SHAPE_INTEGER: u32 = 0;
 const SHAPE_FLOAT: u32 = 1;
 /// `PrimitiveShape::Bool` wire cell.
 const SHAPE_BOOL: u32 = 2;
-/// `PrimitiveShape::Char` wire cell.
-const SHAPE_CHAR: u32 = 3;
+/// `PrimitiveShape::Utf16CodeUnit` wire cell.
+const SHAPE_UTF16_CODE_UNIT: u32 = 18;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
 
@@ -566,7 +566,7 @@ fn primitive_cells(spelling: &[u8]) -> Result<(u32, u32), ProjectionFault<'_>> {
             SHAPE_INTEGER,
             (64 << INTEGER_WIDTH_SHIFT) | INTEGER_SIGNED_FLAG,
         ),
-        b"char" => (SHAPE_CHAR, 0),
+        b"char" => (SHAPE_UTF16_CODE_UNIT, TypeWidth::Fixed(16).to_cell()),
         b"float" => (SHAPE_FLOAT, TypeWidth::Fixed(32).to_cell()),
         b"double" => (SHAPE_FLOAT, TypeWidth::Fixed(64).to_cell()),
         _ => return Err(ProjectionFault::Primitive { spelling }),

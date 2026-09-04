@@ -7,7 +7,10 @@
 //! that produced them.
 
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticTypeFault};
-use compiler_languages_clang::{DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity};
+use compiler_languages_clang::{
+    DeclarationId as ClangDeclarationId, SourceSpan as ClangSourceSpan, SymbolIdentity,
+    TypeId as ClangTypeId, TypeKind as ClangTypeKind, TypeQualifiers as ClangTypeQualifiers,
+};
 use compiler_languages_csharp::{ImageError, TypeRef as CSharpTypeRef};
 
 /// Exact cause for rejecting one emitted fact.
@@ -176,4 +179,28 @@ pub enum ClangProjectionFault {
     IndexCapacity,
     /// An override named a foreign native identity with no exact public key.
     ForeignOverride { identity: SymbolIdentity },
+    /// Direct `const`/`volatile`/`restrict` facts named a native shape on
+    /// which those qualifiers are not semantically legal. The full authority
+    /// row operands remain inspectable; no qualifier is silently relocated.
+    IllegalQualifierTarget {
+        /// Qualified native type row.
+        type_id: ClangTypeId,
+        /// Native type form directly qualified.
+        kind: ClangTypeKind,
+        /// Exact native qualifier set.
+        qualifiers: ClangTypeQualifiers,
+    },
+    /// A C++ member pointer named a non-class owner type. A missing or
+    /// malformed owner is not a root and must not degrade to an ordinary
+    /// pointer.
+    IllegalMemberPointerOwner {
+        /// Native member-pointer row.
+        pointer: ClangTypeId,
+        /// Native owner row supplied by libclang.
+        owner: ClangTypeId,
+        /// Owner's direct native type kind.
+        kind: ClangTypeKind,
+        /// Native declaration identity attached to the owner row, if any.
+        declaration: Option<SymbolIdentity>,
+    },
 }

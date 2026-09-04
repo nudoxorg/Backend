@@ -150,8 +150,24 @@ pub enum BuiltinClass {
     Void,
     /// The C `_Bool` type.
     Bool,
-    /// A character type (`char`, `signed char`, `char16_t`, `wchar_t`, ...).
-    Char,
+    /// Plain `char` with a signed representation reported by libclang.
+    PlainCharSigned,
+    /// Plain `char` with an unsigned representation reported by libclang.
+    PlainCharUnsigned,
+    /// Explicit `signed char`.
+    SignedChar,
+    /// Explicit `unsigned char`.
+    UnsignedChar,
+    /// `char16_t`, a UTF-16 code unit.
+    Utf16CodeUnit,
+    /// `char32_t`, a UTF-32 code unit.
+    Utf32CodeUnit,
+    /// `wchar_t` with signed representation verified by canonical native type.
+    WideCharSigned,
+    /// `wchar_t` with unsigned representation verified by canonical native type.
+    WideCharUnsigned,
+    /// `wchar_t` where the native surface supplies no signedness proof.
+    WideCharSignednessUnavailable,
     /// A signed or unsigned integer scalar.
     Integer {
         /// The type excludes negative values.
@@ -208,6 +224,10 @@ pub struct DeclarationFact {
     pub storage: StorageClass,
     /// Root recursive type fact associated with this declaration.
     pub type_root: Option<TypeId>,
+    /// Exact native integer type declared for an enumeration. Only enum
+    /// declarations carry this fact; absent means the authority did not
+    /// provide a valid underlying type.
+    pub enum_underlying: Option<TypeId>,
 }
 
 /// One directed C++ override-authority relation reported by libclang.
@@ -241,6 +261,9 @@ pub enum TypeKind {
     Named,
     /// A pointer type with one pointee edge.
     Pointer,
+    /// An Objective-C block pointer. It has a signature/pointee edge but is
+    /// structurally distinct from an ordinary C pointer.
+    BlockPointer,
     /// A C++ member pointer with independent owning-class and member-type
     /// edges. It must not be flattened into an ordinary pointer because
     /// `Field Owner::*` has two source-semantic operands.
@@ -294,6 +317,9 @@ pub struct TypeFact {
     pub size_bits: Option<u32>,
     /// Exact bit alignment measured by libclang under the same law.
     pub align_bits: Option<u32>,
+    /// Native `clang_isFunctionTypeVariadic` fact. This is meaningful only
+    /// on [`TypeKind::Function`] and is never inferred from source spelling.
+    pub is_variadic: bool,
 }
 
 impl TypeFact {

@@ -350,8 +350,23 @@ impl TranslationUnit {
         unsafe { clang_sys::clang_getCursorType(cursor) }
     }
 
+    /// Returns libclang's exact enumeration underlying integer type. An
+    /// invalid result remains invalid and is rejected by the collector's
+    /// normal recursive type admission rather than guessed from enum size.
+    pub(crate) fn enum_underlying_type(cursor: CXCursor) -> CXType {
+        // SAFETY: cursor was supplied by this live translation unit.
+        unsafe { clang_sys::clang_getEnumDeclIntegerType(cursor) }
+    }
+
     pub(crate) const fn type_kind(type_: CXType) -> clang_sys::CXTypeKind {
         type_.kind
+    }
+
+    /// Returns the native canonical type. This is used only to retain the
+    /// signedness authority hidden behind a `wchar_t` spelling.
+    pub(crate) fn canonical_type(type_: CXType) -> CXType {
+        // SAFETY: type_ was obtained from this live translation unit.
+        unsafe { clang_sys::clang_getCanonicalType(type_) }
     }
 
     pub(crate) fn type_qualifiers(type_: CXType) -> (bool, bool, bool) {
@@ -428,6 +443,14 @@ impl TranslationUnit {
         // SAFETY: type_ was obtained from this live translation unit and index is bounded by its
         // immediately preceding function_argument_count result.
         unsafe { clang_sys::clang_getArgType(type_, index) }
+    }
+
+    /// Returns libclang's direct C-family variadic predicate for a function
+    /// type. It retains C's unbounded trailing `...` independently from a
+    /// typed source rest parameter.
+    pub(crate) fn function_is_variadic(type_: CXType) -> bool {
+        // SAFETY: type_ was obtained from this live translation unit.
+        unsafe { clang_sys::clang_isFunctionTypeVariadic(type_) != 0 }
     }
 
     pub(crate) fn template_argument_count(type_: CXType) -> Option<u32> {
@@ -715,6 +738,8 @@ impl RequiredApi {
             }
             Self::Types => {
                 clang_sys::clang_getCursorType::is_loaded()
+                    && clang_sys::clang_getEnumDeclIntegerType::is_loaded()
+                    && clang_sys::clang_getCanonicalType::is_loaded()
                     && clang_sys::clang_getTypeDeclaration::is_loaded()
                     && clang_sys::clang_isConstQualifiedType::is_loaded()
                     && clang_sys::clang_isVolatileQualifiedType::is_loaded()
@@ -726,6 +751,7 @@ impl RequiredApi {
                     && clang_sys::clang_getResultType::is_loaded()
                     && clang_sys::clang_getNumArgTypes::is_loaded()
                     && clang_sys::clang_getArgType::is_loaded()
+                    && clang_sys::clang_isFunctionTypeVariadic::is_loaded()
                     && clang_sys::clang_Type_getNumTemplateArguments::is_loaded()
                     && clang_sys::clang_Type_getTemplateArgumentAsType::is_loaded()
                     && clang_sys::clang_Type_getSizeOf::is_loaded()

@@ -362,8 +362,10 @@ pub enum PrimitiveShape {
     Float = 1,
     /// The boolean type.
     Bool = 2,
-    /// The character type.
-    Char = 3,
+    /// A historical, under-specified character row. New producers must use
+    /// one of the precise character roles appended below; this discriminant
+    /// exists only so legacy fragments remain decodable.
+    LegacyChar = 3,
     /// A string-literal type (`str`, `string`).
     Str = 4,
     /// A raw mutable pointer (`*mut T`, `int*`); the pointee is the row's
@@ -397,6 +399,31 @@ pub enum PrimitiveShape {
     NativeUnsignedInteger = 15,
     /// An unsigned pointer-address integer (`uintptr`, C# `nuint`).
     PointerAddressInteger = 16,
+    /// Rust's Unicode scalar value (`char`), not a C code unit.
+    UnicodeScalar = 17,
+    /// A UTF-16 code unit (`char` in Java/C#, `char16_t` in C++).
+    Utf16CodeUnit = 18,
+    /// A UTF-32 code unit (`char32_t` in C++), distinct from a Unicode
+    /// scalar because the source language chooses its operations and range.
+    Utf32CodeUnit = 19,
+    /// A plain C/C++ `char` whose authority reports signed representation.
+    CPlainSignedChar = 20,
+    /// A plain C/C++ `char` whose authority reports unsigned representation.
+    CPlainUnsignedChar = 21,
+    /// An explicitly spelled C/C++ `signed char`.
+    CSignedChar = 22,
+    /// An explicitly spelled C/C++ `unsigned char`.
+    CUnsignedChar = 23,
+    /// The implementation-defined C/C++ `wchar_t` role when the native
+    /// authority could not establish signedness.
+    CWideChar = 24,
+    /// An Objective-C block pointer with one signature/pointee child. It is
+    /// not a C raw pointer and must survive for a declarator dialect.
+    CBlockPointer = 25,
+    /// `wchar_t` with authority-proven signed representation.
+    CWideSignedChar = 26,
+    /// `wchar_t` with authority-proven unsigned representation.
+    CWideUnsignedChar = 27,
 }
 
 /// Exact primitive-shape rejection retaining the observed cell.
@@ -413,7 +440,7 @@ impl From<PrimitiveShape> for u32 {
             PrimitiveShape::Integer => 0,
             PrimitiveShape::Float => 1,
             PrimitiveShape::Bool => 2,
-            PrimitiveShape::Char => 3,
+            PrimitiveShape::LegacyChar => 3,
             PrimitiveShape::Str => 4,
             PrimitiveShape::MutPointer => 5,
             PrimitiveShape::ConstPointer => 6,
@@ -427,6 +454,17 @@ impl From<PrimitiveShape> for u32 {
             PrimitiveShape::NativeSignedInteger => 14,
             PrimitiveShape::NativeUnsignedInteger => 15,
             PrimitiveShape::PointerAddressInteger => 16,
+            PrimitiveShape::UnicodeScalar => 17,
+            PrimitiveShape::Utf16CodeUnit => 18,
+            PrimitiveShape::Utf32CodeUnit => 19,
+            PrimitiveShape::CPlainSignedChar => 20,
+            PrimitiveShape::CPlainUnsignedChar => 21,
+            PrimitiveShape::CSignedChar => 22,
+            PrimitiveShape::CUnsignedChar => 23,
+            PrimitiveShape::CWideChar => 24,
+            PrimitiveShape::CBlockPointer => 25,
+            PrimitiveShape::CWideSignedChar => 26,
+            PrimitiveShape::CWideUnsignedChar => 27,
         }
     }
 }
@@ -441,7 +479,7 @@ impl TryFrom<u32> for PrimitiveShape {
             0 => Ok(Self::Integer),
             1 => Ok(Self::Float),
             2 => Ok(Self::Bool),
-            3 => Ok(Self::Char),
+            3 => Ok(Self::LegacyChar),
             4 => Ok(Self::Str),
             5 => Ok(Self::MutPointer),
             6 => Ok(Self::ConstPointer),
@@ -455,6 +493,17 @@ impl TryFrom<u32> for PrimitiveShape {
             14 => Ok(Self::NativeSignedInteger),
             15 => Ok(Self::NativeUnsignedInteger),
             16 => Ok(Self::PointerAddressInteger),
+            17 => Ok(Self::UnicodeScalar),
+            18 => Ok(Self::Utf16CodeUnit),
+            19 => Ok(Self::Utf32CodeUnit),
+            20 => Ok(Self::CPlainSignedChar),
+            21 => Ok(Self::CPlainUnsignedChar),
+            22 => Ok(Self::CSignedChar),
+            23 => Ok(Self::CUnsignedChar),
+            24 => Ok(Self::CWideChar),
+            25 => Ok(Self::CBlockPointer),
+            26 => Ok(Self::CWideSignedChar),
+            27 => Ok(Self::CWideUnsignedChar),
             actual => Err(PrimitiveShapeError { actual }),
         }
     }
@@ -1594,7 +1643,7 @@ impl SemanticTypeRecord<'_> {
                 }
             }
             PrimitiveShape::Bool
-            | PrimitiveShape::Char
+            | PrimitiveShape::LegacyChar
             | PrimitiveShape::Str
             | PrimitiveShape::MutPointer
             | PrimitiveShape::ConstPointer
@@ -1606,6 +1655,32 @@ impl SemanticTypeRecord<'_> {
             | PrimitiveShape::NativeSignedInteger
             | PrimitiveShape::NativeUnsignedInteger
             | PrimitiveShape::PointerAddressInteger => {
+                if self.payload1 != 0 {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload1,
+                        actual: self.payload1,
+                    });
+                }
+            }
+            PrimitiveShape::UnicodeScalar
+            | PrimitiveShape::Utf16CodeUnit
+            | PrimitiveShape::Utf32CodeUnit
+            | PrimitiveShape::CPlainSignedChar
+            | PrimitiveShape::CPlainUnsignedChar
+            | PrimitiveShape::CSignedChar
+            | PrimitiveShape::CUnsignedChar
+            | PrimitiveShape::CWideChar
+            | PrimitiveShape::CWideSignedChar
+            | PrimitiveShape::CWideUnsignedChar => match TypeWidth::try_from_cell(self.payload1) {
+                Ok(TypeWidth::Fixed(_)) => {}
+                Ok(TypeWidth::Arch) | Err(_) => {
+                    return Err(SemanticTypeFault::Width {
+                        actual: self.payload1,
+                    });
+                }
+            },
+            PrimitiveShape::CBlockPointer => {
                 if self.payload1 != 0 {
                     return Err(SemanticTypeFault::ReservedCell {
                         tag,
@@ -1634,6 +1709,7 @@ impl SemanticTypeRecord<'_> {
                 | PrimitiveShape::ConstPointer
                 | PrimitiveShape::Reference
                 | PrimitiveShape::CPointer
+                | PrimitiveShape::CBlockPointer
                 | PrimitiveShape::CxxLvalueReference
                 | PrimitiveShape::CxxRvalueReference
         );
@@ -1756,5 +1832,23 @@ mod tests {
             qualified.validate(1),
             Err(SemanticTypeFault::CvQualifiers { actual: 0 })
         ));
+
+        // Falsifier: width and signedness are part of a native character
+        // fact, so a C `char` cannot reopen as the same row as Java `char`
+        // or legacy character payloads.
+        let mut native_char = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        native_char.payload0 = u32::from(PrimitiveShape::CPlainUnsignedChar);
+        native_char.payload1 = TypeWidth::Fixed(8).to_cell();
+        assert_eq!(native_char.validate(0), Ok(()));
+        native_char.payload1 = TypeWidth::ARCH_FLAG;
+        assert!(matches!(
+            native_char.validate(0),
+            Err(SemanticTypeFault::Width { .. })
+        ));
+
+        let mut block = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        block.payload0 = u32::from(PrimitiveShape::CBlockPointer);
+        assert_eq!(block.validate(1), Ok(()));
+        assert!(matches!(block.validate(0), Err(SemanticTypeFault::ChildCount { .. })));
     }
 }

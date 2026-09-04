@@ -349,6 +349,17 @@ fn write_concrete_type(
             output.write_str(" ")?;
             write_type(output, ir, target, next)
         }
+        ConcreteType::CBlockPointer { target } => {
+            // Neutral traversal makes the distinct block-pointer semantic
+            // form visible without pretending this is a C declarator. A
+            // future C-family declarator dialect owns exact `^` placement.
+            output.write_str("blockptr<")?;
+            write_type(output, ir, target, next)?;
+            output.write_str(">")
+        }
+        ConcreteType::NativeCharacter { role, width } => {
+            write_native_character(output, role, width)
+        }
         ConcreteType::Pointer { target, mutability } => {
             output.write_str(if mutability == Mutability::Mutable {
                 "*mut "
@@ -919,7 +930,7 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::Unit => "()",
         BuiltinType::Never => "!",
         BuiltinType::Bool => "bool",
-        BuiltinType::Char => "char",
+        BuiltinType::LegacyChar => "char",
         BuiltinType::I8 => "i8",
         BuiltinType::I16 => "i16",
         BuiltinType::I32 => "i32",
@@ -957,6 +968,26 @@ const fn builtin_name(builtin: BuiltinType) -> &'static str {
         BuiltinType::NativeUnsignedInteger => "native-uint",
         BuiltinType::PointerAddressInteger => "pointer-uint",
     }
+}
+
+fn write_native_character(
+    output: &mut impl fmt::Write,
+    role: crate::NativeCharacterRole,
+    width: core::num::NonZeroU16,
+) -> fmt::Result {
+    let name = match role {
+        crate::NativeCharacterRole::UnicodeScalar => "unicode-scalar",
+        crate::NativeCharacterRole::Utf16CodeUnit => "utf16-code-unit",
+        crate::NativeCharacterRole::Utf32CodeUnit => "utf32-code-unit",
+        crate::NativeCharacterRole::CPlainSigned => "c-char-signed",
+        crate::NativeCharacterRole::CPlainUnsigned => "c-char-unsigned",
+        crate::NativeCharacterRole::CSigned => "signed-char",
+        crate::NativeCharacterRole::CUnsigned => "unsigned-char",
+        crate::NativeCharacterRole::CWideSigned => "wchar-signed",
+        crate::NativeCharacterRole::CWideUnsigned => "wchar-unsigned",
+        crate::NativeCharacterRole::CWideSignednessUnavailable => "wchar",
+    };
+    write!(output, "{name}[{}]", width.get())
 }
 
 fn write_c_qualifier_prefix(

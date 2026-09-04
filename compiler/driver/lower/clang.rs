@@ -160,8 +160,26 @@ const SHAPE_INTEGER: u32 = 0;
 const SHAPE_FLOAT: u32 = 1;
 /// `PrimitiveShape::Bool` wire cell.
 const SHAPE_BOOL: u32 = 2;
-/// `PrimitiveShape::Char` wire cell.
-const SHAPE_CHAR: u32 = 3;
+/// `PrimitiveShape::CPlainSignedChar` wire cell.
+const SHAPE_C_PLAIN_SIGNED_CHAR: u32 = 20;
+/// `PrimitiveShape::CPlainUnsignedChar` wire cell.
+const SHAPE_C_PLAIN_UNSIGNED_CHAR: u32 = 21;
+/// `PrimitiveShape::CSignedChar` wire cell.
+const SHAPE_C_SIGNED_CHAR: u32 = 22;
+/// `PrimitiveShape::CUnsignedChar` wire cell.
+const SHAPE_C_UNSIGNED_CHAR: u32 = 23;
+/// `PrimitiveShape::CWideChar` wire cell for unavailable native signedness.
+const SHAPE_C_WIDE_CHAR: u32 = 24;
+/// `PrimitiveShape::CBlockPointer` wire cell.
+const SHAPE_C_BLOCK_POINTER: u32 = 25;
+/// `PrimitiveShape::CWideSignedChar` wire cell.
+const SHAPE_C_WIDE_SIGNED_CHAR: u32 = 26;
+/// `PrimitiveShape::CWideUnsignedChar` wire cell.
+const SHAPE_C_WIDE_UNSIGNED_CHAR: u32 = 27;
+/// `PrimitiveShape::Utf16CodeUnit` wire cell.
+const SHAPE_UTF16_CODE_UNIT: u32 = 18;
+/// `PrimitiveShape::Utf32CodeUnit` wire cell.
+const SHAPE_UTF32_CODE_UNIT: u32 = 19;
 /// `PrimitiveShape::Builtin` wire cell.
 const SHAPE_BUILTIN: u32 = 8;
 /// `PrimitiveShape::CPointer` wire cell.
@@ -288,6 +306,7 @@ const fn empty_declaration() -> DeclarationFact {
         documentation: None,
         storage: StorageClass::None,
         type_root: None,
+        enum_underlying: None,
     }
 }
 
@@ -305,6 +324,7 @@ const fn empty_type() -> TypeFact {
         builtin: None,
         size_bits: None,
         align_bits: None,
+        is_variadic: false,
     }
 }
 
@@ -323,6 +343,28 @@ const fn c_qualifiers(qualifiers: compiler_languages_clang::TypeQualifiers) -> u
     (if qualifiers.is_const { 1 } else { 0 })
         | (if qualifiers.is_volatile { 1 << 1 } else { 0 })
         | (if qualifiers.is_restrict { 1 << 2 } else { 0 })
+}
+
+/// Validates native qualifier placement before the common lattice sees a
+/// structural wrapper. `restrict` qualifies only an ordinary direct pointer;
+/// const/volatile on a function or reference would have no truthful C-family
+/// semantic node and therefore terminate with the original authority row.
+const fn qualifiers_are_legal(
+    kind: TypeKind,
+    qualifiers: compiler_languages_clang::TypeQualifiers,
+) -> bool {
+    if qualifiers.is_restrict && kind != TypeKind::Pointer {
+        return false;
+    }
+    if (qualifiers.is_const || qualifiers.is_volatile)
+        && matches!(
+            kind,
+            TypeKind::Function | TypeKind::LvalueReference | TypeKind::RvalueReference
+        )
+    {
+        return false;
+    }
+    true
 }
 
 const fn empty_reference() -> ReferenceFact {
@@ -923,9 +965,10 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
-    /// Pushes one enumerator: a variant whose declared type is the enum's
-    /// underlying integer — the measured width of the enumeration type row,
-    /// signed per C's default underlying compatibility.
+    /// Pushes one enumerator from its owning enumeration's direct native
+    /// underlying-type fact. Enum layout and C defaults are not a substitute
+    /// for this authority: absent or invalid underlying type remains the
+    /// typed oracle gap instead of a fabricated signed integer.
     fn push_enumerator(&mut self, index: usize) -> Result<(), ClangCollectError> {
         let declarations = self.authority.declarations;
         let Some(declaration) = declarations.get(index) else {
@@ -934,14 +977,27 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let Ok(name) = self.name_of(declaration) else {
             return Ok(());
         };
-        let record = declaration
-            .type_root
-            .and_then(|root| self.type_row(root))
-            .map(|row| underlying_integer_record(row.size_bits))
-            .unwrap_or_else(|| unknown_record(TypeReason::OracleGap, None));
+        let underlying = declaration.owner.and_then(|owner| {
+            self.authority
+                .declarations
+                .iter()
+                .find(|candidate| {
+                    candidate.identity == Some(owner)
+                        && candidate.kind == DeclarationKind::Enumeration
+                })
+                .and_then(|enumeration| enumeration.enum_underlying)
+        });
+        let projected = match underlying {
+            Some(underlying) => self.project_root(underlying)?,
+            None => Projected::leaf(unknown_record(TypeReason::OracleGap, None)),
+        };
         let extension = self.extension(declaration, 0)?;
-        let fact = SemanticFact::new(EntityKind::Variant, name, constructor(EntityKind::Variant))
-            .typed(record)
+        let fact = projected
+            .attach(SemanticFact::new(
+                EntityKind::Variant,
+                name,
+                constructor(EntityKind::Variant),
+            ))
             .with_extension(EmissionExtension::Clang(extension));
         let ordinal = push(self.facts, fact)?;
         self.record_pushed(index, ordinal, declaration);
@@ -1194,6 +1250,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             TypeKind::Builtin => Ok(self.project_builtin(row)),
             TypeKind::Named => self.project_named(row, type_id, depth),
             TypeKind::Pointer => self.project_pointer(row, depth),
+            TypeKind::BlockPointer => self.project_block_pointer(row, depth),
             TypeKind::MemberPointer => self.project_member_pointer(row, depth),
             TypeKind::LvalueReference | TypeKind::RvalueReference => {
                 self.project_reference(row, depth)
@@ -1217,6 +1274,13 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let qualifiers = c_qualifiers(row.qualifiers);
         if qualifiers == 0 {
             return Ok(projected);
+        }
+        if !qualifiers_are_legal(row.kind, row.qualifiers) {
+            return Err(terminal(ProjectionFault::IllegalQualifierTarget {
+                type_id: row.id,
+                kind: row.kind,
+                qualifiers: row.qualifiers,
+            }));
         }
         let child = self.intern_row(projected)?;
         if child == UNHOSTABLE {
@@ -1252,9 +1316,36 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 record.payload0 = SHAPE_BOOL;
                 record
             }
-            compiler_languages_clang::BuiltinClass::Char => {
+            compiler_languages_clang::BuiltinClass::PlainCharSigned
+            | compiler_languages_clang::BuiltinClass::PlainCharUnsigned
+            | compiler_languages_clang::BuiltinClass::SignedChar
+            | compiler_languages_clang::BuiltinClass::UnsignedChar
+            | compiler_languages_clang::BuiltinClass::Utf16CodeUnit
+            | compiler_languages_clang::BuiltinClass::Utf32CodeUnit
+            | compiler_languages_clang::BuiltinClass::WideCharSigned
+            | compiler_languages_clang::BuiltinClass::WideCharUnsigned
+            | compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => {
+                let Some(width) = width(row.size_bits) else {
+                    return Projected::leaf(unknown_record(TypeReason::OracleGap, None));
+                };
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-                record.payload0 = SHAPE_CHAR;
+                record.payload0 = match builtin {
+                    compiler_languages_clang::BuiltinClass::PlainCharSigned => SHAPE_C_PLAIN_SIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::PlainCharUnsigned => SHAPE_C_PLAIN_UNSIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::SignedChar => SHAPE_C_SIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::UnsignedChar => SHAPE_C_UNSIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::Utf16CodeUnit => SHAPE_UTF16_CODE_UNIT,
+                    compiler_languages_clang::BuiltinClass::Utf32CodeUnit => SHAPE_UTF32_CODE_UNIT,
+                    compiler_languages_clang::BuiltinClass::WideCharSigned => SHAPE_C_WIDE_SIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::WideCharUnsigned => SHAPE_C_WIDE_UNSIGNED_CHAR,
+                    compiler_languages_clang::BuiltinClass::WideCharSignednessUnavailable => SHAPE_C_WIDE_CHAR,
+                    compiler_languages_clang::BuiltinClass::Void
+                    | compiler_languages_clang::BuiltinClass::Bool
+                    | compiler_languages_clang::BuiltinClass::Integer { .. }
+                    | compiler_languages_clang::BuiltinClass::Float
+                    | compiler_languages_clang::BuiltinClass::Other => unreachable!("character class matched above"),
+                };
+                record.payload1 = width;
                 record
             }
             compiler_languages_clang::BuiltinClass::Integer { signed } => {
@@ -1359,6 +1450,26 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(self.finish_row(record, vec![(child, None)]))
     }
 
+    /// Projects an Objective-C block pointer without collapsing it into the
+    /// ordinary C pointer form. The later declarator dialect receives one
+    /// exact structural node and owns `^` placement.
+    fn project_block_pointer(
+        &mut self,
+        row: &TypeFact,
+        depth: usize,
+    ) -> Result<Projected<'source>, ClangCollectError> {
+        let Some(pointee) = self.edge_of(row.id, TypeRelation::Pointee) else {
+            return Ok(gap());
+        };
+        let child = match self.project_child(pointee, depth)? {
+            UNHOSTABLE => return Ok(gap()),
+            coordinate => coordinate,
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        record.payload0 = SHAPE_C_BLOCK_POINTER;
+        Ok(self.finish_row(record, vec![(child, None)]))
+    }
+
     /// Projects a C++ reference category over its referent. This path never
     /// converts `T&&` into the Rust borrow mutability bit.
     fn project_reference(
@@ -1396,6 +1507,22 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let Some(member) = self.edge_of(row.id, TypeRelation::Pointee) else {
             return Ok(gap());
         };
+        let Some(owner_row) = self.type_row(owner) else {
+            return Ok(gap());
+        };
+        let owner_is_record = owner_row.declaration.is_some_and(|identity| {
+            self.authority.declarations.iter().any(|declaration| {
+                declaration.identity == Some(identity) && declaration.kind == DeclarationKind::Record
+            })
+        });
+        if owner_row.kind != TypeKind::Named || !owner_is_record {
+            return Err(terminal(ProjectionFault::IllegalMemberPointerOwner {
+                pointer: row.id,
+                owner,
+                kind: owner_row.kind,
+                declaration: owner_row.declaration,
+            }));
+        }
         let owner = match self.project_child(owner, depth)? {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
@@ -1468,6 +1595,9 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             }
         }
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
+        if row.is_variadic {
+            record.payload0 = SemanticTypeRecord::FUNCTION_C_VARIADIC_FLAG;
+        }
         if has_result {
             record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
@@ -1974,22 +2104,6 @@ fn foreign_universe_key<'source>(
             .map(OccurrenceTarget::Foreign)
         })
         .flatten()
-}
-
-/// The underlying-integer row of one enumeration: the measured width of the
-/// enum type, signed per C's default underlying compatibility. An
-/// unmeasured enumeration keeps the typed oracle gap.
-fn underlying_integer_record(size_bits: Option<u32>) -> SemanticTypeRecord<'static> {
-    let Some(bits) = size_bits.and_then(|bits| u32::try_from(bits).ok()) else {
-        return unknown_record(TypeReason::OracleGap, None);
-    };
-    let Ok(bits) = u16::try_from(bits) else {
-        return unknown_record(TypeReason::OracleGap, None);
-    };
-    let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-    record.payload0 = SHAPE_INTEGER;
-    record.payload1 = (u32::from(bits) << INTEGER_WIDTH_SHIFT) | INTEGER_SIGNED_FLAG;
-    record
 }
 
 /// One cleaned comment line piece: prose or an inline `@ref`/`\ref` link.

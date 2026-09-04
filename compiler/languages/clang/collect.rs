@@ -193,6 +193,10 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         };
         let identity = TranslationUnit::cursor_identity(cursor);
         let type_root = self.collect_type(TranslationUnit::cursor_type(cursor))?;
+        let enum_underlying = (kind == DeclarationKind::Enumeration)
+            .then(|| self.collect_type(TranslationUnit::enum_underlying_type(cursor)))
+            .transpose()?
+            .flatten();
         let virtuality = if kind == DeclarationKind::Method {
             let (is_virtual, is_pure_virtual) = TranslationUnit::method_virtuality(cursor);
             if is_pure_virtual {
@@ -239,6 +243,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             documentation: self.unit.documentation_span(cursor)?,
             storage: storage_class(TranslationUnit::storage_class(cursor)),
             type_root,
+            enum_underlying,
         };
         if let Some(index) = existing {
             self.scratch.declarations[index] = fact;
@@ -328,6 +333,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         }
         let declaration = TranslationUnit::type_declaration(type_);
         let kind = type_kind(native_kind, declaration);
+        let canonical_kind = TranslationUnit::type_kind(TranslationUnit::canonical_type(type_));
         let id = TypeId {
             raw: u32::try_from(self.types).map_err(|_| CollectError::SlotOrdinalTooLarge {
                 lane: ScratchLane::Types,
@@ -347,9 +353,11 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             array_len: matches!(kind, TypeKind::Array)
                 .then(|| TranslationUnit::array_len(type_))
                 .flatten(),
-            builtin: builtin_class(native_kind),
+            builtin: builtin_class(native_kind, canonical_kind),
             size_bits: measured_bits(TranslationUnit::type_size_of(type_)),
             align_bits: measured_bits(TranslationUnit::type_align_of(type_)),
+            is_variadic: kind == TypeKind::Function
+                && TranslationUnit::function_is_variadic(type_),
         })?;
         self.collect_type_children(id, kind, type_)?;
         Ok(Some(id))
@@ -363,7 +371,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         type_: CXType,
     ) -> Result<(), CollectError> {
         match kind {
-            TypeKind::Pointer => self.collect_type_child(
+            TypeKind::Pointer | TypeKind::BlockPointer => self.collect_type_child(
                 parent,
                 TypeRelation::Pointee,
                 TranslationUnit::pointee_type(type_),
@@ -671,7 +679,8 @@ const fn source_dependency_kind(kind: NativeCursorKind) -> Option<SourceDependen
 /// Classifies direct native type kinds while retaining unsupported kinds as `Unknown` facts.
 const fn type_kind(kind: CXTypeKind, declaration: Option<SymbolIdentity>) -> TypeKind {
     match kind {
-        clang_sys::CXType_Pointer | clang_sys::CXType_BlockPointer => TypeKind::Pointer,
+        clang_sys::CXType_Pointer => TypeKind::Pointer,
+        clang_sys::CXType_BlockPointer => TypeKind::BlockPointer,
         clang_sys::CXType_MemberPointer => TypeKind::MemberPointer,
         clang_sys::CXType_LValueReference => TypeKind::LvalueReference,
         clang_sys::CXType_RValueReference => TypeKind::RvalueReference,
@@ -742,17 +751,31 @@ const fn storage_class(class: clang_sys::CX_StorageClass) -> StorageClass {
 
 /// Classifies libclang's closed builtin type kinds without name or spelling
 /// inspection, retaining exotic builtins as `Other`.
-const fn builtin_class(kind: CXTypeKind) -> Option<BuiltinClass> {
+const fn builtin_class(kind: CXTypeKind, canonical_kind: CXTypeKind) -> Option<BuiltinClass> {
     match kind {
         clang_sys::CXType_Void => Some(BuiltinClass::Void),
         clang_sys::CXType_Bool => Some(BuiltinClass::Bool),
-        clang_sys::CXType_Char_U
-        | clang_sys::CXType_UChar
-        | clang_sys::CXType_Char_S
-        | clang_sys::CXType_SChar
-        | clang_sys::CXType_Char16
-        | clang_sys::CXType_Char32
-        | clang_sys::CXType_WChar => Some(BuiltinClass::Char),
+        clang_sys::CXType_Char_U => Some(BuiltinClass::PlainCharUnsigned),
+        clang_sys::CXType_Char_S => Some(BuiltinClass::PlainCharSigned),
+        clang_sys::CXType_SChar => Some(BuiltinClass::SignedChar),
+        clang_sys::CXType_UChar => Some(BuiltinClass::UnsignedChar),
+        clang_sys::CXType_Char16 => Some(BuiltinClass::Utf16CodeUnit),
+        clang_sys::CXType_Char32 => Some(BuiltinClass::Utf32CodeUnit),
+        clang_sys::CXType_WChar => match canonical_kind {
+            clang_sys::CXType_SChar
+            | clang_sys::CXType_Short
+            | clang_sys::CXType_Int
+            | clang_sys::CXType_Long
+            | clang_sys::CXType_LongLong
+            | clang_sys::CXType_Int128 => Some(BuiltinClass::WideCharSigned),
+            clang_sys::CXType_UChar
+            | clang_sys::CXType_UShort
+            | clang_sys::CXType_UInt
+            | clang_sys::CXType_ULong
+            | clang_sys::CXType_ULongLong
+            | clang_sys::CXType_UInt128 => Some(BuiltinClass::WideCharUnsigned),
+            _ => Some(BuiltinClass::WideCharSignednessUnavailable),
+        },
         clang_sys::CXType_Short
         | clang_sys::CXType_Int
         | clang_sys::CXType_Long
@@ -839,6 +862,7 @@ mod tests {
     fn native_kind_classifiers_preserve_templates_and_recursive_types() -> Result<(), TestError> {
         let template = declaration_kind(clang_sys::CXCursor_FunctionTemplate);
         let pointer = type_kind(clang_sys::CXType_Pointer, None);
+        let block_pointer = type_kind(clang_sys::CXType_BlockPointer, None);
         let member_pointer = type_kind(clang_sys::CXType_MemberPointer, None);
         let named = type_kind(
             clang_sys::CXType_Unexposed,
@@ -848,6 +872,7 @@ mod tests {
         );
         if template == DeclarationKind::Template
             && pointer == TypeKind::Pointer
+            && block_pointer == TypeKind::BlockPointer
             && member_pointer == TypeKind::MemberPointer
             && named == TypeKind::Named
         {

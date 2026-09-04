@@ -573,6 +573,7 @@ const fn empty_declaration() -> DeclarationFact {
         documentation: None,
         storage: StorageClass::None,
         type_root: None,
+        enum_underlying: None,
     }
 }
 
@@ -597,6 +598,7 @@ const fn empty_type() -> TypeFact {
         builtin: Some(BuiltinClass::Other),
         size_bits: None,
         align_bits: None,
+        is_variadic: false,
     }
 }
 

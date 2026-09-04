@@ -2271,7 +2271,10 @@ fn builtin_record(builtin: ra_ap_hir::BuiltinType) -> SemanticTypeRecord<'static
     let name = builtin.name();
     match name.as_str() {
         "bool" => primitive_record(PrimitiveShape::Bool, 0),
-        "char" => primitive_record(PrimitiveShape::Char, 0),
+        "char" => primitive_record(
+            PrimitiveShape::UnicodeScalar,
+            TypeWidth::Fixed(32).to_cell(),
+        ),
         "str" => primitive_record(PrimitiveShape::Str, 0),
         "isize" => primitive_record(PrimitiveShape::NativeSignedInteger, 0),
         "usize" => primitive_record(PrimitiveShape::NativeUnsignedInteger, 0),

@@ -121,8 +121,8 @@ const SHAPE_INTEGER: u32 = 0;
 const SHAPE_FLOAT: u32 = 1;
 /// `PrimitiveShape::Bool` wire cell.
 const SHAPE_BOOL: u32 = 2;
-/// `PrimitiveShape::Char` wire cell.
-const SHAPE_CHAR: u32 = 3;
+/// `PrimitiveShape::Utf16CodeUnit` wire cell.
+const SHAPE_UTF16_CODE_UNIT: u32 = 18;
 /// `PrimitiveShape::Str` wire cell.
 const SHAPE_STR: u32 = 4;
 /// `PrimitiveShape::MutPointer` wire cell.
@@ -1250,7 +1250,8 @@ fn primitive_record(spelling: &[u8]) -> Option<SemanticTypeRecord<'static>> {
             Some(record)
         }
         b"System.Char" | b"char" => {
-            record.payload0 = SHAPE_CHAR;
+            record.payload0 = SHAPE_UTF16_CODE_UNIT;
+            record.payload1 = TypeWidth::Fixed(16).to_cell();
             Some(record)
         }
         b"System.String" | b"string" => {
