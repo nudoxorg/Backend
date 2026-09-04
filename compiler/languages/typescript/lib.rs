@@ -12,7 +12,8 @@ mod error;
 pub use authority::{OxcDeclaration, OxcDeclarationKind, OxcModule, analyze, with_analysis};
 pub use checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
-    Declaration, LiteralBase, Narrowing, ObjectMember, Origin, Reference, Report, TypeTree,
+    Declaration, LiteralBase, MappedModifier, Narrowing, ObjectMember, Origin, Reference, Report,
+    TemplatePart, TypeTree,
     source_digest,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};

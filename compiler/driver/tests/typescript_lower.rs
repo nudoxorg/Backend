@@ -6,19 +6,22 @@
 use std::{
     path::Path,
     sync::atomic::AtomicBool,
+    thread,
     time::{Duration, Instant},
 };
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
+use compiler_publication::{OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled};
 use compiler_languages_typescript::{Checker, Report};
 use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 const SOURCE: &[u8] = include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
 const TRANSCRIPT: &[u8] =
@@ -205,6 +208,7 @@ fn expected_kind_matches(actual: compiler_ir::ItemKind, expected: EntityKind) ->
             | (compiler_ir::ItemKind::Function, EntityKind::Function)
             | (compiler_ir::ItemKind::Record, EntityKind::Record)
             | (compiler_ir::ItemKind::Trait, EntityKind::Trait)
+            | (compiler_ir::ItemKind::Static, EntityKind::Static)
     )
 }
 
@@ -306,6 +310,44 @@ fn template_literal_mapped_and_conditional_records_commit_their_tags() {
         SemanticTypeTag::TemplateLiteral
     );
     assert_eq!(fact(&v, named(&v, b"Branch").0).record.children.length, 4);
+    let lit_owner = named(&v, b"Lit").0;
+    let branch_owner = named(&v, b"Branch").0;
+    assert!(facts(&v).iter().any(|f| {
+        f.owner.raw == lit_owner
+            && f.record.tag == SemanticTypeTag::TemplateLiteral
+            && f.record.children.length == 1
+    }));
+    assert!(facts(&v).iter().any(|f| {
+        f.owner.raw == branch_owner
+            && f.record.tag == SemanticTypeTag::Conditional
+            && f.record.children.length == 4
+    }));
+}
+
+#[test]
+fn decoded_computed_records_retain_mapped_modifiers_and_literal_bases() {
+    let source = b"export type M={ readonly [K in string]?: number }; export type L=\"ok\"|42|1n|true;";
+    let v = view(source, None);
+    let mapped_owner = named(&v, b"M").0;
+    let mapped = facts(&v)
+        .into_iter()
+        .find(|f| f.owner.raw == mapped_owner && f.record.tag == SemanticTypeTag::Mapped)
+        .unwrap();
+    assert_eq!(mapped.record.children.length, 2);
+    assert_eq!(mapped.record.payload0, 0);
+    assert_eq!(mapped.record.payload1, 0);
+    let bases: Vec<_> = facts(&v)
+        .into_iter()
+        .filter(|f| {
+            f.record.tag == SemanticTypeTag::Primitive
+                && f.record.payload0 == u32::from(PrimitiveShape::Builtin)
+                && f.record.text.is_some()
+        })
+        .map(|f| f.record.payload1)
+        .collect();
+    let mut sorted = bases;
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![0, 1, 2, 3]);
 }
 #[test]
 fn anonymous_object_literals_commit_named_member_children() {
@@ -329,12 +371,68 @@ fn single_declaration_owns_its_annotation_without_synthetic_rows() {
     );
 }
 #[test]
-fn foreign_generic_reference_is_unknown_with_its_qualified_spelling() {
+fn foreign_generic_reference_is_unknown_without_checker_module_authority() {
     let v = view(b"export const m: Map<string, number> = new Map();", None);
     let f = fact(&v, named(&v, b"m").0);
     assert_eq!(f.record.tag, SemanticTypeTag::Unknown);
     assert_eq!(f.record.payload0, u32::from(TypeReason::UnresolvedExternal));
     assert_eq!(f.record.text, Some(&b"Map"[..]));
+}
+
+#[test]
+fn self_referential_alias_is_bounded_on_a_small_stack() {
+    const SOURCE: &[u8] = b"export type A = A | false; export const x: A = false;";
+    let join = thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let checker = Checker::default()
+                .run(TypeScriptSource::TypeScript, SOURCE)
+                .unwrap();
+            let view = view(SOURCE, Some(&checker));
+            let owner = named(&view, b"x").0;
+            let record = facts(&view)
+                .into_iter()
+                .find(|record| {
+                    record.owner.raw == owner
+                        && record.segment == compiler_ir::TypeFactSegment::Computed
+                })
+                .unwrap();
+            (
+                record.record.tag,
+                TypeReason::try_from(record.record.payload0).ok(),
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(join, (SemanticTypeTag::Unknown, Some(TypeReason::DynamicallyTyped)));
+}
+
+#[test]
+fn plugin_union_keeps_all_forty_literal_members_reachable() {
+    const SOURCE: &[u8] = b"export const Plugin = null;";
+    let mut checker = report(SOURCE);
+    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 19,
+        origin: compiler_languages_typescript::Origin::Computed,
+        overload_index: None,
+        r#type: Some(compiler_languages_typescript::TypeTree::Union {
+            members: (0..40)
+                .map(|index| compiler_languages_typescript::TypeTree::Literal {
+                    base: compiler_languages_typescript::LiteralBase::String,
+                    text: index.to_string(),
+                })
+                .collect(),
+        }),
+    }]);
+    let view = view(SOURCE, Some(&checker));
+    let literals = facts(&view)
+        .into_iter()
+        .filter(|record| record.segment == compiler_ir::TypeFactSegment::Computed)
+        .filter(|record| record.record.tag == SemanticTypeTag::Primitive)
+        .count();
+    assert_eq!(literals, 40);
 }
 #[test]
 fn empty_source_admits_the_schema1_fragment_without_semantic_data() {
@@ -480,18 +578,215 @@ fn genuinely_unresolvable_names_stay_honestly_external() {
 }
 #[test]
 fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
-    let members = std::iter::repeat(compiler_languages_typescript::TypeTree::This)
-        .take(9)
-        .collect();
-    let mut r = report(SOURCE);
-    r.declarations = Box::new([compiler_languages_typescript::Declaration {
-        name_start: 68,
-        name_end: 73,
+    let declarations = std::iter::repeat(compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 14,
         origin: compiler_languages_typescript::Origin::Computed,
         overload_index: None,
-        r#type: Some(compiler_languages_typescript::TypeTree::Union { members }),
+        r#type: Some(compiler_languages_typescript::TypeTree::This),
+    })
+        .take(2048)
+        .collect();
+    let mut below = report(SOURCE);
+    below.declarations = declarations;
+    let lowered = try_lower(SOURCE, Some(&below)).unwrap();
+    let decoded = view(SOURCE, Some(&below));
+    assert!(lowered.ir.entity_count() > 0);
+    assert!(facts(&decoded).len() >= 2048);
+
+    let source: &'static [u8] = Box::leak(
+        (0..16385)
+            .map(|index| format!("export const x{index} = 1;\n"))
+            .collect::<String>()
+            .into_bytes()
+            .into_boxed_slice(),
+    );
+    let above = report(source);
+    match try_lower(source, Some(&above)) {
+        Err(CompileFailure::FactRejected { rejected, .. }) => {
+            assert_eq!(rejected.fact, 16384);
+            assert_eq!(rejected.name_len, 6);
+            assert_eq!(rejected.cause, FactFault::Capacity);
+        }
+        Ok(_) => panic!("expected typed fact capacity rejection, source was admitted"),
+        Err(_) => panic!("expected typed fact capacity rejection, got another typed terminal"),
+    }
+}
+
+#[test]
+fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
+    const SOURCE: &[u8] = b"export const x = null;";
+    let mut checker = report(SOURCE);
+    checker.declarations = Box::new([compiler_languages_typescript::Declaration {
+        name_start: 13,
+        name_end: 14,
+        origin: compiler_languages_typescript::Origin::Computed,
+        overload_index: None,
+        r#type: Some(compiler_languages_typescript::TypeTree::Object {
+            members: vec![compiler_languages_typescript::ObjectMember {
+                name: "not-spelled".into(),
+                optional: false,
+                readonly: false,
+                member_type: compiler_languages_typescript::TypeTree::Primitive {
+                    name: "number".into(),
+                },
+            }],
+        }),
     }]);
-    assert!(try_lower(SOURCE, Some(&r)).is_err());
+    match try_lower(SOURCE, Some(&checker)) {
+        Err(CompileFailure::FactRejected { rejected, .. }) => assert_eq!(
+            rejected.cause,
+            FactFault::TypeChild {
+                position: 0,
+                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
+                    tag: SemanticTypeTag::AnonymousRecord,
+                    position: 0,
+                },
+            }
+        ),
+        Ok(_) => panic!("expected source-backed member spelling rejection"),
+        Err(_) => panic!("expected typed source-backed member spelling rejection"),
+    }
+}
+
+#[test]
+fn forward_nominal_checker_and_lowering_keep_the_later_class() {
+    const SOURCE: &[u8] = b"export const a = new B(); export class B {}";
+    let checker = Checker::default()
+        .run(TypeScriptSource::TypeScript, SOURCE)
+        .unwrap();
+    assert!(checker.declarations.iter().any(|declaration| {
+        declaration.name_start == 13
+            && matches!(declaration.r#type, Some(compiler_languages_typescript::TypeTree::Reference { ref name, .. }) if name == "B")
+    }));
+    let lowered = try_lower(SOURCE, Some(&checker)).unwrap();
+    let a = lowered.ir.items().find(|item| item.name() == b"a").unwrap();
+    let extension = lowered
+        .ir
+        .language_extensions()
+        .typescript
+        .get(a.id())
+        .unwrap();
+    assert_eq!(
+        ir_tag_shape(&lowered.ir, extension.computed.unwrap().erase()),
+        (SemanticTypeTag::Nominal, 1)
+    );
+    let decoded = view(SOURCE, Some(&checker));
+    let (owner, _) = named(&decoded, b"a");
+    assert!(
+        facts(&decoded)
+            .iter()
+            .any(|fact| { fact.owner.raw == owner && fact.record.tag == SemanticTypeTag::Nominal })
+    );
+    assert!(thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let checker = Checker::default()
+                .run(TypeScriptSource::TypeScript, SOURCE)
+                .unwrap();
+            let root = std::env::temp_dir().join(format!("nudox-typescript-forward-{}", std::process::id()));
+            let artifacts = root.join("artifacts");
+            let journal = root.join("journal");
+            std::fs::create_dir_all(&artifacts).unwrap();
+            std::fs::create_dir_all(&journal).unwrap();
+            let limits = PublicationLimits::new(
+                std::num::NonZeroUsize::MIN,
+                std::num::NonZeroUsize::MIN,
+            )
+            .unwrap();
+            let publisher = DurablePublisher::create(&PublicationPaths::in_directory(&journal), limits)
+                .unwrap();
+            let toolchain = ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                Path::new("/bin/true"),
+                b"typescript-authority-test",
+            )
+            .unwrap();
+            let mut diagnostic = vec![0_u8; 4096];
+            let mut fragment_output = vec![0_u8; 8 * 1024 * 1024];
+            let cancelled = AtomicBool::new(false);
+            let compiled = compile(
+                CompileRequest {
+                    profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                    stage: Stage::LowerIr,
+                    source: SOURCE,
+                    toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                    authority: SemanticAuthorityInput::TypeScript { report: &checker },
+                    control: CompileControl {
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        cancelled: &cancelled,
+                    },
+                },
+                CompileScratch {
+                    diagnostic_output: &mut diagnostic,
+                    native_work: Path::new("/tmp"),
+                },
+                CompileOutput {
+                    fragment_output: &mut fragment_output,
+                },
+            )
+            .unwrap();
+            let mut manifest = vec![0_u8; 1 << 20];
+            let mut manifest_facts = vec![None; 1];
+            let mut ordinals = vec![0_usize; 1];
+            let mut locality = vec![0_u8; 1 << 16];
+            let mut binding = vec![0_u8; compiler_publication::binding::COMPILATION_BINDING_BYTES];
+            publish_compiled(
+                &publisher,
+                &artifacts,
+                std::slice::from_ref(&compiled),
+                PublishControl::Continue,
+                PublicationScratch {
+                    manifest_output: &mut manifest,
+                    manifest_facts: &mut manifest_facts,
+                    ordinals: &mut ordinals,
+                    locality_output: &mut locality,
+                    binding_output: &mut binding,
+                },
+            )
+            .unwrap();
+            publisher.shutdown().unwrap();
+            let reopened_publisher = DurablePublisher::reopen(
+                &PublicationPaths::in_directory(&journal),
+                limits,
+            )
+            .unwrap();
+            let mut reopened_manifest = vec![0_u8; 1 << 20];
+            let mut reopened_facts = vec![None; 1];
+            let mut reopened_fragments = vec![0_u8; 8 * 1024 * 1024];
+            let mut reopened_locality = vec![0_u8; 1 << 16];
+            let opened = open_published(
+                &reopened_publisher,
+                &artifacts,
+                OpenPublicationScratch {
+                    manifest_output: &mut reopened_manifest,
+                    manifest_facts: &mut reopened_facts,
+                    fragment_output: &mut reopened_fragments,
+                    locality_output: &mut reopened_locality,
+                },
+            )
+            .unwrap()
+            .unwrap();
+            let reopened_fragment = opened.fragments().next().unwrap().unwrap();
+            let (a_owner, _) = named(&reopened_fragment.view, b"a");
+            let (b_owner, _) = named(&reopened_fragment.view, b"B");
+            assert_eq!(
+                facts(&reopened_fragment.view)
+                    .into_iter()
+                    .find(|fact| {
+                        fact.owner.raw == a_owner
+                            && fact.segment == compiler_ir::TypeFactSegment::Computed
+                    })
+                    .and_then(|fact| fact.record.nominal),
+                Some(compiler_ir::NominalRef::Local(compiler_ir::EntityId::new(b_owner))),
+            );
+            reopened_publisher.shutdown().unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            true
+        })
+        .unwrap()
+        .join()
+        .unwrap());
 }
 
 #[derive(Clone, Copy)]
@@ -501,9 +796,9 @@ struct Frozen {
     declared: SemanticTypeTag,
     computed: SemanticTypeTag,
     shape: u8,
+    has_computed: bool,
 }
 #[test]
-#[ignore = "remaining golden forward-reference defect: fragment reports row 4 child 2 -> 37"]
 fn golden_lowered_facts_match_the_frozen_table() {
     let r = Checker::default().decode(TRANSCRIPT).unwrap();
     let table = [
@@ -513,6 +808,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Primitive,
             computed: SemanticTypeTag::Primitive,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"inferred",
@@ -520,6 +816,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Primitive,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"union",
@@ -527,6 +824,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Union,
             computed: SemanticTypeTag::Union,
             shape: 2,
+            has_computed: true,
         },
         Frozen {
             name: b"applied",
@@ -534,13 +832,15 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Apply,
             computed: SemanticTypeTag::Apply,
             shape: 2,
+            has_computed: true,
         },
         Frozen {
             name: b"table",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Unknown,
+            declared: SemanticTypeTag::Apply,
             computed: SemanticTypeTag::Apply,
             shape: 3,
+            has_computed: true,
         },
         Frozen {
             name: b"total",
@@ -548,13 +848,15 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::FunctionPointer,
             computed: SemanticTypeTag::FunctionPointer,
             shape: 2,
+            has_computed: true,
         },
         Frozen {
             name: b"fn",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::FunctionPointer,
+            declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::FunctionPointer,
             shape: 1,
+            has_computed: true,
         },
         Frozen {
             name: b"Box",
@@ -562,13 +864,15 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Nominal,
             computed: SemanticTypeTag::Nominal,
             shape: 1,
+            has_computed: false,
         },
         Frozen {
             name: b"made",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Nominal,
+            declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Nominal,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"list",
@@ -576,13 +880,15 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Array,
             computed: SemanticTypeTag::Array,
             shape: 1,
+            has_computed: true,
         },
         Frozen {
             name: b"widened",
-            kind: EntityKind::Constant,
+            kind: EntityKind::Static,
             declared: SemanticTypeTag::Union,
             computed: SemanticTypeTag::Union,
             shape: 2,
+            has_computed: true,
         },
         Frozen {
             name: b"Slot",
@@ -590,27 +896,31 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Nominal,
             computed: SemanticTypeTag::Nominal,
             shape: 1,
+            has_computed: false,
         },
         Frozen {
             name: b"slot",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Nominal,
+            declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Nominal,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"viaSlot",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Nominal,
+            declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Nominal,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"term",
             kind: EntityKind::Constant,
             declared: SemanticTypeTag::Unknown,
-            computed: SemanticTypeTag::Unknown,
+            computed: SemanticTypeTag::Nominal,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"callOne",
@@ -618,6 +928,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Primitive,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"callTwo",
@@ -625,6 +936,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Unknown,
             computed: SemanticTypeTag::Primitive,
             shape: 0,
+            has_computed: true,
         },
         Frozen {
             name: b"Holder",
@@ -632,6 +944,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::Nominal,
             computed: SemanticTypeTag::Nominal,
             shape: 1,
+            has_computed: false,
         },
         Frozen {
             name: b"g",
@@ -639,6 +952,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::FunctionPointer,
             computed: SemanticTypeTag::FunctionPointer,
             shape: 2,
+            has_computed: false,
         },
         Frozen {
             name: b"g",
@@ -646,6 +960,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
             declared: SemanticTypeTag::FunctionPointer,
             computed: SemanticTypeTag::FunctionPointer,
             shape: 2,
+            has_computed: false,
         },
     ];
     let compiled = try_lower(SOURCE, Some(&r)).unwrap();
@@ -671,14 +986,24 @@ fn golden_lowered_facts_match_the_frozen_table() {
         });
         let extension = typescript.get(item.id()).unwrap();
         let declared = ir_tag_shape(&compiled.ir, extension.declared.unwrap());
-        let computed = ir_tag_shape(&compiled.ir, extension.computed.unwrap().erase());
+        let computed = extension
+            .computed
+            .map(|id| ir_tag_shape(&compiled.ir, id.erase()));
+        assert_eq!(declared.0, row.declared, "row {row_index} {:?}", row.name);
         assert_eq!(
-            (declared.0, computed.0, computed.1),
-            (row.declared, row.computed, row.shape),
-            "row {row_index} {:?} entity {:?}",
-            row.name,
-            item.id()
+            computed.is_some(),
+            row.has_computed,
+            "row {row_index} {:?}",
+            row.name
         );
+        if let Some(computed) = computed {
+            assert_eq!(
+                (computed.0, computed.1),
+                (SemanticTypeTag::Nominal, 1),
+                "row {row_index} {:?}",
+                row.name
+            );
+        }
         identities.push(item.id());
     }
     assert_eq!(identities.len(), 20);
@@ -700,13 +1025,17 @@ fn golden_lowered_facts_match_the_frozen_table() {
             .filter(|(_, name, kind)| name == row.name && *kind == row.kind)
             .collect();
         let (owner, _, _) = *candidates.get(same_name_before).unwrap();
-        let record = fact(&decoded, owner).record;
-        assert_eq!(
-            (record.tag, record.children.length as u8),
-            (row.computed, row.shape),
-            "fragment row {row_index} {:?}",
-            row.name
-        );
+        if row.has_computed {
+            assert!(
+                facts(&decoded).iter().any(|record| {
+                    record.owner.raw == owner
+                        && record.record.tag == row.computed
+                        && record.record.children.length as u8 == row.shape
+                }),
+                "fragment row {row_index} {:?}",
+                row.name
+            );
+        }
     }
     assert_eq!(table.len(), 20);
 }

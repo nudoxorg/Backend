@@ -133,28 +133,37 @@ fn generic_renders() {
 #[test]
 fn conditional_renders() {
     let ir = compile(CASES[3].1);
-    signature(&ir, "Cond", ItemKind::TypeAlias, "type Cond = ?unsupported");
+    signature(
+        &ir,
+        "Cond",
+        ItemKind::TypeAlias,
+        "type Cond = [T] extends str ? \"s\" : \"n\"",
+    );
 }
 
 #[test]
 fn mapped_renders() {
     let ir = compile(CASES[4].1);
+    // Fork-pending operand class: mapped `keyof`/indexed-access keys have no
+    // declared-plane record representation, so ?unsupported is honest.
     signature(
         &ir,
         "Readonlyify",
         ItemKind::TypeAlias,
-        "type Readonlyify = ?unsupported",
+        "type Readonlyify = { [K in ?unsupported]-?: ?unsupported }",
     );
 }
 
 #[test]
 fn template_renders() {
     let ir = compile(CASES[5].1);
+    // Fork-pending operand class: template text parts have no declared-plane
+    // record representation; the placeholder remains structurally decoded.
     signature(
         &ir,
         "Greet",
         ItemKind::TypeAlias,
-        "type Greet = ?unsupported",
+        "type Greet = `${str}`",
     );
 }
 
@@ -165,7 +174,7 @@ fn literals_render() {
         &ir,
         "Literals",
         ItemKind::TypeAlias,
-        "type Literals = ?unsupported | ?unsupported | ?unsupported | ?unsupported",
+        "type Literals = \"ok\" | \"42\" | false | true",
     );
 }
 
@@ -237,4 +246,28 @@ fn extensions_render() {
         ir.type_parameters(fact.type_parameters)
             .is_some_and(|parameters| parameters.len() == 1)
     }));
+}
+
+#[test]
+fn forward_nominal_render_truth_names_the_later_class() {
+    let ir = compile(b"export const a = new B(); export class B {}");
+    let a = item(&ir, "a", ItemKind::Constant);
+    let _computed = ir
+        .storage_columns()
+        .language_extensions
+        .typescript
+        .get(a)
+        .and_then(|facts| facts.computed)
+        .expect("forward nominal computed type");
+    let b = item(&ir, "B", ItemKind::Record);
+    let b_type = ir
+        .item(b)
+        .and_then(|item| item.semantic_type())
+        .expect("forward nominal class type");
+    assert_eq!(
+        ir.display_type(b_type)
+            .expect("forward nominal class display")
+            .to_string(),
+        "B"
+    );
 }

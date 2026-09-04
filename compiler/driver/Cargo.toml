@@ -25,6 +25,7 @@ sha2 = "=0.10.9"
 thiserror.workspace = true
 
 [dev-dependencies]
+serde_json = { workspace = true }
 compiler-publication = { path = "../publication" }
 server-journal = { path = "../../server/journal" }
 ureq = { workspace = true }

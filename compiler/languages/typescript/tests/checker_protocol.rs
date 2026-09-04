@@ -11,6 +11,7 @@ use compiler_languages_typescript::{
 
 const GOLDEN: &str = include_str!("transcripts/golden.json");
 const GOLDEN_SOURCE: &[u8] = include_bytes!("fixtures/source.ts");
+const UNDEFINED_TYPE_SOURCE: &[u8] = include_bytes!("fixtures/l7_r2_old_crash.ts");
 
 static ENVIRONMENT: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
@@ -99,6 +100,34 @@ fn golden_transcript_decodes_declarations_and_references() -> Result<(), Checker
             text: "\"text\"".to_owned(),
         })
     );
+    Ok(())
+}
+
+#[test]
+fn undefined_conditional_branch_is_an_honest_closed_record() -> Result<(), CheckerError> {
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .map_err(|_| CheckerError::Decode {
+            message: "checker environment mutex poisoned".to_owned(),
+            transcript: String::new(),
+        })?;
+    let report = match Checker::default().run(
+        compiler_vocabulary::TypeScriptSource::TypeScript,
+        UNDEFINED_TYPE_SOURCE,
+    ) {
+        Ok(report) => report,
+        Err(CheckerError::ModuleUnavailable { .. }) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    assert!(report.declarations.iter().any(|declaration| {
+        matches!(
+            declaration.r#type,
+            Some(TypeTree::Conditional { ref then_type, ref else_type, .. })
+                if matches!(then_type.as_ref(), TypeTree::Other { text } if text == "any")
+                    && matches!(else_type.as_ref(), TypeTree::Other { text } if text == "any")
+        )
+    }));
     Ok(())
 }
 

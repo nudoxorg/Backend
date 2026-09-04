@@ -1,0 +1,9 @@
+{
+  "class": "SiblingTypes",
+  "defect_class": "entry-resolution",
+  "purl": "npm:react@18.3.1",
+  "raw_error": "compile: FactRejected { source_identity: SourceIdentity { identity: ContentId(0e74a52ced4ab3ef2f4991137f6934852ebcb27039531e4232626149fbf6e338), byte_len: 193934 }, recipe: CompileRecipeFact { identity: ContentId(11dd235b6a20d298984291a70fc9548a07c917c0408b7c407fc35532721d2e97), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, rejected: FactRejection { fact: 1024, name_len: 1, cause: Capacity } }",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

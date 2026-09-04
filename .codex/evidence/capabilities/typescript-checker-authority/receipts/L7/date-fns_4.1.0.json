@@ -1,0 +1,9 @@
+{
+  "class": "NonStandardLayout",
+  "defect_class": "production-lowering",
+  "purl": "npm:date-fns@4.1.0",
+  "raw_error": "compile: LoweringUnsupported { source_identity: SourceIdentity { identity: ContentId(0e7409b5687bf0eff5759f87a7579cb040b9c16d3f617f2467b29e7dd08aaf71), byte_len: 8821 }, recipe: CompileRecipeFact { identity: ContentId(1196d282e2819b4d249d248bb9810f0d4704a1d900f3f5c5327fb5abbb399da5), profile: TypeScript(TypeScript), stage: LowerIr, tool: TypeScriptCompiler, toolchain: ContentId(0fe9e62ffe91f46368a8274642ef1ac7bcbee7f3922850b3fa7cc8159c5e783a) }, cause: NoSupportedDeclaration }",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

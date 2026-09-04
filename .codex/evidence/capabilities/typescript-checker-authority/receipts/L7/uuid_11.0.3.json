@@ -1,0 +1,9 @@
+{
+  "class": "BuildArtifacts",
+  "defect_class": "entry-resolution",
+  "purl": "npm:uuid@11.0.3",
+  "raw_error": "retry exhausted; first=network request failed: http status: 404; second=network request failed: http status: 404",
+  "schema": 1,
+  "stage": "full-lifecycle",
+  "verdict": "FAILED"
+}

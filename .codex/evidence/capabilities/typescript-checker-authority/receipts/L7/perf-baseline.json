@@ -1,0 +1,30 @@
+{
+  "regression_cap": 2.0,
+  "rows": [
+    {
+      "check_ns": 479762083,
+      "fact_count": 1,
+      "lower_ns": 4427417,
+      "parse_ns": 280762958,
+      "purl": "npm:zod@3.25.76",
+      "wall_ns": 764952458
+    },
+    {
+      "check_ns": 352085959,
+      "fact_count": 477,
+      "lower_ns": 37324417,
+      "parse_ns": 268845584,
+      "purl": "npm:@babel/parser@7.26.8",
+      "wall_ns": 658255960
+    },
+    {
+      "check_ns": 476297875,
+      "fact_count": 1,
+      "lower_ns": 2602584,
+      "parse_ns": 201798792,
+      "purl": "npm:hono@4.6.12",
+      "wall_ns": 680699251
+    }
+  ],
+  "schema": 1
+}

@@ -6,15 +6,15 @@
 
 use compiler_ir::{
     AnonRecordForm, ComputedType, ComputedTypeId, DocFragmentInput, DocLinkTarget, EntityId,
-    EntityKind, ForeignKey, ForeignOrigin, IrBuilder, LatticeMappedModifier, NominalRef,
-    Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
-    ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
-    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeQuery, TypeReason,
-    TypeWidth,
+    EntityKind, ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, IrBuilder,
+    LatticeMappedModifier, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
+    PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
+    SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord, SemanticTypeTag, TypeId,
+    TypeParameterListId, TypeQuery, TypeReason, TypeWidth,
 };
 use compiler_languages_typescript::{
     AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan, Origin, ReferenceFlags,
-    Semantic, Span, SymbolFlags, SymbolId, TypeTree, Utf8Span, with_analysis,
+    Semantic, Span, SymbolFlags, SymbolId, TemplatePart, TypeTree, Utf8Span, with_analysis,
 };
 use compiler_vocabulary::TypeScriptSource;
 
@@ -64,8 +64,12 @@ fn lane_rejection() -> TypeScriptCollectError {
 /// The declaration-lane path now retains the full [`FactFault`] through
 /// [`TypeScriptCollectError::Rejected`]; this fold remains only for the
 /// pooled-lane helpers (docs, atoms, spans) and is a recorded lane criticism.
-fn fault(_cause: FactFault) -> TypeScriptCollectError {
-    lane_rejection()
+fn fault(cause: FactFault) -> TypeScriptCollectError {
+    TypeScriptCollectError::Rejected(FactRejection {
+        fact: 0,
+        name_len: 0,
+        cause,
+    })
 }
 
 /// Maps one foreign-key rejection onto the coarse lane terminal. The path and
@@ -73,6 +77,36 @@ fn fault(_cause: FactFault) -> TypeScriptCollectError {
 /// means a malformed cross-package path and the lane cannot proceed.
 fn foreign_fault(_cause: compiler_ir::ForeignKeyFault) -> TypeScriptCollectError {
     lane_rejection()
+}
+
+fn computed_fault<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    owner: u32,
+    cause: FactFault,
+) -> TypeScriptCollectError {
+    let index = usize::try_from(owner).ok();
+    let name_len = match index {
+        Some(index) => match (
+            registry.name_starts.get(index).copied(),
+            registry.name_ends.get(index).copied(),
+        ) {
+            (Some(start), Some(end)) => match (usize::try_from(start), usize::try_from(end)) {
+                (Ok(start), Ok(end)) => registry.source.get(start..end).map_or(0, str::len),
+                _ => 0,
+            },
+            _ => 0,
+        },
+        None => 0,
+    };
+    let fact = match usize::try_from(owner) {
+        Ok(fact) => fact,
+        Err(_) => 0,
+    };
+    TypeScriptCollectError::Rejected(FactRejection {
+        fact,
+        name_len,
+        cause,
+    })
 }
 
 /// Widens one lane counter to the wire's `u32` coordinate width; an overflow
@@ -127,7 +161,7 @@ impl TypeParamRows {
                 self.len += 1;
                 Ok(())
             }
-            None => Err(lane_rejection()),
+            None => Err(fault(FactFault::TypeParameterCapacity)),
         }
     }
 
@@ -171,7 +205,7 @@ impl ParamRows {
                 self.len += 1;
                 Ok(())
             }
-            None => Err(lane_rejection()),
+            None => Err(fault(FactFault::ChildCapacity)),
         }
     }
 
@@ -239,7 +273,7 @@ impl<'source> TypeCells<'source> {
             }
             None => {
                 self.truncated = true;
-                Err(lane_rejection())
+                Err(fault(FactFault::TypeChildCapacity))
             }
         }
     }
@@ -304,18 +338,21 @@ impl ImportModule {
 /// coordinates.
 struct Projector<'x, 'report, 'source> {
     semantic: &'x Semantic<'x>,
+    /// Span index built once for this projection; type probes use binary
+    /// search instead of rescanning the complete syntax arena.
+    node_index: Vec<(Span, usize)>,
     source: &'source str,
     facts: &'x mut FactSet<'source>,
     /// Binding-name span start per pushed fact (`UNSET` when unregistered).
-    name_starts: [u32; MAX_EMISSION_FACTS],
-    name_ends: [u32; MAX_EMISSION_FACTS],
+    name_starts: Box<[u32]>,
+    name_ends: Box<[u32]>,
     /// Declaring-node span start per pushed fact.
-    decl_starts: [u32; MAX_EMISSION_FACTS],
-    decl_ends: [u32; MAX_EMISSION_FACTS],
-    fact_kinds: [EntityKind; MAX_EMISSION_FACTS],
+    decl_starts: Box<[u32]>,
+    decl_ends: Box<[u32]>,
+    fact_kinds: Box<[EntityKind]>,
     /// One row per import-binding fact: the module and imported-name spans
     /// its foreign keys are built from.
-    import_modules: [ImportModule; MAX_EMISSION_FACTS],
+    import_modules: Box<[ImportModule]>,
     import_module_len: usize,
     /// The span-bound checker report, when the authority ran.
     checker: Option<CheckerIndex<'report>>,
@@ -324,7 +361,7 @@ struct Projector<'x, 'report, 'source> {
     pending_type_parameters: u32,
     /// Pooled type-parameter start per pushed fact, retained so the checker
     /// pass can re-attach a completed extension with the computed cell.
-    extension_type_parameters: [u32; MAX_EMISSION_FACTS],
+    extension_type_parameters: Box<[u32]>,
     /// The computed-cell proof mint: one session builder whose computed
     /// arena allocates exactly one node per computed type row, in lane
     /// order, so every minted coordinate equals the row's final type-lane
@@ -802,7 +839,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let relative_start = local.start.checked_sub(declaration.start);
         let relative_end = local.end.checked_sub(declaration.start);
         if let (Some(relative_start), Some(relative_end)) = (relative_start, relative_end) {
-            let span = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
+            let span = RelSpan::new(relative_start, relative_end).map_err(|_| {
+                TypeScriptCollectError::Span {
+                    start: relative_start,
+                    end: relative_end,
+                }
+            })?;
             let target = self.import_target(ordinal)?;
             self.facts
                 .push_occurrence(
@@ -920,7 +962,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
     }
 
-    /// The honest backlog record for a proven-but-unrepresented construct:
+    /// The honest `TypeReason` record for a proven-but-unrepresented construct:
     /// unknown with [`TypeReason::NoIrRepresentation`] and the exact spelling.
     fn unrepresented(&self, span: Span) -> TypeCells<'source> {
         let mut cells = TypeCells::unknown(TypeReason::NoIrRepresentation);
@@ -948,13 +990,21 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             )));
         }
         let span = Span::new(start, end);
-        let semantic = self.semantic;
         let next_depth = depth.saturating_add(1);
-        for node in semantic.nodes().iter() {
-            let kind = node.kind();
-            if kind.span() != span {
+        if let Some(cells) = self.literal_cells(span) {
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_ordinal) in self.node_index[first..last].iter() {
+            let Some(node) = self.semantic.nodes().iter().nth(*node_ordinal) else {
                 continue;
-            }
+            };
+            let kind = node.kind();
 
             // Transparent wrappers descend into their inner expression span.
             if let Some(parenthesized) = kind.as_ts_parenthesized_type() {
@@ -975,6 +1025,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
 
             if let Some(union) = kind.as_ts_union_type() {
+                if union.types.len() > MAX_TYPE_CHILDREN {
+                    let spans: Vec<_> = union.types.iter().map(GetSpan::span).collect();
+                    return self.associative_cells(&spans, next_depth, SemanticTypeTag::Union);
+                }
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Union);
                 for member in union.types.iter() {
                     let member_span = member.span();
@@ -984,7 +1038,34 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
                 return Ok(TypeOutcome::Cells(cells));
             }
+            if let Some(template) = kind.as_ts_template_literal_type() {
+                let full = self.slice_span(span).unwrap_or(&[]);
+                let inner = full
+                    .strip_prefix(b"`")
+                    .and_then(|bytes| bytes.strip_suffix(b"`"))
+                    .unwrap_or(full);
+                let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
+                for substitution in template.types.iter() {
+                    let substitution_span = substitution.span();
+                    let target = self.child_target(
+                        substitution_span.start,
+                        substitution_span.end,
+                        next_depth,
+                    )?;
+                    cells.push_child(target, None, 0)?;
+                }
+                let _ = inner;
+                return Ok(TypeOutcome::Cells(cells));
+            }
             if let Some(intersection) = kind.as_ts_intersection_type() {
+                if intersection.types.len() > MAX_TYPE_CHILDREN {
+                    let spans: Vec<_> = intersection.types.iter().map(GetSpan::span).collect();
+                    return self.associative_cells(
+                        &spans,
+                        next_depth,
+                        SemanticTypeTag::Intersection,
+                    );
+                }
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Intersection);
                 for member in intersection.types.iter() {
                     let member_span = member.span();
@@ -1000,11 +1081,21 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let element_span = element.span();
                     let mut label: Option<Span> = None;
                     let mut inner = element_span;
-                    for wrapped in semantic.nodes().iter() {
-                        let wrapped_kind = wrapped.kind();
-                        if wrapped_kind.span() != element_span {
+                    if let Some(position) = self
+                        .node_index
+                        .binary_search_by_key(
+                            &(element_span.start, element_span.end),
+                            |(known, _)| (known.start, known.end),
+                        )
+                        .ok()
+                    {
+                        let Some((_, ordinal)) = self.node_index.get(position) else {
                             continue;
-                        }
+                        };
+                        let Some(wrapped) = self.semantic.nodes().iter().nth(*ordinal) else {
+                            continue;
+                        };
+                        let wrapped_kind = wrapped.kind();
                         if let Some(named) = wrapped_kind.as_ts_named_tuple_member() {
                             label = Some(named.label.span);
                             inner = named.element_type.span();
@@ -1095,10 +1186,34 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     }
                     return Ok(TypeOutcome::Existing(fact));
                 }
+                if let Some(module) = self.checker_foreign_module(name_span) {
+                    let fragment = ExternalFragmentId::from_canonical_bytes(module.as_bytes());
+                    let mut constructor = TypeCells::leaf(SemanticTypeTag::Nominal);
+                    constructor.record.nominal =
+                        Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
+                    if reference.type_arguments.is_some() {
+                        let constructor = self.synthetic_cells_fact(name_span, constructor)?;
+                        let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
+                        cells.push_child(constructor, None, 0)?;
+                        if let Some(arguments) = reference.type_arguments.as_ref() {
+                            for argument in arguments.params.iter() {
+                                let argument_span = argument.span();
+                                let target = self.child_target(
+                                    argument_span.start,
+                                    argument_span.end,
+                                    next_depth,
+                                )?;
+                                cells.push_child(target, None, 0)?;
+                            }
+                        }
+                        return Ok(TypeOutcome::Cells(cells));
+                    }
+                    return Ok(TypeOutcome::Cells(constructor));
+                }
                 // Genuinely unresolvable names stay honestly external; a
                 // checker-resolved foreign module type is known and named
                 // but has no foreign-nominal row form in the closed lattice,
-                // so its exact spelling backs the backlog reason instead.
+                // so its exact spelling backs the `TypeReason` instead.
                 let reason = if self.checker_foreign_resolved(name_span) {
                     TypeReason::NoIrRepresentation
                 } else {
@@ -1180,14 +1295,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     SemanticTypeTag::SelfType,
                 )));
             }
-            if kind.as_ts_template_literal_type().is_some() {
-                // The frozen lane commits every type-record child as a nested
-                // type coordinate, so a template literal's literal text parts
-                // have no wire form; the tag alone proves the construct.
-                return Ok(TypeOutcome::Cells(TypeCells::leaf(
-                    SemanticTypeTag::TemplateLiteral,
-                )));
-            }
             if let Some(number) = kind.as_ts_number_keyword() {
                 let _ = number;
                 let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
@@ -1244,6 +1351,67 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(TypeOutcome::Cells(self.unrepresented(span)))
     }
 
+    /// Recognizes the closed literal spellings on the source plane. The
+    /// checker reports their bases, while the source owns the exact value.
+    fn literal_cells(&self, span: Span) -> Option<TypeCells<'source>> {
+        let text = self.slice_span(span)?;
+        let text = trim_bytes(text, b" \t\r\n");
+        let base = if (text.starts_with(b"\"") && text.ends_with(b"\""))
+            || (text.starts_with(b"'") && text.ends_with(b"'"))
+        {
+            Some(compiler_languages_typescript::LiteralBase::String)
+        } else if text == b"true" || text == b"false" {
+            Some(compiler_languages_typescript::LiteralBase::Boolean)
+        } else if text.ends_with(b"n") && text[..text.len().saturating_sub(1)]
+            .iter()
+            .all(u8::is_ascii_digit)
+        {
+            Some(compiler_languages_typescript::LiteralBase::Bigint)
+        } else if !text.is_empty()
+            && text
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            Some(compiler_languages_typescript::LiteralBase::Number)
+        } else {
+            None
+        }?;
+        let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+        cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+        cells.record.text = Some(text);
+        cells.record.payload1 = u32::from(base as u8);
+        Some(cells)
+    }
+
+    fn associative_cells(
+        &mut self,
+        spans: &[Span],
+        depth: u8,
+        tag: SemanticTypeTag,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        let first = spans.first().ok_or_else(lane_rejection)?;
+        let second = spans.get(1).ok_or_else(lane_rejection)?;
+        let mut left = self.child_target(first.start, first.end, depth)?;
+        let right = self.child_target(second.start, second.end, depth)?;
+        let mut pair = TypeCells::leaf(tag);
+        pair.push_child(left, None, 0)?;
+        pair.push_child(right, None, 0)?;
+        left = self.synthetic_cells_fact(*second, pair)?;
+        for span in spans.iter().skip(2).take(spans.len().saturating_sub(3)) {
+            let right = self.child_target(span.start, span.end, depth)?;
+            let mut pair = TypeCells::leaf(tag);
+            pair.push_child(left, None, 0)?;
+            pair.push_child(right, None, 0)?;
+            left = self.synthetic_cells_fact(*span, pair)?;
+        }
+        let last = spans.last().ok_or_else(lane_rejection)?;
+        let right = self.child_target(last.start, last.end, depth)?;
+        let mut root = TypeCells::leaf(tag);
+        root.push_child(left, None, 0)?;
+        root.push_child(right, None, 0)?;
+        Ok(TypeOutcome::Cells(root))
+    }
+
     /// Pushes one member fact of a type-position object literal and returns
     /// its fact ordinal, member name bytes, and member flags. Unnamed
     /// signature members (call and construct signatures) carry no linkable
@@ -1253,12 +1421,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         member_span: Span,
         depth: u8,
     ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
-        let semantic = self.semantic;
-        for probed in semantic.nodes().iter() {
+        let node_position = self
+            .node_index
+            .binary_search_by_key(&(member_span.start, member_span.end), |(known, _)| {
+                (known.start, known.end)
+            })
+            .ok();
+        let Some(node_position) = node_position else {
+            return Ok(None);
+        };
+        let Some((_, node_ordinal)) = self.node_index.get(node_position) else {
+            return Ok(None);
+        };
+        let Some(probed) = self.semantic.nodes().iter().nth(*node_ordinal) else {
+            return Ok(None);
+        };
+        {
             let member_kind = probed.kind();
-            if member_kind.span() != member_span {
-                continue;
-            }
             if let Some(property) = member_kind.as_ts_property_signature() {
                 let key_span = property.key.span();
                 let name = self
@@ -1377,18 +1556,29 @@ pub(crate) fn collect_with_checker<'source, 'report>(
     with_analysis(profile, source, |module| {
         let mut projector = Projector {
             semantic: &module.semantic,
+            node_index: {
+                let mut index: Vec<_> = module
+                    .semantic
+                    .nodes()
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, node)| (node.kind().span(), ordinal))
+                    .collect();
+                index.sort_unstable_by_key(|(span, _)| (span.start, span.end));
+                index
+            },
             source,
             facts,
-            name_starts: [UNSET; MAX_EMISSION_FACTS],
-            name_ends: [UNSET; MAX_EMISSION_FACTS],
-            decl_starts: [UNSET; MAX_EMISSION_FACTS],
-            decl_ends: [UNSET; MAX_EMISSION_FACTS],
-            fact_kinds: [EntityKind::Function; MAX_EMISSION_FACTS],
-            import_modules: [ImportModule::unset(); MAX_EMISSION_FACTS],
+            name_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            name_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            decl_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            decl_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            fact_kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
+            import_modules: vec![ImportModule::unset(); MAX_EMISSION_FACTS].into_boxed_slice(),
             import_module_len: 0,
             checker: index,
             pending_type_parameters: 0,
-            extension_type_parameters: [0; MAX_EMISSION_FACTS],
+            extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             mint: ComputedMint {
                 builder: IrBuilder::new(),
                 count: 0,
@@ -2089,7 +2279,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         ) else {
             return Ok(());
         };
-        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| lane_rejection())?;
+        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
+            TypeScriptCollectError::Span {
+                start: relative_start,
+                end: relative_end,
+            }
+        })?;
         self.facts
             .push_occurrence(
                 owner,
@@ -2109,7 +2304,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// oracle confidence, and a language-library foreign base becomes an
     /// npm-universe occurrence at oracle confidence whose path is the exact
     /// use-site spelling. Foreign package modules stay at the honest
-    /// syntactic degradation: their module bytes are not spelled anywhere
+    /// syntactic `TypeReason`: their module bytes are not spelled anywhere
     /// in this source, and every borrowed wire cell must stay
     /// source-backed.
     fn checker_resolved_unresolved(
@@ -2301,6 +2496,16 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .is_some_and(|reference| reference.module.is_some())
     }
 
+    fn checker_foreign_module(&self, name_span: Span) -> Option<&'report str> {
+        let checker = self.checker.as_ref()?;
+        checker
+            .references()
+            .find(|reference| {
+                reference.span.start == name_span.start && reference.span.end == name_span.end
+            })
+            .and_then(|reference| reference.module)
+    }
+
     /// Upgrades one same-file reference to oracle confidence when the
     /// checker authority resolved it: the target becomes the exact overload
     /// member the checker picked (call sites), the first published fact of
@@ -2479,7 +2684,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if overflow {
             // A JSDoc line with more segments than the staged bound cannot be
             // emitted without truncation, which the lane forbids.
-            return Err(lane_rejection());
+            return Err(fault(FactFault::DocCapacity));
         }
         if len == 0 {
             return Ok(false);
@@ -2579,11 +2784,15 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
         name: &[u8],
         owner: u32,
     ) -> Option<&'source [u8]> {
+        let source_end = u32::try_from(self.source.len()).ok()?;
         match domain {
-            SpellDomain::Owner => self.source_spelling_owner(name, owner),
+            SpellDomain::Owner => self
+                .source_spelling_owner(name, owner)
+                .or_else(|| self.source_spelling_in(name, 0, source_end)),
             SpellDomain::Range(start, end) => self
                 .source_spelling_in(name, start, end)
-                .or_else(|| self.source_spelling_owner(name, owner)),
+                .or_else(|| self.source_spelling_owner(name, owner))
+                .or_else(|| self.source_spelling_in(name, 0, source_end)),
         }
     }
 }
@@ -2652,28 +2861,107 @@ fn intern_computed_tree<'source>(
         TypeTree::Literal { base, .. } => {
             intern_computed_leaf(facts, checker_literal(*base), owner)
         }
-        TypeTree::Union { members } => {
-            let children = intern_computed_children(registry, facts, members, owner, depth, spell)?;
-            intern_computed_row(
+        TypeTree::Union { members } => intern_computed_associative(
+            registry,
+            facts,
+            members,
+            owner,
+            depth,
+            spell,
+            SemanticTypeTag::Union,
+        ),
+        TypeTree::Intersection { members } => intern_computed_associative(
+            registry,
+            facts,
+            members,
+            owner,
+            depth,
+            spell,
+            SemanticTypeTag::Intersection,
+        ),
+        TypeTree::Conditional {
+            check,
+            extends,
+            then_type,
+            else_type,
+        } => {
+            let children = [
+                check.as_ref().clone(),
+                extends.as_ref().clone(),
+                then_type.as_ref().clone(),
+                else_type.as_ref().clone(),
+            ];
+            let children = intern_computed_children(
+                registry,
                 facts,
-                SemanticTypeRecord::leaf(SemanticTypeTag::Union),
+                &children,
                 owner,
-                &children[..members.len()],
+                depth,
+                spell,
+            )?;
+            intern_computed_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::Conditional),
+                owner,
+                &children[..4],
             )
         }
-        TypeTree::Intersection { members } => {
-            let children = intern_computed_children(registry, facts, members, owner, depth, spell)?;
-            intern_computed_row(
+        TypeTree::Mapped {
+            parameter,
+            constraint,
+            value,
+            readonly,
+            optional,
+        } => {
+            let children = intern_computed_children(
+                registry,
                 facts,
-                SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
+                &[constraint.as_ref().clone(), value.as_ref().clone()],
                 owner,
-                &children[..members.len()],
-            )
+                depth,
+                spell,
+            )?;
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Mapped);
+            record.text = registry.source_spelling(spell, parameter.as_bytes(), owner);
+            record.payload0 = u32::from(*readonly as u8);
+            record.payload1 = u32::from(*optional as u8);
+            intern_computed_row(registry, facts, record, owner, &children[..2])
+        }
+        TypeTree::TemplateLiteral { parts } => {
+            let mut children = [0_u32; MAX_TYPE_CHILDREN];
+            let mut child_count = 0;
+            let mut text = None;
+            for part in parts {
+                match part {
+                    TemplatePart::Text { text: value } => {
+                        text = registry.source_spelling(spell, value.as_bytes(), owner).or(text);
+                    }
+                    TemplatePart::Type { r#type } => {
+                        let slot = children.get_mut(child_count).ok_or_else(|| {
+                            computed_fault(registry, owner, FactFault::TypeChildCapacity)
+                        })?;
+                        *slot = intern_computed_tree(
+                            registry,
+                            facts,
+                            r#type,
+                            owner,
+                            depth.saturating_add(1),
+                            spell,
+                        )?;
+                        child_count += 1;
+                    }
+                }
+            }
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+            record.text = text;
+            intern_computed_row(registry, facts, record, owner, &children[..child_count])
         }
         TypeTree::Tuple { elements } => {
             let children =
                 intern_computed_children(registry, facts, elements, owner, depth, spell)?;
             intern_computed_row(
+                registry,
                 facts,
                 SemanticTypeRecord::leaf(SemanticTypeTag::Tuple),
                 owner,
@@ -2691,13 +2979,22 @@ fn intern_computed_tree<'source>(
             )?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
             record.text = Some(&b"[]"[..]);
-            intern_computed_row(facts, record, owner, &children[..1])
+            intern_computed_row(registry, facts, record, owner, &children[..1])
         }
         TypeTree::Function { parameters, result } => {
             let mut children = [0_u32; MAX_TYPE_CHILDREN];
             let mut len = 0_usize;
+            if parameters.len() >= MAX_TYPE_CHILDREN {
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeChildCapacity,
+                ));
+            }
             for parameter in parameters {
-                let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
+                let slot = children.get_mut(len).ok_or_else(|| {
+                    computed_fault(registry, owner, FactFault::TypeChildCapacity)
+                })?;
                 *slot = intern_computed_tree(
                     registry,
                     facts,
@@ -2716,12 +3013,14 @@ fn intern_computed_tree<'source>(
                 depth.saturating_add(1),
                 spell,
             )?;
-            let slot = children.get_mut(len).ok_or_else(lane_rejection)?;
+            let slot = children.get_mut(len).ok_or_else(|| {
+                computed_fault(registry, owner, FactFault::TypeChildCapacity)
+            })?;
             *slot = result_row;
             len += 1;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
             record.payload1 = SemanticTypeRecord::RESULT_FLAG;
-            intern_computed_row(facts, record, owner, &children[..len])
+            intern_computed_row(registry, facts, record, owner, &children[..len])
         }
         TypeTree::Object { members } => {
             // Members carry names and flags, so each member's row is
@@ -2729,7 +3028,11 @@ fn intern_computed_tree<'source>(
             // source spelling.
             let mut rows = [0_u32; MAX_TYPE_CHILDREN];
             if members.len() > MAX_TYPE_CHILDREN {
-                return Err(lane_rejection());
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeChildCapacity,
+                ));
             }
             for (position, member) in members.iter().enumerate() {
                 let row = intern_computed_tree(
@@ -2740,8 +3043,12 @@ fn intern_computed_tree<'source>(
                     depth.saturating_add(1),
                     spell,
                 )?;
-                if let Some(slot) = rows.get_mut(position) {
-                    *slot = row;
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "the preceding member-count check proves every position fits the fixed row lane"
+                )]
+                {
+                    rows[position] = row;
                 }
             }
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
@@ -2756,13 +3063,31 @@ fn intern_computed_tree<'source>(
                 }
                 let spelling = registry
                     .source_spelling(spell, member.name.as_bytes(), owner)
-                    .ok_or_else(lane_rejection)?;
-                let row = rows.get(position).copied().ok_or_else(lane_rejection)?;
+                    .ok_or_else(|| {
+                        computed_fault(
+                            registry,
+                            owner,
+                            FactFault::TypeChild {
+                                position,
+                                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
+                                    tag: SemanticTypeTag::AnonymousRecord,
+                                    position: position as u32,
+                                },
+                            },
+                        )
+                    })?;
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "the preceding member-count check proves every position fits the fixed row lane"
+                )]
+                let row = rows[position];
                 facts
                     .computed_type_child(row, Some(spelling), flags)
-                    .map_err(fault)?;
+                    .map_err(|cause| computed_fault(registry, owner, cause))?;
             }
-            facts.intern_computed_type_row(owner, record).map_err(fault)
+            facts
+                .intern_computed_type_row(owner, record)
+                .map_err(|cause| computed_fault(registry, owner, cause))
         }
         TypeTree::Reference { name, module, args } => intern_computed_reference(
             registry,
@@ -2777,10 +3102,9 @@ fn intern_computed_tree<'source>(
     }
 }
 
-/// Interns one computed reference: a bare same-file type names its local
-/// nominal, a foreign module type names the checker-resolved spelling —
-/// the closed lattice has no foreign-nominal row form — and applied
-/// foreign bases keep their exact argument structure.
+/// Interns one computed reference. Foreign bases retain a typed external
+/// nominal row, so applying one keeps the constructor rather than decaying
+/// to an unknown record.
 fn intern_computed_reference<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
@@ -2816,18 +3140,15 @@ fn intern_computed_reference<'source>(
     let base = match local_fact {
         Some(fact) => fact,
         None => {
-            // A checker-resolved foreign module type is known and named,
-            // but the closed lattice has no foreign-nominal row form; the
-            // record keeps the spelling-domain source slice so the
-            // backlog stays countable.
-            let record = match registry.source_spelling(spell, name.as_bytes(), owner) {
-                Some(spelling) => {
-                    let mut record = unknown_record(TypeReason::NoIrRepresentation);
-                    record.text = Some(spelling);
-                    record
-                }
-                None => unknown_record(TypeReason::OracleGap),
-            };
+            if module.is_none() {
+                let mut record = unknown_record(TypeReason::UnresolvedExternal);
+                record.text = registry.source_spelling(spell, name.as_bytes(), owner);
+                return intern_computed_leaf(facts, record, owner);
+            }
+            let module_bytes = module.map_or(name.as_bytes(), str::as_bytes);
+            let fragment = ExternalFragmentId::from_canonical_bytes(module_bytes);
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
+            record.nominal = Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
             intern_computed_leaf(facts, record, owner)?
         }
     };
@@ -2863,11 +3184,78 @@ fn intern_computed_reference<'source>(
         len += 1;
     }
     intern_computed_row(
+        registry,
         facts,
         SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
         owner,
         &children[..len],
     )
+}
+
+/// Folds an arbitrarily wide union or intersection into binary rows. Every
+/// source member remains reachable while each row obeys the fixed child lane.
+fn intern_computed_associative<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    facts: &mut FactSet<'source>,
+    members: &[TypeTree],
+    owner: u32,
+    depth: u8,
+    spell: SpellDomain,
+    tag: SemanticTypeTag,
+) -> Result<u32, TypeScriptCollectError> {
+    if members.len() <= MAX_TYPE_CHILDREN {
+        let children = intern_computed_children(registry, facts, members, owner, depth, spell)?;
+        return intern_computed_row(
+            registry,
+            facts,
+            SemanticTypeRecord::leaf(tag),
+            owner,
+            &children[..members.len()],
+        );
+    }
+    let first = members.first().ok_or_else(lane_rejection)?;
+    let second = members.get(1).ok_or_else(lane_rejection)?;
+    let mut left = intern_computed_tree(
+        registry,
+        facts,
+        first,
+        owner,
+        depth.saturating_add(1),
+        spell,
+    )?;
+    let right = intern_computed_tree(
+        registry,
+        facts,
+        second,
+        owner,
+        depth.saturating_add(1),
+        spell,
+    )?;
+    left = intern_computed_row(
+        registry,
+        facts,
+        SemanticTypeRecord::leaf(tag),
+        owner,
+        &[left, right],
+    )?;
+    for member in members.iter().skip(2) {
+        let right = intern_computed_tree(
+            registry,
+            facts,
+            member,
+            owner,
+            depth.saturating_add(1),
+            spell,
+        )?;
+        left = intern_computed_row(
+            registry,
+            facts,
+            SemanticTypeRecord::leaf(tag),
+            owner,
+            &[left, right],
+        )?;
+    }
+    Ok(left)
 }
 
 fn intern_computed_children<'source>(
@@ -2888,15 +3276,20 @@ fn intern_computed_children<'source>(
 
 /// Links one bounded child run under a new anonymous row and interns it.
 fn intern_computed_row<'a, 'source>(
+    registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
     record: SemanticTypeRecord<'source>,
     owner: u32,
     children: &[u32],
 ) -> Result<u32, TypeScriptCollectError> {
     for child in children {
-        facts.computed_type_child(*child, None, 0).map_err(fault)?;
+        facts
+            .computed_type_child(*child, None, 0)
+            .map_err(|cause| computed_fault(registry, owner, cause))?;
     }
-    facts.intern_computed_type_row(owner, record).map_err(fault)
+    facts
+        .intern_computed_type_row(owner, record)
+        .map_err(|cause| computed_fault(registry, owner, cause))
 }
 
 fn intern_computed_leaf<'a, 'source>(

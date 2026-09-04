@@ -26,7 +26,7 @@ use compiler_vocabulary::TypeScriptSource;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{CoordinateError, Utf8Span, Utf16Span};
+use crate::{CoordinateError, Utf16Span, Utf8Span};
 
 /// Digest width of one SHA-256 source binding.
 const DIGEST_BYTES: usize = 32;
@@ -216,6 +216,25 @@ pub enum TypeTree {
         /// The intersection members, in declared order.
         members: Vec<TypeTree>,
     },
+    /// A conditional type with its four source-level operands.
+    Conditional {
+        check: Box<TypeTree>,
+        extends: Box<TypeTree>,
+        #[serde(rename = "thenType")]
+        then_type: Box<TypeTree>,
+        #[serde(rename = "elseType")]
+        else_type: Box<TypeTree>,
+    },
+    /// A mapped type with its key constraint and value type.
+    Mapped {
+        parameter: String,
+        constraint: Box<TypeTree>,
+        value: Box<TypeTree>,
+        readonly: MappedModifier,
+        optional: MappedModifier,
+    },
+    /// One part of a template-literal type, in source order.
+    TemplateLiteral { parts: Vec<TemplatePart> },
     /// A tuple with positional elements.
     Tuple {
         /// The tuple elements, in declared order.
@@ -250,6 +269,28 @@ pub enum TypeTree {
         /// The checker's exact printed spelling.
         text: String,
     },
+}
+
+/// The modifier applied by one mapped type member.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MappedModifier {
+    /// No modifier was written.
+    Preserve,
+    /// The modifier is added.
+    Add,
+    /// The modifier is removed.
+    Remove,
+}
+
+/// One ordered template-literal part.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TemplatePart {
+    /// Literal source text.
+    Text { text: String },
+    /// A placeholder type.
+    Type { r#type: Box<TypeTree> },
 }
 
 /// The base class of one [`TypeTree::Literal`].
