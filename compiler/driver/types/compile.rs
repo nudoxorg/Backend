@@ -32,6 +32,7 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
         transaction.source,
         transaction.recipe,
         &transaction.facts,
+        transaction.permit,
         output.fragment_output,
     )
 }
@@ -43,8 +44,12 @@ pub fn compile<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
 /// artifact is written and validated, so a failure returns no partial result.
 /// The returned value borrows only `output.fragment_output`; source bytes,
 /// authority input, scratch storage, cancellation control, and deadline do
-/// not escape. Cancellation or deadline at either transaction checkpoint
-/// returns the exact borrowed diagnostic terminal and no fragment or IR.
+/// not escape. A retained-permit checkpoint runs after owned `Ir` and capture
+/// materialization but before fragment admission mutates caller output; the
+/// writer repeats that gate at its admission linearization point. Cancellation
+/// or deadline observed there returns the exact borrowed diagnostic terminal
+/// and no fragment or IR; once synchronous admission has begun, a later
+/// observation is not retroactive.
 pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'output>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
@@ -60,10 +65,15 @@ pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'outpu
             cause,
         })?;
     let capture = transaction.facts.rich_capture();
+    // This observes the retained permit immediately after owned truth exists
+    // and before the fragment writer can mutate the caller's lease. The
+    // writer repeats the gate as its admission linearization point.
+    checkpoint(transaction.permit, transaction.recipe)?;
     let artifact = write_fragment(
         transaction.source,
         transaction.recipe,
         &transaction.facts,
+        transaction.permit,
         output.fragment_output,
     )?;
     Ok(CompiledSemantic {
@@ -78,6 +88,8 @@ pub fn compile_semantic<'source, 'toolchain, 'cancel, 'diagnostic, 'work, 'outpu
 /// This owned-only view does not validate a compact artifact. A separate
 /// [`compile`] call repeats authority traversal and therefore cannot prove
 /// cross-call coherence; use [`compile_semantic`] for the fused parity result.
+/// Its retained permit is checked after owned materialization and before this
+/// compatibility result becomes visible.
 pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
@@ -91,11 +103,13 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
             recipe: transaction.recipe,
             cause,
         })?;
+    let capture = transaction.facts.rich_capture();
+    checkpoint(transaction.permit, transaction.recipe)?;
     Ok(super::CompiledIr {
         source: transaction.source,
         recipe: transaction.recipe,
         ir,
-        capture: transaction.facts.rich_capture(),
+        capture,
     })
 }
 
@@ -104,16 +118,18 @@ pub fn compile_ir<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
 /// but successful callers immediately materialize an owned IR and/or the
 /// caller output fragment, so no such staging borrow crosses the public
 /// boundary.
-struct CollectedFacts<'source> {
+struct CollectedFacts<'source, 'cancel> {
     source: SourceIdentity,
     recipe: CompileRecipeFact,
+    /// Retained through materialization to the final pre-write checkpoint.
+    permit: WorkPermit<'cancel>,
     facts: lower::FactSet<'source>,
 }
 
 fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     request: CompileRequest<'source, 'toolchain, 'cancel>,
     scratch: CompileScratch<'diagnostic, 'work>,
-) -> Result<CollectedFacts<'source>, CompileFailure<'diagnostic>> {
+) -> Result<CollectedFacts<'source, 'cancel>, CompileFailure<'diagnostic>> {
     let prepared = prepare(request)?;
     let mut facts = lower::FactSet::with_primary_source(
         lower::ResourcePlan::for_source(request.profile, request.source.len()),
@@ -123,16 +139,22 @@ fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     Ok(CollectedFacts {
         source: prepared.source,
         recipe: prepared.recipe,
+        permit: prepared.permit,
         facts,
     })
 }
 
-fn write_fragment<'source, 'diagnostic, 'output>(
+/// Shared output linearization point. A stopped permit observed before
+/// `lower::admit` begins leaves caller output unchanged. Admission is
+/// synchronous, so a later cancellation or deadline cannot retract it.
+fn write_fragment<'source, 'cancel, 'diagnostic, 'output>(
     source: SourceIdentity,
     recipe: CompileRecipeFact,
     facts: &lower::FactSet<'source>,
+    permit: WorkPermit<'cancel>,
     output: &'output mut [u8],
 ) -> Result<CompiledFragment<'output>, CompileFailure<'diagnostic>> {
+    checkpoint(permit, recipe)?;
     let bytes = lower::admit(
         facts,
         source,
@@ -1013,5 +1035,108 @@ fn typescript_diagnostic<'diagnostic>(
         Ok(diagnostic) => diagnostic,
         Err(AuthorityDiagnosticFault::PrefixExceedsObserved { .. })
         | Err(AuthorityDiagnosticFault::TruncationMismatch { .. }) => AuthorityDiagnostic::absent(),
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
+    };
+
+    use compiler_ir::{EntityKind, SemanticProductConstructor};
+    use compiler_vocabulary::{NativeTool, RustEdition};
+    use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
+
+    use super::*;
+
+    const SOURCE: &[u8] = b"fn lifecycle() {}";
+
+    fn source() -> SourceIdentity {
+        SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(SOURCE),
+            byte_len: u32::try_from(SOURCE.len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    fn recipe(source: SourceIdentity) -> CompileRecipeFact {
+        CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"lifecycle-toolchain"),
+        )
+    }
+
+    fn facts() -> lower::FactSet<'static> {
+        let mut facts = lower::FactSet::new();
+        match facts.push(lower::SemanticFact::new(
+            EntityKind::Function,
+            b"lifecycle",
+            SemanticProductConstructor::PRODUCT,
+        )) {
+            Ok(0) => facts,
+            Ok(_) | Err(_) => panic!("lifecycle fact fixture must admit at ordinal zero"),
+        }
+    }
+
+    #[test]
+    fn stopped_prewrite_gate_keeps_fused_and_compact_output_untouched() {
+        let source = source();
+        let recipe = recipe(source);
+        let facts = facts();
+
+        // Fused path: materialize owned truth first, then stop before its
+        // only output mutation. The writer must retain the exact terminal.
+        let cancelled = AtomicBool::new(false);
+        let ir = match facts.build_ir(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            source,
+            super::super::DeclarationScope::fixture(),
+        ) {
+            Ok(ir) => ir,
+            Err(_) => panic!("fixture owned image must build"),
+        };
+        let capture = facts.rich_capture();
+        cancelled.store(true, Ordering::Release);
+        let permit = WorkPermit::new(
+            source,
+            super::super::CompileControl {
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancelled: &cancelled,
+            },
+        );
+        let mut fused_output = [0xa5_u8; 1024];
+        match write_fragment(source, recipe, &facts, permit, &mut fused_output) {
+            Err(CompileFailure::Cancelled { diagnostic, .. })
+                if diagnostic.bytes.is_empty()
+                    && diagnostic.observed == 0
+                    && !diagnostic.truncated => {}
+            _ => panic!("fused pre-write cancellation must retain its exact terminal"),
+        }
+        assert!(fused_output.iter().all(|byte| *byte == 0xa5));
+        drop((ir, capture));
+
+        // Compact compatibility path reaches the identical writer boundary;
+        // a deadline there is likewise observed before any output byte moves.
+        let deadline_cancelled = AtomicBool::new(false);
+        let deadline_permit = WorkPermit::new(
+            source,
+            super::super::CompileControl {
+                deadline: Instant::now() - Duration::from_secs(1),
+                cancelled: &deadline_cancelled,
+            },
+        );
+        let mut compact_output = [0xa5_u8; 1024];
+        match write_fragment(source, recipe, &facts, deadline_permit, &mut compact_output) {
+            Err(CompileFailure::DeadlineExceeded { diagnostic, .. })
+                if diagnostic.bytes.is_empty()
+                    && diagnostic.observed == 0
+                    && !diagnostic.truncated => {}
+            _ => panic!("compact pre-write deadline must retain its exact terminal"),
+        }
+        assert!(compact_output.iter().all(|byte| *byte == 0xa5));
     }
 }

@@ -13,6 +13,10 @@ use crate::semantic::StableEntityId;
 /// containment fact are part of stable identity.  These facts are not an
 /// overload skeleton: unique declarations retain `Disambiguator::None`.
 const SCOPED_DECLARATION_KEY_PURPOSE: &[u8] = b"compiler.scoped-declaration.v1";
+const SCOPED_DECLARATION_KEY_PURPOSE_LEN: u32 = 31;
+const _: () = assert!(
+    SCOPED_DECLARATION_KEY_PURPOSE.len() == SCOPED_DECLARATION_KEY_PURPOSE_LEN as usize
+);
 const SCOPED_KEY_TAIL_BYTES: usize = 8;
 
 /// Closed containment fact retained by one [`ScopedDeclarationKey`].
@@ -135,7 +139,7 @@ impl<'bytes> ScopedDeclarationKey<'bytes> {
         let profile: [u8; 2] = self.profile.into();
         let mut cursor = 0;
         out[cursor..cursor + 4]
-            .copy_from_slice(&(SCOPED_DECLARATION_KEY_PURPOSE.len() as u32).to_le_bytes());
+            .copy_from_slice(&SCOPED_DECLARATION_KEY_PURPOSE_LEN.to_le_bytes());
         cursor += 4;
         out[cursor..cursor + SCOPED_DECLARATION_KEY_PURPOSE.len()]
             .copy_from_slice(SCOPED_DECLARATION_KEY_PURPOSE);

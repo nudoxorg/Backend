@@ -2239,7 +2239,11 @@ impl StableEntityId {
         &self.0
     }
 }
-/// Canonical hash of one declaration payload, excluding containment edges.
+
+/// Canonical hash of one declaration payload.  It excludes identity scope and
+/// optional provenance planes, but may include the order-independent basis of
+/// locally Bound members where that topology is part of the declaration's
+/// admitted semantic payload.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PayloadHash([u8; 16]);
