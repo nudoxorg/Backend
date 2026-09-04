@@ -321,6 +321,17 @@ impl TypeNodeKind {
             _ => None,
         }
     }
+
+    /// Closed authority child cardinality. Array rank is represented by the
+    /// number of element children; callable rows may be empty for `void ()`.
+    const fn child_law(self) -> (usize, usize) {
+        match self {
+            Self::Array => (1, usize::MAX),
+            Self::Pointer | Self::NullableValue => (1, 1),
+            Self::TypeParameter | Self::Dynamic | Self::Error => (0, 0),
+            Self::Named | Self::Tuple | Self::FunctionPointer => (0, usize::MAX),
+        }
+    }
 }
 
 /// Generic-parameter variance, closed to C#'s two written directions.
@@ -1166,13 +1177,11 @@ impl<'image> CSharpImage<'image> {
     fn validate_types(self) -> Result<(), ImageError> {
         for index in 0..self.section(Section::Types).count {
             let row = self.row(Section::Types, index);
-            if TypeNodeKind::decode(row[0]).is_none() {
-                return Err(ImageError::DeclarationKind {
+            let kind = TypeNodeKind::decode(row[0]).ok_or(ImageError::DeclarationKind {
                     index,
                     found: row[0],
                     plane: Section::Types,
-                });
-            }
+                })?;
             if NullabilityCell::decode(row[1]).is_none() {
                 return Err(ImageError::DeclarationKind {
                     index,
@@ -1193,7 +1202,17 @@ impl<'image> CSharpImage<'image> {
                 start: u32::try_from(start).unwrap_or(u32::MAX),
                 end: u32::try_from(self.section(Section::TypeChildren).count).unwrap_or(u32::MAX),
             })?;
-            let _ = self.range_end(start, count, Section::TypeChildren, index)?;
+            self.range_end(start, count, Section::TypeChildren, index)?;
+            let (min, max) = kind.child_law();
+            if count < min || count > max {
+                return Err(ImageError::TypeChildCount {
+                    index,
+                    kind,
+                    min,
+                    max,
+                    actual: count,
+                });
+            }
         }
         Ok(())
     }
@@ -1729,6 +1748,15 @@ pub enum ImageError {
         start: u32,
         /// Exclusive byte coordinate or the section's exclusive bound.
         end: u32,
+    },
+    /// A type-node kind's closed child arity was violated before lowering.
+    #[error("C# authority type row {index} {kind:?} has {actual} children; expected {min}..={max}")]
+    TypeChildCount {
+        index: usize,
+        kind: TypeNodeKind,
+        min: usize,
+        max: usize,
+        actual: usize,
     },
 }
 

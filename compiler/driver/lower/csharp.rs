@@ -38,7 +38,7 @@
 //! scanning source text or a native parser fallback.
 
 use compiler_ir::{
-    AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
+    AnnotationKind, AtomId, AtomListId, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
     CSharpReferenceKind, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
     ForeignOrigin, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
@@ -138,7 +138,6 @@ const INTEGER_WIDTH_SHIFT: u32 = 1;
 /// Multidimensional array text spellings by rank, ranks one through four.
 /// Rank one spells `[]`; higher ranks keep their comma spelling; deeper
 /// ranks fold to typed unknowns with their written spelling.
-const RANK_SPELLINGS: [&[u8]; 4] = [b"[]", b"[,]", b"[,,]", b"[,,,]"];
 
 /// The void builtin spelling; the void row is a primitive builtin leaf.
 const VOID_SPELLING: &[u8] = b"void";
@@ -880,21 +879,20 @@ fn child_target<'source>(
     }
 }
 
-/// The interning of one compound node: children must already be interned, so
-/// the row and its children are appended before the caller interns the next.
+/// The interning of one compound node is one staging transaction: append its
+/// already-resolved children first, then admit the row that validates exactly
+/// that pending range. `FactSet` deliberately rejects an empty pending range
+/// for unary/tuple rows, so reversing this order loses every compound C# type.
 fn intern_row<'source>(
     facts: &mut FactSet<'source>,
     anchor: u32,
     record: SemanticTypeRecord<'source>,
     children: &[(u32, Option<&'source [u8]>)],
 ) -> Result<u32, FactFault> {
-    let pending = u32::try_from(children.len()).map_err(|_| FactFault::TypeRowCapacity)?;
-    record.validate(pending).map_err(FactFault::TypeRecord)?;
-    let row = facts.intern_anonymous_type_row(anchor, record)?;
     for (target, name) in children {
         facts.anonymous_type_child(*target, *name, 0)?;
     }
-    Ok(row)
+    facts.intern_anonymous_type_row(anchor, record)
 }
 
 /// One owned compound node built bottom-up: its children are already
@@ -926,14 +924,13 @@ fn owned_node<'source>(
             let Some(element) = node.children.clone().next() else {
                 return Ok(spelled_unknown(node));
             };
-            // Jagged chains project as nested array rows, one `[]` per
-            // level; only true multidimensional ranks need comma spellings,
-            // and ranks the bounded table cannot spell fold to unknowns.
-            let Some(arity) = RANK_SPELLINGS.get(rank - 1) else {
+            // Jagged chains project as nested array rows. A rectangular rank
+            // is a numeric authority fact, not a bounded comma spelling.
+            let Some(rank) = u16::try_from(rank).ok().filter(|rank| *rank != 0) else {
                 return Ok(spelled_unknown(node));
             };
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-            record.text = Some(arity);
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayRectangular);
+            record.payload0 = u32::from(rank);
             let target =
                 child_target(facts, image, names, ordinals, anchor, element.ty, depth - 1)?;
             Ok(OwnedNode {
@@ -963,13 +960,12 @@ fn owned_node<'source>(
             })
         }
         TypeNodeKind::NullableValue => {
-            // `T?` collapses to the lane's annotated row over its inner row;
-            // the annotation argument is the written question mark.
+            // `T?` is a closed nullable-value annotation over its inner row.
             let Some(inner) = node.children.clone().next() else {
                 return Ok(spelled_unknown(node));
             };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
-            record.text = Some(b"?");
+            record.payload0 = AnnotationKind::NullableValue as u32;
             let target = child_target(facts, image, names, ordinals, anchor, inner.ty, depth - 1)?;
             Ok(OwnedNode {
                 record,
@@ -2444,7 +2440,7 @@ mod tests {
         }
         let maybe = row(&view, 5)?;
         if maybe.record.tag != SemanticTypeTag::Annotated
-            || maybe.record.text != Some(b"?".as_slice())
+            || maybe.record.payload0 != AnnotationKind::NullableValue as u32
             || maybe.record.children.length != 1
         {
             return Err(TestError::Missing("annotated value row"));
@@ -3007,15 +3003,13 @@ mod tests {
         // Facts: 0 Bag; the interned element row precedes the carriers, so
         // 1 is the anonymous string element, 2 the `rest` carrier, 3 Rest.
         let parameter = row(&view, 2)?;
-        if parameter.record.tag != SemanticTypeTag::Array
-            || parameter.record.text != Some(b"[]".as_slice())
+        if parameter.record.tag != SemanticTypeTag::ArrayRectangular
+            || parameter.record.payload0 != 1
             || parameter.record.children.length != 1
         {
             return Err(TestError::Missing("params array row"));
         }
-        // Falsifier: a second element raises the array's rank, and the
-        // committed row must carry the comma spelling instead. The rank
-        // rides in the row's text cell, so the carrier ordinal is stable.
+        // Falsifier: a second element raises the typed rectangular rank.
         let mut mutated = fix.clone();
         let int_ty = mutated.named(b"System.Int32");
         mutated.types[array_row as usize]
@@ -3027,7 +3021,9 @@ mod tests {
         }
         let view = FragmentView::validate(&other)?;
         let parameter = row(&view, 2)?;
-        if parameter.record.text != Some(b"[,]".as_slice()) {
+        if parameter.record.tag != SemanticTypeTag::ArrayRectangular
+            || parameter.record.payload0 != 2
+        {
             return Err(TestError::Missing("rank-two spelling"));
         }
         Ok(())

@@ -42,10 +42,10 @@ pub use canonical_data::{
 };
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
-    AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
+    AnnotationKind, AnonRecordForm, AnonRecordFormError, ChildCountLaw, DeclarationKey, DeclarationKeyFault,
     DeclarationPathFault, Disambiguator, ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
     ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
-    FunctionVariadicForm, ListSpan,
+    ChannelDirection, FunctionVariadicForm, ListSpan,
     NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageFault, PooledListError,
     PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
     ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
@@ -96,7 +96,7 @@ pub use range::{
 };
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
-    AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
+    ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
     CallableElementRole,
     CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
     ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
@@ -109,7 +109,7 @@ pub use semantic::{
     LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
     LinkTarget, LiteralType,
     MappedModifier, Mutability, ObjectMember, ObjectMemberListId, OptionalId, PayloadHash,
-    PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, RustExtension, RustFacts,
+    PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
     RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
     SparseColumnView, StableEntityId, StorageColumns, TemplatePart, TemplatePartListId,
     TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
@@ -118,6 +118,7 @@ pub use semantic::{
     VariadicForm,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
     UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
+    WildcardBound,
 };
 pub use semantic_data_view::{
     SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,

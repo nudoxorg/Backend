@@ -47,7 +47,7 @@ use core::str;
 use std::collections::HashMap;
 
 use compiler_ir::{
-    AtomListId, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey, ForeignKeyFault,
+    AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey, ForeignKeyFault,
     ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence, OccurrenceConfidence,
     OccurrenceTarget, PackageLineage, PackageLineageFault, ProductChildRole, ReferenceKind,
     RelSpan, RelSpanFault, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag,
@@ -189,8 +189,6 @@ const DEPTH_LIMIT: usize = 64;
 /// type plane carries no spellings for.
 const UNNAMED: &[u8] = b"_";
 
-/// Fixed array text cell; the exact length travels in the payload cells.
-const ARRAY_BRACKET: &[u8] = b"[]";
 
 /// `PrimitiveShape::Integer` wire cell.
 const SHAPE_INTEGER: u32 = 0;
@@ -210,10 +208,6 @@ const INTEGER_SIGNED_FLAG: u32 = 1;
 /// Bit offset of the integer width cell above the signedness bit.
 const INTEGER_WIDTH_SHIFT: u32 = 1;
 
-/// Channel base spellings by image direction cell.
-const CHAN_BOTH: &[u8] = b"chan";
-const CHAN_SEND: &[u8] = b"chan<-";
-const CHAN_RECV: &[u8] = b"<-chan";
 
 /// Go ecosystem name of every foreign package lineage.
 const ECOSYSTEM: &str = "go";
@@ -1165,25 +1159,20 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             TypeRowKind::Array => {
                 let children = self.row_children(&row)?;
-                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-                record.text = Some(ARRAY_BRACKET);
-                let length = row.length;
-                record.payload0 = u32::try_from(length & 0xFFFF_FFFF).unwrap_or(u32::MAX);
-                record.payload1 = u32::try_from((length >> 32) & 0xFFFF_FFFF).unwrap_or(u32::MAX);
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
+                let length = u64::try_from(row.length)
+                    .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+                let bytes = length.to_le_bytes();
+                record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                record.payload1 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 self.unary_root(record, children.first().copied(), depth)
             }
             TypeRowKind::Map => {
                 let children = self.row_children(&row)?;
                 let mut projected = RootType {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
+                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Map),
                     children: Vec::new(),
                 };
-                let base = self.builtin_row(b"map").map_err(lane_terminal)?;
-                projected.children.push(TypeChild {
-                    target: base,
-                    name: None,
-                    flags: 0,
-                });
                 for child in children {
                     let target = self.coordinate(Some(child), depth - 1)?;
                     projected.children.push(TypeChild {
@@ -1197,20 +1186,17 @@ impl<'x, 'source> Projector<'x, 'source> {
             TypeRowKind::Chan => {
                 let children = self.row_children(&row)?;
                 let mut projected = RootType {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
+                    record: {
+                        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Channel);
+                        record.payload0 = match row.dir {
+                            ChanDir::Both => ChannelDirection::Both as u32,
+                            ChanDir::Send => ChannelDirection::Send as u32,
+                            ChanDir::Recv => ChannelDirection::Receive as u32,
+                        };
+                        record
+                    },
                     children: Vec::new(),
                 };
-                let spelling = match row.dir {
-                    ChanDir::Both => CHAN_BOTH,
-                    ChanDir::Send => CHAN_SEND,
-                    ChanDir::Recv => CHAN_RECV,
-                };
-                let base = self.builtin_row(spelling).map_err(lane_terminal)?;
-                projected.children.push(TypeChild {
-                    target: base,
-                    name: None,
-                    flags: 0,
-                });
                 for child in children {
                     let target = self.coordinate(Some(child), depth - 1)?;
                     projected.children.push(TypeChild {
@@ -1281,11 +1267,16 @@ impl<'x, 'source> Projector<'x, 'source> {
                     record: anonymous_record(ANON_INTERFACE),
                     children: Vec::new(),
                 };
-                for embedded in embedded_run(&row) {
+                for embedded in embedded_run(self.image, &row) {
+                    let embedded = embedded.map_err(GoCollectError::Image)?;
                     let target = self.coordinate(Some(embedded), depth - 1)?;
+                    let embedded_row = self
+                        .image
+                        .type_row(index_of(embedded))
+                        .map_err(GoCollectError::Image)?;
                     projected.children.push(TypeChild {
                         target,
-                        name: Some(embedded_name(&row)),
+                        name: Some(embedded_name(&embedded_row)),
                         flags: 0,
                     });
                 }
@@ -1508,11 +1499,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             TypeRowKind::Array => {
                 let children = self.row_children(&row)?;
-                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-                record.text = Some(ARRAY_BRACKET);
-                record.payload0 = u32::try_from(row.length & 0xFFFF_FFFF).unwrap_or(u32::MAX);
-                record.payload1 =
-                    u32::try_from((row.length >> 32) & 0xFFFF_FFFF).unwrap_or(u32::MAX);
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
+                let length = u64::try_from(row.length)
+                    .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+                let bytes = length.to_le_bytes();
+                record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                record.payload1 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
                 let mut built = AnonRow {
                     record,
                     children: Vec::new(),
@@ -1529,14 +1521,9 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             TypeRowKind::Map => {
                 let children = self.row_children(&row)?;
-                let base = self.builtin_row(b"map").map_err(lane_terminal)?;
                 let mut built = AnonRow {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
-                    children: vec![TypeChild {
-                        target: base,
-                        name: None,
-                        flags: 0,
-                    }],
+                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Map),
+                    children: Vec::new(),
                 };
                 for child in children {
                     let target = self.project_anonymous(index_of(child), depth - 1)?;
@@ -1550,19 +1537,17 @@ impl<'x, 'source> Projector<'x, 'source> {
             }
             TypeRowKind::Chan => {
                 let children = self.row_children(&row)?;
-                let spelling = match row.dir {
-                    ChanDir::Both => CHAN_BOTH,
-                    ChanDir::Send => CHAN_SEND,
-                    ChanDir::Recv => CHAN_RECV,
-                };
-                let base = self.builtin_row(spelling).map_err(lane_terminal)?;
                 let mut built = AnonRow {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
-                    children: vec![TypeChild {
-                        target: base,
-                        name: None,
-                        flags: 0,
-                    }],
+                    record: {
+                        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Channel);
+                        record.payload0 = match row.dir {
+                            ChanDir::Both => ChannelDirection::Both as u32,
+                            ChanDir::Send => ChannelDirection::Send as u32,
+                            ChanDir::Recv => ChannelDirection::Receive as u32,
+                        };
+                        record
+                    },
+                    children: Vec::new(),
                 };
                 for child in children {
                     let target = self.project_anonymous(index_of(child), depth - 1)?;
@@ -1636,11 +1621,16 @@ impl<'x, 'source> Projector<'x, 'source> {
                         record: anonymous_record(ANON_INTERFACE),
                         children: Vec::new(),
                     };
-                    for embedded in embedded_run(&row) {
+                    for embedded in embedded_run(self.image, &row) {
+                        let embedded = embedded.map_err(GoCollectError::Image)?;
                         let target = self.project_anonymous(index_of(embedded), depth - 1)?;
+                        let embedded_row = self
+                            .image
+                            .type_row(index_of(embedded))
+                            .map_err(GoCollectError::Image)?;
                         built.children.push(TypeChild {
                             target,
-                            name: Some(embedded_name(&row)),
+                            name: Some(embedded_name(&embedded_row)),
                             flags: 0,
                         });
                     }
@@ -1838,12 +1828,16 @@ fn member_run(row: &compiler_languages_go::TypeRow<'_>) -> Vec<usize> {
 }
 
 /// The embedded-run row indices of one interface row.
-fn embedded_run(row: &compiler_languages_go::TypeRow<'_>) -> Vec<u32> {
+fn embedded_run<'image>(
+    image: GoImage<'image>,
+    row: &compiler_languages_go::TypeRow<'image>,
+) -> impl Iterator<Item = Result<u32, ImageError>> + 'image {
     let start = index_of(row.children.0);
     let count = usize::try_from(row.children.1).unwrap_or(0);
-    (start..start + count)
-        .map(|offset| u32::try_from(offset).unwrap_or(u32::MAX))
-        .collect()
+    // `GoImage::open` already proved this exact child range. Streaming keeps
+    // every target authority-bound without a per-interface allocation.
+    (start..start.saturating_add(count))
+        .map(move |offset| image.type_child(offset).map(|(target, _)| target))
 }
 
 /// The first embedded row's spelling; anonymous embeddeds carry none and
@@ -1901,7 +1895,7 @@ mod tests {
     use super::*;
     use crate::lower::{FactSet, MAX_EMISSION_FACTS, MAX_REF_LISTS};
     use crate::types::FactFault;
-    use compiler_ir::{FragmentView, LanguageExtensionWireFact, SourceIdentity};
+    use compiler_ir::{ChannelDirection, FragmentView, LanguageExtensionWireFact, SourceIdentity};
     use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
@@ -3087,7 +3081,8 @@ mod tests {
         fix.declaration(KIND_VAR, b"Ch", Some(channel));
         let bytes = lower(&fix, b"package demo\n")?;
         let view = FragmentView::validate(&bytes)?;
-        // Anonymous pool: 0 int, 1 map base, 2 string, 3 bool, 4 chan<- base.
+        // Anonymous pool starts with the shared int row, then the structural
+        // slice/pointer/array; map and channel own no fabricated base rows.
         let slice_row = row(&view, 5)?;
         if slice_row.record.tag != SemanticTypeTag::Slice
             || field_children(&view, &slice_row)? != vec![0]
@@ -3101,32 +3096,24 @@ mod tests {
             return Err(TestError::Missing("pointer row"));
         }
         let array_row = row(&view, 7)?;
-        if array_row.record.tag != SemanticTypeTag::Array
-            || array_row.record.text != Some(b"[]".as_slice())
+        if array_row.record.tag != SemanticTypeTag::ArrayFixed
             || array_row.record.payload0 != 3
             || array_row.record.payload1 != 0
         {
             return Err(TestError::Missing("array length cells"));
         }
-        let map_row = row(&view, 8)?;
-        if map_row.record.tag != SemanticTypeTag::Apply
-            || field_children(&view, &map_row)? != vec![1, 2, 3]
+        let map_row = row(&view, 10)?;
+        if map_row.record.tag != SemanticTypeTag::Map
+            || field_children(&view, &map_row)? != vec![8, 9]
         {
-            return Err(TestError::Missing("map application"));
+            return Err(TestError::Missing("structural map"));
         }
-        let base = row(&view, 1)?;
-        if base.record.payload0 != SHAPE_BUILTIN || base.record.text != Some(b"map".as_slice()) {
-            return Err(TestError::Missing("map base spelling"));
-        }
-        let chan_row = row(&view, 9)?;
-        if chan_row.record.tag != SemanticTypeTag::Apply
-            || field_children(&view, &chan_row)? != vec![4, 0]
+        let chan_row = row(&view, 11)?;
+        if chan_row.record.tag != SemanticTypeTag::Channel
+            || chan_row.record.payload0 != ChannelDirection::Send as u32
+            || field_children(&view, &chan_row)? != vec![0]
         {
-            return Err(TestError::Missing("channel application"));
-        }
-        let chan_base = row(&view, 4)?;
-        if chan_base.record.text != Some(b"chan<-".as_slice()) {
-            return Err(TestError::Missing("send-only base spelling"));
+            return Err(TestError::Missing("directional channel"));
         }
         Ok(())
     }

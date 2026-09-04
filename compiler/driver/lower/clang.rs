@@ -196,10 +196,6 @@ fn gap() -> Projected<'static> {
     Projected::leaf(unknown_record(TypeReason::OracleGap, None))
 }
 
-/// Array arity spelling shared by every C array row; the row's payload cell
-/// carries the exact measured element count (length+1, zero unmeasured).
-const ARRAY_ARITY_SPELLING: &[u8] = b"[]";
-
 /// `AnonymousRecordForm::Struct` wire cell.
 const ANON_RECORD_STRUCT: u32 = 0;
 
@@ -1365,9 +1361,8 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(self.finish_row(record, vec![(child, None)]))
     }
 
-    /// Projects one array row: the element count travels in the payload
-    /// cell as length+1, zero when the authority could not measure a
-    /// length (incomplete, variable, or dependent arrays).
+    /// Projects one array row with a typed fixed extent or an explicit
+    /// incomplete/dependent extent. No sentinel length shares either state.
     fn project_array(
         &mut self,
         row: &TypeFact,
@@ -1376,13 +1371,15 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         let Some(element) = self.edge_of(row.id, TypeRelation::Element) else {
             return Ok(gap());
         };
-        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-        record.text = Some(ARRAY_ARITY_SPELLING);
-        record.payload0 = match row.array_len {
+        let record = match row.array_len {
             Some(length) => {
-                u32::try_from(length.checked_add(1).unwrap_or(u64::MAX)).unwrap_or(u32::MAX)
+                let bytes = length.to_le_bytes();
+                let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
+                record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                record.payload1 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+                record
             }
-            None => 0,
+            None => SemanticTypeRecord::leaf(SemanticTypeTag::ArrayIncomplete),
         };
         let child = match self.project_child(element, depth)? {
             UNHOSTABLE => return Ok(gap()),

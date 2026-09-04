@@ -180,7 +180,7 @@ fn ir_tag_shape(ir: &compiler_ir::Ir, id: compiler_ir::TypeId) -> (SemanticTypeT
             SemanticTypeTag::FunctionPointer,
             (ir.tuple_elements(parameters).unwrap().len() + ir.tuple_elements(results).unwrap().len()) as u8,
         ),
-        TypeExpr::Concrete(ConcreteType::Array { .. }) => (SemanticTypeTag::Array, 1),
+        TypeExpr::Concrete(ConcreteType::Array { .. }) => (SemanticTypeTag::ArraySequence, 1),
         TypeExpr::Concrete(ConcreteType::Union(types)) => {
             (SemanticTypeTag::Union, ir.types(types).unwrap().len() as u8)
         }
@@ -256,7 +256,7 @@ fn structural_types_commit_union_intersection_tuple_array_and_apply_records() {
         (b"U", SemanticTypeTag::Union, 2),
         (b"I", SemanticTypeTag::Intersection, 2),
         (b"T", SemanticTypeTag::Tuple, 2),
-        (b"a", SemanticTypeTag::Array, 1),
+        (b"a", SemanticTypeTag::ArraySequence, 1),
     ] {
         let f = fact(&v, named(&v, n).0);
         assert_eq!(f.record.tag, t);
@@ -993,8 +993,8 @@ fn golden_lowered_facts_match_the_frozen_table() {
         Frozen {
             name: b"list",
             kind: EntityKind::Constant,
-            declared: SemanticTypeTag::Array,
-            computed: SemanticTypeTag::Array,
+            declared: SemanticTypeTag::ArraySequence,
+            computed: SemanticTypeTag::ArraySequence,
             shape: 1,
             has_computed: true,
         },

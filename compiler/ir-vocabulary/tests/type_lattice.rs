@@ -3,7 +3,7 @@
 //! 87,101-position Python census froze. Assertions retain exact operands.
 
 use compiler_ir_vocabulary::{
-    AnonRecordForm, ChildCountLaw, MappedModifier, NominalRef, PrimitiveShape, SemanticTypeChild,
+    AnnotationKind, AnonRecordForm, ChannelDirection, ChildCountLaw, MappedModifier, NominalRef, PrimitiveShape, SemanticTypeChild,
     SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, TypeCell, TypeChildTarget, TypeReason,
     TypeRef, TypeWidth, Variance,
 };
@@ -15,18 +15,67 @@ fn record(tag: SemanticTypeTag) -> SemanticTypeRecord<'static> {
 }
 
 #[test]
+fn typed_forms_reject_crossed_cardinality_and_foreign_cells() {
+    let mut wildcard = record(SemanticTypeTag::Wildcard);
+    wildcard.payload0 = u32::from(Variance::Covariant);
+    assert_eq!(
+        wildcard.validate(0),
+        Err(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::Wildcard,
+            law: ChildCountLaw { min: 1, max: 1 },
+            actual: 0,
+        })
+    );
+
+    let mut annotation = record(SemanticTypeTag::Annotated);
+    annotation.payload0 = AnnotationKind::NullableValue as u32;
+    assert_eq!(annotation.validate(1), Ok(()));
+    annotation.text = Some(b"?");
+    assert_eq!(
+        annotation.validate(1),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::Annotated,
+            cell: TypeCell::Text,
+            actual: 1,
+        })
+    );
+
+    let mut channel = record(SemanticTypeTag::Channel);
+    channel.payload0 = ChannelDirection::Receive as u32;
+    assert_eq!(channel.validate(1), Ok(()));
+    assert_eq!(
+        channel.validate(2),
+        Err(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::Channel,
+            law: ChildCountLaw { min: 1, max: 1 },
+            actual: 2,
+        })
+    );
+
+    assert_eq!(record(SemanticTypeTag::Map).validate(2), Ok(()));
+    assert_eq!(
+        record(SemanticTypeTag::ArraySequence).validate(0),
+        Err(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::ArraySequence,
+            law: ChildCountLaw { min: 1, max: 1 },
+            actual: 0,
+        })
+    );
+}
+
+#[test]
 fn every_tag_round_trips_through_its_frozen_discriminant() {
     // Decoding every frozen code and re-encoding the result must be the
-    // identity on 0..24, and 24 must stay outside the registry.
-    for ordinal in 0_u8..24 {
+    // identity on 0..31, and 31 must stay outside the registry.
+    for ordinal in 0_u8..31 {
         assert_eq!(
             SemanticTypeTag::try_from(ordinal).map(u8::from),
             Ok(ordinal)
         );
     }
     assert_eq!(
-        SemanticTypeTag::try_from(24),
-        Err(compiler_ir_vocabulary::SemanticTypeTagError { actual: 24 })
+        SemanticTypeTag::try_from(31),
+        Err(compiler_ir_vocabulary::SemanticTypeTagError { actual: 31 })
     );
 }
 

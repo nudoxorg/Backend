@@ -1455,7 +1455,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }) else {
             return Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None)));
         };
-        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayConstExpression);
         record.text = Some(text);
         Ok(Lowered {
             record,

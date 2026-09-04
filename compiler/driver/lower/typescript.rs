@@ -5,7 +5,7 @@
 //! Contains no token reconstruction, fallback collector, or declaration guessing.
 
 use compiler_ir::{
-    AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
+    AnnotationKind, AnonRecordForm, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
     ExternalFragmentId, ForeignKey, ForeignOrigin,
     LatticeMappedModifier, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     PackageLineage, PrimitiveShape, ProductChildRole, ReferenceKind, RelSpan,
@@ -1271,8 +1271,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if let Some(array) = kind.as_ts_array_type() {
                 let element = array.element_type.span();
                 let element_target = self.child_target(element.start, element.end, next_depth)?;
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Array);
-                cells.record.text = Some(&b"[]"[..]);
+                let mut cells = TypeCells::leaf(SemanticTypeTag::ArraySequence);
                 cells.push_child(element_target, None, 0)?;
                 return Ok(TypeOutcome::Cells(cells));
             }
@@ -1282,7 +1281,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let inner = operator.type_annotation.span();
                     let inner_target = self.child_target(inner.start, inner.end, next_depth)?;
                     let mut cells = TypeCells::leaf(SemanticTypeTag::Annotated);
-                    cells.record.text = Some(&b"readonly"[..]);
+                    cells.record.payload0 = AnnotationKind::Readonly as u32;
                     cells.push_child(inner_target, None, 0)?;
                     return Ok(TypeOutcome::Cells(cells));
                 }
@@ -3027,8 +3026,7 @@ fn intern_computed_tree<'source>(
                 depth,
                 spell,
             )?;
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-            record.text = Some(&b"[]"[..]);
+            let record = SemanticTypeRecord::leaf(SemanticTypeTag::ArraySequence);
             intern_computed_row(registry, facts, record, owner, &children[..1])
         }
         TypeTree::Function { parameters, result } => {

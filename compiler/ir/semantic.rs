@@ -7,7 +7,7 @@
 
 use alloc::vec::Vec;
 use compiler_vocabulary::{Language, LanguageProfile};
-use core::{fmt, hash::Hash, marker::PhantomData};
+use core::{fmt, hash::Hash, marker::PhantomData, num::NonZeroU16};
 
 use crate::{
     AtomId, AtomInterner, AtomTable, AtomTableView, CapacityError, DenseId, EntityId, Interner,
@@ -415,6 +415,12 @@ pub enum TypeTag {
     Unknown,
     ImplTrait,
     DynTrait,
+    Wildcard,
+    Annotated,
+    Inferred,
+    QualifiedPath,
+    Map,
+    Channel,
 }
 
 #[repr(C)]
@@ -541,17 +547,78 @@ impl PackedTypes {
                     header(TypeTag::Pointer, mutability as u8, 0, target.raw)
                 }
                 ConcreteType::Slice(value) => header(TypeTag::Slice, 0, 0, value.raw),
-                ConcreteType::Array { element, length } => header(
-                    TypeTag::Array,
-                    0,
-                    0,
-                    self.pair([element.raw, option_raw(length)]),
-                ),
+                ConcreteType::Array { element, shape } => match shape {
+                    ArrayShape::Sequence => header(TypeTag::Array, 0, 0, element.raw),
+                    ArrayShape::Rectangular { rank } => {
+                        header(TypeTag::Array, 1, rank.get(), element.raw)
+                    }
+                    ArrayShape::FixedValue { length } => {
+                        let bytes = length.to_le_bytes();
+                        header(
+                            TypeTag::Array,
+                            2,
+                            0,
+                            self.triple([
+                                element.raw,
+                                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                                u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                            ]),
+                        )
+                    }
+                    ArrayShape::ConstExpression(expression) => header(
+                        TypeTag::Array,
+                        3,
+                        0,
+                        self.pair([element.raw, expression.raw]),
+                    ),
+                    ArrayShape::Incomplete => header(TypeTag::Array, 4, 0, element.raw),
+                },
                 ConcreteType::Optional(value) => header(TypeTag::Optional, 0, 0, value.raw),
                 ConcreteType::Union(value) => header(TypeTag::Union, 0, 0, value.raw),
                 ConcreteType::Intersection(value) => header(TypeTag::Intersection, 0, 0, value.raw),
                 ConcreteType::ImplTrait(value) => header(TypeTag::ImplTrait, 0, 0, value.raw),
                 ConcreteType::DynTrait(value) => header(TypeTag::DynTrait, 0, 0, value.raw),
+                ConcreteType::Wildcard(bound) => match bound {
+                    WildcardBound::Unbounded => header(TypeTag::Wildcard, 0, 0, 0),
+                    WildcardBound::Extends(bound) => {
+                        header(TypeTag::Wildcard, 1, 0, bound.raw)
+                    }
+                    WildcardBound::Super(bound) => header(TypeTag::Wildcard, 2, 0, bound.raw),
+                },
+                ConcreteType::Annotated { kind, target } => {
+                    header(TypeTag::Annotated, kind as u8, 0, target.raw)
+                }
+                ConcreteType::Inferred(spelling) => {
+                    header(TypeTag::Inferred, 0, 0, option_raw(spelling))
+                }
+                ConcreteType::QualifiedPath {
+                    self_type,
+                    trait_type,
+                    segments,
+                    spelling,
+                } => header(
+                    TypeTag::QualifiedPath,
+                    match segments {
+                        QualifiedSegments::Captured(_) => 1,
+                        QualifiedSegments::Unavailable => 0,
+                    },
+                    0,
+                    self.quad([
+                        self_type.raw,
+                        option_raw(trait_type),
+                        match segments {
+                            QualifiedSegments::Captured(segments) => segments.raw,
+                            QualifiedSegments::Unavailable => 0,
+                        },
+                        spelling.raw,
+                    ]),
+                ),
+                ConcreteType::Map { key, value } => {
+                    header(TypeTag::Map, 0, 0, self.pair([key.raw, value.raw]))
+                }
+                ConcreteType::Channel { direction, element } => {
+                    header(TypeTag::Channel, direction as u8, 0, element.raw)
+                }
             },
             TypeExpr::Computed(ty) => match ty {
                 ComputedType::KeyOf(value) => header(TypeTag::KeyOf, 0, 0, value.raw),
@@ -707,13 +774,31 @@ impl PackedTypes {
                 mutability: mutability_from(value.flags)?,
             }),
             TypeTag::Slice => TypeExpr::Concrete(ConcreteType::Slice(TypeId::new(value.payload))),
-            TypeTag::Array => {
-                let data = pair(value.payload)?;
-                TypeExpr::Concrete(ConcreteType::Array {
-                    element: TypeId::new(data[0]),
-                    length: raw_option(data[1]).map(AtomId::new),
-                })
-            }
+            TypeTag::Array => TypeExpr::Concrete(ConcreteType::Array {
+                element: match value.flags {
+                    0 | 1 | 4 => TypeId::new(value.payload),
+                    2 => TypeId::new(triple(value.payload)?[0]),
+                    3 => TypeId::new(pair(value.payload)?[0]),
+                    _ => return None,
+                },
+                shape: match value.flags {
+                    0 if value.auxiliary == 0 => ArrayShape::Sequence,
+                    1 => ArrayShape::Rectangular {
+                        rank: NonZeroU16::new(value.auxiliary)?,
+                    },
+                    2 if value.auxiliary == 0 => {
+                        let data = triple(value.payload)?;
+                        ArrayShape::FixedValue {
+                            length: u64::from(data[1]) | (u64::from(data[2]) << 32),
+                        }
+                    }
+                    3 if value.auxiliary == 0 => {
+                        ArrayShape::ConstExpression(AtomId::new(pair(value.payload)?[1]))
+                    }
+                    4 if value.auxiliary == 0 => ArrayShape::Incomplete,
+                    _ => return None,
+                },
+            }),
             TypeTag::Optional => {
                 TypeExpr::Concrete(ConcreteType::Optional(TypeId::new(value.payload)))
             }
@@ -729,6 +814,43 @@ impl PackedTypes {
             TypeTag::DynTrait => {
                 TypeExpr::Concrete(ConcreteType::DynTrait(TypeListId::new(value.payload)))
             }
+            TypeTag::Wildcard => TypeExpr::Concrete(ConcreteType::Wildcard(match value.flags {
+                0 if value.payload == 0 => WildcardBound::Unbounded,
+                1 => WildcardBound::Extends(TypeId::new(value.payload)),
+                2 => WildcardBound::Super(TypeId::new(value.payload)),
+                _ => return None,
+            })),
+            TypeTag::Annotated => TypeExpr::Concrete(ConcreteType::Annotated {
+                kind: annotation_kind_from(value.flags)?,
+                target: TypeId::new(value.payload),
+            }),
+            TypeTag::Inferred => TypeExpr::Concrete(ConcreteType::Inferred(
+                raw_option(value.payload).map(AtomId::new),
+            )),
+            TypeTag::QualifiedPath => {
+                let data = quad(value.payload)?;
+                TypeExpr::Concrete(ConcreteType::QualifiedPath {
+                    self_type: TypeId::new(data[0]),
+                    trait_type: raw_option(data[1]).map(TypeId::new),
+                    segments: match value.flags {
+                        0 => QualifiedSegments::Unavailable,
+                        1 => QualifiedSegments::Captured(AtomListId::new(data[2])),
+                        _ => return None,
+                    },
+                    spelling: AtomId::new(data[3]),
+                })
+            }
+            TypeTag::Map => {
+                let data = pair(value.payload)?;
+                TypeExpr::Concrete(ConcreteType::Map {
+                    key: TypeId::new(data[0]),
+                    value: TypeId::new(data[1]),
+                })
+            }
+            TypeTag::Channel => TypeExpr::Concrete(ConcreteType::Channel {
+                direction: channel_direction_from(value.flags)?,
+                element: TypeId::new(value.payload),
+            }),
             TypeTag::KeyOf => TypeExpr::Computed(ComputedType::KeyOf(TypeId::new(value.payload))),
             TypeTag::TypeOf => TypeExpr::Computed(ComputedType::TypeOf(match value.flags {
                 0 => TypeQuery::Entity(EntityId::new(value.payload)),
@@ -894,13 +1016,57 @@ mod packed_type_tests {
             TypeExpr::Concrete(ConcreteType::Slice(TypeId::new(17))),
             TypeExpr::Concrete(ConcreteType::Array {
                 element: TypeId::new(18),
-                length: Some(AtomId::new(19)),
+                shape: ArrayShape::ConstExpression(AtomId::new(19)),
             }),
             TypeExpr::Concrete(ConcreteType::Optional(TypeId::new(20))),
             TypeExpr::Concrete(ConcreteType::Union(TypeListId::new(21))),
             TypeExpr::Concrete(ConcreteType::Intersection(TypeListId::new(22))),
             TypeExpr::Concrete(ConcreteType::ImplTrait(TypeListId::new(23))),
             TypeExpr::Concrete(ConcreteType::DynTrait(TypeListId::new(24))),
+            TypeExpr::Concrete(ConcreteType::Wildcard(WildcardBound::Unbounded)),
+            TypeExpr::Concrete(ConcreteType::Wildcard(WildcardBound::Extends(TypeId::new(25)))),
+            TypeExpr::Concrete(ConcreteType::Wildcard(WildcardBound::Super(TypeId::new(26)))),
+            TypeExpr::Concrete(ConcreteType::Annotated {
+                kind: AnnotationKind::Readonly,
+                target: TypeId::new(27),
+            }),
+            TypeExpr::Concrete(ConcreteType::Annotated {
+                kind: AnnotationKind::NullableValue,
+                target: TypeId::new(28),
+            }),
+            TypeExpr::Concrete(ConcreteType::Inferred(Some(AtomId::new(29)))),
+            TypeExpr::Concrete(ConcreteType::QualifiedPath {
+                self_type: TypeId::new(30),
+                trait_type: Some(TypeId::new(31)),
+                segments: QualifiedSegments::Captured(AtomListId::new(32)),
+                spelling: AtomId::new(33),
+            }),
+            TypeExpr::Concrete(ConcreteType::Map {
+                key: TypeId::new(34),
+                value: TypeId::new(35),
+            }),
+            TypeExpr::Concrete(ConcreteType::Channel {
+                direction: ChannelDirection::Receive,
+                element: TypeId::new(36),
+            }),
+            TypeExpr::Concrete(ConcreteType::Array {
+                element: TypeId::new(37),
+                shape: ArrayShape::Sequence,
+            }),
+            TypeExpr::Concrete(ConcreteType::Array {
+                element: TypeId::new(38),
+                shape: ArrayShape::Rectangular {
+                    rank: NonZeroU16::new(2).expect("nonzero rank"),
+                },
+            }),
+            TypeExpr::Concrete(ConcreteType::Array {
+                element: TypeId::new(39),
+                shape: ArrayShape::FixedValue { length: u64::MAX },
+            }),
+            TypeExpr::Concrete(ConcreteType::Array {
+                element: TypeId::new(40),
+                shape: ArrayShape::Incomplete,
+            }),
             TypeExpr::Computed(ComputedType::KeyOf(TypeId::new(23))),
             TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(EntityId::new(24)))),
             TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Path(AtomListId::new(25)))),
@@ -999,13 +1165,13 @@ mod packed_type_tests {
             packed.push(ty);
         }
         assert_eq!(packed.headers.len(), types.len());
-        assert_eq!(packed.pairs.len(), 5);
-        assert_eq!(packed.triples.len(), 2);
-        assert_eq!(packed.quads.len(), 2);
+        assert_eq!(packed.pairs.len(), 6);
+        assert_eq!(packed.triples.len(), 3);
+        assert_eq!(packed.quads.len(), 3);
         let cold_bytes = core::mem::size_of_val(packed.pairs.as_slice())
             + core::mem::size_of_val(packed.triples.as_slice())
             + core::mem::size_of_val(packed.quads.as_slice());
-        assert_eq!(cold_bytes, 96);
+        assert_eq!(cold_bytes, 132);
         assert!(cold_bytes < 9 * 20);
         for (index, expected) in types.iter().copied().enumerate() {
             let id = TypeId::new(u32::try_from(index).expect("bounded test index"));
@@ -1095,6 +1261,23 @@ const fn modifier_from(value: u8) -> Option<MappedModifier> {
     }
 }
 
+const fn annotation_kind_from(value: u8) -> Option<AnnotationKind> {
+    match value {
+        0 => Some(AnnotationKind::Readonly),
+        1 => Some(AnnotationKind::NullableValue),
+        _ => None,
+    }
+}
+
+const fn channel_direction_from(value: u8) -> Option<ChannelDirection> {
+    match value {
+        0 => Some(ChannelDirection::Both),
+        1 => Some(ChannelDirection::Send),
+        2 => Some(ChannelDirection::Receive),
+        _ => None,
+    }
+}
+
 const fn unknown_from(value: u16) -> Option<UnknownReason> {
     match value {
         0 => Some(UnknownReason::Unannotated),
@@ -1169,7 +1352,7 @@ pub enum ConcreteType {
     Slice(TypeId),
     Array {
         element: TypeId,
-        length: Option<AtomId>,
+        shape: ArrayShape,
     },
     Optional(TypeId),
     Union(TypeListId),
@@ -1178,6 +1361,64 @@ pub enum ConcreteType {
     ImplTrait(TypeListId),
     /// Rust's dynamic-dispatch trait-object bound set (`dyn Trait`).
     DynTrait(TypeListId),
+    /// Java/C# wildcard with one of its three legal bound states.
+    Wildcard(WildcardBound),
+    /// A closed source-level annotation that preserves its inner type.
+    Annotated {
+        kind: AnnotationKind,
+        target: TypeId,
+    },
+    /// A written inference request (`_`, `auto`, `var`), with an optional
+    /// authority spelling when the source language distinguishes them.
+    Inferred(Option<AtomId>),
+    /// A qualified path with source-authoritative named segments.  Segments
+    /// are atoms rather than fabricated type nodes, so `<Self as Trait>::Assoc`
+    /// and `Outer<T>.Inner` retain their actual path grammar.
+    QualifiedPath {
+        self_type: TypeId,
+        trait_type: Option<TypeId>,
+        segments: QualifiedSegments,
+        spelling: AtomId,
+    },
+    /// Go's structural map, never an application of a fabricated `map` base.
+    Map {
+        key: TypeId,
+        value: TypeId,
+    },
+    /// Go's directional channel, never an application of a fabricated `chan` base.
+    Channel {
+        direction: ChannelDirection,
+        element: TypeId,
+    },
+}
+
+/// Closed array extent semantics. Rendering belongs to a language dialect;
+/// it may never guess an extent from a surface spelling shared by languages.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ArrayShape {
+    Sequence,
+    Rectangular { rank: NonZeroU16 },
+    FixedValue { length: u64 },
+    ConstExpression(AtomId),
+    Incomplete,
+}
+
+/// Legal Java/C# wildcard states. A bound is inseparable from `extends` or
+/// `super`; `?` cannot accidentally carry a hidden target.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WildcardBound {
+    Unbounded,
+    Extends(TypeId),
+    Super(TypeId),
+}
+
+/// Availability of source-authoritative qualified-path segments. Legacy rows
+/// can retain a complete spelling without falsely claiming it was one parsed
+/// component; only a captured nonempty atom list permits structural traversal.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum QualifiedSegments {
+    Captured(AtomListId),
+    Unavailable,
 }
 
 /// Literal type payload. Numeric spelling remains raw to preserve `-0`, bigint,
@@ -1263,19 +1504,10 @@ pub enum TupleElementKind {
     Rest,
 }
 
-/// Closed callable-tail form. A typed rest parameter and a C-style unnamed
-/// ellipsis have different source semantics and must never be inferred from
-/// one boolean or rendered twice.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum VariadicForm {
-    /// The parameter range contains no variadic tail.
-    None = 0,
-    /// Exactly the final parameter is a typed `Rest` tuple element.
-    TypedLast = 1,
-    /// A C-family unnamed trailing `...` follows ordinary parameters.
-    CUnbounded = 2,
-}
+/// Owned IR uses the same closed callable-tail grammar as staged records.
+/// Keeping this as an alias eliminates a conversion that could otherwise
+/// silently reinterpret a future wire discriminant.
+pub type VariadicForm = crate::FunctionVariadicForm;
 
 /// The role of one callable element rejected by owned-IR validation.
 #[repr(u8)]
@@ -2636,6 +2868,8 @@ pub enum BuildError {
     /// A callable claimed a typed variadic tail but had no final `Rest`
     /// parameter element to own it.
     MissingTypedVariadicParameter { parameter_count: usize },
+    /// A qualified type path had no named segments after its self/trait base.
+    EmptyQualifiedPath,
     /// A durable documentation fact was not valid UTF-8, so it cannot enter
     /// the owned text arena without loss.  Callers must retain it in the
     /// compact fragment or surface this exact terminal; silently dropping it
@@ -2690,6 +2924,7 @@ impl fmt::Display for BuildError {
             Self::RecursiveType { raw } => {
                 write!(formatter, "compound type coordinate {raw} is recursively projected")
             }
+            Self::EmptyQualifiedPath => formatter.write_str("qualified type path has no segments"),
             Self::InvalidDocumentationUtf8 { bytes } => {
                 write!(formatter, "documentation fact has {bytes} invalid UTF-8 bytes")
             }
@@ -3522,12 +3757,54 @@ fn validate_concrete_type(builder: &IrBuilder, ty: ConcreteType) -> Result<(), B
         ConcreteType::Pointer { target, .. }
         | ConcreteType::Slice(target)
         | ConcreteType::Optional(target) => id(target, builder.types.len(), SemanticSpace::Type),
-        ConcreteType::Array { element, length } => {
+        ConcreteType::Array { element, shape } => {
             id(element, builder.types.len(), SemanticSpace::Type)?;
-            if let Some(length) = length {
-                atom(builder, length)?;
+            if let ArrayShape::ConstExpression(expression) = shape {
+                atom(builder, expression)?;
             }
             Ok(())
+        }
+        ConcreteType::Wildcard(WildcardBound::Unbounded) => Ok(()),
+        ConcreteType::Wildcard(WildcardBound::Extends(bound))
+        | ConcreteType::Wildcard(WildcardBound::Super(bound)) => {
+            id(bound, builder.types.len(), SemanticSpace::Type)
+        }
+        ConcreteType::Annotated { target, .. } => {
+            id(target, builder.types.len(), SemanticSpace::Type)
+        }
+        ConcreteType::Inferred(spelling) => spelling
+            .map(|spelling| atom(builder, spelling))
+            .transpose()
+            .map(|_| ()),
+        ConcreteType::QualifiedPath {
+            self_type,
+            trait_type,
+            segments,
+            spelling,
+        } => {
+            id(self_type, builder.types.len(), SemanticSpace::Type)?;
+            optional_id(trait_type, builder.types.len(), SemanticSpace::Type)?;
+            if let QualifiedSegments::Captured(segments) = segments {
+                let segments = list_or_dangling(
+                    &builder.atom_lists,
+                    segments,
+                    SemanticSpace::AtomList,
+                )?;
+                if segments.is_empty() {
+                    return Err(BuildError::EmptyQualifiedPath);
+                }
+                for segment in segments {
+                    atom(builder, *segment)?;
+                }
+            }
+            atom(builder, spelling)
+        }
+        ConcreteType::Map { key, value } => {
+            id(key, builder.types.len(), SemanticSpace::Type)?;
+            id(value, builder.types.len(), SemanticSpace::Type)
+        }
+        ConcreteType::Channel { element, .. } => {
+            id(element, builder.types.len(), SemanticSpace::Type)
         }
     }
 }

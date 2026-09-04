@@ -456,11 +456,10 @@ const fn qualified_record(spelling: &[u8]) -> SemanticTypeRecord<'_> {
     record
 }
 
-/// An array row whose text cell carries the derived arity spelling.
-const fn array_record(spelling: &[u8]) -> SemanticTypeRecord<'_> {
-    let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Array);
-    record.text = Some(spelling);
-    record
+/// A Java sequence array has no numeric extent: each source `[]` is one
+/// nested `ArraySequence` row, and the dialect owns token placement.
+const fn array_record(_spelling: &[u8]) -> SemanticTypeRecord<'static> {
+    SemanticTypeRecord::leaf(SemanticTypeTag::ArraySequence)
 }
 
 /// The typed unknown projection fold for one optional spelling.
@@ -2362,8 +2361,7 @@ mod tests {
             return Err(TestError::Missing("generic application row"));
         }
         let array = row(&view, 3)?;
-        if array.record.tag != SemanticTypeTag::Array
-            || array.record.text != Some(b"[]".as_slice())
+        if array.record.tag != SemanticTypeTag::ArraySequence
             || array.record.children.length != 1
         {
             return Err(TestError::Missing("array arity row"));

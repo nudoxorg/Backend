@@ -5,7 +5,7 @@
 //! had collapsed onto one dynamic opcode before the lattice split, and every
 //! named [`TypeReason`] below exists because a distinct source fact once
 //! shared an encoding. The variant set is exactly the frozen census lattice
-//! (24 constructors plus seven named unknown reasons), reshaped into dense,
+//! (31 constructors plus seven named unknown reasons), reshaped into dense,
 //! borrowed, allocation-free records whose cells each closed tag owns.
 //!
 //! Nesting is expressed the canonical way: child coordinates into a
@@ -96,13 +96,27 @@ pub enum SemanticTypeTag {
     Inferred = 22,
     /// A qualified path `<T as Trait>::Assoc` / `Outer<T>.Inner`.
     QualifiedPath = 23,
+    /// A Go associative map with a key and value child.
+    Map = 24,
+    /// A Go channel with one element child and a closed direction cell.
+    Channel = 25,
+    /// A sequence array (`T[]`, `T...`, Java `T[]`) with no stored extent.
+    ArraySequence = 26,
+    /// A rectangular array with a nonzero rank (C# `T[,]`).
+    ArrayRectangular = 27,
+    /// A fixed numeric extent (`[N]T`, `T[N]`).
+    ArrayFixed = 28,
+    /// A source expression extent (`[T; N + 1]`) retained as text.
+    ArrayConstExpression = 29,
+    /// An incomplete/dependent C-family array with no known extent.
+    ArrayIncomplete = 30,
 }
 
 /// Closed staged callable-tail discriminator carried in a function record's
 /// low payload bits. It mirrors, but does not depend on, owned IR so the wire
 /// grammar can reject a mixed typed-rest/C-ellipsis claim before projection.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FunctionVariadicForm {
     None = 0,
     TypedLast = 1,
@@ -117,6 +131,50 @@ impl TryFrom<u32> for FunctionVariadicForm {
             0 => Ok(Self::None),
             1 => Ok(Self::TypedLast),
             2 => Ok(Self::CUnbounded),
+            _ => Err(()),
+        }
+    }
+}
+
+/// The only directional channel forms admitted by the common wire grammar.
+/// `Both` is `chan T`, `Send` is `chan<- T`, and `Receive` is `<-chan T`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ChannelDirection {
+    Both = 0,
+    Send = 1,
+    Receive = 2,
+}
+
+impl TryFrom<u32> for ChannelDirection {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Both),
+            1 => Ok(Self::Send),
+            2 => Ok(Self::Receive),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Closed source-level annotation forms whose inner type remains a structural
+/// child. Arbitrary annotation text is not a type escape hatch.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum AnnotationKind {
+    Readonly = 0,
+    NullableValue = 1,
+}
+
+impl TryFrom<u32> for AnnotationKind {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Readonly),
+            1 => Ok(Self::NullableValue),
             _ => Err(()),
         }
     }
@@ -167,6 +225,13 @@ impl TryFrom<u8> for SemanticTypeTag {
             21 => Ok(Self::DynTrait),
             22 => Ok(Self::Inferred),
             23 => Ok(Self::QualifiedPath),
+            24 => Ok(Self::Map),
+            25 => Ok(Self::Channel),
+            26 => Ok(Self::ArraySequence),
+            27 => Ok(Self::ArrayRectangular),
+            28 => Ok(Self::ArrayFixed),
+            29 => Ok(Self::ArrayConstExpression),
+            30 => Ok(Self::ArrayIncomplete),
             actual => Err(SemanticTypeTagError { actual }),
         }
     }
@@ -809,9 +874,18 @@ impl SemanticTypeRecord<'_> {
     #[must_use]
     pub const fn child_law(tag: SemanticTypeTag) -> ChildCountLaw {
         match tag {
-            SemanticTypeTag::Slice | SemanticTypeTag::Array | SemanticTypeTag::Annotated => {
+            SemanticTypeTag::Slice
+            | SemanticTypeTag::Array
+            | SemanticTypeTag::Annotated
+            | SemanticTypeTag::Channel
+            | SemanticTypeTag::ArraySequence
+            | SemanticTypeTag::ArrayRectangular
+            | SemanticTypeTag::ArrayFixed
+            | SemanticTypeTag::ArrayConstExpression
+            | SemanticTypeTag::ArrayIncomplete => {
                 ChildCountLaw { min: 1, max: 1 }
             }
+            SemanticTypeTag::Map => ChildCountLaw { min: 2, max: 2 },
             SemanticTypeTag::Conditional => ChildCountLaw { min: 4, max: 4 },
             // constraint, optional key-remap (`as`), value
             SemanticTypeTag::Mapped => ChildCountLaw { min: 2, max: 3 },
@@ -832,7 +906,8 @@ impl SemanticTypeRecord<'_> {
                 min: 0,
                 max: u32::MAX,
             },
-            SemanticTypeTag::Never
+            SemanticTypeTag::SelfType
+            | SemanticTypeTag::Never
             | SemanticTypeTag::Any
             | SemanticTypeTag::Unknown
             | SemanticTypeTag::Nominal
@@ -866,7 +941,6 @@ impl SemanticTypeRecord<'_> {
         match tag {
             SemanticTypeTag::Never
             | SemanticTypeTag::Any
-            | SemanticTypeTag::Inferred
             | SemanticTypeTag::Tuple
             | SemanticTypeTag::Slice
             | SemanticTypeTag::Union
@@ -898,6 +972,12 @@ impl SemanticTypeRecord<'_> {
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
                 self.check_cell(TypeCell::Nominal, CellLaw::Forbidden, self.nominal.is_some())?;
             }
+            SemanticTypeTag::Inferred => {
+                self.require_zero_payloads()?;
+                self.check_cell(TypeCell::Text, CellLaw::Optional, self.text.is_some())?;
+                self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
+                self.check_cell(TypeCell::Nominal, CellLaw::Forbidden, self.nominal.is_some())?;
+            }
             SemanticTypeTag::Primitive => self.validate_primitive(child_count)?,
             SemanticTypeTag::Unknown => {
                 let reason = TypeReason::try_from(self.payload0).map_err(|error| {
@@ -917,6 +997,7 @@ impl SemanticTypeRecord<'_> {
                     CellLaw::Forbidden,
                     self.nominal.is_some(),
                 )?;
+                self.require_zero_payload1()?;
             }
             SemanticTypeTag::Nominal => {
                 // Local nominals are resolved solely by their typed entity
@@ -931,6 +1012,7 @@ impl SemanticTypeRecord<'_> {
                 self.check_cell(TypeCell::Text, text_law, self.text.is_some())?;
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
                 self.check_cell(TypeCell::Nominal, CellLaw::Required, self.nominal.is_some())?;
+                self.require_zero_payloads()?;
             }
             SemanticTypeTag::TypeVar => {
                 self.check_cell(TypeCell::Text, CellLaw::Required, self.text.is_some())?;
@@ -940,8 +1022,12 @@ impl SemanticTypeRecord<'_> {
                     CellLaw::Forbidden,
                     self.nominal.is_some(),
                 )?;
+                self.require_zero_payloads()?;
             }
-            SemanticTypeTag::Array | SemanticTypeTag::QualifiedPath => {
+            SemanticTypeTag::Array => {
+                // Schema-2 compatibility only. Fresh producers use one of
+                // the closed Array* tags below, so a renderer never has to
+                // infer extent semantics from a shared `[]` spelling.
                 self.check_cell(TypeCell::Text, CellLaw::Required, self.text.is_some())?;
                 self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
                 self.check_cell(
@@ -949,6 +1035,39 @@ impl SemanticTypeRecord<'_> {
                     CellLaw::Forbidden,
                     self.nominal.is_some(),
                 )?;
+            }
+            SemanticTypeTag::ArraySequence | SemanticTypeTag::ArrayIncomplete => {
+                self.require_no_cells()?;
+            }
+            SemanticTypeTag::ArrayRectangular => {
+                if self.payload0 == 0 || self.payload0 > u32::from(u16::MAX) {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                }
+                self.require_zero_payload1()?;
+                self.require_no_text()?;
+            }
+            SemanticTypeTag::ArrayFixed => {
+                self.require_no_text()?;
+            }
+            SemanticTypeTag::ArrayConstExpression => {
+                self.require_zero_payloads()?;
+                self.check_cell(TypeCell::Text, CellLaw::Required, self.text.is_some())?;
+                self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
+                self.check_cell(TypeCell::Nominal, CellLaw::Forbidden, self.nominal.is_some())?;
+            }
+            SemanticTypeTag::QualifiedPath => {
+                self.check_cell(TypeCell::Text, CellLaw::Required, self.text.is_some())?;
+                self.check_cell(TypeCell::Text2, CellLaw::Forbidden, self.text2.is_some())?;
+                self.check_cell(
+                    TypeCell::Nominal,
+                    CellLaw::Forbidden,
+                    self.nominal.is_some(),
+                )?;
+                self.require_zero_payloads()?;
             }
             SemanticTypeTag::Wildcard => {
                 if self.payload0 > u32::from(Variance::Contravariant) {
@@ -959,6 +1078,27 @@ impl SemanticTypeRecord<'_> {
                     });
                 }
                 self.require_no_text()?;
+                self.require_zero_payload1()?;
+                let expected_children = match self.payload0 {
+                    value if value == u32::from(Variance::Invariant) => 0,
+                    value
+                        if value == u32::from(Variance::Covariant)
+                            || value == u32::from(Variance::Contravariant) =>
+                    {
+                        1
+                    }
+                    _ => unreachable!("variance cell was bounded above"),
+                };
+                if child_count != expected_children {
+                    return Err(SemanticTypeFault::ChildCount {
+                        tag,
+                        law: ChildCountLaw {
+                            min: expected_children,
+                            max: expected_children,
+                        },
+                        actual: child_count,
+                    });
+                }
             }
             SemanticTypeTag::FunctionPointer => {
                 let Some(results) = self.function_result_count() else {
@@ -1020,13 +1160,15 @@ impl SemanticTypeRecord<'_> {
                 )?;
             }
             SemanticTypeTag::Annotated => {
-                self.check_cell(TypeCell::Text, CellLaw::Required, self.text.is_some())?;
-                self.check_cell(TypeCell::Text2, CellLaw::Optional, self.text2.is_some())?;
-                self.check_cell(
-                    TypeCell::Nominal,
-                    CellLaw::Forbidden,
-                    self.nominal.is_some(),
-                )?;
+                if AnnotationKind::try_from(self.payload0).is_err() {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                }
+                self.require_zero_payload1()?;
+                self.require_no_text()?;
             }
             SemanticTypeTag::Conditional | SemanticTypeTag::Apply => {
                 self.require_no_cells()?;
@@ -1062,6 +1204,18 @@ impl SemanticTypeRecord<'_> {
                         actual: self.payload0,
                     });
                 }
+                self.require_no_text()?;
+            }
+            SemanticTypeTag::Map => self.require_no_cells()?,
+            SemanticTypeTag::Channel => {
+                if ChannelDirection::try_from(self.payload0).is_err() {
+                    return Err(SemanticTypeFault::ReservedCell {
+                        tag,
+                        cell: TypeCell::Payload0,
+                        actual: self.payload0,
+                    });
+                }
+                self.require_zero_payload1()?;
                 self.require_no_text()?;
             }
         }
@@ -1337,6 +1491,28 @@ impl SemanticTypeRecord<'_> {
             });
         }
         self.require_no_text()
+    }
+
+    fn require_zero_payloads(&self) -> Result<(), SemanticTypeFault> {
+        if self.payload0 != 0 {
+            return Err(SemanticTypeFault::ReservedCell {
+                tag: self.tag,
+                cell: TypeCell::Payload0,
+                actual: self.payload0,
+            });
+        }
+        self.require_zero_payload1()
+    }
+
+    fn require_zero_payload1(&self) -> Result<(), SemanticTypeFault> {
+        if self.payload1 != 0 {
+            return Err(SemanticTypeFault::ReservedCell {
+                tag: self.tag,
+                cell: TypeCell::Payload1,
+                actual: self.payload1,
+            });
+        }
+        Ok(())
     }
 
     fn require_no_text(&self) -> Result<(), SemanticTypeFault> {

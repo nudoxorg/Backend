@@ -8,7 +8,7 @@
 //! return typed terminals instead of inspecting source text here.
 use compiler_ir::DocumentationLane;
 use compiler_ir::{
-    AtomId, BuiltinType, ComputedType, ConcreteType, DeclarationKey, Disambiguator, DocInput,
+    AnnotationKind, AtomId, BuiltinType, ChannelDirection, ComputedType, ConcreteType, DeclarationKey, Disambiguator, DocInput,
     EntityVersion, ExternalTarget, Ir,
     IrBuilder, ItemKind, LanguageExtensionInput, ListSpan, LiteralType, NominalRef, PayloadHash,
     PrimitiveShape, ProductChildRole, ProductChildren, ProductId, ProductListId, ProductRef,
@@ -16,7 +16,7 @@ use compiler_ir::{
     SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
     SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, StableEntityId,
     TemplatePart, TreeItemInput, TreeLinkInput, TreeLinkTarget, TupleElement, TupleElementKind,
-    TypeChildTarget, TypeId, TypeWidth, VariadicForm, Visibility,
+    QualifiedSegments, TypeChildTarget, TypeId, TypeWidth, Visibility, WildcardBound,
 };
 use compiler_ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
@@ -27,6 +27,7 @@ use compiler_ir::{
     canonicalize_data_with_budget,
 };
 use core::mem::size_of;
+use core::num::NonZeroU16;
 
 pub(crate) mod clang;
 pub(crate) mod csharp;
@@ -2973,14 +2974,119 @@ fn live_type<'source>(
         SemanticTypeTag::Slice if child_count == 1 => tree
             .intern_concrete(ConcreteType::Slice(child_type(0)?))?
             .erase(),
-        SemanticTypeTag::Array if child_count == 1 => {
-            let length = record
-                .text
-                .map(|bytes| tree.intern_atom(bytes))
-                .transpose()?;
+        SemanticTypeTag::ArraySequence if child_count == 1 => {
             tree.intern_concrete(ConcreteType::Array {
                 element: child_type(0)?,
-                length,
+                shape: compiler_ir::ArrayShape::Sequence,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::ArrayRectangular if child_count == 1 => {
+            let rank = u16::try_from(record.payload0)
+                .ok()
+                .and_then(NonZeroU16::new)
+                .ok_or(compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                })?;
+            tree.intern_concrete(ConcreteType::Array {
+                element: child_type(0)?,
+                shape: compiler_ir::ArrayShape::Rectangular { rank },
+            })?
+            .erase()
+        }
+        SemanticTypeTag::ArrayFixed if child_count == 1 => {
+            tree.intern_concrete(ConcreteType::Array {
+                element: child_type(0)?,
+                shape: compiler_ir::ArrayShape::FixedValue {
+                    length: u64::from(record.payload0) | (u64::from(record.payload1) << 32),
+                },
+            })?
+            .erase()
+        }
+        SemanticTypeTag::ArrayConstExpression if child_count == 1 => {
+            let expression = record.text.ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Atom,
+                raw: row,
+            })?;
+            tree.intern_concrete(ConcreteType::Array {
+                element: child_type(0)?,
+                shape: compiler_ir::ArrayShape::ConstExpression(tree.intern_atom(expression)?),
+            })?
+            .erase()
+        }
+        SemanticTypeTag::ArrayIncomplete if child_count == 1 => {
+            tree.intern_concrete(ConcreteType::Array {
+                element: child_type(0)?,
+                shape: compiler_ir::ArrayShape::Incomplete,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Wildcard => {
+            let wildcard = match (record.payload0, child_count) {
+                (0, 0) => WildcardBound::Unbounded,
+                (1, 1) => WildcardBound::Extends(child_type(0)?),
+                (2, 1) => WildcardBound::Super(child_type(0)?),
+                _ => {
+                    return Err(compiler_ir::BuildError::Dangling {
+                        space: compiler_ir::SemanticSpace::Type,
+                        raw: row,
+                    });
+                }
+            };
+            tree.intern_concrete(ConcreteType::Wildcard(wildcard))?.erase()
+        }
+        SemanticTypeTag::Annotated if child_count == 1 => {
+            let kind = AnnotationKind::try_from(record.payload0).map_err(|_| {
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                }
+            })?;
+            tree.intern_concrete(ConcreteType::Annotated {
+                kind,
+                target: child_type(0)?,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Inferred => tree
+            .intern_concrete(ConcreteType::Inferred(
+                record.text.map(|bytes| tree.intern_atom(bytes)).transpose()?,
+            ))?
+            .erase(),
+        SemanticTypeTag::QualifiedPath if child_count >= 1 => {
+            let spelling = record.text.ok_or(compiler_ir::BuildError::Dangling {
+                space: compiler_ir::SemanticSpace::Atom,
+                raw: row,
+            })?;
+            // Legacy rows retain only source spelling. Their source authority
+            // did not capture parsed components, so traversal remains typed
+            // unavailable rather than fabricating one whole-spelling segment.
+            let spelling = tree.intern_atom(spelling)?;
+            tree.intern_concrete(ConcreteType::QualifiedPath {
+                self_type: child_type(0)?,
+                trait_type: (child_count == 2).then(|| child_type(1)).transpose()?,
+                segments: QualifiedSegments::Unavailable,
+                spelling,
+            })?
+            .erase()
+        }
+        SemanticTypeTag::Map if child_count == 2 => tree
+            .intern_concrete(ConcreteType::Map {
+                key: child_type(0)?,
+                value: child_type(1)?,
+            })?
+            .erase(),
+        SemanticTypeTag::Channel if child_count == 1 => {
+            let direction = ChannelDirection::try_from(record.payload0).map_err(|_| {
+                compiler_ir::BuildError::Dangling {
+                    space: compiler_ir::SemanticSpace::Type,
+                    raw: row,
+                }
+            })?;
+            tree.intern_concrete(ConcreteType::Channel {
+                direction,
+                element: child_type(0)?,
             })?
             .erase()
         }
@@ -3113,16 +3219,12 @@ fn live_type<'source>(
                 parameters,
                 results,
                 abi: record.text.map(|abi| tree.intern_atom(abi)).transpose()?,
-                variadic: match record.function_variadic_form().ok_or(
+                variadic: record.function_variadic_form().ok_or(
                     compiler_ir::BuildError::Dangling {
                         space: compiler_ir::SemanticSpace::Type,
                         raw: row,
                     },
-                )? {
-                    compiler_ir::FunctionVariadicForm::None => VariadicForm::None,
-                    compiler_ir::FunctionVariadicForm::TypedLast => VariadicForm::TypedLast,
-                    compiler_ir::FunctionVariadicForm::CUnbounded => VariadicForm::CUnbounded,
-                },
+                )?,
                 unsafe_: record.payload0 & SemanticTypeRecord::FUNCTION_UNSAFE_FLAG != 0,
             })?
             .erase()

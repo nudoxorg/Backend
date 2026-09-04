@@ -7,9 +7,9 @@
 use core::{fmt, str};
 
 use crate::{
-    BuiltinType, ComputedType, ConcreteType, DocFragment, EntityId, Ir, ItemKind, ItemView,
+    AnnotationKind, ArrayShape, BuiltinType, ChannelDirection, ComputedType, ConcreteType, DocFragment, EntityId, Ir, ItemKind, ItemView,
     LinkTarget, LiteralType, MappedModifier, Mutability, ObjectMember, PropertyKey, TemplatePart,
-    TupleElementKind, TypeExpr, TypeId, TypeQuery, VariadicForm, Visibility,
+    TupleElementKind, TypeExpr, TypeId, TypeQuery, VariadicForm, Visibility, WildcardBound,
 };
 
 const MAX_TYPE_DEPTH: u8 = 96;
@@ -337,15 +337,36 @@ fn write_concrete_type(
             write_type(output, ir, element, next)?;
             output.write_str("]")
         }
-        ConcreteType::Array { element, length } => {
-            output.write_str("[")?;
-            write_type(output, ir, element, next)?;
-            if let Some(length) = length {
-                output.write_str("; ")?;
-                write_atom(output, ir.atom(length).unwrap_or(b"?"))?;
+        ConcreteType::Array { element, shape } => match shape {
+            ArrayShape::Sequence => {
+                output.write_str("[]")?;
+                write_type(output, ir, element, next)
             }
-            output.write_str("]")
-        }
+            ArrayShape::Rectangular { rank } => {
+                write_type(output, ir, element, next)?;
+                output.write_str("[")?;
+                for _ in 1..rank.get() {
+                    output.write_str(",")?;
+                }
+                output.write_str("]")
+            }
+            ArrayShape::FixedValue { length } => {
+                output.write_str("[")?;
+                write_type(output, ir, element, next)?;
+                write!(output, "; {length}]")
+            }
+            ArrayShape::ConstExpression(expression) => {
+                output.write_str("[")?;
+                write_type(output, ir, element, next)?;
+                output.write_str("; ")?;
+                write_atom(output, ir.atom(expression).unwrap_or(b"?"))?;
+                output.write_str("]")
+            }
+            ArrayShape::Incomplete => {
+                write_type(output, ir, element, next)?;
+                output.write_str("[]")
+            }
+        },
         ConcreteType::Optional(inner) => {
             output.write_str("Option<")?;
             write_type(output, ir, inner, next)?;
@@ -360,6 +381,45 @@ fn write_concrete_type(
         ConcreteType::DynTrait(types) => {
             output.write_str("dyn ")?;
             write_type_list(output, ir, types, next, " + ")
+        }
+        ConcreteType::Wildcard(WildcardBound::Unbounded) => output.write_str("?"),
+        ConcreteType::Wildcard(WildcardBound::Extends(bound)) => {
+            output.write_str("? extends ")?;
+            write_type(output, ir, bound, next)
+        }
+        ConcreteType::Wildcard(WildcardBound::Super(bound)) => {
+            output.write_str("? super ")?;
+            write_type(output, ir, bound, next)
+        }
+        ConcreteType::Annotated { kind, target } => match kind {
+            AnnotationKind::Readonly => {
+                output.write_str("readonly ")?;
+                write_type(output, ir, target, next)
+            }
+            AnnotationKind::NullableValue => {
+                write_type(output, ir, target, next)?;
+                output.write_str("?")
+            }
+        },
+        ConcreteType::Inferred(spelling) => {
+            write_atom(output, spelling.and_then(|atom| ir.atom(atom)).unwrap_or(b"_"))
+        }
+        ConcreteType::QualifiedPath { spelling, .. } => {
+            write_atom(output, ir.atom(spelling).unwrap_or(b"?qualified"))
+        }
+        ConcreteType::Map { key, value } => {
+            output.write_str("map[")?;
+            write_type(output, ir, key, next)?;
+            output.write_str("]")?;
+            write_type(output, ir, value, next)
+        }
+        ConcreteType::Channel { direction, element } => {
+            output.write_str(match direction {
+                ChannelDirection::Both => "chan ",
+                ChannelDirection::Send => "chan<- ",
+                ChannelDirection::Receive => "<-chan ",
+            })?;
+            write_type(output, ir, element, next)
         }
     }
 }
