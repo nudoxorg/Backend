@@ -25,7 +25,9 @@ use compiler_publication::{
     open_published_semantic, publish_semantic,
 };
 use compiler_vocabulary::{GoVersion, LanguageProfile, Stage};
-use server_index_build::{IndexedType, SemanticIndexBuildScratch, build_semantic};
+use server_index_build::{
+    IndexedType, SemanticIndexBuildScratch, SemanticTypeFact, build_semantic,
+};
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
@@ -324,9 +326,18 @@ fn authority_truth_survives_publication_reopen_discovery_render_and_index()
     let Some(image) = artifact.fragment.facts.semantic_image else {
         return Err(SemanticJourneyError::IndexMismatch);
     };
+    let semantic_class = artifact
+        .semantic_image
+        .ty(semantic_type)
+        .ok_or(SemanticJourneyError::MissingType)?
+        .tag();
     if document.artifact != EntityArtifactIdentity::Semantic(image.identity)
         || document.entity != indexed.entity
-        || exact_value.semantic_type != IndexedType::Semantic(Some(semantic_type))
+        || exact_value.semantic_type
+            != IndexedType::Semantic(Some(SemanticTypeFact {
+                coordinate: semantic_type,
+                class: semantic_class,
+            }))
         || indexed.name != b"Brew"
     {
         return Err(SemanticJourneyError::IndexMismatch);

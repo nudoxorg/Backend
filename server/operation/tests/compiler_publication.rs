@@ -225,6 +225,7 @@ fn request<'source, 'toolchain, 'cancel>(
         profile: LanguageProfile::Rust(RustEdition::Rust2024),
         stage: Stage::LowerIr,
         source,
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain),
         authority: compiler_driver::SemanticAuthorityInput::None,
         control: CompileControl {
