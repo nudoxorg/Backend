@@ -1,0 +1,59 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "oracle/1.0.0": {
+        "dependencies": {
+          "Microsoft.CodeAnalysis.CSharp": "5.6.0"
+        },
+        "runtime": {
+          "oracle.dll": {}
+        }
+      },
+      "Microsoft.CodeAnalysis.Common/5.6.0": {
+        "runtime": {
+          "lib/net10.0/Microsoft.CodeAnalysis.dll": {
+            "assemblyVersion": "5.6.0.0",
+            "fileVersion": "5.600.26.26310"
+          }
+        }
+      },
+      "Microsoft.CodeAnalysis.CSharp/5.6.0": {
+        "dependencies": {
+          "Microsoft.CodeAnalysis.Common": "5.6.0"
+        },
+        "runtime": {
+          "lib/net10.0/Microsoft.CodeAnalysis.CSharp.dll": {
+            "assemblyVersion": "5.6.0.0",
+            "fileVersion": "5.600.26.26310"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "oracle/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.CodeAnalysis.Common/5.6.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-eWYNB5e92PSdkQ0xcmy2aLtrvBXNydnVi0Hj/VjaAely6XBqA3By+ClGAJaj4d16pzQmrXPLLK9RDVuS1Ec9xQ==",
+      "path": "microsoft.codeanalysis.common/5.6.0",
+      "hashPath": "microsoft.codeanalysis.common.5.6.0.nupkg.sha512"
+    },
+    "Microsoft.CodeAnalysis.CSharp/5.6.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-r1DrKQ/L0xTw03wJrLr36AMQNslyaeEKBFyFmQcOKa8HX3YvmhY//JEUafb6IR/m0gmaUVCfBTWitKJRNb7YAA==",
+      "path": "microsoft.codeanalysis.csharp/5.6.0",
+      "hashPath": "microsoft.codeanalysis.csharp.5.6.0.nupkg.sha512"
+    }
+  }
+}

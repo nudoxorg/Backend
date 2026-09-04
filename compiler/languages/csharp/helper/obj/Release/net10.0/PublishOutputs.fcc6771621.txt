@@ -1,0 +1,7 @@
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/oracle
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/oracle.dll
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/oracle.deps.json
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/oracle.runtimeconfig.json
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/oracle.pdb
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/Microsoft.CodeAnalysis.dll
+/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/nudox-csharp-oracle-publish-67974-9/Microsoft.CodeAnalysis.CSharp.dll

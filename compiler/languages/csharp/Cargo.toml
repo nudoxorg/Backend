@@ -1,6 +1,7 @@
 # Typed offline decoder and bounded tool probe for the Roslyn oracle.
 # Vendor files remain byte-exact inputs and are not compiled by this crate.
-# Tests replay helper output without requiring the broken host dotnet.
+# Tests replay the committed producer fixtures, and regenerate them
+# byte-exactly whenever a dotnet toolchain is present.
 [package]
 name = "compiler-languages-csharp"
 version.workspace = true

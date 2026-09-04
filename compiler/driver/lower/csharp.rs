@@ -12,6 +12,11 @@
 //! Two Roslyn facts the image retains have no lane cell and stay
 //! image-retained: declaration-site generic variance and the `params`
 //! modifier (the parameter's explicit array type still lands in full).
+//! The drop is a decided, pinned state — not an oversight:
+//! `.codex/evidence/capabilities/csharp-roslyn-fidelity/escalation-wire-saturation.md`
+//! carries the trunk decision packet, and
+//! `wire_saturation_gaps_stay_image_retained_pending_trunk_cells` below
+//! fails the moment the saturated values become representable.
 //! Pattern-based locals are absent from the producer's fact surface, so the
 //! projection records none rather than inventing any.
 //!
