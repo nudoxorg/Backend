@@ -3712,11 +3712,13 @@ version = "0.1.0"
 dependencies = [
  "allocation-counter",
  "arrayvec",
+ "compiler-ir",
  "compiler-registry",
  "compiler-vocabulary",
  "heart-adaptive",
  "heart-identity",
  "heart-observe",
+ "server-index-core",
 ]
 
 [[package]]
