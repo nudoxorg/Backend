@@ -13,8 +13,14 @@ use compiler_ir::{AtomId, EntityId, TypeId};
 use compiler_publication::OpenedFragment;
 use compiler_publication::manifest::StoredFragmentFacts;
 use server_index_core::{
-    EntityDocumentId, ExactRow, ExactSegment, LexicalRow, LexicalScore, LexicalSegment,
-    MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
+    EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, LexicalRow, LexicalScore,
+    LexicalSegment, MAX_EXACT_ROWS, MAX_LEXICAL_ROWS,
+};
+
+mod semantic;
+
+pub use semantic::{
+    SemanticIndexBuildCapacity, SemanticIndexBuildScratch, build_semantic, preflight_semantic,
 };
 
 /// Maximum declarations accepted by one builder invocation.
@@ -143,10 +149,10 @@ pub fn build<'opened, 'fragment: 'scratch, 'scratch>(
     let type_nodes = collect_type_nodes(selected.type_nodes, &fragment.view)?;
     let projections =
         canonical_projections(selected.projections, &fragment.view, atoms, type_nodes)?;
-    let entities = derive_entities(selected.entities, projections, fragment.facts.fragment)?;
+    let artifact = EntityArtifactIdentity::Compact(fragment.facts.fragment);
+    let entities = derive_entities(selected.entities, projections, artifact)?;
     let exact_rows = derive_exact_rows(selected.exact_rows, entities)?;
-    let lexical_rows =
-        derive_lexical_rows(selected.lexical_rows, entities, fragment.facts.fragment)?;
+    let lexical_rows = derive_lexical_rows(selected.lexical_rows, entities, artifact)?;
     let exact = ExactSegment::new(exact_rows).map_err(|cause| BuildError::Exact { cause })?;
     let lexical =
         LexicalSegment::new(lexical_rows).map_err(|cause| BuildError::Lexical { cause })?;
@@ -208,7 +214,7 @@ fn canonical_projections<'slots>(
 fn derive_entities<'slots>(
     output: &'slots mut [MaybeUninit<EntityFact<'slots>>],
     projections: &[EntityProjection<'slots>],
-    fragment: compiler_publication::immutable::FragmentIdentity,
+    artifact: EntityArtifactIdentity,
 ) -> DerivationResult<&'slots [EntityFact<'slots>]> {
     initialize(
         BuildRegion::Entities,
@@ -219,7 +225,7 @@ fn derive_entities<'slots>(
                 BuildDerivationError::EntityOrdinalAddressSpace { ordinal, source }
             })?);
             Ok(EntityFact::new(
-                EntityDocumentId { fragment, entity },
+                EntityDocumentId { artifact, entity },
                 entity,
                 projection.name,
                 projection.kind,
@@ -246,7 +252,7 @@ fn derive_exact_rows<'slots>(
 fn derive_lexical_rows<'slots>(
     output: &'slots mut [MaybeUninit<LexicalRow<'slots>>],
     entities: &[EntityFact<'slots>],
-    fragment: compiler_publication::immutable::FragmentIdentity,
+    artifact: EntityArtifactIdentity,
 ) -> DerivationResult<&'slots [LexicalRow<'slots>]> {
     initialize(
         BuildRegion::LexicalRows,
@@ -254,7 +260,7 @@ fn derive_lexical_rows<'slots>(
         entities.iter(),
         |entity| {
             let document = EntityDocumentId {
-                fragment,
+                artifact,
                 entity: entity.entity,
             };
             Ok(LexicalRow::new(

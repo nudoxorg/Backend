@@ -17,7 +17,9 @@ mod exact;
 mod lexical;
 mod snapshot;
 
-pub use document::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError};
+pub use document::{
+    ENTITY_DOCUMENT_ID_BYTES, EntityArtifactIdentity, EntityDocumentId, EntityDocumentIdError,
+};
 
 pub use exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentVerifier,

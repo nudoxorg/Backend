@@ -15,6 +15,8 @@ const ARTIFACT_NAME_BYTES: usize = HEX_NAME_BYTES + ARTIFACT_EXTENSION_BYTES;
 pub(crate) enum StorageNamespace {
     /// Complete canonical IR fragments.
     Fragments,
+    /// Complete portable semantic images.
+    SemanticImages,
     /// Complete canonical compiler package manifests.
     Manifests,
 }
@@ -23,6 +25,7 @@ impl StorageNamespace {
     pub(crate) const fn directory(self) -> &'static str {
         match self {
             Self::Fragments => "fragments",
+            Self::SemanticImages => "semantic-images",
             Self::Manifests => "manifests",
         }
     }
@@ -30,6 +33,7 @@ impl StorageNamespace {
     const fn extension(self) -> &'static [u8; ARTIFACT_EXTENSION_BYTES] {
         match self {
             Self::Fragments => b".irfrag",
+            Self::SemanticImages => b".semimg",
             Self::Manifests => b".irmani",
         }
     }

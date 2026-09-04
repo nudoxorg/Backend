@@ -21,11 +21,15 @@ use heart_root::{
 use heart_schema::SchemaId;
 use thiserror::Error;
 
-use crate::manifest::{CanonicalCompilation, CompilationManifestView, StoredFragmentFacts};
+use crate::manifest::{
+    CanonicalCompilation, CanonicalSemanticCompilation, CompilationManifestView,
+    StoredFragmentFacts,
+};
 
 const MANIFEST_ENTRY_KEY: u64 = 0;
 const MANIFEST_KIND: u16 = 1;
 const FRAGMENT_KIND: u16 = 1;
+const SEMANTIC_IMAGE_KIND: u16 = 2;
 
 /// Runs a continuation only while it holds a real complete-generation witness over the exact
 /// borrowed compiler manifest and fragment bytes.
@@ -59,6 +63,85 @@ pub(crate) fn with_verified_generation<'input, 'scratch, 'fragment, 'manifest, '
             next_object(&mut entries, key)?,
             compiled.fragment.as_ref(),
         )?;
+    }
+    if entries.next().is_some() {
+        return Err(GenerationBuildError::RootClosureExtra);
+    }
+
+    let prepared = PreparedLocality::prepare(&root, &[]).map_err(GenerationBuildError::Locality)?;
+    let locality = prepared
+        .write(locality_output)
+        .map_err(GenerationBuildError::LocalityWrite)?;
+    let view = GenerationView::new(&root, &locality).map_err(GenerationBuildError::Locality)?;
+    let mut closure =
+        ClosureScratch::new(root.len()).map_err(GenerationBuildError::ClosureReservation)?;
+    let mut planning =
+        PlanScratch::new(root.entry_count.into()).map_err(GenerationBuildError::PlanReservation)?;
+    let plan = plan(
+        demand(&view, Projection::CompleteGeneration),
+        &mut closure,
+        &mut planning,
+        |_| true,
+    )
+    .map_err(GenerationBuildError::Plan)?;
+    let verified = plan
+        .stage()
+        .verify_store(&store)
+        .map_err(GenerationBuildError::Verification)?;
+    Ok(visit(verified))
+}
+
+/// Runs a continuation while holding a complete-generation witness over each
+/// compact fragment and its paired full semantic image.
+#[allow(
+    clippy::result_large_err,
+    reason = "cold generation construction retains exact sources"
+)]
+pub(crate) fn with_verified_semantic_generation<
+    'input,
+    'scratch,
+    'fragment,
+    'images,
+    'manifest,
+    'facts,
+    Output,
+>(
+    canonical: &CanonicalSemanticCompilation<'input, 'scratch, 'fragment, 'images>,
+    manifest: &CompilationManifestView<'manifest, 'facts>,
+    semantic_bytes: &[u8],
+    locality_output: &mut [u8],
+    visit: impl FnOnce(VerifiedGeneration<'_, ObjectDomain, &'_ [u8]>) -> Output,
+) -> Result<Output, GenerationBuildError> {
+    let root = build_semantic_root(canonical, manifest, semantic_bytes)?;
+    let capacity = store_capacity(manifest)?;
+    let mut store = MemoryStore::<ObjectDomain, &[u8]>::new(capacity)
+        .map_err(GenerationBuildError::StoreInitialization)?;
+    let mut entries = root.closure();
+    insert(
+        &mut store,
+        next_object(&mut entries, MANIFEST_ENTRY_KEY)?,
+        manifest.as_ref(),
+    )?;
+    for (ordinal, (compiled, prepared)) in canonical.artifacts().enumerate() {
+        let fragment_key = semantic_fragment_key(ordinal)?;
+        insert(
+            &mut store,
+            next_object(&mut entries, fragment_key)?,
+            compiled.artifact.fragment.as_ref(),
+        )?;
+        let image_key = fragment_key
+            .checked_add(1)
+            .ok_or(GenerationBuildError::EntryCountOverflow)?;
+        let bytes =
+            prepared
+                .bytes(semantic_bytes)
+                .ok_or(GenerationBuildError::SemanticImageBytes {
+                    ordinal,
+                    offset: prepared.offset,
+                    length: prepared.byte_length,
+                    available: semantic_bytes.len(),
+                })?;
+        insert(&mut store, next_object(&mut entries, image_key)?, bytes)?;
     }
     if entries.next().is_some() {
         return Err(GenerationBuildError::RootClosureExtra);
@@ -123,6 +206,69 @@ pub(crate) fn verify_reopened_generation(
         return Err(GenerationBuildError::ReopenedBytesLength {
             expected: offset,
             observed: fragment_bytes.len(),
+        });
+    }
+    if entries.next().is_some() {
+        return Err(GenerationBuildError::RootClosureExtra);
+    }
+    verify_generation(&root, &store, locality_output)
+}
+
+/// Rebuilds and verifies a schema-2 generation from caller-owned compact and
+/// semantic artifact bytes in canonical manifest order.
+#[allow(
+    clippy::result_large_err,
+    reason = "cold generation reconstruction retains exact sources"
+)]
+pub(crate) fn verify_reopened_semantic_generation(
+    manifest: &CompilationManifestView<'_, '_>,
+    fragment_bytes: &[u8],
+    semantic_bytes: &[u8],
+    locality_output: &mut [u8],
+) -> Result<heart_hydration::VerifiedGenerationFacts, GenerationBuildError> {
+    let root = build_reopened_semantic_root(manifest, fragment_bytes, semantic_bytes)?;
+    let capacity = store_capacity(manifest)?;
+    let mut store = MemoryStore::<ObjectDomain, &[u8]>::new(capacity)
+        .map_err(GenerationBuildError::StoreInitialization)?;
+    let mut entries = root.closure();
+    insert(
+        &mut store,
+        next_object(&mut entries, MANIFEST_ENTRY_KEY)?,
+        manifest.as_ref(),
+    )?;
+    let mut fragment_offset = 0_usize;
+    let mut semantic_offset = 0_usize;
+    for (ordinal, facts) in manifest.fragments().enumerate() {
+        let fragment_key = semantic_fragment_key(ordinal)?;
+        let fragment = next_fragment_bytes(fragment_bytes, &mut fragment_offset, facts)?;
+        insert(
+            &mut store,
+            next_object(&mut entries, fragment_key)?,
+            fragment,
+        )?;
+        let semantic =
+            next_semantic_image_bytes(semantic_bytes, &mut semantic_offset, ordinal, facts)?;
+        insert(
+            &mut store,
+            next_object(
+                &mut entries,
+                fragment_key
+                    .checked_add(1)
+                    .ok_or(GenerationBuildError::EntryCountOverflow)?,
+            )?,
+            semantic,
+        )?;
+    }
+    if fragment_offset != fragment_bytes.len() {
+        return Err(GenerationBuildError::ReopenedBytesLength {
+            expected: fragment_offset,
+            observed: fragment_bytes.len(),
+        });
+    }
+    if semantic_offset != semantic_bytes.len() {
+        return Err(GenerationBuildError::ReopenedSemanticBytesLength {
+            expected: semantic_offset,
+            observed: semantic_bytes.len(),
         });
     }
     if entries.next().is_some() {
@@ -220,6 +366,137 @@ fn build_reopened_root(
     builder.finish().map_err(GenerationBuildError::Root)
 }
 
+fn build_semantic_root<'input, 'scratch, 'fragment, 'images>(
+    canonical: &CanonicalSemanticCompilation<'input, 'scratch, 'fragment, 'images>,
+    manifest: &CompilationManifestView<'_, '_>,
+    semantic_bytes: &[u8],
+) -> Result<GenerationRoot<ObjectDomain>, GenerationBuildError> {
+    let entry_count = canonical
+        .artifacts()
+        .count()
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(1))
+        .ok_or(GenerationBuildError::EntryCountOverflow)?;
+    let mut builder = GenerationRootBuilder::with_capacity(entry_count)
+        .map_err(GenerationBuildError::RootReservation)?;
+    push(
+        &mut builder,
+        RootEntry {
+            key: MANIFEST_ENTRY_KEY.into(),
+            parent: None,
+            object: manifest_object(manifest),
+        },
+    )?;
+    for (ordinal, ((compiled, prepared), facts)) in
+        canonical.artifacts().zip(manifest.fragments()).enumerate()
+    {
+        let fragment_key = semantic_fragment_key(ordinal)?;
+        push(
+            &mut builder,
+            RootEntry {
+                key: fragment_key.into(),
+                parent: Some(MANIFEST_ENTRY_KEY.into()),
+                object: fragment_object(compiled.artifact.fragment.as_ref(), facts),
+            },
+        )?;
+        let bytes =
+            prepared
+                .bytes(semantic_bytes)
+                .ok_or(GenerationBuildError::SemanticImageBytes {
+                    ordinal,
+                    offset: prepared.offset,
+                    length: prepared.byte_length,
+                    available: semantic_bytes.len(),
+                })?;
+        push(
+            &mut builder,
+            RootEntry {
+                key: fragment_key
+                    .checked_add(1)
+                    .ok_or(GenerationBuildError::EntryCountOverflow)?
+                    .into(),
+                parent: Some(MANIFEST_ENTRY_KEY.into()),
+                object: semantic_image_object(bytes, prepared.byte_length),
+            },
+        )?;
+    }
+    builder.finish().map_err(GenerationBuildError::Root)
+}
+
+fn build_reopened_semantic_root(
+    manifest: &CompilationManifestView<'_, '_>,
+    fragment_bytes: &[u8],
+    semantic_bytes: &[u8],
+) -> Result<GenerationRoot<ObjectDomain>, GenerationBuildError> {
+    let entry_count = manifest
+        .fragments()
+        .count()
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(1))
+        .ok_or(GenerationBuildError::EntryCountOverflow)?;
+    let mut builder = GenerationRootBuilder::with_capacity(entry_count)
+        .map_err(GenerationBuildError::RootReservation)?;
+    push(
+        &mut builder,
+        RootEntry {
+            key: MANIFEST_ENTRY_KEY.into(),
+            parent: None,
+            object: manifest_object(manifest),
+        },
+    )?;
+    let mut fragment_offset = 0_usize;
+    let mut semantic_offset = 0_usize;
+    for (ordinal, facts) in manifest.fragments().enumerate() {
+        let fragment_key = semantic_fragment_key(ordinal)?;
+        let fragment = next_fragment_bytes(fragment_bytes, &mut fragment_offset, facts)?;
+        push(
+            &mut builder,
+            RootEntry {
+                key: fragment_key.into(),
+                parent: Some(MANIFEST_ENTRY_KEY.into()),
+                object: fragment_object(fragment, facts),
+            },
+        )?;
+        let semantic =
+            next_semantic_image_bytes(semantic_bytes, &mut semantic_offset, ordinal, facts)?;
+        let semantic_facts = facts
+            .semantic_image
+            .ok_or(GenerationBuildError::MissingSemanticImage { ordinal })?;
+        push(
+            &mut builder,
+            RootEntry {
+                key: fragment_key
+                    .checked_add(1)
+                    .ok_or(GenerationBuildError::EntryCountOverflow)?
+                    .into(),
+                parent: Some(MANIFEST_ENTRY_KEY.into()),
+                object: semantic_image_object(semantic, semantic_facts.byte_length),
+            },
+        )?;
+    }
+    if fragment_offset != fragment_bytes.len() {
+        return Err(GenerationBuildError::ReopenedBytesLength {
+            expected: fragment_offset,
+            observed: fragment_bytes.len(),
+        });
+    }
+    if semantic_offset != semantic_bytes.len() {
+        return Err(GenerationBuildError::ReopenedSemanticBytesLength {
+            expected: semantic_offset,
+            observed: semantic_bytes.len(),
+        });
+    }
+    builder.finish().map_err(GenerationBuildError::Root)
+}
+
+fn semantic_fragment_key(ordinal: usize) -> Result<u64, GenerationBuildError> {
+    u64::try_from(ordinal)
+        .map_err(|source| GenerationBuildError::EntryKeyAddressSpace { ordinal, source })?
+        .checked_mul(2)
+        .and_then(|key| key.checked_add(1))
+        .ok_or(GenerationBuildError::EntryCountOverflow)
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "cold root build retains exact sources"
@@ -284,6 +561,35 @@ fn next_fragment_bytes<'bytes>(
     Ok(bytes)
 }
 
+fn next_semantic_image_bytes<'bytes>(
+    all_bytes: &'bytes [u8],
+    offset: &mut usize,
+    ordinal: usize,
+    facts: StoredFragmentFacts,
+) -> Result<&'bytes [u8], GenerationBuildError> {
+    let semantic = facts
+        .semantic_image
+        .ok_or(GenerationBuildError::MissingSemanticImage { ordinal })?;
+    let length = usize::try_from(semantic.byte_length).map_err(|source| {
+        GenerationBuildError::SemanticImageLengthAddressSpace {
+            observed: semantic.byte_length,
+            source,
+        }
+    })?;
+    let end = offset
+        .checked_add(length)
+        .ok_or(GenerationBuildError::ReopenedSemanticBytesLengthOverflow)?;
+    let bytes =
+        all_bytes
+            .get(*offset..end)
+            .ok_or(GenerationBuildError::ReopenedSemanticBytesLength {
+                expected: end,
+                observed: all_bytes.len(),
+            })?;
+    *offset = end;
+    Ok(bytes)
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "cold root build retains exact sources"
@@ -300,6 +606,14 @@ fn store_capacity<'manifest, 'facts>(
         slots = slots
             .checked_add(1)
             .ok_or(GenerationBuildError::StoreSlotsOverflow)?;
+        if let Some(semantic) = facts.semantic_image {
+            bytes = bytes
+                .checked_add(u64::from(semantic.byte_length))
+                .ok_or(GenerationBuildError::StoreBytesOverflow)?;
+            slots = slots
+                .checked_add(1)
+                .ok_or(GenerationBuildError::StoreSlotsOverflow)?;
+        }
     }
     Ok(StoreCapacity {
         bytes: bytes.into(),
@@ -380,6 +694,15 @@ fn fragment_object(bytes: &[u8], facts: StoredFragmentFacts) -> ObjectRef<Object
     }
 }
 
+fn semantic_image_object(bytes: &[u8], length: u32) -> ObjectRef<ObjectDomain> {
+    ObjectRef {
+        content: ContentId::<ObjectDomain>::from_canonical_bytes(bytes),
+        length: ObjectLength::from(u64::from(length)),
+        schema: SchemaId::IrSemanticImage,
+        kind: ObjectKind::from(SEMANTIC_IMAGE_KIND),
+    }
+}
+
 /// Failure while constructing a complete root and store over one canonical package.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -396,8 +719,25 @@ pub enum GenerationBuildError {
         #[source]
         source: TryFromIntError,
     },
+    #[error(
+        "semantic image {ordinal} at {offset} with length {length} exceeds {available} prepared bytes"
+    )]
+    SemanticImageBytes {
+        ordinal: usize,
+        offset: usize,
+        length: u32,
+        available: usize,
+    },
     #[error("stored compiler fragment length {observed} cannot fit this address space")]
     FragmentLengthAddressSpace {
+        observed: u32,
+        #[source]
+        source: TryFromIntError,
+    },
+    #[error("semantic manifest entry {ordinal} omitted its complete image fact")]
+    MissingSemanticImage { ordinal: usize },
+    #[error("stored semantic image length {observed} cannot fit this address space")]
+    SemanticImageLengthAddressSpace {
         observed: u32,
         #[source]
         source: TryFromIntError,
@@ -406,6 +746,10 @@ pub enum GenerationBuildError {
     ReopenedBytesLengthOverflow,
     #[error("stored compiler fragment bytes have {observed} bytes, require {expected}")]
     ReopenedBytesLength { expected: usize, observed: usize },
+    #[error("stored semantic-image byte extent overflowed while rebuilding the generation")]
+    ReopenedSemanticBytesLengthOverflow,
+    #[error("stored semantic-image bytes have {observed} bytes, require {expected}")]
+    ReopenedSemanticBytesLength { expected: usize, observed: usize },
     #[error("could not reserve the bounded compiler generation root")]
     RootReservation(#[source] TryReserveError),
     #[error("compiler generation root rejected a preflighted entry")]

@@ -151,6 +151,8 @@ pub(crate) enum BuildProofError {
 /// A lifetime-free structural classification of a builder terminal from one test journey.
 #[derive(Debug, Error)]
 pub(crate) enum BuildTerminal {
+    #[error("semantic index input omitted its complete image authority")]
+    MissingSemanticImage,
     #[error("canonical entity ordinal did not fit compiler identity")]
     EntityOrdinalAddressSpace,
     #[error("entity bound rejected build: observed {observed}, maximum {maximum}")]
@@ -215,6 +217,7 @@ impl From<BuildError<'_>> for BuildTerminal {
 impl From<BuildDerivationError> for BuildTerminal {
     fn from(error: BuildDerivationError) -> Self {
         match error {
+            BuildDerivationError::MissingSemanticImage => Self::MissingSemanticImage,
             BuildDerivationError::EntityOrdinalAddressSpace { .. } => {
                 Self::EntityOrdinalAddressSpace
             }

@@ -26,9 +26,12 @@ compiler-languages-go = { path = "../../compiler/languages/go" }
 compiler-languages-java = { path = "../../compiler/languages/java" }
 compiler-languages-rust = { path = "../../compiler/languages/rust" }
 server-journal = { path = "../journal" }
+server-index-build = { path = "../index/build" }
+server-index-core = { path = "../index/core" }
 compiler-ir = { path = "../../compiler/ir" }
 heart-memory = { path = "../../heart/memory" }
 blake3.workspace = true
+sha2 = "=0.10.9"
 [lints]
 workspace = true
 

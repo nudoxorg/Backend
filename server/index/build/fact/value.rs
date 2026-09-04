@@ -14,6 +14,17 @@ pub const ENTITY_VALUE_BYTES: usize = size_of::<ExactEntityValueWire>();
 const ENTITY_VALUE_SCHEMA: u8 = 1;
 const PRIMITIVE_TYPE_TAG: u8 = 0;
 const REFERENCE_TYPE_TAG: u8 = 1;
+const SEMANTIC_ABSENT_TYPE_TAG: u8 = 2;
+const SEMANTIC_TYPE_TAG: u8 = 3;
+
+/// Closed type authority retained by one exact entity row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexedType {
+    /// Legacy compact type-node authority.
+    Compact(TypeNode),
+    /// Full semantic-image coordinate, including captured absence.
+    Semantic(Option<TypeId>),
+}
 
 /// A checked fixed-width exact entity value with no redundant semantic cache.
 ///
@@ -30,7 +41,7 @@ pub struct ExactEntityValueView {
     /// Closed compiler declaration kind.
     pub kind: EntityKind,
     /// Closed compiler type fact carried by this exact value.
-    pub semantic_type: TypeNode,
+    pub semantic_type: IndexedType,
 }
 
 impl AsRef<[u8]> for ExactEntityValue {
@@ -78,13 +89,23 @@ pub enum ExactEntityValueError {
         #[source]
         source: TypeNodeFault,
     },
+    /// Captured absent semantic type carried a nonzero coordinate payload.
+    #[error("absent semantic type carried nonzero operand {observed}")]
+    AbsentTypeOperand {
+        /// Complete rejected coordinate payload.
+        observed: u32,
+    },
 }
 
 impl ExactEntityValue {
-    pub(crate) fn from_facts(kind: EntityKind, semantic_type: TypeNode) -> Self {
+    pub(crate) fn from_facts(kind: EntityKind, semantic_type: IndexedType) -> Self {
         let (type_tag, type_operand) = match semantic_type {
-            TypeNode::Primitive(primitive) => (PRIMITIVE_TYPE_TAG, u32::from(primitive)),
-            TypeNode::Reference(target) => (REFERENCE_TYPE_TAG, target.raw),
+            IndexedType::Compact(TypeNode::Primitive(primitive)) => {
+                (PRIMITIVE_TYPE_TAG, u32::from(primitive))
+            }
+            IndexedType::Compact(TypeNode::Reference(target)) => (REFERENCE_TYPE_TAG, target.raw),
+            IndexedType::Semantic(None) => (SEMANTIC_ABSENT_TYPE_TAG, 0),
+            IndexedType::Semantic(Some(target)) => (SEMANTIC_TYPE_TAG, target.raw),
         };
         let wire = ExactEntityValueWire {
             schema: ENTITY_VALUE_SCHEMA,
@@ -135,15 +156,20 @@ fn decode_exact_entity_value(
         .map_err(|EntityKindCodeError { actual }| ExactEntityValueError::Kind { actual })?;
     let operand = u32::from_le_bytes(wire.type_operand);
     let semantic_type = match wire.type_tag {
-        PRIMITIVE_TYPE_TAG => {
-            TypeNode::Primitive(PrimitiveType::try_from(operand).map_err(|source| {
+        PRIMITIVE_TYPE_TAG => IndexedType::Compact(TypeNode::Primitive(
+            PrimitiveType::try_from(operand).map_err(|source| {
                 ExactEntityValueError::Primitive {
                     actual: operand,
                     source,
                 }
-            })?)
+            })?,
+        )),
+        REFERENCE_TYPE_TAG => IndexedType::Compact(TypeNode::Reference(TypeId::new(operand))),
+        SEMANTIC_ABSENT_TYPE_TAG if operand == 0 => IndexedType::Semantic(None),
+        SEMANTIC_ABSENT_TYPE_TAG => {
+            return Err(ExactEntityValueError::AbsentTypeOperand { observed: operand });
         }
-        REFERENCE_TYPE_TAG => TypeNode::Reference(TypeId::new(operand)),
+        SEMANTIC_TYPE_TAG => IndexedType::Semantic(Some(TypeId::new(operand))),
         actual => return Err(ExactEntityValueError::TypeTag { actual }),
     };
     Ok(ExactEntityValueView {
@@ -169,7 +195,7 @@ const _: () = assert!(align_of::<ExactEntityValueWire>() == 1);
 mod tests {
     use super::{
         ENTITY_VALUE_BYTES, ENTITY_VALUE_SCHEMA, ExactEntityValue, ExactEntityValueError,
-        ExactEntityValueWire, PRIMITIVE_TYPE_TAG, REFERENCE_TYPE_TAG,
+        ExactEntityValueWire, IndexedType, PRIMITIVE_TYPE_TAG,
     };
     use compiler_ir::{EntityKind, PrimitiveType, TypeNode};
     use core::mem::size_of;
@@ -195,6 +221,10 @@ mod tests {
         TypeTag,
         #[error("unknown exact entity primitive was accepted")]
         Primitive,
+        #[error("semantic type coordinates did not round trip exactly")]
+        SemanticType,
+        #[error("an absent semantic type accepted a nonzero coordinate")]
+        AbsentOperand,
     }
 
     #[test]
@@ -202,7 +232,7 @@ mod tests {
     -> Result<(), ExactEntityValueTestError> {
         let value = ExactEntityValue::from_facts(
             EntityKind::Record,
-            TypeNode::Primitive(PrimitiveType::String),
+            IndexedType::Compact(TypeNode::Primitive(PrimitiveType::String)),
         );
         let decoded = ExactEntityValue::try_from(value.as_ref())
             .map_err(|cause| ExactEntityValueTestError::Decode { cause })?;
@@ -211,9 +241,40 @@ mod tests {
             .map_err(|cause| ExactEntityValueTestError::Decode { cause })?;
         if decoded != value
             || view.kind != EntityKind::Record
-            || view.semantic_type != TypeNode::Primitive(PrimitiveType::String)
+            || view.semantic_type
+                != IndexedType::Compact(TypeNode::Primitive(PrimitiveType::String))
         {
             return Err(ExactEntityValueTestError::RoundTrip);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_entity_value_retains_present_and_absent_semantic_coordinates()
+    -> Result<(), ExactEntityValueTestError> {
+        for expected in [
+            IndexedType::Semantic(None),
+            IndexedType::Semantic(Some(compiler_ir::TypeId::new(4096))),
+        ] {
+            let value = ExactEntityValue::from_facts(EntityKind::Function, expected);
+            let observed = value
+                .semantic_view()
+                .map_err(|cause| ExactEntityValueTestError::Decode { cause })?;
+            if observed.semantic_type != expected {
+                return Err(ExactEntityValueTestError::SemanticType);
+            }
+        }
+        let malformed = invalid_wire(
+            ENTITY_VALUE_SCHEMA,
+            u16::from(EntityKind::Function),
+            super::SEMANTIC_ABSENT_TYPE_TAG,
+            1,
+        );
+        if !matches!(
+            ExactEntityValue::try_from(malformed.as_bytes()),
+            Err(ExactEntityValueError::AbsentTypeOperand { observed: 1 })
+        ) {
+            return Err(ExactEntityValueTestError::AbsentOperand);
         }
         Ok(())
     }
@@ -240,7 +301,7 @@ mod tests {
             invalid_wire(
                 ENTITY_VALUE_SCHEMA,
                 0,
-                REFERENCE_TYPE_TAG.wrapping_add(1),
+                u8::MAX,
                 0,
             )
             .as_bytes(),

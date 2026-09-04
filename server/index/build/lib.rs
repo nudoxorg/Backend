@@ -17,11 +17,12 @@ mod fact;
 mod initialized;
 
 pub use construct::{
-    IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView, build,
-    preflight,
+    IndexBuildCapacity, IndexBuildScratch, MAX_INDEX_ROWS, PreparedIndex, PreparedIndexView,
+    SemanticIndexBuildCapacity, SemanticIndexBuildScratch, build, build_semantic, preflight,
+    preflight_semantic,
 };
 pub use error::{BuildAdmissionError, BuildDerivationError, BuildError, BuildRegion};
 pub use fact::{
     ENTITY_VALUE_BYTES, EXACT_ENTITY_KEY_BYTES, EntityFact, EntityFactView, EntityProjection,
-    ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView,
+    ExactEntityKey, ExactEntityValue, ExactEntityValueError, ExactEntityValueView, IndexedType,
 };

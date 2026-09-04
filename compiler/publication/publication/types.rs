@@ -11,7 +11,8 @@ use std::sync::{
 
 use compiler_ir::{
     FragmentError, FragmentRange, FragmentRangeManifest, FragmentRangeManifestError, FragmentView,
-    RecipeFact, SectionKind, SourceIdentity,
+    RecipeFact, SectionKind, SemanticImageEncodeError, SemanticImageIdentity,
+    SemanticImageReopenError, SemanticImageView, SourceIdentity,
 };
 use heart_hydration::VerifiedGenerationFacts;
 use server_journal::{PublicationFacts, SharedPublicationFailure};
@@ -27,6 +28,7 @@ use crate::{
         CompilationWriteError, StoredFragmentFacts,
     },
     manifest_store::ImmutableManifestError,
+    semantic_immutable::ImmutableSemanticImageError,
 };
 
 /// Caller-owned bounded buffers for one synchronous compiler publication.
@@ -37,6 +39,32 @@ pub struct PublicationScratch<'manifest, 'facts, 'order, 'locality, 'binding> {
     pub manifest_facts: &'facts mut [Option<StoredFragmentFacts>],
     /// Reusable caller-owned canonical input ordinals.
     pub ordinals: &'order mut [usize],
+    /// Output for all-resident generation-locality bytes.
+    pub locality_output: &'locality mut [u8],
+    /// Exact fixed output for the pre-journal immutable generation binding.
+    pub binding_output: &'binding mut [u8],
+}
+
+/// Caller-owned bounded outputs for one fused semantic publication.
+pub struct SemanticPublicationScratch<
+    'manifest,
+    'facts,
+    'order,
+    'plan,
+    'semantic,
+    'locality,
+    'binding,
+> {
+    /// Output for the complete schema-2 package manifest.
+    pub manifest_output: &'manifest mut [u8],
+    /// Decoded manifest facts proving every paired artifact row.
+    pub manifest_facts: &'facts mut [Option<StoredFragmentFacts>],
+    /// Reusable caller-owned canonical input ordinals.
+    pub ordinals: &'order mut [usize],
+    /// Reusable exact per-image extent plan, one slot per compiler output.
+    pub semantic_image_plan: &'plan mut [crate::manifest::SemanticImageRegion],
+    /// Concatenated complete semantic-image output in caller input order.
+    pub semantic_image_output: &'semantic mut [u8],
     /// Output for all-resident generation-locality bytes.
     pub locality_output: &'locality mut [u8],
     /// Exact fixed output for the pre-journal immutable generation binding.
@@ -96,6 +124,20 @@ pub struct OpenPublicationScratch<'manifest, 'facts, 'fragments, 'locality> {
     pub locality_output: &'locality mut [u8],
 }
 
+/// Caller-owned buffers used to reopen a schema-2 semantic publication.
+pub struct OpenSemanticPublicationScratch<'manifest, 'facts, 'fragments, 'semantic, 'locality> {
+    /// Output for the complete immutable package manifest.
+    pub manifest_output: &'manifest mut [u8],
+    /// Decoded manifest facts for every paired artifact row.
+    pub manifest_facts: &'facts mut [Option<StoredFragmentFacts>],
+    /// Concatenated compact fragment bytes in canonical manifest order.
+    pub fragment_output: &'fragments mut [u8],
+    /// Concatenated full semantic-image bytes in canonical manifest order.
+    pub semantic_image_output: &'semantic mut [u8],
+    /// Output for complete-generation locality reconstruction.
+    pub locality_output: &'locality mut [u8],
+}
+
 /// Stable compiler publication facts exposed only after durable journal success.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublishedCompilation {
@@ -134,6 +176,92 @@ impl<'manifest, 'facts> OpenedCompilation<'manifest, 'facts> {
         }
     }
 }
+
+/// Durable compiler package whose compact and full semantic artifacts were
+/// jointly verified against one selected generation.
+pub struct OpenedSemanticCompilation<'manifest, 'facts, 'fragments, 'semantic> {
+    /// Stable journal facts selecting this exact complete generation.
+    pub publication: PublicationFacts,
+    /// Immutable generation-to-manifest binding.
+    pub binding: CompilationBindingFacts,
+    /// Validated schema-2 manifest pairing every artifact.
+    pub manifest: CompilationManifestView<'manifest, 'facts>,
+    pub(super) fragments: &'fragments [u8],
+    pub(super) semantic_images: &'semantic [u8],
+}
+
+impl<'manifest, 'facts, 'fragments, 'semantic>
+    OpenedSemanticCompilation<'manifest, 'facts, 'fragments, 'semantic>
+{
+    /// Iterates paired compact and full semantic views in manifest order.
+    pub fn artifacts(&self) -> OpenedSemanticArtifactCursor<'_, 'fragments, 'semantic> {
+        OpenedSemanticArtifactCursor {
+            facts: self.manifest.fragments(),
+            fragment_bytes: self.fragments,
+            semantic_bytes: self.semantic_images,
+            fragment_offset: 0,
+            semantic_offset: 0,
+            ordinal: 0,
+            failed: false,
+        }
+    }
+}
+
+/// One manifest-bound compact compatibility view and authoritative semantic image.
+pub struct OpenedSemanticArtifact<'fragment, 'semantic> {
+    /// Compact artifact retained for compatibility and range retrieval.
+    pub fragment: OpenedFragment<'fragment>,
+    /// Complete typed semantic reader over the paired immutable image.
+    pub semantic_image: SemanticImageView<'semantic>,
+}
+
+/// Exact-size-on-success cursor over paired semantic publication artifacts.
+pub struct OpenedSemanticArtifactCursor<'manifest, 'fragment, 'semantic> {
+    facts: crate::manifest::CompilationManifestEntries<'manifest>,
+    fragment_bytes: &'fragment [u8],
+    semantic_bytes: &'semantic [u8],
+    fragment_offset: usize,
+    semantic_offset: usize,
+    ordinal: usize,
+    failed: bool,
+}
+
+impl<'fragment, 'semantic> Iterator for OpenedSemanticArtifactCursor<'_, 'fragment, 'semantic> {
+    type Item = Result<OpenedSemanticArtifact<'fragment, 'semantic>, OpenedSemanticArtifactError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        let facts = self.facts.next()?;
+        let ordinal = self.ordinal;
+        let Some(next_ordinal) = ordinal.checked_add(1) else {
+            self.failed = true;
+            return Some(Err(OpenedSemanticArtifactError::OrdinalOverflow { facts }));
+        };
+        self.ordinal = next_ordinal;
+        match opened_semantic_artifact(
+            self.fragment_bytes,
+            self.semantic_bytes,
+            self.fragment_offset,
+            self.semantic_offset,
+            ordinal,
+            facts,
+        ) {
+            Ok((artifact, fragment_offset, semantic_offset)) => {
+                self.fragment_offset = fragment_offset;
+                self.semantic_offset = semantic_offset;
+                Some(Ok(artifact))
+            }
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+impl core::iter::FusedIterator for OpenedSemanticArtifactCursor<'_, '_, '_> {}
 
 /// One manifest-named compact IR fragment borrowed from an opened durable compilation.
 pub struct OpenedFragment<'fragment> {
@@ -317,7 +445,7 @@ pub enum OpenedFragmentFactMismatch {
     clippy::result_large_err,
     reason = "cold integrity failures retain complete typed manifest facts and compact-IR sources without allocation"
 )]
-fn opened_fragment<'fragment>(
+pub(super) fn opened_fragment<'fragment>(
     bytes: &'fragment [u8],
     offset: usize,
     ordinal: usize,
@@ -370,6 +498,129 @@ fn opened_fragment<'fragment>(
         expected: facts,
         mismatch,
     })
+}
+
+/// Rejection while yielding one paired artifact from a reopened semantic package.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[allow(
+    missing_docs,
+    reason = "each variant retains the exact manifest row, coordinate, and source"
+)]
+pub enum OpenedSemanticArtifactError {
+    #[error("opened semantic artifact ordinal overflowed this address space")]
+    OrdinalOverflow { facts: StoredFragmentFacts },
+    #[error("opened semantic artifact {ordinal} has no schema-2 semantic image fact")]
+    MissingSemanticImage {
+        ordinal: usize,
+        facts: StoredFragmentFacts,
+    },
+    #[error("opened semantic image {ordinal} length cannot fit this address space")]
+    LengthAddressSpace {
+        ordinal: usize,
+        facts: crate::semantic_immutable::SemanticImageArtifactFacts,
+        #[source]
+        source: core::num::TryFromIntError,
+    },
+    #[error("opened semantic image {ordinal} extent overflowed")]
+    RangeOverflow {
+        ordinal: usize,
+        facts: crate::semantic_immutable::SemanticImageArtifactFacts,
+        offset: usize,
+        length: usize,
+    },
+    #[error("opened semantic image {ordinal} region is truncated")]
+    RegionTruncated {
+        ordinal: usize,
+        facts: crate::semantic_immutable::SemanticImageArtifactFacts,
+        available: usize,
+        required: usize,
+    },
+    #[error("opened semantic image {ordinal} failed complete semantic grammar validation")]
+    Grammar {
+        ordinal: usize,
+        facts: crate::semantic_immutable::SemanticImageArtifactFacts,
+        #[source]
+        source: SemanticImageReopenError,
+    },
+    #[error("opened semantic image {ordinal} identity differs from its manifest fact")]
+    Identity {
+        ordinal: usize,
+        expected: SemanticImageIdentity,
+        observed: SemanticImageIdentity,
+    },
+    #[error("paired compact artifact {ordinal} failed durable reconstruction")]
+    Fragment {
+        ordinal: usize,
+        #[source]
+        source: OpenedFragmentError,
+    },
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "cold paired-artifact failures retain exact manifest facts and typed grammar causes"
+)]
+fn opened_semantic_artifact<'fragment, 'semantic>(
+    fragment_bytes: &'fragment [u8],
+    semantic_bytes: &'semantic [u8],
+    fragment_offset: usize,
+    semantic_offset: usize,
+    ordinal: usize,
+    facts: StoredFragmentFacts,
+) -> Result<(OpenedSemanticArtifact<'fragment, 'semantic>, usize, usize), OpenedSemanticArtifactError>
+{
+    let semantic_facts = facts
+        .semantic_image
+        .ok_or(OpenedSemanticArtifactError::MissingSemanticImage { ordinal, facts })?;
+    let semantic_length = usize::try_from(semantic_facts.byte_length).map_err(|source| {
+        OpenedSemanticArtifactError::LengthAddressSpace {
+            ordinal,
+            facts: semantic_facts,
+            source,
+        }
+    })?;
+    let semantic_end = semantic_offset.checked_add(semantic_length).ok_or(
+        OpenedSemanticArtifactError::RangeOverflow {
+            ordinal,
+            facts: semantic_facts,
+            offset: semantic_offset,
+            length: semantic_length,
+        },
+    )?;
+    let region = semantic_bytes.get(semantic_offset..semantic_end).ok_or(
+        OpenedSemanticArtifactError::RegionTruncated {
+            ordinal,
+            facts: semantic_facts,
+            available: semantic_bytes.len().saturating_sub(semantic_offset),
+            required: semantic_length,
+        },
+    )?;
+    let semantic_image = SemanticImageView::reopen(region).map_err(|source| {
+        OpenedSemanticArtifactError::Grammar {
+            ordinal,
+            facts: semantic_facts,
+            source,
+        }
+    })?;
+    let observed = SemanticImageIdentity::from_encoded_bytes(region);
+    if observed != semantic_facts.identity {
+        return Err(OpenedSemanticArtifactError::Identity {
+            ordinal,
+            expected: semantic_facts.identity,
+            observed,
+        });
+    }
+    let (fragment, fragment_end) = opened_fragment(fragment_bytes, fragment_offset, ordinal, facts)
+        .map_err(|source| OpenedSemanticArtifactError::Fragment { ordinal, source })?;
+    Ok((
+        OpenedSemanticArtifact {
+            fragment,
+            semantic_image,
+        },
+        fragment_end,
+        semantic_end,
+    ))
 }
 
 fn fragment_fact_mismatch(
@@ -515,6 +766,114 @@ pub enum PublishCompiledError {
     BindingOutputLength { observed: usize },
 }
 
+/// Rejection while publishing fused compact and full semantic compiler output.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[allow(
+    missing_docs,
+    reason = "each variant retains the exact typed semantic-publication boundary and source"
+)]
+pub enum PublishSemanticError {
+    #[error("semantic publication was cancelled before image preparation or storage")]
+    CancelledBeforeStorage,
+    #[error("semantic image plan has {available} slots, requires {required}")]
+    ImagePlanTooSmall { required: usize, available: usize },
+    #[error("semantic image {ordinal} could not be measured")]
+    ImageMeasure {
+        ordinal: usize,
+        #[source]
+        source: SemanticImageEncodeError,
+    },
+    #[error("semantic image {ordinal} has {observed} bytes, exceeding its durable length width")]
+    ImageLengthAddressSpace {
+        ordinal: usize,
+        observed: usize,
+        #[source]
+        source: core::num::TryFromIntError,
+    },
+    #[error("semantic image {ordinal} durable length {observed} does not fit this address space")]
+    ImagePlanLengthAddressSpace {
+        ordinal: usize,
+        observed: u32,
+        #[source]
+        source: core::num::TryFromIntError,
+    },
+    #[error("semantic image {ordinal} extent overflowed after byte {offset}")]
+    ImageExtentOverflow {
+        ordinal: usize,
+        offset: usize,
+        length: usize,
+    },
+    #[error("semantic image output has {available} bytes, requires {required}")]
+    ImageOutputTooSmall { required: usize, available: usize },
+    #[error("semantic image {ordinal} could not be encoded")]
+    ImageEncode {
+        ordinal: usize,
+        #[source]
+        source: SemanticImageEncodeError,
+    },
+    #[error("semantic image {ordinal} wrote {observed} bytes after promising exactly {expected}")]
+    ImageWriteLengthMismatch {
+        ordinal: usize,
+        expected: usize,
+        observed: usize,
+    },
+    #[error("semantic image {ordinal} failed its independent full reopen")]
+    ImageReopen {
+        ordinal: usize,
+        #[source]
+        source: SemanticImageReopenError,
+    },
+    #[error("semantic image {ordinal} has no captured compiler provenance")]
+    ImageProvenanceUnavailable { ordinal: usize },
+    #[error("semantic image {ordinal} source differs from its fused compact artifact")]
+    ImageSource {
+        ordinal: usize,
+        expected: SourceIdentity,
+        observed: SourceIdentity,
+    },
+    #[error("semantic image {ordinal} recipe differs from its fused compact artifact")]
+    ImageRecipe {
+        ordinal: usize,
+        expected: RecipeFact,
+        observed: RecipeFact,
+    },
+    #[error("fused compiler outputs could not form a canonical semantic package")]
+    Canonical(#[source] CompilationPrepareError),
+    #[error("canonical semantic package manifest could not be written")]
+    ManifestWrite(#[source] CompilationWriteError),
+    #[error("semantic compiler fragment storage owner could not open")]
+    FragmentStorageOwner(#[source] ImmutableArtifactError),
+    #[error("semantic compiler fragment {ordinal} could not enter immutable storage")]
+    FragmentStorage {
+        ordinal: usize,
+        #[source]
+        source: ImmutableArtifactError,
+    },
+    #[error("semantic compiler fragment {ordinal} could not derive its full range manifest")]
+    FragmentManifest {
+        ordinal: usize,
+        #[source]
+        source: FragmentRangeManifestError,
+    },
+    #[error("semantic image storage owner could not open")]
+    SemanticStorageOwner(#[source] ImmutableSemanticImageError),
+    #[error("semantic image {ordinal} could not enter immutable storage")]
+    SemanticStorage {
+        ordinal: usize,
+        #[source]
+        source: ImmutableSemanticImageError,
+    },
+    #[error("semantic image {ordinal} storage facts differ from its measured encoded region")]
+    SemanticStorageFacts {
+        ordinal: usize,
+        expected: crate::semantic_immutable::SemanticImageArtifactFacts,
+        observed: crate::semantic_immutable::SemanticImageArtifactFacts,
+    },
+    #[error("semantic publication failed after all paired artifacts were prepared")]
+    Publication(#[source] PublishCompiledError),
+}
+
 /// Failure while reopening the durable compiler-selected package.
 #[derive(Debug, Error)]
 #[allow(
@@ -540,6 +899,11 @@ pub enum OpenPublishedError {
     },
     #[error("durable selected compiler manifest could not be opened")]
     Manifest(#[source] ImmutableManifestError),
+    #[error("compiler publication uses {observed:?}, but this reopen path requires {expected:?}")]
+    ManifestFormat {
+        expected: crate::manifest::CompilationManifestFormat,
+        observed: crate::manifest::CompilationManifestFormat,
+    },
     #[error("compiler manifest fragment output has {available} bytes, requires {required}")]
     FragmentOutputTooSmall { required: usize, available: usize },
     #[error("compiler manifest fragment {fragment:?} length cannot fit this address space")]
@@ -553,11 +917,45 @@ pub enum OpenPublishedError {
     },
     #[error("compiler manifest fragment byte sum overflowed native address space")]
     FragmentOutputLengthOverflow,
+    #[error("semantic manifest fragment {fragment:?} omitted its complete semantic image")]
+    MissingSemanticImage {
+        fragment: crate::immutable::FragmentIdentity,
+    },
+    #[error("semantic image {semantic_image:?} length cannot fit this address space")]
+    SemanticOutputLengthAddressSpace {
+        semantic_image: SemanticImageIdentity,
+        #[source]
+        source: core::num::TryFromIntError,
+    },
+    #[error("semantic-image byte sum overflowed native address space")]
+    SemanticOutputLengthOverflow,
+    #[error("semantic-image output has {available} bytes, requires {required}")]
+    SemanticOutputTooSmall { required: usize, available: usize },
     #[error("durable selected compiler fragment {ordinal} could not be opened")]
     Fragment {
         ordinal: usize,
         #[source]
         source: ImmutableArtifactError,
+    },
+    #[error("durable selected semantic image {ordinal} could not be opened")]
+    SemanticImage {
+        ordinal: usize,
+        #[source]
+        source: ImmutableSemanticImageError,
+    },
+    #[error("durable semantic image {ordinal} has no captured compiler provenance")]
+    SemanticProvenanceUnavailable { ordinal: usize },
+    #[error("durable semantic image {ordinal} source differs from its manifest fragment")]
+    SemanticSource {
+        ordinal: usize,
+        expected: SourceIdentity,
+        observed: SourceIdentity,
+    },
+    #[error("durable semantic image {ordinal} recipe differs from its manifest fragment")]
+    SemanticRecipe {
+        ordinal: usize,
+        expected: RecipeFact,
+        observed: RecipeFact,
     },
     #[error("durable selected compiler fragment {ordinal} could not commit all semantic ranges")]
     FragmentRanges {

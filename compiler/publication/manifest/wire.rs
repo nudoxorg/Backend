@@ -6,17 +6,20 @@ use compiler_ir::{FragmentRange, FragmentRangeManifest, RecipeFact, SectionKind,
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
 use heart_identity::{
     ArtifactId, CompileRecipeDomain, ContentId, IrFragmentDomain, IrFragmentEncoding,
-    IrFragmentRangeEncoding, SourceFactDomain, ToolchainDomain,
+    IrFragmentRangeEncoding, IrSemanticImageDomain, IrSemanticImageEncoding, SourceFactDomain,
+    ToolchainDomain,
 };
 
 use super::{
-    CompilationManifestError, StoredFragmentFacts,
+    CompilationManifestError, CompilationManifestFormat, StoredFragmentFacts,
     build::{
         FRAGMENT_IDENTITY_OFFSET, FRAGMENT_LENGTH_OFFSET, RANGE_BYTES, RANGE_COUNT, RANGE_OFFSET,
         RECIPE_IDENTITY_OFFSET, RECIPE_PROFILE_OFFSET, RECIPE_STAGE_OFFSET, RECIPE_TOOL_OFFSET,
-        RECIPE_TOOLCHAIN_OFFSET, SECTION_ORDER, SOURCE_IDENTITY_OFFSET, SOURCE_LENGTH_OFFSET,
+        RECIPE_TOOLCHAIN_OFFSET, SECTION_ORDER, SEMANTIC_IMAGE_IDENTITY_OFFSET,
+        SEMANTIC_IMAGE_LENGTH_OFFSET, SOURCE_IDENTITY_OFFSET, SOURCE_LENGTH_OFFSET,
     },
 };
+use crate::semantic_immutable::SemanticImageArtifactFacts;
 
 pub(super) fn write_entry(output: &mut [u8], manifest: &FragmentRangeManifest) {
     output[SOURCE_IDENTITY_OFFSET..SOURCE_IDENTITY_OFFSET + 32]
@@ -45,6 +48,13 @@ pub(super) fn write_entry(output: &mut [u8], manifest: &FragmentRangeManifest) {
     }
 }
 
+pub(super) fn write_semantic_image(output: &mut [u8], facts: SemanticImageArtifactFacts) {
+    output[SEMANTIC_IMAGE_IDENTITY_OFFSET..SEMANTIC_IMAGE_IDENTITY_OFFSET + 32]
+        .copy_from_slice(facts.identity.as_ref());
+    output[SEMANTIC_IMAGE_LENGTH_OFFSET..SEMANTIC_IMAGE_LENGTH_OFFSET + 4]
+        .copy_from_slice(&facts.byte_length.to_le_bytes());
+}
+
 pub(super) fn fragment_identity(
     compiled: &CompiledFragment<'_>,
 ) -> ArtifactId<IrFragmentEncoding, IrFragmentDomain> {
@@ -60,6 +70,7 @@ pub(super) fn fragment_identity(
 pub(super) fn decode_entry(
     bytes: &[u8],
     ordinal: usize,
+    format: CompilationManifestFormat,
 ) -> Result<StoredFragmentFacts, CompilationManifestError> {
     let source = SourceIdentity {
         identity: ContentId::<SourceFactDomain>::try_from(
@@ -177,9 +188,23 @@ pub(super) fn decode_entry(
             })?,
         };
     }
+    let semantic_image = match format {
+        CompilationManifestFormat::CompactV1 => None,
+        CompilationManifestFormat::SemanticV2 => Some(SemanticImageArtifactFacts {
+            identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::try_from(
+                &bytes[SEMANTIC_IMAGE_IDENTITY_OFFSET..SEMANTIC_IMAGE_IDENTITY_OFFSET + 32],
+            )
+            .map_err(|source| CompilationManifestError::SemanticImageIdentity {
+                ordinal,
+                source,
+            })?,
+            byte_length: u32::from_le_bytes(fixed::<4>(bytes, SEMANTIC_IMAGE_LENGTH_OFFSET)),
+        }),
+    };
     Ok(StoredFragmentFacts {
         fragment,
         fragment_length,
+        semantic_image,
         source,
         recipe,
         ranges,

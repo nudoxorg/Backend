@@ -19,6 +19,7 @@ sha2 = "=0.10.9"
 thiserror.workspace = true
 # OXC's tightly pinned crates form one arena-borrowed authority boundary.
 oxc_allocator = "=0.139.0"
+oxc_ast = "=0.139.0"
 oxc_diagnostics = "=0.139.0"
 oxc_parser = "=0.139.0"
 oxc_semantic = "=0.139.0"

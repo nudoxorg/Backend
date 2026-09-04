@@ -4,15 +4,17 @@
 use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
-    EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation, LexicalOutputError,
-    LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit,
-    LexicalTerminal, LexicalTopK,
+    EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,
+    LexicalOutputError, LexicalQueryError, LexicalRow, LexicalScore, LexicalSegment,
+    LexicalSnapshotHit, LexicalTerminal, LexicalTopK,
 };
 
 fn document(entity: u32) -> EntityDocumentId {
     EntityDocumentId {
-        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            b"lexical-snapshot-test-fragment",
+        artifact: EntityArtifactIdentity::Compact(
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                b"lexical-snapshot-test-fragment",
+            ),
         ),
         entity: EntityId::new(entity),
     }

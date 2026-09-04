@@ -13,8 +13,8 @@ use thiserror::Error;
 use super::{
     CompilationManifestIdentity,
     build::{
-        COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES, MAGIC, RANGE_COUNT,
-        VERSION,
+        COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
+        COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, MAGIC, RANGE_COUNT, SEMANTIC_VERSION, VERSION,
     },
     wire::{decode_entry, fixed},
 };
@@ -24,10 +24,38 @@ use super::{
 pub struct CompilationManifestFacts {
     /// Typed identity of the complete canonical manifest bytes.
     pub identity: CompilationManifestIdentity,
+    /// Closed wire generation governing every package entry.
+    pub format: CompilationManifestFormat,
     /// Exact number of complete fragment entries.
     pub fragment_count: u32,
     /// Exact complete canonical manifest length.
     pub byte_length: u32,
+}
+
+/// Closed compiler-manifest generations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilationManifestFormat {
+    /// Compatibility package binding only compact IR fragments.
+    CompactV1,
+    /// Authoritative package binding compact fragments and full semantic images.
+    SemanticV2,
+}
+
+impl CompilationManifestFormat {
+    const fn from_version(version: u16) -> Option<Self> {
+        match version {
+            VERSION => Some(Self::CompactV1),
+            SEMANTIC_VERSION => Some(Self::SemanticV2),
+            _ => None,
+        }
+    }
+
+    const fn entry_bytes(self) -> usize {
+        match self {
+            Self::CompactV1 => COMPILATION_MANIFEST_ENTRY_BYTES,
+            Self::SemanticV2 => COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES,
+        }
+    }
 }
 
 /// A borrowed validated compiler package manifest.
@@ -57,9 +85,9 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
             return Err(CompilationManifestError::Magic { observed: magic });
         }
         let version = u16::from_le_bytes(fixed::<2>(bytes, 8));
-        if version != VERSION {
-            return Err(CompilationManifestError::Version { observed: version });
-        }
+        let format = CompilationManifestFormat::from_version(version)
+            .ok_or(CompilationManifestError::Version { observed: version })?;
+        let entry_bytes = format.entry_bytes();
         let reserved = u16::from_le_bytes(fixed::<2>(bytes, 10));
         if reserved != 0 {
             return Err(CompilationManifestError::HeaderReserved { observed: reserved });
@@ -80,7 +108,7 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
         let expected = COMPILATION_MANIFEST_HEADER_BYTES
             .checked_add(
                 count
-                    .checked_mul(COMPILATION_MANIFEST_ENTRY_BYTES)
+                    .checked_mul(entry_bytes)
                     .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?,
             )
             .ok_or(CompilationManifestError::LengthOverflow { fragment_count })?;
@@ -94,12 +122,8 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
         entries.fill(None);
         let mut previous: Option<ArtifactId<IrFragmentEncoding, IrFragmentDomain>> = None;
         for (ordinal, slot) in entries.iter_mut().enumerate() {
-            let offset =
-                COMPILATION_MANIFEST_HEADER_BYTES + ordinal * COMPILATION_MANIFEST_ENTRY_BYTES;
-            let entry = decode_entry(
-                &bytes[offset..offset + COMPILATION_MANIFEST_ENTRY_BYTES],
-                ordinal,
-            )?;
+            let offset = COMPILATION_MANIFEST_HEADER_BYTES + ordinal * entry_bytes;
+            let entry = decode_entry(&bytes[offset..offset + entry_bytes], ordinal, format)?;
             if let Some(previous_identity) = previous
                 && previous_identity.cmp(&entry.fragment) != Ordering::Less
             {
@@ -122,6 +146,7 @@ impl<'manifest, 'facts> CompilationManifestView<'manifest, 'facts> {
             bytes,
             facts: CompilationManifestFacts {
                 identity: CompilationManifestIdentity::from_encoded_bytes(bytes),
+                format,
                 fragment_count,
                 byte_length,
             },
@@ -160,6 +185,8 @@ pub struct StoredFragmentFacts {
     pub fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
     /// Exact complete fragment byte length.
     pub fragment_length: u32,
+    /// Full semantic image paired with this compatibility fragment in schema 2.
+    pub semantic_image: Option<crate::semantic_immutable::SemanticImageArtifactFacts>,
     /// Source fact retained by the complete fragment.
     pub source: SourceIdentity,
     /// Recipe fact retained by the complete fragment.
@@ -269,6 +296,13 @@ pub enum CompilationManifestError {
     /// One complete fragment identity had the wrong typed authority.
     #[error("manifest fragment {ordinal} has an invalid complete fragment identity")]
     FragmentIdentity {
+        ordinal: usize,
+        #[source]
+        source: ArtifactIdDecodeError,
+    },
+    /// One complete semantic-image identity had the wrong typed authority.
+    #[error("manifest fragment {ordinal} has an invalid complete semantic-image identity")]
+    SemanticImageIdentity {
         ordinal: usize,
         #[source]
         source: ArtifactIdDecodeError,

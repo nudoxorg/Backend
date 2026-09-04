@@ -4,8 +4,9 @@
 use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
-    EntityDocumentId, GenerationId, IndexSnapshot, IndexSnapshotId, LexicalHit, LexicalManifest,
-    LexicalManifestError, LexicalOperation, LexicalRow, LexicalScore, LexicalSegment, LexicalTopK,
+    EntityArtifactIdentity, EntityDocumentId, GenerationId, IndexSnapshot, IndexSnapshotId,
+    LexicalHit, LexicalManifest, LexicalManifestError, LexicalOperation, LexicalRow, LexicalScore,
+    LexicalSegment, LexicalTopK,
 };
 use server_index_tantivy::{
     MAX_TANTIVY_DOCUMENTS, MAX_TANTIVY_QUERY_BYTES, TantivyAdapterError, TantivyHit, TantivyLexical,
@@ -13,8 +14,10 @@ use server_index_tantivy::{
 
 fn document(entity: u32) -> EntityDocumentId {
     EntityDocumentId {
-        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            b"tantivy-differential-test-fragment",
+        artifact: EntityArtifactIdentity::Compact(
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                b"tantivy-differential-test-fragment",
+            ),
         ),
         entity: EntityId::new(entity),
     }

@@ -29,6 +29,8 @@ pub enum SchemaId {
     IrFragment = 0x0002_0001_u32.to_be(),
     /// Canonical compiler publication manifest bytes.
     CompilationManifest = 0x0002_0002_u32.to_be(),
+    /// Complete portable semantic image bytes.
+    IrSemanticImage = 0x0002_0003_u32.to_be(),
 }
 
 impl From<SchemaId> for u32 {
@@ -38,6 +40,7 @@ impl From<SchemaId> for u32 {
             SchemaId::Frame => 0x0001_0001,
             SchemaId::IrFragment => 0x0002_0001,
             SchemaId::CompilationManifest => 0x0002_0002,
+            SchemaId::IrSemanticImage => 0x0002_0003,
         }
     }
 }
@@ -51,6 +54,7 @@ impl TryFrom<u32> for SchemaId {
             0x0001_0001 => Ok(Self::Frame),
             0x0002_0001 => Ok(Self::IrFragment),
             0x0002_0002 => Ok(Self::CompilationManifest),
+            0x0002_0003 => Ok(Self::IrSemanticImage),
             other => Err(UnknownSchemaId(other)),
         }
     }
@@ -63,6 +67,7 @@ impl fmt::Display for SchemaId {
             Self::Frame => formatter.write_str("schema:frame"),
             Self::IrFragment => formatter.write_str("schema:ir-fragment"),
             Self::CompilationManifest => formatter.write_str("schema:compilation-manifest"),
+            Self::IrSemanticImage => formatter.write_str("schema:ir-semantic-image"),
         }
     }
 }
@@ -140,6 +145,10 @@ mod tests {
             u32::from(SchemaId::IrFragment),
             u32::from(SchemaId::CompilationManifest)
         );
+        assert_ne!(
+            u32::from(SchemaId::CompilationManifest),
+            u32::from(SchemaId::IrSemanticImage)
+        );
         assert_eq!(
             SchemaId::try_from(u32::from(SchemaId::Frame)),
             Ok(SchemaId::Frame)
@@ -151,6 +160,10 @@ mod tests {
         assert_eq!(
             SchemaId::try_from(u32::from(SchemaId::CompilationManifest)),
             Ok(SchemaId::CompilationManifest)
+        );
+        assert_eq!(
+            SchemaId::try_from(u32::from(SchemaId::IrSemanticImage)),
+            Ok(SchemaId::IrSemanticImage)
         );
         assert_eq!(OperationId::try_from(1), Ok(OperationId::PinnedObject));
         assert_eq!(SchemaId::try_from(99), Err(UnknownSchemaId(99)));
@@ -173,6 +186,10 @@ mod tests {
         assert_eq!(
             SchemaId::CompilationManifest.as_bytes(),
             0x0002_0002_u32.to_be_bytes()
+        );
+        assert_eq!(
+            SchemaId::IrSemanticImage.as_bytes(),
+            0x0002_0003_u32.to_be_bytes()
         );
         assert_eq!(OperationId::PinnedObject.as_bytes(), 1_u32.to_be_bytes());
     }

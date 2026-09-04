@@ -11,15 +11,16 @@ mod wire;
 mod tests;
 
 pub use build::{
-    COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES, CompilationPrepareError,
-    CompilationWriteError, PublicationFragmentError,
+    COMPILATION_MANIFEST_ENTRY_BYTES, COMPILATION_MANIFEST_HEADER_BYTES,
+    COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES, CompilationPrepareError, CompilationWriteError,
+    PublicationFragmentError, SemanticImageRegion,
 };
 pub use validate::{
     CompilationManifestEntries, CompilationManifestError, CompilationManifestFacts,
-    CompilationManifestView, StoredFragmentFacts,
+    CompilationManifestFormat, CompilationManifestView, StoredFragmentFacts,
 };
 
-pub(crate) use build::CanonicalCompilation;
+pub(crate) use build::{CanonicalCompilation, CanonicalSemanticCompilation};
 
 /// Typed identity of one complete canonical compiler package manifest.
 pub type CompilationManifestIdentity = heart_identity::ArtifactId<

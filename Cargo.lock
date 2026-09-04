@@ -1413,6 +1413,7 @@ version = "0.1.0"
 dependencies = [
  "compiler-vocabulary",
  "oxc_allocator",
+ "oxc_ast",
  "oxc_diagnostics",
  "oxc_parser",
  "oxc_semantic",
@@ -7706,7 +7707,10 @@ dependencies = [
  "heart-object",
  "heart-root",
  "heart-schema",
+ "server-index-build",
+ "server-index-core",
  "server-journal",
+ "sha2",
  "thiserror 2.0.20",
 ]
 

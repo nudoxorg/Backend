@@ -15,6 +15,8 @@ pub mod manifest;
 pub mod manifest_store;
 /// Durable publication from compiler-driver outputs only.
 pub mod publication;
+/// Immutable storage for complete validated semantic images.
+pub mod semantic_immutable;
 
 mod generation;
 mod storage;
@@ -25,9 +27,16 @@ pub use binding_store::{BindingIoPhase, BindingStoreError};
 pub use generation::GenerationBuildError;
 /// Durable compiler publication and verified reopen public boundary.
 pub use publication::{
-    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragment,
-    OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch, OpenedFragmentView,
-    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
-    UncommittedPublication, UncommittedPublicationFacts, open_published, publish_compiled,
+    OpenPublicationScratch, OpenPublishedError, OpenSemanticPublicationScratch, OpenedCompilation,
+    OpenedFragment, OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch,
+    OpenedFragmentView, OpenedSemanticArtifact, OpenedSemanticArtifactCursor,
+    OpenedSemanticArtifactError, OpenedSemanticCompilation, PublicationScratch,
+    PublishCompiledError, PublishControl, PublishSemanticError, PublishedCompilation,
+    SemanticPublicationScratch, UncommittedPublication, UncommittedPublicationFacts,
+    open_published, open_published_semantic, publish_compiled, publish_semantic,
+};
+pub use semantic_immutable::{
+    ImmutableSemanticImageError, ImmutableSemanticImageStore, SemanticImageArtifactFacts,
+    StoredSemanticImage,
 };
 pub use storage::ImmutableFileError;

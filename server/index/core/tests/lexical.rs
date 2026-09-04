@@ -4,8 +4,8 @@
 use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{
-    EntityDocumentId, LexicalHit, LexicalOperation, LexicalOutputError, LexicalRow, LexicalScore,
-    LexicalSegment, LexicalSegmentError, LexicalTopK, MAX_LEXICAL_ROWS,
+    EntityArtifactIdentity, EntityDocumentId, LexicalHit, LexicalOperation, LexicalOutputError,
+    LexicalRow, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalTopK, MAX_LEXICAL_ROWS,
 };
 
 fn score(units: u32) -> LexicalScore {
@@ -14,8 +14,10 @@ fn score(units: u32) -> LexicalScore {
 
 fn document_id(entity: u32) -> EntityDocumentId {
     EntityDocumentId {
-        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            b"lexical-core-test-fragment",
+        artifact: EntityArtifactIdentity::Compact(
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                b"lexical-core-test-fragment",
+            ),
         ),
         entity: EntityId::new(entity),
     }

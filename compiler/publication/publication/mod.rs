@@ -7,11 +7,13 @@ mod open;
 mod publish;
 mod types;
 
-pub use open::open_published;
-pub use publish::publish_compiled;
+pub use open::{open_published, open_published_semantic};
+pub use publish::{publish_compiled, publish_semantic};
 pub use types::{
-    OpenPublicationScratch, OpenPublishedError, OpenedCompilation, OpenedFragment,
-    OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch, OpenedFragmentView,
-    PublicationScratch, PublishCompiledError, PublishControl, PublishedCompilation,
-    UncommittedPublication, UncommittedPublicationFacts,
+    OpenPublicationScratch, OpenPublishedError, OpenSemanticPublicationScratch, OpenedCompilation,
+    OpenedFragment, OpenedFragmentCursor, OpenedFragmentError, OpenedFragmentFactMismatch,
+    OpenedFragmentView, OpenedSemanticArtifact, OpenedSemanticArtifactCursor,
+    OpenedSemanticArtifactError, OpenedSemanticCompilation, PublicationScratch,
+    PublishCompiledError, PublishControl, PublishSemanticError, PublishedCompilation,
+    SemanticPublicationScratch, UncommittedPublication, UncommittedPublicationFacts,
 };

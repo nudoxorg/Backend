@@ -35,8 +35,8 @@ use heart_object::ObjectRef;
 use heart_root::{ClosureScratch, GenerationRoot, GenerationView, PreparedLocality, RootEntry};
 use heart_schema::SchemaId;
 use server_index_core::{
-    EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow, LexicalScore,
-    LexicalSegment,
+    EntityArtifactIdentity, EntityDocumentId, ExactRow, ExactSegment, IndexSnapshot, LexicalRow,
+    LexicalScore, LexicalSegment,
 };
 use server_index_graph_vector::{
     Cancellation, GraphAuthority, GraphDegradation, GraphEdge, GraphLease, GraphStreamEvent,
@@ -54,8 +54,10 @@ static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn lexical_document(entity: u32) -> EntityDocumentId {
     EntityDocumentId {
-        fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-            b"sealed-retrieval-fixture-fragment",
+        artifact: EntityArtifactIdentity::Compact(
+            ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
+                b"sealed-retrieval-fixture-fragment",
+            ),
         ),
         entity: EntityId::new(entity),
     }

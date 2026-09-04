@@ -5,10 +5,10 @@ use core::ops::Deref;
 
 use server_index_core::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId};
 
-/// Exact serialized width of one fragment-global entity key.
+/// Exact serialized width of one compiler-artifact-global entity key.
 pub const EXACT_ENTITY_KEY_BYTES: usize = ENTITY_DOCUMENT_ID_BYTES;
 
-/// A canonical exact-plane identity for one entity in a prepared fragment.
+/// A canonical exact-plane identity for one entity in a prepared compiler artifact.
 ///
 /// Its bytes are the shared [`EntityDocumentId`] grammar: complete immutable fragment authority
 /// followed by a canonical entity ordinal. Exact and lexical lanes therefore agree on one global
@@ -43,7 +43,7 @@ mod tests {
     use super::ExactEntityKey;
     use compiler_ir::EntityId;
     use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
-    use server_index_core::{EntityDocumentId, MAX_EXACT_ROWS};
+    use server_index_core::{EntityArtifactIdentity, EntityDocumentId, MAX_EXACT_ROWS};
     use thiserror::Error;
 
     #[derive(Debug, Error)]
@@ -64,14 +64,14 @@ mod tests {
             b"exact-key-order",
         );
         let mut previous = ExactEntityKey::from(EntityDocumentId {
-            fragment,
+            artifact: EntityArtifactIdentity::Compact(fragment),
             entity: EntityId::new(0),
         });
         for ordinal in 1..MAX_EXACT_ROWS {
             let ordinal = u32::try_from(ordinal)
                 .map_err(|source| ExactEntityKeyTestError::Ordinal { source })?;
             let observed = ExactEntityKey::from(EntityDocumentId {
-                fragment,
+                artifact: EntityArtifactIdentity::Compact(fragment),
                 entity: EntityId::new(ordinal),
             });
             if previous >= observed {

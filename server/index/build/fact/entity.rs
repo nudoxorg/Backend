@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 use core::ops::Deref;
 
-use super::{ExactEntityKey, ExactEntityValue};
+use super::{ExactEntityKey, ExactEntityValue, IndexedType};
 use compiler_ir::EntityId;
 use compiler_ir::{EntityKind, TypeNode};
 use server_index_core::EntityDocumentId;
@@ -52,7 +52,30 @@ impl<'bytes> EntityFact<'bytes> {
             view: EntityFactView {
                 entity,
                 exact_key: document.into(),
-                exact_value: ExactEntityValue::from_facts(kind, semantic_type),
+                exact_value: ExactEntityValue::from_facts(
+                    kind,
+                    IndexedType::Compact(semantic_type),
+                ),
+                name,
+            },
+        }
+    }
+
+    pub(crate) fn new_semantic(
+        document: EntityDocumentId,
+        entity: EntityId,
+        name: &'bytes [u8],
+        kind: EntityKind,
+        semantic_type: Option<compiler_ir::TypeId>,
+    ) -> Self {
+        Self {
+            view: EntityFactView {
+                entity,
+                exact_key: document.into(),
+                exact_value: ExactEntityValue::from_facts(
+                    kind,
+                    IndexedType::Semantic(semantic_type),
+                ),
                 name,
             },
         }

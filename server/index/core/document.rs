@@ -6,27 +6,36 @@
 use core::{cmp::Ordering, mem::size_of};
 
 use compiler_ir::EntityId;
-use heart_identity::{ArtifactId, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding};
+use heart_identity::{
+    ArtifactId, Domain, Encoding, HASH_BYTES, IrFragmentDomain, IrFragmentEncoding,
+    IrSemanticImageDomain, IrSemanticImageEncoding,
+};
 
 /// Fixed encoded width of one immutable globally addressable entity document.
 pub const ENTITY_DOCUMENT_ID_BYTES: usize = HASH_BYTES + size_of::<u32>();
 
+/// Closed immutable compiler artifact that owns an indexed entity coordinate.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum EntityArtifactIdentity {
+    /// Legacy compact fragment authority.
+    Compact(ArtifactId<IrFragmentEncoding, IrFragmentDomain>),
+    /// Complete portable semantic-image authority.
+    Semantic(ArtifactId<IrSemanticImageEncoding, IrSemanticImageDomain>),
+}
+
 /// Immutable globally addressable entity document identity.
 ///
 /// This is the one entity-address concept shared by the exact and lexical planes: a complete
-/// content-addressed compact-IR fragment plus its canonical entity position. It is collision-free
-/// across a snapshot without a lossy hash salt. A raw fragment change intentionally creates a new
-/// address even when its declaration text is unchanged.
+/// content-addressed compiler artifact plus its validated entity position. It is collision-free
+/// across compact compatibility and full semantic images without an untyped hash salt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct EntityDocumentId {
-    /// Complete immutable compact-IR artifact containing the declaration.
-    pub fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
-    /// Canonical declaration position within `fragment` after compiler-index normalization.
+    /// Complete immutable compiler artifact containing the declaration.
+    pub artifact: EntityArtifactIdentity,
+    /// Canonical declaration position within the selected artifact.
     pub entity: EntityId,
 }
-
-const _: () = assert!(size_of::<EntityDocumentId>() == ENTITY_DOCUMENT_ID_BYTES);
 
 impl PartialOrd for EntityDocumentId {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -36,8 +45,8 @@ impl PartialOrd for EntityDocumentId {
 
 impl Ord for EntityDocumentId {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.fragment
-            .cmp(&other.fragment)
+        self.artifact
+            .cmp(&other.artifact)
             .then_with(|| self.entity.raw.cmp(&other.entity.raw))
     }
 }
@@ -45,7 +54,14 @@ impl Ord for EntityDocumentId {
 impl From<EntityDocumentId> for [u8; ENTITY_DOCUMENT_ID_BYTES] {
     fn from(document: EntityDocumentId) -> Self {
         let mut bytes = [0_u8; ENTITY_DOCUMENT_ID_BYTES];
-        bytes[..HASH_BYTES].copy_from_slice(document.fragment.as_ref());
+        match document.artifact {
+            EntityArtifactIdentity::Compact(identity) => {
+                bytes[..HASH_BYTES].copy_from_slice(identity.as_ref());
+            }
+            EntityArtifactIdentity::Semantic(identity) => {
+                bytes[..HASH_BYTES].copy_from_slice(identity.as_ref());
+            }
+        }
         bytes[HASH_BYTES..].copy_from_slice(&document.entity.raw.to_be_bytes());
         bytes
     }
@@ -63,9 +79,19 @@ pub enum EntityDocumentIdError {
         #[source]
         source: core::array::TryFromSliceError,
     },
-    /// The stored fragment bytes did not carry compact-IR artifact authority.
-    #[error("entity document fragment authority was invalid")]
-    Fragment {
+    /// The embedded artifact authority cell was not an indexable compiler artifact.
+    #[error(
+        "entity document artifact authority ({observed_encoding}, {observed_domain}) is unknown"
+    )]
+    ArtifactAuthority {
+        /// Complete observed encoding registry code.
+        observed_encoding: u8,
+        /// Complete observed semantic-domain registry code.
+        observed_domain: u8,
+    },
+    /// The stored artifact bytes did not carry the authority selected by their tag.
+    #[error("entity document artifact authority was invalid")]
+    Artifact {
         /// Complete typed artifact decoding cause.
         #[source]
         source: heart_identity::ArtifactIdDecodeError,
@@ -89,29 +115,58 @@ impl TryFrom<&[u8]> for EntityDocumentId {
                 source,
             }
         })?;
-        let fragment = ArtifactId::try_from(&raw[..HASH_BYTES])
-            .map_err(|source| EntityDocumentIdError::Fragment { source })?;
+        let identity = &raw[..HASH_BYTES];
+        let authority = (raw[0], raw[1]);
+        let compact_authority = (
+            u8::from(IrFragmentEncoding::CODE),
+            u8::from(IrFragmentDomain::CODE),
+        );
+        let semantic_authority = (
+            u8::from(IrSemanticImageEncoding::CODE),
+            u8::from(IrSemanticImageDomain::CODE),
+        );
+        let artifact = match authority {
+            observed if observed == compact_authority => EntityArtifactIdentity::Compact(
+                ArtifactId::try_from(identity)
+                    .map_err(|source| EntityDocumentIdError::Artifact { source })?,
+            ),
+            observed if observed == semantic_authority => EntityArtifactIdentity::Semantic(
+                ArtifactId::try_from(identity)
+                    .map_err(|source| EntityDocumentIdError::Artifact { source })?,
+            ),
+            (observed_encoding, observed_domain) => {
+                return Err(EntityDocumentIdError::ArtifactAuthority {
+                    observed_encoding,
+                    observed_domain,
+                });
+            }
+        };
         let entity = EntityId::new(u32::from_be_bytes(
             raw[HASH_BYTES..]
                 .try_into()
                 .map_err(|source| EntityDocumentIdError::Entity { source })?,
         ));
-        Ok(Self { fragment, entity })
+        Ok(Self { artifact, entity })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError};
+    use super::{
+        ENTITY_DOCUMENT_ID_BYTES, EntityArtifactIdentity, EntityDocumentId, EntityDocumentIdError,
+    };
     use compiler_ir::EntityId;
     use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 
     #[test]
     fn global_document_wire_roundtrips_and_rejects_foreign_authority() {
         let document = EntityDocumentId {
-            fragment: ArtifactId::<IrFragmentEncoding, IrFragmentDomain>::from_encoded_bytes(
-                b"entity-document-wire",
-            ),
+            artifact: EntityArtifactIdentity::Compact(ArtifactId::<
+                IrFragmentEncoding,
+                IrFragmentDomain,
+            >::from_encoded_bytes(
+                b"entity-document-wire"
+            )),
             entity: EntityId::new(7),
         };
         let mut bytes: [u8; ENTITY_DOCUMENT_ID_BYTES] = document.into();
@@ -123,10 +178,10 @@ mod tests {
             EntityDocumentId::try_from(&bytes[..ENTITY_DOCUMENT_ID_BYTES - 1]),
             Err(EntityDocumentIdError::Width { .. })
         ));
-        bytes[0] ^= 1;
+        bytes[1] ^= 1;
         assert!(matches!(
             EntityDocumentId::try_from(bytes.as_slice()),
-            Err(EntityDocumentIdError::Fragment { .. })
+            Err(EntityDocumentIdError::ArtifactAuthority { .. })
         ));
     }
 }

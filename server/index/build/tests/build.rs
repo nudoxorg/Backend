@@ -158,7 +158,7 @@ fn verify_rows(index: &server_index_build::PreparedIndex<'_>) -> Result<(), Test
         .zip(index.lexical.rows)
     {
         let document = server_index_core::EntityDocumentId {
-            fragment: index.fragment.fragment,
+            artifact: server_index_core::EntityArtifactIdentity::Compact(index.fragment.fragment),
             entity: fact.entity,
         };
         let document_bytes: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = document.into();

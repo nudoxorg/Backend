@@ -54,22 +54,20 @@ impl LatestPublication {
             })
     }
 
-    pub(super) fn read(
-        &self,
-    ) -> Result<Option<PublicationFacts>, LatestPublicationReadError> {
+    pub(super) fn read(&self) -> Result<Option<PublicationFacts>, LatestPublicationReadError> {
         self.snapshot
             .read()
-            .map_err(|SnapshotReadError {
-                attempts,
-                observed_version,
-            }| {
-                LatestPublicationReadError::Snapshot(
-                    PublicationSnapshotError::ReadContended {
+            .map_err(
+                |SnapshotReadError {
+                     attempts,
+                     observed_version,
+                 }| {
+                    LatestPublicationReadError::Snapshot(PublicationSnapshotError::ReadContended {
                         attempts,
                         observed_version,
-                    },
-                )
-            })?
+                    })
+                },
+            )?
             .map(decode)
             .transpose()
     }
@@ -82,8 +80,8 @@ pub(super) enum LatestPublicationReadError {
 
 fn encode(facts: PublicationFacts) -> [u64; PUBLICATION_WORDS] {
     let mut bytes = [0_u8; PUBLICATION_BYTES];
-    bytes[0..32].copy_from_slice(&facts.generation.pinned_root);
-    bytes[32..64].copy_from_slice(&facts.generation.dep_set);
+    bytes[0..32].copy_from_slice(facts.generation.pinned_root.as_ref());
+    bytes[32..64].copy_from_slice(facts.generation.dep_set.as_ref());
     bytes[64..72].copy_from_slice(&u64::to_le_bytes(*facts.stable.sequence));
     bytes[72..80].copy_from_slice(&u64::to_le_bytes(*facts.stable.durable_end));
     bytes[80..96].copy_from_slice(&facts.immutable.checksum);
@@ -103,9 +101,7 @@ fn encode(facts: PublicationFacts) -> [u64; PUBLICATION_WORDS] {
     })
 }
 
-fn decode(
-    words: [u64; PUBLICATION_WORDS],
-) -> Result<PublicationFacts, LatestPublicationReadError> {
+fn decode(words: [u64; PUBLICATION_WORDS]) -> Result<PublicationFacts, LatestPublicationReadError> {
     let mut bytes = [0_u8; PUBLICATION_BYTES];
     for (index, word) in words.into_iter().enumerate() {
         let start = index * size_of::<u64>();

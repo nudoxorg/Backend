@@ -170,7 +170,7 @@ pub struct LexicalRow<'bytes> {
 /// The order-bearing projection of a lexical row.
 ///
 /// Scores are deliberately absent: canonical lexical order depends only on term and document.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct LexicalOrderKey<'bytes> {
     /// Canonical borrowed term bytes.
     pub term: &'bytes [u8],

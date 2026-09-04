@@ -54,6 +54,9 @@ pub enum BuildError<'bytes> {
 /// every existing-core rejection in full.
 #[derive(Debug, Error)]
 pub enum BuildDerivationError {
+    /// A semantic index entry was presented without its schema-2 image fact.
+    #[error("semantic index artifact has no bound complete semantic image")]
+    MissingSemanticImage,
     /// A canonical builder ordinal could not be represented by the compiler entity identity.
     #[error("canonical entity ordinal {ordinal} does not fit compiler entity identity")]
     EntityOrdinalAddressSpace {
