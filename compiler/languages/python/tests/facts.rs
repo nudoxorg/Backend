@@ -104,14 +104,14 @@ fn written_param_spec_and_type_var_tuple_are_preserved() -> Result<(), TestError
         .iter()
         .find(|fact| fact.name == "f")
         .ok_or(TestError::MissingDeclaration("f"))?;
-    assert_eq!(
+    assert!(matches!(
         function.parameters[0].annotation,
-        Annotation::Name("ParamSpec".to_owned())
-    );
-    assert_eq!(
+        Annotation::Name { ref name, span: Some(_) } if name == "ParamSpec"
+    ));
+    assert!(matches!(
         function.parameters[1].annotation,
-        Annotation::Name("TypeVarTuple".to_owned())
-    );
+        Annotation::Name { ref name, span: Some(_) } if name == "TypeVarTuple"
+    ));
     Ok(())
 }
 
@@ -137,14 +137,14 @@ fn module_assignments_are_constants_with_source_and_annotation() -> Result<(), T
     assert_eq!(x.and_then(|d| d.value_source.as_deref()), Some("5"));
     assert_eq!(y.map(|d| d.kind), Some(DeclarationKind::Constant));
     assert_eq!(y.and_then(|d| d.value_source.as_deref()), Some("6"));
-    assert_eq!(
+    assert!(matches!(
         facts
             .annotations
             .iter()
             .find(|a| a.owner == "Y")
             .map(|a| &a.annotation),
-        Some(&Annotation::Name("int".to_owned()))
-    );
+        Some(Annotation::Name { name, span: Some(_) }) if name == "int"
+    ));
     Ok(())
 }
 

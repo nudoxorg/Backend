@@ -144,9 +144,9 @@ fn ruff_annotation_nodes_preserve_nested_generic_literal_and_unsupported_shapes(
     let Annotation::Generic { base, args } = &function.parameters[0].annotation else {
         return Err(TestError::ExpectedGeneric);
     };
-    assert!(matches!(base.as_ref(), Annotation::Name(name) if name == "dict"));
+    assert!(matches!(base.as_ref(), Annotation::Name { name, span: Some(_) } if name == "dict"));
     assert!(
-        matches!(args.as_slice(), [Annotation::Name(key), Annotation::Generic { .. }] if key == "str")
+        matches!(args.as_slice(), [Annotation::Name { name, span: Some(_) }, Annotation::Generic { .. }] if name == "str")
     );
 
     let Annotation::Literal(values) = &function.parameters[1].annotation else {

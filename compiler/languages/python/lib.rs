@@ -48,7 +48,17 @@ pub enum AnnotationPosition {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Annotation {
-    Name(String),
+    /// One name whose extractor-proved source span is retained independently
+    /// of its containing annotation. Nested type-variable uses require this
+    /// leaf span: their parent span names `list[T]`, not the written `T`.
+    Name {
+        /// Extracted identifier or qualified identifier spelling.
+        name: String,
+        /// Exact span when this expression came directly from the entered
+        /// module. Quoted annotation recursion has no outer-source child
+        /// coordinates, so it explicitly carries `None`.
+        span: Option<Span>,
+    },
     Generic {
         base: Box<Annotation>,
         args: Vec<Annotation>,
@@ -522,9 +532,18 @@ const MAX_STRING_ANNOTATION_DEPTH: usize = 8;
 /// Ruff's own expression authority up to the depth guard.
 fn annotation_at_depth(expr: &ast::Expr, depth: usize) -> Annotation {
     match expr {
-        ast::Expr::Name(name) => Annotation::Name(name.id.as_str().to_owned()),
+        ast::Expr::Name(name) => Annotation::Name {
+            name: name.id.as_str().to_owned(),
+            span: Some(span(expr.range())),
+        },
         ast::Expr::Attribute(_) => {
-            qualified_name(expr).map_or_else(|| unsupported_annotation(expr), Annotation::Name)
+            qualified_name(expr).map_or_else(
+                || unsupported_annotation(expr),
+                |name| Annotation::Name {
+                    name,
+                    span: Some(span(expr.range())),
+                },
+            )
         }
         ast::Expr::StringLiteral(literal) => string_annotation(literal, expr, depth),
         ast::Expr::NoneLiteral(_) => Annotation::None,
@@ -564,8 +583,34 @@ fn string_annotation(
         return unsupported_annotation(full);
     }
     match parsed.syntax() {
-        ast::Mod::Expression(expression) => annotation_at_depth(&expression.body, depth + 1),
+        ast::Mod::Expression(expression) => {
+            let mut annotation = annotation_at_depth(&expression.body, depth + 1);
+            annotation.clear_source_spans();
+            annotation
+        }
         ast::Mod::Module(_) => unsupported_annotation(full),
+    }
+}
+
+impl Annotation {
+    /// Prevents coordinates parsed from a quoted string value from being
+    /// mistaken for offsets into the enclosing source module.
+    fn clear_source_spans(&mut self) {
+        match self {
+            Self::Name { span, .. } => *span = None,
+            Self::Generic { base, args } => {
+                base.clear_source_spans();
+                for argument in args {
+                    argument.clear_source_spans();
+                }
+            }
+            Self::List(elements) | Self::Union(elements) => {
+                for element in elements {
+                    element.clear_source_spans();
+                }
+            }
+            Self::StringLiteral(_) | Self::Literal(_) | Self::None | Self::Unknown(_) => {}
+        }
     }
 }
 

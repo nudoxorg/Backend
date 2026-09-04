@@ -45,7 +45,7 @@ fn field_annotation(source: &[u8]) -> Result<compiler_languages_python::Annotati
 fn quoted_name_resolves_to_a_name_annotation() -> Result<(), TestError> {
     let annotation = field_annotation(b"class Node:\n    next: \"Node\"\n")?;
     match annotation {
-        Annotation::Name(name) if name == "Node" => Ok(()),
+        Annotation::Name { name, span: None } if name == "Node" => Ok(()),
         _ => Err(TestError::ExpectedResolved),
     }
 }
@@ -56,8 +56,8 @@ fn quoted_generic_resolves_to_a_generic_annotation() -> Result<(), TestError> {
     let annotation = field_annotation(b"class Box:\n    items: \"list[int]\"\n")?;
     match annotation {
         Annotation::Generic { base, args } => {
-            if matches!(base.as_ref(), Annotation::Name(name) if name == "list")
-                && matches!(args.as_slice(), [Annotation::Name(arg)] if arg == "int")
+            if matches!(base.as_ref(), Annotation::Name { name, span: None } if name == "list")
+                && matches!(args.as_slice(), [Annotation::Name { name, span: None }] if name == "int")
             {
                 Ok(())
             } else {

@@ -428,10 +428,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return Ok(None);
         };
         let (inner, required) = match &found.annotation {
-            Annotation::Generic { base, args } if matches!(base.as_ref(), Annotation::Name(name) if name == "NotRequired" || name == "typing.NotRequired") => {
+            Annotation::Generic { base, args } if matches!(base.as_ref(), Annotation::Name { name, .. } if name == "NotRequired" || name == "typing.NotRequired") => {
                 (args.first().cloned(), Some(false))
             }
-            Annotation::Generic { base, args } if matches!(base.as_ref(), Annotation::Name(name) if name == "Required" || name == "typing.Required") => {
+            Annotation::Generic { base, args } if matches!(base.as_ref(), Annotation::Name { name, .. } if name == "Required" || name == "typing.Required") => {
                 (args.first().cloned(), Some(true))
             }
             other => (Some(other.clone()), None),
@@ -935,7 +935,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         tables: &TypeTables<'source>,
     ) -> Result<LoweredType<'source>, PythonCollectError> {
         match annotation {
-            Annotation::Name(name) => self.lower_name(name, spelling, tables),
+            Annotation::Name { name, span } => self.lower_name(name, *span, tables),
             Annotation::None => Ok(LoweredType {
                 record: none_record(),
                 children: Vec::new(),
@@ -976,7 +976,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }),
             Annotation::Union(members) => self.lower_union(members, spelling, tables),
             Annotation::Generic { base, args } => {
-                let is_union_base = matches!(base.as_ref(), Annotation::Name(name) if name == "Union" || name == "typing.Union");
+                let is_union_base = matches!(base.as_ref(), Annotation::Name { name, .. } if name == "Union" || name == "typing.Union");
                 if is_union_base {
                     return self.lower_union(args, spelling, tables);
                 }
@@ -1009,7 +1009,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return Ok(None);
         };
         let base_name = match base.as_ref() {
-            Annotation::Name(name) => Some(name.as_str()),
+            Annotation::Name { name, .. } => Some(name.as_str()),
             _ => None,
         };
         let is_class_base = base_name.is_some_and(|name| {
@@ -1135,7 +1135,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         anchor: u32,
     ) -> Result<Option<u32>, PythonCollectError> {
         match annotation {
-            Annotation::Name(name) => {
+            Annotation::Name { name, span } => {
                 if let Some((_, ordinal)) = tables
                     .classes
                     .iter()
@@ -1144,7 +1144,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     return Ok(Some(*ordinal));
                 }
                 if tables.typevars.contains(&name.as_bytes()) {
-                    let text = self.spelling_bytes(spelling)?;
+                    let text = self.spelling_bytes(*span)?;
                     let record = if text.is_empty() {
                         unknown_record(TypeReason::OracleGap)
                     } else {

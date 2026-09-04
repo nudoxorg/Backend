@@ -32,6 +32,10 @@ static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const TUPLE_RESULT: &[u8] = b"anchor: int = 0\ndef f() -> tuple[int, str]: ...\n";
 const DICT_RESULT: &[u8] = b"anchor: int = 0\ndef g() -> dict[str, int]: ...\n";
 const UNION_RESULT: &[u8] = b"anchor: int = 0\ndef u() -> int | str: ...\n";
+/// A nested `TypeVar` use must retain the leaf `T` spelling rather than the
+/// enclosing `list[T]` annotation span (or fall back to an OracleGap).
+const NESTED_TYPEVAR: &[u8] =
+    b"from typing import TypeVar\nT = TypeVar(\"T\")\nvalue: list[T] = []\n";
 const TEN_PARAMETERS: &[u8] = b"def h(a, b, c, d, e, f, g, h2, i, j) -> None: ...\n";
 /// Exactly at the raised per-fact child bound, with no result annotation so
 /// the children are exactly the parameters: every one admits.
@@ -630,5 +634,30 @@ fn union_result_slot_carries_exactly_two_member_children() -> Result<(), TestErr
     let children = type_child_targets(&lane, row)?;
     expect_primitive(&lane, children[0], PrimitiveShape::Integer, None)?;
     expect_primitive(&lane, children[1], PrimitiveShape::Str, None)?;
+    Ok(())
+}
+
+/// The anonymous argument row inside `list[T]` carries the extractor-proved
+/// `T` leaf span. This falsifies the former whole-annotation spelling path,
+/// which turned a nested type variable into `?oracle-gap`.
+#[test]
+fn nested_typevar_argument_keeps_its_leaf_spelling() -> Result<(), TestError> {
+    let bytes = attempt_fragment(NESTED_TYPEVAR, "nested-typevar")?.map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let value = entity_ordinal(&lane, b"value", EntityKind::Constant)?;
+    let root = owned_row(&lane, value)?;
+    if lane.types[root].record.tag != SemanticTypeTag::Apply {
+        return Err(TestError::Falsified("list[T] root is not an Apply"));
+    }
+    let children = type_child_targets(&lane, root)?;
+    if children.len() != 2 {
+        return Err(TestError::Falsified("list[T] does not have base and argument rows"));
+    }
+    let argument = row_at(&lane, children[1])?;
+    if argument.record.tag != SemanticTypeTag::TypeVar || argument.record.text != Some(b"T") {
+        return Err(TestError::Falsified(
+            "nested TypeVar did not retain its exact leaf spelling",
+        ));
+    }
     Ok(())
 }
