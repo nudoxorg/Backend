@@ -9,6 +9,7 @@ mod canonical;
 mod encode;
 mod decode;
 mod fault;
+mod full;
 mod model;
 mod plan;
 mod typed;

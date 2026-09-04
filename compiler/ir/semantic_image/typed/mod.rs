@@ -18,3 +18,34 @@ mod tests;
 use model::*;
 
 pub(super) use traverse::{TypedDependencyPlan, TypedPlanError};
+
+// The full-image planner consumes only canonical coordinates from the typed
+// dependency subgraph.  It never reaches into the graph scratch or converts a
+// raw pool ordinal itself, so type-owned and terminal-only pool invariants
+// remain separate.
+impl<'image> TypedDependencyPlan<'image> {
+    pub(super) fn canonical_type(&self, id: crate::TypeId) -> Result<u32, TypedPlanError> {
+        self.canonical_node(model::TypedPlanNode::Type(id))
+    }
+
+    pub(super) fn canonical_atom_list(
+        &self,
+        id: crate::AtomListId,
+    ) -> Result<u32, TypedPlanError> {
+        self.canonical_node(model::TypedPlanNode::AtomList(id))
+    }
+
+    pub(super) fn canonical(&self) -> &CanonicalFullPlan<'image> {
+        &self.canonical
+    }
+
+    fn canonical_node(&self, node: model::TypedPlanNode) -> Result<u32, TypedPlanError> {
+        let slot = self.slot(node)?;
+        self.scratch.canonical_slots.get(slot).copied().ok_or(
+            model::TypedPlanFault::MissingNode {
+                node,
+                count: self.counts.at(node.domain()),
+            },
+        ).map_err(Into::into)
+    }
+}

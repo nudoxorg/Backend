@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    AtomId, DeclarationIdentity, EntityId, ExternalId, ExternalTarget,
+    AtomId, DeclarationIdentity, EntityId, ExternalId, ExternalTarget, LinkTarget, SourceSpan,
     ForeignTargetOrigin, Ir, SemanticCoreReader, SemanticImageFacts,
     VariantAvailability,
 };
@@ -281,6 +281,18 @@ impl<'image> CanonicalFullPlan<'image> {
         })
     }
 
+    /// Projects an atom into the common canonical arena. The resulting
+    /// coordinate is stable because that arena is ordered by exact bytes.
+    pub(super) fn atom(&self, atom: AtomId) -> Result<u32, CoreSemanticImageFault> {
+        self.core.atom(atom)
+    }
+
+    /// Projects a local declaration into the common canonical entity arena.
+    /// That arena is ordered by exact declaration instance identity.
+    pub(super) fn entity(&self, entity: EntityId) -> Result<u32, CoreSemanticImageFault> {
+        self.core.entity(entity)
+    }
+
     pub(super) fn atom_fingerprint(
         &self,
         atom: AtomId,
@@ -376,6 +388,45 @@ impl<'image> CanonicalFullPlan<'image> {
             },
         )?;
         Ok(left.cmp(right))
+    }
+
+    /// Compares a graph endpoint without ever consulting raw local/external
+    /// coordinates. Local endpoints order by exact declaration identity;
+    /// foreign endpoints retain their closed full external key.
+    pub(super) fn compare_link_target(
+        &self,
+        left: LinkTarget,
+        right: LinkTarget,
+    ) -> Result<core::cmp::Ordering, CoreSemanticImageFault> {
+        match (left, right) {
+            (LinkTarget::Local(left), LinkTarget::Local(right)) => {
+                Ok(self.entity_identity(left)?.cmp(&self.entity_identity(right)?))
+            }
+            (LinkTarget::Local(_), LinkTarget::External(_)) => Ok(core::cmp::Ordering::Less),
+            (LinkTarget::External(_), LinkTarget::Local(_)) => Ok(core::cmp::Ordering::Greater),
+            (LinkTarget::External(left), LinkTarget::External(right)) => {
+                self.compare_external(left, right)
+            }
+        }
+    }
+
+    /// Orders optional source evidence by exact file bytes and range instead
+    /// of the atom coordinate assigned by an admitting builder.
+    pub(super) fn compare_source(
+        &self,
+        left: Option<SourceSpan>,
+        right: Option<SourceSpan>,
+    ) -> Result<core::cmp::Ordering, CoreSemanticImageFault> {
+        match (left, right) {
+            (None, None) => Ok(core::cmp::Ordering::Equal),
+            (None, Some(_)) => Ok(core::cmp::Ordering::Less),
+            (Some(_), None) => Ok(core::cmp::Ordering::Greater),
+            (Some(left), Some(right)) => Ok(self
+                .atom_bytes(left.file())?
+                .cmp(self.atom_bytes(right.file())?)
+                .then_with(|| left.start().cmp(&right.start()))
+                .then_with(|| left.end().cmp(&right.end()))),
+        }
     }
 }
 
