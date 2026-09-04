@@ -50,6 +50,16 @@ pub struct SourceSpanFact {
     pub end: u32,
 }
 
+/// Closed pooled type-child arena whose measured request capacity was
+/// exhausted. Per-row cardinality remains a separate `TypeChildCapacity`
+/// fault, so callers can distinguish protocol shape from resource demand.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypeChildLane {
+    Declared,
+    Anonymous,
+    Computed,
+}
+
 impl SourceSpanFact {
     /// Constructs only a well-ordered half-open source span.
     #[must_use]
@@ -67,6 +77,12 @@ pub enum FactFault {
     Capacity,
     /// The fact's product child lane is full.
     ChildCapacity,
+    /// The request-level flat product-child arena is exhausted.
+    ProductChildPoolCapacity {
+        used: usize,
+        requested: usize,
+        capacity: usize,
+    },
     /// The constructor payload disagrees with its child count.
     Constructor(ProductConstructorFault),
     /// A child role disagrees with the constructor's closed role lane.
@@ -107,6 +123,13 @@ pub enum FactFault {
     },
     /// The type-record child lane is full.
     TypeChildCapacity,
+    /// One request-level flat type-child arena is exhausted.
+    TypeChildPoolCapacity {
+        lane: TypeChildLane,
+        used: usize,
+        requested: usize,
+        capacity: usize,
+    },
     /// The anonymous type-row pool is full.
     TypeRowCapacity,
     /// The computed type-row lane is full.

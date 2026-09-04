@@ -17,7 +17,7 @@ pub use authority::{
 pub use compile::{compile, compile_ir, compile_semantic};
 pub use lowering::{
     CSharpProjectionFault, ClangProjectionFault, FactFault, FactRejection, ParentageState,
-    SourceSpanFact,
+    SourceSpanFact, TypeChildLane,
 };
 pub(crate) use request::{NativeRecipe, SourceLease, WorkPermit, WorkStopped};
 pub use request::{CompileControl, CompileRequest, CompileScratch, DeclarationScope, SemanticAuthorityInput};

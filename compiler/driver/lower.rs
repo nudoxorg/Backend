@@ -61,6 +61,12 @@ pub(super) const MAX_FACT_CHILDREN: usize = 64;
 /// Dense bound of one fact's ordered type-record children.
 /// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
 pub(super) const MAX_TYPE_CHILDREN: usize = 64;
+/// Total pooled product-child ceiling across one request. Per-row legality is
+/// still governed by [`MAX_FACT_CHILDREN`]; production allocation uses the
+/// request's measured aggregate demand rather than this Cartesian maximum.
+const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_FACT_CHILDREN;
+/// Total pooled declared-type-child ceiling across one request.
+const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN;
 /// The uncommitted portion of either fixed type-child lane can never exceed
 /// one record's bounded child capacity, so its cursor has a total compact
 /// representation independent of the platform's native word width.
@@ -92,6 +98,10 @@ pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
 /// Dense bound of checker-computed type rows in the schema-2 segment.
 /// 32,768 slots × 4-byte `u32` owner = 128 KiB; measured target high-water 23,037 rows. Roll back to 16,384 if every target stays below 8,192.
 pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 32768;
+/// Aggregate anonymous/computed child ceilings. These remain protocol limits,
+/// not eager allocation instructions.
+const MAX_ANONYMOUS_TYPE_CHILDREN: usize = MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN;
+const MAX_COMPUTED_TYPE_CHILDREN: usize = MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN;
 /// Total type-row budget: one record per fact plus the anonymous pool.
 pub(super) const MAX_TYPE_ROWS: usize =
     MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
@@ -120,6 +130,8 @@ const SECTION_NONE: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResourcePlan {
     facts: usize,
+    product_children: usize,
+    declared_type_children: usize,
     occurrences: usize,
     docs: usize,
     extension_atoms: usize,
@@ -127,7 +139,9 @@ pub(crate) struct ResourcePlan {
     type_parameter_bounds: usize,
     ref_lists: usize,
     anonymous_rows: usize,
+    anonymous_type_children: usize,
     computed_rows: usize,
+    computed_type_children: usize,
 }
 
 impl ResourcePlan {
@@ -135,6 +149,8 @@ impl ResourcePlan {
     pub(crate) const fn protocol_maximum() -> Self {
         Self {
             facts: MAX_EMISSION_FACTS,
+            product_children: MAX_EMISSION_CHILDREN,
+            declared_type_children: MAX_EMISSION_TYPE_CHILDREN,
             occurrences: MAX_EMISSION_OCCURRENCES,
             docs: MAX_EMISSION_DOC_FRAGMENTS,
             extension_atoms: MAX_EXTENSION_ATOMS,
@@ -142,7 +158,9 @@ impl ResourcePlan {
             type_parameter_bounds: MAX_TYPE_PARAMETER_BOUNDS,
             ref_lists: MAX_REF_LISTS,
             anonymous_rows: MAX_ANONYMOUS_TYPE_ROWS,
+            anonymous_type_children: MAX_ANONYMOUS_TYPE_CHILDREN,
             computed_rows: MAX_COMPUTED_TYPE_ROWS,
+            computed_type_children: MAX_COMPUTED_TYPE_CHILDREN,
         }
     }
 
@@ -165,9 +183,18 @@ impl ResourcePlan {
         };
         let units = source_bytes.saturating_add(1);
         let bounded = |value, maximum| value.clamp(8, maximum);
+        let bounded_children = |value, maximum| value.clamp(MAX_TYPE_CHILDREN, maximum);
         let facts = bounded(units / 2 + 8, MAX_EMISSION_FACTS);
         Self {
             facts,
+            product_children: bounded_children(
+                units.saturating_mul(4),
+                MAX_EMISSION_CHILDREN,
+            ),
+            declared_type_children: bounded_children(
+                units.saturating_mul(8),
+                MAX_EMISSION_TYPE_CHILDREN,
+            ),
             // A reference occurrence owns at least one source byte.  This
             // preserves the measured C# 1,253-occurrence demand without
             // reserving eight thousand rows for a ten-byte source.
@@ -181,11 +208,19 @@ impl ResourcePlan {
                 units.saturating_mul(multiplier).saturating_add(8),
                 MAX_ANONYMOUS_TYPE_ROWS,
             ),
+            anonymous_type_children: bounded_children(
+                units.saturating_mul(8),
+                MAX_ANONYMOUS_TYPE_CHILDREN,
+            ),
             computed_rows: bounded(
                 units
                     .saturating_mul(multiplier.saturating_mul(2))
                     .saturating_add(8),
                 MAX_COMPUTED_TYPE_ROWS,
+            ),
+            computed_type_children: bounded_children(
+                units.saturating_mul(16),
+                MAX_COMPUTED_TYPE_CHILDREN,
             ),
         }
     }
@@ -462,7 +497,7 @@ impl<'source> SemanticFact<'source> {
     }
 }
 
-use crate::types::{FactFault, FactRejection, ParentageState};
+use crate::types::{FactFault, FactRejection, ParentageState, TypeChildLane};
 
 /// Exact rejection of one fact at admission, retaining the offending ordinal,
 /// its exact name bytes, and the typed cause. The shared terminal projects
@@ -760,20 +795,17 @@ impl<'source> FactSet<'source> {
             kinds: vec![EntityKind::Function; plan.facts].into_boxed_slice(),
             names: vec![empty_name; plan.facts].into_boxed_slice(),
             type_records: vec![opaque_record(); plan.facts].into_boxed_slice(),
-            type_child_targets: vec![0; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_names: vec![None; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
-            type_child_flags: vec![0; plan.facts * MAX_TYPE_CHILDREN].into_boxed_slice(),
+            type_child_targets: vec![0; plan.declared_type_children].into_boxed_slice(),
+            type_child_names: vec![None; plan.declared_type_children].into_boxed_slice(),
+            type_child_flags: vec![0; plan.declared_type_children].into_boxed_slice(),
             type_child_counts: vec![0; plan.facts].into_boxed_slice(),
             type_child_starts: vec![0; plan.facts].into_boxed_slice(),
             total_type_children: 0,
             constructors: vec![SemanticProductConstructor::PRODUCT; plan.facts]
                 .into_boxed_slice(),
-            child_roles: vec![
-                ProductChildRole::ProductMember;
-                plan.facts * MAX_FACT_CHILDREN
-            ]
-            .into_boxed_slice(),
-            child_targets: vec![0; plan.facts * MAX_FACT_CHILDREN].into_boxed_slice(),
+            child_roles: vec![ProductChildRole::ProductMember; plan.product_children]
+                .into_boxed_slice(),
+            child_targets: vec![0; plan.product_children].into_boxed_slice(),
             child_counts: vec![0; plan.facts].into_boxed_slice(),
             child_starts: vec![0; plan.facts].into_boxed_slice(),
             extensions: vec![None; plan.facts].into_boxed_slice(),
@@ -848,11 +880,11 @@ impl<'source> FactSet<'source> {
             anonymous_owners: vec![0; plan.anonymous_rows].into_boxed_slice(),
             anonymous_child_starts: vec![0; plan.anonymous_rows].into_boxed_slice(),
             anonymous_child_counts: vec![0; plan.anonymous_rows].into_boxed_slice(),
-            anonymous_child_targets: vec![0; plan.anonymous_rows * MAX_TYPE_CHILDREN]
+            anonymous_child_targets: vec![0; plan.anonymous_type_children]
                 .into_boxed_slice(),
-            anonymous_child_names: vec![None; plan.anonymous_rows * MAX_TYPE_CHILDREN]
+            anonymous_child_names: vec![None; plan.anonymous_type_children]
                 .into_boxed_slice(),
-            anonymous_child_flags: vec![0; plan.anonymous_rows * MAX_TYPE_CHILDREN]
+            anonymous_child_flags: vec![0; plan.anonymous_type_children]
                 .into_boxed_slice(),
             anonymous_rows: 0,
             anonymous_children_total: 0,
@@ -861,11 +893,11 @@ impl<'source> FactSet<'source> {
             computed_owners: vec![0; plan.computed_rows].into_boxed_slice(),
             computed_child_starts: vec![0; plan.computed_rows].into_boxed_slice(),
             computed_child_counts: vec![0; plan.computed_rows].into_boxed_slice(),
-            computed_child_targets: vec![0; plan.computed_rows * MAX_TYPE_CHILDREN]
+            computed_child_targets: vec![0; plan.computed_type_children]
                 .into_boxed_slice(),
-            computed_child_names: vec![None; plan.computed_rows * MAX_TYPE_CHILDREN]
+            computed_child_names: vec![None; plan.computed_type_children]
                 .into_boxed_slice(),
-            computed_child_flags: vec![0; plan.computed_rows * MAX_TYPE_CHILDREN]
+            computed_child_flags: vec![0; plan.computed_type_children]
                 .into_boxed_slice(),
             computed_rows: 0,
             computed_children_total: 0,
@@ -1072,13 +1104,20 @@ impl<'source> FactSet<'source> {
                 },
             );
         }
-        if self.anonymous_child_pending == MAX_PENDING_TYPE_CHILDREN
-            || self.anonymous_children_total == self.anonymous_child_targets.len()
-        {
+        if self.anonymous_child_pending == MAX_PENDING_TYPE_CHILDREN {
             return self.reject_pending_type_run(
                 PendingTypeLane::Anonymous,
                 FactFault::TypeChildCapacity,
             );
+        }
+        if self.anonymous_children_total == self.anonymous_child_targets.len() {
+            let fault = FactFault::TypeChildPoolCapacity {
+                lane: TypeChildLane::Anonymous,
+                used: self.anonymous_children_total,
+                requested: 1,
+                capacity: self.anonymous_child_targets.len(),
+            };
+            return self.reject_pending_type_run(PendingTypeLane::Anonymous, fault);
         }
         let pooled = self.anonymous_children_total;
         self.anonymous_child_targets[pooled] = target;
@@ -1201,13 +1240,20 @@ impl<'source> FactSet<'source> {
                 },
             );
         }
-        if self.computed_child_pending == MAX_PENDING_TYPE_CHILDREN
-            || self.computed_children_total == self.computed_child_targets.len()
-        {
+        if self.computed_child_pending == MAX_PENDING_TYPE_CHILDREN {
             return self.reject_pending_type_run(
                 PendingTypeLane::Computed,
                 FactFault::TypeChildCapacity,
             );
+        }
+        if self.computed_children_total == self.computed_child_targets.len() {
+            let fault = FactFault::TypeChildPoolCapacity {
+                lane: TypeChildLane::Computed,
+                used: self.computed_children_total,
+                requested: 1,
+                capacity: self.computed_child_targets.len(),
+            };
+            return self.reject_pending_type_run(PendingTypeLane::Computed, fault);
         }
         let pooled = self.computed_children_total;
         self.computed_child_targets[pooled] = target;
@@ -2423,11 +2469,35 @@ impl<'source> FactSet<'source> {
                 .map_err(rejected)?,
             None => None,
         };
+        let type_pooled_start = self.total_type_children;
+        let requested_type_children = usize::from(fact.type_child_count);
+        let type_pooled_end = type_pooled_start
+            .checked_add(requested_type_children)
+            .filter(|end| *end <= self.type_child_targets.len())
+            .ok_or_else(|| {
+                rejected(FactFault::TypeChildPoolCapacity {
+                    lane: TypeChildLane::Declared,
+                    used: type_pooled_start,
+                    requested: requested_type_children,
+                    capacity: self.type_child_targets.len(),
+                })
+            })?;
+        let pooled_start = self.total_children;
+        let requested_product_children = child_count as usize;
+        let pooled_end = pooled_start
+            .checked_add(requested_product_children)
+            .filter(|end| *end <= self.child_targets.len())
+            .ok_or_else(|| {
+                rejected(FactFault::ProductChildPoolCapacity {
+                    used: pooled_start,
+                    requested: requested_product_children,
+                    capacity: self.child_targets.len(),
+                })
+            })?;
 
         self.kinds[fact_ordinal] = fact.kind;
         self.names[fact_ordinal] = fact.name;
         self.type_records[fact_ordinal] = fact.type_record;
-        let type_pooled_start = self.total_type_children;
         for (offset, child) in fact
             .type_children
             .iter()
@@ -2440,7 +2510,7 @@ impl<'source> FactSet<'source> {
             self.type_child_names[pooled] = child.name;
             self.type_child_flags[pooled] = child.flags;
         }
-        self.total_type_children = type_pooled_start + usize::from(fact.type_child_count);
+        self.total_type_children = type_pooled_end;
         self.type_child_starts[fact_ordinal] = type_pooled_start as u32;
         self.type_child_counts[fact_ordinal] = fact.type_child_count;
         self.constructors[fact_ordinal] = fact.constructor;
@@ -2450,7 +2520,6 @@ impl<'source> FactSet<'source> {
         self.visibility[fact_ordinal] = fact.visibility;
         self.visibility_captured[fact_ordinal] = fact.visibility_captured;
         self.key_digests[fact_ordinal] = identity::fact_payload_basis(&fact);
-        let pooled_start = self.total_children;
         for (offset, child) in fact
             .children
             .iter()
@@ -2461,7 +2530,7 @@ impl<'source> FactSet<'source> {
             self.child_roles[pooled_start + offset] = child.role;
             self.child_targets[pooled_start + offset] = child.target;
         }
-        self.total_children = pooled_start + child_count as usize;
+        self.total_children = pooled_end;
         self.child_starts[fact_ordinal] = pooled_start as u32;
         self.len = fact_ordinal + 1;
         Ok(fact_ordinal)
