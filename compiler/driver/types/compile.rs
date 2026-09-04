@@ -781,6 +781,34 @@ fn clang_terminal<'diagnostic>(
             recipe,
             cause,
         },
+        lower::clang::ClangCollectError::Admission(cause) => match cause {
+            AdmissionFault::Canonical(cause) => CompileFailure::Prepare {
+                source_identity,
+                recipe,
+                cause: PrepareError::SemanticData { cause },
+            },
+            AdmissionFault::Prepare(cause) => CompileFailure::Prepare {
+                source_identity,
+                recipe,
+                cause,
+            },
+            AdmissionFault::Write(cause) => CompileFailure::Write {
+                source_identity,
+                recipe,
+                cause,
+            },
+            AdmissionFault::ExtensionAtom {
+                row,
+                provisional,
+                atom_count,
+            } => CompileFailure::ExtensionAtomUnbound {
+                source_identity,
+                recipe,
+                row,
+                provisional,
+                atom_count,
+            },
+        },
     }
 }
 

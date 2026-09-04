@@ -2,7 +2,9 @@
 //! The tests prove canonical profile admission and pre-native source rejection deterministically.
 //! Live direct-authority fixtures belong to a provisioned libclang environment, never an ignored test.
 
-use compiler_languages_clang::{ClangInput, ClangScratch, CollectError, collect};
+use compiler_languages_clang::{
+    ClangInput, ClangScratch, CollectError, DatabaseError, MAX_DATABASE_ARGUMENTS, collect,
+};
 use compiler_vocabulary::{CStandard, LanguageProfile, RustEdition};
 use core::sync::atomic::AtomicBool;
 
@@ -54,6 +56,7 @@ fn nul_source_rejects_before_native_loading_or_any_scanner_fallback() -> Result<
     let mut references = [];
     let mut diagnostics = [];
     let mut includes = [];
+    let mut overrides = [];
     let input = ClangInput::C {
         file_name: c"translation.c",
         source: b"int\0main(void);",
@@ -66,6 +69,7 @@ fn nul_source_rejects_before_native_loading_or_any_scanner_fallback() -> Result<
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     };
     match collect(input, scratch) {
         Err(CollectError::SourceContainsNul) => Ok(()),
@@ -83,6 +87,7 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
     let mut references = [];
     let mut diagnostics = [];
     let mut includes = [];
+    let mut overrides = [];
     let input = ClangInput::C {
         file_name: c"translation.c",
         source: b"int main(void);",
@@ -95,10 +100,35 @@ fn cancelled_collection_does_not_load_native_authority_or_fallback() -> Result<(
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     };
     match compiler_languages_clang::collect_cancellable(input, scratch, &cancellation) {
         Err(CollectError::Cancelled) => Ok(()),
         Err(error) => Err(TestError::Unexpected(error)),
         Ok(_) => Err(TestError::Profile),
     }
+}
+
+#[test]
+fn database_argument_capacity_rejects_without_truncation() {
+    let values = [c"-DVALUE=1"; MAX_DATABASE_ARGUMENTS + 1];
+    let result = ClangInput::from_database(c"main.c", b"int main;", &values, c".");
+    match result {
+        Err(error) => {
+            assert_eq!(error.required, MAX_DATABASE_ARGUMENTS + 1);
+            assert_eq!(error.capacity, MAX_DATABASE_ARGUMENTS);
+        }
+        Ok(_) => assert!(false, "over-capacity command was accepted"),
+    }
+}
+
+#[test]
+fn absent_database_is_an_explicit_typed_terminal() {
+    let result = compiler_languages_clang::CompilationDatabase::from_directory(
+        std::path::Path::new("/definitely/no/compile_commands-here"),
+    );
+    assert!(matches!(
+        result,
+        Err(DatabaseError::Absent | DatabaseError::Native)
+    ));
 }

@@ -62,13 +62,18 @@ fn reference_kind_discriminants_round_trip_and_reject_unknowns() {
         (ReferenceKind::MacroInvocation, 4),
         (ReferenceKind::FieldAccess, 5),
         (ReferenceKind::Import, 6),
+        (ReferenceKind::Overrides, 7),
     ] {
         assert_eq!(u8::from(kind), code);
         assert_eq!(ReferenceKind::try_from(code), Ok(kind));
     }
     assert_eq!(
-        ReferenceKind::try_from(7),
-        Err(compiler_ir_vocabulary::ReferenceKindCodeError { actual: 7 })
+        ReferenceKind::try_from(8),
+        Err(compiler_ir_vocabulary::ReferenceKindCodeError { actual: 8 })
+    );
+    assert_eq!(
+        ReferenceKind::try_from(255),
+        Err(compiler_ir_vocabulary::ReferenceKindCodeError { actual: 255 })
     );
 }
 

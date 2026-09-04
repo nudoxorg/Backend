@@ -6,12 +6,16 @@
 
 use compiler_languages_clang::{
     BuiltinClass, ClangInput, ClangScratch, CollectError, DeclarationFact, DeclarationId,
-    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, ReferenceFact, ReferenceKind,
-    ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass, TypeEdge, TypeFact, TypeId,
-    collect,
+    DeclarationKind, DefinitionState, DiagnosticFact, IncludeFact, MethodVirtuality, OverrideFact,
+    ReferenceFact, ReferenceKind, ReferenceTarget, SourceDependencyKind, SourceSpan, StorageClass,
+    SymbolIdentity, TypeEdge, TypeFact, TypeId, collect,
     facts::{TypeKind, TypeQualifiers},
 };
 use compiler_vocabulary::{CStandard, CxxStandard};
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// Identifies the one direct native fact a live authority proof requires.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -57,6 +61,9 @@ enum TestError {
     /// Direct libclang collection returned its exact typed error.
     #[error(transparent)]
     Collection(#[from] CollectError),
+    /// The real compilation database could not be loaded.
+    #[error(transparent)]
+    Database(#[from] compiler_languages_clang::DatabaseError),
     /// A required direct native fact was absent from the returned bounded fact prefixes.
     #[error("missing direct native fact: {0}")]
     Missing(RequiredFact),
@@ -99,6 +106,84 @@ int caller(int *value) { return SCALE(add(*value, 2)); }
 }
 
 #[test]
+fn database_authority_parses_relative_translation_unit_with_real_include() -> Result<(), TestError>
+{
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Function,
+            })
+        })?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("nudox-clang-authority-{suffix}"));
+    let source_path = root.join("src/main.c");
+    fs::create_dir_all(root.join("src")).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    fs::create_dir_all(root.join("include")).map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    let source = b"#include \"base.h\"\nint main(void) { return BASE; }\n";
+    fs::write(root.join("include/base.h"), b"#define BASE 7\n").map_err(|_| {
+        TestError::Missing(RequiredFact::Dependency {
+            kind: SourceDependencyKind::Include,
+        })
+    })?;
+    fs::write(&source_path, source).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let database = format!(
+        "[{{\"directory\":\"{}\",\"file\":\"src/main.c\",\"arguments\":[\"clang\",\"-x\",\"c\",\"-std=c23\",\"-I\",\"include\",\"src/main.c\"]}}]",
+        root.display()
+    );
+    fs::write(root.join("compile_commands.json"), database).map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    })?;
+    let result = (|| {
+        let database = compiler_languages_clang::CompilationDatabase::from_directory(&root)?;
+        let command =
+            database
+                .commands()
+                .first()
+                .ok_or(TestError::Missing(RequiredFact::Declaration {
+                    kind: DeclarationKind::Function,
+                }))?;
+        let arguments = command
+            .arguments()
+            .iter()
+            .map(|argument| argument.as_c_str())
+            .collect::<Vec<_>>();
+        let input =
+            ClangInput::from_database(command.file_name(), source, &arguments, command.directory())
+                .map_err(|_| {
+                    TestError::Missing(RequiredFact::Declaration {
+                        kind: DeclarationKind::Function,
+                    })
+                })?;
+        with_scratch(|scratch| {
+            let facts = collect(input, scratch)?;
+            require_declaration(&facts, DeclarationKind::Function)?;
+            require_dependency(&facts, SourceDependencyKind::Include)
+        })
+    })();
+    let cleanup = fs::remove_dir_all(&root);
+    result.and(cleanup.map_err(|_| {
+        TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Function,
+        })
+    }))
+}
+
+#[test]
 fn cxx_authority_keeps_overload_identity_and_template_type_edges() -> Result<(), TestError> {
     let source = br"
 template <typename Item> struct Box { Item value; };
@@ -127,6 +212,295 @@ int caller() { Box<int> value{2}; return score(value.value); }
     })
 }
 
+#[test]
+fn cxx_authority_retains_virtuality_and_deduplicated_overrides() -> Result<(), TestError> {
+    let source = br#"
+struct Base { virtual void run() = 0; };
+struct Derived : Base { void run() override; };
+void Derived::run() {}
+"#;
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"authority.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let base = method_identity(
+            &facts,
+            source,
+            b"run",
+            b"Base",
+            MethodVirtuality::PureVirtual,
+        )?;
+        let derived = method_identity(
+            &facts,
+            source,
+            b"run",
+            b"Derived",
+            MethodVirtuality::Virtual,
+        )?;
+        assert_eq!(facts.overrides.len(), 1);
+        assert_eq!(
+            facts.overrides[0],
+            OverrideFact {
+                source: derived,
+                target: base
+            }
+        );
+
+        let mut declarations = [empty_declaration(); DECLARATION_SLOTS];
+        let mut types = [empty_type(); TYPE_SLOTS];
+        let mut type_edges = [empty_type_edge(); TYPE_EDGE_SLOTS];
+        let mut references = [empty_reference(); REFERENCE_SLOTS];
+        let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_SLOTS];
+        let mut includes = [empty_include(); DEPENDENCY_SLOTS];
+        let mut overrides = [];
+        let result = collect(
+            ClangInput::Cxx {
+                file_name: c"authority.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            ClangScratch {
+                declarations: &mut declarations,
+                types: &mut types,
+                type_edges: &mut type_edges,
+                references: &mut references,
+                diagnostics: &mut diagnostics,
+                includes: &mut includes,
+                overrides: &mut overrides,
+            },
+        );
+        match result {
+            Err(CollectError::ScratchCapacity {
+                lane: compiler_languages_clang::ScratchLane::Overrides,
+                capacity: 0,
+                required: 1,
+            }) => Ok(()),
+            Err(error) => Err(TestError::Collection(error)),
+            Ok(_) => Err(TestError::Missing(RequiredFact::OverloadIdentity)),
+        }
+    })
+}
+
+#[test]
+fn c_authority_anonymous_record_keeps_only_the_unnamed_definition() -> Result<(), TestError> {
+    let source = br"struct { int x; } point;";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::C {
+                file_name: c"anonymous.c",
+                source,
+                standard: CStandard::C23,
+            },
+            scratch,
+        )?;
+        let records = facts
+            .declarations
+            .iter()
+            .filter(|fact| fact.kind == DeclarationKind::Record)
+            .count();
+        assert_eq!(records, 1);
+        let record = facts
+            .declarations
+            .iter()
+            .find(|fact| fact.kind == DeclarationKind::Record)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Record,
+            }))?;
+        assert_eq!(record.name, None);
+        assert_eq!(record.definition, DefinitionState::Definition);
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"x")
+                && fact.owner == record.identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Variable
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"point")
+        }));
+        assert!(facts.declarations.iter().all(|fact| {
+            fact.name
+                .is_none_or(|span| source_at(source, span) != b"struct")
+        }));
+        Ok(())
+    })
+}
+
+#[test]
+fn c_authority_deduplicates_canonical_anonymous_record_cursors() -> Result<(), TestError> {
+    let source = br"struct { int x; } point;";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::C {
+                file_name: c"duplicate-anonymous.c",
+                source,
+                standard: CStandard::C23,
+            },
+            scratch,
+        )?;
+        assert_eq!(
+            facts
+                .declarations
+                .iter()
+                .filter(|fact| fact.kind == DeclarationKind::Record)
+                .count(),
+            1
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn cxx_authority_canonical_record_dedupe_prefers_definition() -> Result<(), TestError> {
+    let source = br"struct Node;
+struct Node { int x; };";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"definition-preference.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let record_count = facts
+            .declarations
+            .iter()
+            .filter(|fact| fact.kind == DeclarationKind::Record)
+            .count();
+        assert_eq!(record_count, 1);
+        let record = facts
+            .declarations
+            .iter()
+            .find(|fact| fact.kind == DeclarationKind::Record)
+            .ok_or(TestError::Missing(RequiredFact::Declaration {
+                kind: DeclarationKind::Record,
+            }))?;
+        assert_eq!(record.definition, DefinitionState::Definition);
+        assert_eq!(
+            record.name.map(|span| source_at(source, span)),
+            Some(&b"Node"[..])
+        );
+        assert!(record.type_root.is_some());
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"x")
+                && fact.owner == record.identity
+        }));
+        Ok(())
+    })
+}
+
+#[test]
+fn cxx_authority_projects_template_pattern_into_box_authority() -> Result<(), TestError> {
+    let source = br"template<typename T> struct Box { T value; };
+struct User { struct Box<int> box; };";
+    with_scratch(|scratch| {
+        let facts = collect(
+            ClangInput::Cxx {
+                file_name: c"template.cc",
+                source,
+                standard: CxxStandard::Cxx23,
+            },
+            scratch,
+        )?;
+        let template = facts
+            .declarations
+            .iter()
+            .find(|fact| {
+                fact.kind == DeclarationKind::Template
+                    && fact
+                        .name
+                        .is_some_and(|span| source_at(source, span) == b"Box")
+            })
+            .copied();
+        assert!(template.is_some());
+        let template = template.ok_or(TestError::Missing(RequiredFact::Declaration {
+            kind: DeclarationKind::Template,
+        }))?;
+        assert_eq!(template.definition, DefinitionState::Definition);
+        let box_identity = template.identity;
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::TemplateParameter
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"T")
+                && fact.owner == box_identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"value")
+                && fact.owner == box_identity
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Record
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"User")
+        }));
+        assert!(facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"box")
+        }));
+        assert!(!facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Record
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"Box")
+        }));
+        assert!(!facts.declarations.iter().any(|fact| {
+            fact.kind == DeclarationKind::Field
+                && fact
+                    .name
+                    .is_some_and(|span| source_at(source, span) == b"struct")
+        }));
+        Ok(())
+    })
+}
+
+fn method_identity(
+    facts: &compiler_languages_clang::ClangFacts<'_>,
+    source: &[u8],
+    name: &[u8],
+    owner: &[u8],
+    virtuality: MethodVirtuality,
+) -> Result<SymbolIdentity, TestError> {
+    facts
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.kind == DeclarationKind::Method
+                && declaration.virtuality == virtuality
+                && declaration
+                    .name
+                    .is_some_and(|span| source_at(source, span) == name)
+                && declaration.owner.is_some_and(|identity| {
+                    facts.declarations.iter().any(|owner_declaration| {
+                        owner_declaration.identity == Some(identity)
+                            && owner_declaration
+                                .name
+                                .is_some_and(|span| source_at(source, span) == owner)
+                    })
+                })
+        })
+        .and_then(|declaration| declaration.identity)
+        .ok_or(TestError::Missing(RequiredFact::OverloadIdentity))
+}
+
 /// Builds enough caller-owned typed capacity for a small but deliberately rich native fixture.
 fn with_scratch<Output>(
     run: impl for<'scratch> FnOnce(ClangScratch<'scratch>) -> Result<Output, TestError>,
@@ -137,6 +511,7 @@ fn with_scratch<Output>(
     let mut references = [empty_reference(); REFERENCE_SLOTS];
     let mut diagnostics = [empty_diagnostic(); DIAGNOSTIC_SLOTS];
     let mut includes = [empty_include(); DEPENDENCY_SLOTS];
+    let mut overrides = [empty_override(); OVERRIDE_SLOTS];
     run(ClangScratch {
         declarations: &mut declarations,
         types: &mut types,
@@ -144,6 +519,7 @@ fn with_scratch<Output>(
         references: &mut references,
         diagnostics: &mut diagnostics,
         includes: &mut includes,
+        overrides: &mut overrides,
     })
 }
 
@@ -178,6 +554,7 @@ const TYPE_EDGE_SLOTS: usize = 192;
 const REFERENCE_SLOTS: usize = 64;
 const DIAGNOSTIC_SLOTS: usize = 16;
 const DEPENDENCY_SLOTS: usize = 16;
+const OVERRIDE_SLOTS: usize = 16;
 
 const fn empty_span() -> SourceSpan {
     SourceSpan { start: 0, end: 0 }
@@ -188,6 +565,7 @@ const fn empty_declaration() -> DeclarationFact {
         id: DeclarationId { raw: 0 },
         kind: DeclarationKind::Unknown,
         definition: DefinitionState::Declaration,
+        virtuality: MethodVirtuality::NonVirtual,
         identity: None,
         span: empty_span(),
         name: None,
@@ -195,6 +573,13 @@ const fn empty_declaration() -> DeclarationFact {
         documentation: None,
         storage: StorageClass::None,
         type_root: None,
+    }
+}
+
+const fn empty_override() -> OverrideFact {
+    OverrideFact {
+        source: SymbolIdentity { bytes: [0; 16] },
+        target: SymbolIdentity { bytes: [0; 16] },
     }
 }
 

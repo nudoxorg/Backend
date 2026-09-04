@@ -1,28 +1,210 @@
 schema = 1
 capability_id = "clang-c-lifecycle"
-state = "phase0"
+state = "phase-rendering-and-lifecycle-landed-corpus-open"
 baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
-baseline_tree = "working-tree state frozen by per-file digests in brief.md (uncommitted lane work included deliberately)"
-candidate_commit = ""
-candidate_tree = ""
+baseline_tree = "per-file digests in brief.md (pre-worktree-protocol freeze)"
+candidate_commit = "post-closure-review R1; see closure.md and codex/fidelity-clang history"
+candidate_tree = "luna/clang-lifecycle worktree; lane-owned surfaces committed, other lanes' in-flight work preserved uncommitted"
 testing_path = ""
 testing_sha256 = ""
 
 [artifacts]
 brief = { path = ".codex/evidence/capabilities/clang-c-lifecycle/brief.md", sha256 = "3d24e957cb22cbb1eecd92212cecece98af5b11cd72d65ce9e59feb4ec41d048" }
-matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "1cb622c04e0f5e75ffd0ef31f3578d23a2df37d48aab63507b9e00a70ea5fdf4" }
-research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "c39d4f348436aae61bb06d0ff594be064b61508e808ebec4f1bda1c3da6fe1ec" }
+matrix = { path = ".codex/evidence/capabilities/clang-c-lifecycle/proof-matrix.md", sha256 = "79b5c890238db0f4f2aa28af2adda9508729bc2eb3fe53e8b42d03af3ba43fb1" }
+research = { path = ".codex/evidence/capabilities/clang-c-lifecycle/research.md", sha256 = "030860dff52ab8d4fdd1264574eb89582e96aef8e3ed6ccba9f05304db040a25" }
 closure = { path = ".codex/evidence/capabilities/clang-c-lifecycle/closure.md", sha256 = "" }
 
+# Worker custody is recorded per card in cards/*.md; digests at dispatch time are in
+# the git history of this file. Environment: shared lane worktree
+# .local/worktrees/clang-lifecycle, CARGO_TARGET_DIR=$PWD/.local/target, live libclang at
+# /Library/Developer/CommandLineTools/usr/lib/libclang.dylib.
+
 [[workers]]
-task_id = "pending"
+task_id = "A2-repair attempt 1 (stopped: authority dishonesty, verified)"
 role = "luna"
-config_path = ".opencode/agents/luna.md"
-model = "openai/gpt-5.6-luna"
-effort = "max"
-sandbox = "workspace-write"
-baseline_commit = "2c0b26f864c9def0acd97a10add4f765d762ce8d"
-checkout = "shared worktree, disjoint owned paths per card"
-card_sha256 = "recorded at dispatch"
-result_commit = ""
-retention = "active"
+result_commit = "none — stop decision, evidence in research.md"
+
+[[workers]]
+task_id = "A-auth (authority honesty)"
+role = "luna"
+result_commit = "d7e770e47"
+
+[[workers]]
+task_id = "A-auth2 (definition-preference repair)"
+role = "luna"
+result_commit = "80291db98"
+
+[[workers]]
+task_id = "A2-repair v3 (stopped: harness/law contradictions, ruled by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "A2-repair v4 (integrated by Terra after worker stop on the child decoder)"
+role = "luna"
+result_commit = "51331fb31"
+
+[[workers]]
+task_id = "A3-overrides v1 (stopped: lifetime wall, ruled by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "A3-overrides v2"
+role = "luna"
+result_commit = "fe47d3806"
+
+[[workers]]
+task_id = "B-ir1 v1 (stopped: lane helper geometry, resolved by Terra)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir1 v2 (schema 2 + owner cell)"
+role = "luna"
+result_commit = "f53c0958a"
+
+[[workers]]
+task_id = "B-ir2 (identity-list cell, 32-byte schema-2)"
+role = "luna"
+result_commit = "ed7088593"
+
+[[workers]]
+task_id = "B-lane v1 (stopped: missing ir API)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir3 v1 (stopped: forbidden struct literal)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "B-ir3 v2 (identity pool input)"
+role = "luna"
+result_commit = "09f6c96f7"
+
+[[workers]]
+task_id = "B-lane v3 (identity pool end-to-end + build_ir members)"
+role = "luna"
+result_commit = "be31d5ef"
+
+[[workers]]
+task_id = "B-ir4 (render C bodies + goldens)"
+role = "luna"
+result_commit = "deebd3342"
+
+[[workers]]
+task_id = "C1-lifecycle (PURL + database input)"
+role = "luna"
+result_commit = "308b0c264"
+
+[[workers]]
+task_id = "C1b v1 (stopped: seam outside card)"
+role = "luna"
+result_commit = "none — stop decision"
+
+[[workers]]
+task_id = "C1b v2 (additive per-TU entry + terminals)"
+role = "luna"
+result_commit = "2fd221a07"
+
+[[workers]]
+task_id = "C1c-repair (real database parse)"
+role = "luna"
+result_commit = "4921f60f"
+
+[[workers]]
+task_id = "C1d-journey v1+v2 (stopped: journal second-generation Conflict)"
+role = "luna"
+result_commit = "none — trunk blocker recorded in proof matrix R10"
+
+# 2026-09-03 finish round (Terra): canonical fully consumed (merge 8b465ed0c;
+# canonical=309acc8f1, ancestor verified). Trunk's f9efccc58 chained LIVE
+# publication groups only; replay_stream still rejects chained history, so the
+# pinned reopen defect (a7f6379d1) is still live and R10/R11 reopen terminals
+# require the trunk heal. Terra mechanically fixed the clang_lane parallel
+# temp-dir nonce collision (74c3a41fb; gate 18/18 twice). Four cards frozen:
+# L8 trunk replay heal -> L9 (R10/R12 journey+terminals) ∥ L10 (C2 drive +
+# R16 packaging; needs L8) -> L11 (R11/R14 corpus; needs L8+L10) -> closure.
+# Terra pre-verified with real buck2: compilation_database is not a prelude
+# rule; positive Buck drive = uquery -> build --show-output -> read_compdb
+# (probe cell, BUILD SUCCEEDED). Terra pre-verified meson re-setup fails
+# without --wipe.
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "L8-replay (server/workflow chained replay heal + pinned-test flip)"
+card_sha256 = "22ca5dd47c89bf18cf64505b3649ee1de7a2affed653bdf576f4b87356f0058b"
+paths = ["server/workflow/**", "server/journal/**", "compiler/driver/tests/clang_lifecycle.rs (pinned test only)"]
+baseline = "74c3a41fb"
+result_commit = "db845d5c9"
+ingest = "Terra reproduced all gates: server-workflow 12, server-journal 42, clang_lifecycle 7 (chained_journal_reopens_after_shutdown green; gen-1 fragment revalidated from artifact store). Diff re-read: reduce_chained mirrors the live fallback exactly (Requested+Keyed -> one retry from New; original error preserved); replay_stream unconditionally chained with faithful-inverse justification; journal inline copy DELETED. F1-F3 falsifiers present with exact StageKeyMismatch operands. fmt drift + clippy warnings located only in pre-existing trunk files (publication/format.rs, publication/owner.rs, append_group dead-code) — not L8 regressions. R10 reopen blocker healed."
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "L9-journey (R10 changed-content journey + R12 per-phase typed terminals)"
+card_sha256 = "81cbfed98433d4b0753472cf735c034c2816cf6664f32628848c651d0feaa1d4"
+paths = ["compiler/driver/tests/clang_lifecycle.rs"]
+baseline = "post-L8 (c3b77c384)"
+result_commit = "dd2166cbb"
+ingest = "Terra reproduced clang_lifecycle 11/11 twice and re-read the diff: gen-2 changes main.c (adds changed_value + struct Changed), asserts SHA(main_2)!=SHA(gen1 main) and byte-equal util fragment; gen-1 index sealed before gen-2; shutdown+reopen before opening gen-2. Phase terminals pinned: publish cancel = CancelledBeforeStorage (open_published afterwards returns None); publish capacity = BindingOutputLength{observed:8} then a successful publish on the same journal; open capacity = FragmentOutputTooSmall{required>available} then success; index = BuildAdmissionError::OutputTooSmall{region:Projections} + CompilationIndexError::ExactScratch. Worker's mutation spot-check reported at clang_lifecycle.rs:355. NOTE: L10 dispatched in parallel hit a transient compile failure — concurrent luna workers on one shared worktree are unsafe even with disjoint paths (cargo raced L9's in-flight edits); L10 re-dispatched sequentially. R10/R12 now REPRODUCED BY TERRA."
+
+[[workers]]
+task = "done (partial: T1-T3 of 4)"
+role = "nudox_luna_implementer"
+card = "L10-drive (make compound lines, buck compdb positive path, meson --wipe, R16 packaging journeys)"
+card_sha256 = "dfe918a3f3b2debcccafd6a38fbe65692a6d4ef6d01143d78e701dadb204506f"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
+baseline = "post-L8 (179dbf6e0 after first parallel attempt was safely discarded)"
+result_commit = "28b385f92"
+ingest = "Terra reproduced build_drive 15/15 twice (+1 corpus-gated ignored) and re-read the diff: make compound lines split top-level on ;/&&/||/| with pure-redirection stripping and unchanged typed UnrecognizedCompileCommand law; buck positive path = uquery -> (targets? build --show-output -> read_compdb : ToolPresentUndrivable(evidence)); query/build failures = DriveFailed with combined capture; meson setup gains --wipe on existing build dir; ninja compdb now lists all rules (no c/cxx filter). Redis probe REPRODUCED BY TERRA: 234 TUs, no UnrecognizedCompileCommand. T4 packaging journeys + absent twins NOT delivered (worker reported honestly) -> one falsifier-bound repair card L10b."
+
+[[workers]]
+task = "stopped (honest) — product seam found"
+role = "nudox_luna_implementer"
+card = "L10b-packaging (R16 journeys + tool-absent twins; completes L10 T4)"
+card_sha256 = "a94308825e04519c89f979962c74815aa87a45c8b450424351d8300622fe7d73"
+paths = ["compiler/driver/tests/build_drive.rs"]
+baseline = "post-L10 T1-T3 (b142fb136)"
+result_commit = "none — owned path restored; no commit"
+ingest = "Worker stopped honestly: meson packaging journey dies at compile_build_command with Authority('libclang rejected the database translation unit'). TERRA ROOT-CAUSED: L10's bare `ninja -t compdb` emits entries for EVERY edge (link edges file=*.o without -c, phony edges 'meson-internal__test' with empty command, tool-runner edges); read_compdb admits them all as TUs and libclang rejects an object file as C source. Reproduced by Terra with a real meson+ninja probe. Repair card L10c folds the module header's non-compile-selection law into compdb entry admission + finishes L10b J3/J4."
+
+[[workers]]
+task = "done (product half)"
+role = "nudox_luna_implementer"
+card = "L10c-compdb (compile-command selection law for compdb entries; repairs L10 ninja regression; delivers meson journey + absent twins)"
+card_sha256 = "ffbbeff5110972170285d6564a1a6cf746af6834e5d4a987fa5040facfe147bd"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/tests/build_drive.rs"]
+baseline = "7dc7de48c"
+result_commit = "180ec274 (product) + 6f78997ea (Terra-authored test surface)"
+ingest = "Worker landed the admission law (read_compdb admits only -c + source-suffix entries; module header documents the JSON compdb selection law) and reproduced the redis probe green, but again deferred the test additions. Two bounded worker attempts on test-heavy halves -> Terra authored the remaining surface directly per the test-authoring lane law: restructured the make packaging journey (changed-content gen-2: one.c bytes change + three.c added; shutdown+reopen+index seal at BOTH generations via a shared reopen_validate_seal_and_shutdown helper; unchanged two.c fragment byte-identical, changed one.c fragment differs; gen-1 fragment reopens from the artifact store), added meson_packaging_journey_drives_publishes_reopens_and_indexes (exact TU-count 2->3 over the SAME scratch with --wipe re-drive = the junk-edge admission falsifier; meson reserves meson-*-prefixed target names — fixture renamed) and absent_meson_and_make_are_not_silently_skipped (availability-adaptive like the cmake twin precedent; the absent branch requires a tool-less host). Mechanical Terra fix in build_drive.rs: the failed-drive capture now retains stdout+stderr (meson reports failures on stdout; the typed terminal previously retained empty evidence). CUSTODY INCIDENT: the worker left a workspace-wide `cargo fmt` result uncommitted across compiler/ir + server/journal (formatting-only: line wraps + trailing commas, verified) — restored to HEAD, other lanes' surfaces untouched. Gates reproduced by Terra: build_drive 17/17 (+1 ignored corpus probe), clang_lane 18/18, clang_lifecycle 11/11, clang crate 9/9, all twice. L10/L10b/L10c closed together; R13/R16 evidence complete pending the corpus run."
+
+[[workers]]
+task = "planned"
+role = "nudox_luna_implementer"
+card = "L11-corpus (20 projects end-to-end + decoded-IR review + honest perf)"
+card_sha256 = "1dde9d97a7aa81115725dbd73c6fea7e6b9b697b60f4fb7c756a4aeeee6f8227"
+paths = ["compiler/driver/tests/corpus_harness.rs", ".codex/evidence/capabilities/clang-c-lifecycle/corpus.md"]
+baseline = "post-L8+L10"
+result_commit = "98ca4f24 (worker skeleton) + 0534cc968 (Terra finish: slice fallback, index sealing, typed-wall classification, spot calibration, honest columns)"
+ingest = "Worker delivered the full-lifecycle skeleton (publish gen-1 -> shutdown+reopen -> gen-2 with changed driver TU -> both generations validated) but left index sealing, slice fallback, and spot truthfulness open; Terra finished the harness and classified walls by typed cause. Final corpus: 17/20 rows full end-to-end lifecycle (stb, rxi-map, klib full; miniaudio/vurtun/STC/klib driver rows; 12 slice rows with verbatim full-set wall terminals); yaml-cpp = named index-seal defect; Vulkan-Headers = NoTranslationUnits (header-only); buck2 = typed DriveFailed terminal + real build evidence. Cause preservation (899b6c224) converted six misreported NoSupportedDeclaration walls into exact FactRejection terminals. Peak RSS 253,689,864 / 270,352,384 bytes via /usr/bin/time -l; run twice + no-op green."
+
+[[workers]]
+task = "done"
+role = "nudox_terra_reviewer"
+card = "closure review"
+state = "returned: 5 majors / 5 minors / 1 question / 7 cleared suspicions; verdict NOT merge-ready pending R1"
+result = "All 5 majors accepted and repaired (06347bf4 + Terra falsifiers); minors m7/m9/m10/q11 fixed, m6/m8 recorded as documented bounds/adaptations. Reviewer independently cleared the replay mirror, cause preservation, cancellation discipline, corpus evidence authenticity, and boundary mixing."
+
+[[workers]]
+task = "done"
+role = "nudox_luna_implementer"
+card = "R1-review (reviewer repairs M1-M5 + m7)"
+card_sha256 = "83e0a5f7a46c4646117031b503ba2d78f7b403d9a026c0d75e27604f6bc07c76"
+paths = ["compiler/driver/build_drive.rs", "compiler/driver/lower/clang.rs", "compiler/driver/database.rs", "compiler/driver/tests/build_drive.rs", "compiler/driver/tests/clang_lane.rs", "compiler/driver/types/compile.rs (forced exhaustive-match arm)"]
+baseline = "9ea191544"
+result_commit = "06347bf4"
+ingest = "Product fixes verified by Terra diff-read: M1 redirection-target lookahead, M2 from_utf8 with typed Json rejection, M3 classify-before-capacity (make + compdb), M4 exact ChildCapacity rejection replacing min(), M5 Admission variant + exact public terminals on both compile paths, m7 directory stack. Terra authored the six falsifiers the worker deferred (separated-redirection, 300-word link selection, 304-arg exact capacity, nested 3-level make, cafe UTF-8 path, 17-parameter signature rejection, 64-byte-output admission cause). types/compile.rs deviation from the card's read-only rule was FORCED by the exhaustive match on the new enum arm and mirrors the profile path's exact mapping - accepted. Gates green twice; corpus re-run twice green (293,568,512 / 281,837,568 bytes RSS)."

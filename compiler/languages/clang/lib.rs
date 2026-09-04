@@ -16,15 +16,64 @@ mod error;
 pub mod facts;
 mod ffi;
 mod input;
+pub mod purl;
 mod scratch;
 
 pub use collect::{collect, collect_cancellable};
-pub use error::{CollectError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
+pub use error::{CollectError, DatabaseError, NativeApi, NativeFailure, ParseFailure, ScratchLane};
 pub use facts::{
     BuiltinClass, ClangFacts, DeclarationFact, DeclarationId, DeclarationKind, DefinitionState,
-    DiagnosticFact, DiagnosticSeverity, IncludeFact, ReferenceFact, ReferenceKind, ReferenceTarget,
-    SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan, StorageClass, SymbolIdentity,
-    TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers, TypeRelation,
+    DiagnosticFact, DiagnosticSeverity, IncludeFact, MAX_CLANG_DECLARATIONS, MAX_CLANG_DIAGNOSTICS,
+    MAX_CLANG_FACTS, MAX_CLANG_INCLUDES, MAX_CLANG_OVERRIDES, MAX_CLANG_REFERENCES,
+    MAX_CLANG_TYPE_EDGES, MAX_CLANG_TYPES, MethodVirtuality, OverrideFact, ReferenceFact,
+    ReferenceKind, ReferenceTarget, SYMBOL_IDENTITY_BYTES, SourceDependencyKind, SourceSpan,
+    StorageClass, SymbolIdentity, TypeEdge, TypeFact, TypeId, TypeKind, TypeQualifiers,
+    TypeRelation,
 };
-pub use input::{ClangInput, UnsupportedLanguageProfile};
+pub use input::{
+    ClangInput, DatabaseArgumentError, DatabaseArguments, MAX_DATABASE_ARGUMENTS,
+    UnsupportedLanguageProfile,
+};
 pub use scratch::ClangScratch;
+
+/// One command retained by the native compilation database authority.
+#[derive(Debug)]
+pub struct CompilationCommand {
+    pub(crate) file_name: std::ffi::CString,
+    pub(crate) arguments: Vec<std::ffi::CString>,
+    pub(crate) directory: std::ffi::CString,
+}
+
+impl CompilationCommand {
+    /// Source path as returned by the command's final database argument.
+    pub fn file_name(&self) -> &std::ffi::CStr {
+        &self.file_name
+    }
+    /// All command arguments, including the compiler and source path, verbatim.
+    pub fn arguments(&self) -> &[std::ffi::CString] {
+        &self.arguments
+    }
+
+    /// Working directory recorded by the compilation database.
+    pub fn directory(&self) -> &std::ffi::CStr {
+        &self.directory
+    }
+}
+
+/// Native compilation-database snapshot with bounded command arguments.
+#[derive(Debug)]
+pub struct CompilationDatabase {
+    pub(crate) commands: Vec<CompilationCommand>,
+}
+
+impl CompilationDatabase {
+    /// Opens `compile_commands.json` through libclang's runtime-loaded authority.
+    pub fn from_directory(directory: &std::path::Path) -> Result<Self, DatabaseError> {
+        ffi::load_database(directory)
+    }
+
+    /// Returns commands in native database order.
+    pub fn commands(&self) -> &[CompilationCommand] {
+        &self.commands
+    }
+}

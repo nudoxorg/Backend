@@ -559,3 +559,89 @@ fn common_only_images_encode_zero_bytes_for_every_empty_plane() {
     assert_eq!(section.java.get(EntityId::new(0)), Ok(None));
     assert_eq!(section.clang.get(EntityId::new(0)), Ok(None));
 }
+
+#[test]
+fn schema_two_owner_cell_and_schema_one_tail_decode() {
+    let mut builder = IrBuilder::new();
+    builder
+        .set_language_profile(LanguageProfile::Cxx(compiler_ir::CxxStandard::Cxx26))
+        .expect("profile");
+    let clang = ClangFacts {
+        qualifiers: ClangQualifiers {
+            is_const: false,
+            is_volatile: false,
+            is_restrict: false,
+        },
+        storage: ClangStorageClass::None,
+        layout: ClangLayout {
+            size_bits: Some(32),
+            align_bits: Some(32),
+        },
+        templates: builder.intern_type_parameters(&[]).expect("templates"),
+        includes: builder.intern_attributes(&[]).expect("includes"),
+    };
+    add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
+    let ir = builder.finish().expect("Clang IR");
+    let schema_two = encode(&ir);
+    let section = reopen_language_extension_section(
+        &schema_two,
+        ir.storage_columns().authority,
+        ir.language_extension_common_bounds().expect("bounds"),
+    )
+    .expect("schema two");
+    assert_eq!(schema_two[152..156], 36_u32.to_le_bytes());
+    assert_eq!(section.clang.owner(EntityId::new(0)), Ok(Some(0)));
+    assert_eq!(section.clang.identity_list(EntityId::new(0)), Ok(None));
+
+    let mut schema_one = schema_two;
+    schema_one[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    schema_one.truncate(schema_one.len() - 8);
+    let schema_one_len = u32::try_from(schema_one.len()).expect("fixture length");
+    schema_one[12..16].copy_from_slice(&schema_one_len.to_le_bytes());
+    schema_one[152..156].copy_from_slice(&28_u32.to_le_bytes());
+    let reopened = reopen_language_extension_section(
+        &schema_one,
+        ir.storage_columns().authority,
+        ir.language_extension_common_bounds().expect("bounds"),
+    )
+    .expect("preserved schema one");
+    assert_eq!(schema_one[152..156], 28_u32.to_le_bytes());
+    assert_eq!(reopened.clang.get(EntityId::new(0)), Ok(Some(clang)));
+    assert_eq!(reopened.clang.identity_list(EntityId::new(0)), Ok(None));
+}
+
+#[test]
+fn extension_schema_rejects_each_unadmitted_version_cell() {
+    let mut builder = IrBuilder::new();
+    builder
+        .set_language_profile(LanguageProfile::Cxx(compiler_ir::CxxStandard::Cxx26))
+        .expect("profile");
+    let clang = ClangFacts {
+        qualifiers: ClangQualifiers {
+            is_const: false,
+            is_volatile: false,
+            is_restrict: false,
+        },
+        storage: ClangStorageClass::None,
+        layout: ClangLayout {
+            size_bits: None,
+            align_bits: None,
+        },
+        templates: builder.intern_type_parameters(&[]).expect("templates"),
+        includes: builder.intern_attributes(&[]).expect("includes"),
+    };
+    add_extension(&mut builder, LanguageExtensionInput::Clang(&clang));
+    let ir = builder.finish().expect("Clang IR");
+    for observed in [0_u16, 3_u16] {
+        let mut bytes = encode(&ir);
+        bytes[4..6].copy_from_slice(&observed.to_le_bytes());
+        assert!(matches!(
+            reopen_language_extension_section(
+                &bytes,
+                ir.storage_columns().authority,
+                ir.language_extension_common_bounds().expect("bounds"),
+            ),
+            Err(LanguageExtensionReopenError::Schema { observed: actual }) if actual == observed
+        ));
+    }
+}
