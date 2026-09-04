@@ -6,8 +6,8 @@
 mod support;
 
 use support::multilingual_corpus::{
-    CorpusLanguage, CorpusPackage, CorpusRenderError, PACKAGE_COUNT, SOURCE_BYTE_LIMIT,
-    corpus_packages,
+    CaseId, CorpusLanguage, CorpusPackage, CorpusRenderError, PackageShape, PACKAGE_COUNT,
+    SOURCE_BYTE_LIMIT, corpus_packages,
 };
 
 const EXPECTED_PACKAGES_PER_LANGUAGE: usize = 30;
@@ -35,6 +35,8 @@ fn corpus_rendering_preflights_exact_output_without_writing() -> Result<(), Corp
     let package = CorpusPackage {
         ordinal: 0,
         language: CorpusLanguage::Rust,
+        shape: PackageShape::Constant,
+        case_id: CaseId(0),
     };
     let mut exact = [0xa5; SOURCE_BYTE_LIMIT];
     let required = package.render(&mut exact)?.source.len();
@@ -59,6 +61,8 @@ fn corpus_rendering_has_stable_language_source_and_symbol_bytes() -> Result<(), 
     let package = CorpusPackage {
         ordinal: 2,
         language: CorpusLanguage::Rust,
+        shape: PackageShape::Constant,
+        case_id: CaseId(2),
     };
     let mut output = [0xa5; SOURCE_BYTE_LIMIT];
 

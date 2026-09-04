@@ -1,63 +1,256 @@
-//! Exercises the `server-operation` tests compiler-corpus contract through its observable boundary.
-//! The cases target malformed, partial, reordered, and resource-constrained behavior.
-//! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-//! Executable deterministic multilingual compiler corpus.
+//! Executes the deterministic source-to-output audit matrix.
+//!
+//! This test is deliberately source-first.  A row is either compiled from a
+//! real native/semantic authority, or it records a typed local-unavailability
+//! terminal.  No row is downgraded to a syntax-only answer when its authority
+//! is absent.  The compact fragment, owned IR, durable reopen, and renderer
+//! observations are joined by [`CaseId`], never by the order in which a pass
+//! admitted its inputs.
 
 #[path = "support/multilingual_corpus.rs"]
 mod multilingual_corpus;
 #[path = "support/native_tooling.rs"]
 mod native_tooling;
+#[path = "support/compiler_corpus/authority.rs"]
+mod authority;
+#[path = "support/compiler_corpus/observation.rs"]
+mod observation;
+#[path = "support/compiler_corpus/publication.rs"]
+mod publication;
+#[path = "support/compiler_corpus/comparison.rs"]
+mod comparison;
+#[path = "support/compiler_corpus/execution.rs"]
+mod execution;
 
 use std::{
-    sync::atomic::AtomicBool,
+    fmt::Write as _,
+    fs,
+    hash::{Hash, Hasher},
+    io::{self, Read},
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    process::{Command, ExitStatus, Stdio},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
 use compiler_driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
-    CompiledFragment, NativeTool, ResolvedToolchain, ToolchainSelection, compile,
+    CompiledSemantic, DeclarationScope, NativeTool, ResolvedToolchain, SemanticAuthorityInput,
+    ToolchainSelection, compile_semantic,
 };
-use compiler_ir::{SourceIdentity, TypeNode};
+use compiler_ir::{
+    BuiltinType, ConcreteType, DeclarationFamilyId, DeclarationKeyFault, EntityAuthorityFacts,
+    EntityId, EntityKind, FactAvailability, FragmentRangeManifest, FragmentView, ImageProvenance,
+    Ir, ItemKind, PackageLineage, PackageLineageFault, ParentageAuthority, PrimitiveType,
+    SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode, VariantFingerprint, Visibility,
+};
+use compiler_publication::{
+    OpenPublicationScratch, OpenedFragmentError, PublicationScratch, PublishControl,
+    open_published, publish_compiled,
+};
 use compiler_vocabulary::{
-    CSharpVersion, CStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
+    CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
 };
-use heart_identity::{
-    ArtifactHasher, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
-    ToolchainDomain,
-};
+use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use multilingual_corpus::{
-    CorpusLanguage, CorpusPackage, CorpusRenderError, PACKAGE_COUNT, SOURCE_BYTE_LIMIT,
-    corpus_packages,
+    CaseAvailability, CaseId, CorpusLanguage, CorpusPackage, CountExpectation, ExpectedFacts,
+    ExpectedType, PackageShape, PlaneAvailability, RelationExpectation, RenderAvailability,
+    SOURCE_BYTE_LIMIT, PACKAGE_COUNT, corpus_packages,
 };
 use native_tooling::{HostTool, NativeToolingError, NativeWork};
+use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
-const DIAGNOSTIC_BYTES: usize = 4_096;
-const FRAGMENT_BYTES: usize = 512;
-const DEADLINE: Duration = Duration::from_secs(5);
+use authority::{
+    AuthorityBuildError, AuthorityFactory, AuthorityUnavailableCause, CSharpHelperError,
+    HostTools, NativeUnavailableCause, NativeUnavailableKind, ProviderSlot, ResolvedTools,
+    go_error_is_unavailable, native_slot, native_tool, rust_error_is_unavailable, rust_fixture,
+    go_fixture,
+};
+use comparison::{
+    compare_passes, CorpusMismatch, Pass, PermutationField, Plane, expected_mismatches,
+};
+use observation::{
+    CaseObservation, CaseOutputObservation, CompactObservation, CountObservation,
+    EntityObservation, OwnedObservation, ObservedTypeShape, PlaneObservation, RenderVerdict,
+    ReopenedObservation, StableHasher, VersionObservation, digest_bytes, observe_compact,
+    observe_owned, range_manifest_digest, render_neutral,
+};
+use publication::PassPublisher;
+use execution::run_package;
+
+const DIAGNOSTIC_BYTES: usize = 16 * 1024;
+const FRAGMENT_BYTES: usize = 256 * 1024;
+const MANIFEST_BYTES: usize = 256 * 1024;
+const LOCALITY_BYTES: usize = 256 * 1024;
+const AUTHORITY_BYTES: usize = 32 * 1024 * 1024;
+const DEADLINE: Duration = Duration::from_secs(120);
+const CSHARP_DIAGNOSTIC_BYTES: usize = 4 * 1024;
+const CSHARP_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+type Digest = [u8; 32];
+
+/// A compact, copyable key used to join observations from differently ordered
+/// matrix passes.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct CaseKey {
+    case_id: CaseId,
+    language: CorpusLanguage,
+    shape: PackageShape,
+}
+
+const fn case_key(package: CorpusPackage) -> CaseKey {
+    CaseKey {
+        case_id: package.case_id,
+        language: package.language,
+        shape: package.shape,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LaneSummary {
+    attempted: u16,
+    output: u16,
+    unavailable: u16,
+    mismatches: u16,
+}
+
+impl LaneSummary {
+    const ZERO: Self = Self {
+        attempted: 0,
+        output: 0,
+        unavailable: 0,
+        mismatches: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MatrixSummary {
+    lanes: [LaneSummary; CorpusLanguage::ALL.len() * PackageShape::ALL.len()],
+}
+
+impl MatrixSummary {
+    const fn new() -> Self {
+        Self {
+            lanes: [LaneSummary::ZERO; CorpusLanguage::ALL.len() * PackageShape::ALL.len()],
+        }
+    }
+
+    fn lane_mut(&mut self, package: CorpusPackage) -> &mut LaneSummary {
+        &mut self.lanes[lane_index(package)]
+    }
+}
+
+fn lane_index(package: CorpusPackage) -> usize {
+    language_index(package.language) * PackageShape::ALL.len() + shape_index(package.shape)
+}
+
+const fn language_index(language: CorpusLanguage) -> usize {
+    match language {
+        CorpusLanguage::Rust => 0,
+        CorpusLanguage::TypeScript => 1,
+        CorpusLanguage::Python => 2,
+        CorpusLanguage::Go => 3,
+        CorpusLanguage::Java => 4,
+        CorpusLanguage::CSharp => 5,
+        CorpusLanguage::Clang => 6,
+    }
+}
+
+const fn shape_index(shape: PackageShape) -> usize {
+    match shape {
+        PackageShape::Constant => 0,
+        PackageShape::Callable => 1,
+        PackageShape::Aggregate => 2,
+        PackageShape::Generic => 3,
+        PackageShape::Documentation => 4,
+        PackageShape::Reference => 5,
+    }
+}
 
 #[derive(Debug, Error)]
-enum CorpusCompileError {
+enum CorpusAuditError {
     #[error(transparent)]
-    Render(#[from] CorpusRenderError),
-    #[error(transparent)]
-    Tooling(#[from] NativeToolingError),
-    #[error("corpus package {ordinal} source length {observed} exceeded the typed u32 fact")]
-    SourceLength {
-        ordinal: usize,
-        observed: usize,
+    Render(#[from] multilingual_corpus::CorpusRenderError),
+    #[error("corpus declaration scope lineage was rejected")]
+    ScopeLineage(#[source] PackageLineageFault),
+    #[error("corpus declaration scope key was rejected")]
+    ScopeKey(#[source] DeclarationKeyFault),
+    #[error("corpus filesystem phase {phase:?} failed")]
+    Io {
+        phase: AuditIoPhase,
         #[source]
-        source: std::num::TryFromIntError,
+        source: io::Error,
     },
-    #[error("corpus package {ordinal} failed for {language:?} with {tool:?}: {terminal:?}")]
-    Compile {
-        ordinal: usize,
-        language: Language,
-        tool: NativeTool,
-        source_identity: SourceIdentity,
-        terminal: CompileTerminalKind,
+    #[error("corpus durable publisher limits were rejected")]
+    Limits(#[from] server_journal::PublicationLimitError),
+    #[error("corpus durable publisher could not be created")]
+    Publisher(#[from] server_journal::PublicationOpenError),
+    #[error("corpus durable publisher could not be shut down")]
+    Shutdown(#[from] server_journal::ShutdownError),
+    #[error("corpus publication failed")]
+    Publish(#[from] compiler_publication::PublishCompiledError),
+    #[error("corpus publication reopen failed")]
+    Open(#[from] compiler_publication::OpenPublishedError),
+    #[error("corpus reopened fragment failed")]
+    OpenedFragment(#[from] OpenedFragmentError),
+    #[error("corpus fragment range manifest could not be reconstructed")]
+    Ranges(#[from] compiler_ir::FragmentRangeManifestError),
+    #[error("corpus authority setup failed for {key:?}")]
+    AuthoritySetup {
+        key: CaseKey,
+        #[source]
+        cause: AuthorityBuildError,
     },
+    #[error("corpus native work failed for {key:?}")]
+    NativeWork {
+        key: CaseKey,
+        #[source]
+        cause: NativeToolingError,
+    },
+    #[error("corpus invariant {cause:?} failed for {key:?}")]
+    Invariant {
+        key: Option<CaseKey>,
+        cause: CorpusInvariant,
+    },
+    #[error("source/output matrix retained {count} mismatches; first={first:?}")]
+    Mismatches {
+        count: usize,
+        first: Option<CorpusMismatch>,
+    },
+}
+
+/// Structural audit failures kept separate from source-vs-output mismatches.
+/// These are keyed and typed so a malformed pass cannot be mistaken for a
+/// semantic disagreement in one source row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CorpusInvariant {
+    PackageCount { observed: usize, expected: usize },
+    CaseIdentity { ordinal: usize, observed: CaseId },
+    DuplicateCase,
+    MissingCase,
+    LaneCount {
+        language: CorpusLanguage,
+        shape: PackageShape,
+        observed: usize,
+        expected: usize,
+    },
+    MissingPublishedFragment,
+    ExtraPublishedFragment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuditIoPhase {
+    Fixture,
+    RustManifest,
+    RustSource,
+    GoManifest,
+    GoSource,
+    CSharpPublish,
+    CSharpSource,
+    CSharpImage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,283 +279,364 @@ enum CompileTerminalKind {
     DeadlineExceeded,
     DiagnosticLimit,
     NativeRejected,
+    Authority,
+    AuthorityInputRequired,
+    AuthorityInputProfileMismatch,
     LoweringUnsupported,
+    ExtensionAtomUnbound,
+    FactRejected,
+    CSharpProjection,
+    ClangProjection,
     Build,
     Prepare,
     Write,
     Validate,
 }
 
-#[test]
-fn all_two_hundred_ten_packages_reach_a_real_adapter_or_exact_typed_terminal()
--> Result<(), CorpusCompileError> {
-    let rust = HostTool::resolve(NativeTool::Rustc)?;
-    let python = HostTool::resolve(NativeTool::Python)?;
-    let clang = HostTool::resolve(NativeTool::Clang)?;
-    let typescript = HostTool::resolve(NativeTool::TypeScriptCompiler)?;
-    let go = HostTool::resolve(NativeTool::GoCompiler)?;
-    let java = HostTool::resolve(NativeTool::JavaCompiler)?;
-    let csharp = HostTool::resolve(NativeTool::CSharpCompiler)?;
-    let resolved = ResolvedTools {
-        rust: rust.toolchain()?,
-        python: python.toolchain()?,
-        clang: clang.toolchain()?,
-        typescript: typescript.toolchain()?,
-        go: go.toolchain()?,
-        java: java.toolchain()?,
-        csharp: csharp.toolchain()?,
-    };
-    let first = run_corpus(&resolved)?;
-    let second = run_corpus(&resolved)?;
-    assert_eq!(first, second);
-    assert_eq!(CorpusLanguage::ALL.len(), 7);
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PassObservation {
+    cases: [CaseObservation; PACKAGE_COUNT],
+    summary: MatrixSummary,
+    mismatches: Box<[CorpusMismatch]>,
+}
+
+struct FixtureDir {
+    path: PathBuf,
+}
+
+static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+impl FixtureDir {
+    fn new(label: &str) -> Result<Self, io::Error> {
+        for _attempt in 0..64 {
+            let serial = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "server-operation-corpus-{label}-{}-{serial}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => return Err(source),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique corpus fixture directory",
+        ))
+    }
+
+    fn child(&self, name: &str) -> PathBuf {
+        self.path.join(name)
+    }
+}
+
+impl Drop for FixtureDir {
+    fn drop(&mut self) {
+        let _removed = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn declaration_scope(
+    package: CorpusPackage,
+) -> Result<DeclarationScope<'static>, CorpusAuditError> {
+    let scope = package.scope_spec();
+    let lineage = PackageLineage::new(scope.ecosystem, scope.package)
+        .map_err(CorpusAuditError::ScopeLineage)?;
+    DeclarationScope::new(lineage, scope.path).map_err(CorpusAuditError::ScopeKey)
+}
+
+fn source_identity(source: &[u8]) -> SourceIdentity {
+    SourceIdentity {
+        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+        byte_len: u32::try_from(source.len()).unwrap_or(u32::MAX),
+    }
+}
+
+fn expected_recipe(
+    profile: LanguageProfile,
+    tool: NativeTool,
+    source: SourceIdentity,
+    toolchain: ResolvedToolchain<'_>,
+) -> compiler_vocabulary::CompileRecipeFact {
+    compiler_vocabulary::CompileRecipeFact::derive(
+        profile,
+        Stage::LowerIr,
+        tool,
+        source.identity,
+        toolchain.identity,
+    )
+}
+
+fn validate_matrix(packages: &[CorpusPackage]) -> Result<(), CorpusAuditError> {
+    if packages.len() != PACKAGE_COUNT {
+        return Err(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::PackageCount {
+                observed: packages.len(),
+                expected: PACKAGE_COUNT,
+            },
+        });
+    }
+    let canonical: Vec<CorpusPackage> = corpus_packages().collect();
+    let mut seen = [false; PACKAGE_COUNT];
+    let mut lanes = [0_usize; CorpusLanguage::ALL.len() * PackageShape::ALL.len()];
+    for (position, package) in packages.iter().copied().enumerate() {
+        let raw = usize::from(package.case_id.raw());
+        if raw >= PACKAGE_COUNT || package.ordinal != raw {
+            return Err(CorpusAuditError::Invariant {
+                key: Some(case_key(package)),
+                cause: CorpusInvariant::CaseIdentity {
+                    ordinal: package.ordinal,
+                    observed: package.case_id,
+                },
+            });
+        }
+        if seen[raw] {
+            return Err(CorpusAuditError::Invariant {
+                key: Some(case_key(package)),
+                cause: CorpusInvariant::DuplicateCase,
+            });
+        }
+        seen[raw] = true;
+        lanes[lane_index(package)] += 1;
+        if canonical.get(position).copied() != Some(package) {
+            return Err(CorpusAuditError::Invariant {
+                key: Some(case_key(package)),
+                cause: CorpusInvariant::CaseIdentity {
+                    ordinal: position,
+                    observed: package.case_id,
+                },
+            });
+        }
+    }
+    if seen.iter().any(|present| !present) {
+        return Err(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::MissingCase,
+        });
+    }
+    for language in CorpusLanguage::ALL {
+        for shape in PackageShape::ALL {
+            let package = CorpusPackage {
+                ordinal: 0,
+                language,
+                shape,
+                case_id: CaseId(0),
+            };
+            let observed = lanes[lane_index(package)];
+            if observed != multilingual_corpus::CASES_PER_SHAPE {
+                return Err(CorpusAuditError::Invariant {
+                    key: None,
+                    cause: CorpusInvariant::LaneCount {
+                        language,
+                        shape,
+                        observed,
+                        expected: multilingual_corpus::CASES_PER_SHAPE,
+                    },
+                });
+            }
+        }
+    }
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CorpusRecord {
-    source: [u8; 32],
-    recipe: [u8; 32],
-    fragment: [u8; 32],
-    language: Language,
-    tool: NativeTool,
-}
-
-type FragmentDigest = heart_identity::ArtifactId<IrFragmentEncoding, IrFragmentDomain>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CorpusRun {
-    digest: FragmentDigest,
-}
-
-fn run_corpus(resolved: &ResolvedTools<'_>) -> Result<CorpusRun, CorpusCompileError> {
-    let mut digest = ArtifactHasher::<IrFragmentEncoding, IrFragmentDomain>::new();
-    let mut previous: Option<CorpusRecord> = None;
-    let mut observed = 0;
-    for package in corpus_packages() {
-        let record = run_package(package, resolved)?;
-        assert_eq!(record.language, language(package.language));
-        assert_eq!(record.tool, native_tool(package.language));
-        if let Some(previous) = previous {
-            assert_ne!(record.source, previous.source);
-            assert_ne!(record.recipe, previous.recipe);
-            assert_ne!(record.fragment, previous.fragment);
-        }
-        digest.write_chunk(&record.source);
-        digest.write_chunk(&record.recipe);
-        digest.write_chunk(&record.fragment);
-        previous = Some(record);
-        observed += 1;
+fn ordered_packages(packages: &[CorpusPackage], pass: Pass) -> Vec<CorpusPackage> {
+    let mut ordered = packages.to_vec();
+    match pass {
+        Pass::Original => {}
+        Pass::Reverse => ordered.reverse(),
+        Pass::FixedShuffle => ordered.sort_by_key(|package| {
+            (shuffle_key(package.case_id.raw()), package.case_id)
+        }),
     }
-    assert_eq!(observed, PACKAGE_COUNT);
-    Ok(CorpusRun {
-        digest: digest.finalize(),
-    })
+    ordered
 }
 
-fn run_package(
-    package: CorpusPackage,
+/// A bijective affine permutation over the complete 210-row domain. The
+/// multiplier is coprime to 210, so this cannot silently collapse rows or
+/// leave the input in ordinal order as an overflowing u16 arithmetic trick
+/// would.
+const fn shuffle_key(raw: u16) -> u16 {
+    ((u32::from(raw) * 137 + 17) % PACKAGE_COUNT as u32) as u16
+}
+
+const _: () = {
+    assert!(shuffle_key(0) == 17);
+    assert!(shuffle_key(209) == 0);
+    assert!(shuffle_key(0) != 0);
+    assert!(shuffle_key(1) != 1);
+    // `0` sorts before `1`, unlike reverse order; `2` sorts before `1`,
+    // unlike canonical order. Together these witnesses prove the pass is a
+    // distinct permutation rather than either control ordering.
+    assert!(shuffle_key(0) < shuffle_key(1));
+    assert!(shuffle_key(1) > shuffle_key(2));
+};
+
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "the audit retains exact typed source, authority, publication, and mismatch facts"
+)]
+fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
+-> Result<(), CorpusAuditError> {
+    let packages: Vec<CorpusPackage> = corpus_packages().collect();
+    validate_matrix(&packages)?;
+    let hosts = HostTools::resolve();
+    let resolved = ResolvedTools::from_hosts(&hosts);
+    let first_key = packages
+        .first()
+        .copied()
+        .map(case_key)
+        .ok_or(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::MissingCase,
+        })?;
+    let authorities = AuthorityFactory::new(&hosts).map_err(|cause| {
+        CorpusAuditError::AuthoritySetup {
+            key: first_key,
+            cause,
+        }
+    })?;
+    let mut original = run_pass(
+        &packages,
+        Pass::Original,
+        &hosts,
+        &resolved,
+        &authorities,
+    )?;
+    let reverse = run_pass(
+        &packages,
+        Pass::Reverse,
+        &hosts,
+        &resolved,
+        &authorities,
+    )?;
+    let shuffle = run_pass(
+        &packages,
+        Pass::FixedShuffle,
+        &hosts,
+        &resolved,
+        &authorities,
+    )?;
+
+    let mut mismatches = original.mismatches.iter().copied().collect::<Vec<_>>();
+    mismatches.extend(reverse.mismatches.iter().copied());
+    mismatches.extend(shuffle.mismatches.iter().copied());
+    compare_passes(
+        &packages,
+        &original,
+        &reverse,
+        Pass::Reverse,
+        &mut original.summary,
+        &mut mismatches,
+    );
+    compare_passes(
+        &packages,
+        &original,
+        &shuffle,
+        Pass::FixedShuffle,
+        &mut original.summary,
+        &mut mismatches,
+    );
+    if let Some(first) = mismatches.first().copied() {
+        return Err(CorpusAuditError::Mismatches {
+            count: mismatches.len(),
+            first: Some(first),
+        });
+    }
+    Ok(())
+}
+
+fn run_pass(
+    packages: &[CorpusPackage],
+    pass: Pass,
+    hosts: &HostTools,
     resolved: &ResolvedTools<'_>,
-) -> Result<CorpusRecord, CorpusCompileError> {
-    let mut source_output = [0xa5; SOURCE_BYTE_LIMIT];
-    let rendered = package.render(&mut source_output)?;
-    let work = NativeWork::create()?;
-    let cancelled = AtomicBool::new(false);
-    let mut diagnostic_output = [0; DIAGNOSTIC_BYTES];
-    let mut fragment_output = [0xa5; FRAGMENT_BYTES];
-    let (profile, toolchain) = selection(package.language, resolved);
-    let result = compile(
-        CompileRequest {
-            profile,
-            stage: Stage::LowerIr,
-            source: rendered.source.as_bytes(),
-            toolchain: ToolchainSelection::ResolvedNative(toolchain),
-            authority: compiler_driver::SemanticAuthorityInput::None,
-            control: CompileControl {
-                deadline: Instant::now() + DEADLINE,
-                cancelled: &cancelled,
-            },
+    authorities: &AuthorityFactory,
+) -> Result<PassObservation, CorpusAuditError> {
+    let ordered = ordered_packages(packages, pass);
+    let mut publisher = PassPublisher::new(pass)?;
+    let mut slots: Vec<Option<CaseObservation>> = vec![None; PACKAGE_COUNT];
+    let mut summary = MatrixSummary::new();
+    let mut mismatches = Vec::new();
+    let mut failure = None;
+    for package in ordered {
+        let result = match run_package(package, hosts, resolved, authorities, &mut publisher) {
+            Ok(result) => result,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        };
+        let raw = usize::from(package.case_id.raw());
+        if raw >= PACKAGE_COUNT {
+            failure = Some(CorpusAuditError::Invariant {
+                key: Some(case_key(package)),
+                cause: CorpusInvariant::CaseIdentity {
+                    ordinal: package.ordinal,
+                    observed: package.case_id,
+                },
+            });
+            break;
+        }
+        if slots[raw].is_some() {
+            failure = Some(CorpusAuditError::Invariant {
+                key: Some(case_key(package)),
+                cause: CorpusInvariant::DuplicateCase,
+            });
+            break;
+        }
+        let lane = summary.lane_mut(package);
+        lane.attempted = lane.attempted.saturating_add(1);
+        match &result.observation {
+            CaseObservation::Output(_) => lane.output = lane.output.saturating_add(1),
+            CaseObservation::LocallyUnavailable { .. } => {
+                lane.unavailable = lane.unavailable.saturating_add(1)
+            }
+            CaseObservation::Terminal { .. } => {}
+        }
+        lane.mismatches = lane
+            .mismatches
+            .saturating_add(u16::try_from(result.mismatches.len()).unwrap_or(u16::MAX));
+        slots[raw] = Some(result.observation);
+        mismatches.extend(result.mismatches.iter().copied());
+    }
+    let shutdown = publisher.finish();
+    if let Some(error) = failure {
+        let _ = shutdown;
+        return Err(error);
+    }
+    shutdown?;
+    if slots.iter().any(Option::is_none) {
+        return Err(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::MissingCase,
+        });
+    }
+    let cases = match slots.into_iter().collect::<Option<Vec<_>>>() {
+        Some(cases) => match cases.try_into() {
+            Ok(cases) => cases,
+            Err(_) => {
+                return Err(CorpusAuditError::Invariant {
+                    key: None,
+                    cause: CorpusInvariant::PackageCount {
+                        observed: PACKAGE_COUNT,
+                        expected: PACKAGE_COUNT,
+                    },
+                });
+            }
         },
-        CompileScratch {
-            diagnostic_output: &mut diagnostic_output,
-            native_work: work.path(),
-        },
-        CompileOutput {
-            fragment_output: &mut fragment_output,
-        },
-    );
-    let source_identity = source_identity(rendered.source.as_bytes(), package.ordinal)?;
-    let tool = native_tool(package.language);
-    let compiled = result.map_err(|failure| CorpusCompileError::Compile {
-        ordinal: package.ordinal,
-        language: profile.language(),
-        tool,
-        source_identity,
-        terminal: terminal_kind(&failure),
-    })?;
-    let record = assert_compiled(
-        &compiled,
-        &rendered,
-        source_identity,
-        toolchain.identity,
-        profile.language(),
-        tool,
-    );
-    work.assert_empty()?;
-    Ok(record)
-}
-
-const fn native_tool(language: CorpusLanguage) -> NativeTool {
-    match language {
-        CorpusLanguage::Rust => NativeTool::Rustc,
-        CorpusLanguage::TypeScript => NativeTool::TypeScriptCompiler,
-        CorpusLanguage::Python => NativeTool::Python,
-        CorpusLanguage::Go => NativeTool::GoCompiler,
-        CorpusLanguage::Java => NativeTool::JavaCompiler,
-        CorpusLanguage::CSharp => NativeTool::CSharpCompiler,
-        CorpusLanguage::Clang => NativeTool::Clang,
-    }
-}
-
-const fn language(corpus_language: CorpusLanguage) -> Language {
-    match corpus_language {
-        CorpusLanguage::Rust => Language::Rust,
-        CorpusLanguage::TypeScript => Language::TypeScript,
-        CorpusLanguage::Python => Language::Python,
-        CorpusLanguage::Go => Language::Go,
-        CorpusLanguage::Java => Language::Java,
-        CorpusLanguage::CSharp => Language::CSharp,
-        CorpusLanguage::Clang => Language::Clang,
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ResolvedTools<'path> {
-    rust: ResolvedToolchain<'path>,
-    python: ResolvedToolchain<'path>,
-    clang: ResolvedToolchain<'path>,
-    typescript: ResolvedToolchain<'path>,
-    go: ResolvedToolchain<'path>,
-    java: ResolvedToolchain<'path>,
-    csharp: ResolvedToolchain<'path>,
-}
-
-const fn selection<'path>(
-    language: CorpusLanguage,
-    resolved: &ResolvedTools<'path>,
-) -> (LanguageProfile, ResolvedToolchain<'path>) {
-    match language {
-        CorpusLanguage::Rust => (LanguageProfile::Rust(RustEdition::Rust2024), resolved.rust),
-        CorpusLanguage::TypeScript => (
-            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-            resolved.typescript,
-        ),
-        CorpusLanguage::Python => (
-            LanguageProfile::Python(PythonVersion::Python314),
-            resolved.python,
-        ),
-        CorpusLanguage::Go => (LanguageProfile::Go(GoVersion::Go125), resolved.go),
-        CorpusLanguage::Java => (LanguageProfile::Java(JavaRelease::Java21), resolved.java),
-        CorpusLanguage::CSharp => (
-            LanguageProfile::CSharp(CSharpVersion::CSharp12),
-            resolved.csharp,
-        ),
-        CorpusLanguage::Clang => (LanguageProfile::C(CStandard::C23), resolved.clang),
-    }
-}
-
-fn assert_compiled(
-    compiled: &CompiledFragment<'_>,
-    expected: &multilingual_corpus::RenderedPackage<'_>,
-    expected_source: SourceIdentity,
-    expected_toolchain: ContentId<ToolchainDomain>,
-    expected_language: Language,
-    expected_tool: NativeTool,
-) -> CorpusRecord {
-    assert_eq!(compiled.source, expected_source);
-    assert_eq!(compiled.recipe.profile.language(), expected_language);
-    assert_eq!(compiled.recipe.stage, Stage::LowerIr);
-    assert_eq!(compiled.recipe.tool, expected_tool);
-    assert_eq!(compiled.recipe.toolchain, expected_toolchain);
-    assert!(
-        compiled
-            .fragment
-            .entities()
-            .map(|entity| (entity.kind, entity.name.raw))
-            .eq([(expected.expected_kind, 0)])
-    );
-    assert_eq!(
-        compiled.fragment.atoms().next().map(|atom| atom.bytes),
-        Some(expected.expected_symbol.as_bytes())
-    );
-    assert!(
-        compiled
-            .fragment
-            .type_nodes()
-            .eq([TypeNode::Primitive(expected.expected_type)])
-    );
-    let mut hasher = ArtifactHasher::<IrFragmentEncoding, IrFragmentDomain>::new();
-    hasher.write_chunk(compiled.fragment.as_ref());
-    CorpusRecord {
-        source: *compiled.source.identity.as_ref(),
-        recipe: *compiled.recipe.identity.as_ref(),
-        fragment: *hasher.finalize().as_ref(),
-        language: compiled.recipe.profile.language(),
-        tool: compiled.recipe.tool,
-    }
-}
-
-fn source_identity(source: &[u8], ordinal: usize) -> Result<SourceIdentity, CorpusCompileError> {
-    let observed = source.len();
-    let byte_len = u32::try_from(observed).map_err(|source| CorpusCompileError::SourceLength {
-        ordinal,
-        observed,
-        source,
-    })?;
-    Ok(SourceIdentity {
-        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
-        byte_len,
+        None => {
+            return Err(CorpusAuditError::Invariant {
+                key: None,
+                cause: CorpusInvariant::MissingCase,
+            });
+        }
+    };
+    Ok(PassObservation {
+        cases,
+        summary,
+        mismatches: mismatches.into_boxed_slice(),
     })
-}
-
-const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTerminalKind {
-    match failure {
-        CompileFailure::SourceLength { .. } => CompileTerminalKind::SourceLength,
-        CompileFailure::UnsupportedStage { .. } => CompileTerminalKind::UnsupportedStage,
-        CompileFailure::ToolchainSelectionMismatch { .. } => {
-            CompileTerminalKind::ToolchainSelectionMismatch
-        }
-        CompileFailure::ToolchainMismatch { .. } => CompileTerminalKind::ToolchainMismatch,
-        CompileFailure::NativeWork { .. } => CompileTerminalKind::NativeWork,
-        CompileFailure::NativeWorkCleanup { .. } => CompileTerminalKind::NativeWorkCleanup,
-        CompileFailure::ToolingUnavailable { .. } => CompileTerminalKind::ToolingUnavailable,
-        CompileFailure::ToolStart { .. } => CompileTerminalKind::ToolStart,
-        CompileFailure::MissingToolInput { .. } => CompileTerminalKind::MissingToolInput,
-        CompileFailure::MissingToolInputCleanup { .. } => {
-            CompileTerminalKind::MissingToolInputCleanup
-        }
-        CompileFailure::MissingToolDiagnostic { .. } => CompileTerminalKind::MissingToolDiagnostic,
-        CompileFailure::MissingToolDiagnosticCleanup { .. } => {
-            CompileTerminalKind::MissingToolDiagnosticCleanup
-        }
-        CompileFailure::ToolInput { .. } => CompileTerminalKind::ToolInput,
-        CompileFailure::ToolInputCleanup { .. } => CompileTerminalKind::ToolInputCleanup,
-        CompileFailure::ToolTerminate { .. } => CompileTerminalKind::ToolTerminate,
-        CompileFailure::ToolWait { .. } => CompileTerminalKind::ToolWait,
-        CompileFailure::ToolWaitCleanup { .. } => CompileTerminalKind::ToolWaitCleanup,
-        CompileFailure::ToolDiagnosticRead { .. } => CompileTerminalKind::ToolDiagnosticRead,
-        CompileFailure::ToolDiagnosticReadCleanup { .. } => {
-            CompileTerminalKind::ToolDiagnosticReadCleanup
-        }
-        CompileFailure::NativeWorkerPanic { .. } => CompileTerminalKind::NativeWorkerPanic,
-        CompileFailure::Cancelled { .. } => CompileTerminalKind::Cancelled,
-        CompileFailure::DeadlineExceeded { .. } => CompileTerminalKind::DeadlineExceeded,
-        CompileFailure::DiagnosticLimit { .. } => CompileTerminalKind::DiagnosticLimit,
-        CompileFailure::NativeRejected { .. } => CompileTerminalKind::NativeRejected,
-        CompileFailure::LoweringUnsupported { .. } => CompileTerminalKind::LoweringUnsupported,
-        CompileFailure::Build { .. } => CompileTerminalKind::Build,
-        CompileFailure::Prepare { .. } => CompileTerminalKind::Prepare,
-        CompileFailure::Write { .. } => CompileTerminalKind::Write,
-        CompileFailure::Validate { .. } => CompileTerminalKind::Validate,
-    }
 }

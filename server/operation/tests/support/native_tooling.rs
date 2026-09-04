@@ -113,6 +113,15 @@ impl HostTool {
             identity_bytes,
         )?)
     }
+
+    /// Returns the exact executable selected by the bounded host resolver.
+    ///
+    /// Corpus authority producers use this only to derive their own typed
+    /// toolchain root.  They never perform an ambient PATH lookup after this
+    /// boundary has been crossed.
+    pub(crate) fn executable(&self) -> &Path {
+        &self.executable
+    }
 }
 
 fn nix_path_executable(tool: NativeTool) -> Result<PathBuf, NativeToolingError> {
