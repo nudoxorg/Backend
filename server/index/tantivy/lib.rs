@@ -12,7 +12,7 @@ use core::str::Utf8Error;
 
 use server_index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError, IndexSnapshotId,
-    LexicalManifest, LexicalSegmentId,
+    LexicalManifest, LexicalOrderKey, LexicalSegmentId,
 };
 use tantivy::{
     Index, IndexReader, TantivyDocument,
@@ -254,12 +254,19 @@ impl TantivyLexical {
                 })?;
         for (segment_position, segment) in manifest.segments.iter().enumerate() {
             for (row_index, row) in segment.rows.iter().copied().enumerate() {
+                let key = LexicalOrderKey::from(row);
                 let shadowed = manifest
                     .segments
                     .iter()
                     .take(segment_position)
-                    .flat_map(|newer| newer.rows)
-                    .any(|newer| newer.term == row.term && newer.document == row.document);
+                    .any(|newer| {
+                        newer
+                            .rows
+                            .binary_search_by(|candidate| {
+                                LexicalOrderKey::from(*candidate).cmp(&key)
+                            })
+                            .is_ok()
+                    });
                 if shadowed || row.is_tombstone() {
                     continue;
                 }
@@ -341,6 +348,12 @@ impl TantivyLexical {
                 source,
             }
         })?;
+        if available_documents == 0 || requested_limit == 0 {
+            return Ok(TantivyTerminal {
+                snapshot: self.snapshot,
+                written: 0,
+            });
+        }
         let matches = searcher
             .search(
                 &query,

@@ -209,6 +209,52 @@ fn manifest_wide_updates_and_compaction_keep_the_same_global_ranking() {
 }
 
 #[test]
+fn caller_owned_dedup_scratch_is_reusable_across_distinct_queries() {
+    let rows = [
+        LexicalRow::new(b"alpha", document(1), LexicalScore::from(4)),
+        LexicalRow::new(b"alpha", document(2), LexicalScore::from(3)),
+        LexicalRow::new(b"beta", document(2), LexicalScore::from(2)),
+        LexicalRow::new(b"beta", document(3), LexicalScore::from(1)),
+    ];
+    let segment = LexicalSegment::new(&rows).expect("ordered reusable-scratch segment");
+    let segments = [segment];
+    let selected = [segment.id];
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("bounded snapshot");
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("complete manifest");
+    let top_k = LexicalTopK::new(2).expect("bounded top-k");
+    let mut scratch = [Some(document(90)), Some(document(91))];
+    let mut output = [placeholder(segment.id); 2];
+
+    let alpha = manifest
+        .execute(
+            LexicalOperation::new(b"alpha"),
+            top_k,
+            &mut scratch,
+            &mut output,
+        )
+        .expect("first query");
+    assert!(matches!(
+        alpha,
+        LexicalTerminal::Complete { hits, .. }
+            if hits.iter().map(|hit| hit.document.entity.raw).eq([1, 2])
+    ));
+
+    let beta = manifest
+        .execute(
+            LexicalOperation::new(b"beta"),
+            top_k,
+            &mut scratch,
+            &mut output,
+        )
+        .expect("second query reusing scratch");
+    assert!(matches!(
+        beta,
+        LexicalTerminal::Complete { hits, .. }
+            if hits.iter().map(|hit| hit.document.entity.raw).eq([2, 3])
+    ));
+}
+
+#[test]
 fn term_change_tombstone_hides_old_membership_and_publishes_new_membership() {
     let old_rows = [LexicalRow::new(
         b"alpha",

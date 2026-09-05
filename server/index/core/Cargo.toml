@@ -17,3 +17,8 @@ thiserror.workspace = true
 
 [lib]
 path = "lib.rs"
+
+[[bench]]
+name = "lexical-manifest"
+path = "benches/lexical_manifest.rs"
+harness = false

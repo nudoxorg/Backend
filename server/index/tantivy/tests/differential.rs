@@ -118,6 +118,47 @@ fn tantivy_projects_only_newest_live_term_memberships() {
 }
 
 #[test]
+fn tantivy_top_k_deduplicates_versions_without_underfilling_or_reordering() {
+    let old_rows = [
+        LexicalRow::new(b"alpha", document(1), LexicalScore::from(9)),
+        LexicalRow::new(b"beta", document(1), LexicalScore::from(8)),
+        LexicalRow::new(b"beta", document(2), LexicalScore::from(7)),
+        LexicalRow::new(b"beta", document(3), LexicalScore::from(6)),
+    ];
+    let update_rows = [
+        LexicalRow::new(b"alpha", document(1), LexicalScore::from(1)),
+        LexicalRow::new(b"gamma", document(4), LexicalScore::from(5)),
+    ];
+    let old = LexicalSegment::new(&old_rows).expect("old duplicate-id segment");
+    let update = LexicalSegment::new(&update_rows).expect("new duplicate-id segment");
+    let selected = [update.id, old.id];
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("snapshot");
+    let segments = [update, old];
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("manifest");
+    let adapter = TantivyLexical::build(manifest).expect("projection");
+
+    let mut output = [None; 3];
+    let terminal = adapter
+        .search(snapshot.id, "alpha OR beta", 3, &mut output)
+        .expect("duplicate-id query");
+    assert_eq!(terminal.written, 3);
+    assert_eq!(
+        output,
+        [
+            Some(TantivyHit {
+                document: document(1),
+            }),
+            Some(TantivyHit {
+                document: document(2),
+            }),
+            Some(TantivyHit {
+                document: document(3),
+            }),
+        ]
+    );
+}
+
+#[test]
 fn a_different_corpus_cannot_claim_the_same_snapshot() {
     let first_rows = [LexicalRow::new(b"rust", document(1), LexicalScore::from(1))];
     let second_rows = [LexicalRow::new(

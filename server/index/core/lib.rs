@@ -408,6 +408,54 @@ impl<'manifest, 'segment> Deref for LexicalManifest<'manifest, 'segment> {
     }
 }
 
+/// One contiguous borrowed lexical match range with its immutable provenance.
+///
+/// The range is internal to manifest execution: its constructor is reached only while walking a
+/// manifest whose selected-segment bound has already been proved.
+#[derive(Clone, Copy)]
+struct MatchedLexicalRange<'bytes> {
+    segment: LexicalSegmentId,
+    rows: &'bytes [LexicalRow<'bytes>],
+}
+
+/// Fixed-capacity directory of borrowed match ranges for one manifest operation.
+///
+/// `len` is incremented only after the corresponding slot is initialized.  All public execution
+/// loops consume [`Self::iter`], so they cannot mix a segment identity with another range's rows.
+struct MatchedLexicalRanges<'bytes> {
+    entries: [Option<MatchedLexicalRange<'bytes>>; MAX_SELECTED_SEGMENTS],
+    len: usize,
+    rows: usize,
+}
+
+impl<'bytes> MatchedLexicalRanges<'bytes> {
+    const fn new() -> Self {
+        Self {
+            entries: [None; MAX_SELECTED_SEGMENTS],
+            len: 0,
+            rows: 0,
+        }
+    }
+
+    fn push(&mut self, range: MatchedLexicalRange<'bytes>) -> Result<(), LexicalQueryError> {
+        let observed = self.len.saturating_add(1);
+        let Some(slot) = self.entries.get_mut(self.len) else {
+            return Err(LexicalQueryError::MatchingRangeCapacity {
+                limit: MAX_SELECTED_SEGMENTS,
+                observed,
+            });
+        };
+        *slot = Some(range);
+        self.len = observed;
+        self.rows = self.rows.saturating_add(range.rows.len());
+        Ok(())
+    }
+
+    fn iter(&self) -> impl Iterator<Item = MatchedLexicalRange<'bytes>> + '_ {
+        self.entries[..self.len].iter().filter_map(|entry| *entry)
+    }
+}
+
 impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
     /// Validates a healthy lexical snapshot manifest before query execution.
     pub fn new(
@@ -553,13 +601,19 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         seen_documents: &mut [Option<EntityDocumentId>],
         output: &'output mut [LexicalSnapshotHit<'segment>],
     ) -> Result<LexicalTerminal<'manifest, 'output, 'segment>, LexicalQueryError> {
-        let matching_rows = self
-            .view
-            .segments
-            .iter()
-            .filter_map(|segment| segment.lookup(operation))
-            .map(<[LexicalRow<'_>]>::len)
-            .sum::<usize>();
+        // Cache each borrowed match range once. Preflight still deliberately checks newest-first
+        // ownership before mutating caller buffers, but no longer repeats every segment's lookup
+        // for every candidate row.
+        let mut matching_ranges = MatchedLexicalRanges::new();
+        for segment in self.view.segments {
+            if let Some(rows) = segment.lookup(operation) {
+                matching_ranges.push(MatchedLexicalRange {
+                    segment: segment.id,
+                    rows,
+                })?;
+            }
+        }
+        let matching_rows = matching_ranges.rows;
         if seen_documents.len() < matching_rows {
             return Err(LexicalQueryError::ScratchCapacity {
                 required: matching_rows,
@@ -568,24 +622,19 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         }
 
         let mut unique_documents = 0_usize;
-        for (segment_position, segment) in self.view.segments.iter().enumerate() {
-            if let Some(rows) = segment.lookup(operation) {
-                for (row_position, row) in rows.iter().enumerate() {
-                    let was_seen = self
-                        .view
-                        .segments
+        for (segment_position, range) in matching_ranges.iter().enumerate() {
+            let rows = range.rows;
+            for (row_position, row) in rows.iter().enumerate() {
+                let was_seen = matching_ranges
+                    .iter()
+                    .take(segment_position)
+                    .flat_map(|previous| previous.rows.iter())
+                    .any(|previous| previous.document == row.document)
+                    || rows[..row_position]
                         .iter()
-                        .take(segment_position)
-                        .filter_map(|previous| previous.lookup(operation))
-                        .flat_map(|previous_rows| previous_rows.iter())
-                        .any(|previous| previous.document == row.document)
-                        || rows
-                            .iter()
-                            .take(row_position)
-                            .any(|previous| previous.document == row.document);
-                    if !was_seen && !row.is_tombstone() {
-                        unique_documents += 1;
-                    }
+                        .any(|previous| previous.document == row.document);
+                if !was_seen && !row.is_tombstone() {
+                    unique_documents += 1;
                 }
             }
         }
@@ -597,40 +646,39 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
             }));
         }
 
-        let mut emitted_documents = 0_usize;
         let mut hit_count = 0_usize;
-        for segment in self.view.segments {
-            if let Some(rows) = segment.lookup(operation) {
-                for row in rows {
-                    if seen_documents[..emitted_documents].contains(&Some(row.document)) {
-                        continue;
+        for slot in &mut seen_documents[..matching_rows] {
+            *slot = None;
+        }
+        for range in matching_ranges.iter() {
+            let rows = range.rows;
+            for row in rows.iter() {
+                if !remember_document(&mut seen_documents[..matching_rows], row.document)? {
+                    continue;
+                }
+                let Some(stored) = row.score() else {
+                    continue;
+                };
+                let Some(score) = operation.relevance(stored, row.term.len()) else {
+                    return Err(LexicalQueryError::ScoreDiscount {
+                        stored,
+                        prefix_bytes: operation.term.len(),
+                        term_bytes: row.term.len(),
+                    });
+                };
+                let candidate =
+                    LexicalSnapshotHit::new(range.segment, row.term, row.document, score);
+                let position = output[..hit_count]
+                    .iter()
+                    .position(|current| lexical_snapshot_order(&candidate, current).is_lt())
+                    .unwrap_or(hit_count);
+                if position < required {
+                    let new_count = core::cmp::min(hit_count + 1, required);
+                    for destination in (position + 1..new_count).rev() {
+                        output[destination] = output[destination - 1];
                     }
-                    seen_documents[emitted_documents] = Some(row.document);
-                    emitted_documents += 1;
-                    let Some(stored) = row.score() else {
-                        continue;
-                    };
-                    let Some(score) = operation.relevance(stored, row.term.len()) else {
-                        return Err(LexicalQueryError::ScoreDiscount {
-                            stored,
-                            prefix_bytes: operation.term.len(),
-                            term_bytes: row.term.len(),
-                        });
-                    };
-                    let candidate =
-                        LexicalSnapshotHit::new(segment.id, row.term, row.document, score);
-                    let position = output[..hit_count]
-                        .iter()
-                        .position(|current| lexical_snapshot_order(&candidate, current).is_lt())
-                        .unwrap_or(hit_count);
-                    if position < required {
-                        let new_count = core::cmp::min(hit_count + 1, required);
-                        for destination in (position + 1..new_count).rev() {
-                            output[destination] = output[destination - 1];
-                        }
-                        output[position] = candidate;
-                        hit_count = new_count;
-                    }
+                    output[position] = candidate;
+                    hit_count = new_count;
                 }
             }
         }
@@ -668,6 +716,45 @@ fn lexical_snapshot_order(
         .then_with(|| left.segment.cmp(&right.segment))
 }
 
+fn remember_document(
+    seen_documents: &mut [Option<EntityDocumentId>],
+    document: EntityDocumentId,
+) -> Result<bool, LexicalQueryError> {
+    if seen_documents.is_empty() {
+        return Err(LexicalQueryError::ScratchProbeExhausted { capacity: 0 });
+    }
+    let mut slot = document_hash(document) % seen_documents.len();
+    for _ in 0..seen_documents.len() {
+        match seen_documents[slot] {
+            None => {
+                seen_documents[slot] = Some(document);
+                return Ok(true);
+            }
+            Some(existing) if existing == document => return Ok(false),
+            Some(_) => {
+                slot += 1;
+                if slot == seen_documents.len() {
+                    slot = 0;
+                }
+            }
+        }
+    }
+    Err(LexicalQueryError::ScratchProbeExhausted {
+        capacity: seen_documents.len(),
+    })
+}
+
+fn document_hash(document: EntityDocumentId) -> usize {
+    let bytes: [u8; ENTITY_DOCUMENT_ID_BYTES] = document.into();
+    let mut hash = 2_166_136_261_usize;
+    for byte in bytes {
+        hash = hash
+            .wrapping_mul(16_777_619_usize)
+            .wrapping_add(usize::from(byte));
+    }
+    hash
+}
+
 /// Health provenance for a selected lexical snapshot route.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum LexicalAvailability {
@@ -689,12 +776,29 @@ pub enum LexicalDegradation {
 /// A lexical execution rejection preserving selection or capacity operands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LexicalQueryError {
+    /// Internal borrowed-range directory could not represent a manifest selection already
+    /// admitted by the manifest boundary.
+    MatchingRangeCapacity {
+        /// Fixed internal range-directory capacity.
+        limit: usize,
+        /// Number of matching ranges observed before rejection.
+        observed: usize,
+    },
     /// Caller deduplication scratch could not retain every matching document identity.
     ScratchCapacity {
         /// Exact required optional-document slots.
         required: usize,
         /// Supplied optional-document slots.
         available: usize,
+    },
+    /// The caller-owned deduplication table had no empty slot after one complete bounded probe.
+    ///
+    /// With a cleared scratch prefix at least as long as the matching-row count this is
+    /// unreachable for valid manifest rows, but it remains typed rather than relying on an
+    /// unbounded probe or a panic should that invariant be violated.
+    ScratchProbeExhausted {
+        /// Number of caller-owned scratch slots probed.
+        capacity: usize,
     },
     /// Caller output could not retain the complete requested ranking.
     OutputCapacity(LexicalOutputError),
