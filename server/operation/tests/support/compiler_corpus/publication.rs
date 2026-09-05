@@ -3,10 +3,8 @@
 //! Publication is kept as a separate invariant from native authority setup
 //! and semantic comparison so a missing reader plane remains typed.
 
+use super::observation::{observe_reopened_semantic, range_manifest_digest_from_manifest};
 use super::*;
-use super::observation::{
-    observe_reopened_semantic, range_manifest_digest_from_manifest,
-};
 
 pub(super) struct PassPublisher {
     _root: FixtureDir,
@@ -40,11 +38,18 @@ impl PassPublisher {
         })
     }
 
-    pub(super) fn publish(
+    /// Publishes one compiled batch, then lends the validated reopened
+    /// fragment and complete semantic reader to a caller-owned observer while
+    /// their scratch leases are alive.  Returning only observations from the
+    /// callback keeps this helper free of self-referential reader values.
+    pub(super) fn publish_with_reader<T>(
         &mut self,
         compiled: &compiler_driver::CompiledSemantic<'_>,
-        primary: Option<EntityId>,
-    ) -> Result<ReopenedObservation, CorpusAuditError> {
+        inspect: impl FnOnce(
+            &compiler_publication::OpenedFragment<'_>,
+            &compiler_ir::SemanticImageView<'_>,
+        ) -> Result<T, CorpusAuditError>,
+    ) -> Result<T, CorpusAuditError> {
         let mut manifest = vec![0_u8; MANIFEST_BYTES];
         let mut manifest_facts = [None; 1];
         let mut ordinals = [0_usize; 1];
@@ -106,34 +111,41 @@ impl PassPublisher {
             cause: CorpusInvariant::MissingPublishedFragment,
         })?;
         let mut artifacts = opened.artifacts();
-        let artifact = artifacts
-            .next()
-            .ok_or(CorpusAuditError::Invariant {
-                key: None,
-                cause: CorpusInvariant::MissingPublishedFragment,
-            })??;
+        let artifact = artifacts.next().ok_or(CorpusAuditError::Invariant {
+            key: None,
+            cause: CorpusInvariant::MissingPublishedFragment,
+        })??;
         if artifacts.next().is_some() {
             return Err(CorpusAuditError::Invariant {
                 key: None,
                 cause: CorpusInvariant::ExtraPublishedFragment,
             });
         }
-        let ranges = FragmentRangeManifest::from_view(&artifact.fragment.view)?;
-        let semantic = observe_reopened_semantic(&artifact.semantic_image, primary);
-        let reopened = ReopenedObservation {
-            fragment: digest_bytes(artifact.fragment.view.as_ref()),
-            source: artifact.fragment.facts.source,
-            recipe: artifact.fragment.facts.recipe,
-            ranges: range_manifest_digest_from_manifest(ranges),
-            census: artifact.fragment.view.discover().census(),
-            semantic_data: PlaneObservation::Captured,
-            occurrences: PlaneObservation::Captured,
-            type_facts: PlaneObservation::Captured,
-            documentation: PlaneObservation::Captured,
-            extensions: PlaneObservation::Captured,
-            semantic,
-        };
-        Ok(reopened)
+        inspect(&artifact.fragment, &artifact.semantic_image)
+    }
+
+    pub(super) fn publish(
+        &mut self,
+        compiled: &compiler_driver::CompiledSemantic<'_>,
+        primary: Option<EntityId>,
+    ) -> Result<ReopenedObservation, CorpusAuditError> {
+        self.publish_with_reader(compiled, |fragment, semantic_image| {
+            let ranges = FragmentRangeManifest::from_view(&fragment.view)?;
+            let semantic = observe_reopened_semantic(semantic_image, primary);
+            Ok(ReopenedObservation {
+                fragment: digest_bytes(fragment.view.as_ref()),
+                source: fragment.facts.source,
+                recipe: fragment.facts.recipe,
+                ranges: range_manifest_digest_from_manifest(ranges),
+                census: fragment.view.discover().census(),
+                semantic_data: PlaneObservation::Captured,
+                occurrences: PlaneObservation::Captured,
+                type_facts: PlaneObservation::Captured,
+                documentation: PlaneObservation::Captured,
+                extensions: PlaneObservation::Captured,
+                semantic,
+            })
+        })
     }
 
     pub(super) fn finish(mut self) -> Result<(), CorpusAuditError> {

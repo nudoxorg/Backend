@@ -180,17 +180,15 @@ impl<'path> ResolvedTools<'path> {
     }
 }
 
-fn resolved<'path>(slot: &'path ToolSlot) -> Result<ResolvedToolchain<'path>, NativeUnavailableCause> {
+fn resolved<'path>(
+    slot: &'path ToolSlot,
+) -> Result<ResolvedToolchain<'path>, NativeUnavailableCause> {
     let host = slot.host().ok_or(slot.cause)?;
-    host
-        .toolchain()
+    host.toolchain()
         .map_err(|error| native_unavailable(slot.tool, &error))
 }
 
-fn native_unavailable(
-    requested: NativeTool,
-    error: &NativeToolingError,
-) -> NativeUnavailableCause {
+fn native_unavailable(requested: NativeTool, error: &NativeToolingError) -> NativeUnavailableCause {
     let (tool, kind) = match error {
         NativeToolingError::MissingPath { tool }
         | NativeToolingError::MissingTool { tool }
@@ -203,16 +201,20 @@ fn native_unavailable(
                 NativeToolingError::MissingTool { .. } => NativeUnavailableKind::MissingTool,
                 NativeToolingError::Canonicalize { .. } => NativeUnavailableKind::Canonicalize,
                 NativeToolingError::ProbeVersion { .. } => NativeUnavailableKind::ProbeVersion,
-                NativeToolingError::VersionRejected { .. } => NativeUnavailableKind::VersionRejected,
+                NativeToolingError::VersionRejected { .. } => {
+                    NativeUnavailableKind::VersionRejected
+                }
                 NativeToolingError::EmptyVersion { .. } => NativeUnavailableKind::EmptyVersion,
                 NativeToolingError::Resolve(_) => NativeUnavailableKind::Resolve,
-                NativeToolingError::CreateWork(_) | NativeToolingError::InspectWork(_)
+                NativeToolingError::CreateWork(_)
+                | NativeToolingError::InspectWork(_)
                 | NativeToolingError::WorkNotEmpty => NativeUnavailableKind::Resolve,
             };
             (*tool, kind)
         }
         NativeToolingError::Resolve(_) => (requested, NativeUnavailableKind::Resolve),
-        NativeToolingError::CreateWork(_) | NativeToolingError::InspectWork(_)
+        NativeToolingError::CreateWork(_)
+        | NativeToolingError::InspectWork(_)
         | NativeToolingError::WorkNotEmpty => (requested, NativeUnavailableKind::Resolve),
     };
     NativeUnavailableCause { tool, kind }
@@ -320,9 +322,7 @@ impl AuthorityFactory {
                 }
                 Err(error) => return Err(error),
             },
-            None => ProviderSlot::Unavailable(AuthorityUnavailableCause::Native(
-                hosts.java.cause,
-            )),
+            None => ProviderSlot::Unavailable(AuthorityUnavailableCause::Native(hosts.java.cause)),
         };
         let csharp = match hosts.csharp.host() {
             Some(host) => match CSharpAuthorityProvider::new(host) {
@@ -332,9 +332,9 @@ impl AuthorityFactory {
                 }
                 Err(error) => return Err(error),
             },
-            None => ProviderSlot::Unavailable(AuthorityUnavailableCause::Native(
-                hosts.csharp.cause,
-            )),
+            None => {
+                ProviderSlot::Unavailable(AuthorityUnavailableCause::Native(hosts.csharp.cause))
+            }
         };
         Ok(Self { java, csharp })
     }
@@ -379,17 +379,18 @@ impl JavaAuthorityProvider {
 
 impl CSharpAuthorityProvider {
     fn new(host: &HostTool) -> Result<Self, AuthorityBuildError> {
-        let root = FixtureDir::new("csharp-provider").map_err(|source| AuthorityBuildError::Io {
-            phase: AuditIoPhase::Fixture,
-            source,
-        })?;
+        let root =
+            FixtureDir::new("csharp-provider").map_err(|source| AuthorityBuildError::Io {
+                phase: AuditIoPhase::Fixture,
+                source,
+            })?;
         let output = root.child("publish");
         fs::create_dir(&output).map_err(|source| AuthorityBuildError::Io {
             phase: AuditIoPhase::CSharpPublish,
             source,
         })?;
-        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../compiler/languages/csharp/helper");
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compiler/languages/csharp/helper");
         let mut command = Command::new(host.executable());
         command
             .args([
@@ -608,9 +609,7 @@ pub(super) fn go_fixture_for_source(
 }
 
 fn run_bounded_command(mut command: Command, deadline: Duration) -> Result<(), CSharpHelperError> {
-    command
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(CSharpHelperError::Spawn)?;
     let started = Instant::now();
     let status = loop {

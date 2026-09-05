@@ -240,20 +240,55 @@ pub(super) fn digest_typed<T: Hash>(value: &T) -> Digest {
     hasher.digest()
 }
 
+pub(super) fn digest_entity_observation(value: Option<EntityObservation>) -> Digest {
+    let mut hasher = StableHasher::default();
+    hash_entity_observation(value, &mut hasher);
+    hasher.digest()
+}
+
+pub(super) fn digest_fact_availability(value: FactAvailability) -> Digest {
+    let mut hasher = StableHasher::default();
+    hash_fact_availability(value, &mut hasher);
+    hasher.digest()
+}
+
+pub(super) fn digest_image_provenance(value: ImageProvenance) -> Digest {
+    let mut hasher = StableHasher::default();
+    hash_image_provenance(value, &mut hasher);
+    hasher.digest()
+}
+
+pub(super) fn digest_semantic_census(value: Option<compiler_ir::SemanticImageCensus>) -> Digest {
+    let mut hasher = StableHasher::default();
+    match value {
+        Some(value) => {
+            1_u8.hash(&mut hasher);
+            hash_semantic_census(value, &mut hasher);
+        }
+        None => 0_u8.hash(&mut hasher),
+    }
+    hasher.digest()
+}
+
+pub(super) fn digest_type_shape(value: ObservedTypeShape) -> Digest {
+    let mut hasher = StableHasher::default();
+    hash_type_shape(value, &mut hasher);
+    hasher.digest()
+}
+
 pub(super) fn digest_bytes(bytes: &[u8]) -> Digest {
     let mut hasher = StableHasher::default();
     hasher.write(bytes);
     hasher.digest()
 }
 
-
 pub(super) fn range_manifest_digest(view: &FragmentView<'_>) -> Result<Digest, CorpusAuditError> {
-    Ok(range_manifest_digest_from_manifest(FragmentRangeManifest::from_view(view)?))
+    Ok(range_manifest_digest_from_manifest(
+        FragmentRangeManifest::from_view(view)?,
+    ))
 }
 
-pub(super) fn range_manifest_digest_from_manifest(
-    ranges: FragmentRangeManifest,
-) -> Digest {
+pub(super) fn range_manifest_digest_from_manifest(ranges: FragmentRangeManifest) -> Digest {
     let mut hasher = StableHasher::default();
     ranges.fragment.hash(&mut hasher);
     ranges.fragment_length.hash(&mut hasher);
@@ -329,9 +364,7 @@ fn type_shape(ir: &Ir, ty: Option<TypeId>) -> ObservedTypeShape {
     match expression {
         TypeExpr::Unknown(_) => ObservedTypeShape::Unknown,
         TypeExpr::Computed(_) => ObservedTypeShape::Computed,
-        TypeExpr::Concrete(ConcreteType::Builtin(builtin)) => {
-            ObservedTypeShape::Primitive(builtin)
-        }
+        TypeExpr::Concrete(ConcreteType::Builtin(builtin)) => ObservedTypeShape::Primitive(builtin),
         TypeExpr::Concrete(ConcreteType::Literal(_)) => ObservedTypeShape::Literal,
         TypeExpr::Concrete(ConcreteType::Function { .. }) => ObservedTypeShape::Callable,
         TypeExpr::Concrete(ConcreteType::Nominal(_))
@@ -366,11 +399,7 @@ fn type_shape(ir: &Ir, ty: Option<TypeId>) -> ObservedTypeShape {
     }
 }
 
-fn generic_parameters(
-    ir: &Ir,
-    language: CorpusLanguage,
-    entity: EntityId,
-) -> CountObservation {
+fn generic_parameters(ir: &Ir, language: CorpusLanguage, entity: EntityId) -> CountObservation {
     let extensions = ir.language_extensions();
     let count = match language {
         CorpusLanguage::TypeScript => extensions
@@ -443,10 +472,7 @@ fn semantic_digest(ir: &Ir) -> Digest {
     hasher.digest()
 }
 
-fn hash_semantic_image_facts(
-    value: compiler_ir::SemanticImageFacts,
-    hasher: &mut StableHasher,
-) {
+fn hash_semantic_image_facts(value: compiler_ir::SemanticImageFacts, hasher: &mut StableHasher) {
     value.authority.hash(hasher);
     match value.provenance {
         ImageProvenance::Unavailable => 0_u8.hash(hasher),
@@ -546,9 +572,7 @@ fn semantic_entities_digest<R: compiler_ir::SemanticReader + ?Sized>(reader: &R)
     hasher.digest()
 }
 
-pub(super) fn digest_source_span_rows(
-    mut spans: Vec<(Vec<u8>, u32, u32)>,
-) -> Digest {
+pub(super) fn digest_source_span_rows(mut spans: Vec<(Vec<u8>, u32, u32)>) -> Digest {
     spans.sort();
     let mut hasher = StableHasher::default();
     spans.len().hash(&mut hasher);
@@ -711,7 +735,8 @@ fn hash_object_members<R: compiler_ir::SemanticReader + ?Sized>(
                     compiler_ir::ObjectMember::Index { parameter, .. } => {
                         hash_atom_reference(reader, parameter, hasher);
                     }
-                    compiler_ir::ObjectMember::Call(_) | compiler_ir::ObjectMember::Construct(_) => {}
+                    compiler_ir::ObjectMember::Call(_)
+                    | compiler_ir::ObjectMember::Construct(_) => {}
                 }
             }
         }
@@ -793,7 +818,11 @@ fn hash_type_references<R: compiler_ir::SemanticReader + ?Sized>(
             | ConcreteType::Intersection(arguments)
             | ConcreteType::ImplTrait(arguments)
             | ConcreteType::DynTrait(arguments) => hash_type_list(reader, arguments, hasher),
-            ConcreteType::Tuple(elements) | ConcreteType::Function { parameters: elements, .. } => {
+            ConcreteType::Tuple(elements)
+            | ConcreteType::Function {
+                parameters: elements,
+                ..
+            } => {
                 hash_tuple_elements(reader, elements, hasher);
                 if let ConcreteType::Function { results, .. } = concrete {
                     hash_tuple_elements(reader, results, hasher);
@@ -997,7 +1026,9 @@ fn observe_reader<R: compiler_ir::SemanticReader + ?Sized>(
     identity: Option<compiler_ir::SemanticImageIdentity>,
     primary: Option<EntityId>,
 ) -> SemanticObservation {
-    let census = compiler_ir::SemanticImageDiscovery::new(reader).census().ok();
+    let census = compiler_ir::SemanticImageDiscovery::new(reader)
+        .census()
+        .ok();
     let status = if census.is_some() {
         SemanticReaderStatus::Captured
     } else {
@@ -1034,10 +1065,7 @@ fn owned_image_identity(ir: &Ir) -> Option<compiler_ir::SemanticImageIdentity> {
     (written == length).then(|| compiler_ir::SemanticImageIdentity::from_encoded_bytes(&bytes))
 }
 
-pub(super) fn observe_owned_semantic(
-    ir: &Ir,
-    primary: Option<EntityId>,
-) -> SemanticObservation {
+pub(super) fn observe_owned_semantic(ir: &Ir, primary: Option<EntityId>) -> SemanticObservation {
     observe_reader(ir, owned_image_identity(ir), primary)
 }
 
@@ -1047,9 +1075,152 @@ pub(super) fn observe_reopened_semantic(
 ) -> SemanticObservation {
     observe_reader(
         image,
-        Some(compiler_ir::SemanticImageIdentity::from_encoded_bytes(image.as_ref())),
+        Some(compiler_ir::SemanticImageIdentity::from_encoded_bytes(
+            image.as_ref(),
+        )),
         primary,
     )
+}
+
+/// Finds one source-bound declaration in a complete owned or reopened reader.
+///
+/// Name-only lookup is insufficient for grouped fixtures: Java overloads and
+/// wrapper classes can share a spelling.  The source-name span is therefore a
+/// mandatory containment key, while the returned multiplicity lets the caller
+/// report duplicate or missing authority rows instead of picking the first
+/// match.
+pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
+    reader: &R,
+    expected_kind: ItemKind,
+    expected_name: &[u8],
+    expected_name_start: u32,
+    expected_name_end: u32,
+    expected_file: &[u8],
+) -> (u16, Option<EntityObservation>, u32, u32) {
+    let candidates: Vec<_> = reader
+        .canonical_entities()
+        .filter(|entity| {
+            entity.kind == expected_kind
+                && reader
+                    .atom(entity.name)
+                    .is_some_and(|name| name == expected_name)
+                && entity.source.is_some_and(|span| {
+                    span.start() <= expected_name_start
+                        && span.end() >= expected_name_end
+                        && reader.atom(span.file()) == Some(expected_file)
+                })
+        })
+        .collect();
+    let matches = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
+    let Some(entity) = (candidates.len() == 1).then(|| candidates[0]) else {
+        return (matches, None, 0, 0);
+    };
+    let members = reader.entity_list(entity.members).map_or(0, |members| {
+        u32::try_from(members.len()).unwrap_or(u32::MAX)
+    });
+    let member_order = reader
+        .entity_list(entity.members)
+        .map_or([0_u8; 32], |members| {
+            member_order_digest_reader(reader, members)
+        });
+    let first_member = reader
+        .entity_list(entity.members)
+        .and_then(|mut members| members.next())
+        .and_then(|id| reader.entity(id))
+        .and_then(|member| reader.atom(member.name))
+        .map(digest_bytes);
+    let occurrences = reader
+        .link_occurrences()
+        .filter(|(_, occurrence)| {
+            reader
+                .link(occurrence.link)
+                .is_some_and(|link| link.from == entity.id)
+        })
+        .count();
+    let links = reader.links_from(entity.id).len();
+    let observed = EntityObservation {
+        id: entity.id,
+        kind: entity.kind,
+        name: digest_bytes(reader.atom(entity.name).unwrap_or_default()),
+        visibility: entity.visibility,
+        parent: entity.parent,
+        authority: Some(entity.authority),
+        members,
+        member_order,
+        first_member,
+        type_shape: type_shape_reader(reader, entity.semantic_type),
+        source: entity.source,
+        version: version_observation(entity.version),
+    };
+    (
+        matches,
+        Some(observed),
+        u32::try_from(links).unwrap_or(u32::MAX),
+        u32::try_from(occurrences).unwrap_or(u32::MAX),
+    )
+}
+
+fn member_order_digest_reader<R: SemanticReader + ?Sized>(
+    reader: &R,
+    members: R::Entities<'_>,
+) -> Digest {
+    let mut hasher = StableHasher::default();
+    for member_id in members {
+        member_id.raw.hash(&mut hasher);
+        if let Some(member) = reader.entity(member_id) {
+            member.kind.hash(&mut hasher);
+            reader
+                .atom(member.name)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+        }
+    }
+    hasher.digest()
+}
+
+fn type_shape_reader<R: SemanticReader + ?Sized>(
+    reader: &R,
+    ty: Option<TypeId>,
+) -> ObservedTypeShape {
+    let Some(expression) = ty.and_then(|id| reader.ty(id)) else {
+        return ObservedTypeShape::Absent;
+    };
+    match expression {
+        TypeExpr::Unknown(_) => ObservedTypeShape::Unknown,
+        TypeExpr::Computed(_) => ObservedTypeShape::Computed,
+        TypeExpr::Concrete(ConcreteType::Builtin(builtin)) => ObservedTypeShape::Primitive(builtin),
+        TypeExpr::Concrete(ConcreteType::Literal(_)) => ObservedTypeShape::Literal,
+        TypeExpr::Concrete(ConcreteType::Function { .. }) => ObservedTypeShape::Callable,
+        TypeExpr::Concrete(ConcreteType::Nominal(_))
+        | TypeExpr::Concrete(ConcreteType::External(_)) => ObservedTypeShape::Nominal,
+        TypeExpr::Concrete(ConcreteType::Reference { .. }) => ObservedTypeShape::Reference,
+        TypeExpr::Concrete(ConcreteType::Parameter(_))
+        | TypeExpr::Concrete(ConcreteType::Applied { .. })
+        | TypeExpr::Concrete(ConcreteType::ImplTrait(_))
+        | TypeExpr::Concrete(ConcreteType::DynTrait(_)) => ObservedTypeShape::Generic,
+        TypeExpr::Concrete(
+            ConcreteType::Tuple(_)
+            | ConcreteType::Object(_)
+            | ConcreteType::CxxReference { .. }
+            | ConcreteType::CPointer { .. }
+            | ConcreteType::CxxMemberPointer { .. }
+            | ConcreteType::CQualified { .. }
+            | ConcreteType::CBlockPointer { .. }
+            | ConcreteType::NativeCharacter { .. }
+            | ConcreteType::Pointer { .. }
+            | ConcreteType::Slice(_)
+            | ConcreteType::Array { .. }
+            | ConcreteType::Optional(_)
+            | ConcreteType::Union(_)
+            | ConcreteType::Intersection(_)
+            | ConcreteType::Wildcard(_)
+            | ConcreteType::Annotated { .. }
+            | ConcreteType::Inferred(_)
+            | ConcreteType::QualifiedPath { .. }
+            | ConcreteType::Map { .. }
+            | ConcreteType::Channel { .. },
+        ) => ObservedTypeShape::Structural,
+    }
 }
 
 /// Borrows one complete authority row through the immutable IR columns. A
@@ -1086,7 +1257,9 @@ pub(super) fn observe_owned(
     let expected_kind = item_kind(rendered.expected.primary_kind);
     let candidates: Vec<_> = ir
         .items()
-        .filter(|item| item.kind() == expected_kind && item.name() == rendered.expected_symbol.as_bytes())
+        .filter(|item| {
+            item.kind() == expected_kind && item.name() == rendered.expected_symbol.as_bytes()
+        })
         .collect();
     let primary_matches = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
     let primary = (candidates.len() == 1).then(|| {
@@ -1179,7 +1352,8 @@ pub(super) fn observe_compact(
         primary_name: primary
             .and_then(|entity| fragment.atoms().nth(entity.name.index()))
             .map_or([0_u8; 32], |atom| digest_bytes(atom.bytes)),
-        primary_type: primary.and_then(|entity| fragment.type_nodes().nth(entity.semantic_type.index())),
+        primary_type: primary
+            .and_then(|entity| fragment.type_nodes().nth(entity.semantic_type.index())),
         semantic_data: if discovery.semantic_data().is_some() {
             PlaneObservation::Captured
         } else {
@@ -1200,7 +1374,10 @@ pub(super) fn observe_compact(
         } else {
             PlaneObservation::Unavailable
         },
-        extensions: if discovery.language_extensions().is_ok_and(|value| value.is_some()) {
+        extensions: if discovery
+            .language_extensions()
+            .is_ok_and(|value| value.is_some())
+        {
             PlaneObservation::Captured
         } else {
             PlaneObservation::Unavailable
@@ -1222,8 +1399,16 @@ pub(super) fn render_neutral(ir: &Ir, primary: Option<EntityObservation>) -> Ren
     RenderVerdict::Rendered(digest_bytes(text.as_bytes()))
 }
 
-
-
+/// Canonical language-neutral signature rendering for any complete semantic
+/// reader, including a cold reopened image.  The grouped audit uses this
+/// alongside the owned `Ir` renderer so a publication reader cannot silently
+/// lose a declaration's type spelling.
+pub(super) fn render_neutral_reader<R: SemanticReader + ?Sized>(
+    reader: &R,
+    primary: Option<EntityId>,
+) -> RenderVerdict {
+    canonical_type_render(reader, primary)
+}
 
 fn hash_count_observation(value: CountObservation, hasher: &mut StableHasher) {
     match value {
@@ -1349,18 +1534,12 @@ fn hash_census(value: compiler_ir::SemanticCensus, hasher: &mut StableHasher) {
     value.extension_pool_section.hash(hasher);
 }
 
-fn hash_availability_census(
-    value: compiler_ir::AvailabilityCensus,
-    hasher: &mut StableHasher,
-) {
+fn hash_availability_census(value: compiler_ir::AvailabilityCensus, hasher: &mut StableHasher) {
     value.captured.hash(hasher);
     value.unavailable.hash(hasher);
 }
 
-fn hash_semantic_census(
-    value: compiler_ir::SemanticImageCensus,
-    hasher: &mut StableHasher,
-) {
+fn hash_semantic_census(value: compiler_ir::SemanticImageCensus, hasher: &mut StableHasher) {
     hash_semantic_image_facts(value.image, hasher);
     value.entities.hash(hasher);
     value.root_entities.hash(hasher);
@@ -1385,7 +1564,10 @@ fn hash_semantic_census(
     authority.parentage.unavailable.hash(hasher);
     authority.parentage.roots.hash(hasher);
     authority.parentage.bound.hash(hasher);
-    authority.parentage.unrepresented_authority_owner.hash(hasher);
+    authority
+        .parentage
+        .unrepresented_authority_owner
+        .hash(hasher);
     hash_availability_census(authority.source, hasher);
     hash_availability_census(authority.source_file, hasher);
     hash_availability_census(authority.members, hasher);

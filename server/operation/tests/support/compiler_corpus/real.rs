@@ -7,14 +7,13 @@
 //! package is never counted as verified merely because a source tree or a
 //! native executable happened to be present.
 
-use super::*;
 use super::authority::{go_fixture_for_source, rust_fixture_for_source};
 use super::comparison::RealAuditField;
 use super::execution::{compile_with_authority, terminal_kind};
 use super::observation::{
-    digest_recipe, digest_semantic, digest_source, digest_typed, digest_u64,
-    observe_owned_semantic,
+    digest_recipe, digest_semantic, digest_source, digest_typed, digest_u64, observe_owned_semantic,
 };
+use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RealLaneSummary {
@@ -67,10 +66,7 @@ struct SourceExpectation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RealCaseDisposition {
-    Output {
-        mismatches: usize,
-        verified: bool,
-    },
+    Output { mismatches: usize, verified: bool },
     Unavailable(AuthorityUnavailableCause),
     Terminal(CompileTerminalKind),
 }
@@ -84,8 +80,7 @@ pub(super) fn audit_real_inventory(
     resolved: &ResolvedTools<'_>,
     authorities: &AuthorityFactory,
 ) -> Result<RealAuditSummary, CorpusAuditError> {
-    inventory::validate_real_inventory()
-        .map_err(|cause| CorpusAuditError::Inventory { cause })?;
+    inventory::validate_real_inventory().map_err(|cause| CorpusAuditError::Inventory { cause })?;
     let mut lanes = [RealLaneSummary::ZERO; CorpusLanguage::ALL.len()];
     let mut mismatches = Vec::new();
     let mut publisher = PassPublisher::new(Pass::Original)?;
@@ -117,7 +112,10 @@ pub(super) fn audit_real_inventory(
                     &mut publisher,
                     &mut mismatches,
                 ) {
-                    Ok(RealCaseDisposition::Output { mismatches: count, verified }) => {
+                    Ok(RealCaseDisposition::Output {
+                        mismatches: count,
+                        verified,
+                    }) => {
                         lane.output = lane.output.saturating_add(1);
                         lane.mismatches = lane.mismatches.saturating_add(count);
                         lane.verified += usize::from(verified);
@@ -187,7 +185,11 @@ fn audit_source_case(
 ) -> Result<RealCaseDisposition, CorpusAuditError> {
     let (profile, toolchain) = match native_slot(case.language, resolved) {
         Ok(value) => value,
-        Err(cause) => return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::Native(cause))),
+        Err(cause) => {
+            return Ok(RealCaseDisposition::Unavailable(
+                AuthorityUnavailableCause::Native(cause),
+            ));
+        }
     };
     source
         .bind_toolchain(native_tool(case.language), toolchain)
@@ -196,8 +198,8 @@ fn audit_source_case(
             cause: CorpusInvariant::AuthorityBindingMismatch,
         })?;
     let (ecosystem, package) = case.coordinate.lineage();
-    let lineage = PackageLineage::new(ecosystem, package)
-        .map_err(CorpusAuditError::ScopeLineage)?;
+    let lineage =
+        PackageLineage::new(ecosystem, package).map_err(CorpusAuditError::ScopeLineage)?;
     let path = source
         .path
         .file_name()
@@ -232,17 +234,27 @@ fn audit_source_case(
     match case.language {
         CorpusLanguage::Rust => {
             let Some(host) = hosts.rust.host() else {
-                return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::Native(hosts.rust.cause)));
+                return Ok(RealCaseDisposition::Unavailable(
+                    AuthorityUnavailableCause::Native(hosts.rust.cause),
+                ));
             };
             let fixture = match rust_fixture_for_source(case.case_id.raw(), &source.bytes, host) {
                 Ok(fixture) => fixture,
                 Err(error) if rust_error_is_unavailable(&error) => {
-                    return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::RustAuthority));
+                    return Ok(RealCaseDisposition::Unavailable(
+                        AuthorityUnavailableCause::RustAuthority,
+                    ));
                 }
-                Err(error) => return Err(CorpusAuditError::AuthoritySetup {
-                    key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
-                    cause: error,
-                }),
+                Err(error) => {
+                    return Err(CorpusAuditError::AuthoritySetup {
+                        key: CaseKey {
+                            case_id: case.case_id,
+                            language: case.language,
+                            shape: PackageShape::Reference,
+                        },
+                        cause: error,
+                    });
+                }
             };
             let compiled = compile_with_authority(
                 profile,
@@ -261,57 +273,59 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::Go => {
             let fixture = match go_fixture_for_source(case.case_id.raw(), &source.bytes) {
                 Ok(fixture) => fixture,
                 Err(AuthorityBuildError::Go(error)) if go_error_is_unavailable(&error) => {
-                    return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::GoOracle));
+                    return Ok(RealCaseDisposition::Unavailable(
+                        AuthorityUnavailableCause::GoOracle,
+                    ));
                 }
-                Err(error) => return Err(CorpusAuditError::AuthoritySetup {
-                    key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
-                    cause: error,
-                }),
+                Err(error) => {
+                    return Err(CorpusAuditError::AuthoritySetup {
+                        key: CaseKey {
+                            case_id: case.case_id,
+                            language: case.language,
+                            shape: PackageShape::Reference,
+                        },
+                        cause: error,
+                    });
+                }
             };
             let compiled = compile_with_authority(
                 profile,
                 &source.bytes,
                 scope,
                 toolchain,
-                SemanticAuthorityInput::Go { image: &fixture.image },
+                SemanticAuthorityInput::Go {
+                    image: &fixture.image,
+                },
                 &cancelled,
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::Java => {
             let ProviderSlot::Ready(provider) = &authorities.java else {
-                let ProviderSlot::Unavailable(cause) = &authorities.java else { unreachable!() };
+                let ProviderSlot::Unavailable(cause) = &authorities.java else {
+                    unreachable!()
+                };
                 return Ok(RealCaseDisposition::Unavailable(*cause));
             };
-            let image = provider
-                .image(&source.bytes)
-                .map_err(|cause| CorpusAuditError::AuthoritySetup {
-                    key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
+            let image = provider.image(&source.bytes).map_err(|cause| {
+                CorpusAuditError::AuthoritySetup {
+                    key: CaseKey {
+                        case_id: case.case_id,
+                        language: case.language,
+                        shape: PackageShape::Reference,
+                    },
                     cause,
-                })?;
+                }
+            })?;
             let compiled = compile_with_authority(
                 profile,
                 &source.bytes,
@@ -323,24 +337,23 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::CSharp => {
             let ProviderSlot::Ready(provider) = &authorities.csharp else {
-                let ProviderSlot::Unavailable(cause) = &authorities.csharp else { unreachable!() };
+                let ProviderSlot::Unavailable(cause) = &authorities.csharp else {
+                    unreachable!()
+                };
                 return Ok(RealCaseDisposition::Unavailable(*cause));
             };
             let image = provider
                 .image_for_source(case.case_id.raw(), &source.bytes)
                 .map_err(|cause| CorpusAuditError::AuthoritySetup {
-                    key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
+                    key: CaseKey {
+                        case_id: case.case_id,
+                        language: case.language,
+                        shape: PackageShape::Reference,
+                    },
                     cause,
                 })?;
             let compiled = compile_with_authority(
@@ -354,23 +367,22 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::TypeScript => {
             let checker = compiler_languages_typescript::Checker::default();
             let LanguageProfile::TypeScript(profile) = profile else {
-                return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::TypeScriptChecker));
+                return Ok(RealCaseDisposition::Unavailable(
+                    AuthorityUnavailableCause::TypeScriptChecker,
+                ));
             };
             let report = match checker.run_in_package(profile, &source.bytes, &source.source_root) {
                 Ok(report) => report,
-                Err(_) => return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::TypeScriptChecker)),
+                Err(_) => {
+                    return Ok(RealCaseDisposition::Unavailable(
+                        AuthorityUnavailableCause::TypeScriptChecker,
+                    ));
+                }
             };
             let compiled = compile_with_authority(
                 LanguageProfile::TypeScript(profile),
@@ -383,28 +395,31 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::Python => {
             let profile = PythonVersion::Python314;
             let facts = match compiler_languages_python::extract(&source.bytes, profile) {
                 Ok(facts) => facts,
-                Err(_) => return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::PythonChecker)),
+                Err(_) => {
+                    return Ok(RealCaseDisposition::Unavailable(
+                        AuthorityUnavailableCause::PythonChecker,
+                    ));
+                }
             };
             let checker = compiler_languages_python::Pyrefly::from_env();
             if !checker.is_available() {
-                return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::PythonChecker));
+                return Ok(RealCaseDisposition::Unavailable(
+                    AuthorityUnavailableCause::PythonChecker,
+                ));
             }
             let report = match checker.analyze(&source.bytes, profile, &facts) {
                 Ok(report) => report,
-                Err(_) => return Ok(RealCaseDisposition::Unavailable(AuthorityUnavailableCause::PythonChecker)),
+                Err(_) => {
+                    return Ok(RealCaseDisposition::Unavailable(
+                        AuthorityUnavailableCause::PythonChecker,
+                    ));
+                }
             };
             let compiled = compile_with_authority(
                 LanguageProfile::Python(profile),
@@ -417,14 +432,7 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
         CorpusLanguage::Clang => {
             let compiled = compile_with_authority(
@@ -438,14 +446,7 @@ fn audit_source_case(
                 work.path(),
                 &mut fragment_output,
             );
-            finish_real_compile(
-                case,
-                expected,
-                compiled,
-                work,
-                publisher,
-                mismatch_sink,
-            )
+            finish_real_compile(case, expected, compiled, work, publisher, mismatch_sink)
         }
     }
 }
@@ -464,24 +465,44 @@ fn finish_real_compile<'diagnostic, 'output>(
         Ok(compiled) => compiled,
         Err(failure) => {
             let terminal = terminal_kind(&failure);
-            work.assert_empty().map_err(|cause| CorpusAuditError::NativeWork {
-                key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
-                cause,
-            })?;
+            work.assert_empty()
+                .map_err(|cause| CorpusAuditError::NativeWork {
+                    key: CaseKey {
+                        case_id: case.case_id,
+                        language: case.language,
+                        shape: PackageShape::Reference,
+                    },
+                    cause,
+                })?;
             return Ok(RealCaseDisposition::Terminal(terminal));
         }
     };
-    work.assert_empty().map_err(|cause| CorpusAuditError::NativeWork {
-        key: CaseKey { case_id: case.case_id, language: case.language, shape: PackageShape::Reference },
-        cause,
-    })?;
+    work.assert_empty()
+        .map_err(|cause| CorpusAuditError::NativeWork {
+            key: CaseKey {
+                case_id: case.case_id,
+                language: case.language,
+                shape: PackageShape::Reference,
+            },
+            cause,
+        })?;
     let owned = observe_owned_semantic(&compiled.ir, None);
     let reopened = publisher.publish(&compiled, None)?;
     let before = mismatch_sink.len();
-    check_real_output(case, expected, &compiled, owned, reopened.semantic, mismatch_sink);
+    check_real_output(
+        case,
+        expected,
+        &compiled,
+        owned,
+        reopened.semantic,
+        mismatch_sink,
+    );
     let count = mismatch_sink.len().saturating_sub(before);
     let verified = count == 0;
-    Ok(RealCaseDisposition::Output { mismatches: count, verified })
+    Ok(RealCaseDisposition::Output {
+        mismatches: count,
+        verified,
+    })
 }
 
 fn check_real_output(
@@ -590,7 +611,13 @@ fn check_real_output(
         RealAuditField::SemanticImage,
         mismatches,
     );
-    check_image_provenance(case, expected, reopened.image, RealAuditField::Reopened, mismatches);
+    check_image_provenance(
+        case,
+        expected,
+        reopened.image,
+        RealAuditField::Reopened,
+        mismatches,
+    );
     if owned.identity != reopened.identity {
         mismatches.push(CorpusMismatch::Real {
             case,

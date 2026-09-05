@@ -17,6 +17,39 @@ pub(super) fn compile_with_authority<'source, 'toolchain, 'cancel, 'diagnostic, 
     work: &'work Path,
     fragment_output: &'output mut [u8],
 ) -> Result<CompiledSemantic<'output>, CompileFailure<'diagnostic>> {
+    compile_with_authority_until(
+        profile,
+        source,
+        scope,
+        toolchain,
+        authority,
+        cancelled,
+        Instant::now() + DEADLINE,
+        diagnostic,
+        work,
+        fragment_output,
+    )
+}
+
+pub(super) fn compile_with_authority_until<
+    'source,
+    'toolchain,
+    'cancel,
+    'diagnostic,
+    'work,
+    'output,
+>(
+    profile: LanguageProfile,
+    source: &'source [u8],
+    scope: DeclarationScope<'source>,
+    toolchain: ResolvedToolchain<'toolchain>,
+    authority: SemanticAuthorityInput<'source>,
+    cancelled: &'cancel AtomicBool,
+    deadline: Instant,
+    diagnostic: &'diagnostic mut [u8],
+    work: &'work Path,
+    fragment_output: &'output mut [u8],
+) -> Result<CompiledSemantic<'output>, CompileFailure<'diagnostic>> {
     compile_semantic(
         CompileRequest {
             profile,
@@ -26,7 +59,7 @@ pub(super) fn compile_with_authority<'source, 'toolchain, 'cancel, 'diagnostic, 
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
             authority,
             control: CompileControl {
-                deadline: Instant::now() + DEADLINE,
+                deadline,
                 cancelled,
             },
         },
@@ -54,7 +87,10 @@ pub(super) fn run_package(
         Ok(selection) => selection,
         Err(cause) => {
             return Ok(CaseResult::unavailable(
-                CaseObservation::LocallyUnavailable { key, cause: AuthorityUnavailableCause::Native(cause) },
+                CaseObservation::LocallyUnavailable {
+                    key,
+                    cause: AuthorityUnavailableCause::Native(cause),
+                },
                 package,
             ));
         }
@@ -112,16 +148,15 @@ pub(super) fn run_package(
         CorpusLanguage::Go => {
             let fixture = match go_fixture(package, source) {
                 Ok(fixture) => fixture,
-                Err(AuthorityBuildError::Go(error))
-                    if go_error_is_unavailable(&error) => {
-                        return Ok(CaseResult::unavailable(
-                            CaseObservation::LocallyUnavailable {
-                                key,
-                                cause: AuthorityUnavailableCause::GoOracle,
-                            },
-                            package,
-                        ));
-                    }
+                Err(AuthorityBuildError::Go(error)) if go_error_is_unavailable(&error) => {
+                    return Ok(CaseResult::unavailable(
+                        CaseObservation::LocallyUnavailable {
+                            key,
+                            cause: AuthorityUnavailableCause::GoOracle,
+                        },
+                        package,
+                    ));
+                }
                 Err(error) => return Err(CorpusAuditError::AuthoritySetup { key, cause: error }),
             };
             compile_with_authority(
@@ -129,7 +164,9 @@ pub(super) fn run_package(
                 source,
                 scope,
                 toolchain,
-                SemanticAuthorityInput::Go { image: &fixture.image },
+                SemanticAuthorityInput::Go {
+                    image: &fixture.image,
+                },
                 &cancelled,
                 &mut diagnostic,
                 work.path(),
@@ -209,11 +246,13 @@ pub(super) fn run_package(
                 source: expected_source,
                 terminal,
             };
-            work.assert_empty().map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
+            work.assert_empty()
+                .map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
             return Ok(CaseResult::terminal(observation, package));
         }
     };
-    work.assert_empty().map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
+    work.assert_empty()
+        .map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
     // Keep all evolving authority access behind this one observer seam.  The
     // fused result's public contract is the artifact plus owned IR; optional
     // authority planes are reported as typed unavailable until their immutable
@@ -283,8 +322,9 @@ impl CaseResult {
                 .into_boxed_slice(),
                 _ => Box::new([]),
             },
-            CaseAvailability::AuthorityRequired
-            | CaseAvailability::ExplicitUnsupported(_) => Box::new([]),
+            CaseAvailability::AuthorityRequired | CaseAvailability::ExplicitUnsupported(_) => {
+                Box::new([])
+            }
         };
         Self {
             observation,
@@ -329,7 +369,9 @@ pub(super) const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTermin
         CompileFailure::DiagnosticLimit { .. } => CompileTerminalKind::DiagnosticLimit,
         CompileFailure::NativeRejected { .. } => CompileTerminalKind::NativeRejected,
         CompileFailure::Authority { .. } => CompileTerminalKind::Authority,
-        CompileFailure::AuthorityInputRequired { .. } => CompileTerminalKind::AuthorityInputRequired,
+        CompileFailure::AuthorityInputRequired { .. } => {
+            CompileTerminalKind::AuthorityInputRequired
+        }
         CompileFailure::AuthorityInputProfileMismatch { .. } => {
             CompileTerminalKind::AuthorityInputProfileMismatch
         }

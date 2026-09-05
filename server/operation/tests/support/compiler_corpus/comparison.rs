@@ -3,12 +3,11 @@
 //! Every comparison keeps source-bound expectations and observed values in
 //! closed enums; deferred observers remain explicit red outcomes.
 
-use super::*;
 use super::observation::{
-    digest_authority_unavailable, digest_compact, digest_owned, digest_render,
-    digest_reopened, digest_recipe, digest_source, digest_terminal, digest_u64,
-    item_kind,
+    digest_authority_unavailable, digest_compact, digest_owned, digest_recipe, digest_render,
+    digest_reopened, digest_source, digest_terminal, digest_u64, item_kind,
 };
+use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Plane {
@@ -69,6 +68,25 @@ pub(super) enum SemanticImageField {
     Extensions,
     SourceSpans,
     CanonicalType,
+}
+
+/// One source-bound fact checked for a grouped language batch.  The grouped
+/// observer deliberately keeps this separate from the legacy one-row fields:
+/// a batch can contain several declarations with the same written name (for
+/// example Java overloads), so every observation is joined by its source
+/// span and `CaseId` rather than by a positional ordinal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GroupedField {
+    SourceSpan,
+    Declaration,
+    Type,
+    Parent,
+    Documentation,
+    Attributes,
+    Relations,
+    Extension,
+    Render,
+    Reopened,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +248,12 @@ pub(super) enum CorpusMismatch {
         expected: observation::SemanticObservation,
         observed: observation::SemanticObservation,
     },
+    Grouped {
+        key: CaseKey,
+        field: GroupedField,
+        expected: Digest,
+        observed: Digest,
+    },
     Real {
         case: inventory::RealPackageCase,
         field: RealAuditField,
@@ -265,7 +289,6 @@ pub(super) enum CorpusMismatch {
     },
 }
 
-
 pub(super) fn count_matches(expected: CountExpectation, observed: u32) -> bool {
     match expected {
         CountExpectation::Exact(count) => observed == u32::from(count),
@@ -276,7 +299,10 @@ pub(super) fn count_matches(expected: CountExpectation, observed: u32) -> bool {
     }
 }
 
-pub(super) fn count_observation_matches(expected: CountExpectation, observed: CountObservation) -> bool {
+pub(super) fn count_observation_matches(
+    expected: CountExpectation,
+    observed: CountObservation,
+) -> bool {
     match observed {
         CountObservation::Exact(count) => count_matches(expected, count),
         CountObservation::Unavailable | CountObservation::Unsupported => false,
@@ -318,9 +344,7 @@ pub(super) fn type_matches(expected: ExpectedType, observed: ObservedTypeShape) 
 
 pub(super) fn compact_type_matches(expected: ExpectedType, observed: Option<TypeNode>) -> bool {
     match expected {
-        ExpectedType::Primitive(primitive) => {
-            observed == Some(TypeNode::Primitive(primitive))
-        }
+        ExpectedType::Primitive(primitive) => observed == Some(TypeNode::Primitive(primitive)),
         ExpectedType::Builtin(BuiltinType::Bool) => {
             observed == Some(TypeNode::Primitive(PrimitiveType::Bool))
         }
@@ -335,7 +359,9 @@ pub(super) fn compact_type_matches(expected: ExpectedType, observed: Option<Type
         // carry the exact role before this can become a parity assertion.
         ExpectedType::Builtin(_) => false,
         ExpectedType::Reference => matches!(observed, Some(TypeNode::Reference(_))),
-        ExpectedType::Callable | ExpectedType::Nominal | ExpectedType::Structural
+        ExpectedType::Callable
+        | ExpectedType::Nominal
+        | ExpectedType::Structural
         | ExpectedType::Generic => false,
     }
 }
@@ -405,35 +431,38 @@ pub(super) fn expected_mismatches(
                 });
             }
             match expected.parent {
-                multilingual_corpus::ParentExpectation::Root
-                    if primary.parent.is_some() => mismatches.push(CorpusMismatch::Parent {
+                multilingual_corpus::ParentExpectation::Root if primary.parent.is_some() => {
+                    mismatches.push(CorpusMismatch::Parent {
                         key,
                         expected: expected.parent,
                         observed: primary.parent,
-                    }),
-                multilingual_corpus::ParentExpectation::Nested
-                    if primary.parent.is_none() => mismatches.push(CorpusMismatch::Parent {
+                    })
+                }
+                multilingual_corpus::ParentExpectation::Nested if primary.parent.is_none() => {
+                    mismatches.push(CorpusMismatch::Parent {
                         key,
                         expected: expected.parent,
                         observed: primary.parent,
-                    }),
+                    })
+                }
                 multilingual_corpus::ParentExpectation::Unavailable
                 | multilingual_corpus::ParentExpectation::Root
                 | multilingual_corpus::ParentExpectation::Nested => {}
             }
-            let authority_parent_matches = primary.authority.is_some_and(|facts| {
-                match expected.parent {
-                    multilingual_corpus::ParentExpectation::Root => {
-                        facts.parentage == ParentageAuthority::Root
-                    }
-                    multilingual_corpus::ParentExpectation::Nested => {
-                        matches!(facts.parentage, ParentageAuthority::Bound(_))
-                    }
-                    multilingual_corpus::ParentExpectation::Unavailable => {
-                        facts.parentage == ParentageAuthority::Unavailable
-                    }
-                }
-            });
+            let authority_parent_matches =
+                primary
+                    .authority
+                    .is_some_and(|facts| match expected.parent {
+                        multilingual_corpus::ParentExpectation::Root => {
+                            facts.parentage == ParentageAuthority::Root
+                        }
+                        multilingual_corpus::ParentExpectation::Nested => {
+                            matches!(facts.parentage, ParentageAuthority::Bound(_))
+                        }
+                        multilingual_corpus::ParentExpectation::Unavailable => {
+                            facts.parentage == ParentageAuthority::Unavailable
+                        }
+                    });
             if !authority_parent_matches {
                 mismatches.push(CorpusMismatch::AuthorityParent {
                     key,
@@ -762,7 +791,10 @@ fn check_semantic_image(
             });
         }
     };
-    check(SemanticImageField::Status, expected.status == observed.status);
+    check(
+        SemanticImageField::Status,
+        expected.status == observed.status,
+    );
     check(
         SemanticImageField::Identity,
         expected.identity == observed.identity,
@@ -771,8 +803,14 @@ fn check_semantic_image(
         SemanticImageField::ImageFacts,
         expected.image == observed.image,
     );
-    check(SemanticImageField::Census, expected.census == observed.census);
-    check(SemanticImageField::Entities, expected.entities == observed.entities);
+    check(
+        SemanticImageField::Census,
+        expected.census == observed.census,
+    );
+    check(
+        SemanticImageField::Entities,
+        expected.entities == observed.entities,
+    );
     check(SemanticImageField::Types, expected.types == observed.types);
     check(
         SemanticImageField::Externals,
@@ -993,15 +1031,14 @@ pub(super) fn compare_passes(
         let expected_case = expected.cases[index];
         let observed_case = observed.cases[index];
         let fields: &[PermutationField] = match (expected_case, observed_case) {
-            (CaseObservation::Output(_), CaseObservation::Output(_)) => {
-                &PermutationField::OUTPUT
-            }
+            (CaseObservation::Output(_), CaseObservation::Output(_)) => &PermutationField::OUTPUT,
             (CaseObservation::Terminal { .. }, CaseObservation::Terminal { .. }) => {
                 &[PermutationField::Source, PermutationField::Terminal]
             }
-            (CaseObservation::LocallyUnavailable { .. }, CaseObservation::LocallyUnavailable { .. }) => {
-                &[PermutationField::Availability]
-            }
+            (
+                CaseObservation::LocallyUnavailable { .. },
+                CaseObservation::LocallyUnavailable { .. },
+            ) => &[PermutationField::Availability],
             _ => &[PermutationField::Availability],
         };
         for field in fields {

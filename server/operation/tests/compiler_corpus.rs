@@ -7,24 +7,26 @@
 //! observations are joined by [`CaseId`], never by the order in which a pass
 //! admitted its inputs.
 
-#[path = "support/multilingual_corpus.rs"]
-mod multilingual_corpus;
-#[path = "support/native_tooling.rs"]
-mod native_tooling;
 #[path = "support/compiler_corpus/authority.rs"]
 mod authority;
-#[path = "support/compiler_corpus/inventory.rs"]
-mod inventory;
-#[path = "support/compiler_corpus/observation.rs"]
-mod observation;
-#[path = "support/compiler_corpus/publication.rs"]
-mod publication;
 #[path = "support/compiler_corpus/comparison.rs"]
 mod comparison;
 #[path = "support/compiler_corpus/execution.rs"]
 mod execution;
+#[path = "support/compiler_corpus/inventory.rs"]
+mod inventory;
+#[path = "support/multilingual_corpus.rs"]
+mod multilingual_corpus;
+#[path = "support/native_tooling.rs"]
+mod native_tooling;
+#[path = "support/compiler_corpus/observation.rs"]
+mod observation;
+#[path = "support/compiler_corpus/publication.rs"]
+mod publication;
 #[path = "support/compiler_corpus/real.rs"]
 mod real;
+#[path = "support/compiler_corpus/grouped.rs"]
+mod grouped;
 
 use std::{
     fmt::Write as _,
@@ -50,12 +52,12 @@ use compiler_ir::{
     SemanticImageIdentity, SemanticReader, SourceIdentity, SourceSpan, TypeExpr, TypeId, TypeNode,
     VariantFingerprint, Visibility,
 };
+use compiler_publication::manifest::SemanticImageRegion;
 use compiler_publication::{
     OpenPublicationScratch, OpenSemanticPublicationScratch, OpenedFragmentError,
-    PublicationScratch, PublishControl, SemanticPublicationScratch,
-    open_published, open_published_semantic, publish_compiled, publish_semantic,
+    PublicationScratch, PublishControl, SemanticPublicationScratch, open_published,
+    open_published_semantic, publish_compiled, publish_semantic,
 };
-use compiler_publication::manifest::SemanticImageRegion;
 use compiler_vocabulary::{
     CSharpVersion, CxxStandard, GoVersion, JavaRelease, Language, LanguageProfile, PythonVersion,
     RustEdition, Stage, TypeScriptSource,
@@ -63,34 +65,34 @@ use compiler_vocabulary::{
 use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 use multilingual_corpus::{
     CaseAvailability, CaseId, CorpusLanguage, CorpusPackage, CountExpectation, ExpectedFacts,
-    ExpectedType, PackageShape, PlaneAvailability, RelationExpectation, RenderAvailability,
-    SOURCE_BYTE_LIMIT, PACKAGE_COUNT, corpus_packages,
+    ExpectedType, PACKAGE_COUNT, PackageShape, PlaneAvailability, RelationExpectation,
+    RenderAvailability, SOURCE_BYTE_LIMIT, corpus_packages,
 };
 use native_tooling::{HostTool, NativeToolingError, NativeWork};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use thiserror::Error;
 
 use authority::{
-    AuthorityBuildError, AuthorityFactory, AuthorityUnavailableCause, CSharpHelperError,
-    HostTools, NativeUnavailableCause, NativeUnavailableKind, ProviderSlot, ResolvedTools,
-    SourceUnavailableCause, SourceUnavailableKind, go_error_is_unavailable, native_slot,
-    native_tool, rust_error_is_unavailable, rust_fixture, go_fixture,
+    AuthorityBuildError, AuthorityFactory, AuthorityUnavailableCause, CSharpHelperError, HostTools,
+    NativeUnavailableCause, NativeUnavailableKind, ProviderSlot, ResolvedTools,
+    SourceUnavailableCause, SourceUnavailableKind, go_error_is_unavailable, go_fixture,
+    native_slot, native_tool, rust_error_is_unavailable, rust_fixture,
 };
+use comparison::{
+    CorpusMismatch, Pass, PermutationField, Plane, compare_passes, expected_mismatches,
+};
+use execution::run_package;
 use inventory::{
     CorpusCapacityVerdict, InventoryInvariant, REAL_PACKAGE_COUNT, RealInventorySummary,
     validate_source_inventory,
 };
-use comparison::{
-    compare_passes, CorpusMismatch, Pass, PermutationField, Plane, expected_mismatches,
-};
 use observation::{
     CaseObservation, CaseOutputObservation, CompactObservation, CountObservation,
-    EntityObservation, OwnedObservation, ObservedTypeShape, PlaneObservation, RenderVerdict,
+    EntityObservation, ObservedTypeShape, OwnedObservation, PlaneObservation, RenderVerdict,
     ReopenedObservation, StableHasher, VersionObservation, digest_bytes, observe_compact,
     observe_owned, range_manifest_digest, render_neutral,
 };
 use publication::PassPublisher;
-use execution::run_package;
 
 const DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const FRAGMENT_BYTES: usize = 256 * 1024;
@@ -186,6 +188,8 @@ const fn shape_index(shape: PackageShape) -> usize {
 enum CorpusAuditError {
     #[error(transparent)]
     Render(#[from] multilingual_corpus::CorpusRenderError),
+    #[error("grouped corpus source assembly failed")]
+    GroupedSource(#[from] grouped::GroupedSourceError),
     #[error("corpus declaration scope lineage was rejected")]
     ScopeLineage(PackageLineageFault),
     #[error("corpus declaration scope key was rejected")]
@@ -245,8 +249,14 @@ enum CorpusAuditError {
 /// semantic disagreement in one source row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CorpusInvariant {
-    PackageCount { observed: usize, expected: usize },
-    CaseIdentity { ordinal: usize, observed: CaseId },
+    PackageCount {
+        observed: usize,
+        expected: usize,
+    },
+    CaseIdentity {
+        ordinal: usize,
+        observed: CaseId,
+    },
     DuplicateCase,
     MissingCase,
     LaneCount {
@@ -467,9 +477,9 @@ fn ordered_packages(packages: &[CorpusPackage], pass: Pass) -> Vec<CorpusPackage
     match pass {
         Pass::Original => {}
         Pass::Reverse => ordered.reverse(),
-        Pass::FixedShuffle => ordered.sort_by_key(|package| {
-            (shuffle_key(package.case_id.raw()), package.case_id)
-        }),
+        Pass::FixedShuffle => {
+            ordered.sort_by_key(|package| (shuffle_key(package.case_id.raw()), package.case_id))
+        }
     }
     ordered
 }
@@ -501,73 +511,19 @@ const _: () = {
 )]
 fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
 -> Result<(), CorpusAuditError> {
-    let packages: Vec<CorpusPackage> = corpus_packages().collect();
-    validate_matrix(&packages)?;
     let hosts = HostTools::resolve();
     let resolved = ResolvedTools::from_hosts(&hosts);
-    let first_key = packages
-        .first()
-        .copied()
-        .map(case_key)
-        .ok_or(CorpusAuditError::Invariant {
-            key: None,
-            cause: CorpusInvariant::MissingCase,
-        })?;
-    let authorities = AuthorityFactory::new(&hosts).map_err(|cause| {
-        CorpusAuditError::AuthoritySetup {
+    let first_key = CaseKey {
+        case_id: CaseId(0),
+        language: CorpusLanguage::Rust,
+        shape: PackageShape::Constant,
+    };
+    let authorities =
+        AuthorityFactory::new(&hosts).map_err(|cause| CorpusAuditError::AuthoritySetup {
             key: first_key,
             cause,
-        }
-    })?;
-    let original = run_pass(
-        &packages,
-        Pass::Original,
-        &hosts,
-        &resolved,
-        &authorities,
-    )?;
-    let reverse = run_pass(
-        &packages,
-        Pass::Reverse,
-        &hosts,
-        &resolved,
-        &authorities,
-    )?;
-    let shuffle = run_pass(
-        &packages,
-        Pass::FixedShuffle,
-        &hosts,
-        &resolved,
-        &authorities,
-    )?;
-
-    let mut mismatches = original.mismatches.iter().copied().collect::<Vec<_>>();
-    mismatches.extend(reverse.mismatches.iter().copied());
-    mismatches.extend(shuffle.mismatches.iter().copied());
-    let mut permutation_summary = original.summary;
-    compare_passes(
-        &packages,
-        &original,
-        &reverse,
-        Pass::Reverse,
-        &mut permutation_summary,
-        &mut mismatches,
-    );
-    compare_passes(
-        &packages,
-        &original,
-        &shuffle,
-        Pass::FixedShuffle,
-        &mut permutation_summary,
-        &mut mismatches,
-    );
-    if let Some(first) = mismatches.first().copied() {
-        return Err(CorpusAuditError::Mismatches {
-            count: mismatches.len(),
-            first: Some(first),
-        });
-    }
-    Ok(())
+        })?;
+    grouped::run_grouped_audit(&hosts, &resolved, &authorities)
 }
 
 /// Audits the frozen real-package source inventory through the fused semantic
@@ -577,8 +533,8 @@ fn all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render()
 #[test]
 fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
 -> Result<(), CorpusAuditError> {
-    let inventory: RealInventorySummary = validate_source_inventory()
-        .map_err(|cause| CorpusAuditError::Inventory { cause })?;
+    let inventory: RealInventorySummary =
+        validate_source_inventory().map_err(|cause| CorpusAuditError::Inventory { cause })?;
     if inventory.attempted.iter().sum::<usize>() != REAL_PACKAGE_COUNT {
         return Err(CorpusAuditError::Inventory {
             cause: InventoryInvariant::TotalCount {
@@ -599,12 +555,11 @@ fn real_package_inventory_keeps_source_provenance_and_closed_terminals()
             key: None,
             cause: CorpusInvariant::MissingCase,
         })?;
-    let authorities = AuthorityFactory::new(&hosts).map_err(|cause| {
-        CorpusAuditError::AuthoritySetup {
+    let authorities =
+        AuthorityFactory::new(&hosts).map_err(|cause| CorpusAuditError::AuthoritySetup {
             key: first_key,
             cause,
-        }
-    })?;
+        })?;
     let audit = real::audit_real_inventory(&hosts, &resolved, &authorities)?;
     for (index, language) in CorpusLanguage::ALL.into_iter().enumerate() {
         let lane = audit.lanes[index];

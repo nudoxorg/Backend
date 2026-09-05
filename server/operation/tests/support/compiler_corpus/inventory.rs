@@ -8,15 +8,15 @@
 
 use super::*;
 
-#[path = "inventory_tables.rs"]
-mod inventory_tables;
 #[path = "inventory_resolve.rs"]
 mod inventory_resolve;
-use inventory_tables::{
-    CLANG_PROJECTS, CSHARP_PACKAGES, GO_PACKAGES, JAVA_PACKAGES, PYTHON_PACKAGES,
-    RUST_PACKAGES, TYPESCRIPT_PACKAGES,
-};
+#[path = "inventory_tables.rs"]
+mod inventory_tables;
 use inventory_resolve::resolve_package_source;
+use inventory_tables::{
+    CLANG_PROJECTS, CSHARP_PACKAGES, GO_PACKAGES, JAVA_PACKAGES, PYTHON_PACKAGES, RUST_PACKAGES,
+    TYPESCRIPT_PACKAGES,
+};
 
 /// The frozen driver tables contain twenty rows for every lane except Go,
 /// whose table also carries the `rsc.io/quote` source package.  Keep that
@@ -176,13 +176,29 @@ pub(super) enum InventoryInvariant {
         observed: usize,
         expected: usize,
     },
-    TotalCount { observed: usize, expected: usize },
-    CorpusCapacity { observed: usize, required: usize },
-    CaseIdentity { ordinal: usize, observed: CaseId },
-    DuplicateCaseId { observed: CaseId },
+    TotalCount {
+        observed: usize,
+        expected: usize,
+    },
+    CorpusCapacity {
+        observed: usize,
+        required: usize,
+    },
+    CaseIdentity {
+        ordinal: usize,
+        observed: CaseId,
+    },
+    DuplicateCaseId {
+        observed: CaseId,
+    },
     MissingCaseId,
-    DuplicateCoordinate { language: CorpusLanguage, coordinate: PackageCoordinate },
-    DuplicateCoordinateGlobal { coordinate: PackageCoordinate },
+    DuplicateCoordinate {
+        language: CorpusLanguage,
+        coordinate: PackageCoordinate,
+    },
+    DuplicateCoordinateGlobal {
+        coordinate: PackageCoordinate,
+    },
     ProfileMismatch {
         language: CorpusLanguage,
         profile: LanguageProfile,
@@ -191,15 +207,26 @@ pub(super) enum InventoryInvariant {
         language: CorpusLanguage,
         table: CorpusTable,
     },
-    FixtureCount { observed: usize, expected: usize },
+    FixtureCount {
+        observed: usize,
+        expected: usize,
+    },
     FixtureProfileMismatch {
         language: CorpusLanguage,
         profile: LanguageProfile,
     },
-    EmptyFixture { language: CorpusLanguage },
-    FixtureAvailabilityMismatch { language: CorpusLanguage },
-    SourceBindingMismatch { language: CorpusLanguage },
-    SourceCauseMismatch { language: CorpusLanguage },
+    EmptyFixture {
+        language: CorpusLanguage,
+    },
+    FixtureAvailabilityMismatch {
+        language: CorpusLanguage,
+    },
+    SourceBindingMismatch {
+        language: CorpusLanguage,
+    },
+    SourceCauseMismatch {
+        language: CorpusLanguage,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,7 +273,9 @@ pub(super) struct ResolvedPackageSource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AuthorityProvenance {
-    Unresolved { tool: NativeTool },
+    Unresolved {
+        tool: NativeTool,
+    },
     Bound {
         tool: NativeTool,
         toolchain: ContentId<ToolchainDomain>,
@@ -458,21 +487,23 @@ pub(super) const fn real_package_inventory() -> &'static [CorpusLane; 7] {
 }
 
 pub(super) fn local_fixture_inputs() -> impl Iterator<Item = LocalFixtureInput> {
-    LOCAL_FIXTURES.into_iter().map(|fixture| match fixture.bytes {
-        Some(bytes) => LocalFixtureInput::Source {
-            fixture,
-            identity: source_identity(bytes),
-        },
-        None => LocalFixtureInput::Unavailable {
-            fixture,
-            cause: SourceUnavailableCause {
-                language: fixture.language,
-                kind: fixture
-                    .absence
-                    .unwrap_or(SourceUnavailableKind::RepositoryFixtureMissing),
+    LOCAL_FIXTURES
+        .into_iter()
+        .map(|fixture| match fixture.bytes {
+            Some(bytes) => LocalFixtureInput::Source {
+                fixture,
+                identity: source_identity(bytes),
             },
-        },
-    })
+            None => LocalFixtureInput::Unavailable {
+                fixture,
+                cause: SourceUnavailableCause {
+                    language: fixture.language,
+                    kind: fixture
+                        .absence
+                        .unwrap_or(SourceUnavailableKind::RepositoryFixtureMissing),
+                },
+            },
+        })
 }
 
 pub(super) fn real_package_cases() -> impl Iterator<Item = RealPackageCase> {
@@ -521,9 +552,7 @@ pub(super) fn validate_real_inventory() -> Result<(), InventoryInvariant> {
         }
         let expected_profile = match lane.language {
             CorpusLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
-            CorpusLanguage::TypeScript => {
-                LanguageProfile::TypeScript(TypeScriptSource::TypeScript)
-            }
+            CorpusLanguage::TypeScript => LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             CorpusLanguage::Python => LanguageProfile::Python(PythonVersion::Python314),
             CorpusLanguage::Go => LanguageProfile::Go(GoVersion::Go125),
             CorpusLanguage::Java => LanguageProfile::Java(JavaRelease::Java21),

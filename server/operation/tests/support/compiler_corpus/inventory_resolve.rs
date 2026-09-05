@@ -30,11 +30,18 @@ pub(super) fn resolve_package_source(
         extension,
     } = case.root;
     let Some(root) = std::env::var_os(variable).map(PathBuf::from) else {
-        return Err(source_unavailable(case.language, SourceUnavailableKind::RootUnset));
+        return Err(source_unavailable(
+            case.language,
+            SourceUnavailableKind::RootUnset,
+        ));
     };
     let root = root.join(relative);
-    let package_root = package_root(&root, case.coordinate, layout)
-        .ok_or_else(|| source_unavailable(case.language, SourceUnavailableKind::PackageDirectoryMissing))?;
+    let package_root = package_root(&root, case.coordinate, layout).ok_or_else(|| {
+        source_unavailable(
+            case.language,
+            SourceUnavailableKind::PackageDirectoryMissing,
+        )
+    })?;
     let path = largest_source_file(&package_root, extension, case.language)?;
     let byte_len = fs::metadata(&path)
         .map_err(|_| source_unavailable(case.language, SourceUnavailableKind::ReadFailure))?
@@ -170,12 +177,7 @@ fn largest_source_file(
         };
         source_unavailable(language, kind)
     })?;
-    files.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     files
         .into_iter()
         .next()
@@ -210,10 +212,7 @@ fn collect_source_files(
             if files.len() >= MAX_SOURCE_FILE_CANDIDATES {
                 return Err(SourceTraversalError::FileCountExceeded);
             }
-            let length = entry
-                .metadata()
-                .map_err(SourceTraversalError::Io)?
-                .len();
+            let length = entry.metadata().map_err(SourceTraversalError::Io)?.len();
             files.push((path, length));
         }
     }
