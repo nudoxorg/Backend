@@ -2143,10 +2143,11 @@ impl<'source> FactSet<'source> {
         let source_file = self.provenance.source_spans()[..fact_count]
             .iter()
             .any(Option::is_some)
-            // This atom is the entered source's typed content authority, not
-            // a made-up filename.  Adapters with a distinct file authority
-            // must stage it explicitly rather than relabel it as primary.
-            .then(|| tree.intern_atom(source.identity.as_ref()))
+            // The declaration scope carries the authority-entered,
+            // package-relative source path.  Source content identity remains
+            // in the image provenance header; using its digest as a span's
+            // file atom would make path navigation impossible after reopen.
+            .then(|| tree.intern_atom(declaration_scope.path().as_bytes()))
             .transpose()?;
         let mut item_attribute_ranges = vec![(0_usize, 0_usize); fact_count].into_boxed_slice();
         let mut item_attribute_total = 0_usize;

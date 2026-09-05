@@ -5,10 +5,11 @@
 use compiler_ir::{
     AtomListId, BuildError, ConcreteType, CorePayloadHash, EntityAuthorityFacts, EntityId,
     EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
-    ParentageAuthority, PrepareError, PreparedFragment, ReopenedTypeParameterList, RustFacts,
-    RustOwnership, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
-    SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload,
-    TypeTriplePayload, VariadicForm, Visibility,
+    PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, ReopenedTypeParameterList,
+    RustFacts, RustOwnership, SemanticCoreReader, SemanticImageView, SemanticReader,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag, SourceIdentity,
+    TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId, TypeQuadPayload, TypeTriplePayload,
+    VariadicForm, Visibility, encode_full_semantic_image, full_semantic_image_len,
 };
 use compiler_ir::{ProductChildRole, ProductConstructorFault, SemanticProductConstructor};
 use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage};
@@ -1430,6 +1431,68 @@ fn provenance_is_exactly_transactional_and_members_require_complete_capture()
         }) => {}
         Err(_) => return Err(TestError::Tail),
         Ok(()) => return Err(TestError::UnexpectedPush),
+    }
+    Ok(())
+}
+
+#[test]
+fn source_spans_keep_scope_path_while_image_provenance_keeps_content_identity()
+-> Result<(), TestError> {
+    let mut facts = FactSet::new();
+    facts
+        .push(SemanticFact::new(
+            EntityKind::Function,
+            b"scoped",
+            SemanticProductConstructor::PRODUCT,
+        ))
+        .map_err(rejected)?;
+    let Some(span) = SourceSpanFact::new(3, 9) else {
+        return Err(TestError::Tail);
+    };
+    facts.attach_source_span(0, span).map_err(lane_fault)?;
+
+    let lineage = PackageLineage::new("crates.io", "scope-fixture").map_err(|_| TestError::Tail)?;
+    let scope =
+        crate::types::DeclarationScope::new(lineage, "src/lib.rs").map_err(|_| TestError::Tail)?;
+    let expected_source = identity()?;
+    let ir = facts.build_ir(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        expected_source,
+        recipe(),
+        scope,
+    )?;
+    let Some(item) = ir.items().next() else {
+        return Err(TestError::Tail);
+    };
+    let Some(projected) = item.source() else {
+        return Err(TestError::Tail);
+    };
+    if ir.atom(projected.file()) != Some(b"src/lib.rs".as_slice())
+        || projected.start() != span.start
+        || projected.end() != span.end
+        || !matches!(
+            ir.image_provenance(),
+            compiler_ir::ImageProvenance::Captured { source, .. } if source == expected_source
+        )
+    {
+        return Err(TestError::Tail);
+    }
+
+    let image_len = full_semantic_image_len(&ir).map_err(|_| TestError::Tail)?;
+    let mut image = vec![0_u8; image_len];
+    encode_full_semantic_image(&ir, &mut image).map_err(|_| TestError::Tail)?;
+    let reopened = SemanticImageView::reopen(&image).map_err(|_| TestError::Tail)?;
+    let Some(reopened_entity) = SemanticReader::entity(&reopened, EntityId::new(0)) else {
+        return Err(TestError::Tail);
+    };
+    let Some(reopened_source) = reopened_entity.source else {
+        return Err(TestError::Tail);
+    };
+    if SemanticCoreReader::atom(&reopened, reopened_source.file()) != Some(b"src/lib.rs".as_slice())
+        || reopened_source.start() != span.start
+        || reopened_source.end() != span.end
+    {
+        return Err(TestError::Tail);
     }
     Ok(())
 }
