@@ -1759,8 +1759,6 @@ const fn terminal_code(value: CompileTerminalKind) -> u64 {
         CompileTerminalKind::LoweringUnsupported => 27,
         CompileTerminalKind::ExtensionAtomUnbound => 28,
         CompileTerminalKind::ExtensionTypeParametersUnbound => 29,
-        CompileTerminalKind::FactRejected => 30,
-        CompileTerminalKind::CSharpProjection => 31,
         CompileTerminalKind::ClangProjection => 32,
         CompileTerminalKind::Build => 33,
         CompileTerminalKind::Prepare => 34,

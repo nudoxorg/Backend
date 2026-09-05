@@ -377,8 +377,6 @@ pub(super) const fn terminal_kind(failure: &CompileFailure<'_>) -> CompileTermin
         }
         CompileFailure::LoweringUnsupported { .. } => CompileTerminalKind::LoweringUnsupported,
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminalKind::ExtensionAtomUnbound,
-        CompileFailure::FactRejected { .. } => CompileTerminalKind::FactRejected,
-        CompileFailure::CSharpProjection { .. } => CompileTerminalKind::CSharpProjection,
         CompileFailure::ClangProjection { .. } => CompileTerminalKind::ClangProjection,
         CompileFailure::Build { .. } => CompileTerminalKind::Build,
         CompileFailure::Prepare { .. } => CompileTerminalKind::Prepare,

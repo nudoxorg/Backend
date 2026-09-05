@@ -315,8 +315,6 @@ enum CompileTerminalKind {
     LoweringUnsupported,
     ExtensionAtomUnbound,
     ExtensionTypeParametersUnbound,
-    FactRejected,
-    CSharpProjection,
     ClangProjection,
     Build,
     Prepare,
