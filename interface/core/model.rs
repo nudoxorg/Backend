@@ -517,6 +517,11 @@ pub enum ApplicationObservation {
         /// Closed diagnostic class retained by the failed outcome.
         code: DiagnosticCode,
     },
+    /// One ordered package-compilation phase was entered.
+    PackagePhase {
+        /// Exact phase; completion remains represented only by a resolved reply.
+        phase: crate::PackageCompilePhase,
+    },
 }
 
 impl From<&ReplyBody> for ApplicationDisposition {

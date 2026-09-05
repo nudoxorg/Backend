@@ -41,9 +41,10 @@ pub use model::{
     MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody,
 };
 pub use package::{
-    MAX_PACKAGE_URL_BYTES, PackageCompileFacts, PackageCompileRequest, PackageEcosystem,
-    PackageProfileMismatch, PackageTextRange, PackageUrl, PackageUrlError, PackageUrlFacts,
-    RejectedPackageUrl,
+    MAX_PACKAGE_URL_BYTES, PackageCompileFacts, PackageCompilePhase, PackageCompileRequest,
+    PackageEcosystem, PackagePathComponentError, PackageProfileMismatch, PackageSourceCause,
+    PackageSourceIoFact, PackageSourceIoPhase, PackageTextRange, PackageUrl, PackageUrlError,
+    PackageUrlFacts, RejectedPackageUrl,
 };
 pub use retrieval::{
     DocSection, MAX_SIGNATURE_TOKENS, RetrievalCapability, RetrievalCause, RetrievalMode,

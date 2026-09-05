@@ -14,11 +14,13 @@ pub use compiler_vocabulary::{
     NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage,
 };
 use heart_identity::{
-    ArtifactId, CompilePublicationDomain, CompilePublicationEncoding, CompileRecipeDomain,
-    ContentId, DependencySetDomain, GenerationId, IrFragmentDomain, IrFragmentEncoding,
-    IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain, IrSemanticImageEncoding,
-    SourceFactDomain,
+    ArtifactId, CompilationTargetDomain, CompilePublicationDomain, CompilePublicationEncoding,
+    CompileRecipeDomain, ContentId, DependencySetDomain, GenerationId, IrFragmentDomain,
+    IrFragmentEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,
+    IrSemanticImageEncoding, SourceFactDomain,
 };
+
+use crate::{PackageCompilePhase, PackageCompileRequest, PackageSourceCause};
 
 /// Typed source authority copied from a validated compiler result without importing its format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,6 +123,23 @@ pub trait CompilerCapability {
         &mut self,
         request: CompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal>;
+
+    /// Resolves, compiles, publishes, and reopens one pinned local package.
+    ///
+    /// `progress` receives only ordered, already-entered phase facts. A phase callback never
+    /// implies completion; only the returned generated artifact proves a successful reopen.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact package-entry, compiler, or publication terminal. No source-free
+    /// placeholder artifact is permitted.
+    fn compile_package<Progress>(
+        &mut self,
+        request: &PackageCompileRequest,
+        progress: &mut Progress,
+    ) -> Result<GeneratedArtifact, CompilerTerminal>
+    where
+        Progress: FnMut(PackageCompilePhase);
 }
 
 /// Portable specialization with no linked compiler or publication dependencies.
@@ -141,11 +160,41 @@ impl CompilerCapability for UnavailableCompiler {
             stage: request.stage,
         })
     }
+
+    fn compile_package<Progress>(
+        &mut self,
+        request: &PackageCompileRequest,
+        _: &mut Progress,
+    ) -> Result<GeneratedArtifact, CompilerTerminal>
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
+        Err(CompilerTerminal::Unavailable {
+            language: request.target.profile.language(),
+            stage: request.target.stage,
+        })
+    }
 }
 
 /// Bounded semantic terminal projected from a concrete compiler or publication adapter.
 #[derive(Debug, Eq, PartialEq)]
 pub enum CompilerTerminal {
+    /// Package source entry failed before a source compiler attempt existed.
+    PackageSource {
+        /// Identity of the exact canonical pinned package URL.
+        target: ContentId<CompilationTargetDomain>,
+        /// Last entered package phase.
+        phase: PackageCompilePhase,
+        /// Exact package source rejection.
+        cause: PackageSourceCause,
+    },
+    /// Cancellation won during package work before a compiler terminal carried source authority.
+    PackageCancelled {
+        /// Identity of the exact canonical pinned package URL.
+        target: ContentId<CompilationTargetDomain>,
+        /// Phase that observed cancellation.
+        phase: PackageCompilePhase,
+    },
     /// Source width exceeded the compiler identity representation before an authority existed.
     SourceLength {
         /// Exact source byte length that could not fit the compact source fact width.

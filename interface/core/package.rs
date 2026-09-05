@@ -5,8 +5,10 @@
 //! unpinned coordinate.
 
 use core::{ops::Deref, ops::Index};
+use std::{io::ErrorKind, path::Path};
 
 use compiler_vocabulary::{Language, LanguageProfile};
+use heart_identity::{CompilationTargetDomain, ContentId};
 
 use crate::GenerateTarget;
 
@@ -60,6 +62,8 @@ pub struct PackageTextRange {
 /// Immutable parsed facts exposed by [`PackageUrl`] through validated dereferencing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PackageUrlFacts {
+    /// Domain-separated identity of this exact canonical package URL.
+    pub identity: ContentId<CompilationTargetDomain>,
     /// Closed package ecosystem.
     pub ecosystem: PackageEcosystem,
     /// Optional namespace path without its trailing slash.
@@ -176,6 +180,126 @@ pub enum PackageUrlError {
     QualifierValue {
         /// First byte of the offending qualifier.
         offset: u16,
+    },
+}
+
+/// Ordered public phases of one package-to-document compilation journey.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageCompilePhase {
+    /// Resolve the pinned coordinate beneath its explicitly configured ecosystem root.
+    Locate,
+    /// Admit exact package source bytes and stable package-relative declaration scope.
+    EnterSource,
+    /// Produce the language's real semantic authority facts.
+    Authority,
+    /// Lower one authority transaction into compact and rich semantic IR.
+    Lower,
+    /// Durably publish the compact fragment and complete semantic image.
+    Publish,
+    /// Reopen and validate the complete published semantic image.
+    Reopen,
+    /// Build searchable discovery facts from the reopened image.
+    Discover,
+    /// Project documentation and hyperlinks from the same reopened truth.
+    Render,
+}
+
+/// Filesystem phase that rejected package source entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageSourceIoPhase {
+    /// Canonicalizing the configured package-store root.
+    CanonicalizeStore,
+    /// Enumerating Cargo registry namespaces.
+    EnumerateRegistry,
+    /// Canonicalizing the resolved package directory.
+    CanonicalizePackage,
+    /// Canonicalizing the requested source file.
+    CanonicalizeSource,
+    /// Reading exact source metadata.
+    SourceMetadata,
+    /// Reading the exact admitted source bytes.
+    ReadSource,
+}
+
+/// Portable and platform I/O facts retained without formatting away the original category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PackageSourceIoFact {
+    /// Standard-library error category.
+    pub kind: ErrorKind,
+    /// Platform error number when the operating system supplied one.
+    pub raw_os_code: Option<i32>,
+}
+
+/// Closed unsafe path-component reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackagePathComponentError {
+    /// Empty, current-directory, or parent-directory component.
+    Traversal,
+    /// A percent escape decoded to a path separator or NUL.
+    EncodedSeparator,
+    /// Escape bytes were not valid UTF-8 after decoding.
+    InvalidUtf8,
+}
+
+/// Exact package-source resolution rejection.
+#[derive(Debug, Eq, PartialEq)]
+pub enum PackageSourceCause {
+    /// No explicit root owns the request ecosystem.
+    RootUnavailable {
+        /// Ecosystem whose root was absent.
+        ecosystem: PackageEcosystem,
+    },
+    /// Source selection was omitted rather than guessed.
+    SubpathRequired {
+        /// Ecosystem whose package needs an entry subpath.
+        ecosystem: PackageEcosystem,
+    },
+    /// A PURL path component was unsafe or not representable as one local component.
+    InvalidComponent {
+        /// Exact canonical-PURL byte range containing the component.
+        range: PackageTextRange,
+        /// Closed component rejection.
+        cause: PackagePathComponentError,
+    },
+    /// The requested package directory is absent.
+    PackageUnavailable {
+        /// Exact resolved path.
+        path: Box<Path>,
+    },
+    /// The requested source file is absent or not a regular file.
+    SourceUnavailable {
+        /// Exact resolved path.
+        path: Box<Path>,
+    },
+    /// Canonical source resolution escaped its canonical package directory.
+    SourceEscapesPackage {
+        /// Canonical package directory.
+        package: Box<Path>,
+        /// Canonical escaped source path.
+        source: Box<Path>,
+    },
+    /// Exact source extent exceeded the package compiler budget.
+    SourceTooLarge {
+        /// Observed metadata length.
+        observed: u64,
+        /// Maximum accepted length.
+        maximum: u64,
+    },
+    /// One exact filesystem operation failed.
+    Io {
+        /// Failed phase.
+        phase: PackageSourceIoPhase,
+        /// Exact path operand.
+        path: Box<Path>,
+        /// Preserved I/O facts.
+        source: PackageSourceIoFact,
+    },
+    /// Cargo's registry namespace count exceeded the fixed local bound.
+    RegistryNamespaceCapacity {
+        /// Observed directory rows before stopping.
+        observed: usize,
+        /// Fixed maximum inspected rows.
+        maximum: usize,
     },
 }
 
@@ -314,6 +438,7 @@ fn parse(text: &str) -> Result<PackageUrlFacts, PackageUrlError> {
         })
         .transpose()?;
     Ok(PackageUrlFacts {
+        identity: ContentId::<CompilationTargetDomain>::from_canonical_bytes(text.as_bytes()),
         ecosystem,
         namespace,
         name: range(name_start, name_start + name.len()),

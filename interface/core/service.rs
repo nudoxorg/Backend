@@ -22,9 +22,9 @@ use crate::{
     Capability, CapabilityHealth, CapabilityTransition, CompilerCapability, CompilerReadiness,
     CompilerRequest, CompilerTerminal, Diagnostic, DiagnosticCode, DiagnosticDetail,
     ExecutionReply, ExecutionState, GenerateRequest, InconsistentRecovery, InputText,
-    MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody, RetrievalCapability,
-    RetrievalReadiness, RetrievalRequest, UnavailableCompiler, UnavailableRetrieval,
-    execution::LocalCapabilityExecution,
+    MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, PackageCompilePhase, ReplyBody,
+    RetrievalCapability, RetrievalReadiness, RetrievalRequest, UnavailableCompiler,
+    UnavailableRetrieval, execution::LocalCapabilityExecution,
 };
 
 /// One monomorphized service that owns the compiler and retrieval capability seams.
@@ -111,7 +111,14 @@ impl<Compiler: CompilerCapability, Retrieval: RetrievalCapability>
     where
         Observer: Probe<ApplicationEvent>,
     {
-        let reply = self.dispatch(input);
+        let correlation = input.correlation();
+        let mut package_progress = |phase: PackageCompilePhase| {
+            probe.record_with(|| ApplicationEvent {
+                correlation,
+                outcome: crate::ApplicationObservation::PackagePhase { phase },
+            });
+        };
+        let reply = self.dispatch(input, &mut package_progress);
         probe.record_with(|| ApplicationEvent::from(&reply));
         reply
     }
@@ -140,12 +147,38 @@ impl<Compiler: CompilerCapability, Retrieval: RetrievalCapability>
         }
     }
 
-    fn dispatch(&mut self, input: &ApplicationInput) -> ApplicationReply {
+    fn dispatch<Progress>(
+        &mut self,
+        input: &ApplicationInput,
+        package_progress: &mut Progress,
+    ) -> ApplicationReply
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
         match input {
             ApplicationInput::Generate(request) => self.generate(request),
-            ApplicationInput::CompilePackage(request) => {
-                Self::dependency_unavailable(request.target.correlation, Capability::CompilerOutput)
-            }
+            ApplicationInput::CompilePackage(request) => match FullRegistry
+                .route(request.target.profile.language(), request.target.stage)
+            {
+                Ok(_route) => match self.compiler.compile_package(request, package_progress) {
+                    Ok(generated) => ApplicationReply {
+                        correlation: request.target.correlation,
+                        outcome: ApplicationOutcome::Resolved(ReplyBody::Generated(generated)),
+                    },
+                    Err(CompilerTerminal::Unavailable { .. }) => Self::dependency_unavailable(
+                        request.target.correlation,
+                        Capability::CompilerOutput,
+                    ),
+                    Err(terminal) => Self::compiler_terminal(request.target.correlation, terminal),
+                },
+                Err(source) => Self::rejected(
+                    request.target.correlation,
+                    Diagnostic {
+                        code: DiagnosticCode::UnsupportedCompilerStage,
+                        detail: DiagnosticDetail::Frontend(source),
+                    },
+                ),
+            },
             ApplicationInput::SnapshotStatus {
                 correlation,
                 snapshot,
