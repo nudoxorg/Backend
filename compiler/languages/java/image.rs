@@ -293,12 +293,12 @@ impl<'image> JavaImage<'image> {
 
     /// Resolves one type coordinate into its borrowed type fact.
     pub fn type_fact(self, reference: TypeRef) -> Result<TypeFact<'image>, ImageError> {
-        self.type_at(reference.0)
+        self.type_at(reference.ordinal)
     }
 
     /// Resolves one executable coordinate into its borrowed symbol fact.
     pub fn symbol(self, reference: SymbolRef) -> Result<Symbol<'image>, ImageError> {
-        self.symbol_at(reference.0)
+        self.symbol_at(reference.ordinal)
     }
 
     fn validate_digest(self) -> Result<(), ImageError> {
@@ -435,7 +435,7 @@ impl<'image> JavaImage<'image> {
                 let entry = entry?;
                 match entry {
                     DeclarationExtension::Throws(reference) => {
-                        self.type_at(reference.0)?;
+                        self.type_at(reference.ordinal)?;
                     }
                     DeclarationExtension::Annotation(_) => {}
                     DeclarationExtension::RecordComponent(index) => {
@@ -587,13 +587,36 @@ impl<'image> Atom<'image> {
     }
 }
 
+/// Immutable validated image-coordinate fact exposed by typed image handles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JavaImageCoordinateView {
+    /// Exact zero-based authority-image coordinate.
+    pub ordinal: u32,
+}
+
 /// An opaque validated coordinate in the type plane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TypeRef(u32);
+pub struct TypeRef(JavaImageCoordinateView);
+
+impl Deref for TypeRef {
+    type Target = JavaImageCoordinateView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// An opaque validated coordinate in the executable-symbol plane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SymbolRef(u32);
+pub struct SymbolRef(JavaImageCoordinateView);
+
+impl Deref for SymbolRef {
+    type Target = JavaImageCoordinateView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// A closed Java type form carried by one type-plane record.
 #[repr(u8)]
@@ -671,7 +694,9 @@ impl Iterator for TypeChildren<'_> {
         if self.next == self.end {
             return None;
         }
-        let reference = TypeRef(u32_at(self.image.row(self.plane, self.next), 0));
+        let reference = TypeRef(JavaImageCoordinateView {
+            ordinal: u32_at(self.image.row(self.plane, self.next), 0),
+        });
         self.next += 1;
         Some(reference)
     }
@@ -1190,7 +1215,11 @@ impl<'image> Iterator for ExtensionIter<'image> {
             return Some(Err(ImageError::ExtensionReserved));
         }
         Some(match row[0] {
-            1 => Ok(DeclarationExtension::Throws(TypeRef(u32_at(row, 4)))),
+            1 => Ok(DeclarationExtension::Throws(TypeRef(
+                JavaImageCoordinateView {
+                    ordinal: u32_at(row, 4),
+                },
+            ))),
             2 => self
                 .image
                 .atom(u32_at(row, 4))
@@ -1356,8 +1385,12 @@ impl<'image> Reference<'image> {
         if start > end {
             return Err(ImageError::ReferenceRange { start, end });
         }
-        let owner = SymbolRef(u32_at(row, 0));
-        let target = SymbolRef(u32_at(row, 4));
+        let owner = SymbolRef(JavaImageCoordinateView {
+            ordinal: u32_at(row, 0),
+        });
+        let target = SymbolRef(JavaImageCoordinateView {
+            ordinal: u32_at(row, 4),
+        });
         image.symbol(owner)?;
         image.symbol(target)?;
         Ok(Self {
@@ -1546,11 +1579,11 @@ fn row_index(index: usize, plane: ImagePlane, upper_bound: usize) -> Result<u32,
 }
 
 fn optional_type(raw: u32) -> Option<TypeRef> {
-    (raw != ABSENT).then_some(TypeRef(raw))
+    (raw != ABSENT).then_some(TypeRef(JavaImageCoordinateView { ordinal: raw }))
 }
 
 fn optional_symbol(raw: u32) -> Option<SymbolRef> {
-    (raw != ABSENT).then_some(SymbolRef(raw))
+    (raw != ABSENT).then_some(SymbolRef(JavaImageCoordinateView { ordinal: raw }))
 }
 
 fn modifiers(bits: u32) -> Result<Modifiers, ImageError> {

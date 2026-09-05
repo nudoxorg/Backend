@@ -25,10 +25,15 @@ use compiler_ir::{
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeReason, TypeWidth,
 };
 use compiler_languages_java::{
-    BoundImageError, Declaration, DeclarationKind, DocFlavor, ImageError, JavaAuthorityImage,
-    JavaImage, JavaRelease, Reference, SymbolRef, TypeFact, TypeKind, TypeRef,
+    AtomError, BoundImageError, Declaration, DeclarationKind, DocFlavor, HeaderError, ImageError,
+    ImagePlane, JavaAuthorityImage, JavaImage, JavaRelease, Reference, SectionError, SymbolRef,
+    TypeFact, TypeKind, TypeRef,
 };
-use compiler_vocabulary::{JavaRelease as ProfileRelease, LoweringUnsupported};
+use compiler_vocabulary::{
+    JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault, JavaImageHeaderFault, JavaImagePlane,
+    JavaImageSectionFault, JavaProjectionFault, JavaProjectionIndexPhase, JavaProjectionTypeKind,
+    JavaRelease as ProfileRelease, JavaSymbolAtom, LoweringUnsupported,
+};
 use sha2::Digest;
 
 use crate::lower::{
@@ -63,98 +68,288 @@ pub(crate) enum JavaCollectError {
 }
 
 /// Exact projection fault retained until the collect boundary folds it into
-/// the lane's closed terminal. The shared driver failure match owns the
-/// terminal arms and lies outside this module's ownership, so every fault
-/// class folds to the same closed terminal as bounded-lane capacity; the
-/// operands remain named here so the collapse site stays typed.
+/// the portable closed Java terminal. Every variant keeps the source/image
+/// operand that its projection site can actually prove.
 #[derive(Debug)]
-enum ProjectionFault<'image> {
+enum ProjectionFault {
     /// A validated image plane rejected a coordinate during projection.
     Image(
         /// The exact image-plane rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         ImageError,
     ),
     /// The recursive type graph exceeded the producer's documented depth budget.
-    Depth,
+    Depth {
+        /// The exact authority type row at the recursion boundary.
+        type_row: u32,
+    },
     /// A fixed row layout promise was violated: a required atom or child was absent.
     Malformed {
+        /// The exact authority type row whose layout was incomplete.
+        type_row: u32,
         /// The image type row that broke its closed layout.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         kind: TypeKind,
     },
     /// A primitive spelling outside javac's closed kind vocabulary.
     Primitive {
-        /// The rejected spelling bytes.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        spelling: &'image [u8],
+        /// The image type row whose primitive spelling was rejected.
+        type_row: u32,
     },
     /// An image atom was not valid UTF-8 although the image validated its planes.
-    Utf8,
+    Utf8 {
+        /// The symbol row whose atom failed decoding.
+        symbol: u32,
+        /// The exact atom role in that symbol row.
+        atom: JavaSymbolAtom,
+    },
     /// The bound compile source is not UTF-8 text, so javac's UTF-16
     /// coordinates have no byte domain to project into.
     SourceUtf8,
     /// A javac UTF-16 coordinate has no byte offset in the bound source.
     Utf16 {
         /// The requested UTF-16 unit offset.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         units: u32,
         /// The bound source's total UTF-16 length.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         utf16_len: u32,
+    },
+    /// A javac UTF-16 range could not be represented as an ordered relative
+    /// byte span. Both source coordinates remain available to the terminal.
+    Utf16Range {
+        /// The reported source start coordinate.
+        start: u32,
+        /// The reported source end coordinate.
+        end: u32,
     },
     /// A reference owner names no executable admitted by this image.
     OrphanOwner {
         /// The unresolved owner symbol coordinate.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         owner: SymbolRef,
     },
     /// A foreign key could not be built for a resolved external target.
     ForeignKey(
         /// The exact foreign-key rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
         ForeignKeyFault,
     ),
     /// The bounded overload sibling list overflowed its pooled width.
-    SiblingCapacity,
+    SiblingCapacity {
+        /// The exact authority executable symbol being indexed.
+        symbol: u32,
+    },
     /// A bounded projection index overflowed its lane width.
-    IndexCapacity,
+    IndexCapacity {
+        /// The closed operation whose compact coordinate could not fit.
+        phase: JavaProjectionIndexPhase,
+    },
 }
 
-/// Folds one projection fault into the lane's closed terminal. The shared
-/// driver failure match owns the terminal arms and is outside this module's
-/// ownership, so operand-preserving Java terminals stay folded here; adding a
-/// terminal arm is recorded as a lane criticism in the module's review notes.
-fn terminal(fault: ProjectionFault<'_>) -> JavaCollectError {
-    let _ = fault;
-    JavaCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+/// Folds one projection fault into the portable closed Java terminal without
+/// substituting an unsupported-declaration result.
+fn terminal(fault: ProjectionFault) -> JavaCollectError {
+    let fault = match fault {
+        ProjectionFault::Image(cause) => match java_image_fault(cause) {
+            Ok(cause) => JavaProjectionFault::Image { cause },
+            Err(()) => JavaProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::FactOrdinal,
+            },
+        },
+        ProjectionFault::Depth { type_row } => JavaProjectionFault::Depth { type_row },
+        ProjectionFault::Malformed { type_row, kind } => JavaProjectionFault::MalformedType {
+            type_row,
+            kind: java_projection_type_kind(kind),
+        },
+        ProjectionFault::Primitive { type_row } => JavaProjectionFault::Primitive { type_row },
+        ProjectionFault::Utf8 { symbol, atom } => JavaProjectionFault::AtomUtf8 { symbol, atom },
+        ProjectionFault::SourceUtf8 => JavaProjectionFault::SourceUtf8,
+        ProjectionFault::Utf16 { units, utf16_len } => JavaProjectionFault::Utf16Offset {
+            units,
+            source_utf16_len: utf16_len,
+        },
+        ProjectionFault::Utf16Range { start, end } => {
+            JavaProjectionFault::Utf16Range { start, end }
+        }
+        ProjectionFault::OrphanOwner { owner } => JavaProjectionFault::OrphanOwner {
+            owner: owner.ordinal,
+        },
+        ProjectionFault::ForeignKey(cause) => JavaProjectionFault::ForeignKey {
+            cause: java_foreign_key_fault(cause),
+        },
+        ProjectionFault::SiblingCapacity { symbol } => {
+            JavaProjectionFault::SiblingCapacity { symbol }
+        }
+        ProjectionFault::IndexCapacity { phase } => JavaProjectionFault::IndexCapacity { phase },
+    };
+    JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault })
 }
 
-/// Folds one bounded-lane fact rejection into the lane's closed terminal.
-fn lane_terminal(fault: FactFault) -> JavaCollectError {
-    let _ = fault;
-    JavaCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+/// Converts one validated Java image plane into the portable plane vocabulary.
+fn java_image_plane(plane: ImagePlane) -> JavaImagePlane {
+    match plane {
+        ImagePlane::Atoms => JavaImagePlane::Atoms,
+        ImagePlane::AtomBytes => JavaImagePlane::AtomBytes,
+        ImagePlane::Types => JavaImagePlane::Types,
+        ImagePlane::TypeChildren => JavaImagePlane::TypeChildren,
+        ImagePlane::Symbols => JavaImagePlane::Symbols,
+        ImagePlane::SymbolParameters => JavaImagePlane::SymbolParameters,
+        ImagePlane::Declarations => JavaImagePlane::Declarations,
+        ImagePlane::References => JavaImagePlane::References,
+        ImagePlane::DeclarationExtensions => JavaImagePlane::DeclarationExtensions,
+        ImagePlane::ExtensionEntries => JavaImagePlane::ExtensionEntries,
+    }
+}
+
+/// Converts a native image coordinate to its checked portable width.
+fn image_u32(value: usize) -> Result<u32, ()> {
+    u32::try_from(value).map_err(|_| ())
+}
+
+/// Converts one nested Java header rejection without dropping its operands.
+fn java_header_fault(cause: HeaderError) -> Result<JavaImageHeaderFault, ()> {
+    Ok(match cause {
+        HeaderError::Truncated { actual } => JavaImageHeaderFault::Truncated {
+            actual: image_u32(actual)?,
+        },
+        HeaderError::Magic { found } => JavaImageHeaderFault::Magic { found },
+        HeaderError::Version { found } => JavaImageHeaderFault::Version { found },
+        HeaderError::Length { found } => JavaImageHeaderFault::Length { found },
+        HeaderError::Release { found } => JavaImageHeaderFault::Release { found },
+        HeaderError::SectionCount { found } => JavaImageHeaderFault::SectionCount { found },
+        HeaderError::BodyLength { declared, actual } => JavaImageHeaderFault::BodyLength {
+            declared: image_u32(declared)?,
+            actual: image_u32(actual)?,
+        },
+    })
+}
+
+/// Converts one nested Java directory rejection without dropping its operands.
+fn java_section_fault(cause: SectionError) -> Result<JavaImageSectionFault, ()> {
+    Ok(match cause {
+        SectionError::Tag { expected, found } => JavaImageSectionFault::Tag { expected, found },
+        SectionError::RowBytes { expected, found } => JavaImageSectionFault::RowBytes {
+            expected: image_u32(expected)?,
+            found: image_u32(found)?,
+        },
+        SectionError::ByteCount {
+            count,
+            row_bytes,
+            found,
+        } => JavaImageSectionFault::ByteCount {
+            count: image_u32(count)?,
+            row_bytes: image_u32(row_bytes)?,
+            found: image_u32(found)?,
+        },
+        SectionError::Offset { expected, found } => JavaImageSectionFault::Offset {
+            expected: image_u32(expected)?,
+            found: image_u32(found)?,
+        },
+        SectionError::Range {
+            offset,
+            length,
+            image_bytes,
+        } => JavaImageSectionFault::Range {
+            offset: image_u32(offset)?,
+            length: image_u32(length)?,
+            image_bytes: image_u32(image_bytes)?,
+        },
+    })
+}
+
+/// Converts one nested Java atom-table rejection without dropping its operands.
+fn java_atom_fault(cause: AtomError) -> Result<JavaImageAtomFault, ()> {
+    Ok(match cause {
+        AtomError::NonCanonicalOffset { found } => JavaImageAtomFault::NonCanonicalOffset {
+            found: image_u32(found)?,
+        },
+        AtomError::Range => JavaImageAtomFault::Range,
+        AtomError::Utf8 => JavaImageAtomFault::Utf8,
+        AtomError::TrailingBytes => JavaImageAtomFault::TrailingBytes,
+    })
+}
+
+/// Converts every validated Java image rejection into its portable closed form.
+/// A `usize` that cannot fit the portable coordinate width is an explicit
+/// projection capacity failure at the caller, never a truncated operand.
+fn java_image_fault(cause: ImageError) -> Result<JavaImageFault, ()> {
+    Ok(match cause {
+        ImageError::Header(cause) => JavaImageFault::Header {
+            cause: java_header_fault(cause)?,
+        },
+        ImageError::Section { plane, cause } => JavaImageFault::Section {
+            plane: java_image_plane(plane),
+            cause: java_section_fault(cause)?,
+        },
+        ImageError::Digest => JavaImageFault::Digest,
+        ImageError::Atom { index, cause } => JavaImageFault::Atom {
+            index: image_u32(index)?,
+            cause: java_atom_fault(cause)?,
+        },
+        ImageError::AbsentAtom => JavaImageFault::AbsentAtom,
+        ImageError::Coordinate {
+            plane,
+            index,
+            upper_bound,
+        } => JavaImageFault::Coordinate {
+            plane: java_image_plane(plane),
+            index: image_u32(index)?,
+            upper_bound: image_u32(upper_bound)?,
+        },
+        ImageError::Tag { plane, found } => JavaImageFault::Tag {
+            plane: java_image_plane(plane),
+            found,
+        },
+        ImageError::ChildRange {
+            plane,
+            start,
+            count,
+            upper_bound,
+        } => JavaImageFault::ChildRange {
+            plane: java_image_plane(plane),
+            start: image_u32(start)?,
+            count: image_u32(count)?,
+            upper_bound: image_u32(upper_bound)?,
+        },
+        ImageError::ReferenceRange { start, end } => JavaImageFault::ReferenceRange { start, end },
+        ImageError::DocumentationPresence => JavaImageFault::DocumentationPresence,
+        ImageError::ModifierBits { found } => JavaImageFault::ModifierBits { found },
+        ImageError::RecordComponentKind { index } => JavaImageFault::RecordComponentKind {
+            index: image_u32(index)?,
+        },
+        ImageError::ExtensionReserved => JavaImageFault::ExtensionReserved,
+    })
+}
+
+/// Retains one bounded-lane rejection with the exact candidate ordinal and
+/// declaration-name length supplied by its caller.
+fn lane_rejection(fact: usize, name_len: usize, cause: FactFault) -> JavaCollectError {
+    JavaCollectError::Rejected(FactRejection {
+        fact,
+        name_len,
+        cause,
+    })
+}
+
+/// Maps the image's closed Java type tag into the portable vocabulary without
+/// retaining a language-crate value in the driver terminal.
+fn java_projection_type_kind(kind: TypeKind) -> JavaProjectionTypeKind {
+    match kind {
+        TypeKind::Primitive => JavaProjectionTypeKind::Primitive,
+        TypeKind::Void => JavaProjectionTypeKind::Void,
+        TypeKind::Declared => JavaProjectionTypeKind::Declared,
+        TypeKind::Array => JavaProjectionTypeKind::Array,
+        TypeKind::Variable => JavaProjectionTypeKind::Variable,
+        TypeKind::Wildcard => JavaProjectionTypeKind::Wildcard,
+        TypeKind::Intersection => JavaProjectionTypeKind::Intersection,
+        TypeKind::Union => JavaProjectionTypeKind::Union,
+        TypeKind::Error => JavaProjectionTypeKind::Error,
+        TypeKind::None => JavaProjectionTypeKind::None,
+        TypeKind::Null => JavaProjectionTypeKind::Null,
+    }
+}
+
+/// Maps the closed IR foreign-key fault into the portable Java terminal.
+fn java_foreign_key_fault(cause: ForeignKeyFault) -> JavaForeignKeyFault {
+    match cause {
+        ForeignKeyFault::EmptyPath => JavaForeignKeyFault::EmptyPath,
+        ForeignKeyFault::BackslashInPath => JavaForeignKeyFault::BackslashInPath,
+    }
 }
 
 /// Admits one fact and returns its proven backward ordinal.
@@ -163,8 +358,11 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<u32, JavaCollectError> {
     let ordinal = push_fact(facts, fact).map_err(JavaCollectError::Rejected)?;
-    u32::try_from(ordinal)
-        .map_err(|_| JavaCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
+    u32::try_from(ordinal).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::FactOrdinal,
+        })
+    })
 }
 
 /// Producer depth budget of the recursive type graph, documented by the image
@@ -234,15 +432,7 @@ pub(crate) fn collect<'source>(
     }
     let image = authority.image;
     let source_text = str::from_utf8(source).map_err(|_| terminal(ProjectionFault::SourceUtf8))?;
-    let utf16_len = match utf16_length(source_text) {
-        Some(length) => length,
-        None => {
-            return Err(terminal(ProjectionFault::Utf16 {
-                units: u32::MAX,
-                utf16_len: u32::MAX,
-            }));
-        }
-    };
+    let utf16_len = utf16_length(source_text).map_err(terminal)?;
 
     let mut names = NameIndex::new();
     // Pass one: module, package, and type declarations. Type declarations
@@ -257,9 +447,11 @@ pub(crate) fn collect<'source>(
             | DeclarationKind::Enum
             | DeclarationKind::Annotation => {
                 let ordinal = push_type_root(facts, &declared)?;
-                names
-                    .record(declared.name.bytes, ordinal)
-                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+                names.record(declared.name.bytes, ordinal).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: JavaProjectionIndexPhase::NameIndex,
+                    })
+                })?;
                 push_docs(facts, &names, ordinal, &declared)?;
             }
             DeclarationKind::Module | DeclarationKind::Package => {
@@ -407,24 +599,24 @@ impl<'image> ProjectedType<'image> {
     /// declaration when it is not the direct local-nominal terminal. This is
     /// the bridge that lets nested Java arrays retain one structural sequence
     /// node per written `[]` without fabricating carrier declarations.
-    fn into_child(
-        self,
-        facts: &mut FactSet<'image>,
-        anchor: u32,
-    ) -> Result<u32, ProjectionFault<'image>> {
+    fn into_child(self, facts: &mut FactSet<'image>, anchor: u32) -> Result<u32, ProjectionFault> {
         if self.child_count == 0
             && let Some(NominalRef::Local(target)) = self.record.nominal
         {
             return Ok(target.raw);
         }
         for ordinal in self.children.iter().take(self.child_count) {
-            facts
-                .anonymous_type_child(*ordinal, None, 0)
-                .map_err(|_| ProjectionFault::IndexCapacity)?;
+            facts.anonymous_type_child(*ordinal, None, 0).map_err(|_| {
+                ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::TypeChild,
+                }
+            })?;
         }
         facts
             .intern_anonymous_type_row(anchor, self.record)
-            .map_err(|_| ProjectionFault::IndexCapacity)
+            .map_err(|_| ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::TypeRow,
+            })
     }
 }
 
@@ -497,32 +689,46 @@ fn project<'image>(
     anchor: u32,
     reference: TypeRef,
     depth: usize,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
+) -> Result<ProjectedType<'image>, ProjectionFault> {
     if depth == 0 {
-        return Err(ProjectionFault::Depth);
+        return Err(ProjectionFault::Depth {
+            type_row: reference.ordinal,
+        });
     }
     let row = image.type_fact(reference).map_err(ProjectionFault::Image)?;
     match row.kind {
-        TypeKind::Primitive => primitive(&row),
+        TypeKind::Primitive => primitive(reference, &row),
         TypeKind::Void => {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
             record.payload0 = SHAPE_BUILTIN;
             record.text = Some(VOID_SPELLING);
             Ok(ProjectedType::leaf(record, None).with_void())
         }
-        TypeKind::Declared => declared(image, names, &row),
+        TypeKind::Declared => declared(image, names, &row, reference.ordinal),
         TypeKind::Array => array(facts, image, names, anchor, reference, depth),
         TypeKind::Variable => {
-            let spelling = required_spelling(&row)?;
+            let spelling = required_spelling(reference.ordinal, &row)?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
             record.text = Some(spelling);
             Ok(ProjectedType::leaf(record, Some(spelling)))
         }
         TypeKind::Wildcard => wildcard(image, names, &row, depth),
-        TypeKind::Intersection => members(image, names, &row, SemanticTypeTag::Intersection),
-        TypeKind::Union => members(image, names, &row, SemanticTypeTag::Union),
+        TypeKind::Intersection => members(
+            image,
+            names,
+            &row,
+            reference.ordinal,
+            SemanticTypeTag::Intersection,
+        ),
+        TypeKind::Union => members(
+            image,
+            names,
+            &row,
+            reference.ordinal,
+            SemanticTypeTag::Union,
+        ),
         TypeKind::Error => {
-            let spelling = required_spelling(&row)?;
+            let spelling = required_spelling(reference.ordinal, &row)?;
             Ok(ProjectedType::leaf(
                 unknown_record(TypeReason::NoIrRepresentation, Some(spelling)),
                 Some(spelling),
@@ -537,10 +743,11 @@ fn project<'image>(
 
 /// Projects one primitive row onto its exact width and signedness cells.
 fn primitive<'image>(
+    reference: TypeRef,
     row: &TypeFact<'image>,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
-    let spelling = required_spelling(row)?;
-    let (shape_cell, payload1) = primitive_cells(spelling)?;
+) -> Result<ProjectedType<'image>, ProjectionFault> {
+    let spelling = required_spelling(reference.ordinal, row)?;
+    let (shape_cell, payload1) = primitive_cells(reference.ordinal, spelling)?;
     let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
     record.payload0 = shape_cell;
     record.payload1 = payload1;
@@ -551,7 +758,7 @@ fn primitive<'image>(
 /// cells: byte/short/int/long are signed fixed-width integers, float/double
 /// are fixed-width floats, char is the character shape, boolean the boolean
 /// shape.
-fn primitive_cells(spelling: &[u8]) -> Result<(u32, u32), ProjectionFault<'_>> {
+fn primitive_cells(type_row: u32, spelling: &[u8]) -> Result<(u32, u32), ProjectionFault> {
     let cells = match spelling {
         b"boolean" => (SHAPE_BOOL, 0),
         b"byte" => (
@@ -573,7 +780,7 @@ fn primitive_cells(spelling: &[u8]) -> Result<(u32, u32), ProjectionFault<'_>> {
         b"char" => (SHAPE_UTF16_CODE_UNIT, TypeWidth::Fixed(16).to_cell()),
         b"float" => (SHAPE_FLOAT, TypeWidth::Fixed(32).to_cell()),
         b"double" => (SHAPE_FLOAT, TypeWidth::Fixed(64).to_cell()),
-        _ => return Err(ProjectionFault::Primitive { spelling }),
+        _ => return Err(ProjectionFault::Primitive { type_row }),
     };
     Ok(cells)
 }
@@ -586,8 +793,9 @@ fn declared<'image>(
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
-    let spelling = required_spelling(row)?;
+    type_row: u32,
+) -> Result<ProjectedType<'image>, ProjectionFault> {
+    let spelling = required_spelling(type_row, row)?;
     let total = row.children.len();
     let enclosing = row.flags & ENCLOSING_FLAG == ENCLOSING_FLAG;
     if total == 0 {
@@ -651,7 +859,7 @@ fn array<'image>(
     anchor: u32,
     reference: TypeRef,
     depth: usize,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
+) -> Result<ProjectedType<'image>, ProjectionFault> {
     let mut arity = 0usize;
     let mut cursor = reference;
     loop {
@@ -661,12 +869,15 @@ fn array<'image>(
         }
         arity += 1;
         if arity > DEPTH_LIMIT {
-            return Err(ProjectionFault::Depth);
+            return Err(ProjectionFault::Depth {
+                type_row: cursor.ordinal,
+            });
         }
         let mut children = row.children;
-        cursor = children
-            .next()
-            .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
+        cursor = children.next().ok_or(ProjectionFault::Malformed {
+            type_row: cursor.ordinal,
+            kind: row.kind,
+        })?;
     }
     let component = project(facts, image, names, anchor, cursor, depth - 1)?;
     let spelling = component.spelling;
@@ -676,16 +887,22 @@ fn array<'image>(
     // There is deliberately no source-spelling arity table or arbitrary
     // fidelity ceiling here.
     for _ in 1..arity {
-        facts
-            .anonymous_type_child(target, None, 0)
-            .map_err(|_| ProjectionFault::IndexCapacity)?;
+        facts.anonymous_type_child(target, None, 0).map_err(|_| {
+            ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::TypeChild,
+            }
+        })?;
         target = facts
             .intern_anonymous_type_row(anchor, array_record())
-            .map_err(|_| ProjectionFault::IndexCapacity)?;
+            .map_err(|_| ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::TypeRow,
+            })?;
     }
     ProjectedType::leaf(array_record(), spelling)
         .child(target)
-        .ok_or(ProjectionFault::IndexCapacity)
+        .ok_or(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::TypeChild,
+        })
 }
 
 /// Projects one wildcard row: an in-image bound commits the variance cell with
@@ -695,7 +912,7 @@ fn wildcard<'image>(
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
     depth: usize,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
+) -> Result<ProjectedType<'image>, ProjectionFault> {
     let variance = if row.flags & WILDCARD_EXTENDS_FLAG != 0 {
         VARIANCE_COVARIANT
     } else if row.flags & WILDCARD_SUPER_FLAG != 0 {
@@ -728,8 +945,9 @@ fn members<'image>(
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     row: &TypeFact<'image>,
+    type_row: u32,
     tag: SemanticTypeTag,
-) -> Result<ProjectedType<'image>, ProjectionFault<'image>> {
+) -> Result<ProjectedType<'image>, ProjectionFault> {
     let total = row.children.len();
     if total == 0 || total > MAX_TYPE_CHILDREN {
         let mut children = row.children;
@@ -740,9 +958,10 @@ fn members<'image>(
         return Ok(ProjectedType::leaf(unknown_projection(spelling), spelling));
     }
     let mut children = row.children;
-    let first = children
-        .next()
-        .ok_or(ProjectionFault::Malformed { kind: row.kind })?;
+    let first = children.next().ok_or(ProjectionFault::Malformed {
+        type_row,
+        kind: row.kind,
+    })?;
     let first_spelling = nearest_spelling(image, first, DEPTH_LIMIT)?;
     let mut projected = ProjectedType::leaf(SemanticTypeRecord::leaf(tag), first_spelling);
     let mut reference = first;
@@ -768,13 +987,13 @@ fn pure_nominal<'image>(
     image: JavaImage<'image>,
     names: &NameIndex<'image>,
     reference: TypeRef,
-) -> Result<Option<u32>, ProjectionFault<'image>> {
+) -> Result<Option<u32>, ProjectionFault> {
     let row = image.type_fact(reference).map_err(ProjectionFault::Image)?;
     if row.kind != TypeKind::Declared || row.children.len() != 0 || row.flags & ENCLOSING_FLAG != 0
     {
         return Ok(None);
     }
-    let spelling = required_spelling(&row)?;
+    let spelling = required_spelling(reference.ordinal, &row)?;
     Ok(names.lookup(spelling))
 }
 
@@ -784,12 +1003,14 @@ fn nearest_spelling<'image>(
     image: JavaImage<'image>,
     reference: TypeRef,
     depth: usize,
-) -> Result<Option<&'image [u8]>, ProjectionFault<'image>> {
+) -> Result<Option<&'image [u8]>, ProjectionFault> {
     let mut cursor = reference;
     let mut remaining = depth;
     loop {
         if remaining == 0 {
-            return Err(ProjectionFault::Depth);
+            return Err(ProjectionFault::Depth {
+                type_row: cursor.ordinal,
+            });
         }
         remaining -= 1;
         let row = image.type_fact(cursor).map_err(ProjectionFault::Image)?;
@@ -811,11 +1032,15 @@ fn nearest_spelling<'image>(
 
 /// Borrowed atom bytes of one image row whose closed layout requires them.
 fn required_spelling<'image>(
+    type_row: u32,
     row: &TypeFact<'image>,
-) -> Result<&'image [u8], ProjectionFault<'image>> {
+) -> Result<&'image [u8], ProjectionFault> {
     row.spelling
         .map(|atom| atom.bytes)
-        .ok_or(ProjectionFault::Malformed { kind: row.kind })
+        .ok_or(ProjectionFault::Malformed {
+            type_row,
+            kind: row.kind,
+        })
 }
 
 /// Bounded qualified-name index of the image's type declarations.
@@ -832,9 +1057,11 @@ impl<'image> NameIndex<'image> {
         }
     }
 
-    fn record(&mut self, name: &'image [u8], ordinal: u32) -> Result<(), ProjectionFault<'image>> {
+    fn record(&mut self, name: &'image [u8], ordinal: u32) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::NameIndex,
+            });
         }
         self.entries[self.len] = (name, ordinal);
         self.len += 1;
@@ -881,9 +1108,11 @@ impl SymbolIndex {
         }
     }
 
-    fn record(&mut self, symbol: SymbolRef, ordinal: u32) -> Result<(), ProjectionFault<'static>> {
+    fn record(&mut self, symbol: SymbolRef, ordinal: u32) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::SymbolIndex,
+            });
         }
         self.entries[self.len] = (Some(symbol), ordinal);
         self.len += 1;
@@ -922,18 +1151,19 @@ impl<'image> Executables<'image> {
     /// sibling-list width.
     fn siblings(
         &self,
+        symbol: u32,
         constructor: bool,
         owner: Option<&'image [u8]>,
         name: &[u8],
         out: &mut [u32; MAX_REF_LIST_ELEMENTS],
-    ) -> Result<usize, ProjectionFault<'image>> {
+    ) -> Result<usize, ProjectionFault> {
         let mut count = 0usize;
         for (entry_constructor, entry_owner, entry_name, ordinal) in
             self.entries.iter().take(self.len)
         {
             if *entry_constructor == constructor && *entry_owner == owner && *entry_name == name {
                 if count == MAX_REF_LIST_ELEMENTS {
-                    return Err(ProjectionFault::SiblingCapacity);
+                    return Err(ProjectionFault::SiblingCapacity { symbol });
                 }
                 out[count] = *ordinal;
                 count += 1;
@@ -948,9 +1178,11 @@ impl<'image> Executables<'image> {
         owner: Option<&'image [u8]>,
         name: &'image [u8],
         ordinal: u32,
-    ) -> Result<(), ProjectionFault<'image>> {
+    ) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::ExecutableIndex,
+            });
         }
         self.entries[self.len] = (constructor, owner, name, ordinal);
         self.len += 1;
@@ -978,8 +1210,11 @@ fn push_type_root<'source>(
     declared: &Declaration<'source>,
 ) -> Result<u32, JavaCollectError> {
     let kind = entity_kind(declared.kind);
-    let self_ordinal =
-        u32::try_from(facts.len()).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let self_ordinal = u32::try_from(facts.len()).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::FactOrdinal,
+        })
+    })?;
     let fact = SemanticFact::new(kind, declared.name.bytes, constructor(kind))
         .typed(nominal_record(self_ordinal));
     push(facts, fact)
@@ -992,12 +1227,14 @@ fn type_anchor(
     facts: &FactSet<'_>,
     names: &NameIndex<'_>,
     declared: &Declaration<'_>,
-) -> Result<u32, ProjectionFault<'static>> {
+) -> Result<u32, ProjectionFault> {
     declared
         .owner
         .and_then(|owner| names.lookup(owner.bytes))
         .or_else(|| (facts.len() != 0).then_some(0))
-        .ok_or(ProjectionFault::IndexCapacity)
+        .ok_or(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::NameIndex,
+        })
 }
 
 /// Pushes one field or enum constant with its projected declared type.
@@ -1035,11 +1272,20 @@ fn push_executable<'source>(
     symbols: &mut SymbolIndex,
     declared: &Declaration<'source>,
 ) -> Result<(), JavaCollectError> {
-    let symbol_reference = declared.symbol.ok_or_else(|| {
-        terminal(ProjectionFault::Malformed {
-            kind: TypeKind::None,
-        })
-    })?;
+    let symbol_reference = match declared.symbol {
+        Some(reference) => reference,
+        None => {
+            let Some(type_reference) = declared.semantic_type else {
+                return Err(terminal(ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Signature,
+                }));
+            };
+            return Err(terminal(ProjectionFault::Malformed {
+                type_row: type_reference.ordinal,
+                kind: TypeKind::None,
+            }));
+        }
+    };
     let symbol = image
         .symbol(symbol_reference)
         .map_err(|cause| terminal(ProjectionFault::Image(cause)))?;
@@ -1056,6 +1302,7 @@ fn push_executable<'source>(
             project(facts, image, names, anchor, parameter, DEPTH_LIMIT).map_err(terminal)?;
         let name = projected.spelling.ok_or_else(|| {
             terminal(ProjectionFault::Malformed {
+                type_row: parameter.ordinal,
                 kind: TypeKind::None,
             })
         })?;
@@ -1080,6 +1327,7 @@ fn push_executable<'source>(
         if !projected.void {
             let name = projected.spelling.ok_or_else(|| {
                 terminal(ProjectionFault::Malformed {
+                    type_row: return_type.ordinal,
                     kind: TypeKind::None,
                 })
             })?;
@@ -1106,6 +1354,7 @@ fn push_executable<'source>(
     let mut siblings = [0_u32; MAX_REF_LIST_ELEMENTS];
     let sibling_count = executables
         .siblings(
+            symbol_reference.ordinal,
             is_constructor,
             declared.owner.map(|atom| atom.bytes),
             declared.name.bytes,
@@ -1113,12 +1362,18 @@ fn push_executable<'source>(
         )
         .map_err(terminal)?;
     let Some(sibling_ordinals) = siblings.get(..sibling_count) else {
-        return Err(terminal(ProjectionFault::IndexCapacity));
+        return Err(terminal(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::ExecutableIndex,
+        }));
     };
-    let extension = java_facts(facts, sibling_ordinals).map_err(lane_terminal)?;
+    let extension = java_facts(facts, sibling_ordinals)
+        .map_err(|cause| lane_rejection(facts.len(), declared.name.bytes.len(), cause))?;
 
-    let parameter_total =
-        u32::try_from(parameter_count).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let parameter_total = u32::try_from(parameter_count).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::Signature,
+        })
+    })?;
     let mut fact = SemanticFact::new(
         EntityKind::Function,
         declared.name.bytes,
@@ -1136,9 +1391,11 @@ fn push_executable<'source>(
         fact = fact.type_child(*ordinal, None, 0);
     }
     let ordinal = push(facts, fact)?;
-    symbols
-        .record(symbol_reference, ordinal)
-        .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    symbols.record(symbol_reference, ordinal).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::SymbolIndex,
+        })
+    })?;
     executables
         .record(
             is_constructor,
@@ -1146,7 +1403,11 @@ fn push_executable<'source>(
             declared.name.bytes,
             ordinal,
         )
-        .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+        .map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::ExecutableIndex,
+            })
+        })?;
     push_docs(facts, names, ordinal, declared)
 }
 
@@ -1181,7 +1442,7 @@ fn push_occurrence<'source>(
     source_text: &'source str,
     utf16_len: u32,
     reference: &Reference<'source>,
-) -> Result<(), ProjectionFault<'source>> {
+) -> Result<(), ProjectionFault> {
     let owner = symbols
         .lookup(reference.owner)
         .ok_or(ProjectionFault::OrphanOwner {
@@ -1193,8 +1454,14 @@ fn push_occurrence<'source>(
             let symbol = image
                 .symbol(reference.target)
                 .map_err(ProjectionFault::Image)?;
-            let namespace = symbol.owner.utf8().map_err(|_| ProjectionFault::Utf8)?;
-            let name = symbol.name.utf8().map_err(|_| ProjectionFault::Utf8)?;
+            let namespace = symbol.owner.utf8().map_err(|_| ProjectionFault::Utf8 {
+                symbol: reference.target.ordinal,
+                atom: JavaSymbolAtom::Owner,
+            })?;
+            let name = symbol.name.utf8().map_err(|_| ProjectionFault::Utf8 {
+                symbol: reference.target.ordinal,
+                atom: JavaSymbolAtom::Name,
+            })?;
             // The image stores the declaring type and member name as two
             // separate atoms, so the declaring type travels as the namespace
             // and the member as the canonical path — no allocation, no join.
@@ -1213,9 +1480,9 @@ fn push_occurrence<'source>(
     };
     let start = utf16_byte_offset(source_text, reference.start, utf16_len)?;
     let end = utf16_byte_offset(source_text, reference.end, utf16_len)?;
-    let span = RelSpan::new(start, end).map_err(|_| ProjectionFault::Utf16 {
-        units: reference.start,
-        utf16_len,
+    let span = RelSpan::new(start, end).map_err(|_| ProjectionFault::Utf16Range {
+        start: reference.start,
+        end: reference.end,
     })?;
     facts
         .push_occurrence(
@@ -1227,12 +1494,14 @@ fn push_occurrence<'source>(
                 span,
             },
         )
-        .map_err(|_| ProjectionFault::IndexCapacity)?;
+        .map_err(|_| ProjectionFault::IndexCapacity {
+            phase: JavaProjectionIndexPhase::FactOrdinal,
+        })?;
     Ok(())
 }
 
 /// Projects one javac UTF-16 coordinate onto the bound source's byte domain.
-fn utf16_byte_offset(source: &str, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault<'_>> {
+fn utf16_byte_offset(source: &str, units: u32, utf16_len: u32) -> Result<u32, ProjectionFault> {
     let mut seen = 0_u32;
     for (offset, character) in source.char_indices() {
         if seen == units {
@@ -1253,16 +1522,22 @@ fn utf16_byte_offset(source: &str, units: u32, utf16_len: u32) -> Result<u32, Pr
     Err(ProjectionFault::Utf16 { units, utf16_len })
 }
 
-/// The bound source's total UTF-16 length, or `None` when it cannot fit a u32.
-fn utf16_length(source: &str) -> Option<u32> {
+/// The bound source's total UTF-16 length, or an explicit capacity fault when
+/// it cannot fit the compact coordinate width.
+fn utf16_length(source: &str) -> Result<u32, ProjectionFault> {
     let mut total = 0_u32;
     for character in source.chars() {
-        let Ok(width) = u32::try_from(character.len_utf16()) else {
-            return None;
-        };
-        total = total.checked_add(width)?;
+        let width =
+            u32::try_from(character.len_utf16()).map_err(|_| ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::Utf16,
+            })?;
+        total = total
+            .checked_add(width)
+            .ok_or(ProjectionFault::IndexCapacity {
+                phase: JavaProjectionIndexPhase::Utf16,
+            })?;
     }
-    Some(total)
+    Ok(total)
 }
 
 /// Streams one declaration's Javadoc atom into the documentation lane as text
@@ -1279,7 +1554,7 @@ fn push_docs<'source>(
     // when it is absent, so `docs: []` is not an authority gap.
     facts
         .mark_documentation_captured(owner)
-        .map_err(lane_terminal)?;
+        .map_err(|cause| lane_rejection(owner as usize, declared.name.bytes.len(), cause))?;
     let Some(documentation) = declared.documentation else {
         return Ok(());
     };
@@ -1296,8 +1571,11 @@ fn push_docs<'source>(
         match declared.documentation_flavor {
             DocFlavor::Traditional => push_doc_line(facts, names, owner, line).map_err(terminal)?,
             DocFlavor::Markdown | DocFlavor::Absent => {
-                push_text(facts, owner, line)
-                    .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+                push_text(facts, owner, line).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: JavaProjectionIndexPhase::Documentation,
+                    })
+                })?;
             }
         }
         if line_end == doc.len() {
@@ -1305,7 +1583,11 @@ fn push_docs<'source>(
         }
         facts
             .push_doc(owner, DocFragmentInput::SoftBreak)
-            .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            .map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Documentation,
+                })
+            })?;
         line_start = line_end + 1;
     }
     Ok(())
@@ -1318,25 +1600,34 @@ fn push_doc_line<'source>(
     names: &NameIndex<'source>,
     owner: u32,
     line: &'source [u8],
-) -> Result<(), ProjectionFault<'source>> {
+) -> Result<(), ProjectionFault> {
     let mut cursor = 0usize;
     while cursor < line.len() {
         let rest = line.get(cursor..).unwrap_or(&[]);
         match inline_tag(rest) {
             None => {
-                push_text(facts, owner, rest).map_err(|_| ProjectionFault::IndexCapacity)?;
+                push_text(facts, owner, rest).map_err(|_| ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Documentation,
+                })?;
                 break;
             }
             Some(tag) => {
                 let prose = rest.get(..tag.at).unwrap_or(&[]);
-                push_text(facts, owner, prose).map_err(|_| ProjectionFault::IndexCapacity)?;
+                push_text(facts, owner, prose).map_err(|_| ProjectionFault::IndexCapacity {
+                    phase: JavaProjectionIndexPhase::Documentation,
+                })?;
                 if tag.link {
-                    push_link(facts, names, owner, tag.interior)
-                        .map_err(|_| ProjectionFault::IndexCapacity)?;
+                    push_link(facts, names, owner, tag.interior).map_err(|_| {
+                        ProjectionFault::IndexCapacity {
+                            phase: JavaProjectionIndexPhase::Documentation,
+                        }
+                    })?;
                 } else if !tag.interior.is_empty() {
                     facts
                         .push_doc(owner, DocFragmentInput::Code(tag.interior))
-                        .map_err(|_| ProjectionFault::IndexCapacity)?;
+                        .map_err(|_| ProjectionFault::IndexCapacity {
+                            phase: JavaProjectionIndexPhase::Documentation,
+                        })?;
                 }
                 cursor += tag.after;
             }
@@ -2459,6 +2750,216 @@ mod tests {
                     && rejection.cause == FactFault::Capacity => {}
             Err(other) => return Err(TestError::Collect(other)),
             Ok(()) => return Err(TestError::Missing("capacity rejection")),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_terminal_retains_class_and_utf16_operands() -> Result<(), TestError> {
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Utf16 {
+                units: 7,
+                utf16_len: 12,
+            })
+        else {
+            return Err(TestError::Missing("Java projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::Utf16Offset {
+                units: 7,
+                source_utf16_len: 12,
+            })
+        {
+            return Err(TestError::Missing("exact UTF-16 projection operands"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_terminal_retains_type_owner_and_atom_coordinates() -> Result<(), TestError> {
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Primitive { type_row: 17 })
+        else {
+            return Err(TestError::Missing("primitive projection terminal"));
+        };
+        if fault != (compiler_vocabulary::JavaProjectionFault::Primitive { type_row: 17 }) {
+            return Err(TestError::Missing("primitive type row"));
+        }
+
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Depth { type_row: 23 })
+        else {
+            return Err(TestError::Missing("depth projection terminal"));
+        };
+        if fault != (compiler_vocabulary::JavaProjectionFault::Depth { type_row: 23 }) {
+            return Err(TestError::Missing("depth type row"));
+        }
+
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Malformed {
+                type_row: 24,
+                kind: TypeKind::Array,
+            })
+        else {
+            return Err(TestError::Missing("malformed-type projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::MalformedType {
+                type_row: 24,
+                kind: compiler_vocabulary::JavaProjectionTypeKind::Array,
+            })
+        {
+            return Err(TestError::Missing("malformed type coordinates"));
+        }
+
+        let mut fix = Fixture::default();
+        let owner_atom = fix.atom(b"demo.Owner");
+        let name_atom = fix.atom(b"call");
+        fix.symbols.push(SymbolRow {
+            owner: owner_atom,
+            name: name_atom,
+            parameters: Vec::new(),
+        });
+        fix.declarations.push(DeclarationRow {
+            kind: 11,
+            name: name_atom,
+            owner: None,
+            documentation: None,
+            semantic_type: None,
+            symbol: Some(0),
+        });
+        let bytes = fix.bind(b"")?;
+        let owner = compiler_languages_java::JavaAuthorityImage::open(&bytes)
+            .map_err(|_| TestError::Missing("validated symbol fixture"))?
+            .image
+            .declarations()
+            .next()
+            .ok_or(TestError::Missing("symbol declaration"))?
+            .map_err(|_| TestError::Missing("symbol declaration image"))?
+            .symbol
+            .ok_or(TestError::Missing("symbol coordinate"))?;
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::OrphanOwner { owner })
+        else {
+            return Err(TestError::Missing("orphan-owner projection terminal"));
+        };
+        if fault != (compiler_vocabulary::JavaProjectionFault::OrphanOwner { owner: 0 }) {
+            return Err(TestError::Missing("orphan owner coordinate"));
+        }
+
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Utf8 {
+                symbol: 31,
+                atom: compiler_vocabulary::JavaSymbolAtom::Name,
+            })
+        else {
+            return Err(TestError::Missing("atom UTF-8 projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::AtomUtf8 {
+                symbol: 31,
+                atom: compiler_vocabulary::JavaSymbolAtom::Name,
+            })
+        {
+            return Err(TestError::Missing("atom UTF-8 coordinates"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_terminal_retains_nested_image_coordinates() -> Result<(), TestError> {
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Image(ImageError::ChildRange {
+                plane: ImagePlane::TypeChildren,
+                start: 4,
+                count: 3,
+                upper_bound: 9,
+            }))
+        else {
+            return Err(TestError::Missing("image projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::Image {
+                cause: compiler_vocabulary::JavaImageFault::ChildRange {
+                    plane: compiler_vocabulary::JavaImagePlane::TypeChildren,
+                    start: 4,
+                    count: 3,
+                    upper_bound: 9,
+                },
+            })
+        {
+            return Err(TestError::Missing("nested image coordinates"));
+        }
+
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) = terminal(
+            ProjectionFault::Image(ImageError::Header(HeaderError::BodyLength {
+                declared: 11,
+                actual: 7,
+            })),
+        ) else {
+            return Err(TestError::Missing("header projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::Image {
+                cause: compiler_vocabulary::JavaImageFault::Header {
+                    cause: compiler_vocabulary::JavaImageHeaderFault::BodyLength {
+                        declared: 11,
+                        actual: 7,
+                    },
+                },
+            })
+        {
+            return Err(TestError::Missing("nested header operands"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn image_coordinate_overflow_is_capacity_not_truncation() -> Result<(), TestError> {
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) =
+            terminal(ProjectionFault::Image(ImageError::Header(
+                HeaderError::Truncated { actual: usize::MAX },
+            )))
+        else {
+            return Err(TestError::Missing("image overflow terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::IndexCapacity {
+                phase: compiler_vocabulary::JavaProjectionIndexPhase::FactOrdinal,
+            })
+        {
+            return Err(TestError::Missing("checked image coordinate overflow"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projection_terminal_does_not_fold_foreign_key_to_unsupported_declaration()
+    -> Result<(), TestError> {
+        let JavaCollectError::Lowering(LoweringUnsupported::JavaProjection { fault }) = terminal(
+            ProjectionFault::ForeignKey(ForeignKeyFault::BackslashInPath),
+        ) else {
+            return Err(TestError::Missing("foreign-key projection terminal"));
+        };
+        if fault
+            != (compiler_vocabulary::JavaProjectionFault::ForeignKey {
+                cause: compiler_vocabulary::JavaForeignKeyFault::BackslashInPath,
+            })
+        {
+            return Err(TestError::Missing("foreign-key projection operands"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lane_rejection_keeps_full_fact_cause_and_candidate_context() -> Result<(), TestError> {
+        let JavaCollectError::Rejected(rejection) = lane_rejection(13, 5, FactFault::Capacity)
+        else {
+            return Err(TestError::Missing("fact rejection terminal"));
+        };
+        if rejection.fact != 13 || rejection.name_len != 5 || rejection.cause != FactFault::Capacity
+        {
+            return Err(TestError::Missing("full fact rejection operands"));
         }
         Ok(())
     }

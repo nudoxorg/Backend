@@ -383,10 +383,6 @@ impl core::error::Error for NativeWorkerPanic {}
 
 /// Closed semantic terminal for syntax-native source whose declaration facts lack a compact recipe.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "the cold Copy terminal retains exact bounded Java projection text inline without shared or heap ownership"
-)]
 pub enum LoweringUnsupported {
     /// No declaration form has a compact semantic recipe in this compiler slice.
     #[error("no supported declaration form")]
@@ -466,125 +462,684 @@ pub enum LoweringUnsupported {
     /// Java lacks the closed top-level type or class-member recipe required for compact IR.
     #[error("Java declaration form is not represented")]
     JavaDeclarationForm,
-    /// A Java image projection failed after retaining its exact declaration context.
-    #[error("Java projection {class} in declaration {declaration}, owner {owner}")]
+    /// A Java image projection failed with its closed, source-bound fault.
+    #[error("Java projection {fault}")]
     JavaProjection {
-        /// Closed projection-fault class.
-        class: JavaProjectionFaultClass,
-        /// Exact declaration atom text.
-        declaration: JavaProjectionText,
-        /// Exact owner atom text, or the typed absent-owner fact.
-        owner: JavaProjectionOwner,
+        /// Variant-specific coordinates are retained exactly where the image
+        /// producer exposes them. Other variants retain their closed class;
+        /// the enclosing compile terminal owns the source identity.
+        fault: JavaProjectionFault,
+    },
+    /// A Go authority projection failed after retaining its compact context.
+    #[error("Go projection {fault}")]
+    GoProjection {
+        /// Closed fault class plus exact bounded operands.
+        fault: GoProjectionFault,
+    },
+    /// A TypeScript authority projection failed after retaining its compact context.
+    #[error("TypeScript projection {fault}")]
+    TypeScriptProjection {
+        /// Closed fault class plus exact bounded operands.
+        fault: TypeScriptProjectionFault,
+    },
+    /// A Python authority projection failed after retaining its compact context.
+    #[error("Python projection {fault}")]
+    PythonProjection {
+        /// Closed fault class plus exact bounded operands.
+        fault: PythonProjectionFault,
+    },
+    /// A C# authority projection failed after retaining its compact context.
+    #[error("C# projection {fault}")]
+    CSharpProjection {
+        /// Closed fault class plus exact bounded operands.
+        fault: CSharpProjectionFault,
+    },
+    /// A Clang authority projection failed after retaining its compact context.
+    #[error("Clang projection {fault}")]
+    ClangProjection {
+        /// Closed fault class plus exact bounded operands.
+        fault: ClangProjectionFault,
     },
 }
 
-/// Closed projection-fault classes emitted by the Java lowering lane.
+/// One closed Java type kind retained when an image row violates its
+/// type-specific grammar. This vocabulary mirrors the authority's public
+/// closed tags without importing the Java image crate into this portable
+/// terminal crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JavaProjectionFaultClass {
-    Image,
-    Depth,
-    Malformed,
+pub enum JavaProjectionTypeKind {
+    /// Java primitive type row.
     Primitive,
-    Utf8,
-    SourceUtf8,
+    /// Java `void` type row.
+    Void,
+    /// Declared Java class, interface, enum, annotation, or record row.
+    Declared,
+    /// Java array type row.
+    Array,
+    /// Java declared type-variable row.
+    Variable,
+    /// Java wildcard row.
+    Wildcard,
+    /// Java intersection row.
+    Intersection,
+    /// Java multi-catch union row.
+    Union,
+    /// Javac error type row.
+    Error,
+    /// Javac no-type sentinel row.
+    None,
+    /// Java null type row.
+    Null,
+}
+
+/// One exact foreign-key grammar rejection projected from a Java reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaForeignKeyFault {
+    /// The authority's canonical foreign path was empty.
+    EmptyPath,
+    /// The authority's canonical foreign path contained a backslash.
+    BackslashInPath,
+}
+
+/// One atom role in a resolved Java executable-symbol row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaSymbolAtom {
+    /// The symbol's declaring owner atom.
+    Owner,
+    /// The symbol's member-name atom.
+    Name,
+}
+
+/// Closed staging operation whose coordinate could not fit Java's compact
+/// projection lane. This names the failed operation without inventing a raw
+/// coordinate where the source operation did not expose one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaProjectionIndexPhase {
+    /// A canonical fact ordinal could not fit the compact coordinate width.
+    FactOrdinal,
+    /// A recursive type-row coordinate could not fit.
+    TypeRow,
+    /// A recursive type-child coordinate could not fit.
+    TypeChild,
+    /// A qualified declaration-name index was full.
+    NameIndex,
+    /// An executable-symbol index was full.
+    SymbolIndex,
+    /// An overload-executable index was full.
+    ExecutableIndex,
+    /// A callable signature carrier coordinate could not fit.
+    Signature,
+    /// A documentation projection coordinate could not fit.
+    Documentation,
+    /// A UTF-16-to-byte conversion could not fit the source coordinate lane.
     Utf16,
-    OrphanOwner,
-    ForeignKey,
-    SiblingCapacity,
+}
+
+/// One fixed Java authority-image plane in canonical directory order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaImagePlane {
+    /// Fixed-width atom offset and length rows.
+    Atoms,
+    /// Concatenated UTF-8 atom bytes.
+    AtomBytes,
+    /// Recursive type rows.
+    Types,
+    /// Type-child coordinate rows.
+    TypeChildren,
+    /// Executable symbol rows.
+    Symbols,
+    /// Symbol-parameter coordinate rows.
+    SymbolParameters,
+    /// Declaration rows.
+    Declarations,
+    /// Resolved call-reference rows.
+    References,
+    /// Per-declaration extension ranges.
+    DeclarationExtensions,
+    /// Extension payload rows.
+    ExtensionEntries,
+}
+
+/// Exact Java authority-image header rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaImageHeaderFault {
+    /// The fixed header was truncated.
+    Truncated { actual: u32 },
+    /// The fixed magic bytes differed.
+    Magic { found: [u8; 4] },
+    /// The image version was unsupported.
+    Version { found: u16 },
+    /// The encoded fixed-header length differed.
+    Length { found: u16 },
+    /// The encoded Java release was unsupported.
+    Release { found: u16 },
+    /// The directory count differed from the grammar.
+    SectionCount { found: u16 },
+    /// Declared and supplied body lengths differed.
+    BodyLength { declared: u32, actual: u32 },
+}
+
+/// Exact Java authority-image directory rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaImageSectionFault {
+    /// A directory tag differed at its canonical plane position.
+    Tag { expected: u16, found: u16 },
+    /// A fixed row width differed.
+    RowBytes { expected: u32, found: u32 },
+    /// Count, row width, and encoded aggregate bytes disagreed.
+    ByteCount {
+        count: u32,
+        row_bytes: u32,
+        found: u32,
+    },
+    /// A plane offset was not contiguous.
+    Offset { expected: u32, found: u32 },
+    /// A declared plane range escaped the source image.
+    Range {
+        offset: u32,
+        length: u32,
+        image_bytes: u32,
+    },
+}
+
+/// Exact Java atom-table rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaImageAtomFault {
+    /// An atom began at a noncanonical byte offset.
+    NonCanonicalOffset { found: u32 },
+    /// An atom range escaped the atom-byte plane.
+    Range,
+    /// Atom bytes violated their UTF-8 promise.
+    Utf8,
+    /// Atom-byte data remained after the final atom.
+    TrailingBytes,
+}
+
+/// Exact portable Java authority-image rejection.
+///
+/// All source image offsets are checked into the explicit `u32` image
+/// coordinate width by the projection boundary. A native `usize` outside
+/// that width instead produces the projection's separate `IndexCapacity`
+/// terminal; it is never truncated or replaced by a sentinel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaImageFault {
+    /// Header grammar rejected one exact nested fact.
+    Header { cause: JavaImageHeaderFault },
+    /// A canonical directory plane rejected one exact nested fact.
+    Section {
+        plane: JavaImagePlane,
+        cause: JavaImageSectionFault,
+    },
+    /// The image checksum differed.
+    Digest,
+    /// An atom row rejected one exact nested fact.
+    Atom {
+        index: u32,
+        cause: JavaImageAtomFault,
+    },
+    /// A required atom coordinate used the absent grammar value.
+    AbsentAtom,
+    /// A coordinate escaped its exact target plane.
+    Coordinate {
+        plane: JavaImagePlane,
+        index: u32,
+        upper_bound: u32,
+    },
+    /// A fixed-width row used an unknown closed tag.
+    Tag { plane: JavaImagePlane, found: u8 },
+    /// A child range overflowed or escaped its target plane.
+    ChildRange {
+        plane: JavaImagePlane,
+        start: u32,
+        count: u32,
+        upper_bound: u32,
+    },
+    /// A reference range was inverted in Java UTF-16 coordinates.
+    ReferenceRange { start: u32, end: u32 },
+    /// Documentation flavor and atom presence disagreed.
+    DocumentationPresence,
+    /// A declaration modifier bitset carried unrecognized bits.
+    ModifierBits { found: u32 },
+    /// A record-component extension targeted a non-field declaration row.
+    RecordComponentKind { index: u32 },
+    /// Extension reserved bytes were nonzero.
+    ExtensionReserved,
+}
+
+/// Closed Java authority projection terminal.
+///
+/// Each variant carries precisely the coordinates the projection had at its
+/// failure site. Absence is encoded by choosing a variant with no coordinate,
+/// never with an optional-coordinate bag or a sentinel value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JavaProjectionFault {
+    /// A previously validated Java image row could not be reread.
+    Image { cause: JavaImageFault },
+    /// The producer-bounded recursive type graph exceeded its depth limit at
+    /// this exact authority type row.
+    Depth { type_row: u32 },
+    /// A row of the named closed Java type kind lacked a required child.
+    MalformedType {
+        type_row: u32,
+        kind: JavaProjectionTypeKind,
+    },
+    /// A primitive spelling in this exact authority type row lay outside the
+    /// shared primitive vocabulary.
+    Primitive { type_row: u32 },
+    /// One exact atom in a resolved executable-symbol row failed its UTF-8
+    /// promise.
+    AtomUtf8 { symbol: u32, atom: JavaSymbolAtom },
+    /// The compile source itself was not UTF-8 for Javac coordinate mapping.
+    SourceUtf8,
+    /// One Javac UTF-16 unit offset could not map into the source.
+    Utf16Offset {
+        /// Requested UTF-16 unit coordinate.
+        units: u32,
+        /// Exact UTF-16 length of the bound source.
+        source_utf16_len: u32,
+    },
+    /// A Javac UTF-16 range was not an ordered relative byte span.
+    Utf16Range {
+        /// Reported source start coordinate.
+        start: u32,
+        /// Reported source end coordinate.
+        end: u32,
+    },
+    /// A reference owner named no pushed executable.
+    OrphanOwner { owner: u32 },
+    /// A resolved external reference failed canonical key validation.
+    ForeignKey { cause: JavaForeignKeyFault },
+    /// The authority's sibling list for this executable symbol exceeded its
+    /// bounded pooled width.
+    SiblingCapacity { symbol: u32 },
+    /// A checked projection coordinate could not fit the named operation.
+    IndexCapacity { phase: JavaProjectionIndexPhase },
+}
+
+/// Exact foreign-key grammar rejection projected by Go, TypeScript, or
+/// Python. The shared shape is closed and has no coordinate bag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionForeignKeyFault {
+    /// The canonical path was empty.
+    EmptyPath,
+    /// The canonical path contained a backslash.
+    BackslashInPath,
+}
+
+/// Exact rejected portion of one package lineage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionLineagePart {
+    /// The ecosystem component.
+    Ecosystem,
+    /// The package-name component.
+    Package,
+}
+
+/// Exact package-lineage grammar rejection projected by Go, TypeScript, or
+/// Python.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionPackageLineageFault {
+    /// The ecosystem component was empty.
+    EmptyEcosystem,
+    /// The package-name component was empty.
+    EmptyPackage,
+    /// The ecosystem contained the closed render separator.
+    SeparatorInEcosystem,
+    /// The package name contained the closed render separator.
+    SeparatorInPackage,
+    /// The named component contained a path separator.
+    Backslash { part: ProjectionLineagePart },
+}
+
+/// Closed Go authority projection terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GoProjectionFault {
+    /// A validated Go authority image row could not be reread.
+    Image,
+    /// A projection index could not fit the compact lane.
     IndexCapacity,
+    /// The producer-bounded recursive type graph exceeded its depth budget.
+    Depth,
+    /// A variadic signature had no final typed parameter.
+    VariadicWithoutParameter { signature: u32 },
+    /// No pushed fact could own an anonymous compound row.
+    Anchor,
+    /// A field or method list exceeded its bounded pool.
+    ListCapacity,
+    /// A same-package reference named no declared target.
+    OrphanTarget,
+    /// A foreign target key failed grammar validation.
+    ForeignKey { cause: ProjectionForeignKeyFault },
+    /// A package lineage failed grammar validation.
+    PackageLineage {
+        cause: ProjectionPackageLineageFault,
+    },
+    /// An authority atom violated its UTF-8 promise.
+    AtomUtf8,
+    /// A relative occurrence span was inverted.
+    RelativeSpan { start: u32, end: u32 },
+    /// A member, doc, or occurrence owner had no pushed fact.
+    OrphanOwner { owner: u32 },
 }
 
-impl core::fmt::Display for JavaProjectionFaultClass {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let name = match self {
-            Self::Image => "Image",
-            Self::Depth => "Depth",
-            Self::Malformed => "Malformed",
-            Self::Primitive => "Primitive",
-            Self::Utf8 => "Utf8",
-            Self::SourceUtf8 => "SourceUtf8",
-            Self::Utf16 => "Utf16",
-            Self::OrphanOwner => "OrphanOwner",
-            Self::ForeignKey => "ForeignKey",
-            Self::SiblingCapacity => "SiblingCapacity",
-            Self::IndexCapacity => "IndexCapacity",
-        };
-        formatter.write_str(name)
-    }
-}
-
-/// Owned UTF-8 atom text retained by a Java projection diagnostic.
+/// Closed TypeScript authority projection terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct JavaProjectionText {
-    /// Exact retained atom bytes.
-    bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
-    /// Number of meaningful bytes in `bytes`.
-    byte_len: usize,
-    /// Whether the source atom exceeded the bounded diagnostic width.
-    truncated: bool,
+pub enum TypeScriptProjectionFault {
+    /// A foreign target key failed grammar validation.
+    ForeignKey { cause: ProjectionForeignKeyFault },
+    /// An import-module package lineage failed grammar validation.
+    PackageLineage {
+        cause: ProjectionPackageLineageFault,
+    },
+    /// A host-size coordinate could not fit the wire's `u32` coordinate.
+    CoordinateOverflow { value: u64 },
+    /// An import binding named no retained module row.
+    MissingImportBinding { fact: u32 },
 }
 
-impl JavaProjectionText {
-    /// Retains an already image-validated atom without changing its bytes.
-    ///
-    /// Atoms wider than the diagnostic bound keep their leading characters
-    /// and are marked truncated, so the rendered cause never presents a cut
-    /// name as the complete declaration or splits a UTF-8 character.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        if bytes.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES {
-            let mut retained = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
-            retained[..bytes.len()].copy_from_slice(bytes);
-            return Self {
-                bytes: retained,
-                byte_len: bytes.len(),
-                truncated: false,
-            };
-        }
-        let mut end = MAX_NATIVE_DIAGNOSTIC_BYTES;
-        while end > 0 && (bytes[end] & 0xC0) == 0x80 {
-            end -= 1;
-        }
-        let mut retained = [0; MAX_NATIVE_DIAGNOSTIC_BYTES];
-        retained[..end].copy_from_slice(&bytes[..end]);
-        Self {
-            bytes: retained,
-            byte_len: end,
-            truncated: true,
-        }
-    }
-}
-
-impl core::fmt::Display for JavaProjectionText {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let text =
-            core::str::from_utf8(&self.bytes[..self.byte_len]).map_err(|_| core::fmt::Error)?;
-        formatter.write_str(text)?;
-        if self.truncated {
-            formatter.write_str("…")?;
-        }
-        Ok(())
-    }
-}
-
-/// Owner atom fact for a Java declaration, including an honest unnamed owner.
+/// Closed Python authority projection terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "the cold Copy fact retains exact bounded owner text inline without shared or heap ownership"
-)]
-pub enum JavaProjectionOwner {
-    Named(JavaProjectionText),
-    Absent,
+pub enum PythonProjectionFault {
+    /// An authority spelling that must become a foreign key was not UTF-8.
+    ForeignSpellingUtf8,
+    /// A foreign target key failed grammar validation.
+    ForeignKey { cause: ProjectionForeignKeyFault },
+    /// A foreign package lineage failed grammar validation.
+    PackageLineage {
+        cause: ProjectionPackageLineageFault,
+    },
 }
 
-impl core::fmt::Display for JavaProjectionOwner {
+/// Closed C# authority projection terminal portable across the application
+/// and interface boundaries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CSharpProjectionFault {
+    /// A validated C# authority image row could not be reread.
+    Image { cause: CSharpImageFault },
+    /// The recursive authority type graph exceeded its projection budget.
+    Depth,
+    /// A declaration name span escaped the entered source.
+    NameSpan { start: u32, end: u32 },
+    /// A reference began before its owning declaration.
+    OwnerOrder {
+        owner_start: u32,
+        reference_start: u32,
+    },
+    /// A foreign occurrence key could not be built from authority facts.
+    Foreign,
+    /// The bounded attribute lane exhausted its element capacity.
+    AttributeCapacity { spellings: u32 },
+    /// A projection index could not fit the compact lane.
+    IndexCapacity,
+    /// A rectangular-array row repeated distinct element references.
+    HeterogeneousArrayRank,
+}
+
+/// One C# authority-image section in fixed directory order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CSharpImageSection {
+    /// Atom offsets and lengths.
+    Atoms,
+    /// Concatenated UTF-8 atom bytes.
+    AtomBytes,
+    /// Namespace, type, and member declarations.
+    Declarations,
+    /// Callable parameter rows.
+    Parameters,
+    /// Generic parameter rows.
+    TypeParameters,
+    /// Generic constraint rows.
+    TypeConstraints,
+    /// Recursive type rows.
+    Types,
+    /// Type-child rows.
+    TypeChildren,
+    /// Applied attribute rows.
+    Attributes,
+    /// XML documentation rows.
+    Docs,
+    /// Resolved reference rows.
+    References,
+}
+
+/// Exact C# image header rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CSharpImageHeaderFault {
+    /// The fixed header was truncated.
+    Truncated { actual: u32 },
+    /// The fixed magic bytes differed.
+    Magic { found: [u8; 4] },
+    /// The image version was unsupported.
+    Version { found: u16 },
+    /// The fixed header length differed.
+    Length { found: u32 },
+    /// The directory count differed.
+    SectionCount { found: u32 },
+    /// Declared and supplied body lengths differed.
+    BodyLength { declared: u32, actual: u32 },
+    /// Reserved header bytes were nonzero.
+    Reserved,
+    /// A directory tag differed from canonical position.
+    DirectoryTag { expected: u16, found: u16 },
+    /// A directory row width differed from its fixed grammar.
+    DirectoryRowBytes { expected: u32, found: u32 },
+    /// Directory count, width, and aggregate byte count disagreed.
+    DirectoryByteCount {
+        count: u32,
+        row_bytes: u32,
+        found: u32,
+    },
+    /// A directory offset was not canonical.
+    DirectoryOffset { expected: u32, found: u32 },
+    /// A directory range escaped the image.
+    DirectoryRange {
+        offset: u32,
+        length: u32,
+        image_bytes: u32,
+    },
+}
+
+/// One closed C# authority type-node kind for an image child-law rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CSharpImageTypeKind {
+    /// Named type use.
+    Named,
+    /// Array type.
+    Array,
+    /// Pointer type.
+    Pointer,
+    /// Nullable value type.
+    NullableValue,
+    /// Tuple type.
+    Tuple,
+    /// Function-pointer type.
+    FunctionPointer,
+    /// Type-parameter use.
+    TypeParameter,
+    /// Dynamic type.
+    Dynamic,
+    /// Unbound Roslyn error type.
+    Error,
+}
+
+/// Exact portable C# authority-image rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CSharpImageFault {
+    /// Fixed header grammar rejected one nested fact.
+    Header { cause: CSharpImageHeaderFault },
+    /// The image checksum differed.
+    Digest,
+    /// A closed row tag was unknown in the named section.
+    DeclarationKind {
+        index: u32,
+        found: u8,
+        plane: CSharpImageSection,
+    },
+    /// A row carried reserved bytes or flags in the named section.
+    DeclarationReserved {
+        index: u32,
+        plane: CSharpImageSection,
+    },
+    /// An atom range escaped the atom-byte plane.
+    NameRange {
+        index: u32,
+        offset: u32,
+        length: u32,
+        atom_bytes: u32,
+    },
+    /// A referenced atom violated UTF-8.
+    NameUtf8 { index: u32 },
+    /// A source or section range was inverted or escaped its bound.
+    Span { index: u32, start: u32, end: u32 },
+    /// A type-node child run violated its closed cardinality law.
+    TypeChildCount {
+        index: u32,
+        kind: CSharpImageTypeKind,
+        min: u32,
+        max: u32,
+        actual: u32,
+    },
+}
+
+/// Closed native type kind retained by Clang projection terminals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClangProjectionTypeKind {
+    /// Unknown or unmodeled native type.
+    Unknown,
+    /// Native builtin type.
+    Builtin,
+    /// Declaration-named native type.
+    Named,
+    /// Native pointer.
+    Pointer,
+    /// Objective-C block pointer.
+    BlockPointer,
+    /// C++ member pointer.
+    MemberPointer,
+    /// C++ lvalue reference.
+    LvalueReference,
+    /// C++ rvalue reference.
+    RvalueReference,
+    /// Native array.
+    Array,
+    /// Native function type.
+    Function,
+}
+
+/// Exact native qualifier fact retained by Clang projection terminals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClangProjectionQualifiers {
+    /// Native `const` fact.
+    pub is_const: bool,
+    /// Native `volatile` fact.
+    pub is_volatile: bool,
+    /// Native `restrict` fact.
+    pub is_restrict: bool,
+}
+
+/// Closed native declaration-identity availability in a Clang terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClangProjectionDeclaration {
+    /// The authority supplied a compact native declaration identity.
+    Known { identity: [u8; 16] },
+    /// The authority supplied no declaration identity.
+    Unavailable,
+}
+
+/// Closed Clang authority projection terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClangProjectionFault {
+    /// An authority source range escaped the entered source lease.
+    Span { start: u32, end: u32 },
+    /// A declaration requiring a name had no nonempty authority name span.
+    Nameless { declaration: u32 },
+    /// An anonymous authority type had no representable owning declaration.
+    Anchor,
+    /// A projection index could not fit the compact lane.
+    IndexCapacity,
+    /// A C++ override named a foreign native identity with no public key.
+    ForeignOverride { identity: [u8; 16] },
+    /// A reference named a foreign native identity with no public key.
+    ForeignReference { identity: [u8; 16] },
+    /// Qualifiers named a type form on which they are not semantically legal.
+    IllegalQualifierTarget {
+        type_id: u32,
+        kind: ClangProjectionTypeKind,
+        qualifiers: ClangProjectionQualifiers,
+    },
+    /// A C++ member pointer named a non-class owner type.
+    IllegalMemberPointerOwner {
+        pointer: u32,
+        owner: u32,
+        kind: ClangProjectionTypeKind,
+        declaration: ClangProjectionDeclaration,
+    },
+}
+
+impl core::fmt::Display for GoProjectionFault {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl core::fmt::Display for TypeScriptProjectionFault {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl core::fmt::Display for PythonProjectionFault {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl core::fmt::Display for CSharpProjectionFault {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl core::fmt::Display for ClangProjectionFault {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl core::fmt::Display for JavaProjectionFault {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Named(text) => text.fmt(formatter),
-            Self::Absent => formatter.write_str("<absent>"),
+            Self::Image { cause } => write!(formatter, "image {cause:?}"),
+            Self::Depth { type_row } => write!(formatter, "depth at type row {type_row}"),
+            Self::MalformedType { type_row, kind } => {
+                write!(formatter, "malformed {kind:?} type row {type_row}")
+            }
+            Self::Primitive { type_row } => write!(formatter, "primitive type row {type_row}"),
+            Self::AtomUtf8 { symbol, atom } => {
+                write!(formatter, "symbol {symbol} {atom:?} atom UTF-8")
+            }
+            Self::SourceUtf8 => formatter.write_str("source UTF-8"),
+            Self::Utf16Offset {
+                units,
+                source_utf16_len,
+            } => write!(formatter, "UTF-16 offset {units} of {source_utf16_len}"),
+            Self::Utf16Range { start, end } => write!(formatter, "UTF-16 range {start}..{end}"),
+            Self::OrphanOwner { owner } => write!(formatter, "orphan owner {owner}"),
+            Self::ForeignKey { cause } => write!(formatter, "foreign key {cause:?}"),
+            Self::SiblingCapacity { symbol } => write!(formatter, "sibling capacity {symbol}"),
+            Self::IndexCapacity { phase } => write!(formatter, "{phase:?} capacity"),
         }
     }
 }
+
+const _: () = assert!(core::mem::size_of::<GoProjectionFault>() <= 16);
+const _: () = assert!(core::mem::size_of::<TypeScriptProjectionFault>() <= 16);
+const _: () = assert!(core::mem::size_of::<PythonProjectionFault>() <= 8);
+const _: () = assert!(core::mem::size_of::<CSharpProjectionFault>() <= 32);
+const _: () = assert!(core::mem::size_of::<ClangProjectionFault>() <= 32);
+const _: () = assert!(core::mem::size_of::<JavaProjectionFault>() <= 32);
+
+const _: () = assert!(core::mem::size_of::<LoweringUnsupported>() <= 96);
 
 /// Copyable canonical recipe facts retained by compact compiler artifacts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
