@@ -4,8 +4,7 @@
 //! Verified point mutations and readback admission.
 
 use arrayvec::ArrayVec;
-use server_index_graph_vector::{IrVectorColumn, ValidatedVectorSegment};
-use server_index_vocabulary::VectorSegmentId;
+use server_index_graph_vector::ValidatedVectorSegment;
 
 use super::{
     QdrantBlockingAdapter,
@@ -26,20 +25,6 @@ impl QdrantBlockingAdapter {
         segments: &[ValidatedVectorSegment<'_>],
     ) -> Result<QdrantMutationReceipt, QdrantError> {
         let prepared = admission::prepare_segments(self.authority, segments)?;
-        self.upsert_prepared(&prepared)
-    }
-
-    /// Upserts an entity-aligned canonical IR vector column directly.
-    ///
-    /// The only encoding occurs at the unavoidable remote HTTP boundary; no
-    /// intermediate vector facts, points, segments, or owned coordinates are
-    /// created inside the process.
-    pub fn upsert_ir_column(
-        &self,
-        segment: VectorSegmentId,
-        column: IrVectorColumn<'_, '_>,
-    ) -> Result<QdrantMutationReceipt, QdrantError> {
-        let prepared = admission::prepare_ir_column(self.authority, segment, column)?;
         self.upsert_prepared(&prepared)
     }
 
