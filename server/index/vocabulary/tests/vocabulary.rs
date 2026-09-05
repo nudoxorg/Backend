@@ -4,12 +4,18 @@
 //! Public laws for the minimal immutable-index identity vocabulary.
 
 use allocation_counter::{AllocationInfo, measure};
+use compiler_ir::{DeclarationIdentity, PackageLineage, SemanticImageIdentity};
 use core::{
     mem::{align_of, size_of},
     ops::Deref,
 };
-use heart_identity::{ContentIdDecodeError, DomainCode};
-use server_index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId, VectorSegmentId};
+use heart_identity::{
+    CompilePublicationDomain, ContentId, ContentIdDecodeError, DomainCode, GenerationId,
+};
+use server_index_vocabulary::{
+    CanonicalEntityLocator, ExactSegmentId, IndexLocatorFacts, IndexSnapshotId, LexicalSegmentId,
+    PackageVersion, SemanticImageExtent, SemanticImageLocator, VectorSegmentId,
+};
 use std::hint::black_box;
 
 const CANONICAL_BYTES: usize = 24;
@@ -103,4 +109,34 @@ fn canonical_construction_allocates_nothing_after_warmup() {
         black_box(VectorSegmentId::from_canonical_bytes(&bytes));
     });
     assert_eq!(allocations, AllocationInfo::default());
+}
+
+#[test]
+fn typed_locator_vocabulary_retains_borrowed_facts() {
+    assert!(PackageVersion::new("").is_err());
+    let version = PackageVersion::new("1.2.3").expect("nonempty version");
+    let lineage = PackageLineage::new("cargo", "serde").expect("valid lineage");
+    let coordinate = server_index_vocabulary::PackageCoordinate::new(lineage, version);
+    assert_eq!(coordinate.version.as_str(), "1.2.3");
+    let identity = SemanticImageIdentity::from_encoded_bytes(b"canonical-image");
+    let extent = SemanticImageExtent::new(64, 15).expect("checked extent");
+    let image = SemanticImageLocator::new(identity, extent);
+    assert_eq!((image.identity, image.extent), (identity, extent));
+    let generation = GenerationId::from_digest([4; 32]);
+    let snapshot = IndexSnapshotId::from_canonical_bytes(b"snapshot");
+    let publication = ContentId::<CompilePublicationDomain>::from_canonical_bytes(b"publication");
+    let facts = IndexLocatorFacts::new(generation, snapshot, publication);
+    assert_eq!(
+        (facts.generation, facts.snapshot, facts.publication),
+        (generation, snapshot, publication)
+    );
+    let declaration = DeclarationIdentity {
+        family: compiler_ir::DeclarationFamilyId::from_raw([7; 16]),
+        variant: compiler_ir::VariantFingerprint::from_raw([8; 16]),
+    };
+    let locator = CanonicalEntityLocator::new(image, 3, declaration);
+    assert_eq!(
+        (locator.image, locator.ordinal, locator.declaration),
+        (image, 3, declaration)
+    );
 }
