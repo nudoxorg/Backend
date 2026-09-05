@@ -13,8 +13,8 @@ use interface_core::{
 
 use crate::{
     CommandId, DocumentFilter, DocumentSearchScope, DocumentationState, FormError, FormField,
-    FormState, NavigationState, PaletteDirection, PaletteEditError, ResultLimit, Route,
-    ServiceAction,
+    FormState, NavigationState, PackageDocumentationOutcome, PaletteDirection, PaletteEditError,
+    ResultLimit, Route, ServiceAction,
 };
 use interface_core::InputText;
 
@@ -335,13 +335,13 @@ pub enum NativeTextInputError {
 }
 
 /// Fixed-capacity presentation state for one application window.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct ShellState {
     projection: ShellProjection,
 }
 
 /// Immutable public projection facts for one application window.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct ShellProjection {
     /// Stable product information architecture and visible-only palette state.
     pub navigation: NavigationState,
@@ -355,6 +355,9 @@ pub struct ShellProjection {
     pub generated: Option<GeneratedProjection>,
     /// Current or most recently completed pinned-package journey.
     pub package_journey: Option<PackageJourneyProjection>,
+    /// Canonical documents derived from the exact reopened generated image, or their exact
+    /// post-publication projection failure.
+    pub package_documentation: Option<PackageDocumentationOutcome>,
     /// Adaptive placement projection.
     pub adaptive: AdaptiveProjection,
     /// Service-owned execution projection.
@@ -458,6 +461,49 @@ impl ShellState {
             return self.retain_projection_error(ApplyError::NotificationEpochExhausted);
         };
         self.projection.package_journey = Some(next);
+        if phase == PackageCompilePhase::Locate {
+            self.projection.package_documentation = None;
+        }
+        self.projection.notification_epoch = epoch;
+        self.projection.projection_error = None;
+        self.refresh_pages();
+        Ok(())
+    }
+
+    /// Retains the terminal semantic-document projection for the active package journey.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a projection without a package journey, from a different correlation, or before
+    /// durable reopen. The outcome itself always retains the exact post-publication cause.
+    pub fn apply_package_documentation(
+        &mut self,
+        outcome: PackageDocumentationOutcome,
+    ) -> Result<(), ApplyError> {
+        let observed = outcome.correlation();
+        let Some(journey) = self.projection.package_journey else {
+            return self.retain_projection_error(ApplyError::PackageDocumentationWithoutJourney {
+                observed,
+            });
+        };
+        if journey.correlation != observed {
+            return self.retain_projection_error(ApplyError::PackageDocumentationCorrelation {
+                active: journey.correlation,
+                observed,
+            });
+        }
+        if package_phase_ordinal(journey.last_phase)
+            < package_phase_ordinal(PackageCompilePhase::Reopen)
+        {
+            return self.retain_projection_error(ApplyError::PackageDocumentationBeforeReopen {
+                correlation: observed,
+                preceding: journey.last_phase,
+            });
+        }
+        let Some(epoch) = self.projection.notification_epoch.checked_add(1) else {
+            return self.retain_projection_error(ApplyError::NotificationEpochExhausted);
+        };
+        self.projection.package_documentation = Some(outcome);
         self.projection.notification_epoch = epoch;
         self.projection.projection_error = None;
         self.refresh_pages();
@@ -1055,6 +1101,7 @@ impl Default for ShellState {
                 generation: SurfaceStatus::Checking,
                 generated: None,
                 package_journey: None,
+                package_documentation: None,
                 adaptive: AdaptiveProjection::Checking,
                 execution: ExecutionProjection::Checking,
                 index: SurfaceStatus::Checking,
@@ -1190,6 +1237,25 @@ pub enum ApplyError {
         active: CorrelationId,
         /// Newly submitted correlation that was not admitted.
         observed: CorrelationId,
+    },
+    /// A semantic-document projection arrived before any package journey was established.
+    PackageDocumentationWithoutJourney {
+        /// Correlation carried by the rejected projection.
+        observed: CorrelationId,
+    },
+    /// A semantic-document projection did not belong to the active package journey.
+    PackageDocumentationCorrelation {
+        /// Correlation currently owning the package journey.
+        active: CorrelationId,
+        /// Correlation carried by the rejected projection.
+        observed: CorrelationId,
+    },
+    /// A semantic-document projection arrived before durable reopen was observed.
+    PackageDocumentationBeforeReopen {
+        /// Correlation owning the package journey.
+        correlation: CorrelationId,
+        /// Last valid phase observed before the rejected projection.
+        preceding: PackageCompilePhase,
     },
 }
 

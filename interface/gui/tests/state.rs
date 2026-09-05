@@ -21,11 +21,13 @@ use interface_core::{
     GenerateRequest, GenerateTarget, GeneratedArtifact, GenerationAuthority, GenerationId,
     IndexSnapshotId, InputText, InputTextError, OperationBudget, PackageCompilePhase, Pin,
     Pressure, PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
-    RetryBudget, SemanticImageAuthority, SnapshotFacts, SourceAuthority, SourceText,
+    RetryBudget, SemanticImageAccessError, SemanticImageAuthority, SnapshotFacts, SourceAuthority,
+    SourceText,
 };
 use interface_gui::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
     FormField, GeneratedProjection, HealthProjection, MAX_BATCH_REPLIES, MotionPreference,
+    PackageDocumentationError, PackageDocumentationFailure, PackageDocumentationOutcome,
     PaletteDirection, PaletteEditError, ProjectionState, ROUTES, ResultLimit, Route, SURFACE_COUNT,
     ServiceAction, ShellState, Surface, SurfaceStatus,
 };
@@ -514,6 +516,50 @@ fn generated_artifact_is_retained_verbatim_in_the_visible_generation_projection(
         state.generation,
         SurfaceStatus::Resolved(ApplicationDisposition::Complete { emitted: 1 })
     );
+    Ok(())
+}
+
+#[test]
+fn package_document_projection_retains_exact_snapshot_cause_after_reopen() -> Result<(), TestError>
+{
+    let artifact = generated_artifact();
+    let correlation = CorrelationId(41);
+    let mut state = ShellState::default();
+    for phase in [
+        PackageCompilePhase::Locate,
+        PackageCompilePhase::EnterSource,
+        PackageCompilePhase::Authority,
+        PackageCompilePhase::Lower,
+        PackageCompilePhase::Publish,
+        PackageCompilePhase::Reopen,
+    ] {
+        state.apply_package_phase(correlation, phase)?;
+    }
+    state.apply_package_documentation(PackageDocumentationOutcome::Failed(
+        PackageDocumentationFailure {
+            correlation,
+            semantic_image: artifact.semantic_image,
+            source: PackageDocumentationError::Snapshot {
+                source: SemanticImageAccessError::Unavailable {
+                    requested: artifact.semantic_image,
+                },
+            },
+        },
+    ))?;
+
+    assert!(matches!(
+        state.package_documentation.as_ref(),
+        Some(PackageDocumentationOutcome::Failed(PackageDocumentationFailure {
+            correlation: observed_correlation,
+            semantic_image,
+            source: PackageDocumentationError::Snapshot {
+                source: SemanticImageAccessError::Unavailable { requested },
+            },
+        })) if *observed_correlation == correlation
+            && *semantic_image == artifact.semantic_image
+            && *requested == artifact.semantic_image
+    ));
+    assert_eq!(state.notification_epoch, 7);
     Ok(())
 }
 

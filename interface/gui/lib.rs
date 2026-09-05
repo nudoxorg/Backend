@@ -12,6 +12,7 @@
 mod catalog;
 mod forms;
 mod navigation;
+mod semantic_documents;
 mod state;
 
 #[cfg(feature = "real-gpui")]
@@ -80,6 +81,11 @@ pub use state::{
     MotionPreference, NativeTextInputError, PackageJourneyProjection, PageSnapshots,
     ProjectionState, SURFACE_COUNT, SearchPage, SettingsPage, ShellProjection, ShellState, Surface,
     SurfaceStatus, SurfaceSummary, TextInputTarget,
+};
+
+pub use semantic_documents::{
+    MAX_RENDERED_SEMANTIC_BYTES, PackageDocumentationError, PackageDocumentationFailure,
+    PackageDocumentationOutcome, PackageDocumentationProjection, RenderedSemanticDocument,
 };
 
 // These are re-exports of the core types, not shell-owned DTOs. Re-exporting

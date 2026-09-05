@@ -8,6 +8,7 @@ mod input;
 use crate::navigation::{
     action_label, command_facts, route_facts, surface_destination, surface_facts,
 };
+use crate::semantic_documents::project_generated_documents;
 use crate::{
     ApplicationInput, ApplicationReply, ApplicationService, ApplyError, CommandId,
     ConfirmPaletteCommand, DOCUMENT_ITEMS, DOCUMENT_PACKAGES, DiscoverPackages, DismissForm,
@@ -97,6 +98,7 @@ struct DrivenPackage {
 
 enum PackageDelivery {
     Phase(ApplicationEvent),
+    Documentation(crate::PackageDocumentationOutcome),
     Reply(ApplicationReply),
 }
 
@@ -288,6 +290,31 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             };
             let reply =
                 service.execute_observed(&ApplicationInput::CompilePackage(request), &mut probe);
+            let generated = match &reply.outcome {
+                ApplicationOutcome::Resolved(ReplyBody::Generated(artifact)) => Some(*artifact),
+                ApplicationOutcome::Resolved(
+                    ReplyBody::DependencyUnavailable { .. }
+                    | ReplyBody::Health(_)
+                    | ReplyBody::Adaptive(_)
+                    | ReplyBody::ExecutionStarted { .. }
+                    | ReplyBody::Execution(_)
+                    | ReplyBody::Snapshot(_)
+                    | ReplyBody::Retrieval(_)
+                    | ReplyBody::IndexRemoved(_),
+                )
+                | ApplicationOutcome::Failed { .. } => None,
+            };
+            if let Some(artifact) = generated {
+                let documentation =
+                    project_generated_documents(&mut service.compiler, correlation, artifact);
+                if final_delivery
+                    .send_blocking(PackageDelivery::Documentation(documentation))
+                    .is_err()
+                {
+                    service.compiler.cancel_active();
+                    return;
+                }
+            }
             if final_delivery
                 .send_blocking(PackageDelivery::Reply(reply))
                 .is_err()
@@ -304,6 +331,9 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                             outcome: ApplicationObservation::PackagePhase { phase },
                         }) => view.state.apply_package_phase(correlation, phase),
                         PackageDelivery::Phase(_) => Ok(()),
+                        PackageDelivery::Documentation(outcome) => {
+                            view.state.apply_package_documentation(outcome)
+                        }
                         PackageDelivery::Reply(reply) => view.state.apply(reply).map(|_| ()),
                     };
                     match result {
@@ -1391,6 +1421,16 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                         .child(Self::generated_details(&generated)),
                 )
             })
+            .when_some(
+                self.state.package_documentation.as_ref(),
+                |home, documentation| {
+                    home.child(
+                        div()
+                            .max_w(px(1100.0))
+                            .child(Self::semantic_document_details(documentation)),
+                    )
+                },
+            )
             .child(
                 div()
                     .max_w(px(1100.0))
@@ -2653,6 +2693,98 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                     .child("Binding: ")
                     .child(artifact.publication.binding.to_string()),
             )
+    }
+
+    fn semantic_document_details(outcome: &crate::PackageDocumentationOutcome) -> AnyElement {
+        match outcome {
+            crate::PackageDocumentationOutcome::Rendered(projection) => div()
+                .id("home-semantic-documents")
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(9.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(rgb(BORDER))
+                .bg(rgb(PANEL_BACKGROUND))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Verified package semantic documents"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(METADATA_TEXT))
+                        .child(format!(
+                            "{} entities · {} types · {} links · {} documentation fragments · {} canonical bytes",
+                            projection.census.entities,
+                            projection.census.types,
+                            projection.census.links,
+                            projection.census.documentation_fragments,
+                            projection.encoded_bytes,
+                        )),
+                )
+                .children(projection.documents.iter().take(12).map(|document| {
+                    div()
+                        .p(px(9.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .rounded(px(6.0))
+                        .bg(rgb(CODE_BACKGROUND))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(ACCENT))
+                                .child(format!("{:?}", document.entity)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .line_height(px(18.0))
+                                .text_color(rgb(RAIL_TEXT))
+                                .child(SharedString::from(&document.text)),
+                        )
+                }))
+                .when(projection.documents.len() > 12, |documents| {
+                    documents.child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(METADATA_TEXT))
+                            .child(format!(
+                                "{} additional canonical documents retained",
+                                projection.documents.len() - 12
+                            )),
+                    )
+                })
+                .into_any_element(),
+            crate::PackageDocumentationOutcome::Failed(failure) => div()
+                .id("home-semantic-document-failure")
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(rgb(WARNING))
+                .bg(rgb(PANEL_BACKGROUND))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Published image could not be projected"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .line_height(px(18.0))
+                        .text_color(rgb(METADATA_TEXT))
+                        .child(format!("{:?}", failure.source)),
+                )
+                .into_any_element(),
+        }
     }
 
     fn diagnostic_row(diagnostic: Option<&Diagnostic>) -> impl IntoElement + use<Compiler> {
