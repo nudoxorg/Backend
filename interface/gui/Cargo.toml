@@ -23,6 +23,7 @@ required-features = ["real-gpui"]
 
 [dependencies]
 async-channel.workspace = true
+compiler-application = { path = "../../compiler/application" }
 compiler-ir = { path = "../../compiler/ir" }
 compiler-vocabulary = { path = "../../compiler/vocabulary" }
 heart-observe = { path = "../../heart/observe" }

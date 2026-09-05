@@ -6,6 +6,7 @@
 mod compiler;
 mod config;
 mod documentation;
+mod host;
 mod package_authority;
 mod package_source;
 mod runtime;
@@ -27,6 +28,11 @@ pub use documentation::{
     DocumentationProjectionError, DocumentationReference, DocumentationRelation,
     DocumentationRelations, DocumentationSession, DocumentationSessionView, DocumentationTarget,
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
+};
+pub use host::{
+    LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory, LocalHostDiscovery,
+    LocalHostEnvironment, LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
+    ProcessHostEnvironment,
 };
 pub use package_authority::{
     CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration,

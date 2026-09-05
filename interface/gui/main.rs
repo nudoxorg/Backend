@@ -5,6 +5,7 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use compiler_application::LocalCompilerHost;
 use gpui::prelude::*;
 use gpui::{App, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use interface_core::ApplicationService;
@@ -14,7 +15,14 @@ const WINDOW_TITLE: &str = "Hummingbird Docs";
 const APPLICATION_ID: &str = "dev.hummingbird.application";
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    let compiler = match LocalCompilerHost::production().open() {
+        Ok(compiler) => compiler,
+        Err(error) => {
+            eprintln!("{WINDOW_TITLE} could not establish its local compiler: {error:#}");
+            return;
+        }
+    };
+    gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
         let window = cx.open_window(
             WindowOptions {
@@ -27,7 +35,11 @@ fn main() {
                 }),
                 ..WindowOptions::default()
             },
-            |window, cx| cx.new(|cx| GpuiShellView::new(ApplicationService::new(), window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    GpuiShellView::new(ApplicationService::with_compiler(compiler), window, cx)
+                })
+            },
         );
         match window {
             Ok(_) => cx.activate(true),

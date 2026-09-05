@@ -265,6 +265,15 @@ pub(crate) fn probe_version(
     executable: &Path,
     limits: ToolchainProbeLimits,
 ) -> Result<Box<[u8]>, ToolchainProbeError> {
+    probe_command(tool, executable, &[version_argument(tool)], limits)
+}
+
+pub(crate) fn probe_command(
+    tool: NativeTool,
+    executable: &Path,
+    arguments: &[&str],
+    limits: ToolchainProbeLimits,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
     if !executable.is_absolute() {
         return Err(ToolchainProbeError::RelativeExecutable {
             tool,
@@ -273,7 +282,7 @@ pub(crate) fn probe_version(
     }
     let mut command = Command::new(executable);
     command
-        .arg(version_argument(tool))
+        .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
