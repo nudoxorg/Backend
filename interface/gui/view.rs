@@ -25,8 +25,9 @@ use gpui::{
     prelude::*, px, rgb, uniform_list,
 };
 use interface_core::{
-    ApplicationOutcome, Capability, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    ExecutionReply, ExecutionState, OperationKey, ReplyBody,
+    ApplicationOutcome, Capability, CompilerCapability, CorrelationId, Diagnostic, DiagnosticCode,
+    DiagnosticDetail, ExecutionReply, ExecutionState, OperationKey, ReplyBody,
+    UnavailableCompiler,
 };
 use std::{cell::RefCell, future::poll_fn, rc::Rc, time::Duration};
 
@@ -67,8 +68,8 @@ const INTERACTION_DURATION: Duration = Duration::from_millis(90);
 /// project those facts. The one retained foreground task is woken by the admitted execution future;
 /// no timer, polling loop, accessibility driver, or second command decoder participates in the
 /// shell.
-pub struct GpuiShellView {
-    service: Rc<RefCell<ApplicationService>>,
+pub struct GpuiShellView<Compiler = UnavailableCompiler> {
+    service: Rc<RefCell<ApplicationService<Compiler>>>,
     state: ShellState,
     focus: FocusHandle,
     palette_focus: FocusHandle,
@@ -130,11 +131,11 @@ fn execution_delivery(reply: &ApplicationReply) -> ExecutionDelivery {
     }
 }
 
-impl GpuiShellView {
+impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
     /// Creates a focused product shell around the service that owns application behavior.
     #[must_use]
     pub fn new(
-        mut service: ApplicationService,
+        mut service: ApplicationService<Compiler>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1051,7 +1052,7 @@ impl GpuiShellView {
         collapsed: bool,
         icon: &'static str,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         let facts = route_facts(route);
         div()
             .id(facts.element_id)
@@ -1633,7 +1634,7 @@ impl GpuiShellView {
         &self,
         item: crate::DocumentItem,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         div()
             .id("documentation-outline")
             .w(px(OUTLINE_WIDTH))
@@ -1690,7 +1691,7 @@ impl GpuiShellView {
         &self,
         item: crate::DocumentItem,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         let expanded = self.state.documentation.source_expanded;
         div()
             .id("document-source-section")
@@ -2438,7 +2439,7 @@ impl GpuiShellView {
         id: &'static str,
         label: &'static str,
         state: crate::ProjectionState,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         div()
             .id(id)
             .h(px(32.0))
@@ -2495,7 +2496,7 @@ impl GpuiShellView {
             )
     }
 
-    fn diagnostic_row(diagnostic: Option<&Diagnostic>) -> impl IntoElement + use<> {
+    fn diagnostic_row(diagnostic: Option<&Diagnostic>) -> impl IntoElement + use<Compiler> {
         let (code, detail) = diagnostic_text(diagnostic);
         div()
             .id("settings-last-diagnostic")
@@ -2510,7 +2511,7 @@ impl GpuiShellView {
         action: ServiceAction,
         label: &'static str,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         div()
             .id(("application-action", action_element_id(action)))
             .h(px(32.0))
@@ -2709,7 +2710,7 @@ impl GpuiShellView {
         value: Option<interface_core::InputText>,
         focused: FormField,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         div()
             .id(("typed-form-field", form_field_id(field)))
             .h(px(32.0))
@@ -2796,7 +2797,7 @@ impl GpuiShellView {
     fn form_error(
         error: Option<FormError>,
         input_error: Option<crate::NativeTextInputError>,
-    ) -> impl IntoElement + use<> {
+    ) -> impl IntoElement + use<Compiler> {
         let label = match input_error.filter(native_error_targets_form) {
             Some(error) => native_input_error_label(error),
             None => SharedString::from(error.map_or("", form_error_label)),
@@ -2969,7 +2970,7 @@ impl GpuiShellView {
     }
 }
 
-impl Render for GpuiShellView {
+impl<Compiler: CompilerCapability + 'static> Render for GpuiShellView<Compiler> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette_visible = self.state.navigation.palette.visible;
         div()
@@ -3013,7 +3014,7 @@ impl Render for GpuiShellView {
     }
 }
 
-impl Deref for GpuiShellView {
+impl<Compiler> Deref for GpuiShellView<Compiler> {
     type Target = ShellState;
 
     fn deref(&self) -> &Self::Target {

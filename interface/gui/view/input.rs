@@ -10,7 +10,7 @@ use gpui::{
     Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, IntoElement, Pixels,
     Point, UTF16Selection, Window, canvas, point, prelude::*, px, size,
 };
-use interface_core::{InputText, InputTextJoinError};
+use interface_core::{CompilerCapability, InputText, InputTextJoinError};
 
 use crate::{FormError, FormField, FormState, NativeTextInputError, TextInputTarget};
 
@@ -31,7 +31,7 @@ pub(super) struct NativeInputGeometry {
 
 pub(super) type SharedNativeInputGeometry = Rc<std::cell::Cell<Option<NativeInputGeometry>>>;
 
-impl GpuiShellView {
+impl<Compiler: CompilerCapability + 'static> GpuiShellView<Compiler> {
     pub(super) fn native_input_bridge(
         &self,
         target: TextInputTarget,
@@ -239,7 +239,7 @@ impl GpuiShellView {
     }
 }
 
-impl EntityInputHandler for GpuiShellView {
+impl<Compiler: CompilerCapability + 'static> EntityInputHandler for GpuiShellView<Compiler> {
     fn text_for_range(
         &mut self,
         range: Range<usize>,
