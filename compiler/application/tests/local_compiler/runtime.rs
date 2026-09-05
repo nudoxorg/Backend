@@ -13,7 +13,11 @@ use compiler_application::{
     LocalRuntimeToolchain,
 };
 use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
-use interface_core::{CompilerCapability, CompilerRequest, CompilerTerminal};
+use heart_identity::{ArtifactId, IrSemanticImageDomain, IrSemanticImageEncoding};
+use interface_core::{
+    CompilerCapability, CompilerRequest, CompilerTerminal, SemanticImageAccessError,
+    SemanticImageAuthority,
+};
 use server_journal::PublicationLimits;
 
 static RUNTIME_ORDINAL: AtomicUsize = AtomicUsize::new(0);
@@ -66,6 +70,19 @@ fn worker_retains_exact_unavailable_toolchain_terminal_and_joins_on_last_client(
             configured: None,
             ..
         }
+    ));
+    let requested = SemanticImageAuthority {
+        identity: ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+            b"not-a-semantic-image",
+        ),
+        byte_len: 20,
+    };
+    assert!(matches!(
+        client.semantic_image_snapshot(requested),
+        Err(SemanticImageAccessError::Superseded {
+            requested: observed,
+            retained: None,
+        }) if observed == requested
     ));
     drop(client);
     drop(peer);

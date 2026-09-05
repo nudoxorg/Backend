@@ -3,7 +3,7 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Lean, monomorphized compiler capability boundary for the application service.
 
-use std::{io::ErrorKind, ops::Deref, time::Duration};
+use std::{collections::TryReserveError, io::ErrorKind, ops::Deref, time::Duration};
 
 use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
@@ -73,6 +73,113 @@ pub struct SemanticImageAuthority {
     pub byte_len: u32,
 }
 
+/// Owned encoded bytes of one exact, previously reopened semantic image.
+///
+/// This transport owner proves only byte extent and typed artifact identity. Consumers reopen the
+/// bytes through `compiler_ir::SemanticImageView` before reading semantic rows, preserving the IR
+/// crate as the sole grammar authority.
+#[derive(Debug, Eq, PartialEq)]
+pub struct SemanticImageSnapshot {
+    /// Exact image authority requested from the compiler owner.
+    pub authority: SemanticImageAuthority,
+    bytes: Box<[u8]>,
+}
+
+impl SemanticImageSnapshot {
+    /// Copies bytes already grammar-validated by the compiler and rechecks their public authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact extent, identity, or allocation failure without exposing a partial owner.
+    pub fn try_from_reopened(
+        authority: SemanticImageAuthority,
+        bytes: &[u8],
+    ) -> Result<Self, SemanticImageAccessError> {
+        if bytes.len() != authority.byte_len as usize {
+            return Err(SemanticImageAccessError::Length {
+                authority,
+                observed: bytes.len(),
+            });
+        }
+        let observed =
+            ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(bytes);
+        if observed != authority.identity {
+            return Err(SemanticImageAccessError::Identity {
+                authority,
+                observed,
+            });
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len())
+            .map_err(|source| SemanticImageAccessError::Allocation { source })?;
+        owned.extend_from_slice(bytes);
+        Ok(Self {
+            authority,
+            bytes: owned.into_boxed_slice(),
+        })
+    }
+}
+
+impl AsRef<[u8]> for SemanticImageSnapshot {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Exact failure to retrieve immutable semantic bytes from a compiler owner.
+#[derive(Debug)]
+pub enum SemanticImageAccessError {
+    /// This compiler specialization does not expose retained semantic bytes.
+    Unavailable {
+        /// Exact requested image.
+        requested: SemanticImageAuthority,
+    },
+    /// A concurrent request already owns the compiler's single mutable lease.
+    RequestInFlight {
+        /// Exact requested image.
+        requested: SemanticImageAuthority,
+    },
+    /// The compiler owner stopped before it could answer the request.
+    OwnerStopped {
+        /// Exact requested image.
+        requested: SemanticImageAuthority,
+    },
+    /// A newer or failed compile replaced the retained semantic byte lane.
+    Superseded {
+        /// Exact requested image.
+        requested: SemanticImageAuthority,
+        /// Currently retained complete image, if the last compile succeeded.
+        retained: Option<SemanticImageAuthority>,
+    },
+    /// Retained bytes differ from the exact published extent.
+    Length {
+        /// Authority whose length was checked.
+        authority: SemanticImageAuthority,
+        /// Exact retained byte count.
+        observed: usize,
+    },
+    /// Retained bytes differ from the exact published identity.
+    Identity {
+        /// Authority whose identity was checked.
+        authority: SemanticImageAuthority,
+        /// Identity computed over the retained bytes.
+        observed: ArtifactId<IrSemanticImageEncoding, IrSemanticImageDomain>,
+    },
+    /// The one useful ownership copy could not reserve its exact byte extent.
+    Allocation {
+        /// Exact standard-library allocation cause.
+        source: TryReserveError,
+    },
+    /// The compiler owner panicked while retrieving this exact snapshot.
+    WorkerPanic {
+        /// Exact requested image.
+        requested: SemanticImageAuthority,
+        /// Bounded original payload facts.
+        cause: CompilerRuntimePanic,
+    },
+}
+
 /// Immutable authorities that connect a generated fragment to a stable local publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublicationAuthority {
@@ -114,6 +221,17 @@ pub trait CompilerCapability {
     /// Synchronous implementations and unavailable capabilities have no detached request and may
     /// keep the default no-op behavior.
     fn cancel_active(&self) {}
+
+    /// Retrieves owned encoded bytes for one exact generated semantic image.
+    ///
+    /// The default is an honest unavailable terminal. Concrete retained-image implementations
+    /// must match both authority identity and extent before returning an owner.
+    fn semantic_image_snapshot(
+        &mut self,
+        requested: SemanticImageAuthority,
+    ) -> Result<SemanticImageSnapshot, SemanticImageAccessError> {
+        Err(SemanticImageAccessError::Unavailable { requested })
+    }
 
     /// Compiles, validates, and durably publishes one bounded source request.
     ///

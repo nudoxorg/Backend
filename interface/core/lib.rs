@@ -23,8 +23,8 @@ pub use compiler::{
     NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause, NativeIoFact, NativeIoPhase,
     NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority,
-    PublicationCause, PublicationPhase, SemanticImageAuthority, SourceAuthority,
-    UnavailableCompiler,
+    PublicationCause, PublicationPhase, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot, SourceAuthority, UnavailableCompiler,
 };
 pub use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,

@@ -28,7 +28,8 @@ use compiler_vocabulary::{Language, LanguageProfile, NativeTool, Stage};
 use heart_identity::{CompilationTargetDomain, ContentId, ToolchainDomain};
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest, CompilerRuntimeCause, CompilerTerminal,
-    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
+    GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, SemanticImageAccessError,
+    SemanticImageAuthority, SemanticImageSnapshot,
 };
 use server_journal::PublicationLimits;
 use thiserror::Error;
@@ -428,7 +429,7 @@ impl LocalCompilerClient {
         let lease = RequestLease::acquire(&self.shared, facts)?;
         self.shared.cancelled.store(false, Ordering::Release);
         let (response_tx, response_rx) = sync_channel(1);
-        let command = RuntimeCommand {
+        let command = RuntimeCommand::Compile {
             request,
             response: response_tx,
         };
@@ -452,6 +453,36 @@ impl LocalCompilerClient {
         drop(lease);
         result
     }
+
+    /// Retrieves one exact reopened semantic image from the single compiler owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns exact active-request, stopped-owner, supersession, validation, allocation, or
+    /// bounded panic facts. The worker never exposes its reusable scratch directly.
+    pub fn semantic_image_snapshot(
+        &self,
+        requested: SemanticImageAuthority,
+    ) -> Result<SemanticImageSnapshot, SemanticImageAccessError> {
+        let lease = RequestLease::acquire_snapshot(&self.shared, requested)?;
+        let (response, returned) = sync_channel(1);
+        let sender = self
+            .shared
+            .command
+            .as_ref()
+            .ok_or(SemanticImageAccessError::OwnerStopped { requested })?;
+        sender
+            .send(RuntimeCommand::SemanticImage {
+                requested,
+                response,
+            })
+            .map_err(|_| SemanticImageAccessError::OwnerStopped { requested })?;
+        let result = returned
+            .recv()
+            .map_err(|_| SemanticImageAccessError::OwnerStopped { requested })?;
+        drop(lease);
+        result
+    }
 }
 
 impl CompilerCapability for LocalCompilerClient {
@@ -465,6 +496,13 @@ impl CompilerCapability for LocalCompilerClient {
 
     fn cancel_active(&self) {
         Self::cancel_active(self);
+    }
+
+    fn semantic_image_snapshot(
+        &mut self,
+        requested: SemanticImageAuthority,
+    ) -> Result<SemanticImageSnapshot, SemanticImageAccessError> {
+        Self::semantic_image_snapshot(self, requested)
     }
 
     fn generate(
@@ -527,6 +565,20 @@ impl<'shared> RequestLease<'shared> {
             .map_err(|_| facts.terminal(CompilerRuntimeCause::RequestInFlight))?;
         Ok(Self { shared })
     }
+
+    fn acquire_snapshot(
+        shared: &'shared RuntimeShared,
+        requested: SemanticImageAuthority,
+    ) -> Result<Self, SemanticImageAccessError> {
+        if !shared.alive.load(Ordering::Acquire) {
+            return Err(SemanticImageAccessError::OwnerStopped { requested });
+        }
+        shared
+            .active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| SemanticImageAccessError::RequestInFlight { requested })?;
+        Ok(Self { shared })
+    }
 }
 
 impl Drop for RequestLease<'_> {
@@ -580,9 +632,15 @@ impl RequestFacts {
     }
 }
 
-struct RuntimeCommand {
-    request: OwnedCompilerRequest,
-    response: SyncSender<RuntimeEvent>,
+enum RuntimeCommand {
+    Compile {
+        request: OwnedCompilerRequest,
+        response: SyncSender<RuntimeEvent>,
+    },
+    SemanticImage {
+        requested: SemanticImageAuthority,
+        response: SyncSender<Result<SemanticImageSnapshot, SemanticImageAccessError>>,
+    },
 }
 
 enum RuntimeEvent {
@@ -754,36 +812,60 @@ fn run_worker(
 
     while let Ok(command) = commands.recv() {
         cancelled.store(false, Ordering::Release);
-        let facts = command.request.facts();
-        let response = &command.response;
-        let result = catch_unwind(AssertUnwindSafe(|| match &command.request {
-            OwnedCompilerRequest::Generate {
-                profile,
-                stage,
-                source,
-            } => compiler.generate(CompilerRequest {
-                profile: *profile,
-                stage: *stage,
-                source,
-            }),
-            OwnedCompilerRequest::Package(request) => {
-                compiler.compile_package(request, &mut |phase| {
-                    if response.send(RuntimeEvent::Phase(phase)).is_err() {
-                        cancelled.store(true, Ordering::Release);
+        match command {
+            RuntimeCommand::Compile { request, response } => {
+                let facts = request.facts();
+                let result = catch_unwind(AssertUnwindSafe(|| match &request {
+                    OwnedCompilerRequest::Generate {
+                        profile,
+                        stage,
+                        source,
+                    } => compiler.generate(CompilerRequest {
+                        profile: *profile,
+                        stage: *stage,
+                        source,
+                    }),
+                    OwnedCompilerRequest::Package(request) => {
+                        compiler.compile_package(request, &mut |phase| {
+                            if response.send(RuntimeEvent::Phase(phase)).is_err() {
+                                cancelled.store(true, Ordering::Release);
+                            }
+                        })
                     }
-                })
+                }));
+                match result {
+                    Ok(result) => {
+                        let _ = response.send(RuntimeEvent::Complete(result));
+                    }
+                    Err(payload) => {
+                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let _ = response.send(RuntimeEvent::Complete(Err(
+                            facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
+                        )));
+                        break;
+                    }
+                }
             }
-        }));
-        match result {
-            Ok(result) => {
-                let _ = command.response.send(RuntimeEvent::Complete(result));
-            }
-            Err(payload) => {
-                let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
-                let _ = command.response.send(RuntimeEvent::Complete(Err(
-                    facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
-                )));
-                break;
+            RuntimeCommand::SemanticImage {
+                requested,
+                response,
+            } => {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    compiler.semantic_image_snapshot(requested)
+                }));
+                match result {
+                    Ok(result) => {
+                        let _ = response.send(result);
+                    }
+                    Err(payload) => {
+                        let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
+                        let _ = response.send(Err(SemanticImageAccessError::WorkerPanic {
+                            requested,
+                            cause,
+                        }));
+                        break;
+                    }
+                }
             }
         }
     }

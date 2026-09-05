@@ -19,8 +19,8 @@ use heart_identity::{
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
     CompilerTerminal, GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
-    PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority, SemanticImageAuthority,
-    SourceAuthority,
+    PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority,
+    SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
 
@@ -38,6 +38,7 @@ pub struct LocalCompiler<'path, 'scratch, 'cancel> {
     package_authority: PackageAuthorityConfiguration<'path>,
     publisher: DurablePublisher,
     scratch: &'scratch mut LocalCompilerScratch,
+    retained_semantic_image: Option<SemanticImageAuthority>,
 }
 
 impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
@@ -116,7 +117,27 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             package_authority,
             publisher,
             scratch,
+            retained_semantic_image: None,
         })
+    }
+
+    /// Copies the one currently retained, already-reopened semantic image into an owned snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed supersession, authority mismatch, or exact allocation failure. A failed or
+    /// newer compile never exposes stale bytes under the requested identity.
+    pub fn semantic_image_snapshot(
+        &self,
+        requested: SemanticImageAuthority,
+    ) -> Result<SemanticImageSnapshot, SemanticImageAccessError> {
+        if self.retained_semantic_image != Some(requested) {
+            return Err(SemanticImageAccessError::Superseded {
+                requested,
+                retained: self.retained_semantic_image,
+            });
+        }
+        SemanticImageSnapshot::try_from_reopened(requested, &self.scratch.semantic_image_output)
     }
 
     /// Stops durable publication admission and joins its earned single owner.
@@ -253,6 +274,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     where
         Progress: FnMut(PackageCompilePhase),
     {
+        self.retained_semantic_image = None;
         progress(PackageCompilePhase::Lower);
         let scratch = &mut *self.scratch;
         let compiled = compile_fused_semantic(
@@ -337,13 +359,9 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         if artifacts.next().is_some() {
             return Err(crate::terminal::semantic_reopen_cardinality(source, recipe));
         }
-        Ok(generated(
-            source,
-            recipe,
-            fragment,
-            semantic_facts,
-            &publication,
-        ))
+        let generated = generated(source, recipe, fragment, semantic_facts, &publication);
+        self.retained_semantic_image = Some(generated.semantic_image);
+        Ok(generated)
     }
 
     fn toolchain(
@@ -374,6 +392,13 @@ fn select_toolchain(
 impl CompilerCapability for LocalCompiler<'_, '_, '_> {
     fn readiness(&self) -> CompilerReadiness {
         CompilerReadiness::Ready
+    }
+
+    fn semantic_image_snapshot(
+        &mut self,
+        requested: SemanticImageAuthority,
+    ) -> Result<SemanticImageSnapshot, SemanticImageAccessError> {
+        Self::semantic_image_snapshot(self, requested)
     }
 
     fn generate(
