@@ -7607,6 +7607,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "server-index-ingest"
+version = "0.1.0"
+dependencies = [
+ "compiler-ir",
+ "heart-identity",
+ "server-index-vocabulary",
+]
+
+[[package]]
 name = "server-index-publish"
 version = "0.1.0"
 dependencies = [
