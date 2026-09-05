@@ -422,7 +422,7 @@ pub struct Diagnostic {
 }
 
 /// Semantic reply body; all business behavior is represented here rather than in adapters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplyBody {
     /// A real local compiler lowered and durably published one compact IR artifact.
     Generated(crate::GeneratedArtifact),
@@ -521,15 +521,15 @@ pub enum ApplicationObservation {
 
 impl From<&ReplyBody> for ApplicationDisposition {
     fn from(body: &ReplyBody) -> Self {
-        match *body {
+        match body {
             ReplyBody::Generated(_) | ReplyBody::Execution(ExecutionReply::Completed { .. }) => {
                 Self::Complete { emitted: 1 }
             }
             ReplyBody::DependencyUnavailable { capability } => Self::Degraded {
                 emitted: 0,
-                unavailable: capability,
+                unavailable: *capability,
             },
-            ReplyBody::Health(facts) => health_disposition(facts),
+            ReplyBody::Health(facts) => health_disposition(*facts),
             ReplyBody::Adaptive(AdaptiveDisposition::NoAction) => Self::Complete { emitted: 0 },
             ReplyBody::Adaptive(
                 AdaptiveDisposition::RetryRemote { .. }
@@ -543,9 +543,9 @@ impl From<&ReplyBody> for ApplicationDisposition {
                 unavailable: Capability::LocalAnalyzer,
             },
             ReplyBody::ExecutionStarted { operation, .. }
-            | ReplyBody::Execution(ExecutionReply::Pending { operation, .. }) => {
-                Self::Accepted { operation }
-            }
+            | ReplyBody::Execution(ExecutionReply::Pending { operation, .. }) => Self::Accepted {
+                operation: *operation,
+            },
             ReplyBody::Execution(ExecutionReply::Cancelled { .. }) => {
                 Self::Cancelled { emitted: 0 }
             }

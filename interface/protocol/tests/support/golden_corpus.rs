@@ -438,12 +438,12 @@ impl GoldenReply {
 }
 
 fn project_body(body: &ReplyBody) -> Result<GoldenBody, GoldenError> {
-    match *body {
+    match body {
         ReplyBody::Generated(artifact) => Ok(GoldenBody::Generated {
             artifact: generated_artifact(&artifact),
         }),
         ReplyBody::DependencyUnavailable { capability } => Ok(GoldenBody::DependencyUnavailable {
-            capability: capability.into(),
+            capability: (*capability).into(),
         }),
         ReplyBody::Health(facts) => Ok(GoldenBody::Health {
             facts: facts.map(Into::into),
@@ -453,10 +453,10 @@ fn project_body(body: &ReplyBody) -> Result<GoldenBody, GoldenError> {
             transition,
         } => Ok(GoldenBody::ExecutionStarted {
             operation: operation.0,
-            transition: transition.into(),
+            transition: (*transition).into(),
         }),
         ReplyBody::Execution(state) => Ok(GoldenBody::Execution {
-            state: execution_reply(state),
+            state: execution_reply(*state),
         }),
         ReplyBody::Adaptive(_) => Err(GoldenError::Unexpected("adaptive body")),
         ReplyBody::Snapshot(_) | ReplyBody::Retrieval(_) | ReplyBody::IndexRemoved(_) => {

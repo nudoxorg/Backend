@@ -13,8 +13,10 @@ use interface_core::{
     MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
 };
 
-const EXPECTED_APPLICATION_REPLY_BYTES: usize = 272;
-const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 264;
+// The durable semantic result adds one 32-byte image identity and its exact
+// extent to the former compact-artifact reply layout.
+const EXPECTED_APPLICATION_REPLY_BYTES: usize = 312;
+const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 304;
 
 #[derive(Debug, Eq, PartialEq)]
 enum DiagnosticAllocationTestError {

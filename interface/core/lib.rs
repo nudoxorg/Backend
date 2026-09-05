@@ -18,12 +18,12 @@ mod text;
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
     CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerTerminal, FragmentCause,
-    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, MAX_NATIVE_WORKER_PANIC_BYTES,
-    NativeArtifactAction, NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause,
-    NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause,
-    NativeWorkPhase, NativeWorker, NativeWorkerPanic, NativeWorkerPanicClass,
-    NativeWorkerPanicMessage, PublicationAuthority, PublicationCause, PublicationPhase,
-    SemanticImageAuthority, SourceAuthority, UnavailableCompiler,
+    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
+    MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction, NativeArtifactCause, NativeArtifactRole,
+    NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
+    NativeWorkCleanupCause, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
+    NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
+    PublicationPhase, SemanticImageAuthority, SourceAuthority, UnavailableCompiler,
 };
 pub use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
@@ -48,8 +48,8 @@ pub use package::{
 pub use retrieval::{
     DocSection, MAX_SIGNATURE_TOKENS, RetrievalCapability, RetrievalCause, RetrievalMode,
     RetrievalPhase, RetrievalQueryCause, RetrievalReadiness, RetrievalRequest, RetrievalRow,
-    RetrievalRows, RetrievalSpan, SignatureToken, SignatureTokens, SnapshotFacts, TokenKind,
-    UnavailableRetrieval, UnloadReceipt,
+    RetrievalRows, RetrievalRowsFacts, RetrievalSpan, SignatureToken, SignatureTokens,
+    SnapshotFacts, TokenKind, UnavailableRetrieval, UnloadReceipt,
 };
 pub use service::ApplicationService;
 pub use source::{

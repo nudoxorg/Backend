@@ -175,7 +175,7 @@ impl ApplicationReplyWire {
     fn resolved(correlation: u64, body: &ReplyBody) -> Self {
         Self {
             correlation,
-            body: (*body).into(),
+            body: body.clone().into(),
             terminal: ApplicationDisposition::from(body).into(),
             diagnostic: None,
         }

@@ -445,7 +445,7 @@ impl From<RetrievalCause> for RetrievalCauseWire {
                 phase: phase.into(),
             },
             RetrievalCause::RowTableFull { rejected } => Self::RowTableFull {
-                rejected: rejected.into(),
+                rejected: (*rejected).into(),
             },
             RetrievalCause::JournalFull { rejected } => Self::JournalFull {
                 rejected: Text(rejected),

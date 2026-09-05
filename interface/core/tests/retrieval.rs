@@ -116,7 +116,9 @@ impl RetrievalCapability for IndexAdapter {
                     0,
                     RetrievalMode::Exact,
                 ))
-                .map_err(|rejected| RetrievalCause::RowTableFull { rejected });
+                .map_err(|rejected| RetrievalCause::RowTableFull {
+                    rejected: Box::new(rejected),
+                });
         }
 
         let rows = Self::lexical_rows();
@@ -165,7 +167,9 @@ impl RetrievalCapability for IndexAdapter {
                     u32::from(hit.score),
                     RetrievalMode::Lexical,
                 ))
-                .map_err(|rejected| RetrievalCause::RowTableFull { rejected })?;
+                .map_err(|rejected| RetrievalCause::RowTableFull {
+                    rejected: Box::new(rejected),
+                })?;
         }
         Ok(result)
     }

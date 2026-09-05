@@ -60,11 +60,13 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
                 },
             )
         }
-        CompileFailure::LoweringUnsupported { source_identity, recipe, cause } => compile_from_driver(source_identity, recipe, CompilerCause::Lowering(cause)),
+        CompileFailure::LoweringUnsupported { source_identity, recipe, cause } => {
+            compile_from_driver(source_identity, recipe, lowering(cause))
+        }
         CompileFailure::ExtensionAtomUnbound { source_identity, recipe, row, provisional, atom_count } => compile_from_driver(
             source_identity,
             recipe,
-            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
+            lowering(compiler_vocabulary::LoweringUnsupported::ExtensionAtomUnbound {
                 row: u32::try_from(row).unwrap_or(u32::MAX),
                 provisional,
                 atom_count: u32::try_from(atom_count).unwrap_or(u32::MAX),
@@ -73,7 +75,7 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::ExtensionTypeParametersUnbound { source_identity, recipe, row, start, length, element_count } => compile_from_driver(
             source_identity,
             recipe,
-            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ExtensionTypeParametersUnbound {
+            lowering(compiler_vocabulary::LoweringUnsupported::ExtensionTypeParametersUnbound {
                 row: u32::try_from(row).unwrap_or(u32::MAX),
                 start,
                 length,
@@ -83,24 +85,28 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
         CompileFailure::FactRejected { source_identity, recipe, rejected } => compile_from_driver(
             source_identity,
             recipe,
-            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
+            lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
                 fact: u32::try_from(rejected.fact).unwrap_or(u32::MAX),
             }),
         ),
         CompileFailure::CSharpProjection { source_identity, recipe, .. } => compile_from_driver(
             source_identity,
             recipe,
-            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::CSharpDeclarationForm),
+            lowering(compiler_vocabulary::LoweringUnsupported::CSharpDeclarationForm),
         ),
         CompileFailure::ClangProjection { source_identity, recipe, .. } => compile_from_driver(
             source_identity,
             recipe,
-            CompilerCause::Lowering(compiler_vocabulary::LoweringUnsupported::ClangDeclarationForm),
+            lowering(compiler_vocabulary::LoweringUnsupported::ClangDeclarationForm),
         ),
         CompileFailure::Build { source_identity, recipe, .. } | CompileFailure::Prepare { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Prepare),
         CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
         CompileFailure::Validate { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Validate),
     }
+}
+
+fn lowering(cause: compiler_vocabulary::LoweringUnsupported) -> CompilerCause {
+    CompilerCause::Lowering(interface_core::LoweringCause::new(cause))
 }
 
 fn authority_terminal(
@@ -327,7 +333,7 @@ mod tests {
         let CompilerCause::Lowering(cause) = cause else {
             return Err(ProjectionError::Cause);
         };
-        Ok(cause)
+        Ok(*cause)
     }
 
     fn fact_rejection() -> compiler_driver::FactRejection {

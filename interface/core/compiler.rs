@@ -268,9 +268,31 @@ pub enum CompilerCause {
         diagnostic: Option<CompilerDiagnostic>,
     },
     /// A successful parse had no admitted compact lowering recipe.
-    Lowering(LoweringUnsupported),
+    Lowering(LoweringCause),
     /// Compact IR construction, output writing, or self-validation failed.
     Fragment(FragmentCause),
+}
+
+/// One cold owner for a lowering terminal whose largest language projection
+/// retains bounded source text. The outer compiler terminal stays compact;
+/// callers inspect the exact closed cause through [`Deref`].
+#[derive(Debug, Eq, PartialEq)]
+pub struct LoweringCause(Box<LoweringUnsupported>);
+
+impl LoweringCause {
+    /// Moves one exact lowering terminal into its single cold allocation.
+    #[must_use]
+    pub fn new(cause: LoweringUnsupported) -> Self {
+        Self(Box::new(cause))
+    }
+}
+
+impl Deref for LoweringCause {
+    type Target = LoweringUnsupported;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 /// Exact caller-owned native-work phase projected without an allocation.

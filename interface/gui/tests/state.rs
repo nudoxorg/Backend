@@ -146,7 +146,7 @@ fn budget(operations: u8, retries: u8) -> ResourceBudget {
 fn reply(correlation: u64, body: &ReplyBody) -> ApplicationReply {
     ApplicationReply {
         correlation: CorrelationId(correlation),
-        outcome: ApplicationOutcome::Resolved(*body),
+        outcome: ApplicationOutcome::Resolved(body.clone()),
     }
 }
 

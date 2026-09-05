@@ -306,7 +306,7 @@ impl From<CompilerCause> for GoldenCompilerCause {
                 diagnostic: diagnostic.map(Into::into),
             },
             CompilerCause::Lowering(cause) => Self::Lowering {
-                cause: cause.into(),
+                cause: (*cause).into(),
             },
             CompilerCause::Fragment(cause) => Self::Fragment {
                 cause: cause.into(),

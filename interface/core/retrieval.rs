@@ -4,6 +4,8 @@
 //! `server-index-core` belongs to adapter or test code so the portable application service
 //! never manufactures snapshot authority, rows, or unload history.
 
+use core::ops::Deref;
+
 use crate::InputText;
 
 pub(crate) const MAX_REPLY_ROW_SLOTS: usize = 4;
@@ -157,18 +159,31 @@ pub struct RetrievalRow {
 }
 
 /// A packed, fixed-capacity retrieval result table.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RetrievalRows {
-    slots: [Option<RetrievalRow>; MAX_REPLY_ROW_SLOTS],
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetrievalRows(Box<RetrievalRowsFacts>);
+
+/// Immutable fixed-capacity retrieval facts exposed by [`RetrievalRows`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetrievalRowsFacts {
+    /// Rank-ordered rows followed only by empty capacity.
+    pub slots: [Option<RetrievalRow>; MAX_REPLY_ROW_SLOTS],
+}
+
+impl Deref for RetrievalRows {
+    type Target = RetrievalRowsFacts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl RetrievalRows {
     /// Creates an empty table.
     #[must_use]
-    pub const fn new() -> Self {
-        Self {
+    pub fn new() -> Self {
+        Self(Box::new(RetrievalRowsFacts {
             slots: [None; MAX_REPLY_ROW_SLOTS],
-        }
+        }))
     }
 
     /// Appends a row or returns the exact rejected row if the table is full.
@@ -176,8 +191,8 @@ impl RetrievalRows {
         clippy::result_large_err,
         reason = "the rejected bounded row is an exact capability terminal and needs no allocation"
     )]
-    pub const fn push(mut self, row: RetrievalRow) -> Result<Self, RetrievalRow> {
-        let [first, second, third, fourth] = &mut self.slots;
+    pub fn push(mut self, row: RetrievalRow) -> Result<Self, RetrievalRow> {
+        let [first, second, third, fourth] = &mut self.0.slots;
         if first.is_none() {
             *first = Some(row);
         } else if second.is_none() {
@@ -194,8 +209,8 @@ impl RetrievalRows {
 
     /// Number of admitted rows.
     #[must_use]
-    pub const fn len(&self) -> u8 {
-        let [first, second, third, fourth] = self.slots;
+    pub fn len(&self) -> u8 {
+        let [first, second, third, fourth] = &self.slots;
         let first = if first.is_some() { 1 } else { 0 };
         let second = if second.is_some() { 1 } else { 0 };
         let third = if third.is_some() { 1 } else { 0 };
@@ -205,7 +220,7 @@ impl RetrievalRows {
 
     /// Whether the table has no rows.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -273,7 +288,7 @@ pub enum RetrievalCause {
     /// The fixed response table could not retain this row.
     RowTableFull {
         /// Exact rejected row.
-        rejected: RetrievalRow,
+        rejected: Box<RetrievalRow>,
     },
     /// The bounded receipt journal could not retain this selector.
     JournalFull {
