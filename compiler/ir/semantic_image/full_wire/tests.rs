@@ -15,10 +15,11 @@ use crate::{
     Visibility,
 };
 
-use super::wire::{DIRECTORY_BYTES, HEADER_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES};
+use super::wire::{
+    DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
+};
 use super::{
-    FullDirectoryKind, FullSemanticImageFault, SemanticImageView, encode_full_semantic_image,
-    full_semantic_image_len,
+    FullSemanticImageFault, SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
 };
 
 fn version(value: u8) -> EntityVersion {

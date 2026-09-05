@@ -1,4 +1,7 @@
-//! Header/provenance and core-row decoding after explicit wire validation.
+//! Shared canonical image-header and provenance decoding.
+//!
+//! The complete image validator supplies the proven atom/entity lane offsets
+//! below. This module deliberately owns no standalone layout or reopen API.
 
 use alloc::vec;
 
@@ -8,28 +11,59 @@ use heart_identity::{
 };
 
 use crate::{
-    AtomId, CorePayloadHash, CoreSemanticEntity, DeclarationFamilyId, DeclarationIdentity,
-    DeclarationKey, EntityAuthorityFacts, EntityId, EntityKind, EntityVersion, FactAvailability,
-    ImageProvenance, PackageLineage, ParentageAuthority, SemanticImageAuthority,
-    SemanticScopeClaim, SemanticScopeFacts, SourceIdentity, SourceSpan,
-    UnrepresentedAuthorityOwner, VariantFingerprint, Visibility,
+    AtomId, DeclarationKey, EntityKind, ImageProvenance, PackageLineage, SemanticImageAuthority,
+    SemanticScopeClaim, SemanticScopeFacts, SourceIdentity,
 };
 
-use super::{
-    fault::{
-        CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
-        CoreSemanticImageField, ScopeComponent,
-    },
-    wire::{get_u16, get_u32, read_array, CoreImageLayout, HEADER_BYTES, NONE},
+use super::fault::{
+    CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
+    CoreSemanticImageField, ScopeComponent,
 };
+
+const HEADER_BYTES: usize = 176;
+const ATOM_ROW_BYTES: usize = 8;
+
+/// Proven canonical offsets for the header's atom references.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ImageHeaderLayout {
+    pub(crate) atom_rows: usize,
+    pub(crate) atom_bytes: usize,
+    pub(crate) atoms: usize,
+    pub(crate) bytes: usize,
+}
+
+#[inline]
+fn get_u32(
+    bytes: &[u8],
+    offset: usize,
+    field: CoreSemanticImageField,
+) -> Result<u32, CoreSemanticImageFault> {
+    Ok(u32::from_le_bytes(read_array::<4>(bytes, offset, field)?))
+}
+
+#[inline]
+fn read_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+    field: CoreSemanticImageField,
+) -> Result<[u8; N], CoreSemanticImageFault> {
+    let end = offset
+        .checked_add(N)
+        .ok_or(CoreSemanticImageFault::Truncated { field, offset })?;
+    let slice = bytes
+        .get(offset..end)
+        .ok_or(CoreSemanticImageFault::Truncated { field, offset })?;
+    <[u8; N]>::try_from(slice).map_err(|_| CoreSemanticImageFault::Truncated { field, offset })
+}
 
 pub(crate) fn decode_image_facts(
     bytes: &[u8],
-    layout: CoreImageLayout,
+    layout: ImageHeaderLayout,
 ) -> Result<crate::SemanticImageFacts, CoreSemanticImageFault> {
-    let atom_count = u32::try_from(layout.atom_rows).map_err(|_| CoreSemanticImageFault::LengthOverflow {
-        field: CoreSemanticImageField::AtomRange,
-    })?;
+    let atom_count =
+        u32::try_from(layout.atom_rows).map_err(|_| CoreSemanticImageFault::LengthOverflow {
+            field: CoreSemanticImageField::AtomRange,
+        })?;
     let authority = match *bytes.get(16).ok_or(CoreSemanticImageFault::Truncated {
         field: CoreSemanticImageField::Authority,
         offset: 16,
@@ -55,15 +89,20 @@ pub(crate) fn decode_image_facts(
                 });
             }
             let profile = read_array::<2>(bytes, 17, CoreSemanticImageField::Authority)?;
-            SemanticImageAuthority::Language(LanguageProfile::try_from(profile).map_err(|source| {
-                CoreSemanticImageFault::Profile { observed: profile, source }
-            })?)
+            SemanticImageAuthority::Language(LanguageProfile::try_from(profile).map_err(
+                |source| CoreSemanticImageFault::Profile {
+                    observed: profile,
+                    source,
+                },
+            )?)
         }
-        observed => return Err(CoreSemanticImageFault::Discriminant {
-            field: CoreSemanticImageField::Authority,
-            row: 0,
-            observed,
-        }),
+        observed => {
+            return Err(CoreSemanticImageFault::Discriminant {
+                field: CoreSemanticImageField::Authority,
+                row: 0,
+                observed,
+            });
+        }
     };
     for observed in bytes[21..24].iter().chain(bytes[172..HEADER_BYTES].iter()) {
         if *observed != 0 {
@@ -88,24 +127,31 @@ pub(crate) fn decode_image_facts(
             ImageProvenance::Unavailable
         }
         1 => decode_captured_provenance(bytes, layout, atom_count, authority)?,
-        observed => return Err(CoreSemanticImageFault::Discriminant {
-            field: CoreSemanticImageField::Provenance,
-            row: 0,
-            observed,
-        }),
+        observed => {
+            return Err(CoreSemanticImageFault::Discriminant {
+                field: CoreSemanticImageField::Provenance,
+                row: 0,
+                observed,
+            });
+        }
     };
-    Ok(crate::SemanticImageFacts { authority, provenance })
+    Ok(crate::SemanticImageFacts {
+        authority,
+        provenance,
+    })
 }
 
 fn decode_captured_provenance(
     bytes: &[u8],
-    layout: CoreImageLayout,
+    layout: ImageHeaderLayout,
     atom_count: u32,
     authority: SemanticImageAuthority,
 ) -> Result<ImageProvenance, CoreSemanticImageFault> {
     let source = SourceIdentity {
         identity: ContentId::<SourceFactDomain>::try_from(read_array::<32>(
-            bytes, 24, CoreSemanticImageField::Provenance,
+            bytes,
+            24,
+            CoreSemanticImageField::Provenance,
         )?)
         .map_err(|source| CoreSemanticImageFault::ProvenanceIdentity {
             field: CoreProvenanceIdentityField::Source,
@@ -114,17 +160,25 @@ fn decode_captured_provenance(
         byte_len: get_u32(bytes, 56, CoreSemanticImageField::Provenance)?,
     };
     let profile_bytes = read_array::<2>(bytes, 92, CoreSemanticImageField::Provenance)?;
-    let profile = LanguageProfile::try_from(profile_bytes)
-        .map_err(|source| CoreSemanticImageFault::Profile { observed: profile_bytes, source })?;
-    let stage = Stage::try_from(bytes[94]).map_err(|observed| CoreSemanticImageFault::Provenance {
-        cause: CoreProvenanceFault::RecipeStage { observed },
+    let profile = LanguageProfile::try_from(profile_bytes).map_err(|source| {
+        CoreSemanticImageFault::Profile {
+            observed: profile_bytes,
+            source,
+        }
     })?;
-    let tool = NativeTool::try_from(bytes[95]).map_err(|observed| CoreSemanticImageFault::Provenance {
-        cause: CoreProvenanceFault::RecipeTool { observed },
-    })?;
+    let stage =
+        Stage::try_from(bytes[94]).map_err(|observed| CoreSemanticImageFault::Provenance {
+            cause: CoreProvenanceFault::RecipeStage { observed },
+        })?;
+    let tool =
+        NativeTool::try_from(bytes[95]).map_err(|observed| CoreSemanticImageFault::Provenance {
+            cause: CoreProvenanceFault::RecipeTool { observed },
+        })?;
     let recipe = CompileRecipeFact {
         identity: ContentId::<CompileRecipeDomain>::try_from(read_array::<32>(
-            bytes, 60, CoreSemanticImageField::Provenance,
+            bytes,
+            60,
+            CoreSemanticImageField::Provenance,
         )?)
         .map_err(|source| CoreSemanticImageFault::ProvenanceIdentity {
             field: CoreProvenanceIdentityField::Recipe,
@@ -134,7 +188,9 @@ fn decode_captured_provenance(
         stage,
         tool,
         toolchain: ContentId::<ToolchainDomain>::try_from(read_array::<32>(
-            bytes, 96, CoreSemanticImageField::Provenance,
+            bytes,
+            96,
+            CoreSemanticImageField::Provenance,
         )?)
         .map_err(|source| CoreSemanticImageFault::ProvenanceIdentity {
             field: CoreProvenanceIdentityField::Toolchain,
@@ -142,7 +198,11 @@ fn decode_captured_provenance(
         })?,
     };
     let expected_recipe = CompileRecipeFact::derive(
-        recipe.profile, recipe.stage, recipe.tool, source.identity, recipe.toolchain,
+        recipe.profile,
+        recipe.stage,
+        recipe.tool,
+        source.identity,
+        recipe.toolchain,
     );
     if expected_recipe != recipe {
         return Err(CoreSemanticImageFault::Provenance {
@@ -177,13 +237,19 @@ fn decode_captured_provenance(
                 _ => ScopeComponent::Path,
             };
             return Err(CoreSemanticImageFault::Provenance {
-                cause: CoreProvenanceFault::ScopeAtom { component, raw, atom_count },
+                cause: CoreProvenanceFault::ScopeAtom {
+                    component,
+                    raw,
+                    atom_count,
+                },
             });
         }
     }
     let claim = SemanticScopeClaim {
         identity: ContentId::<SemanticScopeDomain>::try_from(read_array::<32>(
-            bytes, 128, CoreSemanticImageField::Provenance,
+            bytes,
+            128,
+            CoreSemanticImageField::Provenance,
         )?)
         .map_err(|source| CoreSemanticImageFault::ProvenanceIdentity {
             field: CoreProvenanceIdentityField::ScopeClaim,
@@ -196,28 +262,50 @@ fn decode_captured_provenance(
         path: AtomId::new(scope_atoms[2]),
     };
     validate_scope_claim(bytes, layout, claim, scope)?;
-    Ok(ImageProvenance::Captured { source, recipe, claim, scope })
+    Ok(ImageProvenance::Captured {
+        source,
+        recipe,
+        claim,
+        scope,
+    })
 }
 
 fn validate_scope_claim(
     bytes: &[u8],
-    layout: CoreImageLayout,
+    layout: ImageHeaderLayout,
     claim: SemanticScopeClaim,
     scope: SemanticScopeFacts,
 ) -> Result<(), CoreSemanticImageFault> {
-    let ecosystem = core::str::from_utf8(atom_bytes(bytes, layout, scope.ecosystem)?)
-        .map_err(|source| CoreSemanticImageFault::ScopeUtf8 { component: ScopeComponent::Ecosystem, source })?;
-    let package = core::str::from_utf8(atom_bytes(bytes, layout, scope.package)?)
-        .map_err(|source| CoreSemanticImageFault::ScopeUtf8 { component: ScopeComponent::Package, source })?;
-    let path = core::str::from_utf8(atom_bytes(bytes, layout, scope.path)?)
-        .map_err(|source| CoreSemanticImageFault::ScopeUtf8 { component: ScopeComponent::Path, source })?;
+    let ecosystem =
+        core::str::from_utf8(atom_bytes(bytes, layout, scope.ecosystem)?).map_err(|source| {
+            CoreSemanticImageFault::ScopeUtf8 {
+                component: ScopeComponent::Ecosystem,
+                source,
+            }
+        })?;
+    let package =
+        core::str::from_utf8(atom_bytes(bytes, layout, scope.package)?).map_err(|source| {
+            CoreSemanticImageFault::ScopeUtf8 {
+                component: ScopeComponent::Package,
+                source,
+            }
+        })?;
+    let path = core::str::from_utf8(atom_bytes(bytes, layout, scope.path)?).map_err(|source| {
+        CoreSemanticImageFault::ScopeUtf8 {
+            component: ScopeComponent::Path,
+            source,
+        }
+    })?;
     let lineage = PackageLineage::new(ecosystem, package)
         .map_err(|cause| CoreSemanticImageFault::ScopeLineage { cause })?;
     let key = DeclarationKey::new(lineage, path, EntityKind::Module, b"_")
         .map_err(|cause| CoreSemanticImageFault::ScopeKey { cause })?;
-    let length = key.preimage_len().map_err(|cause| CoreSemanticImageFault::ScopePreimage { cause })?;
+    let length = key
+        .preimage_len()
+        .map_err(|cause| CoreSemanticImageFault::ScopePreimage { cause })?;
     let mut preimage = vec![0_u8; length];
-    let written = key.write_preimage(&mut preimage)
+    let written = key
+        .write_preimage(&mut preimage)
         .map_err(|cause| CoreSemanticImageFault::ScopePreimage { cause })?;
     let expected = ContentId::<SemanticScopeDomain>::from_canonical_bytes(&preimage[..written]);
     if expected != claim.identity {
@@ -233,148 +321,61 @@ fn validate_scope_claim(
 
 fn atom_bytes<'bytes>(
     bytes: &'bytes [u8],
-    layout: CoreImageLayout,
+    layout: ImageHeaderLayout,
     atom: AtomId,
 ) -> Result<&'bytes [u8], CoreSemanticImageFault> {
     let row = atom.index();
     let row_wire = u32::try_from(row).map_err(|_| CoreSemanticImageFault::LengthOverflow {
         field: CoreSemanticImageField::AtomRange,
     })?;
-    let atom_bytes_wire = u32::try_from(layout.atom_bytes).map_err(|_| CoreSemanticImageFault::LengthOverflow {
-        field: CoreSemanticImageField::AtomRange,
-    })?;
+    let atom_bytes_wire =
+        u32::try_from(layout.atom_bytes).map_err(|_| CoreSemanticImageFault::LengthOverflow {
+            field: CoreSemanticImageField::AtomRange,
+        })?;
     if row >= layout.atom_rows {
         return Err(CoreSemanticImageFault::Reference {
             field: CoreSemanticImageField::Provenance,
             row: 0,
-            expected: u32::try_from(layout.atom_rows).map_err(|_| CoreSemanticImageFault::LengthOverflow {
-                field: CoreSemanticImageField::AtomRange,
+            expected: u32::try_from(layout.atom_rows).map_err(|_| {
+                CoreSemanticImageFault::LengthOverflow {
+                    field: CoreSemanticImageField::AtomRange,
+                }
             })?,
             observed: row_wire,
         });
     }
-    let offset = layout.atoms + row * super::wire::ATOM_ROW_BYTES;
+    let offset = layout.atoms + row * ATOM_ROW_BYTES;
     let start_raw = get_u32(bytes, offset, CoreSemanticImageField::AtomRange)?;
-    let start = usize::try_from(start_raw).map_err(|_| {
-        CoreSemanticImageFault::Reference {
-            field: CoreSemanticImageField::AtomRange,
-            row: row_wire,
-            expected: atom_bytes_wire,
-            observed: start_raw,
-        }
+    let start = usize::try_from(start_raw).map_err(|_| CoreSemanticImageFault::Reference {
+        field: CoreSemanticImageField::AtomRange,
+        row: row_wire,
+        expected: atom_bytes_wire,
+        observed: start_raw,
     })?;
     let length_raw = get_u32(bytes, offset + 4, CoreSemanticImageField::AtomRange)?;
-    let length = usize::try_from(length_raw).map_err(|_| {
-        CoreSemanticImageFault::Reference {
+    let length = usize::try_from(length_raw).map_err(|_| CoreSemanticImageFault::Reference {
+        field: CoreSemanticImageField::AtomRange,
+        row: row_wire,
+        expected: atom_bytes_wire,
+        observed: length_raw,
+    })?;
+    let start = layout
+        .bytes
+        .checked_add(start)
+        .ok_or(CoreSemanticImageFault::Truncated {
             field: CoreSemanticImageField::AtomRange,
-            row: row_wire,
-            expected: atom_bytes_wire,
-            observed: length_raw,
-        }
-    })?;
-    let start = layout.bytes.checked_add(start).ok_or(CoreSemanticImageFault::Truncated {
-        field: CoreSemanticImageField::AtomRange, offset: layout.bytes,
-    })?;
-    let end = start.checked_add(length).ok_or(CoreSemanticImageFault::Truncated {
-        field: CoreSemanticImageField::AtomRange, offset: start,
-    })?;
-    bytes.get(start..end).ok_or(CoreSemanticImageFault::Truncated {
-        field: CoreSemanticImageField::AtomRange, offset: start,
-    })
-}
-
-pub(crate) fn decode_entity(
-    bytes: &[u8],
-    layout: CoreImageLayout,
-    row: u32,
-) -> Result<CoreSemanticEntity, CoreSemanticImageFault> {
-    let entity_count = u32::try_from(layout.entity_rows).map_err(|_| CoreSemanticImageFault::LengthOverflow {
-        field: CoreSemanticImageField::EntityVersion,
-    })?;
-    let row_index = usize::try_from(row).map_err(|_| CoreSemanticImageFault::Reference {
-        field: CoreSemanticImageField::EntityVersion, row, expected: entity_count, observed: row,
-    })?;
-    if row_index >= layout.entity_rows {
-        return Err(CoreSemanticImageFault::Reference {
-            field: CoreSemanticImageField::EntityVersion, row, expected: entity_count, observed: row,
-        });
-    }
-    let offset = layout.entities + row_index * super::wire::ENTITY_ROW_BYTES;
-    let name = get_u32(bytes, offset, CoreSemanticImageField::EntityName)?;
-    let kind_raw = get_u16(bytes, offset + 4, CoreSemanticImageField::EntityKind)?;
-    let kind = EntityKind::try_from(kind_raw)
-        .map_err(|_| CoreSemanticImageFault::EntityKind { row, observed: kind_raw })?;
-    let visibility = decode_visibility(bytes[offset + 6], row)?;
-    let parent_raw = get_u32(bytes, offset + 8, CoreSemanticImageField::EntityParent)?;
-    let parent = (parent_raw != NONE).then(|| EntityId::new(parent_raw));
-    let source_file = get_u32(bytes, offset + 12, CoreSemanticImageField::EntitySource)?;
-    let source = if source_file == NONE {
-        None
-    } else {
-        let start = get_u32(bytes, offset + 16, CoreSemanticImageField::EntitySource)?;
-        let end = get_u32(bytes, offset + 20, CoreSemanticImageField::EntitySource)?;
-        Some(SourceSpan::new(AtomId::new(source_file), start, end).ok_or(
-            CoreSemanticImageFault::SourceSpan { row, start, end },
-        )?)
-    };
-    let authority = EntityAuthorityFacts {
-        parentage: decode_parentage(bytes, offset, row)?,
-        source: decode_availability(bytes[offset + 24], row)?,
-        source_file: decode_availability(bytes[offset + 25], row)?,
-        members: decode_availability(bytes[offset + 26], row)?,
-        semantic_type: decode_availability(bytes[offset + 27], row)?,
-        documentation: decode_availability(bytes[offset + 28], row)?,
-        visibility: decode_availability(bytes[offset + 29], row)?,
-        attributes: decode_availability(bytes[offset + 30], row)?,
-        language_extension: decode_availability(bytes[offset + 31], row)?,
-    };
-    let family = DeclarationFamilyId::from_raw(read_array::<16>(bytes, offset + 36, CoreSemanticImageField::EntityVersion)?);
-    let variant = VariantFingerprint::from_raw(read_array::<16>(bytes, offset + 52, CoreSemanticImageField::EntityVersion)?);
-    let core_payload = CorePayloadHash::from_raw(read_array::<16>(bytes, offset + 68, CoreSemanticImageField::EntityVersion)?);
-    Ok(CoreSemanticEntity {
-        id: EntityId::new(row), name: AtomId::new(name), kind, visibility, parent, authority, source,
-        version: EntityVersion { family, variant, core_payload },
-    })
-}
-
-fn decode_visibility(value: u8, row: u32) -> Result<Visibility, CoreSemanticImageFault> {
-    match value {
-        0 => Ok(Visibility::Unknown),
-        1 => Ok(Visibility::Private),
-        2 => Ok(Visibility::Restricted),
-        3 => Ok(Visibility::Package),
-        4 => Ok(Visibility::Public),
-        observed => Err(CoreSemanticImageFault::Discriminant {
-            field: CoreSemanticImageField::EntityVisibility, row, observed,
-        }),
-    }
-}
-
-fn decode_availability(value: u8, row: u32) -> Result<FactAvailability, CoreSemanticImageFault> {
-    match value {
-        0 => Ok(FactAvailability::Unavailable),
-        1 => Ok(FactAvailability::Captured),
-        observed => Err(CoreSemanticImageFault::Discriminant {
-            field: CoreSemanticImageField::EntityAvailability, row, observed,
-        }),
-    }
-}
-
-fn decode_parentage(
-    bytes: &[u8], offset: usize, row: u32,
-) -> Result<ParentageAuthority, CoreSemanticImageFault> {
-    match bytes[offset + 7] {
-        0 => Ok(ParentageAuthority::Root),
-        1 => Ok(ParentageAuthority::Bound(DeclarationIdentity {
-            family: DeclarationFamilyId::from_raw(read_array::<16>(bytes, offset + 84, CoreSemanticImageField::EntityParentage)?),
-            variant: VariantFingerprint::from_raw(read_array::<16>(bytes, offset + 100, CoreSemanticImageField::EntityParentage)?),
-        })),
-        2 => Ok(ParentageAuthority::UnrepresentedAuthorityOwner(
-            UnrepresentedAuthorityOwner::new(read_array::<16>(bytes, offset + 84, CoreSemanticImageField::EntityParentage)?),
-        )),
-        3 => Ok(ParentageAuthority::Unavailable),
-        observed => Err(CoreSemanticImageFault::Discriminant {
-            field: CoreSemanticImageField::EntityParentage, row, observed,
-        }),
-    }
+            offset: layout.bytes,
+        })?;
+    let end = start
+        .checked_add(length)
+        .ok_or(CoreSemanticImageFault::Truncated {
+            field: CoreSemanticImageField::AtomRange,
+            offset: start,
+        })?;
+    bytes
+        .get(start..end)
+        .ok_or(CoreSemanticImageFault::Truncated {
+            field: CoreSemanticImageField::AtomRange,
+            offset: start,
+        })
 }

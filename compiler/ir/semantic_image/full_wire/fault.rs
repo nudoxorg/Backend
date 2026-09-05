@@ -165,9 +165,9 @@ pub enum FullSemanticImageFault {
     TypedShape { node: u32 },
 }
 
-/// Exact composed reopening failure.  The core header/provenance grammar is
-/// reused verbatim by the full image, so its established fault remains a
-/// first-class cause rather than being recast as a generic full-row error.
+/// Exact composed reopening failure. Canonical planning and shared
+/// header/provenance validation retain their established cause rather than
+/// being recast as a generic full-row error.
 #[derive(Debug, Error)]
 pub enum FullSemanticImageError {
     #[error(transparent)]

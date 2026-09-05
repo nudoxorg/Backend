@@ -31,7 +31,7 @@ use super::{
 ///
 /// It borrows exactly the caller-owned fragment/mmap bytes; all iterators
 /// reuse that backing region and do not allocate or reinterpret Rust-layout
-/// records.  A core image cannot manufacture this type because `reopen`
+/// records. No partial image can manufacture this type because `reopen`
 /// validates every complete-reader plane before returning.
 pub struct SemanticImageView<'bytes> {
     bytes: &'bytes [u8],

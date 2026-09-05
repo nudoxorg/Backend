@@ -13,13 +13,13 @@ extern crate std;
 #[cfg(target_pointer_width = "16")]
 compile_error!("compiler-ir requires at least a 32-bit address space");
 
-mod canonical_data;
 mod authority;
+mod canonical_data;
 mod columnar;
 mod coordinate;
 mod declaration_identity;
-mod docs_facts;
 mod discovery;
+mod docs_facts;
 mod extension_pools;
 mod interner;
 #[cfg(feature = "mmap")]
@@ -30,47 +30,44 @@ mod range;
 mod reader;
 mod render;
 mod semantic;
-mod semantic_discovery;
-mod semantic_render;
 mod semantic_data_view;
+mod semantic_discovery;
 mod semantic_extension_section;
 mod semantic_facts;
 mod semantic_image;
+mod semantic_render;
 mod type_facts;
 mod vcs;
 mod view;
 mod wire;
 
+pub use authority::{
+    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
+    FactAvailability, ImageProvenance, ImageProvenanceClaim, OccurrenceAuthorityColumns,
+    OccurrenceAuthorityFacts, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
+    UnrepresentedAuthorityOwner,
+};
 pub use canonical_data::{
     CanonicalDataError, CanonicalDataGraph, DataCanonicalization, DataCountLane, DataFacts,
     DataOutput, DataOutputLane, DataResource, DataResourceBudget, DataScratch, DataScratchLane,
     canonicalize_data_with_budget,
 };
-pub use authority::{
-    AuthorityFactFault, AuthorityFactPlane, EntityAuthorityColumns, EntityAuthorityFacts,
-    FactAvailability, ImageProvenance, ImageProvenanceClaim, ParentageAuthority, SemanticScopeClaim,
-    SemanticScopeFacts,
-    OccurrenceAuthorityColumns, OccurrenceAuthorityFacts, UnrepresentedAuthorityOwner,
-};
-pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
 pub use compiler_ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use compiler_ir_vocabulary::{
-    AnnotationKind, AnonRecordForm, AnonRecordFormError, ChildCountLaw, CvQualifiers,
-    CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
-    DeclarationKeyFault, DeclarationPathFault,
-    ExternalCoordinate, ExternalEntityRef, ExternalFragmentId,
-    ExternalProductRef, ExternalTypeRef, ForeignKey, ForeignKeyFault, ForeignOrigin,
-    ChannelDirection, FunctionVariadicForm, ListSpan,
-    NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageView,
-    PackageLineageFault, PooledListError,
-    PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product, ProductChildRole,
-    ProductChildRoleCodeError, ProductChildren, ProductConstructorFault, ProductConstructorTag,
-    ProductId, ProductList, ProductListId, ProductRef, ReferenceKind, ReferenceKindCodeError,
-    RelSpan, RelSpanFault, Resolution, SemanticAtom, SemanticProduct, SemanticProductChild,
-    SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
-    SemanticTypeTag, SemanticTypeTagError, StableRef, TypeCell, TypeChildTarget, TypeChildren,
-    TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth, TypeWidthError,
-    ExternalDeclarationIdentity, ForeignDeclarationId, VariantAvailability, VariantFingerprint,
+    AnnotationKind, AnonRecordForm, AnonRecordFormError, ChannelDirection, ChildCountLaw,
+    CvQualifiers, CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
+    DeclarationKeyFault, DeclarationPathFault, ExternalCoordinate, ExternalDeclarationIdentity,
+    ExternalEntityRef, ExternalFragmentId, ExternalProductRef, ExternalTypeRef,
+    ForeignDeclarationId, ForeignKey, ForeignKeyFault, ForeignOrigin, FunctionVariadicForm,
+    ListSpan, NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageFault,
+    PackageLineageView, PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError,
+    Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren, ProductConstructorFault,
+    ProductConstructorTag, ProductId, ProductList, ProductListId, ProductRef, ReferenceKind,
+    ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution, SemanticAtom, SemanticProduct,
+    SemanticProductChild, SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault,
+    SemanticTypeRecord, SemanticTypeTag, SemanticTypeTagError, StableRef, TypeCell,
+    TypeChildTarget, TypeChildren, TypeFactId, TypeReason, TypeReasonError, TypeRef, TypeWidth,
+    TypeWidthError, VariantAvailability, VariantFingerprint,
 };
 pub use compiler_ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
@@ -82,20 +79,21 @@ pub use compiler_vocabulary::{
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
+pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
+pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use docs_facts::{
     DecodedDocFact, DocFactCursor, DocFactFault, DocFactInput, DocFragmentInput, DocLinkTarget,
     DocumentationLane,
 };
-pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use extension_pools::{
     DecodedRefList, DecodedTypeParameter, DecodedTypeParameterBound,
     DecodedTypeParameterBoundCursor, DecodedTypeParameterBoundList, DecodedTypeParameterCursor,
     DecodedTypeParameterKind, DecodedTypeParameterList, DecodedTypeParameterSemantics,
-    ExtensionPoolFault,
-    ExtensionPoolListLane, ExtensionPoolsLane, ExtensionRefList, ExtensionTypeParameter,
-    ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange, ExtensionTypeParameterKind,
-    ExtensionTypeParameterRange, ReopenedExtensionPools, ReopenedTypeParameterList,
-    TypeParameterField, TypeParameterListBounds, TypeParameterTagField, reopen_extension_pools,
+    ExtensionPoolFault, ExtensionPoolListLane, ExtensionPoolsLane, ExtensionRefList,
+    ExtensionTypeParameter, ExtensionTypeParameterBound, ExtensionTypeParameterBoundRange,
+    ExtensionTypeParameterKind, ExtensionTypeParameterRange, ReopenedExtensionPools,
+    ReopenedTypeParameterList, TypeParameterField, TypeParameterListBounds, TypeParameterTagField,
+    reopen_extension_pools,
 };
 pub use interner::{
     ArenaRange, AtomInterner, AtomTable, AtomTableView, CapacityError, CapacitySpace, Interner,
@@ -121,55 +119,42 @@ pub use reader::{
     CoreSemanticEntity, IrCanonicalCoreEntities, IrCanonicalEntities, IrExtensionRows,
     SemanticCoreReader, SemanticCursor, SemanticEntity, SemanticImageFacts, SemanticReader,
 };
-pub use semantic_image::{
-    encode_full_semantic_image, full_semantic_image_len, CoreAuthorityFault,
-    CoreAuthorityPlane, CoreProvenanceFault, CoreProvenanceIdentityField,
-    CoreSemanticImageFault, CoreSemanticImageField, ExtensionPlanFault,
-    FullEntityFault, FullPlanError, FullSemanticImageError, FullSemanticImageFault,
-    FullSemanticImageField, FullSemanticImageIdentityField, GraphPlanFault,
-    DirectoryKind, ScopeComponent, SemanticImageEncodeError, SemanticImageIdentity,
-    SemanticImageReopenError, SemanticImageView, TerminalPoolDomain,
-    TerminalPoolFault,
-};
 #[doc(hidden)]
 pub use render::{DocsDisplay, EmbeddingDisplay, EmbeddingProfile, SignatureDisplay, TypeDisplay};
 pub use semantic::{
     ArrayShape, AtomListId, BorrowedTree, BuildError, BuiltinType, CSharpExtension, CSharpFacts,
-    CallableElementRole, CxxReferenceCategory,
-    CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind, ClangExtension,
-    ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ComputedState, ComputedType,
-    ComputedTypeId, ConcreteState, ConcreteType, ConcreteTypeId, Confidence, DocFragment, DocId,
-    DocInput, EntityColumns, EntityListId, EntityRange, EntityVersion,
-    External, ExternalId, ExternalTarget, ForeignExternalTarget, ForeignTargetOrigin, FrontendTree, GoExtension,
-    GoFacts, GoSignature, GraphColumns, GuardedType, Ir,
-    IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension, JavaFacts,
-    LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
+    CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
+    CallableElementRole, ClangExtension, ClangFacts, ClangLayout, ClangQualifiers,
+    ClangStorageClass, ComputedState, ComputedType, ComputedTypeId, ConcreteState, ConcreteType,
+    ConcreteTypeId, Confidence, CorePayloadCoverage, CorePayloadHash, CorePayloadPlane,
+    CxxReferenceCategory, DeclarationLinkTarget, DocFragment, DocId, DocInput, EntityColumns,
+    EntityListId, EntityRange, EntityVersion, External, ExternalId, ExternalTarget,
+    ForeignExternalTarget, ForeignTargetOrigin, FrontendTree, GoExtension, GoFacts, GoSignature,
+    GraphColumns, GuardedType, Ir, IrBuilder, Item, ItemIdIter, ItemKind, ItemView, JavaExtension,
+    JavaFacts, LanguageExtensionColumnView, LanguageExtensionInput, LanguageExtensionViolation,
     LanguageExtensionsView, Link, LinkId, LinkIter, LinkKind, LinkOccurrence,
     LinkOccurrenceColumns, LinkOccurrenceId, LinkOccurrenceIter, LinkOccurrenceSpace, LinkSpace,
-    LinkTarget, LiteralType,
-    CorePayloadCoverage, CorePayloadHash, CorePayloadPlane,
-    DeclarationLinkTarget, MappedModifier,
-    Mutability, NativeCharacterRole, ObjectMember, ObjectMemberListId, OptionalId,
-    PropertyKey, PythonExtension, PythonFacts, PythonParameterKind, QualifiedSegments, RustExtension, RustFacts,
-    RustOwnership, SemanticImageAuthority, SemanticSpace, SourceColumnsView, SourceSpan,
-    SparseColumnView, StorageColumns, TemplatePart, TemplatePartListId,
-    TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
-    TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr, TypeHeader,
-    TypeListId, TypePairPayload, TypeParameter, TypeParameterBound, TypeParameterBoundListId,
-    TypeParameterInference, TypeParameterKind, TypeParameterListId, TypeParameterPrimaryRequirement,
-    TypeParameterRequirements, TypeQuadPayload, TypeQuery, VariadicForm,
+    LinkTarget, LiteralType, MappedModifier, Mutability, NativeCharacterRole, ObjectMember,
+    ObjectMemberListId, OptionalId, PropertyKey, PythonExtension, PythonFacts, PythonParameterKind,
+    QualifiedSegments, RustExtension, RustFacts, RustOwnership, SemanticImageAuthority,
+    SemanticSpace, SourceColumnsView, SourceSpan, SparseColumnView, StorageColumns, TemplatePart,
+    TemplatePartListId, TreeBuilder, TreeEntity, TreeEntityId, TreeItemInput, TreeLinkInput,
+    TreeLinkTarget, TupleElement, TupleElementKind, TupleElementListId, TypeColumns, TypeExpr,
+    TypeHeader, TypeListId, TypePairPayload, TypeParameter, TypeParameterBound,
+    TypeParameterBoundListId, TypeParameterInference, TypeParameterKind, TypeParameterListId,
+    TypeParameterPrimaryRequirement, TypeParameterRequirements, TypeQuadPayload, TypeQuery,
     TypeScriptExtension, TypeScriptFacts, TypeState, TypeTag, TypeTriplePayload, TypedTypeId,
-    UnknownReason, UnknownState, UnknownType, UnknownTypeId, Variance, VcsColumns, Visibility,
-    WildcardBound,
+    UnknownReason, UnknownState, UnknownType, UnknownTypeId, VariadicForm, Variance, VcsColumns,
+    Visibility, WildcardBound,
+};
+pub use semantic_data_view::{
+    SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,
+    SemanticDataEntityRoot, SemanticDataView,
 };
 pub use semantic_discovery::{
     AvailabilityCensus, EntityAuthorityCensus, LanguageExtensionCensus, ParentageCensus,
     SemanticDiscoveryError, SemanticDiscoveryReference, SemanticImageCensus,
     SemanticImageDiscovery,
-};
-pub use semantic_data_view::{
-    SemanticDataAtom, SemanticDataAtomCursor, SemanticDataChild, SemanticDataCounts,
-    SemanticDataEntityRoot, SemanticDataView,
 };
 pub use semantic_extension_section::{
     ExtensionSectionInput, ExtensionSectionPlane, ExtensionSectionSource,
@@ -183,12 +168,19 @@ pub use semantic_extension_section::{
 pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
+pub use semantic_image::{
+    CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
+    CoreSemanticImageField, ExtensionPlanFault, FullEntityFault, FullPlanError,
+    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    FullSemanticImageIdentityField, GraphPlanFault, ScopeComponent, SemanticImageEncodeError,
+    SemanticImageIdentity, SemanticImageReopenError, SemanticImageView, TerminalPoolDomain,
+    TerminalPoolFault, encode_full_semantic_image, full_semantic_image_len,
+};
 pub use semantic_render::{
-    CanonicalTypeRenderError, CanonicalTypeRenderLimits, CanonicalTypeRenderReference,
-    CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, GoSemanticDocumentDialect,
-    JavaSemanticDocumentDialect,
-    NeutralDialect, PreparedCanonicalType, PreparedCanonicalTypeView, PreparedNeutral,
-    PreparedNeutralView, PreparedSemanticDocument, PreparedSemanticDocumentView,
+    CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, CanonicalTypeRenderError,
+    CanonicalTypeRenderLimits, CanonicalTypeRenderReference, GoSemanticDocumentDialect,
+    JavaSemanticDocumentDialect, NeutralDialect, PreparedCanonicalType, PreparedCanonicalTypeView,
+    PreparedNeutral, PreparedNeutralView, PreparedSemanticDocument, PreparedSemanticDocumentView,
     PythonSemanticDocumentDialect, RenderDialect, RenderFailure, RustSemanticDocumentDialect,
     SemanticDocumentDialect, SemanticDocumentError, SemanticDocumentFact,
     SemanticDocumentReference, SemanticImageSourceSyntaxDialect, SourceSyntaxDialect,

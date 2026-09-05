@@ -1,8 +1,7 @@
 //! Explicit cells and directory vocabulary for the complete semantic image.
 //!
-//! The core image keeps its `NXSI` schema-1 grammar unchanged.  A full image
-//! is a separate `NXFI` grammar whose directory is deliberately complete: a
-//! validated full reader can never confuse a missing pool with an empty one.
+//! `NXFI` has one deliberately complete directory: a validated full reader
+//! can never confuse a missing pool with an empty one.
 
 use core::fmt;
 
@@ -154,7 +153,9 @@ impl FullDirectoryKind {
         }
     }
 
-    pub const fn count() -> u16 { 26 }
+    pub const fn count() -> u16 {
+        26
+    }
 }
 
 impl fmt::Display for FullDirectoryKind {
@@ -211,7 +212,9 @@ pub(crate) fn read_array<const N: usize>(
     offset: usize,
     field: FullSemanticImageField,
 ) -> Result<[u8; N], FullSemanticImageFault> {
-    let end = offset.checked_add(N).ok_or(FullSemanticImageFault::Truncated { field, offset })?;
+    let end = offset
+        .checked_add(N)
+        .ok_or(FullSemanticImageFault::Truncated { field, offset })?;
     let slice = bytes
         .get(offset..end)
         .ok_or(FullSemanticImageFault::Truncated { field, offset })?;

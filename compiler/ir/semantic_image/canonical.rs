@@ -1,16 +1,15 @@
 //! Coordinate-free canonical remaps shared by every semantic-image grammar.
 //!
 //! This layer owns no wire layout. It turns the final owned `Ir` atom and
-//! declaration coordinates into canonical image coordinates once, before a
-//! core or future full encoder writes any cross-reference.
+//! declaration coordinates into canonical image coordinates once, before the
+//! complete encoder writes any cross-reference.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    AtomId, DeclarationIdentity, EntityId, ExternalId, ExternalTarget, LinkTarget, SourceSpan,
-    ForeignTargetOrigin, Ir, SemanticCoreReader, SemanticImageFacts,
-    VariantAvailability,
+    AtomId, DeclarationIdentity, EntityId, ExternalId, ExternalTarget, ForeignTargetOrigin, Ir,
+    LinkTarget, SemanticCoreReader, SemanticImageFacts, SourceSpan, VariantAvailability,
 };
 
 use super::fault::{CoreSemanticImageFault, CoreSemanticImageField};
@@ -22,7 +21,7 @@ pub(super) struct CanonicalAtom<'image> {
     pub(super) length: u32,
 }
 
-/// Measured canonical coordinates for facts common to core and full images.
+/// Measured canonical coordinates shared by complete-image planes.
 pub(super) struct CanonicalImagePlan<'image> {
     pub(super) atoms: Vec<CanonicalAtom<'image>>,
     pub(super) entities: Vec<EntityId>,
@@ -31,9 +30,7 @@ pub(super) struct CanonicalImagePlan<'image> {
     entity_remap: Vec<u32>,
 }
 
-/// Full-only extension of the common plan. Core encoding deliberately never
-/// constructs this: omitted external facts cannot make a core image fail or
-/// consume scratch capacity.
+/// Complete-image extension of the common plan.
 pub(super) struct CanonicalFullPlan<'image> {
     pub(super) core: CanonicalImagePlan<'image>,
     pub(super) externals: Vec<ExternalId>,
@@ -101,15 +98,18 @@ impl<'image> CanonicalImagePlan<'image> {
         }
         source_atoms.sort_unstable_by(|(_, left), (_, right)| left.cmp(right));
         for (row, pair) in source_atoms.windows(2).enumerate() {
-            let [(_, left), (_, right)] = pair else { continue };
+            let [(_, left), (_, right)] = pair else {
+                continue;
+            };
             if left == right {
                 return Err(CoreSemanticImageFault::CanonicalOrder {
                     field: CoreSemanticImageField::AtomOrder,
                     previous: wire_usize(row, CoreSemanticImageField::AtomOrder)?,
                     row: wire_usize(
-                        row.checked_add(1).ok_or(CoreSemanticImageFault::LengthOverflow {
-                            field: CoreSemanticImageField::AtomOrder,
-                        })?,
+                        row.checked_add(1)
+                            .ok_or(CoreSemanticImageFault::LengthOverflow {
+                                field: CoreSemanticImageField::AtomOrder,
+                            })?,
                         CoreSemanticImageField::AtomOrder,
                     )?,
                 });
@@ -125,9 +125,15 @@ impl<'image> CanonicalImagePlan<'image> {
             let start = wire_usize(atom_bytes, CoreSemanticImageField::AtomRange)?;
             let length = wire_usize(bytes.len(), CoreSemanticImageField::AtomRange)?;
             atom_bytes = atom_bytes.checked_add(bytes.len()).ok_or(
-                CoreSemanticImageFault::LengthOverflow { field: CoreSemanticImageField::AtomRange },
+                CoreSemanticImageFault::LengthOverflow {
+                    field: CoreSemanticImageField::AtomRange,
+                },
             )?;
-            atoms.push(CanonicalAtom { bytes, start, length });
+            atoms.push(CanonicalAtom {
+                bytes,
+                start,
+                length,
+            });
         }
 
         let entities = ir
@@ -165,21 +171,30 @@ impl<'image> CanonicalImagePlan<'image> {
     }
 
     pub(super) fn atom(&self, atom: AtomId) -> Result<u32, CoreSemanticImageFault> {
-        self.atom_remap.get(atom.index()).copied().ok_or(CoreSemanticImageFault::Reference {
-            field: CoreSemanticImageField::AtomRange,
-            row: 0,
-            expected: wire_usize(self.atom_remap.len(), CoreSemanticImageField::AtomRange)?,
-            observed: wire_usize(atom.index(), CoreSemanticImageField::AtomRange)?,
-        })
+        self.atom_remap
+            .get(atom.index())
+            .copied()
+            .ok_or(CoreSemanticImageFault::Reference {
+                field: CoreSemanticImageField::AtomRange,
+                row: 0,
+                expected: wire_usize(self.atom_remap.len(), CoreSemanticImageField::AtomRange)?,
+                observed: wire_usize(atom.index(), CoreSemanticImageField::AtomRange)?,
+            })
     }
 
     pub(super) fn entity(&self, entity: EntityId) -> Result<u32, CoreSemanticImageFault> {
-        self.entity_remap.get(entity.index()).copied().ok_or(CoreSemanticImageFault::Reference {
-            field: CoreSemanticImageField::EntityParent,
-            row: 0,
-            expected: wire_usize(self.entity_remap.len(), CoreSemanticImageField::EntityVersion)?,
-            observed: wire_usize(entity.index(), CoreSemanticImageField::EntityVersion)?,
-        })
+        self.entity_remap
+            .get(entity.index())
+            .copied()
+            .ok_or(CoreSemanticImageFault::Reference {
+                field: CoreSemanticImageField::EntityParent,
+                row: 0,
+                expected: wire_usize(
+                    self.entity_remap.len(),
+                    CoreSemanticImageField::EntityVersion,
+                )?,
+                observed: wire_usize(entity.index(), CoreSemanticImageField::EntityVersion)?,
+            })
     }
 
     pub(super) fn atom_bytes_len(&self) -> Result<usize, CoreSemanticImageFault> {
@@ -195,9 +210,9 @@ impl<'image> CanonicalImagePlan<'image> {
 }
 
 impl<'image> CanonicalFullPlan<'image> {
-    /// Extends a finished common plan with external endpoint coordinates.
-    /// Every atom in a foreign path/origin/display is already remapped by the
-    /// core plan before external rows are sorted.
+    /// Extends the common plan with external endpoint coordinates. Every atom
+    /// in a foreign path/origin/display is already remapped before external
+    /// rows are sorted.
     pub(super) fn build(ir: &'image Ir) -> Result<Self, CoreSemanticImageFault> {
         let core = CanonicalImagePlan::build(ir)?;
         let mut atom_fingerprints = Vec::with_capacity(core.atoms.len());
@@ -206,12 +221,17 @@ impl<'image> CanonicalFullPlan<'image> {
         }
         let mut entity_identities = Vec::with_capacity(core.entities.len());
         for (row, entity) in core.entities.iter().copied().enumerate() {
-            let version = ir.version(entity).ok_or(CoreSemanticImageFault::Reference {
-                field: CoreSemanticImageField::EntityVersion,
-                row: wire_usize(row, CoreSemanticImageField::EntityVersion)?,
-                expected: wire_usize(core.entities.len(), CoreSemanticImageField::EntityVersion)?,
-                observed: wire_usize(entity.index(), CoreSemanticImageField::EntityVersion)?,
-            })?;
+            let version = ir
+                .version(entity)
+                .ok_or(CoreSemanticImageFault::Reference {
+                    field: CoreSemanticImageField::EntityVersion,
+                    row: wire_usize(row, CoreSemanticImageField::EntityVersion)?,
+                    expected: wire_usize(
+                        core.entities.len(),
+                        CoreSemanticImageField::EntityVersion,
+                    )?,
+                    observed: wire_usize(entity.index(), CoreSemanticImageField::EntityVersion)?,
+                })?;
             entity_identities.push(version.identity());
         }
         let external_count = ir.storage_columns().externals.len();
@@ -242,9 +262,10 @@ impl<'image> CanonicalFullPlan<'image> {
                     field: CoreSemanticImageField::External,
                     previous: wire_usize(row, CoreSemanticImageField::External)?,
                     row: wire_usize(
-                        row.checked_add(1).ok_or(CoreSemanticImageFault::LengthOverflow {
-                            field: CoreSemanticImageField::External,
-                        })?,
+                        row.checked_add(1)
+                            .ok_or(CoreSemanticImageFault::LengthOverflow {
+                                field: CoreSemanticImageField::External,
+                            })?,
                         CoreSemanticImageField::External,
                     )?,
                 });
@@ -273,12 +294,14 @@ impl<'image> CanonicalFullPlan<'image> {
     }
 
     pub(super) fn external(&self, external: ExternalId) -> Result<u32, CoreSemanticImageFault> {
-        self.external_remap.get(external.index()).copied().ok_or(CoreSemanticImageFault::Reference {
-            field: CoreSemanticImageField::External,
-            row: 0,
-            expected: wire_usize(self.external_remap.len(), CoreSemanticImageField::External)?,
-            observed: wire_usize(external.index(), CoreSemanticImageField::External)?,
-        })
+        self.external_remap.get(external.index()).copied().ok_or(
+            CoreSemanticImageFault::Reference {
+                field: CoreSemanticImageField::External,
+                row: 0,
+                expected: wire_usize(self.external_remap.len(), CoreSemanticImageField::External)?,
+                observed: wire_usize(external.index(), CoreSemanticImageField::External)?,
+            },
+        )
     }
 
     /// Projects an atom into the common canonical arena. The resulting
@@ -298,24 +321,29 @@ impl<'image> CanonicalFullPlan<'image> {
         atom: AtomId,
     ) -> Result<[u8; 32], CoreSemanticImageFault> {
         let canonical = usize::try_from(self.core.atom(atom)?).map_err(|_| {
-            CoreSemanticImageFault::LengthOverflow { field: CoreSemanticImageField::AtomRange }
+            CoreSemanticImageFault::LengthOverflow {
+                field: CoreSemanticImageField::AtomRange,
+            }
         })?;
-        self.atom_fingerprints.get(canonical).copied().ok_or(
-            CoreSemanticImageFault::Reference {
+        self.atom_fingerprints
+            .get(canonical)
+            .copied()
+            .ok_or(CoreSemanticImageFault::Reference {
                 field: CoreSemanticImageField::AtomRange,
                 row: 0,
-                expected: wire_usize(self.atom_fingerprints.len(), CoreSemanticImageField::AtomRange)?,
+                expected: wire_usize(
+                    self.atom_fingerprints.len(),
+                    CoreSemanticImageField::AtomRange,
+                )?,
                 observed: wire_usize(canonical, CoreSemanticImageField::AtomRange)?,
-            },
-        )
+            })
     }
 
-    pub(super) fn atom_bytes(
-        &self,
-        atom: AtomId,
-    ) -> Result<&'image [u8], CoreSemanticImageFault> {
+    pub(super) fn atom_bytes(&self, atom: AtomId) -> Result<&'image [u8], CoreSemanticImageFault> {
         let canonical = usize::try_from(self.core.atom(atom)?).map_err(|_| {
-            CoreSemanticImageFault::LengthOverflow { field: CoreSemanticImageField::AtomRange }
+            CoreSemanticImageFault::LengthOverflow {
+                field: CoreSemanticImageField::AtomRange,
+            }
         })?;
         self.core.atoms.get(canonical).map(|atom| atom.bytes).ok_or(
             CoreSemanticImageFault::Reference {
@@ -332,10 +360,14 @@ impl<'image> CanonicalFullPlan<'image> {
         entity: EntityId,
     ) -> Result<DeclarationIdentity, CoreSemanticImageFault> {
         let canonical = usize::try_from(self.core.entity(entity)?).map_err(|_| {
-            CoreSemanticImageFault::LengthOverflow { field: CoreSemanticImageField::EntityVersion }
+            CoreSemanticImageFault::LengthOverflow {
+                field: CoreSemanticImageField::EntityVersion,
+            }
         })?;
-        self.entity_identities.get(canonical).copied().ok_or(
-            CoreSemanticImageFault::Reference {
+        self.entity_identities
+            .get(canonical)
+            .copied()
+            .ok_or(CoreSemanticImageFault::Reference {
                 field: CoreSemanticImageField::EntityVersion,
                 row: 0,
                 expected: wire_usize(
@@ -343,16 +375,17 @@ impl<'image> CanonicalFullPlan<'image> {
                     CoreSemanticImageField::EntityVersion,
                 )?,
                 observed: wire_usize(canonical, CoreSemanticImageField::EntityVersion)?,
-            },
-        )
+            })
     }
 
     pub(super) fn external_fingerprint(
         &self,
         external: ExternalId,
     ) -> Result<[u8; 32], CoreSemanticImageFault> {
-        self.external_fingerprints.get(external.index()).copied().ok_or(
-            CoreSemanticImageFault::Reference {
+        self.external_fingerprints
+            .get(external.index())
+            .copied()
+            .ok_or(CoreSemanticImageFault::Reference {
                 field: CoreSemanticImageField::External,
                 row: 0,
                 expected: wire_usize(
@@ -360,8 +393,7 @@ impl<'image> CanonicalFullPlan<'image> {
                     CoreSemanticImageField::External,
                 )?,
                 observed: wire_usize(external.index(), CoreSemanticImageField::External)?,
-            },
-        )
+            })
     }
 
     /// Compares two raw external rows by their coordinate-free full key. The
@@ -371,22 +403,30 @@ impl<'image> CanonicalFullPlan<'image> {
         left: ExternalId,
         right: ExternalId,
     ) -> Result<core::cmp::Ordering, CoreSemanticImageFault> {
-        let left = self.external_keys.get(left.index()).ok_or(
-            CoreSemanticImageFault::Reference {
-                field: CoreSemanticImageField::External,
-                row: 0,
-                expected: wire_usize(self.external_keys.len(), CoreSemanticImageField::External)?,
-                observed: wire_usize(left.index(), CoreSemanticImageField::External)?,
-            },
-        )?;
-        let right = self.external_keys.get(right.index()).ok_or(
-            CoreSemanticImageFault::Reference {
-                field: CoreSemanticImageField::External,
-                row: 0,
-                expected: wire_usize(self.external_keys.len(), CoreSemanticImageField::External)?,
-                observed: wire_usize(right.index(), CoreSemanticImageField::External)?,
-            },
-        )?;
+        let left =
+            self.external_keys
+                .get(left.index())
+                .ok_or(CoreSemanticImageFault::Reference {
+                    field: CoreSemanticImageField::External,
+                    row: 0,
+                    expected: wire_usize(
+                        self.external_keys.len(),
+                        CoreSemanticImageField::External,
+                    )?,
+                    observed: wire_usize(left.index(), CoreSemanticImageField::External)?,
+                })?;
+        let right =
+            self.external_keys
+                .get(right.index())
+                .ok_or(CoreSemanticImageFault::Reference {
+                    field: CoreSemanticImageField::External,
+                    row: 0,
+                    expected: wire_usize(
+                        self.external_keys.len(),
+                        CoreSemanticImageField::External,
+                    )?,
+                    observed: wire_usize(right.index(), CoreSemanticImageField::External)?,
+                })?;
         Ok(left.cmp(right))
     }
 
@@ -399,9 +439,9 @@ impl<'image> CanonicalFullPlan<'image> {
         right: LinkTarget,
     ) -> Result<core::cmp::Ordering, CoreSemanticImageFault> {
         match (left, right) {
-            (LinkTarget::Local(left), LinkTarget::Local(right)) => {
-                Ok(self.entity_identity(left)?.cmp(&self.entity_identity(right)?))
-            }
+            (LinkTarget::Local(left), LinkTarget::Local(right)) => Ok(self
+                .entity_identity(left)?
+                .cmp(&self.entity_identity(right)?)),
             (LinkTarget::Local(_), LinkTarget::External(_)) => Ok(core::cmp::Ordering::Less),
             (LinkTarget::External(_), LinkTarget::Local(_)) => Ok(core::cmp::Ordering::Greater),
             (LinkTarget::External(left), LinkTarget::External(right)) => {
@@ -443,7 +483,11 @@ fn fingerprint_external(key: ExternalKey) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"nudox.semantic-image.external.v1\0");
     match key {
-        ExternalKey::Stable { fragment, family, variant } => {
+        ExternalKey::Stable {
+            fragment,
+            family,
+            variant,
+        } => {
             hasher.update(&[0]);
             hasher.update(&fragment);
             hasher.update(&family);
@@ -469,7 +513,11 @@ fn fingerprint_external(key: ExternalKey) -> [u8; 32] {
             hasher.update(&display.to_le_bytes());
             hasher.update(&kind.to_le_bytes());
         }
-        ExternalKey::FragmentEntity { fragment, ordinal, display } => {
+        ExternalKey::FragmentEntity {
+            fragment,
+            ordinal,
+            display,
+        } => {
             hasher.update(&[2]);
             hasher.update(&fragment);
             hasher.update(&ordinal.to_le_bytes());
@@ -496,8 +544,13 @@ fn external_key(
                 VariantAvailability::Unavailable => (0, [0; 16]),
             };
             let (origin_tag, origin_first, origin_second) = match value.origin {
-                ForeignTargetOrigin::Package { ecosystem, package } => (0, atom(ecosystem)?, atom(package)?),
-                ForeignTargetOrigin::Namespace { ecosystem, namespace } => (1, atom(ecosystem)?, atom(namespace)?),
+                ForeignTargetOrigin::Package { ecosystem, package } => {
+                    (0, atom(ecosystem)?, atom(package)?)
+                }
+                ForeignTargetOrigin::Namespace {
+                    ecosystem,
+                    namespace,
+                } => (1, atom(ecosystem)?, atom(namespace)?),
                 ForeignTargetOrigin::Universe { ecosystem } => (2, atom(ecosystem)?, 0),
                 ForeignTargetOrigin::Unspecified { ecosystem } => (3, atom(ecosystem)?, 0),
             };
@@ -513,11 +566,11 @@ fn external_key(
                 // Current closed declaration codes fit below `u16::MAX`; the
                 // `+1` reserves zero for unknown without a saturating alias.
                 kind: match value.kind {
-                    Some(kind) => u16::from(kind)
-                        .checked_add(1)
-                        .ok_or(CoreSemanticImageFault::LengthOverflow {
+                    Some(kind) => u16::from(kind).checked_add(1).ok_or(
+                        CoreSemanticImageFault::LengthOverflow {
                             field: CoreSemanticImageField::External,
-                        })?,
+                        },
+                    )?,
                     None => 0,
                 },
             })
