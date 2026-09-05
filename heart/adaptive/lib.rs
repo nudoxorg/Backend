@@ -11,9 +11,10 @@
 
 mod scalar;
 
-pub use heart_identity::{CapabilityDomain, ContentId, GenerationId, ObjectDomain};
+pub use heart_identity::{
+    CapabilityDomain, ContentId, GenerationId, IndexSnapshotId, ObjectDomain,
+};
 pub use scalar::{ByteCount, LatencyMicros, OperationBudget, RetryBudget};
-pub use server_index_vocabulary::IndexSnapshotId;
 
 /// Maximum local residence facts admitted by one policy snapshot.
 pub const MAX_LOCAL_FACTS: usize = 8;

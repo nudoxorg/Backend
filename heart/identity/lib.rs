@@ -21,6 +21,7 @@ mod artifact;
 mod authority;
 mod content;
 mod generation;
+mod index_snapshot;
 mod marker;
 mod raw;
 
@@ -31,17 +32,24 @@ pub use content::{
     FixedCanonicalRecord,
 };
 pub use generation::{GenerationHasher, GenerationId};
+pub use index_snapshot::{IndexSnapshotIdentityError, derive_index_snapshot};
 pub use marker::{
     CapabilityDomain, CompilationTargetDomain, CompilePublicationDomain,
-    CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DependencySetDomain,
-    Domain, DomainCode, DomainTag, Encoding, EncodingCode, EncodingTag, FrameEncoding,
+    CompilePublicationEncoding, CompileRecipeDomain, ConfigurationDomain, DeclarationFamilyDomain,
+    DeclarationKeyDomain, DeclarationVariantDomain, DependencySetDomain, Domain, DomainCode,
+    DomainTag, Encoding, EncodingCode, EncodingTag, ForeignDeclarationDomain, FrameEncoding,
     IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding,
     IndexSnapshotDomain, IndexVectorSegmentDomain, IrFragmentDomain, IrFragmentEncoding,
     IrFragmentRangeEncoding, IrManifestDomain, IrManifestEncoding, IrSemanticImageDomain,
-    IrSemanticImageEncoding, LocalitySortedEncoding,
-    ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain, SourceFactDomain,
-    StageKeyDomain, ToolchainDomain, DeclarationKeyDomain, DeclarationFamilyDomain,
-    DeclarationVariantDomain, ForeignDeclarationDomain, SemanticScopeDomain,
+    IrSemanticImageEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
+    OperationDomain, RootDomain, SemanticScopeDomain, SourceFactDomain, StageKeyDomain,
+    ToolchainDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};
+
+/// Identity of one immutable index snapshot.
+///
+/// This is portable identity vocabulary: an index snapshot names canonical bytes and does not
+/// imply a server, projection writer, or storage adapter.
+pub type IndexSnapshotId = ContentId<IndexSnapshotDomain>;

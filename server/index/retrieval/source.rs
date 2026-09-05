@@ -7,13 +7,12 @@ use compiler_ir::{
 use server_index_core::{EntityArtifactIdentity, EntityDocumentId};
 use server_index_tantivy::{TantivyProvenance, TantivySegmentHit};
 use server_index_trustfall::{OccurrenceSourceEvidence, SemanticOccurrenceHit};
-use server_index_vocabulary::VerifiedSemanticPublication;
+use server_index_vocabulary::{IndexSnapshotId, VerifiedSemanticPublication};
 
 /// A source location proved against one reopened canonical semantic image.
 ///
 /// The fields remain private so image bytes, path bytes, and the source span
 /// cannot be mixed from separate validation events.
-#[derive(Clone, Copy)]
 pub struct CanonicalSource<'image, 'bytes> {
     image: &'image SemanticImageView<'bytes>,
     path: &'image [u8],
@@ -25,19 +24,19 @@ pub struct CanonicalSource<'image, 'bytes> {
 impl<'image, 'bytes> CanonicalSource<'image, 'bytes> {
     /// Returns the reopened image that proved this source location.
     #[must_use]
-    pub const fn image(self) -> &'image SemanticImageView<'bytes> {
+    pub const fn image(&self) -> &'image SemanticImageView<'bytes> {
         self.image
     }
 
     /// Returns the exact, possibly non-UTF-8, canonical path atom bytes.
     #[must_use]
-    pub const fn path(self) -> &'image [u8] {
+    pub const fn path(&self) -> &'image [u8] {
         self.path
     }
 
     /// Returns the entity document identity carried by the membership hit.
     #[must_use]
-    pub const fn document(self) -> EntityDocumentId {
+    pub const fn document(&self) -> EntityDocumentId {
         self.provenance.document()
     }
 
@@ -46,20 +45,127 @@ impl<'image, 'bytes> CanonicalSource<'image, 'bytes> {
     /// This keeps the pinned snapshot, contributing segment, row, and document
     /// identity correlated with the canonical-image source proof.
     #[must_use]
-    pub const fn provenance(self) -> TantivyProvenance {
+    pub const fn provenance(&self) -> TantivyProvenance {
         self.provenance
     }
 
     /// Returns the verified publication authority that admitted this source.
     #[must_use]
-    pub const fn publication(self) -> VerifiedSemanticPublication {
+    pub const fn publication(&self) -> VerifiedSemanticPublication {
         self.publication
     }
 
     /// Returns the proved half-open source span.
     #[must_use]
-    pub const fn span(self) -> SourceSpan {
+    pub const fn span(&self) -> SourceSpan {
         self.span
+    }
+
+    /// Copies a canonical-image proof into an owned fact suitable for one bounded client reply.
+    ///
+    /// A raw Tantivy hit cannot call this transition: it must first become `CanonicalSource`
+    /// through [`VerifiedSourceImage`] correlation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceWireError::PathLength`] when the canonical path exceeds the bounded wire
+    /// contract, or [`SourceWireError::Allocation`] when its exact owned copy cannot be reserved.
+    pub fn into_owned_canonical_source(self) -> Result<OwnedCanonicalSource, SourceWireError> {
+        let Self {
+            path,
+            publication,
+            provenance,
+            span,
+            ..
+        } = self;
+        if path.len() > MAX_OWNED_CANONICAL_SOURCE_PATH_BYTES {
+            return Err(SourceWireError::PathLength {
+                actual: path.len(),
+                maximum: MAX_OWNED_CANONICAL_SOURCE_PATH_BYTES,
+            });
+        }
+        Ok(OwnedCanonicalSource {
+            path: own_source_path(path)?,
+            start: span.start(),
+            end: span.end(),
+            snapshot: publication.authority().snapshot,
+            document: provenance.document(),
+            publication,
+        })
+    }
+}
+
+/// Owned source proof emitted only after canonical-image correlation.
+///
+/// Private fields keep its snapshot, exact `EntityDocumentId`, publication, image, and source
+/// coordinates inseparable. It owns non-UTF-8 path bytes so a client reply never borrows a
+/// reopened image or a disposable search projection.
+#[derive(Debug, Eq, PartialEq)]
+pub struct OwnedCanonicalSource {
+    path: Vec<u8>,
+    start: u32,
+    end: u32,
+    snapshot: IndexSnapshotId,
+    document: EntityDocumentId,
+    publication: VerifiedSemanticPublication,
+}
+
+impl OwnedCanonicalSource {
+    /// Returns the pinned snapshot proven by the canonical publication.
+    #[must_use]
+    pub const fn snapshot(&self) -> IndexSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact artifact-and-entity identity proven by the membership hit.
+    #[must_use]
+    pub const fn document(&self) -> EntityDocumentId {
+        self.document
+    }
+
+    /// Returns the publication that admitted the canonical image.
+    #[must_use]
+    pub const fn publication(&self) -> VerifiedSemanticPublication {
+        self.publication
+    }
+
+    /// Returns the proved canonical image identity.
+    #[must_use]
+    pub const fn image(&self) -> SemanticImageIdentity {
+        self.publication.image().identity
+    }
+
+    /// Returns the owned, potentially non-UTF-8 source path bytes.
+    #[must_use]
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
+    /// Returns the proved inclusive source offset.
+    #[must_use]
+    pub const fn start(&self) -> u32 {
+        self.start
+    }
+
+    /// Returns the proved exclusive source offset.
+    #[must_use]
+    pub const fn end(&self) -> u32 {
+        self.end
+    }
+
+    /// Separates owned proof fields only for an optional transport adapter that consumes this fact.
+    ///
+    /// The source proof itself remains unforgeable because this method is available only after a
+    /// `CanonicalSource` transition; retrieval retains no dependency on any client transport.
+    #[must_use]
+    pub fn into_transport_parts(self) -> (Vec<u8>, u32, u32, IndexSnapshotId, EntityDocumentId) {
+        (
+            self.path,
+            self.start,
+            self.end,
+            self.snapshot,
+            self.document,
+        )
     }
 }
 
@@ -114,6 +220,223 @@ impl<'image, 'bytes> CanonicalOccurrenceSource<'image, 'bytes> {
     pub const fn provenance(self) -> OccurrenceSourceEvidence<'image> {
         self.provenance
     }
+
+    /// Copies closed occurrence source evidence into an owned client-reply fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceWireError::PathLength`] when captured path evidence exceeds the bounded
+    /// wire contract, or [`SourceWireError::Allocation`] when its exact owned copy cannot be
+    /// reserved.
+    pub fn into_owned_canonical_occurrence_source(
+        self,
+    ) -> Result<OwnedCanonicalOccurrenceSource, SourceWireError> {
+        OwnedCanonicalOccurrenceSource::from_canonical(self)
+    }
+}
+
+/// Owned captured-or-unavailable occurrence source proof.
+///
+/// This closed result can only be created from an already canonicalized occurrence. It retains
+/// explicit `Unavailable` evidence rather than fabricating an empty source span.
+#[derive(Debug, Eq, PartialEq)]
+pub enum OwnedCanonicalOccurrenceSource {
+    /// The canonical image captured an exact source coordinate for this occurrence.
+    Captured(OwnedCanonicalOccurrenceSpan),
+    /// The canonical image proved this occurrence but did not capture a source coordinate.
+    Unavailable(OwnedUnavailableOccurrenceSource),
+}
+
+impl OwnedCanonicalOccurrenceSource {
+    fn from_canonical(source: CanonicalOccurrenceSource<'_, '_>) -> Result<Self, SourceWireError> {
+        let snapshot = source.publication().authority().snapshot;
+        let publication = source.publication();
+        match source.provenance() {
+            OccurrenceSourceEvidence::Captured(captured) => {
+                let path = captured.path();
+                if path.len() > MAX_OWNED_CANONICAL_SOURCE_PATH_BYTES {
+                    return Err(SourceWireError::PathLength {
+                        actual: path.len(),
+                        maximum: MAX_OWNED_CANONICAL_SOURCE_PATH_BYTES,
+                    });
+                }
+                let span = captured.span();
+                Ok(Self::Captured(OwnedCanonicalOccurrenceSpan {
+                    path: own_source_path(path)?,
+                    start: span.start(),
+                    end: span.end(),
+                    snapshot,
+                    publication,
+                    occurrence: source.occurrence(),
+                    link: source.link(),
+                    entity: source.entity(),
+                }))
+            }
+            OccurrenceSourceEvidence::Unavailable => {
+                Ok(Self::Unavailable(OwnedUnavailableOccurrenceSource {
+                    snapshot,
+                    publication,
+                    occurrence: source.occurrence(),
+                    link: source.link(),
+                    entity: source.entity(),
+                }))
+            }
+        }
+    }
+}
+
+/// Owned captured occurrence coordinate with all canonical provenance retained privately.
+#[derive(Debug, Eq, PartialEq)]
+pub struct OwnedCanonicalOccurrenceSpan {
+    path: Vec<u8>,
+    start: u32,
+    end: u32,
+    snapshot: IndexSnapshotId,
+    publication: VerifiedSemanticPublication,
+    occurrence: LinkOccurrenceId,
+    link: LinkId,
+    entity: compiler_ir::EntityId,
+}
+
+impl OwnedCanonicalOccurrenceSpan {
+    /// Returns the remote snapshot proven by the canonical publication.
+    #[must_use]
+    pub const fn snapshot(&self) -> IndexSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact canonical publication that proved this capture.
+    #[must_use]
+    pub const fn publication(&self) -> VerifiedSemanticPublication {
+        self.publication
+    }
+
+    /// Returns the proved canonical semantic image identity.
+    #[must_use]
+    pub const fn image(&self) -> SemanticImageIdentity {
+        self.publication.image().identity
+    }
+
+    /// Returns the stable canonical occurrence coordinate.
+    #[must_use]
+    pub const fn occurrence(&self) -> LinkOccurrenceId {
+        self.occurrence
+    }
+
+    /// Returns the exact canonical link coordinate.
+    #[must_use]
+    pub const fn link(&self) -> LinkId {
+        self.link
+    }
+
+    /// Returns the relation target entity in the canonical image.
+    #[must_use]
+    pub const fn entity(&self) -> compiler_ir::EntityId {
+        self.entity
+    }
+
+    /// Returns the owned possibly non-UTF-8 path bytes.
+    #[must_use]
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
+    /// Returns the captured inclusive source offset.
+    #[must_use]
+    pub const fn start(&self) -> u32 {
+        self.start
+    }
+
+    /// Returns the captured exclusive source offset.
+    #[must_use]
+    pub const fn end(&self) -> u32 {
+        self.end
+    }
+}
+
+/// Owned proof that canonical occurrence source coordinates were unavailable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnedUnavailableOccurrenceSource {
+    snapshot: IndexSnapshotId,
+    publication: VerifiedSemanticPublication,
+    occurrence: LinkOccurrenceId,
+    link: LinkId,
+    entity: compiler_ir::EntityId,
+}
+
+impl OwnedUnavailableOccurrenceSource {
+    /// Returns the remote snapshot proven by the canonical publication.
+    #[must_use]
+    pub const fn snapshot(&self) -> IndexSnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the exact canonical publication that proved this absence.
+    #[must_use]
+    pub const fn publication(&self) -> VerifiedSemanticPublication {
+        self.publication
+    }
+
+    /// Returns the proved canonical semantic image identity.
+    #[must_use]
+    pub const fn image(&self) -> SemanticImageIdentity {
+        self.publication.image().identity
+    }
+
+    /// Returns the stable canonical occurrence coordinate.
+    #[must_use]
+    pub const fn occurrence(&self) -> LinkOccurrenceId {
+        self.occurrence
+    }
+
+    /// Returns the exact canonical link coordinate.
+    #[must_use]
+    pub const fn link(&self) -> LinkId {
+        self.link
+    }
+
+    /// Returns the relation target entity in the canonical image.
+    #[must_use]
+    pub const fn entity(&self) -> compiler_ir::EntityId {
+        self.entity
+    }
+}
+
+/// Failure while materializing a bounded owned source fact for transport.
+#[derive(Debug, thiserror::Error)]
+pub enum SourceWireError {
+    /// Canonical path bytes exceeded the explicit client source-span limit.
+    #[error("canonical source path has {actual} bytes, maximum {maximum}")]
+    PathLength {
+        /// Number of canonical path bytes observed.
+        actual: usize,
+        /// Largest client-transport path length.
+        maximum: usize,
+    },
+    /// Allocating the owned canonical path could not reserve its exact bounded capacity.
+    #[error("could not reserve {requested} bytes for an owned canonical source path")]
+    Allocation {
+        /// Exact bounded source-path capacity requested.
+        requested: usize,
+        /// Allocator failure retained at the transport ownership boundary.
+        #[source]
+        source: std::collections::TryReserveError,
+    },
+}
+
+/// Largest path retained by an owned canonical source reply fact.
+pub(crate) const MAX_OWNED_CANONICAL_SOURCE_PATH_BYTES: usize = 4096;
+
+fn own_source_path(path: &[u8]) -> Result<Vec<u8>, SourceWireError> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(path.len())
+        .map_err(|source| SourceWireError::Allocation {
+            requested: path.len(),
+            source,
+        })?;
+    owned.extend_from_slice(path);
+    Ok(owned)
 }
 
 /// Failure while correlating a disposable hit with canonical source facts.
@@ -213,8 +536,8 @@ pub fn resolve_tantivy_sources<'image, 'bytes>(
     }
 
     let mut written = 0;
-    for (output_slot, source) in output.iter_mut().zip(scratch.iter()).take(hits.len()) {
-        *output_slot = *source;
+    for (output_slot, source) in output.iter_mut().zip(scratch.iter_mut()).take(hits.len()) {
+        *output_slot = source.take();
         written += 1;
     }
     Ok(written)

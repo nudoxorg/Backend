@@ -25,7 +25,9 @@ pub use boundary::{
 pub use exact::ExactRoute;
 pub use lexical::LexicalRoute;
 pub use source::{
-    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError, VerifiedSourceImage,
+    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError,
+    OwnedCanonicalOccurrenceSource, OwnedCanonicalOccurrenceSpan, OwnedCanonicalSource,
+    OwnedUnavailableOccurrenceSource, SourceWireError, VerifiedSourceImage,
     resolve_occurrence_source, resolve_occurrence_sources, resolve_tantivy_source,
     resolve_tantivy_sources,
 };

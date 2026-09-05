@@ -129,7 +129,9 @@ fn checksum(
     sources: &[Option<CanonicalSource<'_, '_>>],
 ) -> Result<u64, Box<dyn std::error::Error>> {
     sources.iter().try_fold(0_u64, |sum, source| {
-        let source = source.ok_or_else(|| std::io::Error::other("benchmark source missing"))?;
+        let source = source
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("benchmark source missing"))?;
         let path = source.path().iter().fold(0_u64, |path_sum, byte| {
             path_sum.wrapping_add(u64::from(*byte))
         });
@@ -214,9 +216,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if written != ENTITY_COUNT {
         return Err("benchmark durable hit cardinality mismatch".into());
     }
-    let mut individual_output = vec![None; ENTITY_COUNT];
-    let mut batch_scratch = vec![None; ENTITY_COUNT];
-    let mut batch_output = vec![None; ENTITY_COUNT];
+    let mut individual_output = std::iter::repeat_with(|| None)
+        .take(ENTITY_COUNT)
+        .collect::<Vec<_>>();
+    let mut batch_scratch = std::iter::repeat_with(|| None)
+        .take(ENTITY_COUNT)
+        .collect::<Vec<_>>();
+    let mut batch_output = std::iter::repeat_with(|| None)
+        .take(ENTITY_COUNT)
+        .collect::<Vec<_>>();
     let expected = individual(publication, &image, &hits, &mut individual_output)?;
     if batch(
         publication,

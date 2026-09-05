@@ -30,12 +30,11 @@ use compiler_ir::{
 };
 use heart_identity::{
     ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IndexExactSegmentDomain,
-    IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding, IndexSnapshotDomain,
-    IndexVectorSegmentDomain,
+    IndexLexicalSegmentDomain, IndexPackDomain, IndexPackEncoding, IndexVectorSegmentDomain,
 };
 
 /// Identity of one immutable index snapshot.
-pub type IndexSnapshotId = ContentId<IndexSnapshotDomain>;
+pub use heart_identity::IndexSnapshotId;
 
 /// Identity of one immutable exact-key segment.
 pub type ExactSegmentId = ContentId<IndexExactSegmentDomain>;

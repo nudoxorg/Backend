@@ -20,7 +20,6 @@ expect_used = "deny"
 
 [dependencies]
 heart-identity = { path = "../identity" }
-server-index-vocabulary = { path = "../../server/index/vocabulary" }
 strum.workspace = true
 
 [lib]

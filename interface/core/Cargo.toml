@@ -16,13 +16,18 @@ compiler-registry = { path = "../../compiler/registry" }
 compiler-vocabulary = { path = "../../compiler/vocabulary" }
 heart-identity = { path = "../../heart/identity" }
 heart-observe = { path = "../../heart/observe" }
+server-index-core = { path = "../../server/index/core" }
 [dev-dependencies]
 allocation-counter.workspace = true
 compiler-ir = { path = "../../compiler/ir" }
-server-index-core = { path = "../../server/index/core" }
 
 [lints]
 workspace = true
 
 [lib]
 path = "lib.rs"
+
+[[bench]]
+name = "client_sync"
+path = "benches/client_sync.rs"
+harness = false

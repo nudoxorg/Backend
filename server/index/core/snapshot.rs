@@ -5,20 +5,11 @@
 
 use core::ops::Deref;
 
-use heart_identity::{
-    ContentHasher, FixedCanonicalRecord, GenerationId, HASH_BYTES, IndexSnapshotDomain,
-};
+use arrayvec::ArrayVec;
+use heart_identity::{GenerationId, IndexSnapshotIdentityError, derive_index_snapshot};
 use server_index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 
 use crate::MAX_SELECTED_SEGMENTS;
-
-struct CanonicalRecord<const BYTES: usize>([u8; BYTES]);
-
-impl<const BYTES: usize> FixedCanonicalRecord<BYTES> for CanonicalRecord<BYTES> {
-    fn canonical_bytes(&self) -> &[u8; BYTES] {
-        &self.0
-    }
-}
 
 // The admitted width is eight: this performs at most 28 comparisons and retains no scratch owner.
 fn duplicate_positions<SegmentId: Eq>(segments: &[SegmentId]) -> Option<(usize, usize)> {
@@ -96,21 +87,12 @@ impl<'selection> IndexSnapshot<'selection> {
             });
         }
 
-        let mut hasher = ContentHasher::<IndexSnapshotDomain>::new();
-        hasher.write_record(&CanonicalRecord(*b"heart.index.snapshot.v2"));
-        hasher.write_record(&CanonicalRecord(*generation));
-        hasher.write_record(&CanonicalRecord((exact.len() as u64).to_le_bytes()));
-        for id in exact {
-            hasher.write_record(&CanonicalRecord(**id));
-        }
-        hasher.write_record(&CanonicalRecord((lexical.len() as u64).to_le_bytes()));
-        for id in lexical {
-            hasher.write_record(&CanonicalRecord(**id));
-        }
+        let id = derive_index_snapshot(generation, exact, lexical)
+            .map_err(IndexSnapshotError::Identity)?;
 
         Ok(Self(IndexSnapshotView {
             generation,
-            id: hasher.finalize(),
+            id,
             exact,
             lexical,
         }))
@@ -153,24 +135,20 @@ impl<'selection> IndexSnapshot<'selection> {
                     required: lexical_count,
                     available: CAPACITY,
                 })?;
-        let mut hasher = ContentHasher::<IndexSnapshotDomain>::new();
-        hasher.write_record(&CanonicalRecord(*b"heart.index.snapshot.v2"));
-        hasher.write_record(&CanonicalRecord(*generation));
-        hash_canonical_lane(&mut hasher, exact, IndexSnapshotLane::Exact)?;
-        hash_canonical_lane(&mut hasher, lexical, IndexSnapshotLane::Lexical)?;
-        Ok(hasher.finalize())
+        let exact = canonical_lane(exact, IndexSnapshotLane::Exact)?;
+        let lexical = canonical_lane(lexical, IndexSnapshotLane::Lexical)?;
+        derive_index_snapshot(generation, &exact, &lexical).map_err(IndexSnapshotError::Identity)
     }
 }
 
-fn hash_canonical_lane<SegmentId>(
-    hasher: &mut ContentHasher<IndexSnapshotDomain>,
+fn canonical_lane<SegmentId>(
     slots: &[Option<SegmentId>],
     lane: IndexSnapshotLane,
-) -> Result<(), IndexSnapshotError>
+) -> Result<ArrayVec<SegmentId, MAX_SELECTED_SEGMENTS>, IndexSnapshotError>
 where
-    SegmentId: CanonicalSnapshotId,
+    SegmentId: Copy + Ord,
 {
-    hasher.write_record(&CanonicalRecord((slots.len() as u64).to_le_bytes()));
+    let mut ids = ArrayVec::new();
     let mut previous = None;
     for (ordinal, slot) in slots.iter().copied().enumerate() {
         let id = slot.ok_or(IndexSnapshotError::CanonicalSlotMissing { lane, ordinal })?;
@@ -179,26 +157,21 @@ where
         {
             return Err(IndexSnapshotError::CanonicalOrder { lane, ordinal });
         }
-        hasher.write_record(&CanonicalRecord(id.canonical_bytes()));
+        if ids.try_push(id).is_err() {
+            return Err(match lane {
+                IndexSnapshotLane::Exact => IndexSnapshotError::ExactSegmentLimit {
+                    limit: MAX_SELECTED_SEGMENTS,
+                    observed: slots.len(),
+                },
+                IndexSnapshotLane::Lexical => IndexSnapshotError::LexicalSegmentLimit {
+                    limit: MAX_SELECTED_SEGMENTS,
+                    observed: slots.len(),
+                },
+            });
+        }
         previous = Some(id);
     }
-    Ok(())
-}
-
-trait CanonicalSnapshotId: Copy + Ord {
-    fn canonical_bytes(self) -> [u8; HASH_BYTES];
-}
-
-impl CanonicalSnapshotId for ExactSegmentId {
-    fn canonical_bytes(self) -> [u8; HASH_BYTES] {
-        *self
-    }
-}
-
-impl CanonicalSnapshotId for LexicalSegmentId {
-    fn canonical_bytes(self) -> [u8; HASH_BYTES] {
-        *self
-    }
+    Ok(ids)
 }
 
 /// One immutable snapshot directory lane.
@@ -213,6 +186,9 @@ pub enum IndexSnapshotLane {
 /// Rejection while deriving an immutable snapshot selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IndexSnapshotError {
+    /// The shared portable snapshot identity grammar could not encode one lane count.
+    #[error("snapshot identity grammar could not encode the selected lanes")]
+    Identity(#[source] IndexSnapshotIdentityError),
     /// Too many exact segments were selected.
     #[error("exact segment selection exceeds the immutable snapshot limit")]
     ExactSegmentLimit {

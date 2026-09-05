@@ -8,6 +8,8 @@
 
 mod compiler;
 mod execution;
+mod index_sync;
+mod local_query;
 mod model;
 mod package;
 mod retrieval;
@@ -35,6 +37,18 @@ pub use heart_adaptive::{
     IndexSnapshotId, OperationBudget, Pin, Pressure, RecoveryCause, ResourceBudget, ResourceClass,
     RetryBudget,
 };
+pub use index_sync::{
+    BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,
+    CompleteLocalSelection, DemandSelection, DisposableProjection, EffectiveSearchDocument,
+    EffectiveSearchResult, LocalDelta, LocalQueryTerminal, LocalSegmentSelection, LocalSelection,
+    MAX_CLIENT_DEMANDS, MAX_CLIENT_OVERLAY_ENTRIES, MAX_CLIENT_PROJECTIONS,
+    MAX_CLIENT_RESIDENT_RANGES, MAX_CLIENT_SEGMENTS_PER_LANE, ManifestEpoch, ManifestError,
+    ManifestSegment, OverlayGeneration, OverlayKey, OverlayObservation, RemoteGeneration,
+    RemoteManifest, RemoteSearch, RemoteSearchCandidate, RemoteSearchTerminal, ResidentRange,
+    SegmentDemand, SegmentId, SegmentRange, SegmentRangeError, SelectionOutput, SelectionScratch,
+    SyncCancellation, SyncTerminal,
+};
+pub use local_query::{LocalLexicalQueryError, query_local_exact, query_local_lexical};
 pub use model::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationEvent, ApplicationInput,
     ApplicationObservation, ApplicationOutcome, ApplicationReply, Capability, CapabilityHealth,

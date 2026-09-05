@@ -9,6 +9,8 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+server-source = ["dep:server-index-retrieval"]
 
 [dependencies]
 heart-adaptive = { path = "../../heart/adaptive" }
@@ -17,6 +19,7 @@ compiler-vocabulary = { path = "../../compiler/vocabulary" }
 serde.workspace = true
 serde_json.workspace = true
 interface-core = { path = "../core" }
+server-index-retrieval = { path = "../../server/index/retrieval", optional = true }
 [dev-dependencies]
 thiserror.workspace = true
 

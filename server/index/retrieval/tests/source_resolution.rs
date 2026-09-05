@@ -26,15 +26,16 @@ use heart_identity::{
     ArtifactId, CompilePublicationDomain, ContentId, GenerationId, IrFragmentDomain,
     IrFragmentEncoding,
 };
+use interface_protocol::UntrustedSourceSpan;
 use server_index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalOperation, LexicalRow,
     LexicalScore, LexicalSegment,
 };
 use server_index_graph_vector::Cancellation;
 use server_index_retrieval::{
-    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError, VerifiedSourceImage,
-    resolve_occurrence_source, resolve_occurrence_sources, resolve_tantivy_source,
-    resolve_tantivy_sources,
+    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError,
+    OwnedCanonicalOccurrenceSource, VerifiedSourceImage, resolve_occurrence_source,
+    resolve_occurrence_sources, resolve_tantivy_source, resolve_tantivy_sources,
 };
 use server_index_tantivy::{TantivySegment, TantivySegmentHit, TantivySegmentStore};
 use server_index_trustfall::SemanticTrustfallGraph;
@@ -191,7 +192,7 @@ fn image_fixture(path: &[u8], source: Option<(u32, u32)>, seed: u8) -> TestResul
     })
 }
 
-fn occurrence_image_fixture() -> TestResult<ImageFixture> {
+fn occurrence_image_fixture(source_availability: FactAvailability) -> TestResult<ImageFixture> {
     let mut builder = IrBuilder::new();
     let file = builder.intern_atom(b"occurrence/\xff-source.rs")?;
     let authority = EntityAuthorityFacts {
@@ -231,9 +232,13 @@ fn occurrence_image_fixture() -> TestResult<ImageFixture> {
             kind: LinkKind::Calls,
             confidence: compiler_ir::Confidence::Compiler,
             authority: OccurrenceAuthorityFacts {
-                source: FactAvailability::Captured,
+                source: source_availability,
             },
-            source: SourceSpan::new(file, 4, 7),
+            source: if source_availability == FactAvailability::Captured {
+                SourceSpan::new(file, 4, 7)
+            } else {
+                None
+            },
         },
         TreeLinkInput {
             from: TreeEntityId::new(0),
@@ -241,9 +246,13 @@ fn occurrence_image_fixture() -> TestResult<ImageFixture> {
             kind: LinkKind::Calls,
             confidence: compiler_ir::Confidence::Indexed,
             authority: OccurrenceAuthorityFacts {
-                source: FactAvailability::Captured,
+                source: source_availability,
             },
-            source: SourceSpan::new(file, 9, 12),
+            source: if source_availability == FactAvailability::Captured {
+                SourceSpan::new(file, 9, 12)
+            } else {
+                None
+            },
         },
     ];
     builder.add_borrowed_tree(BorrowedTree {
@@ -311,6 +320,25 @@ const fn source_stamp(
     )
 }
 
+fn source_pair<'image, 'bytes>(
+    publication: VerifiedSemanticPublication,
+    image: &'image SemanticImageView<'bytes>,
+    hit: TantivySegmentHit<'_>,
+) -> Result<[Option<CanonicalSource<'image, 'bytes>>; 2], CanonicalSourceError> {
+    Ok([
+        Some(resolve_tantivy_source(publication, image, hit)?),
+        Some(resolve_tantivy_source(publication, image, hit)?),
+    ])
+}
+
+fn source_stamps<const LENGTH: usize>(
+    sources: &[Option<CanonicalSource<'_, '_>>; LENGTH],
+) -> [Option<(EntityDocumentId, u32, u32, *const u8, usize)>; LENGTH] {
+    sources
+        .each_ref()
+        .map(|slot| slot.as_ref().map(source_stamp))
+}
+
 #[test]
 fn resolves_durable_hit_against_reopened_non_utf8_source_and_retains_provenance() -> TestResult {
     let fixture = image_fixture(b"src/\xff-entry.rs", Some((3, 7)), 1)?;
@@ -343,8 +371,36 @@ fn captured_empty_span_remains_captured_not_unavailable() -> TestResult {
 }
 
 #[test]
+fn only_a_canonical_source_can_materialize_owned_client_reply_facts() -> TestResult {
+    let fixture = image_fixture(b"src/\xff-owned.rs", Some((5, 11)), 8)?;
+    let durable = DurableFixture::new(document(&fixture, 0))?;
+    let image = SemanticImageView::reopen(&fixture.bytes)?;
+    let publication = publication(&image, &fixture, durable.snapshot)?;
+    let source = resolve_tantivy_source(publication, &image, durable.hit()?)?;
+    let expected_document = source.document();
+    let expected_snapshot = source.publication().authority().snapshot;
+
+    let owned = source.into_owned_canonical_source()?;
+    assert_eq!(owned.path(), b"src/\xff-owned.rs");
+    assert_eq!((owned.start(), owned.end()), (5, 11));
+    assert_eq!(owned.snapshot(), expected_snapshot);
+    assert_eq!(owned.document(), expected_document);
+    assert_eq!(owned.publication(), publication);
+    assert_eq!(owned.image(), fixture.locator.identity);
+    let wire = UntrustedSourceSpan::try_from(owned)?;
+    let encoded = serde_json::to_vec(&wire)?;
+    let round_trip: UntrustedSourceSpan = serde_json::from_slice(&encoded)?;
+    assert_eq!(round_trip.path(), b"src/\xff-owned.rs");
+    assert_eq!((round_trip.start(), round_trip.end()), (5, 11));
+    assert_eq!(round_trip.snapshot(), expected_snapshot);
+    let document: [u8; server_index_core::ENTITY_DOCUMENT_ID_BYTES] = expected_document.into();
+    assert_eq!(round_trip.document().as_bytes(), &document);
+    Ok(())
+}
+
+#[test]
 fn occurrence_candidate_is_borrowed_and_bound_to_verified_publication() -> TestResult {
-    let fixture = occurrence_image_fixture()?;
+    let fixture = occurrence_image_fixture(FactAvailability::Captured)?;
     let image = SemanticImageView::reopen(&fixture.bytes)?;
     let snapshot = IndexSnapshotId::from_canonical_bytes(b"occurrence-source-snapshot");
     let publication = publication(&image, &fixture, snapshot)?;
@@ -384,6 +440,15 @@ fn occurrence_candidate_is_borrowed_and_bound_to_verified_publication() -> TestR
     });
     assert!(spans.contains(&Some((4, 7))));
     assert!(spans.contains(&Some((9, 12))));
+
+    let owned = first_resolved.into_owned_canonical_occurrence_source()?;
+    assert!(matches!(
+        owned,
+        OwnedCanonicalOccurrenceSource::Captured(ref span)
+            if span.path() == b"occurrence/\xff-source.rs"
+                && [(4, 7), (9, 12)].contains(&(span.start(), span.end()))
+                && span.snapshot() == snapshot
+    ));
 
     let candidates = [first, second];
     let mut scratch = [None; 2];
@@ -436,6 +501,36 @@ fn occurrence_candidate_is_borrowed_and_bound_to_verified_publication() -> TestR
 }
 
 #[test]
+fn owned_occurrence_source_retains_proven_unavailable_state() -> TestResult {
+    let fixture = occurrence_image_fixture(FactAvailability::Unavailable)?;
+    let image = SemanticImageView::reopen(&fixture.bytes)?;
+    let snapshot = IndexSnapshotId::from_canonical_bytes(b"occurrence-source-unavailable");
+    let publication = publication(&image, &fixture, snapshot)?;
+    let candidate = {
+        let cancellation = Cancellation::new();
+        let graph = SemanticTrustfallGraph::new(&image, &cancellation);
+        let mut occurrences = graph.occurrence_neighbors(EntityId::new(0))?;
+        let mut context = Context::from_waker(Waker::noop());
+        let Poll::Ready(Some(Ok(candidate))) = Pin::new(&mut occurrences).poll_next(&mut context)
+        else {
+            return Err("unavailable occurrence fixture did not emit a candidate".into());
+        };
+        candidate
+    };
+
+    let owned = resolve_occurrence_source(publication, candidate)?
+        .into_owned_canonical_occurrence_source()?;
+    assert!(matches!(
+        owned,
+        OwnedCanonicalOccurrenceSource::Unavailable(ref unavailable)
+            if unavailable.snapshot() == snapshot
+                && unavailable.publication() == publication
+                && unavailable.entity() == EntityId::new(1)
+    ));
+    Ok(())
+}
+
+#[test]
 fn selection_container_can_expire_while_reopened_image_source_stays_borrowed() -> TestResult {
     let fixture = image_fixture(b"borrow.rs", Some((1, 2)), 3)?;
     let durable = DurableFixture::new(document(&fixture, 0))?;
@@ -451,8 +546,8 @@ fn selection_container_can_expire_while_reopened_image_source_stays_borrowed() -
             1
         );
         output
-            .first()
-            .copied()
+            .into_iter()
+            .next()
             .flatten()
             .ok_or_else(|| std::io::Error::other("source output was unexpectedly absent"))?
     };
@@ -468,20 +563,18 @@ fn every_preflight_failure_preserves_all_output_slots() -> TestResult {
     let image = SemanticImageView::reopen(&fixture.bytes)?;
     let publication = publication(&image, &fixture, durable.snapshot)?;
     let hit = durable.hit()?;
-    let sentinel = resolve_tantivy_source(publication, &image, hit)?;
-
-    let mut output = [Some(sentinel), Some(sentinel)];
-    let original = output.map(|slot| slot.as_ref().map(source_stamp));
-    let mut scratch = [None; 2];
+    let mut output = source_pair(publication, &image, hit)?;
+    let original = source_stamps(&output);
+    let mut scratch = [const { None }; 2];
     let missing = [Some(hit), None];
     assert_eq!(
         resolve_tantivy_sources(publication, &image, &missing, &mut scratch, &mut output),
         Err(CanonicalSourceError::MissingHit { slot: 1 })
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
-    let mut output = [Some(sentinel), Some(sentinel)];
-    let original = output.map(|slot| slot.as_ref().map(source_stamp));
+    let mut output = source_pair(publication, &image, hit)?;
+    let original = source_stamps(&output);
     let mut short_scratch = [];
     assert_eq!(
         resolve_tantivy_sources(
@@ -496,7 +589,7 @@ fn every_preflight_failure_preserves_all_output_slots() -> TestResult {
             available: 0,
         })
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
     let mut output = [];
     let mut scratch = [None];
@@ -518,10 +611,8 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
     let valid_image = SemanticImageView::reopen(&valid_fixture.bytes)?;
     let valid_publication = publication(&valid_image, &valid_fixture, durable.snapshot)?;
     let hit = durable.hit()?;
-    let sentinel = resolve_tantivy_source(valid_publication, &valid_image, hit)?;
-
-    let mut output = [Some(sentinel), Some(sentinel)];
-    let original = output.map(|slot| slot.as_ref().map(source_stamp));
+    let mut output = source_pair(valid_publication, &valid_image, hit)?;
+    let original = source_stamps(&output);
     let mut scratch = [None];
     let wrong_snapshot = IndexSnapshotId::from_canonical_bytes(b"another-source-snapshot");
     let wrong_publication = publication(&valid_image, &valid_fixture, wrong_snapshot)?;
@@ -535,7 +626,7 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
         ),
         Err(CanonicalSourceError::WrongPublication)
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
     let foreign_fixture = image_fixture(b"foreign.rs", Some((2, 5)), 6)?;
     let foreign_image = SemanticImageView::reopen(&foreign_fixture.bytes)?;
@@ -551,7 +642,7 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
         ),
         Err(CanonicalSourceError::WrongPublication)
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
     let absent_durable = DurableFixture::new(document(&valid_fixture, 1))?;
     let absent_hit = absent_durable.hit()?;
@@ -567,7 +658,7 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
         ),
         Err(CanonicalSourceError::EntityAbsent { entity: 1 })
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
     let compact_durable = DurableFixture::new(compact_document(0))?;
     let compact_hit = compact_durable.hit()?;
@@ -583,7 +674,7 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
         ),
         Err(CanonicalSourceError::CompactArtifact)
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
 
     let unavailable_fixture = image_fixture(b"unavailable.rs", None, 7)?;
     let unavailable_durable = DurableFixture::new(document(&unavailable_fixture, 0))?;
@@ -611,6 +702,6 @@ fn rejects_wrong_publication_image_entity_and_unavailable_source_without_output_
         ),
         Err(CanonicalSourceError::SourceUnavailable { entity: 0 })
     );
-    assert_eq!(output.map(|slot| slot.as_ref().map(source_stamp)), original);
+    assert_eq!(source_stamps(&output), original);
     Ok(())
 }

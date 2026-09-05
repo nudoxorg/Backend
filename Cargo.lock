@@ -3513,7 +3513,6 @@ name = "heart-adaptive"
 version = "0.1.0"
 dependencies = [
  "heart-identity",
- "server-index-vocabulary",
  "strum 0.28.0",
 ]
 
@@ -4108,6 +4107,7 @@ dependencies = [
  "interface-core",
  "serde",
  "serde_json",
+ "server-index-retrieval",
  "thiserror 2.0.20",
 ]
 
@@ -8139,6 +8139,7 @@ dependencies = [
 name = "server-index-core"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "compiler-ir",
  "heart-identity",
  "server-index-vocabulary",
@@ -8222,6 +8223,8 @@ dependencies = [
  "heart-object",
  "heart-root",
  "heart-schema",
+ "interface-protocol",
+ "serde_json",
  "server-index-core",
  "server-index-graph-vector",
  "server-index-publish",

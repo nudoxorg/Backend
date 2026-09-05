@@ -32,6 +32,8 @@ heart-root = { path = "../../../heart/root" }
 heart-schema = { path = "../../../heart/schema" }
 heart-memory = { path = "../../../heart/memory" }
 futures-core.workspace = true
+interface-protocol = { path = "../../../interface/protocol", features = ["server-source"] }
+serde_json.workspace = true
 [lints]
 workspace = true
 

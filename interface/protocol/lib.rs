@@ -11,6 +11,7 @@ mod command;
 mod field;
 mod frame;
 mod human;
+mod index;
 mod json;
 /// Static MCP registry and lifecycle projection vocabulary.
 pub mod mcp_tools;
@@ -26,6 +27,11 @@ pub use frame::{
     MAX_FRAME_BYTES, MAX_HEADER_LINE_BYTES, MAX_HEADER_LINES, read_frame, write_frame,
 };
 pub use human::write_human;
+pub use index::{
+    MAX_UNTRUSTED_SOURCE_PATH_BYTES, UNTRUSTED_DOCUMENT_ID_BYTES, UntrustedDocumentId,
+    UntrustedDocumentIdError, UntrustedSourceSpan, UntrustedSourceSpanAuthorityError,
+    UntrustedSourceSpanError,
+};
 pub use json::{
     CancellationTarget, InitializeParams, McpDecode, McpDecodeError, McpEnvelope, McpError,
     McpLifecycle, McpReply, McpRequest, McpRequestId, decode_mcp, encode_cli_adapter_error,
