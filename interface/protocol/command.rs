@@ -72,6 +72,21 @@ pub(crate) struct RawGenerate {
     pub(crate) source: String,
 }
 
+/// Compiler vocabulary and pinned package-url fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawCompilePackage {
+    /// Request correlation.
+    pub(crate) correlation: u64,
+    /// Compiler source-profile token.
+    #[serde(deserialize_with = "deserialize_profile")]
+    pub(crate) profile: LanguageProfile,
+    /// Compiler stage token.
+    pub(crate) stage: RawStage,
+    /// Exact pinned package URL.
+    pub(crate) purl: String,
+}
+
 /// Shared immutable snapshot selector.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +207,8 @@ pub(crate) struct RawOperation {
 pub(crate) enum RawApplicationCommand {
     /// Compiler vocabulary request.
     Generate(RawGenerate),
+    /// Pinned local package compilation request.
+    CompilePackage(RawCompilePackage),
     /// Snapshot status request.
     #[serde(rename = "status")]
     SnapshotStatus(RawSnapshot),

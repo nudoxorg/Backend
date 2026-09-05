@@ -88,6 +88,8 @@ enum AdapterErrorCodeWire {
     InvalidShape,
     FieldTooLong,
     TooManyFields,
+    InvalidPackageUrl,
+    PackageProfileMismatch,
 }
 
 impl<'value> McpError<'value> {
@@ -233,6 +235,8 @@ impl From<AdapterErrorCode> for AdapterErrorCodeWire {
             AdapterErrorCode::InvalidShape => Self::InvalidShape,
             AdapterErrorCode::FieldTooLong => Self::FieldTooLong,
             AdapterErrorCode::TooManyFields => Self::TooManyFields,
+            AdapterErrorCode::InvalidPackageUrl => Self::InvalidPackageUrl,
+            AdapterErrorCode::PackageProfileMismatch => Self::PackageProfileMismatch,
         }
     }
 }

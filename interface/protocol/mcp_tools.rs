@@ -20,11 +20,16 @@ pub struct McpTool {
 }
 
 /// Closed registry in deterministic client-visible order.
-pub const MCP_TOOLS: [McpTool; 13] = [
+pub const MCP_TOOLS: [McpTool; 14] = [
     McpTool {
         name: "generate",
         action: "generate",
         description: "Compile one bounded source with its selected profile and stage.",
+    },
+    McpTool {
+        name: "compile-package",
+        action: "compile-package",
+        description: "Resolve and compile one pinned package URL through its matching language profile.",
     },
     McpTool {
         name: "snapshot-status",

@@ -143,6 +143,9 @@ impl<Compiler: CompilerCapability, Retrieval: RetrievalCapability>
     fn dispatch(&mut self, input: &ApplicationInput) -> ApplicationReply {
         match input {
             ApplicationInput::Generate(request) => self.generate(request),
+            ApplicationInput::CompilePackage(request) => {
+                Self::dependency_unavailable(request.target.correlation, Capability::CompilerOutput)
+            }
             ApplicationInput::SnapshotStatus {
                 correlation,
                 snapshot,

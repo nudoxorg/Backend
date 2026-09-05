@@ -3,7 +3,10 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Closed application vocabulary and bounded reply storage.
 
-use crate::{InputText, RetrievalCause, RetrievalRows, SnapshotFacts, SourceText, UnloadReceipt};
+use crate::{
+    InputText, PackageCompileRequest, RetrievalCause, RetrievalRows, SnapshotFacts, SourceText,
+    UnloadReceipt,
+};
 use compiler_vocabulary::{FrontendError, LanguageProfile, Stage};
 use heart_adaptive::{
     CapabilityDomain, CapabilityKind, ContentId, ExecutionPhase, Overload, Pin, PolicyError,
@@ -65,6 +68,8 @@ pub struct GenerateRequest {
 pub enum ApplicationInput {
     /// Compile one bounded source through an existing compiler-registry row.
     Generate(GenerateRequest),
+    /// Resolve, compile, publish, and reopen one pinned local package.
+    CompilePackage(PackageCompileRequest),
     /// Inspect one immutable snapshot.
     SnapshotStatus {
         /// Request correlation.
@@ -166,6 +171,7 @@ impl ApplicationInput {
     pub const fn correlation(&self) -> CorrelationId {
         match self {
             Self::Generate(request) => request.target.correlation,
+            Self::CompilePackage(request) => request.correlation(),
             Self::SnapshotStatus { correlation, .. }
             | Self::Search { correlation, .. }
             | Self::Graph { correlation, .. }

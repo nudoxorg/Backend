@@ -10,12 +10,13 @@ use heart_identity::{ContentIdDecodeError, Domain, HASH_BYTES, IndexSnapshotDoma
 use interface_core::{
     ApplicationInput, BatteryState, ByteCount, ContentId, CorrelationId, GenerateRequest,
     GenerateTarget, InconsistentRecovery, InputText, InputTextError, OperationBudget, OperationKey,
-    Pin, Pressure, RejectedSourceText, ResourceBudget, RetryBudget, SourceText,
+    PackageCompileRequest, PackageProfileMismatch, PackageUrl, Pin, Pressure, RejectedPackageUrl,
+    RejectedSourceText, ResourceBudget, RetryBudget, SourceText,
 };
 
 use crate::command::{
-    RawApplicationCommand, RawGenerate, RawHealth, RawInconsistentPolicy, RawNumber, RawOperation,
-    RawPolicy, RawRetrieval, RawSearch, RawSnapshot, RawStage,
+    RawApplicationCommand, RawCompilePackage, RawGenerate, RawHealth, RawInconsistentPolicy,
+    RawNumber, RawOperation, RawPolicy, RawRetrieval, RawSearch, RawSnapshot, RawStage,
 };
 use crate::field::AdapterField;
 use crate::source::{CliCommand, SourceEncodingError, SourceIngressRole, SourceIoFact};
@@ -46,6 +47,10 @@ pub enum AdapterErrorCode {
     FieldTooLong,
     /// The process adapter rejected excess positional fields before storing them.
     TooManyFields,
+    /// A package URL was malformed, unpinned, or noncanonical.
+    InvalidPackageUrl,
+    /// A valid package ecosystem did not belong to the selected compiler profile.
+    PackageProfileMismatch,
 }
 
 /// Exact upstream source retained by an adapter rejection where one exists.
@@ -67,6 +72,10 @@ pub enum AdapterErrorCause {
     /// A compiler source exceeded its named local admission budget; the exact source owner is
     /// retained for the CLI or MCP process to report without a second copy.
     SourceLength(RejectedSourceText),
+    /// A package URL retained its exact input and structural rejection.
+    PackageUrl(RejectedPackageUrl),
+    /// A valid package URL was bound to an incompatible compiler profile.
+    PackageProfile(PackageProfileMismatch),
     /// The CLI reader could not reserve bounded ingress storage without losing the allocator
     /// cause.
     SourceAllocation {
@@ -121,6 +130,16 @@ impl fmt::Display for AdapterErrorCause {
                 "source length {} exceeds {}",
                 rejected.error.observed, rejected.error.limit.bytes
             ),
+            Self::PackageUrl(rejected) => write!(
+                formatter,
+                "package URL was rejected at {:?}",
+                rejected.error
+            ),
+            Self::PackageProfile(mismatch) => write!(
+                formatter,
+                "package ecosystem {:?} is incompatible with profile {:?}",
+                mismatch.ecosystem, mismatch.profile
+            ),
             Self::SourceAllocation {
                 role, requested, ..
             } => write!(
@@ -173,6 +192,8 @@ impl Error for AdapterErrorCause {
             Self::NumberRange { .. }
             | Self::TextLength(_)
             | Self::SourceLength(_)
+            | Self::PackageUrl(_)
+            | Self::PackageProfile(_)
             | Self::UnknownLanguage(_)
             | Self::UnknownStage(_)
             | Self::SourceIo(_)
@@ -532,6 +553,12 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
             stage: raw_stage(arguments, 3)?,
             source: owned(arguments, 4, AdapterField::Source)?,
         })),
+        "compile-package" => Ok(RawApplicationCommand::CompilePackage(RawCompilePackage {
+            correlation,
+            profile: raw_profile(arguments, 2)?,
+            stage: raw_stage(arguments, 3)?,
+            purl: owned(arguments, 4, AdapterField::Purl)?,
+        })),
         "status" => Ok(RawApplicationCommand::SnapshotStatus(RawSnapshot {
             correlation,
             snapshot: owned(arguments, 2, AdapterField::Snapshot)?,
@@ -581,7 +608,7 @@ fn raw_command(arguments: &[String]) -> Result<RawApplicationCommand, AdapterErr
 
 fn expected_fields(action: &str) -> Option<usize> {
     match action {
-        "generate" | "generate-file" | "search" => Some(5),
+        "generate" | "generate-file" | "compile-package" | "search" => Some(5),
         "generate-stdin" | "graph" | "vector" => Some(4),
         "status" | "locality" | "remove-index" | "poll-execution" | "cancel" => Some(3),
         "health" => Some(2),
@@ -665,6 +692,7 @@ impl TryFrom<RawApplicationCommand> for ApplicationInput {
     fn try_from(command: RawApplicationCommand) -> Result<Self, Self::Error> {
         match command {
             RawApplicationCommand::Generate(raw) => generate_input(raw),
+            RawApplicationCommand::CompilePackage(raw) => package_input(raw),
             RawApplicationCommand::SnapshotStatus(raw) => status_input(raw),
             RawApplicationCommand::Search(raw) => search_input(raw),
             RawApplicationCommand::Graph(raw) => graph_input(raw),
@@ -688,6 +716,23 @@ fn generate_input(raw: RawGenerate) -> Result<ApplicationInput, AdapterError> {
         generate_target(raw.correlation, raw.profile, raw.stage),
         raw.source,
     )
+}
+
+fn package_input(raw: RawCompilePackage) -> Result<ApplicationInput, AdapterError> {
+    let target = generate_target(raw.correlation, raw.profile, raw.stage);
+    let package = PackageUrl::try_from(raw.purl).map_err(|cause| AdapterError {
+        code: AdapterErrorCode::InvalidPackageUrl,
+        field: AdapterField::Purl,
+        actual: Some(cause.text.len()),
+        cause: Some(AdapterErrorCause::PackageUrl(cause)),
+    })?;
+    let request = PackageCompileRequest::new(target, package).map_err(|cause| AdapterError {
+        code: AdapterErrorCode::PackageProfileMismatch,
+        field: AdapterField::Language,
+        actual: None,
+        cause: Some(AdapterErrorCause::PackageProfile(cause)),
+    })?;
+    Ok(ApplicationInput::CompilePackage(request))
 }
 
 /// Admits one source owner after a CLI, MCP, file, or standard-input boundary has already selected

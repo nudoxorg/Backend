@@ -56,6 +56,8 @@ pub enum AdapterField {
     Params,
     /// Local filesystem path.
     Path,
+    /// Canonical pinned package URL.
+    Purl,
     /// Search or graph query text.
     Query,
     /// Locally available RAM bytes.
@@ -102,6 +104,7 @@ impl fmt::Display for AdapterField {
             Self::Operations => "operations",
             Self::Params => "params",
             Self::Path => "path",
+            Self::Purl => "purl",
             Self::Query => "query",
             Self::RamFree => "ram_free",
             Self::Request => "request",

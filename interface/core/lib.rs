@@ -9,6 +9,7 @@
 mod compiler;
 mod execution;
 mod model;
+mod package;
 mod retrieval;
 mod service;
 mod source;
@@ -38,6 +39,11 @@ pub use model::{
     CapabilityTransition, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
     ExecutionReply, ExecutionState, GenerateRequest, GenerateTarget, InconsistentRecovery,
     MAX_REPLY_ROWS, MAX_SEMANTIC_TEXT_BYTES, OperationKey, ReplyBody,
+};
+pub use package::{
+    MAX_PACKAGE_URL_BYTES, PackageCompileFacts, PackageCompileRequest, PackageEcosystem,
+    PackageProfileMismatch, PackageTextRange, PackageUrl, PackageUrlError, PackageUrlFacts,
+    RejectedPackageUrl,
 };
 pub use retrieval::{
     DocSection, MAX_SIGNATURE_TOKENS, RetrievalCapability, RetrievalCause, RetrievalMode,
