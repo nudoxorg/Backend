@@ -22,9 +22,9 @@ const CSHARP_COMPILER_ENV: &str = "COMPILER_CSHARP_COMPILER";
 
 #[derive(Debug, Error)]
 pub(crate) enum NativeToolingError {
-    #[error("PATH is unavailable while resolving configured Nix tool {tool:?}")]
+    #[error("PATH is unavailable while resolving host tool {tool:?}")]
     MissingPath { tool: NativeTool },
-    #[error("configured Nix executable for {tool:?} is unavailable")]
+    #[error("configured host executable for {tool:?} is unavailable")]
     MissingTool { tool: NativeTool },
     #[error("could not canonicalize the {tool:?} compiler fixture")]
     Canonicalize {
@@ -75,7 +75,7 @@ impl HostTool {
                 }
                 executable
             }
-            None => nix_path_executable(tool)?,
+            None => path_executable(tool)?,
         };
         Ok(Self {
             tool,
@@ -124,18 +124,15 @@ impl HostTool {
     }
 }
 
-fn nix_path_executable(tool: NativeTool) -> Result<PathBuf, NativeToolingError> {
+fn path_executable(tool: NativeTool) -> Result<PathBuf, NativeToolingError> {
     let paths = env::var_os("PATH").ok_or(NativeToolingError::MissingPath { tool })?;
     let name = executable_name(tool);
     for directory in env::split_paths(&paths) {
         let candidate = directory.join(name);
         if candidate.is_file() {
-            let canonical = candidate
+            return candidate
                 .canonicalize()
-                .map_err(|source| NativeToolingError::Canonicalize { tool, source })?;
-            if canonical.starts_with("/nix/store/") {
-                return Ok(canonical);
-            }
+                .map_err(|source| NativeToolingError::Canonicalize { tool, source });
         }
     }
     Err(NativeToolingError::MissingTool { tool })
