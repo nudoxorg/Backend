@@ -61,6 +61,7 @@ impl GpuiShellView {
         }
         match self.state.form.as_ref()? {
             FormState::Generate { focused, .. }
+            | FormState::CompilePackage { focused, .. }
             | FormState::Snapshot { focused, .. }
             | FormState::Search { focused, .. } => Some(TextInputTarget::Form(*focused)),
             FormState::Health | FormState::Recovery { .. } | FormState::Operation { .. } => None,
@@ -430,7 +431,18 @@ fn form_text(form: Option<&FormState>, field: FormField) -> Option<&InputText> {
             FormField::Language => language.as_ref(),
             FormField::Stage => stage.as_ref(),
             FormField::Source => source.as_ref(),
-            FormField::Snapshot | FormField::Query => None,
+            FormField::PackageUrl | FormField::Snapshot | FormField::Query => None,
+        },
+        FormState::CompilePackage {
+            language,
+            stage,
+            package_url,
+            ..
+        } => match field {
+            FormField::Language => language.as_ref(),
+            FormField::Stage => stage.as_ref(),
+            FormField::PackageUrl => package_url.as_ref(),
+            FormField::Source | FormField::Snapshot | FormField::Query => None,
         },
         FormState::Snapshot { snapshot, .. } if field == FormField::Snapshot => snapshot.as_ref(),
         FormState::Search {
@@ -438,7 +450,9 @@ fn form_text(form: Option<&FormState>, field: FormField) -> Option<&InputText> {
         } => match field {
             FormField::Snapshot => snapshot.as_ref(),
             FormField::Query => query.as_ref(),
-            FormField::Language | FormField::Stage | FormField::Source => None,
+            FormField::Language | FormField::Stage | FormField::Source | FormField::PackageUrl => {
+                None
+            }
         },
         FormState::Snapshot { .. }
         | FormState::Health

@@ -121,7 +121,10 @@ fn execution_delivery(reply: &ApplicationReply) -> ExecutionDelivery {
             ReplyBody::Generated(_)
             | ReplyBody::DependencyUnavailable { .. }
             | ReplyBody::Health(_)
-            | ReplyBody::Adaptive(_),
+            | ReplyBody::Adaptive(_)
+            | ReplyBody::Snapshot(_)
+            | ReplyBody::Retrieval(_)
+            | ReplyBody::IndexRemoved(_),
         )
         | ApplicationOutcome::Failed { .. } => ExecutionDelivery::None,
     }
@@ -1202,13 +1205,10 @@ impl GpuiShellView {
                                     .border_color(rgb(BORDER))
                                     .hover(|style| style.bg(rgb(PANEL_HOVER)))
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.state.discover_packages();
-                                        this.search_active = true;
-                                        window.focus(&this.search_focus, cx);
-                                        cx.notify();
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.select_action(ServiceAction::CompilePackage, cx);
                                     }))
-                                    .child("Add a package"),
+                                    .child("Compile a PURL"),
                             ),
                     ),
             )
@@ -2594,6 +2594,12 @@ impl GpuiShellView {
                 stage,
                 source,
             } => self.generate_form_fields(focused, language, stage, source, cx),
+            FormState::CompilePackage {
+                focused,
+                language,
+                stage,
+                package_url,
+            } => self.package_form_fields(focused, language, stage, package_url, cx),
             FormState::Snapshot {
                 focused, snapshot, ..
             } => self.snapshot_form_fields(focused, snapshot, cx),
@@ -2657,6 +2663,33 @@ impl GpuiShellView {
             .into_any_element()
     }
 
+    fn package_form_fields(
+        &self,
+        focused: FormField,
+        language: Option<interface_core::InputText>,
+        stage: Option<interface_core::InputText>,
+        package_url: Option<interface_core::InputText>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("package-form-fields")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children([
+                self.form_field(FormField::Language, "Language", language, focused, cx),
+                self.form_field(FormField::Stage, "Stage", stage, focused, cx),
+                self.form_field(
+                    FormField::PackageUrl,
+                    "Pinned package URL",
+                    package_url,
+                    focused,
+                    cx,
+                ),
+            ])
+            .into_any_element()
+    }
+
     fn snapshot_form_fields(
         &self,
         focused: FormField,
@@ -2716,6 +2749,7 @@ impl GpuiShellView {
         let selected = match form {
             FormState::Snapshot { limit, .. } | FormState::Search { limit, .. } => Some(limit),
             FormState::Generate { .. }
+            | FormState::CompilePackage { .. }
             | FormState::Health
             | FormState::Recovery { .. }
             | FormState::Operation { .. } => None,
@@ -3020,6 +3054,7 @@ fn diagnostic_text(diagnostic: Option<&Diagnostic>) -> (&'static str, &'static s
         DiagnosticCode::AdaptivePolicyRejected => "Adaptive policy rejected",
         DiagnosticCode::CompilerTerminal => "Compiler or publication terminal",
         DiagnosticCode::ExecutionFailed => "Local execution failed",
+        DiagnosticCode::RetrievalFailed => "Retrieval failed",
     };
     let detail = match &diagnostic.detail {
         DiagnosticDetail::Capability(capability) => capability_label(*capability),
@@ -3034,6 +3069,9 @@ fn diagnostic_text(diagnostic: Option<&Diagnostic>) -> (&'static str, &'static s
         }
         DiagnosticDetail::Execution(_) => {
             "The local capability execution retained its exact failed transition."
+        }
+        DiagnosticDetail::Retrieval(_) => {
+            "The retrieval capability retained its exact typed rejection."
         }
     };
     (code, detail)
@@ -3072,6 +3110,7 @@ const fn command_element_id(command: CommandId) -> u64 {
 const fn action_element_id(action: ServiceAction) -> u64 {
     match action {
         ServiceAction::Generate => 1,
+        ServiceAction::CompilePackage => 13,
         ServiceAction::SnapshotStatus => 2,
         ServiceAction::Search => 3,
         ServiceAction::Graph => 4,
@@ -3090,6 +3129,9 @@ const fn action_form_hint(action: ServiceAction) -> &'static str {
     match action {
         ServiceAction::Generate => {
             "Provide language, stage, and source; output is available only after canonical compiler/publication succeeds."
+        }
+        ServiceAction::CompilePackage => {
+            "Provide a canonical pinned package URL, matching language profile, and stage; progress remains typed through locate, authority, lowering, publication, and reopen."
         }
         ServiceAction::SnapshotStatus | ServiceAction::Locality => {
             "Select an immutable published snapshot before submitting this typed request."
@@ -3114,6 +3156,7 @@ const fn action_form_hint(action: ServiceAction) -> &'static str {
 const fn form_action(form: FormState) -> ServiceAction {
     match form {
         FormState::Generate { .. } => ServiceAction::Generate,
+        FormState::CompilePackage { .. } => ServiceAction::CompilePackage,
         FormState::Snapshot { action, .. } => match action {
             crate::SnapshotAction::Status => ServiceAction::SnapshotStatus,
             crate::SnapshotAction::Locality => ServiceAction::Locality,
@@ -3146,8 +3189,9 @@ const fn form_field_id(field: FormField) -> u64 {
         FormField::Language => 1,
         FormField::Stage => 2,
         FormField::Source => 3,
-        FormField::Snapshot => 4,
-        FormField::Query => 5,
+        FormField::PackageUrl => 4,
+        FormField::Snapshot => 5,
+        FormField::Query => 6,
     }
 }
 
@@ -3158,6 +3202,7 @@ const fn text_input_target_label(target: crate::TextInputTarget) -> &'static str
         crate::TextInputTarget::Form(FormField::Language) => "Language",
         crate::TextInputTarget::Form(FormField::Stage) => "Stage",
         crate::TextInputTarget::Form(FormField::Source) => "Source",
+        crate::TextInputTarget::Form(FormField::PackageUrl) => "Pinned package URL",
         crate::TextInputTarget::Form(FormField::Snapshot) => "Snapshot",
         crate::TextInputTarget::Form(FormField::Query) => "Query",
     }
@@ -3183,6 +3228,10 @@ const fn form_error_label(error: FormError) -> &'static str {
         FormError::UnknownStage(_) => "Choose one of the canonical compiler stages.",
         FormError::SourceTooLong { .. } => {
             "That source exceeds the portable local compiler budget."
+        }
+        FormError::InvalidPackageUrl(_) => "Enter a canonical pinned package URL.",
+        FormError::PackageProfileMismatch(_) => {
+            "The selected language profile does not match this package ecosystem."
         }
         FormError::LimitUnavailable => "This typed action has no caller-controlled result limit.",
         FormError::NoEditableField => "This typed action has no editable text field.",

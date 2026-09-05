@@ -104,6 +104,8 @@ pub enum CommandId {
 pub enum ServiceAction {
     /// Compile one selected source through the canonical compiler seam.
     Generate,
+    /// Resolve and compile one pinned package through the semantic publication seam.
+    CompilePackage,
     /// Inspect immutable snapshot status.
     SnapshotStatus,
     /// Submit an exact or lexical query.
@@ -441,7 +443,7 @@ pub(crate) const fn surface_destination(surface: Surface) -> Route {
 
 pub(crate) const fn action_destination(action: ServiceAction) -> Route {
     match action {
-        ServiceAction::Generate => Route::Home,
+        ServiceAction::Generate | ServiceAction::CompilePackage => Route::Home,
         ServiceAction::SnapshotStatus | ServiceAction::Locality => Route::Libraries,
         ServiceAction::Search | ServiceAction::Graph | ServiceAction::Vector => Route::Search,
         ServiceAction::Health => Route::Settings,
@@ -456,6 +458,7 @@ pub(crate) const fn action_destination(action: ServiceAction) -> Route {
 pub(crate) const fn action_label(action: ServiceAction) -> &'static str {
     match action {
         ServiceAction::Generate => "Generate source",
+        ServiceAction::CompilePackage => "Compile pinned package",
         ServiceAction::SnapshotStatus => "Inspect snapshot status",
         ServiceAction::Search => "Search exact and lexical",
         ServiceAction::Graph => "Search graph",
@@ -532,7 +535,7 @@ pub const SURFACES: [SurfaceFacts; 7] = [
     },
 ];
 
-const COMMAND_COUNT: usize = 24;
+const COMMAND_COUNT: usize = 25;
 
 const fn command_at_unfiltered(index: usize) -> Option<CommandId> {
     match index {
@@ -549,17 +552,18 @@ const fn command_at_unfiltered(index: usize) -> Option<CommandId> {
         10 => Some(CommandId::InspectSurface(Surface::Vector)),
         11 => Some(CommandId::InspectSurface(Surface::Health)),
         12 => Some(CommandId::FocusAction(ServiceAction::Generate)),
-        13 => Some(CommandId::FocusAction(ServiceAction::SnapshotStatus)),
-        14 => Some(CommandId::FocusAction(ServiceAction::Search)),
-        15 => Some(CommandId::FocusAction(ServiceAction::Graph)),
-        16 => Some(CommandId::FocusAction(ServiceAction::Vector)),
-        17 => Some(CommandId::FocusAction(ServiceAction::Locality)),
-        18 => Some(CommandId::FocusAction(ServiceAction::Health)),
-        19 => Some(CommandId::FocusAction(ServiceAction::RecoverLocal)),
-        20 => Some(CommandId::FocusAction(ServiceAction::RecoverInconsistent)),
-        21 => Some(CommandId::FocusAction(ServiceAction::ReleaseLocal)),
-        22 => Some(CommandId::FocusAction(ServiceAction::PollExecution)),
-        23 => Some(CommandId::FocusAction(ServiceAction::Cancel)),
+        13 => Some(CommandId::FocusAction(ServiceAction::CompilePackage)),
+        14 => Some(CommandId::FocusAction(ServiceAction::SnapshotStatus)),
+        15 => Some(CommandId::FocusAction(ServiceAction::Search)),
+        16 => Some(CommandId::FocusAction(ServiceAction::Graph)),
+        17 => Some(CommandId::FocusAction(ServiceAction::Vector)),
+        18 => Some(CommandId::FocusAction(ServiceAction::Locality)),
+        19 => Some(CommandId::FocusAction(ServiceAction::Health)),
+        20 => Some(CommandId::FocusAction(ServiceAction::RecoverLocal)),
+        21 => Some(CommandId::FocusAction(ServiceAction::RecoverInconsistent)),
+        22 => Some(CommandId::FocusAction(ServiceAction::ReleaseLocal)),
+        23 => Some(CommandId::FocusAction(ServiceAction::PollExecution)),
+        24 => Some(CommandId::FocusAction(ServiceAction::Cancel)),
         _ => None,
     }
 }

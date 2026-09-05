@@ -386,7 +386,7 @@ fn entity_palette_filters_typed_text_without_a_polling_owner(cx: &mut TestAppCon
 
     cx.simulate_keystrokes("backspace");
     cx.read_entity(&view, |view, _| {
-        assert_eq!(view.navigation.palette.result_count(), 24);
+        assert_eq!(view.navigation.palette.result_count(), 25);
     });
 }
 

@@ -6,8 +6,8 @@
 use compiler_vocabulary::{LanguageProfile, Stage};
 use interface_core::{
     ApplicationInput, ContentId, CorrelationId, GenerateRequest, GenerateTarget,
-    InconsistentRecovery, InputText, InputTextJoinError, OperationKey, Pin, ResourceBudget,
-    SourceText,
+    InconsistentRecovery, InputText, InputTextJoinError, OperationKey, PackageCompileRequest,
+    PackageProfileMismatch, PackageUrl, PackageUrlError, Pin, ResourceBudget, SourceText,
 };
 
 use crate::ServiceAction;
@@ -21,6 +21,8 @@ pub enum FormField {
     Stage,
     /// Compiler source input.
     Source,
+    /// Canonical pinned package URL.
+    PackageUrl,
     /// Immutable snapshot selector.
     Snapshot,
     /// Bounded retrieval query.
@@ -78,6 +80,17 @@ pub enum FormState {
         stage: Option<InputText>,
         /// Typed source field.
         source: Option<InputText>,
+    },
+    /// Typed pinned-package compiler request fields.
+    CompilePackage {
+        /// Keyboard-selected field.
+        focused: FormField,
+        /// Typed language field.
+        language: Option<InputText>,
+        /// Typed stage field.
+        stage: Option<InputText>,
+        /// Canonical package URL field.
+        package_url: Option<InputText>,
     },
     /// Snapshot/locality/graph/vector form.
     Snapshot {
@@ -210,6 +223,10 @@ pub enum FormError {
         /// Named application source budget.
         limit: interface_core::SourceByteLimit,
     },
+    /// A package URL was malformed, unpinned, or noncanonical.
+    InvalidPackageUrl(PackageUrlError),
+    /// A package URL ecosystem did not belong to the selected language profile.
+    PackageProfileMismatch(PackageProfileMismatch),
     /// The selected closed form has no caller-controlled result limit.
     LimitUnavailable,
     /// The selected closed form has no editable text field.
@@ -226,6 +243,12 @@ impl FormState {
                 language: None,
                 stage: None,
                 source: None,
+            },
+            ServiceAction::CompilePackage => Self::CompilePackage {
+                focused: FormField::Language,
+                language: None,
+                stage: None,
+                package_url: None,
             },
             ServiceAction::SnapshotStatus => Self::Snapshot {
                 action: SnapshotAction::Status,
@@ -297,7 +320,20 @@ impl FormState {
                 FormField::Language => *language = Some(value),
                 FormField::Stage => *stage = Some(value),
                 FormField::Source => *source = Some(value),
-                FormField::Snapshot | FormField::Query => {
+                FormField::PackageUrl | FormField::Snapshot | FormField::Query => {
+                    return Err(FormError::FieldUnavailable(field));
+                }
+            },
+            Self::CompilePackage {
+                focused: _,
+                language,
+                stage,
+                package_url,
+            } => match field {
+                FormField::Language => *language = Some(value),
+                FormField::Stage => *stage = Some(value),
+                FormField::PackageUrl => *package_url = Some(value),
+                FormField::Source | FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(field));
                 }
             },
@@ -318,6 +354,7 @@ impl FormState {
         }
         match self {
             Self::Generate { focused, .. }
+            | Self::CompilePackage { focused, .. }
             | Self::Snapshot { focused, .. }
             | Self::Search { focused, .. } => {
                 *focused = field;
@@ -342,6 +379,14 @@ impl FormState {
             {
                 *focused = field;
             }
+            Self::CompilePackage { focused, .. }
+                if matches!(
+                    field,
+                    FormField::Language | FormField::Stage | FormField::PackageUrl
+                ) =>
+            {
+                *focused = field;
+            }
             Self::Snapshot { focused, .. } if field == FormField::Snapshot => *focused = field,
             Self::Search { focused, .. }
                 if matches!(field, FormField::Snapshot | FormField::Query) =>
@@ -362,6 +407,9 @@ impl FormState {
         match self {
             Self::Generate { focused, .. } => {
                 *focused = adjacent_generate_field(*focused, forward);
+            }
+            Self::CompilePackage { focused, .. } => {
+                *focused = adjacent_package_field(*focused, forward);
             }
             Self::Snapshot { .. } => {}
             Self::Search { focused, .. } => {
@@ -394,7 +442,22 @@ impl FormState {
                 FormField::Language => append_input(language, text, FormField::Language)?,
                 FormField::Stage => append_input(stage, text, FormField::Stage)?,
                 FormField::Source => append_input(source, text, FormField::Source)?,
-                FormField::Snapshot | FormField::Query => {
+                FormField::PackageUrl | FormField::Snapshot | FormField::Query => {
+                    return Err(FormError::FieldUnavailable(*focused));
+                }
+            },
+            Self::CompilePackage {
+                focused,
+                language,
+                stage,
+                package_url,
+            } => match focused {
+                FormField::Language => append_input(language, text, FormField::Language)?,
+                FormField::Stage => append_input(stage, text, FormField::Stage)?,
+                FormField::PackageUrl => {
+                    append_input(package_url, text, FormField::PackageUrl)?;
+                }
+                FormField::Source | FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(*focused));
                 }
             },
@@ -432,7 +495,20 @@ impl FormState {
                 FormField::Language => erase_input(language, FormField::Language)?,
                 FormField::Stage => erase_input(stage, FormField::Stage)?,
                 FormField::Source => erase_input(source, FormField::Source)?,
-                FormField::Snapshot | FormField::Query => {
+                FormField::PackageUrl | FormField::Snapshot | FormField::Query => {
+                    return Err(FormError::FieldUnavailable(*focused));
+                }
+            },
+            Self::CompilePackage {
+                focused,
+                language,
+                stage,
+                package_url,
+            } => match focused {
+                FormField::Language => erase_input(language, FormField::Language)?,
+                FormField::Stage => erase_input(stage, FormField::Stage)?,
+                FormField::PackageUrl => erase_input(package_url, FormField::PackageUrl)?,
+                FormField::Source | FormField::Snapshot | FormField::Query => {
                     return Err(FormError::FieldUnavailable(*focused));
                 }
             },
@@ -469,6 +545,7 @@ impl FormState {
             }
             | Self::Search { limit, .. } => *limit = value,
             Self::Generate { .. }
+            | Self::CompilePackage { .. }
             | Self::Snapshot { .. }
             | Self::Health
             | Self::Recovery { .. }
@@ -490,6 +567,12 @@ impl FormState {
                 source,
                 ..
             } => submit_generate(correlation, language, stage, source),
+            Self::CompilePackage {
+                language,
+                stage,
+                package_url,
+                ..
+            } => submit_package(correlation, language, stage, package_url),
             Self::Snapshot {
                 action,
                 snapshot,
@@ -514,9 +597,23 @@ impl FormState {
 const fn adjacent_generate_field(current: FormField, forward: bool) -> FormField {
     let fields = [FormField::Language, FormField::Stage, FormField::Source];
     let index = match current {
-        FormField::Language | FormField::Snapshot | FormField::Query => 0,
+        FormField::Language | FormField::PackageUrl | FormField::Snapshot | FormField::Query => 0,
         FormField::Stage => 1,
         FormField::Source => 2,
+    };
+    if forward {
+        fields[(index + 1) % fields.len()]
+    } else {
+        fields[(index + fields.len() - 1) % fields.len()]
+    }
+}
+
+const fn adjacent_package_field(current: FormField, forward: bool) -> FormField {
+    let fields = [FormField::Language, FormField::Stage, FormField::PackageUrl];
+    let index = match current {
+        FormField::Language | FormField::Source | FormField::Snapshot | FormField::Query => 0,
+        FormField::Stage => 1,
+        FormField::PackageUrl => 2,
     };
     if forward {
         fields[(index + 1) % fields.len()]
@@ -549,6 +646,27 @@ fn submit_generate(
         target,
         source,
     }))
+}
+
+fn submit_package(
+    correlation: CorrelationId,
+    language: Option<InputText>,
+    stage: Option<InputText>,
+    package_url: Option<InputText>,
+) -> Result<ApplicationInput, FormError> {
+    let language = language.ok_or(FormError::MissingText(FormField::Language))?;
+    let stage = stage.ok_or(FormError::MissingText(FormField::Stage))?;
+    let package_url = package_url.ok_or(FormError::MissingText(FormField::PackageUrl))?;
+    let target = GenerateTarget {
+        correlation,
+        profile: form_profile(language)?,
+        stage: form_stage(stage)?,
+    };
+    let package = PackageUrl::try_from(String::from(&*package_url))
+        .map_err(|rejected| FormError::InvalidPackageUrl(rejected.error))?;
+    let request =
+        PackageCompileRequest::new(target, package).map_err(FormError::PackageProfileMismatch)?;
+    Ok(ApplicationInput::CompilePackage(request))
 }
 
 fn form_profile(value: InputText) -> Result<LanguageProfile, FormError> {

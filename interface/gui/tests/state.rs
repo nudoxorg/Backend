@@ -374,6 +374,32 @@ fn typed_generate_form_retains_unknown_compiler_target_at_the_ui_boundary() -> R
 }
 
 #[test]
+fn typed_package_form_emits_only_profile_bound_pinned_package_requests() -> Result<(), TestError> {
+    let mut state = ShellState::default();
+    state.select_action(ServiceAction::CompilePackage);
+    state.replace_form_text(FormField::Language, text("rust-2024")?)?;
+    state.replace_form_text(FormField::Stage, text("lower-ir")?)?;
+    state.replace_form_text(FormField::PackageUrl, text("pkg:cargo/serde@1.0.229")?)?;
+
+    let submitted = state.submit_form(CorrelationId(63))?;
+    let ApplicationInput::CompilePackage(request) = submitted else {
+        return Err(TestError::Unexpected(
+            "package form produced another application input",
+        ));
+    };
+    assert_eq!(request.target.correlation, CorrelationId(63));
+    assert_eq!(request.target.stage, Stage::LowerIr);
+    assert_eq!(request.as_ref().as_ref(), "pkg:cargo/serde@1.0.229");
+
+    state.replace_form_text(FormField::Language, text("python-3.14")?)?;
+    assert!(matches!(
+        state.submit_form(CorrelationId(64)),
+        Err(FormError::PackageProfileMismatch(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn field_and_limit_transitions_retain_exact_form_rejections() -> Result<(), TestError> {
     let mut state = ShellState::default();
     assert_eq!(
