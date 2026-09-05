@@ -11,6 +11,7 @@ publish.workspace = true
 
 
 [dependencies]
+arrayvec.workspace = true
 compiler-driver = { path = "../driver" }
 compiler-registry = { path = "../registry" }
 compiler-publication = { path = "../publication" }

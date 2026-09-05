@@ -271,6 +271,8 @@ pub struct InvalidUtf8Fact {
 /// Closed worker identity retained when a scoped native I/O worker panics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeWorker {
+    /// The single compiler owner executing an admitted application request.
+    CompilerOwner,
     /// The worker sending exact source through native standard input.
     SourceWriter,
     /// The worker draining native standard output into the bounded diagnostic lease.

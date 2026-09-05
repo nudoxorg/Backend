@@ -79,7 +79,7 @@ pub struct PackageUrlFacts {
 }
 
 /// One exact package URL accepted only after complete structural validation.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageUrl {
     text: Box<str>,
     facts: PackageUrlFacts,
@@ -361,7 +361,7 @@ pub struct PackageCompileFacts {
 }
 
 /// One profile-compatible, pinned package request.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageCompileRequest {
     facts: PackageCompileFacts,
     package: PackageUrl,

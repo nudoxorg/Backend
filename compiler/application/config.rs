@@ -3,7 +3,9 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Explicit local compiler configuration and caller-owned bounded scratch.
 
-use std::{ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration};
+use std::{
+    collections::TryReserveError, ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration,
+};
 
 use compiler_driver::ToolchainSelection;
 use compiler_publication::manifest::StoredFragmentFacts;
@@ -18,7 +20,7 @@ pub const MAX_LOCAL_PACKAGE_ROOTS: usize = 7;
 /// Largest per-invocation native work interval accepted by the portable local adapter.
 pub const MAX_LOCAL_COMPILER_TIMEOUT: Duration = Duration::from_hours(1);
 
-/// Maximum compact IR fragment bytes accepted by this single-request adapter.
+/// Inline compact IR fragment bytes accepted without a heap allocation.
 ///
 /// Sized for the schema-2 envelope: header, directory, entity/type-node/atom
 /// lanes, source and recipe facts, and the type-fact plane with its
@@ -365,7 +367,7 @@ fn selection_tool(selection: ToolchainSelection<'_>) -> NativeTool {
 /// adapter invariant; the owner passes this value into [`crate::LocalCompiler::create`].
 pub struct LocalCompilerScratch {
     pub(crate) diagnostic_output: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
-    pub(crate) fragment_output: [u8; MAX_FRAGMENT_OUTPUT_BYTES],
+    pub(crate) fragment_output: FragmentOutput,
     pub(crate) manifest_output: [u8; MAX_MANIFEST_OUTPUT_BYTES],
     pub(crate) manifest_facts: [Option<StoredFragmentFacts>; MAX_MANIFEST_ENTRIES],
     pub(crate) ordinals: [usize; MAX_MANIFEST_ENTRIES],
@@ -380,11 +382,73 @@ pub struct LocalCompilerScratch {
         [compiler_publication::manifest::SemanticImageRegion; MAX_MANIFEST_ENTRIES],
 }
 
+pub(crate) enum FragmentOutput {
+    Inline([u8; MAX_FRAGMENT_OUTPUT_BYTES]),
+    Planned(Box<[u8]>),
+}
+
+impl FragmentOutput {
+    pub(crate) fn as_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Inline(bytes) => bytes,
+            Self::Planned(bytes) => bytes,
+        }
+    }
+}
+
+impl LocalCompilerScratch {
+    /// Creates reusable scratch with an explicit compact-fragment output capacity.
+    ///
+    /// Capacities at or below [`MAX_FRAGMENT_OUTPUT_BYTES`] retain the inline lane. Larger
+    /// capacities allocate exactly once and remain owned by this scratch across every request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact width or allocation rejection before a compiler owner is started.
+    pub fn with_fragment_capacity(
+        capacity: core::num::NonZeroUsize,
+    ) -> Result<Self, LocalCompilerScratchError> {
+        if capacity.get() > u32::MAX as usize {
+            return Err(LocalCompilerScratchError::CapacityWidth {
+                requested: capacity.get(),
+                maximum: u32::MAX as usize,
+            });
+        }
+        if capacity.get() <= MAX_FRAGMENT_OUTPUT_BYTES {
+            return Ok(Self::default());
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity.get())
+            .map_err(LocalCompilerScratchError::Allocation)?;
+        bytes.resize(capacity.get(), 0);
+        let mut scratch = Self::default();
+        scratch.fragment_output = FragmentOutput::Planned(bytes.into_boxed_slice());
+        Ok(scratch)
+    }
+}
+
+/// Rejection while constructing an explicitly sized reusable fragment lane.
+#[derive(Debug, Error)]
+pub enum LocalCompilerScratchError {
+    /// The requested capacity does not fit the canonical fragment byte-coordinate width.
+    #[error("fragment scratch capacity {requested} exceeds maximum {maximum}")]
+    CapacityWidth {
+        /// Requested reusable byte capacity.
+        requested: usize,
+        /// Largest canonical fragment byte capacity.
+        maximum: usize,
+    },
+    /// The exact one-time scratch allocation could not be reserved.
+    #[error("fragment scratch allocation failed")]
+    Allocation(#[source] TryReserveError),
+}
+
 impl Default for LocalCompilerScratch {
     fn default() -> Self {
         Self {
             diagnostic_output: [0; MAX_NATIVE_DIAGNOSTIC_BYTES],
-            fragment_output: [0; MAX_FRAGMENT_OUTPUT_BYTES],
+            fragment_output: FragmentOutput::Inline([0; MAX_FRAGMENT_OUTPUT_BYTES]),
             manifest_output: [0; MAX_MANIFEST_OUTPUT_BYTES],
             manifest_facts: [None; MAX_MANIFEST_ENTRIES],
             ordinals: [0; MAX_MANIFEST_ENTRIES],

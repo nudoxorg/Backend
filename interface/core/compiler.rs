@@ -142,6 +142,19 @@ pub trait CompilerCapability {
         Progress: FnMut(PackageCompilePhase);
 }
 
+/// Closed failure at the bounded client-to-compiler-owner boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerRuntimeCause {
+    /// Another clone already owns the single mutable compiler request lease.
+    RequestInFlight,
+    /// The compiler owner stopped before it could admit this request.
+    RequestOwnerStopped,
+    /// The compiler owner stopped after admission but before returning a terminal result.
+    ResponseOwnerStopped,
+    /// The compiler owner panicked while executing this exact request.
+    WorkerPanic(NativeWorkerPanic),
+}
+
 /// Portable specialization with no linked compiler or publication dependencies.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableCompiler;
@@ -194,6 +207,17 @@ pub enum CompilerTerminal {
         target: ContentId<CompilationTargetDomain>,
         /// Phase that observed cancellation.
         phase: PackageCompilePhase,
+    },
+    /// The bounded asynchronous compiler owner could not finish the exact request.
+    Runtime {
+        /// Requested closed language family.
+        language: Language,
+        /// Requested closed compiler stage.
+        stage: Stage,
+        /// Canonical pinned package identity, absent only for direct source generation.
+        target: Option<ContentId<CompilationTargetDomain>>,
+        /// Exact owner/channel/panic cause.
+        cause: CompilerRuntimeCause,
     },
     /// Source width exceeded the compiler identity representation before an authority existed.
     SourceLength {

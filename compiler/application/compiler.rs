@@ -254,6 +254,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         Progress: FnMut(PackageCompilePhase),
     {
         progress(PackageCompilePhase::Lower);
+        let scratch = &mut *self.scratch;
         let compiled = compile_fused_semantic(
             CompileRequest {
                 profile: request.profile,
@@ -265,11 +266,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 control,
             },
             CompileScratch {
-                diagnostic_output: &mut self.scratch.diagnostic_output,
+                diagnostic_output: &mut scratch.diagnostic_output,
                 native_work: self.config.native_work_directory,
             },
             CompileOutput {
-                fragment_output: &mut self.scratch.fragment_output,
+                fragment_output: scratch.fragment_output.as_mut(),
             },
         )
         .map_err(compile_terminal)?;
@@ -289,9 +290,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                     },
                 )
             })?;
-        self.scratch
-            .semantic_image_output
-            .resize(semantic_length, 0);
+        scratch.semantic_image_output.resize(semantic_length, 0);
         progress(PackageCompilePhase::Publish);
         let publication = publish_semantic(
             &self.publisher,
@@ -299,13 +298,13 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             core::slice::from_ref(&compiled),
             PublishControl::Observe(self.config.control.cancelled),
             SemanticPublicationScratch {
-                manifest_output: &mut self.scratch.manifest_output,
-                manifest_facts: &mut self.scratch.manifest_facts,
-                ordinals: &mut self.scratch.ordinals,
-                semantic_image_plan: &mut self.scratch.semantic_image_plan,
-                semantic_image_output: &mut self.scratch.semantic_image_output,
-                locality_output: &mut self.scratch.locality_output,
-                binding_output: &mut self.scratch.binding_output,
+                manifest_output: &mut scratch.manifest_output,
+                manifest_facts: &mut scratch.manifest_facts,
+                ordinals: &mut scratch.ordinals,
+                semantic_image_plan: &mut scratch.semantic_image_plan,
+                semantic_image_output: &mut scratch.semantic_image_output,
+                locality_output: &mut scratch.locality_output,
+                binding_output: &mut scratch.binding_output,
             },
         )
         .map_err(|error| crate::terminal::semantic_publication_terminal(source, recipe, error))?;
@@ -316,11 +315,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             &self.publisher,
             self.config.artifact_directory,
             OpenSemanticPublicationScratch {
-                manifest_output: &mut self.scratch.manifest_output,
-                manifest_facts: &mut self.scratch.manifest_facts,
-                fragment_output: &mut self.scratch.fragment_output,
-                semantic_image_output: &mut self.scratch.semantic_image_output,
-                locality_output: &mut self.scratch.locality_output,
+                manifest_output: &mut scratch.manifest_output,
+                manifest_facts: &mut scratch.manifest_facts,
+                fragment_output: scratch.fragment_output.as_mut(),
+                semantic_image_output: &mut scratch.semantic_image_output,
+                locality_output: &mut scratch.locality_output,
             },
         )
         .map_err(|error| crate::terminal::semantic_reopen_terminal(source, recipe, error))?

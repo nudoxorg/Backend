@@ -17,7 +17,8 @@ mod text;
 
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
-    CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerTerminal, FragmentCause,
+    CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerRuntimeCause,
+    CompilerTerminal, FragmentCause,
     GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
     MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction, NativeArtifactCause, NativeArtifactRole,
     NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
