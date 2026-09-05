@@ -26,7 +26,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use compiler_vocabulary::{CSharpVersion, NativeTool};
+use compiler_vocabulary::{
+    CSharpVersion, NativeTool, NativeWorker, NativeWorkerPanic,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -360,8 +362,8 @@ impl CSharpOracle {
             &limit_receiver,
             self.output_limit,
         );
-        let stdout = join_stream(stdout_thread, "stdout")?;
-        let stderr = join_stream(stderr_thread, "stderr")?;
+        let stdout = join_stream(stdout_thread, NativeWorker::StandardOutputReader)?;
+        let stderr = join_stream(stderr_thread, NativeWorker::StandardErrorReader)?;
 
         let terminal = terminal?;
         if let Some((stream, observed)) = stdout.exceeded.or(stderr.exceeded) {
@@ -514,11 +516,14 @@ pub enum CSharpAuthorityError {
         #[source]
         source: std::io::Error,
     },
-    /// A stream reader thread panicked.
-    #[error("C# authority {stream} stream worker panicked")]
+    /// A stream reader thread panicked; its exact bounded payload and worker
+    /// identity survive the join boundary.
+    #[error("C# authority stream worker panicked: {cause}")]
     WorkerPanic {
-        /// Child stream whose reader panicked.
-        stream: &'static str,
+        /// Bounded original join payload, including the standard-output or
+        /// standard-error worker category.
+        #[source]
+        cause: NativeWorkerPanic,
     },
     /// A child stream exceeded the configured byte bound.
     #[error("C# authority {stream} output observed {observed} bytes; limit is {limit}")]
@@ -661,11 +666,13 @@ fn read_bounded(
 
 fn join_stream(
     thread: thread::JoinHandle<BoundedStream>,
-    stream: &'static str,
+    worker: NativeWorker,
 ) -> Result<BoundedStream, CSharpAuthorityError> {
     thread
         .join()
-        .map_err(|_| CSharpAuthorityError::WorkerPanic { stream })
+        .map_err(|payload| CSharpAuthorityError::WorkerPanic {
+            cause: NativeWorkerPanic::capture(worker, payload.as_ref()),
+        })
 }
 
 fn wait_for_child(
@@ -734,6 +741,7 @@ fn stderr_tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compiler_vocabulary::{NativeWorkerPanicClass, MAX_NATIVE_WORKER_PANIC_BYTES};
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -791,5 +799,27 @@ mod tests {
             result,
             Err(CSharpAuthorityError::SourceBinding { .. })
         ));
+    }
+
+    #[test]
+    fn stream_join_retains_exact_worker_and_owned_panic_payload() {
+        let thread = thread::spawn(|| -> BoundedStream {
+            std::panic::panic_any(String::from("csharp stderr reader failed"));
+        });
+        let result = join_stream(thread, NativeWorker::StandardErrorReader);
+        let cause = match result {
+            Err(CSharpAuthorityError::WorkerPanic { cause }) => cause,
+            Err(other) => panic!("unexpected join error: {other:?}"),
+            Ok(_) => panic!("panicking stream unexpectedly joined successfully"),
+        };
+        assert_eq!(cause.worker, NativeWorker::StandardErrorReader);
+        assert_eq!(cause.class, NativeWorkerPanicClass::OwnedMessage);
+        assert_eq!(cause.message.byte_len, "csharp stderr reader failed".len());
+        assert!(!cause.message.truncated);
+        assert_eq!(
+            &cause.message.bytes[..cause.message.byte_len],
+            b"csharp stderr reader failed"
+        );
+        assert!(cause.message.byte_len <= MAX_NATIVE_WORKER_PANIC_BYTES);
     }
 }
