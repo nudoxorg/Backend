@@ -8090,6 +8090,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "server-index-acquire"
+version = "0.1.0"
+dependencies = [
+ "compiler-ir",
+ "futures-executor",
+ "heart-identity",
+ "serde",
+ "serde_json",
+ "server-index-catalog",
+ "server-index-ingest",
+ "server-index-vocabulary",
+ "sha2",
+ "thiserror 2.0.20",
+ "ureq",
+]
+
+[[package]]
 name = "server-index-build"
 version = "0.1.0"
 dependencies = [

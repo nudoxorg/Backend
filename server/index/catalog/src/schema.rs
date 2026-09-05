@@ -21,5 +21,20 @@ CREATE TABLE IF NOT EXISTS catalog_checkpoint (
  sequence INTEGER NOT NULL, page INTEGER NOT NULL
 );
 INSERT OR IGNORE INTO catalog_checkpoint(singleton,sequence,page) VALUES (1,0,0);
+CREATE TABLE IF NOT EXISTS catalog_feed_checkpoint (
+ feed TEXT PRIMARY KEY,
+ sequence INTEGER NOT NULL, page INTEGER NOT NULL,
+ cursor TEXT, validator TEXT
+);
+CREATE TABLE IF NOT EXISTS catalog_feed_cycle (
+ feed TEXT PRIMARY KEY REFERENCES catalog_feed_checkpoint(feed),
+ cycle INTEGER NOT NULL, snapshot BLOB, offset INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS catalog_feed_observation (
+ feed TEXT NOT NULL REFERENCES catalog_feed_checkpoint(feed),
+ ecosystem TEXT NOT NULL, package TEXT NOT NULL, version TEXT NOT NULL,
+ checksum BLOB NOT NULL, active INTEGER NOT NULL, cycle INTEGER NOT NULL,
+ PRIMARY KEY(feed, ecosystem, package, version)
+);
 CREATE INDEX IF NOT EXISTS catalog_lookup
  ON catalog_history(ecosystem, package, version, sequence);";

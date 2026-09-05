@@ -1,0 +1,25 @@
+[package]
+name = "server-index-acquire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+compiler-ir = { path = "../../../compiler/ir" }
+server-index-catalog = { path = "../catalog" }
+server-index-ingest = { path = "../ingest" }
+server-index-vocabulary = { path = "../vocabulary" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "=0.10.9"
+thiserror.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+futures-executor = "0.3.31"
+heart-identity = { path = "../../../heart/identity" }
+
+[lib]
+path = "lib.rs"

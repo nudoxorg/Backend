@@ -16,12 +16,14 @@ use futures_executor::block_on;
 use heart_identity::{CompilePublicationDomain, ContentId, GenerationId};
 use server_index_catalog::{
     CatalogError, CatalogPageError, CatalogPageOperation, CatalogPublication,
-    CatalogPublishOutcome, TursoCatalog,
+    CatalogPublishOutcome, FeedCheckpoint, FeedContentChecksum, FeedIdentity, FeedObservation,
+    TursoCatalog,
 };
 use server_index_ingest::Checkpoint;
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, IndexSnapshotId, PackageCoordinate, PackageVersion,
     SemanticImageExtent, SemanticImageLocator, VerifiedCanonicalEntityLocator,
+    VerifiedSemanticPublication,
 };
 
 #[derive(Debug)]
@@ -30,6 +32,53 @@ impl Display for TestFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.0)
     }
+}
+
+#[test]
+fn feed_checkpoints_are_independent_and_survive_reopen() -> TestResult {
+    block_on(async {
+        let database = temp_catalog("independent-feeds")?;
+        let left = FeedIdentity::new("crates.io/sparse/left")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let right = FeedIdentity::new("crates.io/sparse/right")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let left_current = FeedCheckpoint::initial(left.clone());
+        let right_current = FeedCheckpoint::initial(right.clone());
+        let left_next = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            ..left_current.clone()
+        };
+        let right_next = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            ..right_current.clone()
+        };
+        {
+            let mut catalog = TursoCatalog::open(&database.path).await?;
+            assert_eq!(
+                catalog
+                    .apply_feed_page(&left_current, &left_next, &[])
+                    .await?,
+                left_next
+            );
+            assert_eq!(catalog.feed_checkpoint(right.clone()).await?, right_current);
+            assert_eq!(
+                catalog
+                    .apply_feed_page(&right_current, &right_next, &[])
+                    .await?,
+                right_next
+            );
+        }
+        let catalog = TursoCatalog::open(&database.path).await?;
+        assert_eq!(catalog.feed_checkpoint(left).await?, left_next);
+        assert_eq!(catalog.feed_checkpoint(right).await?, right_next);
+        Ok(())
+    })
 }
 impl Error for TestFailure {}
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -195,13 +244,15 @@ fn publication<'a>(
     package: PackageCoordinate<'a>,
     fixture: &'a ImageFixture,
     facts: IndexLocatorFacts,
-) -> CatalogPublication<'a> {
-    CatalogPublication {
+) -> TestResult<CatalogPublication<'a>> {
+    let image = SemanticImageView::reopen(&fixture.bytes)?;
+    let publication = VerifiedSemanticPublication::verify_reopened(facts, fixture.locator, &image)
+        .map_err(|_| TestFailure("fixture semantic publication did not verify"))?;
+    Ok(CatalogPublication {
         package,
-        authority: facts,
-        image: fixture.locator,
+        publication,
         entities: &fixture.entities,
-    }
+    })
 }
 
 #[test]
@@ -214,7 +265,7 @@ fn persistence_survives_close_and_reopen() -> TestResult {
             let mut catalog = TursoCatalog::open(&database.path).await?;
             assert!(matches!(
                 catalog
-                    .publish(publication(coordinate, &fixture, authority(11)))
+                    .publish(publication(coordinate, &fixture, authority(11))?)
                     .await?,
                 CatalogPublishOutcome::Inserted { .. }
             ));
@@ -239,10 +290,10 @@ fn two_versions_make_unversioned_resolution_ambiguous() -> TestResult {
         let second_image = image_fixture(22)?;
         let mut catalog = TursoCatalog::open(&database.path).await?;
         catalog
-            .publish(publication(first, &first_image, authority(21)))
+            .publish(publication(first, &first_image, authority(21))?)
             .await?;
         catalog
-            .publish(publication(second, &second_image, authority(22)))
+            .publish(publication(second, &second_image, authority(22))?)
             .await?;
         match catalog.resolve(first.lineage, None).await {
             Err(CatalogError::Ambiguous) => {}
@@ -263,7 +314,7 @@ fn identical_image_is_unchanged_but_changed_image_appends_history() -> TestResul
         let changed = image_fixture(32)?;
         let mut catalog = TursoCatalog::open(&database.path).await?;
         let first_sequence = match catalog
-            .publish(publication(coordinate, &original, authority(31)))
+            .publish(publication(coordinate, &original, authority(31))?)
             .await?
         {
             CatalogPublishOutcome::Inserted { sequence } => sequence,
@@ -272,7 +323,7 @@ fn identical_image_is_unchanged_but_changed_image_appends_history() -> TestResul
             }
         };
         match catalog
-            .publish(publication(coordinate, &original, authority(31)))
+            .publish(publication(coordinate, &original, authority(31))?)
             .await?
         {
             CatalogPublishOutcome::Unchanged { sequence } => assert_eq!(sequence, first_sequence),
@@ -281,7 +332,7 @@ fn identical_image_is_unchanged_but_changed_image_appends_history() -> TestResul
             }
         }
         match catalog
-            .publish(publication(coordinate, &changed, authority(32)))
+            .publish(publication(coordinate, &changed, authority(32))?)
             .await?
         {
             CatalogPublishOutcome::Inserted { sequence } => assert_ne!(sequence, first_sequence),
@@ -308,7 +359,7 @@ fn returning_to_an_earlier_image_appends_an_immutable_head() -> TestResult {
             (&first, authority(71)),
         ] {
             match catalog
-                .publish(publication(coordinate, fixture, facts))
+                .publish(publication(coordinate, fixture, facts)?)
                 .await?
             {
                 CatalogPublishOutcome::Inserted { .. } => {}
@@ -333,11 +384,11 @@ fn authority_only_rebind_is_history_and_image_immutable() -> TestResult {
         let fixture = image_fixture(33)?;
         let mut catalog = TursoCatalog::open(&database.path).await?;
         catalog
-            .publish(publication(coordinate, &fixture, authority(33)))
+            .publish(publication(coordinate, &fixture, authority(33))?)
             .await?;
         assert!(matches!(
             catalog
-                .publish(publication(coordinate, &fixture, authority(34)))
+                .publish(publication(coordinate, &fixture, authority(34))?)
                 .await?,
             CatalogPublishOutcome::Inserted { .. }
         ));
@@ -350,7 +401,7 @@ fn authority_only_rebind_is_history_and_image_immutable() -> TestResult {
 }
 
 #[test]
-fn same_image_entity_set_drift_appends_history() -> TestResult {
+fn nonempty_reopened_image_rejects_an_incomplete_entity_set() -> TestResult {
     block_on(async {
         let database = temp_catalog("entity-rebind")?;
         let coordinate = package("3.1.1")?;
@@ -363,23 +414,23 @@ fn same_image_entity_set_drift_appends_history() -> TestResult {
         let narrowed = [entity];
         let mut catalog = TursoCatalog::open(&database.path).await?;
         catalog
-            .publish(publication(coordinate, &fixture, authority(73)))
+            .publish(publication(coordinate, &fixture, authority(73))?)
             .await?;
         match catalog
             .publish(CatalogPublication {
-                package: coordinate,
-                authority: authority(73),
-                image: fixture.locator,
                 entities: &narrowed,
+                ..publication(coordinate, &fixture, authority(73))?
             })
-            .await?
+            .await
         {
-            CatalogPublishOutcome::Inserted { .. } => {}
-            CatalogPublishOutcome::Unchanged { .. } => {
-                return Err(TestFailure("entity drift was unchanged").into());
-            }
+            Err(CatalogError::EntityCountMismatch {
+                expected: 2,
+                observed: 1,
+            }) => {}
+            Err(error) => return Err(unexpected(error)),
+            Ok(_) => return Err(TestFailure("incomplete entity set was persisted").into()),
         }
-        assert_eq!(catalog.history(coordinate).await?.len(), 2);
+        assert_eq!(catalog.history(coordinate).await?.len(), 1);
         Ok(())
     })
 }
@@ -392,16 +443,14 @@ fn invalid_entity_image_and_duplicate_entity_roll_back() -> TestResult {
         let fixture = image_fixture(41)?;
         let mut catalog = TursoCatalog::open(&database.path).await?;
         catalog
-            .publish(publication(coordinate, &fixture, authority(41)))
+            .publish(publication(coordinate, &fixture, authority(41))?)
             .await?;
         let before = catalog.history(coordinate).await?;
         let (entity, second_entity) = entity_pair(&fixture)?;
         let duplicate_entities = [entity, entity];
         let duplicate = CatalogPublication {
-            package: coordinate,
-            authority: authority(41),
-            image: fixture.locator,
             entities: &duplicate_entities,
+            ..publication(coordinate, &fixture, authority(41))?
         };
         match catalog.publish(duplicate).await {
             Err(CatalogError::DuplicateEntity) => {}
@@ -410,10 +459,8 @@ fn invalid_entity_image_and_duplicate_entity_roll_back() -> TestResult {
         }
         let wrong_image = image_fixture(42)?;
         let mismatch = CatalogPublication {
-            package: coordinate,
-            authority: authority(41),
-            image: wrong_image.locator,
             entities: &fixture.entities,
+            ..publication(coordinate, &wrong_image, authority(41))?
         };
         match catalog.publish(mismatch).await {
             Err(CatalogError::EntityImageMismatch) => {}
@@ -423,10 +470,8 @@ fn invalid_entity_image_and_duplicate_entity_roll_back() -> TestResult {
         let reversed = [second_entity, entity];
         match catalog
             .publish(CatalogPublication {
-                package: coordinate,
-                authority: authority(41),
-                image: fixture.locator,
                 entities: &reversed,
+                ..publication(coordinate, &fixture, authority(41))?
             })
             .await
         {
@@ -449,7 +494,7 @@ fn corrupt_reopen_is_a_typed_failure_and_locator_facts_survive() -> TestResult {
         {
             let mut catalog = TursoCatalog::open(&database.path).await?;
             catalog
-                .publish(publication(coordinate, &fixture, facts))
+                .publish(publication(coordinate, &fixture, facts)?)
                 .await?;
             let record = catalog
                 .resolve(coordinate.lineage, Some(coordinate.version))
@@ -483,7 +528,7 @@ fn a_second_writer_is_not_silently_admitted() -> TestResult {
         let fixture = image_fixture(61)?;
         let coordinate = package("6.0.0")?;
         match first
-            .publish(publication(package("6.0.0")?, &fixture, authority(61)))
+            .publish(publication(package("6.0.0")?, &fixture, authority(61))?)
             .await?
         {
             CatalogPublishOutcome::Inserted { .. } => {}
@@ -492,7 +537,7 @@ fn a_second_writer_is_not_silently_admitted() -> TestResult {
             }
         }
         match second
-            .publish(publication(coordinate, &fixture, authority(61)))
+            .publish(publication(coordinate, &fixture, authority(61))?)
             .await?
         {
             CatalogPublishOutcome::Unchanged { .. } => {}
@@ -524,7 +569,7 @@ fn checkpointed_page_is_atomic_stale_safe_and_persists() -> TestResult {
                 coordinate,
                 &fixture,
                 authority(81),
-            ))];
+            )?)];
             assert_eq!(catalog.apply_page(initial, next, &operations).await?, next);
             assert_eq!(catalog.checkpoint().await?, next);
             match catalog
@@ -585,7 +630,7 @@ fn checkpointed_page_is_atomic_stale_safe_and_persists() -> TestResult {
             coordinate,
             &fixture,
             authority(81),
-        ))];
+        )?)];
         assert_eq!(
             catalog
                 .apply_page(
@@ -611,6 +656,243 @@ fn checkpointed_page_is_atomic_stale_safe_and_persists() -> TestResult {
 }
 
 #[test]
+fn completed_snapshot_tombstones_stale_observation_and_removes_current() -> TestResult {
+    block_on(async {
+        let database = temp_catalog("snapshot-stale-removal")?;
+        let feed = FeedIdentity::new("crates.io/sparse/target")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let coordinate = package("7.1.0")?;
+        let fixture = image_fixture(82)?;
+        let initial = FeedCheckpoint::initial(feed.clone());
+        let observed = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            cycle: 1,
+            snapshot: None,
+            offset: 0,
+            ..initial.clone()
+        };
+        let completed = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 2,
+            },
+            cycle: 2,
+            snapshot: None,
+            offset: 0,
+            ..observed.clone()
+        };
+        let observation = FeedObservation {
+            coordinate,
+            checksum: FeedContentChecksum::from_bytes([82; 32]),
+            active: true,
+        };
+
+        let mut catalog = TursoCatalog::open(&database.path).await?;
+        let publish = [CatalogPageOperation::Publish(publication(
+            coordinate,
+            &fixture,
+            authority(82),
+        )?)];
+        assert_eq!(
+            catalog
+                .apply_feed_snapshot_page(&initial, &observed, &publish, &[observation], true)
+                .await?,
+            observed
+        );
+        assert!(
+            catalog
+                .resolve(coordinate.lineage, Some(coordinate.version))
+                .await
+                .is_ok()
+        );
+
+        assert_eq!(
+            catalog
+                .apply_feed_snapshot_page(&observed, &completed, &[], &[], true)
+                .await?,
+            completed
+        );
+        match catalog
+            .resolve(coordinate.lineage, Some(coordinate.version))
+            .await
+        {
+            Err(CatalogError::NotFound) => {}
+            Err(error) => return Err(unexpected(error)),
+            Ok(_) => return Err(TestFailure("stale snapshot retained current row").into()),
+        }
+        let observations = catalog.feed_observations(&feed).await?;
+        assert_eq!(observations.len(), 1);
+        assert!(!observations[0].active);
+        assert_eq!(observations[0].cycle, 1);
+        Ok(())
+    })
+}
+
+#[test]
+fn forged_snapshot_completion_or_cycle_jump_rolls_back() -> TestResult {
+    block_on(async {
+        let database = temp_catalog("forged-feed-transition")?;
+        let feed = FeedIdentity::new("crates.io/sparse/forged")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let coordinate = package("7.1.1")?;
+        let fixture = image_fixture(84)?;
+        let initial = FeedCheckpoint::initial(feed.clone());
+        let current = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            cycle: 1,
+            ..initial.clone()
+        };
+        let observation = FeedObservation {
+            coordinate,
+            checksum: FeedContentChecksum::from_bytes([84; 32]),
+            active: true,
+        };
+        let publish = [CatalogPageOperation::Publish(publication(
+            coordinate,
+            &fixture,
+            authority(84),
+        )?)];
+        let mut catalog = TursoCatalog::open(&database.path).await?;
+        catalog
+            .apply_feed_snapshot_page(&initial, &current, &publish, &[observation], true)
+            .await?;
+        let forged = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 2,
+            },
+            cycle: 9,
+            ..current.clone()
+        };
+        match catalog
+            .apply_feed_snapshot_page(&current, &forged, &[], &[], true)
+            .await
+        {
+            Err(CatalogPageError::FeedTransition(_)) => {}
+            Err(error) => return Err(unexpected(error)),
+            Ok(_) => return Err(TestFailure("forged completion was committed").into()),
+        }
+        let malformed_shape = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 2,
+            },
+            cycle: 2,
+            offset: 1,
+            ..current.clone()
+        };
+        match catalog
+            .apply_feed_snapshot_page(&current, &malformed_shape, &[], &[], false)
+            .await
+        {
+            Err(CatalogPageError::FeedTransition(_)) => {}
+            Err(error) => return Err(unexpected(error)),
+            Ok(_) => return Err(TestFailure("nonterminal empty snapshot was committed").into()),
+        }
+        assert_eq!(catalog.feed_checkpoint(feed).await?, current);
+        assert!(
+            catalog
+                .resolve(coordinate.lineage, Some(coordinate.version))
+                .await
+                .is_ok()
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn active_observation_on_another_feed_preserves_current_row() -> TestResult {
+    block_on(async {
+        let database = temp_catalog("snapshot-active-peer")?;
+        let target = FeedIdentity::new("crates.io/sparse/target")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let peer = FeedIdentity::new("crates.io/sparse/peer")
+            .map_err(|_| TestFailure("feed identity was rejected"))?;
+        let coordinate = package("7.2.0")?;
+        let fixture = image_fixture(83)?;
+        let target_initial = FeedCheckpoint::initial(target.clone());
+        let target_observed = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            cycle: 1,
+            snapshot: None,
+            offset: 0,
+            ..target_initial.clone()
+        };
+        let target_completed = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 2,
+            },
+            cycle: 2,
+            snapshot: None,
+            offset: 0,
+            ..target_observed.clone()
+        };
+        let peer_initial = FeedCheckpoint::initial(peer.clone());
+        let peer_observed = FeedCheckpoint {
+            checkpoint: Checkpoint {
+                sequence: 0,
+                page: 1,
+            },
+            cycle: 1,
+            snapshot: None,
+            offset: 0,
+            ..peer_initial.clone()
+        };
+        let observation = FeedObservation {
+            coordinate,
+            checksum: FeedContentChecksum::from_bytes([83; 32]),
+            active: true,
+        };
+
+        let mut catalog = TursoCatalog::open(&database.path).await?;
+        let publish = [CatalogPageOperation::Publish(publication(
+            coordinate,
+            &fixture,
+            authority(83),
+        )?)];
+        catalog
+            .apply_feed_snapshot_page(
+                &target_initial,
+                &target_observed,
+                &publish,
+                &[observation],
+                true,
+            )
+            .await?;
+        catalog
+            .apply_feed_snapshot_page(&peer_initial, &peer_observed, &[], &[observation], true)
+            .await?;
+
+        catalog
+            .apply_feed_snapshot_page(&target_observed, &target_completed, &[], &[], true)
+            .await?;
+        assert!(
+            catalog
+                .resolve(coordinate.lineage, Some(coordinate.version))
+                .await
+                .is_ok()
+        );
+        let target_observations = catalog.feed_observations(&target).await?;
+        assert_eq!(target_observations.len(), 1);
+        assert!(!target_observations[0].active);
+        let peer_observations = catalog.feed_observations(&peer).await?;
+        assert_eq!(peer_observations.len(), 1);
+        assert!(peer_observations[0].active);
+        Ok(())
+    })
+}
+
+#[test]
 fn page_preflight_and_late_failure_leave_no_durable_prefix() -> TestResult {
     block_on(async {
         let database = temp_catalog("page-rollback")?;
@@ -625,12 +907,11 @@ fn page_preflight_and_late_failure_leave_no_durable_prefix() -> TestResult {
             sequence: 0,
             page: 1,
         };
-        let valid = CatalogPageOperation::Publish(publication(coordinate, &fixture, authority(91)));
+        let valid =
+            CatalogPageOperation::Publish(publication(coordinate, &fixture, authority(91))?);
         let invalid = CatalogPageOperation::Publish(CatalogPublication {
-            package: package("8.0.1")?,
-            authority: authority(92),
-            image: other.locator,
             entities: &fixture.entities,
+            ..publication(package("8.0.1")?, &other, authority(92))?
         });
         {
             let mut catalog = TursoCatalog::open(&database.path).await?;
@@ -649,7 +930,7 @@ fn page_preflight_and_late_failure_leave_no_durable_prefix() -> TestResult {
                 Ok(_) => return Err(TestFailure("rolled-back prefix resolved").into()),
             }
             let duplicate = [
-                CatalogPageOperation::Publish(publication(coordinate, &fixture, authority(91))),
+                CatalogPageOperation::Publish(publication(coordinate, &fixture, authority(91))?),
                 CatalogPageOperation::Remove(coordinate),
             ];
             match catalog.apply_page(current, next, &duplicate).await {

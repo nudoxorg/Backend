@@ -6,6 +6,7 @@
 use compiler_ir::DeclarationIdentity;
 use server_index_vocabulary::{
     IndexLocatorFacts, PackageCoordinate, SemanticImageLocator, VerifiedCanonicalEntityLocator,
+    VerifiedSemanticPublication,
 };
 
 /// Maximum number of versions admitted from either side of one reconciliation page/batch.
@@ -27,14 +28,20 @@ pub enum IngestionOrigin {
 pub struct IngestedVersion<'coordinate, 'entities> {
     origin: IngestionOrigin,
     coordinate: PackageCoordinate<'coordinate>,
-    facts: IndexLocatorFacts,
-    image: SemanticImageLocator,
+    publication: VerifiedSemanticPublication,
     entities: &'entities [VerifiedCanonicalEntityLocator],
 }
 
 /// Exact admission failures for an observed version.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngestedVersionFault {
+    /// The caller omitted or added canonical declarations relative to the reopened image.
+    EntityCountMismatch {
+        /// Count retained in the semantic publication proof.
+        expected: usize,
+        /// Count supplied to this admission boundary.
+        observed: usize,
+    },
     /// An entity locator names another semantic image.
     EntityImageMismatch,
     /// Two entity locators repeat one declaration identity.
@@ -55,14 +62,19 @@ impl<'coordinate, 'entities> IngestedVersion<'coordinate, 'entities> {
     pub fn new(
         origin: IngestionOrigin,
         coordinate: PackageCoordinate<'coordinate>,
-        facts: IndexLocatorFacts,
-        image: SemanticImageLocator,
+        publication: VerifiedSemanticPublication,
         entities: &'entities [VerifiedCanonicalEntityLocator],
     ) -> Result<Self, IngestedVersionFault> {
+        if entities.len() != publication.entity_count() {
+            return Err(IngestedVersionFault::EntityCountMismatch {
+                expected: publication.entity_count(),
+                observed: entities.len(),
+            });
+        }
         let mut left = 0;
         while left < entities.len() {
             let current = entities[left].as_locator();
-            if current.image != image {
+            if current.image != publication.image() {
                 return Err(IngestedVersionFault::EntityImageMismatch);
             }
             if left != 0 {
@@ -82,8 +94,7 @@ impl<'coordinate, 'entities> IngestedVersion<'coordinate, 'entities> {
         Ok(Self {
             origin,
             coordinate,
-            facts,
-            image,
+            publication,
             entities,
         })
     }
@@ -98,11 +109,11 @@ impl<'coordinate, 'entities> IngestedVersion<'coordinate, 'entities> {
     }
     /// Returns immutable generation, snapshot, and publication authorities.
     pub const fn locator_facts(self) -> IndexLocatorFacts {
-        self.facts
+        self.publication.authority()
     }
     /// Returns the canonical image locator.
     pub const fn image(self) -> SemanticImageLocator {
-        self.image
+        self.publication.image()
     }
     /// Returns verified declaration locators.
     pub const fn entities(self) -> &'entities [VerifiedCanonicalEntityLocator] {
@@ -240,7 +251,7 @@ pub fn reconcile_into<'record, 'coordinate, 'entities>(
             Some(local_index) if local[local_index] == *desired_row => {
                 out[written] = ReconciliationOperation::Unchanged(desired_row)
             }
-            Some(local_index) if local[local_index].image == desired_row.image => {
+            Some(local_index) if local[local_index].image() == desired_row.image() => {
                 out[written] = ReconciliationOperation::Rebind {
                     local: &local[local_index],
                     desired: desired_row,

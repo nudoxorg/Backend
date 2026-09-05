@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 mod codec;
+mod feed;
 mod page;
 mod schema;
 
@@ -10,23 +11,25 @@ use compiler_ir::{DeclarationIdentity, PackageLineage};
 use server_index_ingest::{Checkpoint, CheckpointFault};
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, PackageCoordinate, PackageVersion,
-    SemanticImageLocator, VerifiedCanonicalEntityLocator,
+    SemanticImageLocator, VerifiedCanonicalEntityLocator, VerifiedSemanticPublication,
 };
 use std::fmt;
 use thiserror::Error;
 use turso::{Builder, Connection, Value};
 
 use codec::{blob, integer, load_entities, record};
+pub use feed::{
+    FeedCheckpoint, FeedCursor, FeedCursorFault, FeedIdentity, FeedIdentityFault, FeedSnapshotId,
+    FeedTransitionFault, FeedValidator, FeedValidatorFault,
+};
 
 /// One borrowed, already verified catalog publication.
 #[derive(Clone, Copy)]
 pub struct CatalogPublication<'a> {
     /// Package coordinate being published.
     pub package: PackageCoordinate<'a>,
-    /// Exact compiler/index authorities.
-    pub authority: IndexLocatorFacts,
-    /// Exact semantic-image identity and extent.
-    pub image: SemanticImageLocator,
+    /// Reopened semantic publication proof carrying authorities and image locator.
+    pub publication: VerifiedSemanticPublication,
     /// Entity locators proved against the reopened image.
     pub entities: &'a [VerifiedCanonicalEntityLocator],
 }
@@ -68,6 +71,16 @@ pub struct CatalogRecord {
 /// Typed failure of opening, publishing, or resolving the durable carrier.
 #[derive(Debug, Error)]
 pub enum CatalogError {
+    /// The caller omitted or added canonical declarations relative to the reopened image.
+    #[error(
+        "catalog entity count differs from reopened image: expected {expected}, observed {observed}"
+    )]
+    EntityCountMismatch {
+        /// Count retained in the semantic publication proof.
+        expected: usize,
+        /// Count supplied to this catalog boundary.
+        observed: usize,
+    },
     /// Underlying Turso operation failed.
     #[error("catalog database: {0}")]
     Database(#[from] turso::Error),
@@ -110,6 +123,50 @@ pub enum CatalogPageOperation<'a> {
     Remove(PackageCoordinate<'a>),
 }
 
+/// One typed source observation retained separately from compiler semantic truth.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeedObservation<'a> {
+    /// Coordinate named by the registry snapshot.
+    pub coordinate: PackageCoordinate<'a>,
+    /// Exact SHA-256 source archive checksum advertised by the registry.
+    pub checksum: FeedContentChecksum,
+    /// Whether the snapshot makes this version materializable (not yanked).
+    pub active: bool,
+}
+
+/// Durable feed observation returned for checksum-aware reconciliation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeedObservationState {
+    /// Package ecosystem.
+    pub ecosystem: String,
+    /// Package name.
+    pub package: String,
+    /// Exact version spelling.
+    pub version: String,
+    /// Registry archive checksum.
+    pub checksum: FeedContentChecksum,
+    /// Whether the source last declared the version active.
+    pub active: bool,
+    /// Snapshot cycle in which this row was observed.
+    pub cycle: u64,
+}
+
+/// Fixed-width content checksum retained as source provenance, never compiler publication truth.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FeedContentChecksum([u8; 32]);
+
+impl FeedContentChecksum {
+    /// Admits the exact 32-byte source checksum selected by the feed protocol.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the exact checksum for source comparison or durable encoding.
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
 /// Exact failure while applying a checkpointed catalog page.
 #[derive(Debug, Error)]
 pub enum CatalogPageError {
@@ -133,6 +190,12 @@ pub enum CatalogPageError {
     /// A caller checkpoint exceeds Turso's signed durable integer width.
     #[error("catalog checkpoint exceeds durable width")]
     CheckpointWidth,
+    /// A feed page attempted to change the durable feed identity.
+    #[error("catalog feed identity changed within a page")]
+    FeedMismatch,
+    /// A caller attempted a cycle/snapshot/offset state transition that cannot be atomic.
+    #[error("catalog feed transition is invalid: {0:?}")]
+    FeedTransition(FeedTransitionFault),
     /// A catalog mutation failed and the transaction was rolled back.
     #[error(transparent)]
     Catalog(#[from] CatalogError),
@@ -157,6 +220,7 @@ impl TursoCatalog {
     pub async fn open(path: &str) -> Result<Self, CatalogError> {
         let database = Builder::new_local(path).build().await?;
         let connection = database.connect()?;
+        connection.execute("PRAGMA foreign_keys=ON", ()).await?;
         connection.execute_batch(schema::INITIALIZE).await?;
         Ok(Self { connection })
     }
@@ -172,11 +236,17 @@ impl TursoCatalog {
         Ok(outcome)
     }
 
-    async fn publish_in(
+    pub(crate) async fn publish_in(
         tx: &turso::transaction::Transaction<'_>,
         publication: CatalogPublication<'_>,
     ) -> Result<CatalogPublishOutcome, CatalogError> {
-        let image = publication.image;
+        let image = publication.publication.image();
+        if publication.entities.len() != publication.publication.entity_count() {
+            return Err(CatalogError::EntityCountMismatch {
+                expected: publication.publication.entity_count(),
+                observed: publication.entities.len(),
+            });
+        }
         for (index, entity) in publication.entities.iter().enumerate() {
             let locator = entity.as_locator();
             if locator.image != image {
@@ -196,7 +266,7 @@ impl TursoCatalog {
             }
         }
         let p = publication.package;
-        let a = publication.authority;
+        let a = publication.publication.authority();
         let params = (
             p.lineage.ecosystem.to_owned(),
             p.lineage.name.to_owned(),

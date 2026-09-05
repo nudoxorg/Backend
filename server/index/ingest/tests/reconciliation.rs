@@ -11,23 +11,29 @@ use server_index_ingest::{
 };
 use server_index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, IndexSnapshotId, PackageCoordinate, PackageVersion,
-    SemanticImageExtent, SemanticImageLocator,
+    SemanticImageExtent, SemanticImageLocator, VerifiedSemanticPublication,
 };
 
-fn image() -> Result<(SemanticImageView<'static>, SemanticImageLocator), String> {
+fn image() -> Result<(&'static SemanticImageView<'static>, SemanticImageLocator), String> {
+    image_with_seed(1)
+}
+
+fn image_with_seed(
+    seed: u8,
+) -> Result<(&'static SemanticImageView<'static>, SemanticImageLocator), String> {
     let mut builder = IrBuilder::new();
     let file = builder
         .intern_atom(b"fixture.rs")
         .map_err(|e| format!("{e:?}"))?;
     let version = EntityVersion {
-        family: DeclarationFamilyId::from_raw([1; 16]),
-        variant: VariantFingerprint::from_raw([2; 16]),
-        core_payload: CorePayloadHash::from_raw([3; 16]),
+        family: DeclarationFamilyId::from_raw([seed; 16]),
+        variant: VariantFingerprint::from_raw([seed.wrapping_add(1); 16]),
+        core_payload: CorePayloadHash::from_raw([seed.wrapping_add(2); 16]),
     };
     let version_two = EntityVersion {
-        family: DeclarationFamilyId::from_raw([4; 16]),
-        variant: VariantFingerprint::from_raw([5; 16]),
-        core_payload: CorePayloadHash::from_raw([6; 16]),
+        family: DeclarationFamilyId::from_raw([seed.wrapping_add(3); 16]),
+        variant: VariantFingerprint::from_raw([seed.wrapping_add(4); 16]),
+        core_payload: CorePayloadHash::from_raw([seed.wrapping_add(5); 16]),
     };
     let item = TreeItemInput {
         name: b"entry",
@@ -66,7 +72,9 @@ fn image() -> Result<(SemanticImageView<'static>, SemanticImageLocator), String>
     let mut bytes = vec![0; length];
     encode_full_semantic_image(&ir, &mut bytes).map_err(|e| format!("{e:?}"))?;
     let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-    let view = SemanticImageView::reopen(leaked).map_err(|e| format!("{e:?}"))?;
+    let view = Box::leak(Box::new(
+        SemanticImageView::reopen(leaked).map_err(|e| format!("{e:?}"))?,
+    ));
     let encoded_len = u32::try_from(view.as_ref().len())
         .map_err(|_| "fixture image exceeds a u32 extent".to_owned())?;
     let locator = SemanticImageLocator::new(
@@ -84,7 +92,40 @@ fn facts() -> IndexLocatorFacts {
     )
 }
 
-fn row<'a>(name: &'a str, image: SemanticImageLocator) -> Result<IngestedVersion<'a, 'a>, String> {
+fn publication(
+    view: &SemanticImageView<'_>,
+    image: SemanticImageLocator,
+    facts: IndexLocatorFacts,
+) -> Result<VerifiedSemanticPublication, String> {
+    VerifiedSemanticPublication::verify_reopened(facts, image, view).map_err(|e| format!("{e:?}"))
+}
+
+fn entities(
+    view: &'static SemanticImageView<'static>,
+    image: SemanticImageLocator,
+) -> Result<&'static [server_index_vocabulary::VerifiedCanonicalEntityLocator], String> {
+    Ok(Box::leak(
+        view.canonical_entities()
+            .enumerate()
+            .map(|(ordinal, entity)| {
+                CanonicalEntityLocator::new(
+                    image,
+                    u32::try_from(ordinal).map_err(|_| "fixture ordinal")?,
+                    entity.version.identity(),
+                )
+                .verify_reopened(view)
+                .map_err(|e| format!("{e:?}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
+fn row<'a>(
+    name: &'a str,
+    view: &'static SemanticImageView<'static>,
+    image: SemanticImageLocator,
+) -> Result<IngestedVersion<'a, 'static>, String> {
     let lineage = compiler_ir::PackageLineage::new("cargo", name).map_err(|e| format!("{e:?}"))?;
     IngestedVersion::new(
         IngestionOrigin::RegistryUpdate,
@@ -92,9 +133,8 @@ fn row<'a>(name: &'a str, image: SemanticImageLocator) -> Result<IngestedVersion
             lineage,
             PackageVersion::new("1").map_err(|e| format!("{e:?}"))?,
         ),
-        facts(),
-        image,
-        &[],
+        publication(view, image, facts())?,
+        entities(view, image)?,
     )
     .map_err(|e| format!("{e:?}"))
 }
@@ -147,7 +187,7 @@ fn canonical_source_entities_and_checkpoint_contracts_hold() -> Result<(), Strin
     }
     let declaration = first.version.identity();
     let verified = CanonicalEntityLocator::new(image, 0, declaration)
-        .verify_reopened(&view)
+        .verify_reopened(view)
         .map_err(|e| format!("{e:?}"))?;
     let declaration_two = view
         .canonical_entities()
@@ -156,49 +196,45 @@ fn canonical_source_entities_and_checkpoint_contracts_hold() -> Result<(), Strin
         .version
         .identity();
     let verified_two = CanonicalEntityLocator::new(image, 1, declaration_two)
-        .verify_reopened(&view)
+        .verify_reopened(view)
         .map_err(|e| format!("{e:?}"))?;
-    let coordinate = row("verified", image)?.coordinate();
+    let coordinate = row("verified", view, image)?.coordinate();
     let reversed = [verified_two, verified];
     if !matches!(
         IngestedVersion::new(
             IngestionOrigin::RemotePull,
             coordinate,
-            facts(),
-            image,
+            publication(view, image, facts())?,
             &reversed
         ),
         Err(IngestedVersionFault::EntityLocatorOutOfOrder { .. })
     ) {
         return Err("reversed locators accepted".into());
     }
-    let verified_entities = [verified];
+    let verified_entities = [verified, verified_two];
     let with_entity = IngestedVersion::new(
         IngestionOrigin::RegistryUpdate,
         coordinate,
-        facts(),
-        image,
+        publication(view, image, facts())?,
         &verified_entities,
     )
     .map_err(|e| format!("{e:?}"))?;
-    if with_entity.entities().len() != 1 {
+    if with_entity.entities().len() != 2 {
         return Err("verified locator was lost".into());
     }
-    let version = row("fixture", image)?;
+    let version = row("fixture", view, image)?;
     let pull = IngestedVersion::new(
         IngestionOrigin::RemotePull,
         version.coordinate(),
-        facts(),
-        image,
-        &[],
+        publication(view, image, facts())?,
+        entities(view, image)?,
     )
     .map_err(|e| format!("{e:?}"))?;
     let scrape = IngestedVersion::new(
         IngestionOrigin::Scrape,
         version.coordinate(),
-        facts(),
-        image,
-        &[],
+        publication(view, image, facts())?,
+        entities(view, image)?,
     )
     .map_err(|e| format!("{e:?}"))?;
     if version.coordinate() != pull.coordinate()
@@ -207,6 +243,20 @@ fn canonical_source_entities_and_checkpoint_contracts_hold() -> Result<(), Strin
         || scrape.origin() != IngestionOrigin::Scrape
     {
         return Err("origins changed typed record".into());
+    }
+    if !matches!(
+        IngestedVersion::new(
+            IngestionOrigin::RegistryUpdate,
+            coordinate,
+            publication(view, image, facts())?,
+            &[],
+        ),
+        Err(IngestedVersionFault::EntityCountMismatch {
+            expected: 2,
+            observed: 0,
+        })
+    ) {
+        return Err("incomplete reopened image was admitted".into());
     }
     let mut output = [ReconciliationOperation::Remove(&version); 1];
     let count = reconcile_into(&[], &[version], &mut output).map_err(|e| format!("{e:?}"))?;
@@ -261,15 +311,14 @@ fn same_image_metadata_drift_rebinds() -> Result<(), String> {
         .version
         .identity();
     let verified = CanonicalEntityLocator::new(image, 0, declaration)
-        .verify_reopened(&view)
+        .verify_reopened(view)
         .map_err(|e| format!("{e:?}"))?;
-    let local = row("metadata", image)?;
+    let local = row("metadata", view, image)?;
     let remote_origin = IngestedVersion::new(
         IngestionOrigin::RemotePull,
         local.coordinate(),
-        facts(),
-        image,
-        &[],
+        publication(view, image, facts())?,
+        entities(view, image)?,
     )
     .map_err(|e| format!("{e:?}"))?;
     let local_rows = [local];
@@ -280,55 +329,37 @@ fn same_image_metadata_drift_rebinds() -> Result<(), String> {
         ReconciliationOperation::Rebind { local, desired }
             if local.origin() == IngestionOrigin::RegistryUpdate
                 && desired.origin() == IngestionOrigin::RemotePull
-                && local.entities().is_empty()
-                && desired.entities().is_empty() => {}
+                && local.entities() == desired.entities() => {}
         _ => return Err("origin-only drift was not rebound".into()),
     }
 
-    let entity_locators = [verified];
-    let with_entity = IngestedVersion::new(
-        IngestionOrigin::RegistryUpdate,
-        local.coordinate(),
-        facts(),
-        image,
-        &entity_locators,
-    )
-    .map_err(|e| format!("{e:?}"))?;
-    let entity_rows = [with_entity];
-    reconcile_into(&local_rows, &entity_rows, &mut output).map_err(|e| format!("{e:?}"))?;
-    match output[0] {
-        ReconciliationOperation::Rebind { local, desired }
-            if local.entities().is_empty()
-                && desired.entities() == entity_locators.as_slice()
-                && desired.origin() == IngestionOrigin::RegistryUpdate => {}
-        _ => return Err("entity-set drift was not rebound".into()),
-    }
+    let _ = verified;
     Ok(())
 }
 
 #[test]
 fn shuffled_sets_are_deterministic_and_replace_images() -> Result<(), String> {
-    let (_, first) = image()?;
-    let second = SemanticImageLocator::new(
-        SemanticImageIdentity::from_encoded_bytes(b"other"),
-        first.extent,
-    );
-    let a = row("a", first)?;
-    let b = row("b", first)?;
-    let c = row("c", first)?;
-    let steady = row("steady", first)?;
-    let replacement = row("a", second)?;
-    let d = row("d", first)?;
+    let (view, first) = image()?;
+    let (second_view, second) = image_with_seed(9)?;
+    let a = row("a", view, first)?;
+    let b = row("b", view, first)?;
+    let c = row("c", view, first)?;
+    let steady = row("steady", view, first)?;
+    let replacement = row("a", second_view, second)?;
+    let d = row("d", view, first)?;
     let rebind = IngestedVersion::new(
         IngestionOrigin::Scrape,
         b.coordinate(),
-        IndexLocatorFacts::new(
-            GenerationId::from_canonical_bytes(b"new-generation"),
-            IndexSnapshotId::from_canonical_bytes(b"snapshot"),
-            ContentId::<CompilePublicationDomain>::from_canonical_bytes(b"publication"),
-        ),
-        first,
-        &[],
+        publication(
+            view,
+            first,
+            IndexLocatorFacts::new(
+                GenerationId::from_canonical_bytes(b"new-generation"),
+                IndexSnapshotId::from_canonical_bytes(b"snapshot"),
+                ContentId::<CompilePublicationDomain>::from_canonical_bytes(b"publication"),
+            ),
+        )?,
+        entities(view, first)?,
     )
     .map_err(|e| format!("{e:?}"))?;
     let local = [c, a, b, steady];
@@ -365,6 +396,7 @@ fn shuffled_sets_are_deterministic_and_replace_images() -> Result<(), String> {
 #[test]
 fn verified_locator_admission_rejects_cross_image_and_duplicates() -> Result<(), String> {
     let (view, image) = image()?;
+    let (wrong_view, wrong) = image_with_seed(9)?;
     let declaration = view
         .canonical_entities()
         .next()
@@ -372,20 +404,15 @@ fn verified_locator_admission_rejects_cross_image_and_duplicates() -> Result<(),
         .version
         .identity();
     let verified = CanonicalEntityLocator::new(image, 0, declaration)
-        .verify_reopened(&view)
+        .verify_reopened(view)
         .map_err(|e| format!("{e:?}"))?;
-    let coordinate = row("x", image)?.coordinate();
-    let wrong = SemanticImageLocator::new(
-        SemanticImageIdentity::from_encoded_bytes(b"wrong"),
-        image.extent,
-    );
+    let coordinate = row("x", view, image)?.coordinate();
     if !matches!(
         IngestedVersion::new(
             IngestionOrigin::Scrape,
             coordinate,
-            facts(),
-            wrong,
-            &[verified]
+            publication(wrong_view, wrong, facts())?,
+            entities(view, image)?
         ),
         Err(IngestedVersionFault::EntityImageMismatch)
     ) {
@@ -395,15 +422,14 @@ fn verified_locator_admission_rejects_cross_image_and_duplicates() -> Result<(),
         IngestedVersion::new(
             IngestionOrigin::RemotePull,
             coordinate,
-            facts(),
-            image,
+            publication(view, image, facts())?,
             &[verified, verified]
         ),
         Err(IngestedVersionFault::DuplicateDeclaration(_))
     ) {
         return Err("duplicate accepted".into());
     }
-    let duplicate = row("x", image)?;
+    let duplicate = row("x", view, image)?;
     let mut output = [ReconciliationOperation::Remove(&duplicate); 1];
     let before = output;
     let duplicated_rows = [duplicate, duplicate];

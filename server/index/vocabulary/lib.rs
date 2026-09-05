@@ -146,6 +146,85 @@ pub struct SemanticImageLocator {
     /// Exact image location in its immutable publication artifact.
     pub extent: SemanticImageExtent,
 }
+
+/// A semantic image locator proved against bytes accepted by `SemanticImageView::reopen`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VerifiedSemanticImageLocator(SemanticImageLocator);
+
+/// Exact failure while binding a locator to reopened semantic-image bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerifiedSemanticImageLocatorFault {
+    /// Reopened bytes hash to another semantic-image identity.
+    Identity,
+    /// Reopened bytes have another exact encoded byte extent.
+    Extent,
+}
+
+impl SemanticImageLocator {
+    /// Proves this locator against an already reopened full semantic image.
+    pub fn verify_reopened(
+        self,
+        image: &SemanticImageView<'_>,
+    ) -> Result<VerifiedSemanticImageLocator, VerifiedSemanticImageLocatorFault> {
+        if self.identity != SemanticImageIdentity::from_encoded_bytes(image.as_ref()) {
+            return Err(VerifiedSemanticImageLocatorFault::Identity);
+        }
+        if usize::try_from(self.extent.byte_length()).ok() != Some(image.as_ref().len()) {
+            return Err(VerifiedSemanticImageLocatorFault::Extent);
+        }
+        Ok(VerifiedSemanticImageLocator(self))
+    }
+}
+
+impl VerifiedSemanticImageLocator {
+    /// Returns the proven semantic-image locator for durable encoding.
+    pub const fn as_locator(self) -> SemanticImageLocator {
+        self.0
+    }
+}
+
+/// Compiler/index authorities bound to a semantic image proved by reopening its bytes.
+///
+/// ```compile_fail
+/// use server_index_vocabulary::{SemanticImageLocator, VerifiedSemanticPublication};
+///
+/// fn bypass(image: SemanticImageLocator) -> VerifiedSemanticPublication {
+///     image
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VerifiedSemanticPublication {
+    authority: IndexLocatorFacts,
+    image: VerifiedSemanticImageLocator,
+    entity_count: usize,
+}
+
+impl VerifiedSemanticPublication {
+    /// Binds immutable authorities only after proving the image locator against reopened bytes.
+    pub fn verify_reopened(
+        authority: IndexLocatorFacts,
+        image: SemanticImageLocator,
+        reopened: &SemanticImageView<'_>,
+    ) -> Result<Self, VerifiedSemanticImageLocatorFault> {
+        Ok(Self {
+            authority,
+            image: image.verify_reopened(reopened)?,
+            entity_count: reopened.canonical_entities().len(),
+        })
+    }
+    /// Returns the immutable compiler/index authorities.
+    pub const fn authority(self) -> IndexLocatorFacts {
+        self.authority
+    }
+    /// Returns the semantic-image locator proved against reopened bytes.
+    pub const fn image(self) -> SemanticImageLocator {
+        self.image.as_locator()
+    }
+    /// Returns the exact count of canonical declarations admitted in the reopened image.
+    pub const fn entity_count(self) -> usize {
+        self.entity_count
+    }
+}
 impl SemanticImageLocator {
     /// Pairs a typed image authority with its checked extent.
     pub const fn new(identity: SemanticImageIdentity, extent: SemanticImageExtent) -> Self {
@@ -234,8 +313,8 @@ impl CanonicalEntityLocator {
         if u32::try_from(image.as_ref().len()).ok() != Some(self.image.extent.byte_length) {
             return Err(CanonicalEntityLocatorFault::ImageExtent);
         }
-        let ordinal = usize::try_from(self.ordinal)
-            .map_err(|_| CanonicalEntityLocatorFault::Ordinal)?;
+        let ordinal =
+            usize::try_from(self.ordinal).map_err(|_| CanonicalEntityLocatorFault::Ordinal)?;
         let entity = image
             .canonical_entities()
             .nth(ordinal)
