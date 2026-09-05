@@ -109,6 +109,12 @@ pub trait CompilerCapability {
     /// Reports whether this concrete service specialization owns a local compiler capability.
     fn readiness(&self) -> CompilerReadiness;
 
+    /// Requests cancellation of the currently admitted compile, if this capability owns one.
+    ///
+    /// Synchronous implementations and unavailable capabilities have no detached request and may
+    /// keep the default no-op behavior.
+    fn cancel_active(&self) {}
+
     /// Compiles, validates, and durably publishes one bounded source request.
     ///
     /// # Errors
@@ -152,7 +158,25 @@ pub enum CompilerRuntimeCause {
     /// The compiler owner stopped after admission but before returning a terminal result.
     ResponseOwnerStopped,
     /// The compiler owner panicked while executing this exact request.
-    WorkerPanic(NativeWorkerPanic),
+    WorkerPanic(CompilerRuntimePanic),
+}
+
+/// Exact bounded panic payload retained from the single compiler owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerRuntimePanic {
+    /// Closed supported payload category.
+    pub class: NativeWorkerPanicClass,
+    /// Exact bounded UTF-8 payload prefix.
+    pub message: NativeWorkerPanicMessage,
+}
+
+impl CompilerRuntimePanic {
+    /// Captures a compiler-owner unwind payload without erasing supported text.
+    #[must_use]
+    pub fn capture(payload: &(dyn core::any::Any + Send)) -> Self {
+        let (class, message) = NativeWorkerPanic::capture_payload(payload);
+        Self { class, message }
+    }
 }
 
 /// Portable specialization with no linked compiler or publication dependencies.

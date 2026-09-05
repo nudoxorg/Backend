@@ -601,13 +601,10 @@ fn package_authority_terminal(
             target,
             phase: PackageCompilePhase::Authority,
         },
-        PackageAuthorityError::AdapterUnavailable { .. }
-        | PackageAuthorityError::CSharpProducerUnavailable { .. } => {
-            CompilerTerminal::Unavailable {
-                language: request.profile.language(),
-                stage: request.stage,
-            }
-        }
+        PackageAuthorityError::AdapterUnavailable { .. } => CompilerTerminal::Unavailable {
+            language: request.profile.language(),
+            stage: request.stage,
+        },
         PackageAuthorityError::ToolchainUnavailable { tool, .. } => CompilerTerminal::Toolchain {
             source,
             language: request.profile.language(),
@@ -690,16 +687,14 @@ const fn package_authority_projection(
         PackageAuthorityError::RustProject(_) | PackageAuthorityError::GoOracle(_) => {
             (Phase::Resolve, Class::Authority)
         }
+        PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }
         | PackageAuthorityError::Deadline { .. }
-        | PackageAuthorityError::AdapterUnavailable { .. }
-        | PackageAuthorityError::CSharpProducerUnavailable { .. } => {
-            (Phase::Open, Class::Authority)
-        }
+        | PackageAuthorityError::AdapterUnavailable { .. } => (Phase::Open, Class::Authority),
     }
 }
 

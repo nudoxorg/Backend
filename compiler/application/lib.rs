@@ -14,10 +14,10 @@ mod terminal;
 pub use compiler::LocalCompiler;
 pub use config::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch, LocalCompilerScratchError,
-    LocalCompilerTimeout, LocalCompilerTimeoutError, LocalPackageRoot, LocalPackageRootError, LocalPackageRootFacts,
-    LocalPackageRootSet, LocalPackageRootSetError, LocalToolchainSet, LocalToolchainSetError,
-    MAX_FRAGMENT_OUTPUT_BYTES, MAX_LOCAL_COMPILER_TIMEOUT, MAX_LOCAL_PACKAGE_ROOTS,
-    MAX_LOCAL_TOOLCHAINS, MAX_LOCALITY_OUTPUT_BYTES, MAX_MANIFEST_ENTRIES,
+    LocalCompilerTimeout, LocalCompilerTimeoutError, LocalPackageRoot, LocalPackageRootError,
+    LocalPackageRootFacts, LocalPackageRootSet, LocalPackageRootSetError, LocalToolchainSet,
+    LocalToolchainSetError, MAX_FRAGMENT_OUTPUT_BYTES, MAX_LOCAL_COMPILER_TIMEOUT,
+    MAX_LOCAL_PACKAGE_ROOTS, MAX_LOCAL_TOOLCHAINS, MAX_LOCALITY_OUTPUT_BYTES, MAX_MANIFEST_ENTRIES,
     MAX_MANIFEST_OUTPUT_BYTES,
 };
 pub use documentation::{
@@ -28,16 +28,17 @@ pub use documentation::{
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
 };
 pub use package_authority::{
-    JavaPackageAuthorityConfiguration, PackageAuthorityConfiguration, PackageAuthorityError,
-    PackageAuthorityOwner, PackageAuthorityRequest, PackageAuthorityStage,
-    RustPackageAuthorityConfiguration, enter_package_authority,
+    CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration,
+    PackageAuthorityConfiguration, PackageAuthorityError, PackageAuthorityOwner,
+    PackageAuthorityRequest, PackageAuthorityStage, RustPackageAuthorityConfiguration,
+    enter_package_authority,
 };
 pub use package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub use runtime::{
-    LocalCompilerClient, LocalCompilerRuntimeConfiguration,
-    LocalCompilerRuntimeConfigurationError, LocalCompilerRuntimeOpenError,
-    LocalCompilerRuntimePaths, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimeRustAuthority,
-    LocalRuntimeToolchain, LocalRuntimeToolchainFacts,
+    LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
+    LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
+    LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority, LocalRuntimePackageRoot,
+    LocalRuntimePackageRootFacts, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimeToolchainFacts,
 };
 pub use terminal::{LocalCompilerOpenError, LocalCompilerPath};

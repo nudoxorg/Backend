@@ -1,20 +1,40 @@
 //! Exercises the `interface-protocol` tests support compiler terminal contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use interface_core::{
-    CompilerCause, CompilerDiagnostic, CompilerTerminal, FragmentCause, LoweringUnsupported,
+    CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, FragmentCause,
+    LoweringUnsupported, PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem,
+    PackagePathComponentError, PackageSourceCause, PackageSourceIoPhase, PackageTextRange,
 };
 use serde::Deserialize;
 
 use super::authority::GoldenSourceAuthority;
-use super::native::{GoldenNativeIoFact, GoldenNativeIoPhase, GoldenNativeWorkCause};
+use super::native::{
+    GoldenErrorKind, GoldenNativeIoFact, GoldenNativeIoPhase, GoldenNativeWorkCause,
+    GoldenNativeWorkerPanicClass, GoldenNativeWorkerPanicMessage,
+};
 use super::publication::GoldenPublicationCause;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum GoldenCompilerTerminal {
+    PackageSource {
+        target: String,
+        phase: GoldenPackageCompilePhase,
+        cause: GoldenPackageSourceCause,
+    },
+    PackageCancelled {
+        target: String,
+        phase: GoldenPackageCompilePhase,
+    },
+    Runtime {
+        language: super::authority::GoldenLanguage,
+        stage: super::authority::GoldenStage,
+        target: Option<String>,
+        cause: GoldenCompilerRuntimeCause,
+    },
     SourceLength {
         actual: usize,
     },
@@ -57,6 +77,139 @@ pub(crate) enum GoldenCompilerTerminal {
     Publication {
         attempted: GoldenCompilerAttempt,
         cause: GoldenPublicationCause,
+    },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPackageCompilePhase {
+    Locate,
+    EnterSource,
+    Authority,
+    Lower,
+    Publish,
+    Reopen,
+    Discover,
+    Render,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPackageEcosystem {
+    Cargo,
+    Npm,
+    Pypi,
+    Golang,
+    Maven,
+    Nuget,
+    Generic,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct GoldenPackageTextRange {
+    pub start: u16,
+    pub end: u16,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPackagePathComponentError {
+    Traversal,
+    EncodedSeparator,
+    InvalidUtf8,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPackageDeclarationScopeCause {
+    EmptyEcosystem,
+    EmptyPackage,
+    EcosystemSeparator,
+    PackageSeparator,
+    LineageBackslash { segment: u8 },
+    EmptySourcePath,
+    SourceBackslash,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenPackageSourceIoPhase {
+    CanonicalizeStore,
+    EnumerateRegistry,
+    CanonicalizePackage,
+    CanonicalizeSource,
+    SourceMetadata,
+    ReadSource,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct GoldenPackageSourceIoFact {
+    pub kind: GoldenErrorKind,
+    pub raw_os_code: Option<i32>,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum GoldenPackageSourceCause {
+    RootUnavailable {
+        ecosystem: GoldenPackageEcosystem,
+    },
+    SubpathRequired {
+        ecosystem: GoldenPackageEcosystem,
+    },
+    InvalidComponent {
+        range: GoldenPackageTextRange,
+        cause: GoldenPackagePathComponentError,
+    },
+    DeclarationScope {
+        cause: GoldenPackageDeclarationScopeCause,
+    },
+    InvalidUtf8 {
+        valid_up_to: usize,
+        error_len: Option<u8>,
+    },
+    PackageUnavailable {
+        path: PathBuf,
+    },
+    PackageEscapesStore {
+        store: PathBuf,
+        package: PathBuf,
+    },
+    SourceUnavailable {
+        path: PathBuf,
+    },
+    SourceEscapesPackage {
+        package: PathBuf,
+        source: PathBuf,
+    },
+    SourceTooLarge {
+        observed: u64,
+        maximum: u64,
+    },
+    Io {
+        phase: GoldenPackageSourceIoPhase,
+        path: PathBuf,
+        source: GoldenPackageSourceIoFact,
+    },
+    RegistryNamespaceCapacity {
+        observed: usize,
+        maximum: usize,
+    },
+    RegistryNamespaceAmbiguous {
+        first: PathBuf,
+        second: PathBuf,
+    },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum GoldenCompilerRuntimeCause {
+    RequestInFlight,
+    RequestOwnerStopped,
+    ResponseOwnerStopped,
+    WorkerPanic {
+        class: GoldenNativeWorkerPanicClass,
+        message: GoldenNativeWorkerPanicMessage,
     },
 }
 
@@ -178,6 +331,30 @@ pub(crate) struct GoldenCompilerDiagnostic {
 impl From<CompilerTerminal> for GoldenCompilerTerminal {
     fn from(terminal: CompilerTerminal) -> Self {
         match terminal {
+            CompilerTerminal::PackageSource {
+                target,
+                phase,
+                cause,
+            } => Self::PackageSource {
+                target: target.to_string(),
+                phase: phase.into(),
+                cause: cause.into(),
+            },
+            CompilerTerminal::PackageCancelled { target, phase } => Self::PackageCancelled {
+                target: target.to_string(),
+                phase: phase.into(),
+            },
+            CompilerTerminal::Runtime {
+                language,
+                stage,
+                target,
+                cause,
+            } => Self::Runtime {
+                language: language.into(),
+                stage: stage.into(),
+                target: target.map(|target| target.to_string()),
+                cause: cause.into(),
+            },
             CompilerTerminal::SourceLength { actual } => Self::SourceLength { actual },
             CompilerTerminal::Unavailable { language, stage } => Self::Unavailable {
                 language: language.into(),
@@ -241,6 +418,166 @@ impl From<CompilerTerminal> for GoldenCompilerTerminal {
             CompilerTerminal::Publication { attempted, cause } => Self::Publication {
                 attempted: attempted.into(),
                 cause: cause.into(),
+            },
+        }
+    }
+}
+
+impl From<PackageCompilePhase> for GoldenPackageCompilePhase {
+    fn from(phase: PackageCompilePhase) -> Self {
+        match phase {
+            PackageCompilePhase::Locate => Self::Locate,
+            PackageCompilePhase::EnterSource => Self::EnterSource,
+            PackageCompilePhase::Authority => Self::Authority,
+            PackageCompilePhase::Lower => Self::Lower,
+            PackageCompilePhase::Publish => Self::Publish,
+            PackageCompilePhase::Reopen => Self::Reopen,
+            PackageCompilePhase::Discover => Self::Discover,
+            PackageCompilePhase::Render => Self::Render,
+        }
+    }
+}
+
+impl From<PackageEcosystem> for GoldenPackageEcosystem {
+    fn from(ecosystem: PackageEcosystem) -> Self {
+        match ecosystem {
+            PackageEcosystem::Cargo => Self::Cargo,
+            PackageEcosystem::Npm => Self::Npm,
+            PackageEcosystem::Pypi => Self::Pypi,
+            PackageEcosystem::Golang => Self::Golang,
+            PackageEcosystem::Maven => Self::Maven,
+            PackageEcosystem::Nuget => Self::Nuget,
+            PackageEcosystem::Generic => Self::Generic,
+        }
+    }
+}
+
+impl From<PackageTextRange> for GoldenPackageTextRange {
+    fn from(range: PackageTextRange) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+impl From<PackagePathComponentError> for GoldenPackagePathComponentError {
+    fn from(cause: PackagePathComponentError) -> Self {
+        match cause {
+            PackagePathComponentError::Traversal => Self::Traversal,
+            PackagePathComponentError::EncodedSeparator => Self::EncodedSeparator,
+            PackagePathComponentError::InvalidUtf8 => Self::InvalidUtf8,
+        }
+    }
+}
+
+impl From<PackageDeclarationScopeCause> for GoldenPackageDeclarationScopeCause {
+    fn from(cause: PackageDeclarationScopeCause) -> Self {
+        match cause {
+            PackageDeclarationScopeCause::EmptyEcosystem => Self::EmptyEcosystem,
+            PackageDeclarationScopeCause::EmptyPackage => Self::EmptyPackage,
+            PackageDeclarationScopeCause::EcosystemSeparator => Self::EcosystemSeparator,
+            PackageDeclarationScopeCause::PackageSeparator => Self::PackageSeparator,
+            PackageDeclarationScopeCause::LineageBackslash { segment } => {
+                Self::LineageBackslash { segment }
+            }
+            PackageDeclarationScopeCause::EmptySourcePath => Self::EmptySourcePath,
+            PackageDeclarationScopeCause::SourceBackslash => Self::SourceBackslash,
+        }
+    }
+}
+
+impl From<PackageSourceIoPhase> for GoldenPackageSourceIoPhase {
+    fn from(phase: PackageSourceIoPhase) -> Self {
+        match phase {
+            PackageSourceIoPhase::CanonicalizeStore => Self::CanonicalizeStore,
+            PackageSourceIoPhase::EnumerateRegistry => Self::EnumerateRegistry,
+            PackageSourceIoPhase::CanonicalizePackage => Self::CanonicalizePackage,
+            PackageSourceIoPhase::CanonicalizeSource => Self::CanonicalizeSource,
+            PackageSourceIoPhase::SourceMetadata => Self::SourceMetadata,
+            PackageSourceIoPhase::ReadSource => Self::ReadSource,
+        }
+    }
+}
+
+impl From<PackageSourceCause> for GoldenPackageSourceCause {
+    fn from(cause: PackageSourceCause) -> Self {
+        match cause {
+            PackageSourceCause::RootUnavailable { ecosystem } => Self::RootUnavailable {
+                ecosystem: ecosystem.into(),
+            },
+            PackageSourceCause::SubpathRequired { ecosystem } => Self::SubpathRequired {
+                ecosystem: ecosystem.into(),
+            },
+            PackageSourceCause::InvalidComponent { range, cause } => Self::InvalidComponent {
+                range: range.into(),
+                cause: cause.into(),
+            },
+            PackageSourceCause::DeclarationScope { cause } => Self::DeclarationScope {
+                cause: cause.into(),
+            },
+            PackageSourceCause::InvalidUtf8 {
+                valid_up_to,
+                error_len,
+            } => Self::InvalidUtf8 {
+                valid_up_to,
+                error_len,
+            },
+            PackageSourceCause::PackageUnavailable { path } => Self::PackageUnavailable {
+                path: path.into_path_buf(),
+            },
+            PackageSourceCause::PackageEscapesStore { store, package } => {
+                Self::PackageEscapesStore {
+                    store: store.into_path_buf(),
+                    package: package.into_path_buf(),
+                }
+            }
+            PackageSourceCause::SourceUnavailable { path } => Self::SourceUnavailable {
+                path: path.into_path_buf(),
+            },
+            PackageSourceCause::SourceEscapesPackage { package, source } => {
+                Self::SourceEscapesPackage {
+                    package: package.into_path_buf(),
+                    source: source.into_path_buf(),
+                }
+            }
+            PackageSourceCause::SourceTooLarge { observed, maximum } => {
+                Self::SourceTooLarge { observed, maximum }
+            }
+            PackageSourceCause::Io {
+                phase,
+                path,
+                source,
+            } => Self::Io {
+                phase: phase.into(),
+                path: path.into_path_buf(),
+                source: GoldenPackageSourceIoFact {
+                    kind: source.kind.into(),
+                    raw_os_code: source.raw_os_code,
+                },
+            },
+            PackageSourceCause::RegistryNamespaceCapacity { observed, maximum } => {
+                Self::RegistryNamespaceCapacity { observed, maximum }
+            }
+            PackageSourceCause::RegistryNamespaceAmbiguous { first, second } => {
+                Self::RegistryNamespaceAmbiguous {
+                    first: first.into_path_buf(),
+                    second: second.into_path_buf(),
+                }
+            }
+        }
+    }
+}
+
+impl From<CompilerRuntimeCause> for GoldenCompilerRuntimeCause {
+    fn from(cause: CompilerRuntimeCause) -> Self {
+        match cause {
+            CompilerRuntimeCause::RequestInFlight => Self::RequestInFlight,
+            CompilerRuntimeCause::RequestOwnerStopped => Self::RequestOwnerStopped,
+            CompilerRuntimeCause::ResponseOwnerStopped => Self::ResponseOwnerStopped,
+            CompilerRuntimeCause::WorkerPanic(panic) => Self::WorkerPanic {
+                class: panic.class.into(),
+                message: panic.message.into(),
             },
         }
     }

@@ -18,6 +18,7 @@ use std::{
 
 use arrayvec::ArrayVec;
 use compiler_driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use compiler_languages_csharp::{CSharpAuthorityConfiguration, CSharpOracle};
 use compiler_languages_go::GoOracle;
 use compiler_languages_java::harness::JdkToolchain;
 use compiler_languages_python::Pyrefly;
@@ -33,11 +34,12 @@ use server_journal::PublicationLimits;
 use thiserror::Error;
 
 use crate::{
-    JavaPackageAuthorityConfiguration, LocalCompiler, LocalCompilerConfig, LocalCompilerControl,
-    LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch, LocalCompilerTimeout,
-    LocalPackageRoot, LocalPackageRootError, LocalPackageRootSet, LocalPackageRootSetError,
-    LocalToolchainSet, LocalToolchainSetError, MAX_LOCAL_PACKAGE_ROOTS, MAX_LOCAL_TOOLCHAINS,
-    PackageAuthorityConfiguration, RustPackageAuthorityConfiguration,
+    CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration, LocalCompiler,
+    LocalCompilerConfig, LocalCompilerControl, LocalCompilerOpenError, LocalCompilerPath,
+    LocalCompilerScratch, LocalCompilerTimeout, LocalPackageRoot, LocalPackageRootError,
+    LocalPackageRootSet, LocalPackageRootSetError, LocalToolchainSet, LocalToolchainSetError,
+    MAX_LOCAL_PACKAGE_ROOTS, MAX_LOCAL_TOOLCHAINS, PackageAuthorityConfiguration,
+    RustPackageAuthorityConfiguration,
 };
 
 /// Exact owned storage paths retained by the compiler worker.
@@ -216,6 +218,27 @@ pub struct LocalRuntimeJavaAuthority {
     pub classpath: Box<[Box<Path>]>,
 }
 
+/// Owned Roslyn helper policy retained for the compiler worker lifetime.
+#[derive(Debug)]
+pub struct LocalRuntimeCSharpAuthority {
+    /// Producer bound to the exact published helper assembly.
+    pub producer: CSharpOracle,
+    /// Optional assembly name forwarded to Roslyn.
+    pub assembly_name: Option<Box<str>>,
+    /// Optional reference-assembly directory forwarded to Roslyn.
+    pub reference_directory: Option<Box<Path>>,
+    /// Additional preprocessor symbols, in caller order.
+    pub define_symbols: Box<[Box<str>]>,
+    /// Additional global usings, in caller order.
+    pub extra_usings: Box<[Box<str>]>,
+    /// Whether SDK-style implicit global usings are reconstructed.
+    pub implicit_usings: bool,
+    /// Whether non-public declarations are retained by Roslyn.
+    pub include_non_public: bool,
+    /// Maximum exact source bytes admitted before helper entry.
+    pub maximum_source_bytes: usize,
+}
+
 /// Owned language-authority adapters for package compilation.
 #[derive(Debug, Default)]
 pub struct LocalRuntimePackageAuthority {
@@ -227,6 +250,8 @@ pub struct LocalRuntimePackageAuthority {
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
     pub go: Option<GoOracle>,
+    /// C# Roslyn helper authority.
+    pub csharp: Option<LocalRuntimeCSharpAuthority>,
     /// Java JDK/doclet authority.
     pub java: Option<LocalRuntimeJavaAuthority>,
     /// Exact maximum retained Go or Java authority image bytes.
@@ -321,8 +346,8 @@ pub enum LocalCompilerRuntimeOpenError {
     #[error("local compiler owner stopped during setup")]
     StartupOwnerStopped,
     /// The compiler owner panicked during setup and retained its bounded payload.
-    #[error("local compiler owner panicked during setup: {0}")]
-    WorkerPanic(interface_core::NativeWorkerPanic),
+    #[error("local compiler owner panicked during setup: {0:?}")]
+    WorkerPanic(interface_core::CompilerRuntimePanic),
 }
 
 /// Cloneable, bounded client for one single-owner local compiler runtime.
@@ -377,10 +402,7 @@ impl LocalCompilerClient {
                 match worker.join() {
                     Ok(()) => Err(LocalCompilerRuntimeOpenError::StartupOwnerStopped),
                     Err(payload) => Err(LocalCompilerRuntimeOpenError::WorkerPanic(
-                        interface_core::NativeWorkerPanic::capture(
-                            interface_core::NativeWorker::CompilerOwner,
-                            payload.as_ref(),
-                        ),
+                        interface_core::CompilerRuntimePanic::capture(payload.as_ref()),
                     )),
                 }
             }
@@ -439,6 +461,10 @@ impl CompilerCapability for LocalCompilerClient {
         } else {
             CompilerReadiness::Unavailable
         }
+    }
+
+    fn cancel_active(&self) {
+        Self::cancel_active(self);
     }
 
     fn generate(
@@ -629,6 +655,28 @@ fn run_worker(
             .map(AsRef::as_ref)
             .collect::<Vec<&Path>>()
     });
+    let csharp_define_storage = configuration
+        .package_authority
+        .csharp
+        .as_ref()
+        .map(|csharp| {
+            csharp
+                .define_symbols
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>()
+        });
+    let csharp_using_storage = configuration
+        .package_authority
+        .csharp
+        .as_ref()
+        .map(|csharp| {
+            csharp
+                .extra_usings
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>()
+        });
     let rust = configuration.package_authority.rust.as_ref().map(|rust| {
         RustPackageAuthorityConfiguration {
             toolchain: &rust.toolchain,
@@ -646,11 +694,28 @@ fn run_worker(
             classpath: java_classpath_storage.as_deref().unwrap_or_default(),
         }
     });
+    let csharp = configuration
+        .package_authority
+        .csharp
+        .as_ref()
+        .map(|csharp| CSharpPackageAuthorityConfiguration {
+            producer: &csharp.producer,
+            configuration: CSharpAuthorityConfiguration {
+                assembly_name: csharp.assembly_name.as_deref(),
+                reference_directory: csharp.reference_directory.as_deref(),
+                define_symbols: csharp_define_storage.as_deref().unwrap_or_default(),
+                extra_usings: csharp_using_storage.as_deref().unwrap_or_default(),
+                implicit_usings: csharp.implicit_usings,
+                include_non_public: csharp.include_non_public,
+                maximum_source_bytes: csharp.maximum_source_bytes,
+            },
+        });
     let authority = PackageAuthorityConfiguration {
         typescript: configuration.package_authority.typescript.as_ref(),
         python: configuration.package_authority.python.as_ref(),
         rust,
         go: configuration.package_authority.go.as_ref(),
+        csharp,
         java,
         maximum_image_bytes: configuration
             .package_authority
@@ -714,10 +779,7 @@ fn run_worker(
                 let _ = command.response.send(RuntimeEvent::Complete(result));
             }
             Err(payload) => {
-                let cause = interface_core::NativeWorkerPanic::capture(
-                    interface_core::NativeWorker::CompilerOwner,
-                    payload.as_ref(),
-                );
+                let cause = interface_core::CompilerRuntimePanic::capture(payload.as_ref());
                 let _ = command.response.send(RuntimeEvent::Complete(Err(
                     facts.terminal(CompilerRuntimeCause::WorkerPanic(cause))
                 )));
@@ -736,10 +798,7 @@ fn join_failed_start(
     match worker.join() {
         Ok(()) => Err(error),
         Err(payload) => Err(LocalCompilerRuntimeOpenError::WorkerPanic(
-            interface_core::NativeWorkerPanic::capture(
-                interface_core::NativeWorker::CompilerOwner,
-                payload.as_ref(),
-            ),
+            interface_core::CompilerRuntimePanic::capture(payload.as_ref()),
         )),
     }
 }

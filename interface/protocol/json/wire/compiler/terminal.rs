@@ -8,17 +8,20 @@ use compiler_vocabulary::{
     JavaProjectionText, Language, LoweringUnsupported, NativeTool, Stage,
 };
 use interface_core::{
-    CompilerAttempt, CompilerCause, CompilerDiagnostic, FragmentCause, PublicationCause,
-    SourceAuthority,
+    CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, FragmentCause,
+    PackageCompilePhase, PackageSourceCause, PublicationCause, SourceAuthority,
 };
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use super::super::scalar::{
     AuthorityDiagnosticClassWire, AuthorityPhaseWire, LanguageWire, NativeToolWire, StageWire,
+    serialize_content,
 };
 use super::authority::{CompilerAttemptWire, SourceAuthorityWire};
 use super::native::{NativeIoFactRef, NativeIoPhaseRef, NativeWorkCauseWire};
+use super::package::{CompilerRuntimeCauseWire, PackageCompilePhaseWire, PackageSourceCauseWire};
 use super::publication::serialize_publication_cause;
+use heart_identity::{CompilationTargetDomain, ContentId};
 
 /// Remote serde definition for the closed compiler terminal.
 ///
@@ -32,6 +35,30 @@ use super::publication::serialize_publication_cause;
     rename_all = "snake_case"
 )]
 pub(crate) enum CompilerTerminalWire {
+    PackageSource {
+        #[serde(serialize_with = "serialize_content")]
+        target: ContentId<CompilationTargetDomain>,
+        #[serde(with = "PackageCompilePhaseWire")]
+        phase: PackageCompilePhase,
+        #[serde(with = "PackageSourceCauseWire")]
+        cause: PackageSourceCause,
+    },
+    PackageCancelled {
+        #[serde(serialize_with = "serialize_content")]
+        target: ContentId<CompilationTargetDomain>,
+        #[serde(with = "PackageCompilePhaseWire")]
+        phase: PackageCompilePhase,
+    },
+    Runtime {
+        #[serde(with = "LanguageWire")]
+        language: Language,
+        #[serde(with = "StageWire")]
+        stage: Stage,
+        #[serde(serialize_with = "serialize_optional_target")]
+        target: Option<ContentId<CompilationTargetDomain>>,
+        #[serde(with = "CompilerRuntimeCauseWire")]
+        cause: CompilerRuntimeCause,
+    },
     SourceLength {
         actual: usize,
     },
@@ -98,6 +125,16 @@ pub(crate) enum CompilerTerminalWire {
         #[serde(serialize_with = "serialize_publication_cause")]
         cause: PublicationCause,
     },
+}
+
+fn serialize_optional_target<Output: Serializer>(
+    target: &Option<ContentId<CompilationTargetDomain>>,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    match target {
+        Some(target) => serialize_content(target, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// Closed lowering vocabulary projected as the value of a named `cause` field.

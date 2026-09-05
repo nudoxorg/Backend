@@ -271,8 +271,6 @@ pub struct InvalidUtf8Fact {
 /// Closed worker identity retained when a scoped native I/O worker panics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeWorker {
-    /// The single compiler owner executing an admitted application request.
-    CompilerOwner,
     /// The worker sending exact source through native standard input.
     SourceWriter,
     /// The worker draining native standard output into the bounded diagnostic lease.
@@ -324,6 +322,19 @@ impl NativeWorkerPanic {
     /// complete message.
     #[must_use]
     pub fn capture(worker: NativeWorker, payload: &(dyn core::any::Any + Send)) -> Self {
+        let (class, message) = Self::capture_payload(payload);
+        Self {
+            worker,
+            class,
+            message,
+        }
+    }
+
+    /// Captures only the bounded payload facts for a typed non-native worker owner.
+    #[must_use]
+    pub fn capture_payload(
+        payload: &(dyn core::any::Any + Send),
+    ) -> (NativeWorkerPanicClass, NativeWorkerPanicMessage) {
         let (class, message) = if let Some(message) = payload.downcast_ref::<&'static str>() {
             (NativeWorkerPanicClass::StaticMessage, *message)
         } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -337,15 +348,14 @@ impl NativeWorkerPanic {
         }
         let mut bytes = [0_u8; MAX_NATIVE_WORKER_PANIC_BYTES];
         bytes[..retained].copy_from_slice(&message.as_bytes()[..retained]);
-        Self {
-            worker,
+        (
             class,
-            message: NativeWorkerPanicMessage {
+            NativeWorkerPanicMessage {
                 bytes,
                 byte_len: retained,
                 truncated: message.len() > retained,
             },
-        }
+        )
     }
 }
 

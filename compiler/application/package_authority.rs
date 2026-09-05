@@ -11,6 +11,10 @@ use std::{path::Path, sync::atomic::Ordering, time::Instant};
 use compiler_driver::{
     CompileControl, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
 };
+use compiler_languages_csharp::{
+    CSharpAuthorityConfiguration, CSharpAuthorityControl, CSharpAuthorityError,
+    CSharpAuthorityRequest, CSharpOracle,
+};
 use compiler_languages_go::{GoOracle, OracleError};
 use compiler_languages_java::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
@@ -41,6 +45,8 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
     pub go: Option<&'config GoOracle>,
+    /// Roslyn helper producer selected by the application owner.
+    pub csharp: Option<CSharpPackageAuthorityConfiguration<'config>>,
     /// Java doclet/JDK authority configuration.
     pub java: Option<JavaPackageAuthorityConfiguration<'config>>,
     /// Largest borrowed Go or Java authority image this owner will retain.
@@ -58,9 +64,19 @@ impl PackageAuthorityConfiguration<'static> {
         python: None,
         rust: None,
         go: None,
+        csharp: None,
         java: None,
         maximum_image_bytes: 0,
     };
+}
+
+/// Explicit Roslyn authority configuration for one compiler-owner lifetime.
+#[derive(Clone, Copy, Debug)]
+pub struct CSharpPackageAuthorityConfiguration<'config> {
+    /// Producer bound to the exact published Roslyn helper assembly.
+    pub producer: &'config CSharpOracle,
+    /// Closed helper policy borrowed by each C# authority transaction.
+    pub configuration: CSharpAuthorityConfiguration<'config>,
 }
 
 /// Explicit Rust project authority inputs that cannot be inferred from source
@@ -153,6 +169,13 @@ pub enum PackageAuthorityOwner<'config> {
         /// Validated producer image bytes.
         image: Box<[u8]>,
     },
+    /// Roslyn authority image owned for the driver's borrowed image input.
+    CSharp {
+        /// Exact checked profile.
+        profile: LanguageProfile,
+        /// Validated source-bound producer image bytes.
+        image: Box<[u8]>,
+    },
     /// Java authority image and its doclet session retained until lowering.
     Java {
         /// Exact checked profile.
@@ -185,6 +208,7 @@ impl PackageAuthorityOwner<'_> {
                 features: *features,
             },
             Self::Go { image, .. } => SemanticAuthorityInput::Go { image },
+            Self::CSharp { image, .. } => SemanticAuthorityInput::CSharp { image },
             Self::Java { image, .. } => SemanticAuthorityInput::Java { image },
         }
     }
@@ -197,6 +221,7 @@ impl PackageAuthorityOwner<'_> {
             | Self::Python { profile, .. }
             | Self::Rust { profile, .. }
             | Self::Go { profile, .. }
+            | Self::CSharp { profile, .. }
             | Self::Java { profile, .. } => *profile,
             Self::TypeScript { profile, .. } => LanguageProfile::TypeScript(*profile),
         }
@@ -388,10 +413,44 @@ pub fn enter_package_authority<'request, 'config>(
                     _session: session,
                 }
             }
-            LanguageProfile::CSharp(_) => {
-                return Err(PackageAuthorityError::CSharpProducerUnavailable {
+            LanguageProfile::CSharp(profile) => {
+                let configuration = request.configuration.csharp.ok_or(
+                    PackageAuthorityError::AdapterUnavailable {
+                        profile: request.profile,
+                        stage: PackageAuthorityStage::CSharpRoslyn,
+                    },
+                )?;
+                let image = configuration
+                    .producer
+                    .produce(CSharpAuthorityRequest {
+                        package_root: request.package_root,
+                        source_path: request.source_path,
+                        source: request.source,
+                        profile,
+                        native_tool: resolved.tool,
+                        toolchain: resolved.as_ref(),
+                        control: CSharpAuthorityControl {
+                            deadline: request.control.deadline,
+                            cancelled: request.control.cancelled,
+                        },
+                        configuration: configuration.configuration,
+                    })
+                    .map_err(PackageAuthorityError::CSharp)?;
+                let image = retain_image(
+                    image.into_bytes().into_vec(),
+                    request.configuration.maximum_image_bytes,
+                    request.profile,
+                    PackageAuthorityStage::CSharpRoslyn,
+                )?;
+                checkpoint(
+                    request.control,
+                    request.profile,
+                    PackageAuthorityStage::CSharpRoslyn,
+                )?;
+                PackageAuthorityOwner::CSharp {
                     profile: request.profile,
-                });
+                    image,
+                }
             }
         };
     checkpoint(
@@ -492,6 +551,8 @@ pub enum PackageAuthorityStage {
     RustProject,
     /// Go package-oracle image production.
     GoOracle,
+    /// Roslyn authority-image production.
+    CSharpRoslyn,
     /// Java doclet preparation and authority-image extraction.
     JavaHarness,
 }
@@ -583,12 +644,6 @@ pub enum PackageAuthorityError {
         /// Compiler executable selected for the enclosing driver request.
         resolved: Box<Path>,
     },
-    /// The real C# producer is not available in the current production adapter set.
-    #[error("C# profile {profile:?} has no production Roslyn authority-image producer")]
-    CSharpProducerUnavailable {
-        /// Requested C# profile.
-        profile: LanguageProfile,
-    },
     /// The package-aware TypeScript checker returned its exact terminal.
     #[error(transparent)]
     TypeScript(#[from] TypeScriptCheckerError),
@@ -604,6 +659,9 @@ pub enum PackageAuthorityError {
     /// Go authority-image production returned its exact terminal.
     #[error(transparent)]
     GoOracle(#[from] OracleError),
+    /// Roslyn authority-image production returned its exact terminal.
+    #[error(transparent)]
+    CSharp(#[from] CSharpAuthorityError),
     /// Java harness preparation or image extraction returned its exact terminal.
     #[error(transparent)]
     JavaHarness(#[from] HarnessError),
@@ -617,7 +675,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use compiler_vocabulary::CStandard;
+    use compiler_vocabulary::{CSharpVersion, CStandard};
 
     use super::*;
 
@@ -627,6 +685,7 @@ mod tests {
             python: None,
             rust: None,
             go: None,
+            csharp: None,
             java: None,
             maximum_image_bytes: 0,
         }
@@ -637,6 +696,15 @@ mod tests {
             NativeTool::Clang,
             Path::new("/configured/clang"),
             b"package-authority-test-toolchain",
+        )
+        .expect("absolute fixture executable is admissible")
+    }
+
+    fn csharp_toolchain() -> ResolvedToolchain<'static> {
+        ResolvedToolchain::from_version(
+            NativeTool::CSharpCompiler,
+            Path::new("/configured/dotnet"),
+            b"package-authority-test-dotnet",
         )
         .expect("absolute fixture executable is admissible")
     }
@@ -686,6 +754,34 @@ mod tests {
             PackageAuthorityError::Cancelled {
                 profile: LanguageProfile::C(CStandard::C11),
                 stage: PackageAuthorityStage::Admission,
+            }
+        ));
+    }
+
+    #[test]
+    fn csharp_requires_the_typed_roslyn_producer_at_its_exact_stage() {
+        let cancelled = AtomicBool::new(false);
+        let error = match enter_package_authority(PackageAuthorityRequest {
+            package_root: Path::new("/packages/example"),
+            source_path: Path::new("/packages/example/Library.cs"),
+            source: b"public sealed class Library {}",
+            profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+            toolchain: ToolchainSelection::ResolvedNative(csharp_toolchain()),
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancelled: &cancelled,
+            },
+            configuration: configuration(),
+        }) {
+            Ok(_) => panic!("C# must never admit a source-only fallback authority"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            PackageAuthorityError::AdapterUnavailable {
+                profile: LanguageProfile::CSharp(CSharpVersion::CSharp14),
+                stage: PackageAuthorityStage::CSharpRoslyn,
             }
         ));
     }

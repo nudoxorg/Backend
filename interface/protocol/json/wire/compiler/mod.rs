@@ -5,6 +5,7 @@
 
 mod authority;
 mod native;
+mod package;
 mod publication;
 mod terminal;
 

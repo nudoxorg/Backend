@@ -19,6 +19,7 @@ compiler-vocabulary = { path = "../vocabulary" }
 server-journal = { path = "../../server/journal" }
 heart-identity = { path = "../../heart/identity" }
 compiler-ir = { path = "../ir" }
+compiler-languages-csharp = { path = "../languages/csharp" }
 compiler-languages-go = { path = "../languages/go" }
 compiler-languages-java = { path = "../languages/java" }
 compiler-languages-python = { path = "../languages/python" }
