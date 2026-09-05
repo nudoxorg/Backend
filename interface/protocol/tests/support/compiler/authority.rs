@@ -127,6 +127,15 @@ pub(crate) struct GoldenPublicationAuthority {
     pub generation: GoldenGenerationAuthority,
     pub manifest: String,
     pub binding: String,
+    pub receipt: GoldenDurableReceiptAuthority,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct GoldenDurableReceiptAuthority {
+    pub sequence: u64,
+    pub durable_end: u64,
+    pub immutable_checksum: [u8; 16],
+    pub head_checksum: [u8; 16],
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -273,6 +282,12 @@ impl From<PublicationAuthority> for GoldenPublicationAuthority {
             generation: publication.generation.into(),
             manifest: publication.manifest.to_string(),
             binding: publication.binding.to_string(),
+            receipt: GoldenDurableReceiptAuthority {
+                sequence: publication.receipt.sequence,
+                durable_end: publication.receipt.durable_end,
+                immutable_checksum: publication.receipt.immutable_checksum,
+                head_checksum: publication.receipt.head_checksum,
+            },
         }
     }
 }

@@ -3,14 +3,16 @@
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
 use std::{path::PathBuf, time::Duration};
 
+use compiler_vocabulary::FrontendError;
 use interface_core::{
     CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, CompilerTerminal, FragmentCause,
-    LoweringUnsupported, PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem,
-    PackagePathComponentError, PackageSourceCause, PackageSourceIoPhase, PackageTextRange,
+    PackageCompilePhase, PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError,
+    PackageSourceCause, PackageSourceIoPhase, PackageTextRange,
 };
 use serde::Deserialize;
 
 use super::authority::GoldenSourceAuthority;
+use super::lowering::GoldenLoweringCause;
 use super::native::{
     GoldenErrorKind, GoldenNativeIoFact, GoldenNativeIoPhase, GoldenNativeWorkCause,
     GoldenNativeWorkerPanicClass, GoldenNativeWorkerPanicMessage,
@@ -44,8 +46,7 @@ pub(crate) enum GoldenCompilerTerminal {
     },
     UnsupportedStage {
         source: GoldenSourceAuthority,
-        language: super::authority::GoldenLanguage,
-        stage: super::authority::GoldenStage,
+        cause: GoldenFrontendError,
     },
     DeadlineConstruction {
         source: GoldenSourceAuthority,
@@ -78,6 +79,26 @@ pub(crate) enum GoldenCompilerTerminal {
         attempted: GoldenCompilerAttempt,
         cause: GoldenPublicationCause,
     },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum GoldenFrontendError {
+    UnsupportedStage {
+        language: super::authority::GoldenLanguage,
+        stage: super::authority::GoldenStage,
+    },
+}
+
+impl From<FrontendError> for GoldenFrontendError {
+    fn from(cause: FrontendError) -> Self {
+        match cause {
+            FrontendError::UnsupportedStage { language, stage } => Self::UnsupportedStage {
+                language: language.into(),
+                stage: stage.into(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -256,44 +277,6 @@ pub(crate) enum GoldenCompilerCause {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum GoldenLoweringCause {
-    NoSupportedDeclaration,
-    ExtensionAtomUnbound {
-        row: u32,
-        provisional: u32,
-        atom_count: u32,
-    },
-    ExtensionTypeParametersUnbound {
-        row: u32,
-        start: u32,
-        length: u32,
-        element_count: u32,
-    },
-    FactRejected {
-        fact: u32,
-    },
-    RustFunction,
-    RustConstantType,
-    RustGenericParameter,
-    PythonAssignmentName,
-    PythonAssignmentValue,
-    ClangDeclarationForm,
-    TypeScriptDeclarationForm,
-    TypeScriptDeclarationType,
-    CSharpDeclarationForm,
-    CSharpDeclarationType,
-    GoDeclarationForm,
-    GoDeclarationType,
-    JavaDeclarationForm,
-    JavaProjection {
-        class: String,
-        declaration: String,
-        owner: String,
-    },
-}
-
-#[derive(Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
 pub(crate) enum GoldenAuthorityPhase {
     Open,
     Parse,
@@ -360,14 +343,9 @@ impl From<CompilerTerminal> for GoldenCompilerTerminal {
                 language: language.into(),
                 stage: stage.into(),
             },
-            CompilerTerminal::UnsupportedStage {
-                source,
-                language,
-                stage,
-            } => Self::UnsupportedStage {
+            CompilerTerminal::UnsupportedStage { source, cause } => Self::UnsupportedStage {
                 source: source.into(),
-                language: language.into(),
-                stage: stage.into(),
+                cause: cause.into(),
             },
             CompilerTerminal::DeadlineConstruction {
                 source,
@@ -647,74 +625,6 @@ impl From<CompilerCause> for GoldenCompilerCause {
             },
             CompilerCause::Fragment(cause) => Self::Fragment {
                 cause: cause.into(),
-            },
-        }
-    }
-}
-
-impl From<LoweringUnsupported> for GoldenLoweringCause {
-    fn from(cause: LoweringUnsupported) -> Self {
-        match cause {
-            LoweringUnsupported::NoSupportedDeclaration => Self::NoSupportedDeclaration,
-            LoweringUnsupported::ExtensionAtomUnbound {
-                row,
-                provisional,
-                atom_count,
-            } => Self::ExtensionAtomUnbound {
-                row,
-                provisional,
-                atom_count,
-            },
-            LoweringUnsupported::ExtensionTypeParametersUnbound {
-                row,
-                start,
-                length,
-                element_count,
-            } => Self::ExtensionTypeParametersUnbound {
-                row,
-                start,
-                length,
-                element_count,
-            },
-            LoweringUnsupported::FactRejected { fact } => Self::FactRejected { fact },
-            LoweringUnsupported::RustFunction => Self::RustFunction,
-            LoweringUnsupported::RustConstantType => Self::RustConstantType,
-            LoweringUnsupported::RustGenericParameter => Self::RustGenericParameter,
-            LoweringUnsupported::PythonAssignmentName => Self::PythonAssignmentName,
-            LoweringUnsupported::PythonAssignmentValue => Self::PythonAssignmentValue,
-            LoweringUnsupported::ClangDeclarationForm => Self::ClangDeclarationForm,
-            LoweringUnsupported::TypeScriptDeclarationForm => Self::TypeScriptDeclarationForm,
-            LoweringUnsupported::TypeScriptDeclarationType => Self::TypeScriptDeclarationType,
-            LoweringUnsupported::CSharpDeclarationForm => Self::CSharpDeclarationForm,
-            LoweringUnsupported::CSharpDeclarationType => Self::CSharpDeclarationType,
-            LoweringUnsupported::GoDeclarationForm => Self::GoDeclarationForm,
-            LoweringUnsupported::GoDeclarationType => Self::GoDeclarationType,
-            LoweringUnsupported::JavaDeclarationForm => Self::JavaDeclarationForm,
-            LoweringUnsupported::JavaProjection {
-                class,
-                declaration,
-                owner,
-            } => Self::JavaProjection {
-                class: match class {
-                    compiler_vocabulary::JavaProjectionFaultClass::Image => "image",
-                    compiler_vocabulary::JavaProjectionFaultClass::Depth => "depth",
-                    compiler_vocabulary::JavaProjectionFaultClass::Malformed => "malformed",
-                    compiler_vocabulary::JavaProjectionFaultClass::Primitive => "primitive",
-                    compiler_vocabulary::JavaProjectionFaultClass::Utf8 => "utf8",
-                    compiler_vocabulary::JavaProjectionFaultClass::SourceUtf8 => "source_utf8",
-                    compiler_vocabulary::JavaProjectionFaultClass::Utf16 => "utf16",
-                    compiler_vocabulary::JavaProjectionFaultClass::OrphanOwner => "orphan_owner",
-                    compiler_vocabulary::JavaProjectionFaultClass::ForeignKey => "foreign_key",
-                    compiler_vocabulary::JavaProjectionFaultClass::SiblingCapacity => {
-                        "sibling_capacity"
-                    }
-                    compiler_vocabulary::JavaProjectionFaultClass::IndexCapacity => {
-                        "index_capacity"
-                    }
-                }
-                .to_owned(),
-                declaration: declaration.to_string(),
-                owner: owner.to_string(),
             },
         }
     }

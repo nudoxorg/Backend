@@ -370,7 +370,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     ) -> Result<ToolchainSelection<'path>, ToolchainRouteError> {
         let route = FullRegistry
             .route(request.profile.language(), request.stage)
-            .map_err(|_| ToolchainRouteError::UnsupportedStage)?;
+            .map_err(ToolchainRouteError::UnsupportedStage)?;
         select_toolchain(self.config.toolchains, route)
     }
 }
@@ -574,7 +574,7 @@ const fn declaration_scope_cause(
     }
 }
 
-const fn generated(
+fn generated(
     source: SourceAuthority,
     recipe: compiler_vocabulary::CompileRecipeFact,
     fragment: ArtifactId<IrFragmentEncoding, IrFragmentDomain>,
@@ -596,6 +596,12 @@ const fn generated(
             },
             manifest: publication.manifest.identity,
             binding: publication.binding.identity,
+            receipt: interface_core::DurableReceiptAuthority {
+                sequence: *publication.publication.stable.sequence,
+                durable_end: *publication.publication.stable.durable_end,
+                immutable_checksum: publication.publication.immutable.checksum,
+                head_checksum: publication.publication.head.checksum,
+            },
         },
     }
 }
@@ -736,7 +742,7 @@ const fn source_terminal(cause: SourceError) -> CompilerTerminal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolchainRouteError {
-    UnsupportedStage,
+    UnsupportedStage(compiler_vocabulary::FrontendError),
     Missing {
         selected: compiler_vocabulary::NativeTool,
     },
@@ -751,11 +757,9 @@ const fn toolchain_terminal(
     cause: ToolchainRouteError,
 ) -> CompilerTerminal {
     match cause {
-        ToolchainRouteError::UnsupportedStage => CompilerTerminal::UnsupportedStage {
-            source,
-            language: request.profile.language(),
-            stage: request.stage,
-        },
+        ToolchainRouteError::UnsupportedStage(cause) => {
+            CompilerTerminal::UnsupportedStage { source, cause }
+        }
         ToolchainRouteError::Missing { selected } => CompilerTerminal::Toolchain {
             source,
             language: request.profile.language(),

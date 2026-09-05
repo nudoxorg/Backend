@@ -133,8 +133,7 @@ const fn unsupported_stage(
 ) -> CompilerTerminal {
     CompilerTerminal::UnsupportedStage {
         source: source_authority(source),
-        language,
-        stage,
+        cause: compiler_vocabulary::FrontendError::UnsupportedStage { language, stage },
     }
 }
 

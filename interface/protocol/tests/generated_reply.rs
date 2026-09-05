@@ -18,8 +18,8 @@ use heart_identity::{
 use interface_core::{
     ApplicationOutcome, ApplicationReply, CompilerAttempt, CompilerCause, CompilerDiagnostic,
     CompilerTerminal, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
-    GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase, PublicationAuthority,
-    ReplyBody, SemanticImageAuthority, SourceAuthority,
+    DurableReceiptAuthority, GeneratedArtifact, GenerationAuthority, NativeIoFact, NativeIoPhase,
+    PublicationAuthority, ReplyBody, SemanticImageAuthority, SourceAuthority,
 };
 use interface_protocol::{encode_cli_reply, mcp_reply};
 use serde_json::Value;
@@ -92,6 +92,12 @@ fn generated_artifact() -> GeneratedArtifact {
             binding: ArtifactId::<CompilePublicationEncoding, CompilePublicationDomain>::from_encoded_bytes(
                 b"wire-binding",
             ),
+            receipt: DurableReceiptAuthority {
+                sequence: 7,
+                durable_end: 4_096,
+                immutable_checksum: [0x11; 16],
+                head_checksum: [0x22; 16],
+            },
         },
     }
 }
@@ -230,6 +236,28 @@ fn generated_reply_is_byte_for_byte_the_same_cli_body_and_mcp_structured_content
         return Err(TestError::Projection {
             channel: "generated binding identity",
             observed: cli["body"]["artifact"]["publication"]["binding"].clone(),
+        });
+    }
+    expect_projection(
+        "generated durable receipt sequence",
+        &cli["body"]["artifact"]["publication"]["receipt"]["sequence"],
+        Value::from(7),
+    )?;
+    expect_projection(
+        "generated durable receipt end",
+        &cli["body"]["artifact"]["publication"]["receipt"]["durable_end"],
+        Value::from(4_096),
+    )?;
+    if cli["body"]["artifact"]["publication"]["receipt"]["immutable_checksum"]
+        .as_array()
+        .is_none_or(|checksum| checksum.len() != 16)
+        || cli["body"]["artifact"]["publication"]["receipt"]["head_checksum"]
+            .as_array()
+            .is_none_or(|checksum| checksum.len() != 16)
+    {
+        return Err(TestError::Projection {
+            channel: "generated durable receipt checksums",
+            observed: cli["body"]["artifact"]["publication"]["receipt"].clone(),
         });
     }
     if let Some(package) = cli["body"]["artifact"].get("package") {

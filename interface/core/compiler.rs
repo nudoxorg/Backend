@@ -189,6 +189,21 @@ pub struct PublicationAuthority {
     pub manifest: ArtifactId<IrManifestEncoding, IrManifestDomain>,
     /// Identity of the immutable generation-to-manifest binding.
     pub binding: ArtifactId<CompilePublicationEncoding, CompilePublicationDomain>,
+    /// Exact journal and filesystem facts proving this generation became durably visible.
+    pub receipt: DurableReceiptAuthority,
+}
+
+/// Transport-independent durable receipt retained from the journal publication boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableReceiptAuthority {
+    /// Monotone journal frame sequence selected by the stable receipt.
+    pub sequence: u64,
+    /// Exclusive durable byte end of the synced journal frame.
+    pub durable_end: u64,
+    /// Checksum of the immutable publication fact that binds the receipt.
+    pub immutable_checksum: [u8; 16],
+    /// Checksum of the visible head that selects the immutable publication fact.
+    pub head_checksum: [u8; 16],
 }
 
 /// Borrowed semantic source-compilation request passed through the monomorphized local capability.
@@ -377,10 +392,8 @@ pub enum CompilerTerminal {
     UnsupportedStage {
         /// Identity and byte length of the exact source under evaluation.
         source: SourceAuthority,
-        /// Requested closed language family.
-        language: Language,
-        /// Requested closed compiler stage.
-        stage: Stage,
+        /// Exact registry rejection, retained instead of reconstructed from copied fields.
+        cause: compiler_vocabulary::FrontendError,
     },
     /// A fresh bounded timeout could not be represented by this platform's monotonic clock.
     DeadlineConstruction {

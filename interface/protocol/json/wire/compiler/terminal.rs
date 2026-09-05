@@ -4,8 +4,14 @@
 use std::time::Duration;
 
 use compiler_vocabulary::{
-    AuthorityDiagnosticClass, AuthorityPhase, JavaProjectionFaultClass, JavaProjectionOwner,
-    JavaProjectionText, Language, LoweringUnsupported, NativeTool, Stage,
+    AuthorityDiagnosticClass, AuthorityPhase, CSharpImageFault, CSharpImageHeaderFault,
+    CSharpImageSection, CSharpImageTypeKind, CSharpProjectionFault, ClangProjectionDeclaration,
+    ClangProjectionFault, ClangProjectionQualifiers, ClangProjectionTypeKind, FrontendError,
+    GoProjectionFault, JavaForeignKeyFault, JavaImageAtomFault, JavaImageFault,
+    JavaImageHeaderFault, JavaImagePlane, JavaImageSectionFault, JavaProjectionFault,
+    JavaProjectionIndexPhase, JavaProjectionTypeKind, JavaSymbolAtom, Language,
+    LoweringUnsupported, NativeTool, ProjectionForeignKeyFault, ProjectionLineagePart,
+    ProjectionPackageLineageFault, PythonProjectionFault, Stage, TypeScriptProjectionFault,
 };
 use interface_core::{
     CompilerAttempt, CompilerCause, CompilerDiagnostic, CompilerRuntimeCause, FragmentCause,
@@ -71,10 +77,8 @@ pub(crate) enum CompilerTerminalWire {
     UnsupportedStage {
         #[serde(with = "SourceAuthorityWire")]
         source: SourceAuthority,
-        #[serde(with = "LanguageWire")]
-        language: Language,
-        #[serde(with = "StageWire")]
-        stage: Stage,
+        #[serde(with = "CompilerFrontendErrorWire")]
+        cause: FrontendError,
     },
     DeadlineConstruction {
         #[serde(with = "SourceAuthorityWire")]
@@ -127,6 +131,21 @@ pub(crate) enum CompilerTerminalWire {
     },
 }
 
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::FrontendError",
+    tag = "kind",
+    rename_all = "snake_case"
+)]
+enum CompilerFrontendErrorWire {
+    UnsupportedStage {
+        #[serde(with = "LanguageWire")]
+        language: Language,
+        #[serde(with = "StageWire")]
+        stage: Stage,
+    },
+}
+
 fn serialize_optional_target<Output: Serializer>(
     target: &Option<ContentId<CompilationTargetDomain>>,
     serializer: Output,
@@ -173,46 +192,616 @@ pub(crate) enum LoweringUnsupportedWire {
     GoDeclarationType,
     JavaDeclarationForm,
     JavaProjection {
-        #[serde(serialize_with = "serialize_java_projection_class")]
-        class: JavaProjectionFaultClass,
-        #[serde(serialize_with = "serialize_java_projection_text")]
-        declaration: JavaProjectionText,
-        #[serde(serialize_with = "serialize_java_projection_owner")]
-        owner: JavaProjectionOwner,
+        #[serde(with = "JavaProjectionFaultWire")]
+        fault: JavaProjectionFault,
+    },
+    GoProjection {
+        #[serde(serialize_with = "serialize_go_projection_fault")]
+        fault: GoProjectionFault,
+    },
+    TypeScriptProjection {
+        #[serde(serialize_with = "serialize_typescript_projection_fault")]
+        fault: TypeScriptProjectionFault,
+    },
+    PythonProjection {
+        #[serde(serialize_with = "serialize_python_projection_fault")]
+        fault: PythonProjectionFault,
+    },
+    CSharpProjection {
+        #[serde(serialize_with = "serialize_csharp_projection_fault")]
+        fault: CSharpProjectionFault,
+    },
+    ClangProjection {
+        #[serde(serialize_with = "serialize_clang_projection_fault")]
+        fault: ClangProjectionFault,
     },
 }
 
-fn serialize_java_projection_class<Output: Serializer>(
-    class: &JavaProjectionFaultClass,
-    serializer: Output,
-) -> Result<Output::Ok, Output::Error> {
-    serializer.serialize_str(match class {
-        JavaProjectionFaultClass::Image => "image",
-        JavaProjectionFaultClass::Depth => "depth",
-        JavaProjectionFaultClass::Malformed => "malformed",
-        JavaProjectionFaultClass::Primitive => "primitive",
-        JavaProjectionFaultClass::Utf8 => "utf8",
-        JavaProjectionFaultClass::SourceUtf8 => "source_utf8",
-        JavaProjectionFaultClass::Utf16 => "utf16",
-        JavaProjectionFaultClass::OrphanOwner => "orphan_owner",
-        JavaProjectionFaultClass::ForeignKey => "foreign_key",
-        JavaProjectionFaultClass::SiblingCapacity => "sibling_capacity",
-        JavaProjectionFaultClass::IndexCapacity => "index_capacity",
-    })
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::JavaProjectionFault",
+    rename_all = "snake_case"
+)]
+enum JavaProjectionFaultWire {
+    Image {
+        #[serde(with = "JavaImageFaultWire")]
+        cause: JavaImageFault,
+    },
+    Depth {
+        type_row: u32,
+    },
+    MalformedType {
+        type_row: u32,
+        #[serde(with = "JavaProjectionTypeKindWire")]
+        kind: JavaProjectionTypeKind,
+    },
+    Primitive {
+        type_row: u32,
+    },
+    AtomUtf8 {
+        symbol: u32,
+        #[serde(with = "JavaSymbolAtomWire")]
+        atom: JavaSymbolAtom,
+    },
+    SourceUtf8,
+    Utf16Offset {
+        units: u32,
+        source_utf16_len: u32,
+    },
+    Utf16Range {
+        start: u32,
+        end: u32,
+    },
+    OrphanOwner {
+        owner: u32,
+    },
+    ForeignKey {
+        #[serde(with = "JavaForeignKeyFaultWire")]
+        cause: JavaForeignKeyFault,
+    },
+    SiblingCapacity {
+        symbol: u32,
+    },
+    IndexCapacity {
+        #[serde(with = "JavaProjectionIndexPhaseWire")]
+        phase: JavaProjectionIndexPhase,
+    },
 }
 
-fn serialize_java_projection_text<Output: Serializer>(
-    text: &JavaProjectionText,
-    serializer: Output,
-) -> Result<Output::Ok, Output::Error> {
-    serializer.collect_str(text)
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::JavaImageFault",
+    rename_all = "snake_case"
+)]
+enum JavaImageFaultWire {
+    Header {
+        #[serde(with = "JavaImageHeaderFaultWire")]
+        cause: JavaImageHeaderFault,
+    },
+    Section {
+        #[serde(with = "JavaImagePlaneWire")]
+        plane: JavaImagePlane,
+        #[serde(with = "JavaImageSectionFaultWire")]
+        cause: JavaImageSectionFault,
+    },
+    Digest,
+    Atom {
+        index: u32,
+        #[serde(with = "JavaImageAtomFaultWire")]
+        cause: JavaImageAtomFault,
+    },
+    AbsentAtom,
+    Coordinate {
+        #[serde(with = "JavaImagePlaneWire")]
+        plane: JavaImagePlane,
+        index: u32,
+        upper_bound: u32,
+    },
+    Tag {
+        #[serde(with = "JavaImagePlaneWire")]
+        plane: JavaImagePlane,
+        found: u8,
+    },
+    ChildRange {
+        #[serde(with = "JavaImagePlaneWire")]
+        plane: JavaImagePlane,
+        start: u32,
+        count: u32,
+        upper_bound: u32,
+    },
+    ReferenceRange {
+        start: u32,
+        end: u32,
+    },
+    DocumentationPresence,
+    ModifierBits {
+        found: u32,
+    },
+    RecordComponentKind {
+        index: u32,
+    },
+    ExtensionReserved,
 }
 
-fn serialize_java_projection_owner<Output: Serializer>(
-    owner: &JavaProjectionOwner,
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::JavaImageHeaderFault",
+    rename_all = "snake_case"
+)]
+enum JavaImageHeaderFaultWire {
+    Truncated { actual: u32 },
+    Magic { found: [u8; 4] },
+    Version { found: u16 },
+    Length { found: u16 },
+    Release { found: u16 },
+    SectionCount { found: u16 },
+    BodyLength { declared: u32, actual: u32 },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::JavaImageSectionFault",
+    rename_all = "snake_case"
+)]
+enum JavaImageSectionFaultWire {
+    Tag {
+        expected: u16,
+        found: u16,
+    },
+    RowBytes {
+        expected: u32,
+        found: u32,
+    },
+    ByteCount {
+        count: u32,
+        row_bytes: u32,
+        found: u32,
+    },
+    Offset {
+        expected: u32,
+        found: u32,
+    },
+    Range {
+        offset: u32,
+        length: u32,
+        image_bytes: u32,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::JavaImageAtomFault",
+    rename_all = "snake_case"
+)]
+enum JavaImageAtomFaultWire {
+    NonCanonicalOffset { found: u32 },
+    Range,
+    Utf8,
+    TrailingBytes,
+}
+
+macro_rules! remote_unit_enum {
+    ($wire:ident, $remote:literal, [$($variant:ident),+ $(,)?]) => {
+        #[derive(Serialize)]
+        #[serde(remote = $remote, rename_all = "snake_case")]
+        enum $wire { $($variant),+ }
+    };
+}
+
+remote_unit_enum!(
+    JavaProjectionTypeKindWire,
+    "compiler_vocabulary::JavaProjectionTypeKind",
+    [
+        Primitive,
+        Void,
+        Declared,
+        Array,
+        Variable,
+        Wildcard,
+        Intersection,
+        Union,
+        Error,
+        None,
+        Null
+    ]
+);
+remote_unit_enum!(
+    JavaSymbolAtomWire,
+    "compiler_vocabulary::JavaSymbolAtom",
+    [Owner, Name]
+);
+remote_unit_enum!(
+    JavaForeignKeyFaultWire,
+    "compiler_vocabulary::JavaForeignKeyFault",
+    [EmptyPath, BackslashInPath]
+);
+remote_unit_enum!(
+    JavaProjectionIndexPhaseWire,
+    "compiler_vocabulary::JavaProjectionIndexPhase",
+    [
+        FactOrdinal,
+        TypeRow,
+        TypeChild,
+        NameIndex,
+        SymbolIndex,
+        ExecutableIndex,
+        Signature,
+        Documentation,
+        Utf16
+    ]
+);
+remote_unit_enum!(
+    JavaImagePlaneWire,
+    "compiler_vocabulary::JavaImagePlane",
+    [
+        Atoms,
+        AtomBytes,
+        Types,
+        TypeChildren,
+        Symbols,
+        SymbolParameters,
+        Declarations,
+        References,
+        DeclarationExtensions,
+        ExtensionEntries
+    ]
+);
+remote_unit_enum!(
+    CSharpImageSectionWire,
+    "compiler_vocabulary::CSharpImageSection",
+    [
+        Atoms,
+        AtomBytes,
+        Declarations,
+        Parameters,
+        TypeParameters,
+        TypeConstraints,
+        Types,
+        TypeChildren,
+        Attributes,
+        Docs,
+        References
+    ]
+);
+remote_unit_enum!(
+    CSharpImageTypeKindWire,
+    "compiler_vocabulary::CSharpImageTypeKind",
+    [
+        Named,
+        Array,
+        Pointer,
+        NullableValue,
+        Tuple,
+        FunctionPointer,
+        TypeParameter,
+        Dynamic,
+        Error
+    ]
+);
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::GoProjectionFault",
+    rename_all = "snake_case"
+)]
+enum GoProjectionFaultWire {
+    Image,
+    IndexCapacity,
+    Depth,
+    VariadicWithoutParameter {
+        signature: u32,
+    },
+    Anchor,
+    ListCapacity,
+    OrphanTarget,
+    ForeignKey {
+        #[serde(with = "ProjectionForeignKeyFaultWire")]
+        cause: ProjectionForeignKeyFault,
+    },
+    PackageLineage {
+        #[serde(with = "ProjectionPackageLineageFaultWire")]
+        cause: ProjectionPackageLineageFault,
+    },
+    AtomUtf8,
+    RelativeSpan {
+        start: u32,
+        end: u32,
+    },
+    OrphanOwner {
+        owner: u32,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::TypeScriptProjectionFault",
+    rename_all = "snake_case"
+)]
+enum TypeScriptProjectionFaultWire {
+    ForeignKey {
+        #[serde(with = "ProjectionForeignKeyFaultWire")]
+        cause: ProjectionForeignKeyFault,
+    },
+    PackageLineage {
+        #[serde(with = "ProjectionPackageLineageFaultWire")]
+        cause: ProjectionPackageLineageFault,
+    },
+    CoordinateOverflow {
+        value: u64,
+    },
+    MissingImportBinding {
+        fact: u32,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::PythonProjectionFault",
+    rename_all = "snake_case"
+)]
+enum PythonProjectionFaultWire {
+    ForeignSpellingUtf8,
+    ForeignKey {
+        #[serde(with = "ProjectionForeignKeyFaultWire")]
+        cause: ProjectionForeignKeyFault,
+    },
+    PackageLineage {
+        #[serde(with = "ProjectionPackageLineageFaultWire")]
+        cause: ProjectionPackageLineageFault,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::CSharpProjectionFault",
+    rename_all = "snake_case"
+)]
+enum CSharpProjectionFaultWire {
+    Image {
+        #[serde(with = "CSharpImageFaultWire")]
+        cause: CSharpImageFault,
+    },
+    Depth,
+    NameSpan {
+        start: u32,
+        end: u32,
+    },
+    OwnerOrder {
+        owner_start: u32,
+        reference_start: u32,
+    },
+    Foreign,
+    AttributeCapacity {
+        spellings: u32,
+    },
+    IndexCapacity,
+    HeterogeneousArrayRank,
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::CSharpImageFault",
+    rename_all = "snake_case"
+)]
+enum CSharpImageFaultWire {
+    Header {
+        #[serde(with = "CSharpImageHeaderFaultWire")]
+        cause: CSharpImageHeaderFault,
+    },
+    Digest,
+    DeclarationKind {
+        index: u32,
+        found: u8,
+        #[serde(with = "CSharpImageSectionWire")]
+        plane: CSharpImageSection,
+    },
+    DeclarationReserved {
+        index: u32,
+        #[serde(with = "CSharpImageSectionWire")]
+        plane: CSharpImageSection,
+    },
+    NameRange {
+        index: u32,
+        offset: u32,
+        length: u32,
+        atom_bytes: u32,
+    },
+    NameUtf8 {
+        index: u32,
+    },
+    Span {
+        index: u32,
+        start: u32,
+        end: u32,
+    },
+    TypeChildCount {
+        index: u32,
+        #[serde(with = "CSharpImageTypeKindWire")]
+        kind: CSharpImageTypeKind,
+        min: u32,
+        max: u32,
+        actual: u32,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::CSharpImageHeaderFault",
+    rename_all = "snake_case"
+)]
+enum CSharpImageHeaderFaultWire {
+    Truncated {
+        actual: u32,
+    },
+    Magic {
+        found: [u8; 4],
+    },
+    Version {
+        found: u16,
+    },
+    Length {
+        found: u32,
+    },
+    SectionCount {
+        found: u32,
+    },
+    BodyLength {
+        declared: u32,
+        actual: u32,
+    },
+    Reserved,
+    DirectoryTag {
+        expected: u16,
+        found: u16,
+    },
+    DirectoryRowBytes {
+        expected: u32,
+        found: u32,
+    },
+    DirectoryByteCount {
+        count: u32,
+        row_bytes: u32,
+        found: u32,
+    },
+    DirectoryOffset {
+        expected: u32,
+        found: u32,
+    },
+    DirectoryRange {
+        offset: u32,
+        length: u32,
+        image_bytes: u32,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::ClangProjectionFault",
+    rename_all = "snake_case"
+)]
+enum ClangProjectionFaultWire {
+    Span {
+        start: u32,
+        end: u32,
+    },
+    Nameless {
+        declaration: u32,
+    },
+    Anchor,
+    IndexCapacity,
+    ForeignOverride {
+        identity: [u8; 16],
+    },
+    ForeignReference {
+        identity: [u8; 16],
+    },
+    IllegalQualifierTarget {
+        type_id: u32,
+        #[serde(with = "ClangProjectionTypeKindWire")]
+        kind: ClangProjectionTypeKind,
+        #[serde(with = "ClangProjectionQualifiersWire")]
+        qualifiers: ClangProjectionQualifiers,
+    },
+    IllegalMemberPointerOwner {
+        pointer: u32,
+        owner: u32,
+        #[serde(with = "ClangProjectionTypeKindWire")]
+        kind: ClangProjectionTypeKind,
+        #[serde(with = "ClangProjectionDeclarationWire")]
+        declaration: ClangProjectionDeclaration,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::ProjectionPackageLineageFault",
+    rename_all = "snake_case"
+)]
+enum ProjectionPackageLineageFaultWire {
+    EmptyEcosystem,
+    EmptyPackage,
+    SeparatorInEcosystem,
+    SeparatorInPackage,
+    Backslash {
+        #[serde(with = "ProjectionLineagePartWire")]
+        part: ProjectionLineagePart,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(remote = "compiler_vocabulary::ClangProjectionQualifiers")]
+struct ClangProjectionQualifiersWire {
+    is_const: bool,
+    is_volatile: bool,
+    is_restrict: bool,
+}
+
+#[derive(Serialize)]
+#[serde(
+    remote = "compiler_vocabulary::ClangProjectionDeclaration",
+    rename_all = "snake_case"
+)]
+enum ClangProjectionDeclarationWire {
+    Known { identity: [u8; 16] },
+    Unavailable,
+}
+
+remote_unit_enum!(
+    ProjectionForeignKeyFaultWire,
+    "compiler_vocabulary::ProjectionForeignKeyFault",
+    [EmptyPath, BackslashInPath]
+);
+remote_unit_enum!(
+    ProjectionLineagePartWire,
+    "compiler_vocabulary::ProjectionLineagePart",
+    [Ecosystem, Package]
+);
+remote_unit_enum!(
+    ClangProjectionTypeKindWire,
+    "compiler_vocabulary::ClangProjectionTypeKind",
+    [
+        Unknown,
+        Builtin,
+        Named,
+        Pointer,
+        BlockPointer,
+        MemberPointer,
+        LvalueReference,
+        RvalueReference,
+        Array,
+        Function
+    ]
+);
+
+fn serialize_go_projection_fault<Output: Serializer>(
+    fault: &GoProjectionFault,
     serializer: Output,
 ) -> Result<Output::Ok, Output::Error> {
-    serializer.collect_str(owner)
+    GoProjectionFaultWire::serialize(fault, serializer)
+}
+fn serialize_typescript_projection_fault<Output: Serializer>(
+    fault: &TypeScriptProjectionFault,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    TypeScriptProjectionFaultWire::serialize(fault, serializer)
+}
+fn serialize_python_projection_fault<Output: Serializer>(
+    fault: &PythonProjectionFault,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    PythonProjectionFaultWire::serialize(fault, serializer)
+}
+fn serialize_csharp_projection_fault<Output: Serializer>(
+    fault: &CSharpProjectionFault,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    CSharpProjectionFaultWire::serialize(fault, serializer)
+}
+fn serialize_clang_projection_fault<Output: Serializer>(
+    fault: &ClangProjectionFault,
+    serializer: Output,
+) -> Result<Output::Ok, Output::Error> {
+    ClangProjectionFaultWire::serialize(fault, serializer)
 }
 
 /// Closed compact-IR failure vocabulary projected as the value of a named `cause` field.

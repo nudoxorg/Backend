@@ -9,7 +9,8 @@ use heart_identity::{
     ToolchainDomain,
 };
 use interface_core::{
-    GenerationAuthority, PublicationAuthority, SemanticImageAuthority, SourceAuthority,
+    DurableReceiptAuthority, GenerationAuthority, PublicationAuthority, SemanticImageAuthority,
+    SourceAuthority,
 };
 use serde::Serialize;
 
@@ -52,6 +53,18 @@ pub(crate) struct PublicationAuthorityWire {
     manifest: ArtifactId<IrManifestEncoding, IrManifestDomain>,
     #[serde(serialize_with = "serialize_artifact")]
     binding: ArtifactId<CompilePublicationEncoding, CompilePublicationDomain>,
+    #[serde(with = "DurableReceiptAuthorityWire")]
+    receipt: DurableReceiptAuthority,
+}
+
+/// Remote serde definition for exact stable journal and publication-artifact facts.
+#[derive(Serialize)]
+#[serde(remote = "interface_core::DurableReceiptAuthority")]
+struct DurableReceiptAuthorityWire {
+    sequence: u64,
+    durable_end: u64,
+    immutable_checksum: [u8; 16],
+    head_checksum: [u8; 16],
 }
 
 /// Remote serde definition for the generation closure that was proved before publication.

@@ -17,12 +17,12 @@ use heart_identity::{
 use interface_core::{
     AdaptiveDisposition, ApplicationDisposition, ApplicationInput, ApplicationOutcome,
     ApplicationReply, ApplicationService, BatteryState, ByteCount, Capability, CapabilityDomain,
-    CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail, ExecutionState,
-    GenerateRequest, GenerateTarget, GeneratedArtifact, GenerationAuthority, GenerationId,
-    IndexSnapshotId, InputText, InputTextError, OperationBudget, PackageCompilePhase, Pin,
-    Pressure, PublicationAuthority, ReplyBody, ResourceBudget, RetrievalCause, RetrievalQueryCause,
-    RetryBudget, SemanticImageAccessError, SemanticImageAuthority, SnapshotFacts, SourceAuthority,
-    SourceText,
+    CapabilityHealth, CorrelationId, Diagnostic, DiagnosticCode, DiagnosticDetail,
+    DurableReceiptAuthority, ExecutionState, GenerateRequest, GenerateTarget, GeneratedArtifact,
+    GenerationAuthority, GenerationId, IndexSnapshotId, InputText, InputTextError, OperationBudget,
+    PackageCompilePhase, Pin, Pressure, PublicationAuthority, ReplyBody, ResourceBudget,
+    RetrievalCause, RetrievalQueryCause, RetryBudget, SemanticImageAccessError,
+    SemanticImageAuthority, SnapshotFacts, SourceAuthority, SourceText,
 };
 use interface_gui::{
     AdaptiveProjection, ApplyError, BatchReceipt, CommandId, ExecutionProjection, FormError,
@@ -129,6 +129,12 @@ fn generated_artifact() -> GeneratedArtifact {
             binding: ArtifactId::<CompilePublicationEncoding, CompilePublicationDomain>::from_encoded_bytes(
                 b"gpui-binding",
             ),
+            receipt: DurableReceiptAuthority {
+                sequence: 11,
+                durable_end: 8_192,
+                immutable_checksum: [0x33; 16],
+                head_checksum: [0x44; 16],
+            },
         },
     }
 }

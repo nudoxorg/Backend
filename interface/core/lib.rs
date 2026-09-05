@@ -18,13 +18,14 @@ mod text;
 pub use compiler::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerDiagnostic,
     CompilerDiagnosticFacts, CompilerReadiness, CompilerRequest, CompilerRuntimeCause,
-    CompilerRuntimePanic, CompilerTerminal, FragmentCause, GeneratedArtifact, GenerationAuthority,
-    InvalidUtf8Fact, LoweringCause, MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction,
-    NativeArtifactCause, NativeArtifactRole, NativeDirectoryCause, NativeIoFact, NativeIoPhase,
-    NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase, NativeWorker,
-    NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority,
-    PublicationCause, PublicationPhase, SemanticImageAccessError, SemanticImageAuthority,
-    SemanticImageSnapshot, SourceAuthority, UnavailableCompiler,
+    CompilerRuntimePanic, CompilerTerminal, DurableReceiptAuthority, FragmentCause,
+    GeneratedArtifact, GenerationAuthority, InvalidUtf8Fact, LoweringCause,
+    MAX_NATIVE_WORKER_PANIC_BYTES, NativeArtifactAction, NativeArtifactCause, NativeArtifactRole,
+    NativeDirectoryCause, NativeIoFact, NativeIoPhase, NativePrimaryCause, NativeWorkCause,
+    NativeWorkCleanupCause, NativeWorkPhase, NativeWorker, NativeWorkerPanic,
+    NativeWorkerPanicClass, NativeWorkerPanicMessage, PublicationAuthority, PublicationCause,
+    PublicationPhase, SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot,
+    SourceAuthority, UnavailableCompiler,
 };
 pub use compiler_vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,

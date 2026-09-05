@@ -4,6 +4,7 @@
 //! Independent compiler/publication oracle used by adapter process tests.
 
 mod authority;
+mod lowering;
 mod native;
 mod publication;
 mod terminal;
@@ -12,6 +13,7 @@ pub(crate) use authority::{
     GoldenCompileRecipe, GoldenGeneratedArtifact, GoldenGenerationAuthority, GoldenLanguage,
     GoldenNativeTool, GoldenPublicationAuthority, GoldenSourceAuthority, GoldenStage,
 };
+pub(crate) use lowering::GoldenLoweringCause;
 #[allow(unused_imports)]
 pub(crate) use native::{
     GoldenErrorKind, GoldenNativeArtifactAction, GoldenNativeArtifactCause,
@@ -23,5 +25,5 @@ pub(crate) use native::{
 pub(crate) use publication::{GoldenPublicationCause, GoldenPublicationPhase};
 pub(crate) use terminal::{
     GoldenCompilerAttempt, GoldenCompilerCause, GoldenCompilerDiagnostic, GoldenCompilerTerminal,
-    GoldenFragmentCause, GoldenLoweringCause,
+    GoldenFragmentCause,
 };
