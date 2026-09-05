@@ -1,6 +1,12 @@
 //! Exercises the `server-index-tantivy` tests differential contract through its observable boundary.
 //! The cases target malformed, partial, reordered, and resource-constrained behavior.
 //! Assertions retain exact typed causes so regressions cannot pass through lossy errors.
+#![allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::expect_used,
+    reason = "adversarial test fixtures fail fast when their construction is invalid"
+)]
 use compiler_ir::EntityId;
 use heart_identity::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
 use server_index_core::{

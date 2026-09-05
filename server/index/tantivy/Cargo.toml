@@ -9,6 +9,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 
 [dependencies]
 compiler-ir = { path = "../../../compiler/ir" }
@@ -25,4 +28,9 @@ path = "lib.rs"
 [[bench]]
 name = "shadow-resolution"
 path = "benches/shadow_resolution.rs"
+harness = false
+
+[[bench]]
+name = "durable_projection"
+path = "benches/durable_projection.rs"
 harness = false

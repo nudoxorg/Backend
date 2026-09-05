@@ -1,5 +1,10 @@
 //! Fixed-fixture measurements for lexical shadow resolution before Tantivy publication.
 #![deny(unsafe_code)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "the fixed benchmark fixture is intentionally fail-fast and bounded"
+)]
 
 use std::{error::Error, fmt, hint::black_box, time::Instant};
 

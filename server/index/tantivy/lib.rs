@@ -2,11 +2,19 @@
 //! Its public types are the complete boundary; implementation details remain private.
 //! Callers compose capabilities through explicit authority, ownership, and failure values.
 #![forbid(unsafe_code)]
+
 //! Real, bounded Tantivy lexical-membership projection over one immutable index snapshot.
 //!
 //! Tantivy establishes term membership only. Fixed-point scoring, update reconciliation, and
 //! global deterministic ranking remain in `server-index-core`; backend floating scores never cross
 //! this adapter boundary.
+
+mod storage;
+
+pub use storage::{
+    TantivyCandidate, TantivyProvenance, TantivyRowOrdinal, TantivySegment, TantivySegmentHit,
+    TantivySegmentStore, TantivySegmentStoreError, TantivySnapshot,
+};
 
 use core::str::Utf8Error;
 
@@ -71,10 +79,10 @@ pub enum TantivyAdapterError {
         /// Rejected query snapshot.
         observed: IndexSnapshotId,
     },
-    /// Caller output cannot retain requested TopK.
+    /// Caller output cannot retain requested `TopK`.
     #[error("Tantivy output has {available} slots, requested {required}")]
     InsufficientOutput {
-        /// Requested TopK.
+        /// Requested `TopK`.
         required: usize,
         /// Caller-provided slots.
         available: usize,
@@ -205,6 +213,10 @@ impl TantivyLexical {
     /// Each newest live canonical lexical membership becomes one nested Tantivy document. The
     /// snapshot authority is therefore inherited from content-derived segment identities rather
     /// than accepted as an unrelated caller label.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed adapter error when manifest, corpus, or Tantivy admission fails.
     pub fn build(manifest: LexicalManifest<'_, '_>) -> Result<Self, TantivyAdapterError> {
         if !manifest.is_complete() {
             return Err(TantivyAdapterError::IncompleteManifest {
@@ -311,6 +323,14 @@ impl TantivyLexical {
     }
 
     /// Executes Tantivy, then applies the portable recipe's deterministic identity tie order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed adapter error when the snapshot, query, output, or stored identity is invalid.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "requested output capacity is checked before slicing"
+    )]
     pub fn search(
         &self,
         snapshot: IndexSnapshotId,
@@ -398,6 +418,10 @@ impl TantivyLexical {
     }
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "output capacity is checked and insertion indices are bounded"
+)]
 fn insert_document(
     output: &mut [Option<TantivyHit>],
     written: &mut usize,

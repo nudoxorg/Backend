@@ -8233,6 +8233,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "server-index-routing"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "compiler-ir",
+ "heart-identity",
+ "server-index-core",
+ "server-index-vocabulary",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "server-index-tantivy"
 version = "0.1.0"
 dependencies = [
