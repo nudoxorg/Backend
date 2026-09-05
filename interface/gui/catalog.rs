@@ -314,6 +314,38 @@ impl DocumentationState {
         }
     }
 
+    /// The package that owns the selected document, when one does.
+    #[must_use]
+    pub fn selected_package(&self) -> Option<usize> {
+        DOCUMENT_PACKAGES.iter().position(|package| {
+            (package.first_item..package.first_item + package.item_count)
+                .contains(&self.selected_item)
+        })
+    }
+
+    /// Removes one package from the library and keeps the reader somewhere real.
+    ///
+    /// The tree renders only packages still in the library, so a selection left
+    /// inside the removed package would point at a row nobody can see. When
+    /// that happens the selection moves to the first item of the first package
+    /// that remains; with none remaining it stays put and the tree is empty.
+    pub fn remove_package(&mut self, package: usize) {
+        self.set_package_added(package, false);
+        let Some(owner) = self.selected_package() else {
+            return;
+        };
+        if owner != package {
+            return;
+        }
+        let surviving = DOCUMENT_PACKAGES
+            .iter()
+            .enumerate()
+            .find(|(index, _)| self.library_packages.get(*index).copied().unwrap_or(false));
+        if let Some((_, package)) = surviving {
+            self.select_item(package.first_item);
+        }
+    }
+
     /// Toggles one package disclosure when the package exists.
     pub fn toggle_package(&mut self, package: usize) {
         if let Some(expanded) = self.expanded_packages.get_mut(package) {

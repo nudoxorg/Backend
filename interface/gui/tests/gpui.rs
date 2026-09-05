@@ -788,6 +788,42 @@ fn documentation_search_has_its_own_wide_ime_safe_query_boundary(cx: &mut TestAp
 
 #[cfg(feature = "real-gpui")]
 #[gpui::test]
+fn removing_a_library_package_hides_it_and_keeps_the_reader_somewhere_real(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) =
+        cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));
+
+    // Package 3 sits outside the library until discovery puts it there.
+    cx.simulate_keystrokes("cmd-shift-p");
+    cx.simulate_input("trustfall");
+    cx.simulate_keystrokes("enter");
+    cx.read_entity(&view, |view, _| {
+        assert!(view.documentation.library_packages[3]);
+        assert_eq!(view.documentation.selected_package(), Some(3));
+    });
+
+    cx.simulate_keystrokes("cmd-backspace");
+    cx.read_entity(&view, |view, _| {
+        assert!(
+            !view.documentation.library_packages[3],
+            "the package left the library"
+        );
+        assert_ne!(
+            view.documentation.selected_package(),
+            Some(3),
+            "the tree renders only library packages, so the selection cannot stay in one it removed"
+        );
+        assert!(
+            view.documentation
+                .selected_package()
+                .is_some_and(|package| view.documentation.library_packages[package]),
+            "the selection landed on a package still in the library"
+        );
+    });
+}
+
+#[gpui::test]
 fn package_discovery_adds_a_search_match_to_the_collapsible_library(cx: &mut TestAppContext) {
     let (view, cx) =
         cx.add_window_view(|window, cx| GpuiShellView::new(ApplicationService::new(), window, cx));

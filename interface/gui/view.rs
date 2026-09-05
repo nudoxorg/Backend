@@ -15,8 +15,9 @@ use crate::{
     DismissPalette, DocumentFilter, DocumentKind, DocumentSearchRow, DocumentSearchScope,
     FocusDocumentationSearch, FormError, FormField, FormState, NavigateDocumentBack,
     NavigateDocumentForward, NextFormField, OpenPalette, OpenSettings, PaletteDirection,
-    PreviousFormField, ResultLimit, Route, SelectFirstPaletteCommand, SelectLastPaletteCommand,
-    SelectNextPaletteCommand, SelectNextPalettePage, SelectPreviousPaletteCommand,
+    PreviousFormField, RemoveLibraryPackage, ResultLimit, Route, SelectFirstPaletteCommand,
+    SelectLastPaletteCommand, SelectNextPaletteCommand, SelectNextPalettePage,
+    SelectPreviousPaletteCommand,
     SelectPreviousPalettePage, ServiceAction, ShellState, ToggleSidebar,
 };
 use core::ops::Deref;
@@ -194,6 +195,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             KeyBinding::new("ctrl-b", ToggleSidebar, Some(SHELL_CONTEXT)),
             KeyBinding::new("cmd-shift-p", DiscoverPackages, Some(SHELL_CONTEXT)),
             KeyBinding::new("ctrl-shift-p", DiscoverPackages, Some(SHELL_CONTEXT)),
+            KeyBinding::new("cmd-backspace", RemoveLibraryPackage, Some(SHELL_CONTEXT)),
+            KeyBinding::new("ctrl-backspace", RemoveLibraryPackage, Some(SHELL_CONTEXT)),
             KeyBinding::new("alt-left", NavigateDocumentBack, Some(SHELL_CONTEXT)),
             KeyBinding::new("alt-right", NavigateDocumentForward, Some(SHELL_CONTEXT)),
         ]);
@@ -451,6 +454,16 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
 
     fn toggle_sidebar_action(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.state.toggle_sidebar();
+        cx.notify();
+    }
+
+    fn remove_library_package_action(
+        &mut self,
+        _: &RemoveLibraryPackage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.remove_selected_document_package();
         cx.notify();
     }
 
@@ -1152,6 +1165,31 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                                     .text_xs()
                                     .text_color(rgb(METADATA_TEXT))
                                     .child(package.item_count.to_string()),
+                            )
+                            .child(
+                                // The row itself toggles disclosure, so this
+                                // stops propagation; without it removing a
+                                // package would also expand or collapse it on
+                                // the way out.
+                                div()
+                                    .id(("package-tree-remove", package_index))
+                                    .w(px(18.0))
+                                    .h(px(18.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.0))
+                                    .text_xs()
+                                    .text_color(rgb(METADATA_TEXT))
+                                    .hover(|style| {
+                                        style.bg(rgb(PANEL_BACKGROUND)).text_color(rgb(FOREGROUND))
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.state.set_document_package_added(package_index, false);
+                                        cx.notify();
+                                    }))
+                                    .child("×"),
                             ),
                     );
                     if expanded {
@@ -3039,17 +3077,12 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                 cx.notify();
             }))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .child(label)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(METADATA_TEXT))
-                            .child(form_field_hint(field)),
-                    ),
+                div().flex().flex_col().gap(px(1.0)).child(label).child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(METADATA_TEXT))
+                        .child(form_field_hint(field)),
+                ),
             )
             .child(
                 div()
@@ -3316,6 +3349,7 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> Render for GpuiShell
             .on_action(cx.listener(Self::focus_documentation_search))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::discover_packages_action))
+            .on_action(cx.listener(Self::remove_library_package_action))
             .on_action(cx.listener(Self::navigate_document_back_action))
             .on_action(cx.listener(Self::navigate_document_forward_action))
             .on_action(cx.listener(Self::next_form_field))
@@ -3483,12 +3517,8 @@ const fn action_element_id(action: ServiceAction) -> u64 {
 /// through `PORTABLE_LOCAL_SOURCE_LIMIT`.
 const fn form_field_hint(field: FormField) -> &'static str {
     match field {
-        FormField::Language => {
-            "profile token, e.g. rust-2024, python-3.13, typescript, go-1.25"
-        }
-        FormField::Stage => {
-            "parse validates syntax; lower-ir also lowers facts into canonical IR"
-        }
+        FormField::Language => "profile token, e.g. rust-2024, python-3.13, typescript, go-1.25",
+        FormField::Stage => "parse validates syntax; lower-ir also lowers facts into canonical IR",
         FormField::Source => "the source text itself, not a path; up to 1 MiB",
         FormField::Snapshot => "identity of an immutable published snapshot",
         FormField::Query => "bounded query text; at most 4 rows come back",

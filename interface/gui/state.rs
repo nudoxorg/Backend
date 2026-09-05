@@ -609,6 +609,13 @@ impl ShellState {
             .set_package_added(package, added);
     }
 
+    /// Removes the library package owning the selected document.
+    pub fn remove_selected_document_package(&mut self) {
+        if let Some(package) = self.projection.documentation.selected_package() {
+            self.projection.documentation.remove_package(package);
+        }
+    }
+
     /// Focuses a closed visible form and selects its owning route.
     pub fn select_action(&mut self, action: ServiceAction) {
         self.projection.navigation.select_action(action);

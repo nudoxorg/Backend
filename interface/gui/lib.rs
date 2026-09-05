@@ -51,6 +51,8 @@ gpui::actions!(
         ToggleSidebar,
         /// Opens package discovery in the indexed search surface.
         DiscoverPackages,
+        /// Removes the selected document's package from the library.
+        RemoveLibraryPackage,
         /// Navigates to the previous visited document.
         NavigateDocumentBack,
         /// Navigates to the next visited document.
