@@ -310,8 +310,8 @@ pub(crate) fn type_parameter_bound(
 ) -> Result<TypeParameterBound, FullSemanticImageFault> {
     let edges = Edges::for_node(bytes, layout, typed, TYPE_PARAMETER_BOUNDS, id.raw)?;
     match edges.scalar_at(22, index)? {
-        0 => Ok(TypeParameterBound::Type(edges.node_at_n(23, index, 1, TYPE)?)),
-        1 => Ok(TypeParameterBound::Lifetime(edges.atom_at_n(23, index, 1)?)),
+        0 => Ok(TypeParameterBound::Type(edges.node_at(23, index, TYPE)?)),
+        1 => Ok(TypeParameterBound::Lifetime(edges.atom_at(23, index)?)),
         _ => Err(shape(edges.node)),
     }
 }

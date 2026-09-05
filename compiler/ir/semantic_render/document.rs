@@ -12,11 +12,17 @@ use core::{convert::Infallible, fmt, ops::Deref, str};
 use thiserror::Error;
 
 use crate::{
-    AtomId, CSharpVersion, CStandard, CanonicalTypeRenderError, CanonicalTypeRenderLimits,
-    CxxStandard, DeclarationIdentity, DocFragment, DocId, EntityId, ExternalId, ExternalTarget,
-    FactAvailability, ForeignTargetOrigin, GoVersion, JavaRelease, LanguageProfile,
-    ParentageAuthority, PythonVersion, RustEdition, SemanticImageAuthority, SemanticReader,
-    SourceSpan, TypeId, TypeScriptSource, prepare_canonical_type,
+    prepare_canonical_type, AtomId, AtomListId, CSharpFacts, CSharpNullability, CSharpPartialRole,
+    CSharpReferenceKind, CSharpVersion, CStandard, CanonicalTypeRenderError,
+    CanonicalTypeRenderLimits, CanonicalTypeRenderReference, ClangFacts, ClangStorageClass,
+    Confidence, CxxStandard, DeclarationIdentity, DocFragment, DocId, EntityId, EntityListId,
+    ExternalId, ExternalTarget, FactAvailability, ForeignTargetOrigin, GoFacts, GoVersion,
+    JavaFacts, JavaRelease, LanguageProfile, ObjectMemberListId, ParentageAuthority, PythonFacts,
+    PythonParameterKind, PythonVersion, RustEdition, RustFacts, SemanticImageAuthority,
+    SemanticReader, SourceSpan, TemplatePartListId, TupleElementListId, TypeId, TypeListId,
+    TypeParameter, TypeParameterBound, TypeParameterBoundListId, TypeParameterInference,
+    TypeParameterListId, TypeParameterPrimaryRequirement, TypeParameterRequirements,
+    TypeScriptSource,
 };
 
 use super::{kind_name, visibility_name};
@@ -49,6 +55,24 @@ pub enum SemanticDocumentReference {
     Documentation(DocId),
     /// A local declaration target.
     Entity(EntityId),
+    /// A semantic type row.
+    Type(TypeId),
+    /// An ordered semantic type list.
+    TypeList(TypeListId),
+    /// An ordered atom list.
+    AtomList(AtomListId),
+    /// An ordered entity/member list.
+    EntityList(EntityListId),
+    /// An ordered generic-parameter list.
+    TypeParameterList(TypeParameterListId),
+    /// An ordered bound list owned by one generic parameter.
+    TypeParameterBoundList(TypeParameterBoundListId),
+    /// A tuple/callable element list nested in a semantic type.
+    TupleElements(TupleElementListId),
+    /// An object-member list nested in a semantic type.
+    ObjectMembers(ObjectMemberListId),
+    /// A template-literal part list nested in a semantic type.
+    TemplateParts(TemplatePartListId),
     /// An external target row.
     External(ExternalId),
 }
@@ -649,6 +673,16 @@ fn emit_document<Reader: SemanticReader + ?Sized>(
         row.docs,
         output,
     )?;
+    // Keep the historical compact extension marker above stable while
+    // appending the complete selected named plane here.  The payload is read
+    // only through `SemanticReader`; every typed list coordinate is resolved
+    // before preparation succeeds and is rendered again by `write_into`.
+    write_text(entity, output, ",extension-facts=")?;
+    if row.authority.language_extension == FactAvailability::Captured {
+        emit_extension_facts(reader, entity, language, type_limits, output)?;
+    } else {
+        write_text(entity, output, "unavailable")?;
+    }
     write_text(entity, output, ")")
 }
 
@@ -665,6 +699,646 @@ fn extension_present<Reader: SemanticReader + ?Sized>(
         SemanticDocumentLanguage::Python => reader.python_extension(entity).is_some(),
         SemanticDocumentLanguage::Java => reader.java_extension(entity).is_some(),
         SemanticDocumentLanguage::Clang => reader.clang_extension(entity).is_some(),
+    }
+}
+
+fn emit_extension_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    language: SemanticDocumentLanguage,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    match language {
+        SemanticDocumentLanguage::TypeScript => {
+            let facts = reader
+                .typescript_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_typescript_facts(reader, entity, facts, type_limits, output)
+        }
+        SemanticDocumentLanguage::CSharp => {
+            let facts = reader
+                .csharp_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_csharp_facts(reader, entity, facts, type_limits, output)
+        }
+        SemanticDocumentLanguage::Go => {
+            let facts = reader
+                .go_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_go_facts(reader, entity, facts, type_limits, output)
+        }
+        SemanticDocumentLanguage::Rust => {
+            let facts = reader
+                .rust_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_rust_facts(reader, entity, facts, type_limits, output)
+        }
+        SemanticDocumentLanguage::Python => {
+            let facts = reader
+                .python_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_python_facts(reader, entity, facts, output)
+        }
+        SemanticDocumentLanguage::Java => {
+            let facts = reader
+                .java_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_java_facts(reader, entity, facts, type_limits, output)
+        }
+        SemanticDocumentLanguage::Clang => {
+            let facts = reader
+                .clang_extension(entity)
+                .ok_or(extension_authority_mismatch(entity))?;
+            emit_clang_facts(reader, entity, facts, type_limits, output)
+        }
+    }
+}
+
+const fn extension_authority_mismatch(entity: EntityId) -> SemanticDocumentError {
+    SemanticDocumentError::AuthorityMismatch {
+        entity,
+        fact: SemanticDocumentFact::LanguageExtension,
+        claimed: FactAvailability::Captured,
+        present: false,
+    }
+}
+
+fn emit_typescript_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: crate::TypeScriptFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "typescript(type-parameters=")?;
+    emit_type_parameter_list(reader, entity, facts.type_parameters, type_limits, output)?;
+    write_text(entity, output, ",declared=")?;
+    emit_optional_type(reader, entity, facts.declared, type_limits, output)?;
+    write_text(entity, output, ",observed=")?;
+    emit_optional_type(reader, entity, facts.observed, type_limits, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_csharp_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: CSharpFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "csharp(nullability=")?;
+    write_text(entity, output, csharp_nullability_name(facts.nullability))?;
+    write_text(entity, output, ",reference-kind=")?;
+    write_text(
+        entity,
+        output,
+        csharp_reference_kind_name(facts.reference_kind),
+    )?;
+    write_text(entity, output, ",constraints=")?;
+    emit_type_parameter_list(reader, entity, facts.constraints, type_limits, output)?;
+    write_text(entity, output, ",effects=(async=")?;
+    write_bool(entity, output, facts.effects.is_async)?;
+    write_text(entity, output, ",iterator=")?;
+    write_bool(entity, output, facts.effects.is_iterator)?;
+    write_text(entity, output, ",extension=")?;
+    write_bool(entity, output, facts.effects.is_extension)?;
+    write_text(entity, output, "),attributes=")?;
+    emit_atom_list(reader, entity, facts.attributes, output)?;
+    write_text(entity, output, ",partial=")?;
+    write_text(entity, output, csharp_partial_role_name(facts.partial))?;
+    write_text(entity, output, ",xml-provenance=")?;
+    emit_optional_source_span(reader, entity, facts.xml_provenance, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_go_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: GoFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "go(signature(parameters=")?;
+    emit_type_list(
+        reader,
+        entity,
+        facts.signature.parameters,
+        type_limits,
+        output,
+    )?;
+    write_text(entity, output, ",results=")?;
+    emit_type_list(reader, entity, facts.signature.results, type_limits, output)?;
+    write_text(entity, output, ",variadic=")?;
+    write_bool(entity, output, facts.signature.variadic)?;
+    write_text(entity, output, "),type-parameters=")?;
+    emit_type_parameter_list(reader, entity, facts.type_parameters, type_limits, output)?;
+    write_text(entity, output, ",fields=")?;
+    emit_entity_list(reader, entity, facts.fields, output)?;
+    write_text(entity, output, ",method-set=")?;
+    emit_entity_list(reader, entity, facts.method_set, output)?;
+    write_text(entity, output, ",build-constraints=")?;
+    emit_atom_list(reader, entity, facts.build_constraints, output)?;
+    write_text(entity, output, ",constant-value=")?;
+    emit_atom_list(reader, entity, facts.constant_value, output)?;
+    write_text(entity, output, ",constant-group=")?;
+    write_signed(entity, output, facts.constant_group)?;
+    write_text(entity, output, ",constant-flags=")?;
+    write_number(entity, output, u64::from(facts.constant_flags))?;
+    write_text(entity, output, ")")
+}
+
+fn emit_rust_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: RustFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "rust(ownership=")?;
+    write_text(entity, output, rust_ownership_name(facts.ownership))?;
+    write_text(entity, output, ",lifetimes=")?;
+    emit_atom_list(reader, entity, facts.lifetimes, output)?;
+    write_text(entity, output, ",where-clauses=")?;
+    emit_type_parameter_list(reader, entity, facts.where_clauses, type_limits, output)?;
+    write_text(entity, output, ",macros=")?;
+    emit_atom_list(reader, entity, facts.macros, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_python_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: PythonFacts,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "python(decorators=")?;
+    emit_atom_list(reader, entity, facts.decorators, output)?;
+    write_text(entity, output, ",parameter-kind=")?;
+    write_text(
+        entity,
+        output,
+        python_parameter_kind_name(facts.parameter_kind),
+    )?;
+    write_text(entity, output, ",dynamic-confidence=")?;
+    write_text(entity, output, confidence_name(facts.dynamic_confidence))?;
+    write_text(entity, output, ")")
+}
+
+fn emit_java_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: JavaFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "java(throws=")?;
+    emit_type_list(reader, entity, facts.throws, type_limits, output)?;
+    write_text(entity, output, ",annotations=")?;
+    emit_atom_list(reader, entity, facts.annotations, output)?;
+    write_text(entity, output, ",overloads=")?;
+    emit_entity_list(reader, entity, facts.overloads, output)?;
+    write_text(entity, output, ",record-components=")?;
+    emit_entity_list(reader, entity, facts.record_components, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_clang_facts<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    facts: ClangFacts,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "clang(qualifiers=(const=")?;
+    write_bool(entity, output, facts.qualifiers.is_const)?;
+    write_text(entity, output, ",volatile=")?;
+    write_bool(entity, output, facts.qualifiers.is_volatile)?;
+    write_text(entity, output, ",restrict=")?;
+    write_bool(entity, output, facts.qualifiers.is_restrict)?;
+    write_text(entity, output, "),storage=")?;
+    write_text(entity, output, clang_storage_name(facts.storage))?;
+    write_text(entity, output, ",layout=(size-bits=")?;
+    emit_optional_u32(entity, facts.layout.size_bits, output)?;
+    write_text(entity, output, ",align-bits=")?;
+    emit_optional_u32(entity, facts.layout.align_bits, output)?;
+    write_text(entity, output, "),templates=")?;
+    emit_type_parameter_list(reader, entity, facts.templates, type_limits, output)?;
+    write_text(entity, output, ",includes=")?;
+    emit_atom_list(reader, entity, facts.includes, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_optional_source_span<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    source: Option<SourceSpan>,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    match source {
+        None => write_text(entity, output, "none"),
+        Some(source) => {
+            write_text(entity, output, "span(file=")?;
+            emit_atom(reader, entity, source.file(), output)?;
+            write_text(entity, output, ",start=")?;
+            write_number(entity, output, u64::from(source.start()))?;
+            write_text(entity, output, ",end=")?;
+            write_number(entity, output, u64::from(source.end()))?;
+            write_text(entity, output, ")")
+        }
+    }
+}
+
+fn emit_optional_u32(
+    entity: EntityId,
+    value: Option<u32>,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    match value {
+        Some(value) => write_number(entity, output, u64::from(value)),
+        None => write_text(entity, output, "none"),
+    }
+}
+
+fn emit_optional_type<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    value: Option<TypeId>,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    match value {
+        Some(value) => {
+            write_text(entity, output, "some(")?;
+            emit_type_coordinate(reader, entity, value, type_limits, output)?;
+            write_text(entity, output, ")")
+        }
+        None => write_text(entity, output, "none"),
+    }
+}
+
+fn emit_type_coordinate<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    semantic_type: TypeId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "type=")?;
+    emit_canonical_type(reader, entity, semantic_type, type_limits, output)
+}
+
+fn emit_canonical_type<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    semantic_type: TypeId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let prepared = prepare_canonical_type(reader, semantic_type, type_limits)
+        .map_err(|cause| map_canonical_type_error(entity, semantic_type, cause))?;
+    prepared
+        .write_to(output)
+        .map_err(|cause| map_canonical_type_error(entity, semantic_type, cause))
+}
+
+fn emit_type_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: TypeListId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let types = reader
+        .types(list)
+        .ok_or(SemanticDocumentError::MissingReference {
+            entity,
+            reference: SemanticDocumentReference::TypeList(list),
+        })?;
+    write_text(entity, output, "type-list(values=[")?;
+    for (index, semantic_type) in types.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        emit_type_coordinate(reader, entity, semantic_type, type_limits, output)?;
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_atom_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: AtomListId,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let atoms = reader
+        .atom_list(list)
+        .ok_or(SemanticDocumentError::MissingReference {
+            entity,
+            reference: SemanticDocumentReference::AtomList(list),
+        })?;
+    write_text(entity, output, "atom-list(values=[")?;
+    for (index, atom) in atoms.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        write_text(entity, output, "atom=")?;
+        emit_atom(reader, entity, atom, output)?;
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_entity_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: EntityListId,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let entities = reader
+        .entity_list(list)
+        .ok_or(SemanticDocumentError::MissingReference {
+            entity,
+            reference: SemanticDocumentReference::EntityList(list),
+        })?;
+    write_text(entity, output, "entity-list(values=[")?;
+    for (index, target) in entities.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        emit_entity_coordinate(reader, entity, target, output)?;
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_entity_coordinate<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    owner: EntityId,
+    target: EntityId,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let row = reader
+        .entity(target)
+        .ok_or(SemanticDocumentError::MissingReference {
+            entity: owner,
+            reference: SemanticDocumentReference::Entity(target),
+        })?;
+    write_text(owner, output, "entity(identity=")?;
+    emit_identity(owner, output, row.version.identity())?;
+    write_text(owner, output, ",name=")?;
+    emit_atom(reader, owner, row.name, output)?;
+    write_text(owner, output, ")")
+}
+
+fn emit_type_parameter_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: TypeParameterListId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let parameters =
+        reader
+            .type_parameters(list)
+            .ok_or(SemanticDocumentError::MissingReference {
+                entity,
+                reference: SemanticDocumentReference::TypeParameterList(list),
+            })?;
+    write_text(entity, output, "type-parameter-list(values=[")?;
+    for (index, parameter) in parameters.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        emit_type_parameter(reader, entity, parameter, type_limits, output)?;
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_type_parameter<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    parameter: TypeParameter,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "parameter(name=")?;
+    emit_atom(reader, entity, parameter.name, output)?;
+    write_text(entity, output, ",bounds=")?;
+    emit_type_parameter_bound_list(reader, entity, parameter.bounds, type_limits, output)?;
+    write_text(entity, output, ",default=")?;
+    emit_optional_type(reader, entity, parameter.default, type_limits, output)?;
+    write_text(entity, output, ",variance=")?;
+    write_text(entity, output, variance_name(parameter.variance))?;
+    write_text(entity, output, ",kind=")?;
+    emit_type_parameter_kind(reader, entity, parameter.kind, type_limits, output)?;
+    write_text(entity, output, ",requirements=")?;
+    emit_type_parameter_requirements(entity, parameter.requirements, output)?;
+    write_text(entity, output, ")")
+}
+
+fn emit_type_parameter_bound_list<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    list: TypeParameterBoundListId,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    let bounds =
+        reader
+            .type_parameter_bounds(list)
+            .ok_or(SemanticDocumentError::MissingReference {
+                entity,
+                reference: SemanticDocumentReference::TypeParameterBoundList(list),
+            })?;
+    write_text(entity, output, "bound-list(values=[")?;
+    for (index, bound) in bounds.enumerate() {
+        if index != 0 {
+            write_text(entity, output, ",")?;
+        }
+        match bound {
+            TypeParameterBound::Type(semantic_type) => {
+                emit_type_coordinate(reader, entity, semantic_type, type_limits, output)?;
+            }
+            TypeParameterBound::Lifetime(atom) => {
+                write_text(entity, output, "lifetime(atom=")?;
+                emit_atom(reader, entity, atom, output)?;
+                write_text(entity, output, ")")?;
+            }
+        }
+    }
+    write_text(entity, output, "])")
+}
+
+fn emit_type_parameter_kind<Reader: SemanticReader + ?Sized>(
+    reader: &Reader,
+    entity: EntityId,
+    kind: crate::TypeParameterKind,
+    type_limits: CanonicalTypeRenderLimits,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    match kind {
+        crate::TypeParameterKind::Type { inference } => {
+            write_text(entity, output, "type(inference=")?;
+            write_text(entity, output, type_parameter_inference_name(inference))?;
+            write_text(entity, output, ")")
+        }
+        crate::TypeParameterKind::ConstValue { value_type } => {
+            write_text(entity, output, "const-value(type=")?;
+            emit_type_coordinate(reader, entity, value_type, type_limits, output)?;
+            write_text(entity, output, ")")
+        }
+        crate::TypeParameterKind::Lifetime => write_text(entity, output, "lifetime"),
+    }
+}
+
+fn emit_type_parameter_requirements(
+    entity: EntityId,
+    requirements: TypeParameterRequirements,
+    output: &mut impl fmt::Write,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, "(primary=")?;
+    match requirements.primary {
+        TypeParameterPrimaryRequirement::None => write_text(entity, output, "none")?,
+        TypeParameterPrimaryRequirement::Reference { nullable } => {
+            write_text(entity, output, "reference(nullable=")?;
+            write_bool(entity, output, nullable)?;
+            write_text(entity, output, ")")?;
+        }
+        TypeParameterPrimaryRequirement::Value => write_text(entity, output, "value")?,
+        TypeParameterPrimaryRequirement::Unmanaged => write_text(entity, output, "unmanaged")?,
+        TypeParameterPrimaryRequirement::NotNull => write_text(entity, output, "not-null")?,
+        TypeParameterPrimaryRequirement::Default => write_text(entity, output, "default")?,
+    }
+    write_text(entity, output, ",constructor=")?;
+    write_bool(entity, output, requirements.constructor)?;
+    write_text(entity, output, ",allows-ref-like=")?;
+    write_bool(entity, output, requirements.allows_ref_like)?;
+    write_text(entity, output, ")")
+}
+
+fn map_canonical_type_error(
+    entity: EntityId,
+    semantic_type: TypeId,
+    cause: CanonicalTypeRenderError,
+) -> SemanticDocumentError {
+    match cause {
+        CanonicalTypeRenderError::MissingRoot { root } => SemanticDocumentError::MissingReference {
+            entity,
+            reference: SemanticDocumentReference::Type(root),
+        },
+        CanonicalTypeRenderError::MissingReference { reference, .. } => {
+            SemanticDocumentError::MissingReference {
+                entity,
+                reference: map_canonical_reference(reference),
+            }
+        }
+        cause => SemanticDocumentError::CanonicalType {
+            entity,
+            semantic_type,
+            cause,
+        },
+    }
+}
+
+const fn map_canonical_reference(
+    reference: CanonicalTypeRenderReference,
+) -> SemanticDocumentReference {
+    match reference {
+        CanonicalTypeRenderReference::Type(value) => SemanticDocumentReference::Type(value),
+        CanonicalTypeRenderReference::Atom(value) => SemanticDocumentReference::Atom(value),
+        CanonicalTypeRenderReference::TypeList(value) => SemanticDocumentReference::TypeList(value),
+        CanonicalTypeRenderReference::AtomList(value) => SemanticDocumentReference::AtomList(value),
+        CanonicalTypeRenderReference::TupleElements(value) => {
+            SemanticDocumentReference::TupleElements(value)
+        }
+        CanonicalTypeRenderReference::ObjectMembers(value) => {
+            SemanticDocumentReference::ObjectMembers(value)
+        }
+        CanonicalTypeRenderReference::TemplateParts(value) => {
+            SemanticDocumentReference::TemplateParts(value)
+        }
+        CanonicalTypeRenderReference::Entity(value) => SemanticDocumentReference::Entity(value),
+        CanonicalTypeRenderReference::External(value) => SemanticDocumentReference::External(value),
+    }
+}
+
+const fn csharp_nullability_name(value: CSharpNullability) -> &'static str {
+    match value {
+        CSharpNullability::Oblivious => "oblivious",
+        CSharpNullability::NonNullable => "non-nullable",
+        CSharpNullability::Nullable => "nullable",
+    }
+}
+
+const fn csharp_reference_kind_name(value: CSharpReferenceKind) -> &'static str {
+    match value {
+        CSharpReferenceKind::Value => "value",
+        CSharpReferenceKind::In => "in",
+        CSharpReferenceKind::Ref => "ref",
+        CSharpReferenceKind::Out => "out",
+    }
+}
+
+const fn csharp_partial_role_name(value: CSharpPartialRole) -> &'static str {
+    match value {
+        CSharpPartialRole::None => "none",
+        CSharpPartialRole::Definition => "definition",
+        CSharpPartialRole::Implementation => "implementation",
+    }
+}
+
+const fn rust_ownership_name(value: crate::RustOwnership) -> &'static str {
+    match value {
+        crate::RustOwnership::Value => "value",
+        crate::RustOwnership::SharedBorrow => "shared-borrow",
+        crate::RustOwnership::MutableBorrow => "mutable-borrow",
+        crate::RustOwnership::Moved => "moved",
+    }
+}
+
+const fn python_parameter_kind_name(value: PythonParameterKind) -> &'static str {
+    match value {
+        PythonParameterKind::PositionalOnly => "positional-only",
+        PythonParameterKind::PositionalOrKeyword => "positional-or-keyword",
+        PythonParameterKind::VariadicPositional => "variadic-positional",
+        PythonParameterKind::KeywordOnly => "keyword-only",
+        PythonParameterKind::VariadicKeyword => "variadic-keyword",
+    }
+}
+
+const fn confidence_name(value: Confidence) -> &'static str {
+    match value {
+        Confidence::Syntactic => "syntactic",
+        Confidence::Heuristic => "heuristic",
+        Confidence::Indexed => "indexed",
+        Confidence::Imported => "imported",
+        Confidence::Compiler => "compiler",
+    }
+}
+
+const fn clang_storage_name(value: ClangStorageClass) -> &'static str {
+    match value {
+        ClangStorageClass::None => "none",
+        ClangStorageClass::Auto => "auto",
+        ClangStorageClass::Static => "static",
+        ClangStorageClass::Extern => "extern",
+        ClangStorageClass::Register => "register",
+        ClangStorageClass::ThreadLocal => "thread-local",
+    }
+}
+
+const fn variance_name(value: crate::Variance) -> &'static str {
+    match value {
+        crate::Variance::Invariant => "invariant",
+        crate::Variance::Covariant => "covariant",
+        crate::Variance::Contravariant => "contravariant",
+        crate::Variance::Bivariant => "bivariant",
+    }
+}
+
+const fn type_parameter_inference_name(value: TypeParameterInference) -> &'static str {
+    match value {
+        TypeParameterInference::Ordinary => "ordinary",
+        TypeParameterInference::Const => "const",
     }
 }
 
@@ -732,18 +1406,7 @@ fn emit_semantic_type<Reader: SemanticReader + ?Sized>(
     )?;
     match semantic_type {
         None => write_text(entity, output, "unavailable"),
-        Some(semantic_type) => prepare_canonical_type(reader, semantic_type, limits)
-            .map_err(|cause| SemanticDocumentError::CanonicalType {
-                entity,
-                semantic_type,
-                cause,
-            })?
-            .write_to(output)
-            .map_err(|cause| SemanticDocumentError::CanonicalType {
-                entity,
-                semantic_type,
-                cause,
-            }),
+        Some(semantic_type) => emit_canonical_type(reader, entity, semantic_type, limits, output),
     }
 }
 
@@ -984,6 +1647,23 @@ fn write_number(
 ) -> Result<(), SemanticDocumentError> {
     fmt::write(output, format_args!("{value}"))
         .map_err(|_| SemanticDocumentError::OutputWrite { entity })
+}
+
+fn write_signed(
+    entity: EntityId,
+    output: &mut impl fmt::Write,
+    value: i64,
+) -> Result<(), SemanticDocumentError> {
+    fmt::write(output, format_args!("{value}"))
+        .map_err(|_| SemanticDocumentError::OutputWrite { entity })
+}
+
+fn write_bool(
+    entity: EntityId,
+    output: &mut impl fmt::Write,
+    value: bool,
+) -> Result<(), SemanticDocumentError> {
+    write_text(entity, output, if value { "true" } else { "false" })
 }
 
 fn write_text(

@@ -3,16 +3,19 @@
 use core::num::NonZeroUsize;
 
 use compiler_ir::{
-    BorrowedTree, CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
-    CSharpReferenceKind, CanonicalTypeRenderLimits, ClangFacts, ClangLayout, ClangQualifiers,
-    ClangStorageClass, CorePayloadHash, DeclarationFamilyId, DocInput, EntityAuthorityFacts,
-    EntityId, EntityVersion, ExternalDeclarationIdentity, ExternalTarget, FactAvailability,
-    ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, GoFacts, GoSignature,
-    IrBuilder, ItemKind, JavaFacts, LanguageExtensionInput, LanguageProfile, ParentageAuthority,
-    PythonFacts, PythonParameterKind, RustFacts, RustOwnership, SemanticDocumentError,
-    SemanticImageView, SourceSyntaxError, TreeItemInput, TypeScriptFacts, VariantAvailability,
-    VariantFingerprint, Visibility, encode_full_semantic_image, full_semantic_image_len,
-    prepare_semantic_document, prepare_source_syntax,
+    encode_full_semantic_image, full_semantic_image_len, prepare_semantic_document,
+    prepare_source_syntax, BorrowedTree, BuiltinType, CSharpFacts, CSharpMemberEffects,
+    CSharpNullability, CSharpPartialRole, CSharpReferenceKind, CanonicalTypeRenderLimits,
+    ClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass, ConcreteType, CorePayloadHash,
+    DeclarationFamilyId, DocInput, EntityAuthorityFacts, EntityId, EntityVersion,
+    ExternalDeclarationIdentity, ExternalTarget, FactAvailability, ForeignDeclarationId,
+    ForeignExternalTarget, ForeignTargetOrigin, GoFacts, GoSignature, Ir, IrBuilder, ItemKind,
+    JavaFacts, LanguageExtensionInput, LanguageProfile, ParentageAuthority, PythonFacts,
+    PythonParameterKind, RustFacts, RustOwnership, SemanticDocumentError, SemanticImageView,
+    SourceSpan, SourceSyntaxError, TreeItemInput, TypeParameter, TypeParameterBound,
+    TypeParameterInference, TypeParameterKind, TypeParameterPrimaryRequirement,
+    TypeParameterRequirements, TypeScriptFacts, Variance, VariantAvailability, VariantFingerprint,
+    Visibility,
 };
 use compiler_vocabulary::{
     CSharpVersion, CStandard, GoVersion, JavaRelease, PythonVersion, RustEdition, TypeScriptSource,
@@ -76,6 +79,317 @@ fn add_one<'facts>(
     Ok(())
 }
 
+fn rich_type_parameters(
+    builder: &mut IrBuilder,
+    semantic_type: compiler_ir::TypeId,
+) -> Result<compiler_ir::TypeParameterListId, compiler_ir::BuildError> {
+    let name = builder.intern_atom(b"T")?;
+    let lifetime = builder.intern_atom(b"'a")?;
+    let bounds = builder.intern_type_parameter_bounds(&[
+        TypeParameterBound::Type(semantic_type),
+        TypeParameterBound::Lifetime(lifetime),
+    ])?;
+    builder.intern_type_parameters(&[TypeParameter {
+        name,
+        bounds,
+        default: Some(semantic_type),
+        variance: Variance::Covariant,
+        kind: TypeParameterKind::Type {
+            inference: TypeParameterInference::Const,
+        },
+        requirements: TypeParameterRequirements {
+            primary: TypeParameterPrimaryRequirement::Reference { nullable: true },
+            constructor: false,
+            allows_ref_like: false,
+        },
+    }])
+}
+
+fn rich_typescript() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let type_parameters = rich_type_parameters(&mut builder, semantic_type.erase())?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::TypeScript(&TypeScriptFacts {
+            type_parameters,
+            declared: Some(semantic_type.erase()),
+            observed: Some(semantic_type.erase()),
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_csharp() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let constraints = rich_type_parameters(&mut builder, semantic_type.erase())?;
+    let attribute = builder.intern_atom(b"Obsolete")?;
+    let attributes = builder.intern_attributes(&[attribute])?;
+    let file = builder.intern_atom(b"src/lib.cs")?;
+    let xml_provenance = SourceSpan::new(file, 4, 17);
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::CSharp(&CSharpFacts {
+            nullability: CSharpNullability::Nullable,
+            reference_kind: CSharpReferenceKind::Ref,
+            constraints,
+            effects: CSharpMemberEffects {
+                is_async: true,
+                is_iterator: true,
+                is_extension: true,
+            },
+            attributes,
+            partial: CSharpPartialRole::Implementation,
+            xml_provenance,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_go() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::Go(GoVersion::Go125);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let types = builder.intern_types(&[semantic_type.erase()])?;
+    let type_parameters = rich_type_parameters(&mut builder, semantic_type.erase())?;
+    let members = builder.intern_members(&[EntityId::new(0)])?;
+    let build_atom = builder.intern_atom(b"linux")?;
+    let build_constraints = builder.intern_attributes(&[build_atom])?;
+    let constant_atom = builder.intern_atom(b"42")?;
+    let constant_value = builder.intern_attributes(&[constant_atom])?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::Go(&GoFacts {
+            signature: GoSignature {
+                parameters: types,
+                results: types,
+                variadic: true,
+            },
+            type_parameters,
+            fields: members,
+            method_set: members,
+            build_constraints,
+            constant_value,
+            constant_group: -7,
+            constant_flags: 0xA5,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_rust() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let type_parameters = rich_type_parameters(&mut builder, semantic_type.erase())?;
+    let lifetime = builder.intern_atom(b"'static")?;
+    let lifetimes = builder.intern_attributes(&[lifetime])?;
+    let macro_name = builder.intern_atom(b"trace")?;
+    let macros = builder.intern_attributes(&[macro_name])?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::Rust(&RustFacts {
+            ownership: RustOwnership::MutableBorrow,
+            lifetimes,
+            where_clauses: type_parameters,
+            macros,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_python() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::Python(PythonVersion::Python314);
+    builder.set_language_profile(profile)?;
+    let decorator = builder.intern_atom(b"classmethod")?;
+    let decorators = builder.intern_attributes(&[decorator])?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::Python(&PythonFacts {
+            decorators,
+            parameter_kind: PythonParameterKind::VariadicKeyword,
+            dynamic_confidence: compiler_ir::Confidence::Imported,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_java() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::Java(JavaRelease::Java25);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let throws = builder.intern_types(&[semantic_type.erase()])?;
+    let annotation = builder.intern_atom(b"Override")?;
+    let annotations = builder.intern_attributes(&[annotation])?;
+    let members = builder.intern_members(&[EntityId::new(0)])?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::Java(&JavaFacts {
+            throws,
+            annotations,
+            overloads: members,
+            record_components: members,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn rich_clang() -> Result<Ir, compiler_ir::BuildError> {
+    let mut builder = IrBuilder::new();
+    let profile = LanguageProfile::C(CStandard::C23);
+    builder.set_language_profile(profile)?;
+    let semantic_type = builder.intern_concrete(ConcreteType::Builtin(BuiltinType::I32))?;
+    let templates = rich_type_parameters(&mut builder, semantic_type.erase())?;
+    let include = builder.intern_atom(b"header.h")?;
+    let includes = builder.intern_attributes(&[include])?;
+    add_one(
+        &mut builder,
+        profile,
+        LanguageExtensionInput::Clang(&ClangFacts {
+            qualifiers: ClangQualifiers {
+                is_const: true,
+                is_volatile: true,
+                is_restrict: true,
+            },
+            storage: ClangStorageClass::ThreadLocal,
+            layout: ClangLayout {
+                size_bits: Some(64),
+                align_bits: Some(8),
+            },
+            templates,
+            includes,
+        }),
+    )?;
+    builder.finish()
+}
+
+fn assert_reopened_payload(profile: LanguageProfile, image: &Ir, expected: &[&str]) {
+    let owned = render(profile, image).expect("owned semantic document");
+    let mut bytes = vec![0; full_semantic_image_len(image).expect("image size")];
+    encode_full_semantic_image(image, &mut bytes).expect("encode full image");
+    let reopened = SemanticImageView::reopen(&bytes).expect("reopen full image");
+    let reopened_output = render(profile, &reopened).expect("reopened semantic document");
+    assert_eq!(owned, reopened_output);
+    let text = core::str::from_utf8(&owned).expect("semantic document is UTF-8");
+    for needle in expected {
+        assert!(text.contains(needle), "missing {needle:?} in {text}");
+    }
+}
+
+#[test]
+fn every_named_extension_payload_is_owned_reopen_byte_exact() -> Result<(), compiler_ir::BuildError>
+{
+    let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    let image = rich_typescript()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=typescript(type-parameters=type-parameter-list(",
+            "declared=some(type=builtin(i32))",
+            "observed=some(type=builtin(i32))",
+            "variance=covariant",
+            "inference=const",
+            "requirements=(primary=reference(nullable=true),constructor=false,allows-ref-like=false)",
+        ],
+    );
+
+    let profile = LanguageProfile::CSharp(CSharpVersion::CSharp14);
+    let image = rich_csharp()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=csharp(nullability=nullable,reference-kind=ref",
+            "effects=(async=true,iterator=true,extension=true)",
+            "attributes=atom-list(",
+            "partial=implementation",
+            "xml-provenance=span(file=x\"7372632F6C69622E6373\",start=4,end=17)",
+        ],
+    );
+
+    let profile = LanguageProfile::Go(GoVersion::Go125);
+    let image = rich_go()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=go(signature(parameters=type-list(",
+            "variadic=true",
+            "fields=entity-list(",
+            "build-constraints=atom-list(",
+            "constant-group=-7,constant-flags=165",
+        ],
+    );
+
+    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    let image = rich_rust()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=rust(ownership=mutable-borrow",
+            "lifetimes=atom-list(",
+            "where-clauses=type-parameter-list(",
+            "macros=atom-list(",
+        ],
+    );
+
+    let profile = LanguageProfile::Python(PythonVersion::Python314);
+    let image = rich_python()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=python(decorators=atom-list(",
+            "parameter-kind=variadic-keyword",
+            "dynamic-confidence=imported",
+        ],
+    );
+
+    let profile = LanguageProfile::Java(JavaRelease::Java25);
+    let image = rich_java()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=java(throws=type-list(",
+            "annotations=atom-list(",
+            "overloads=entity-list(",
+            "record-components=entity-list(",
+        ],
+    );
+
+    let profile = LanguageProfile::C(CStandard::C23);
+    let image = rich_clang()?;
+    assert_reopened_payload(
+        profile,
+        &image,
+        &[
+            "extension-facts=clang(qualifiers=(const=true,volatile=true,restrict=true),storage=thread-local",
+            "layout=(size-bits=64,align-bits=8)",
+            "templates=type-parameter-list(",
+            "includes=atom-list(",
+        ],
+    );
+    Ok(())
+}
+
 fn render<Reader: compiler_ir::SemanticReader + ?Sized>(
     profile: LanguageProfile,
     image: &Reader,
@@ -87,8 +401,8 @@ fn render<Reader: compiler_ir::SemanticReader + ?Sized>(
 }
 
 #[test]
-fn all_named_extension_planes_admit_their_static_document_dialect()
--> Result<(), compiler_ir::BuildError> {
+fn all_named_extension_planes_admit_their_static_document_dialect(
+) -> Result<(), compiler_ir::BuildError> {
     let mut typescript_builder = IrBuilder::new();
     let ts_parameters = typescript_builder.intern_type_parameters(&[])?;
     add_one(
@@ -101,15 +415,13 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
         }),
     )?;
     let ts = typescript_builder.finish()?;
-    assert!(
-        render(
-            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
-            &ts
-        )
-        .expect("typescript document")
-        .windows(b"dialect=typescript".len())
-        .any(|value| value == b"dialect=typescript")
-    );
+    assert!(render(
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        &ts
+    )
+    .expect("typescript document")
+    .windows(b"dialect=typescript".len())
+    .any(|value| value == b"dialect=typescript"));
 
     let mut csharp_builder = IrBuilder::new();
     let constraints = csharp_builder.intern_type_parameters(&[])?;
@@ -163,12 +475,10 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
         }),
     )?;
     let go = go_builder.finish()?;
-    assert!(
-        render(LanguageProfile::Go(GoVersion::Go125), &go)
-            .expect("go document")
-            .windows(b"dialect=go".len())
-            .any(|value| value == b"dialect=go")
-    );
+    assert!(render(LanguageProfile::Go(GoVersion::Go125), &go)
+        .expect("go document")
+        .windows(b"dialect=go".len())
+        .any(|value| value == b"dialect=go"));
 
     let mut rust_builder = IrBuilder::new();
     let rust_atoms = rust_builder.intern_attributes(&[])?;
@@ -184,12 +494,10 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
         }),
     )?;
     let rust = rust_builder.finish()?;
-    assert!(
-        render(LanguageProfile::Rust(RustEdition::Rust2024), &rust)
-            .expect("rust document")
-            .windows(b"dialect=rust".len())
-            .any(|value| value == b"dialect=rust")
-    );
+    assert!(render(LanguageProfile::Rust(RustEdition::Rust2024), &rust)
+        .expect("rust document")
+        .windows(b"dialect=rust".len())
+        .any(|value| value == b"dialect=rust"));
 
     let mut python_builder = IrBuilder::new();
     let decorators = python_builder.intern_attributes(&[])?;
@@ -225,12 +533,10 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
         }),
     )?;
     let java = java_builder.finish()?;
-    assert!(
-        render(LanguageProfile::Java(JavaRelease::Java25), &java)
-            .expect("java document")
-            .windows(b"dialect=java".len())
-            .any(|value| value == b"dialect=java")
-    );
+    assert!(render(LanguageProfile::Java(JavaRelease::Java25), &java)
+        .expect("java document")
+        .windows(b"dialect=java".len())
+        .any(|value| value == b"dialect=java"));
 
     let mut clang_builder = IrBuilder::new();
     let clang_parameters = clang_builder.intern_type_parameters(&[])?;
@@ -254,18 +560,16 @@ fn all_named_extension_planes_admit_their_static_document_dialect()
         }),
     )?;
     let clang = clang_builder.finish()?;
-    assert!(
-        render(LanguageProfile::C(CStandard::C23), &clang)
-            .expect("clang document")
-            .windows(b"dialect=clang".len())
-            .any(|value| value == b"dialect=clang")
-    );
+    assert!(render(LanguageProfile::C(CStandard::C23), &clang)
+        .expect("clang document")
+        .windows(b"dialect=clang".len())
+        .any(|value| value == b"dialect=clang"));
     Ok(())
 }
 
 #[test]
-fn semantic_document_is_reopen_stable_and_never_becomes_source_syntax()
--> Result<(), compiler_ir::BuildError> {
+fn semantic_document_is_reopen_stable_and_never_becomes_source_syntax(
+) -> Result<(), compiler_ir::BuildError> {
     let mut builder = IrBuilder::new();
     let profile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
     builder.set_language_profile(profile)?;
@@ -327,14 +631,10 @@ fn semantic_document_is_reopen_stable_and_never_becomes_source_syntax()
     })?;
     let image = builder.finish()?;
     let owned = render(profile, &image).expect("owned semantic document");
-    assert!(
-        owned
-            .windows(
-                b"target=external(foreign(identity=x\"31313131313131313131313131313131\"".len()
-            )
-            .any(|value| value
-                == b"target=external(foreign(identity=x\"31313131313131313131313131313131\"")
-    );
+    assert!(owned
+        .windows(b"target=external(foreign(identity=x\"31313131313131313131313131313131\"".len())
+        .any(|value| value
+            == b"target=external(foreign(identity=x\"31313131313131313131313131313131\""));
     let mut bytes = vec![0; full_semantic_image_len(&image).expect("image size")];
     encode_full_semantic_image(&image, &mut bytes).expect("encode full image");
     let reopened = SemanticImageView::reopen(&bytes).expect("reopen full image");
