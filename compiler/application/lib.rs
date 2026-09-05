@@ -5,6 +5,7 @@
 
 mod compiler;
 mod config;
+mod documentation;
 mod terminal;
 
 pub use compiler::LocalCompiler;
@@ -13,5 +14,12 @@ pub use config::{
     LocalCompilerTimeoutError, LocalToolchainSet, LocalToolchainSetError,
     MAX_FRAGMENT_OUTPUT_BYTES, MAX_LOCAL_COMPILER_TIMEOUT, MAX_LOCAL_TOOLCHAINS,
     MAX_LOCALITY_OUTPUT_BYTES, MAX_MANIFEST_ENTRIES, MAX_MANIFEST_OUTPUT_BYTES,
+};
+pub use documentation::{
+    CanonicalDocumentationEntities, DocumentationEntity, DocumentationEntityView,
+    DocumentationFragment, DocumentationFragments, DocumentationMembers,
+    DocumentationProjectionError, DocumentationReference, DocumentationRelation,
+    DocumentationRelations, DocumentationSession, DocumentationSessionView, DocumentationTarget,
+    DocumentationTextPart, DocumentationType, DocumentationTypeView,
 };
 pub use terminal::{LocalCompilerOpenError, LocalCompilerPath};

@@ -18,8 +18,8 @@ use heart_identity::{
 };
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
-    CompilerTerminal, GeneratedArtifact, PublicationAuthority, SemanticImageAuthority,
-    SourceAuthority,
+    CompilerTerminal, GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
+    PublicationAuthority, SemanticImageAuthority, SourceAuthority,
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
 
@@ -278,6 +278,24 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
         self.compile_and_publish(request)
+    }
+
+    fn compile_package<Progress>(
+        &mut self,
+        request: &PackageCompileRequest,
+        _: &mut Progress,
+    ) -> Result<GeneratedArtifact, CompilerTerminal>
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
+        // This configured compiler owns source compilation and publication,
+        // but no package-source locator yet.  Reporting the capability as
+        // unavailable is honest: entering a synthetic source phase here
+        // would falsely claim resolution authority.
+        Err(CompilerTerminal::Unavailable {
+            language: request.target.profile.language(),
+            stage: request.target.stage,
+        })
     }
 }
 
