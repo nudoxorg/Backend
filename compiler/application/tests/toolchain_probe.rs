@@ -112,6 +112,34 @@ fn output_crossing_the_stream_cap_is_terminated_and_retains_exact_facts() {
 
 #[cfg(unix)]
 #[test]
+fn exited_probe_cannot_publish_a_truncated_stream_as_its_identity() {
+    let program = ProbeProgram::new("printf '0123456789abcdef0123456789abcdef'");
+    let limits = ToolchainProbeLimits::new(
+        Duration::from_secs(2),
+        NonZeroUsize::new(8).expect("test stream limit is nonzero"),
+    )
+    .expect("test timeout is nonzero");
+    let error = LocalRuntimeToolchain::probe(
+        NativeTool::TypeScriptCompiler,
+        program.executable.clone(),
+        limits,
+    )
+    .expect_err("a fast successful exit must not hide its output-cap crossing");
+    assert!(matches!(
+        error,
+        ToolchainProbeError::Bounded {
+            tool: NativeTool::TypeScriptCompiler,
+            primary: ToolchainProbePrimary::OutputLimit {
+                worker: NativeWorker::StandardOutputReader,
+                observed: 32,
+                maximum: 8,
+            },
+        }
+    ));
+}
+
+#[cfg(unix)]
+#[test]
 fn live_probe_crossing_the_deadline_is_terminated_and_retains_the_interval() {
     let program = ProbeProgram::new("while :; do :; done");
     let timeout = Duration::from_millis(25);

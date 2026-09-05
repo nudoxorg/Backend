@@ -416,6 +416,14 @@ pub(crate) fn probe_command(
     if let Some(terminal) = preceding {
         return Err(terminal);
     }
+    // A short-lived child can exit between the coordinator's last channel
+    // poll and the reader's cap-crossing send. Joining both readers above is
+    // the completion barrier for those sends, so inspect the channel once
+    // more before treating the observed exit status and retained prefix as a
+    // valid version identity.
+    if let Ok(primary) = limit_receiver.try_recv() {
+        return Err(ToolchainProbeError::Bounded { tool, primary });
+    }
     let status = status.ok_or(ToolchainProbeError::MissingStatus { tool })?;
     if !status.success() {
         return Err(ToolchainProbeError::Exit {
