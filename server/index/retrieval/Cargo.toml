@@ -31,8 +31,13 @@ heart-object = { path = "../../../heart/object" }
 heart-root = { path = "../../../heart/root" }
 heart-schema = { path = "../../../heart/schema" }
 heart-memory = { path = "../../../heart/memory" }
+futures-core.workspace = true
 [lints]
 workspace = true
 
 [lib]
 path = "lib.rs"
+
+[[bench]]
+name = "source_resolution"
+harness = false

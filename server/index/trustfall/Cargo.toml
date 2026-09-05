@@ -25,3 +25,7 @@ server-index-vocabulary = { path = "../vocabulary" }
 
 [lib]
 path = "lib.rs"
+
+[[bench]]
+name = "occurrence_traversal"
+harness = false

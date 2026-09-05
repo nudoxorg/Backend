@@ -12,13 +12,12 @@ use std::{
 };
 
 use compiler_ir::{
-    Confidence, EntityId, Ir, LinkKind, LinkTarget, SemanticImageView, SemanticReader,
+    Confidence, EntityId, FactAvailability, Ir, LinkId, LinkKind, LinkOccurrenceId, LinkTarget,
+    SemanticCoreReader, SemanticImageView, SemanticReader, SourceSpan,
 };
 use futures_core::Stream;
 use futures_util::stream;
-use server_index_graph_vector::{
-    Cancellation, GraphAuthority, PartitionId, ValidatedGraphView,
-};
+use server_index_graph_vector::{Cancellation, GraphAuthority, PartitionId, ValidatedGraphView};
 use thiserror::Error;
 use trustfall::{
     FieldValue, Schema,
@@ -32,7 +31,8 @@ use trustfall::{
 use trustfall_core::{
     frontend::{error::FrontendError, parse},
     interpreter::{
-        error::{ExecutionError, QueryArgumentsError}, execution::interpret_ir,
+        error::{ExecutionError, QueryArgumentsError},
+        execution::interpret_ir,
         interpret_ir_async,
     },
     ir::IndexedQuery,
@@ -88,25 +88,174 @@ pub struct SemanticTrustfallHit {
     pub confidence: Confidence,
 }
 
+/// One authority-observed local link occurrence from a reopened semantic image.
+///
+/// Unlike [`SemanticTrustfallHit`], this retains every source site and its
+/// occurrence-local confidence.
+#[derive(Clone, Copy)]
+pub struct SemanticOccurrenceHit<'view, 'bytes> {
+    image: &'view SemanticImageView<'bytes>,
+    occurrence: LinkOccurrenceId,
+    link: LinkId,
+    /// Canonical neighboring declaration coordinate in the same image.
+    entity: EntityId,
+    /// Semantic relation retained by the compiler image.
+    kind: LinkKind,
+    /// Confidence attached to this particular observed occurrence.
+    confidence: Confidence,
+    /// Correlated source coordinate and authority availability.
+    provenance: OccurrenceSourceEvidence<'view>,
+}
+
+impl<'view, 'bytes> SemanticOccurrenceHit<'view, 'bytes> {
+    /// Returns the canonical neighboring declaration.
+    #[must_use]
+    pub const fn entity(self) -> EntityId {
+        self.entity
+    }
+    /// Returns the stable exhaustive occurrence coordinate.
+    #[must_use]
+    pub const fn occurrence(self) -> LinkOccurrenceId {
+        self.occurrence
+    }
+    /// Returns the canonical relation coordinate for this occurrence.
+    #[must_use]
+    pub const fn link(self) -> LinkId {
+        self.link
+    }
+    /// Returns the semantic relation.
+    #[must_use]
+    pub const fn kind(self) -> LinkKind {
+        self.kind
+    }
+    /// Returns confidence attached to this occurrence.
+    #[must_use]
+    pub const fn confidence(self) -> Confidence {
+        self.confidence
+    }
+    /// Returns correlated source evidence.
+    #[must_use]
+    pub const fn provenance(self) -> OccurrenceSourceEvidence<'view> {
+        self.provenance
+    }
+    /// Returns the reopened image that authenticated this candidate.
+    #[must_use]
+    pub const fn image(self) -> &'view SemanticImageView<'bytes> {
+        self.image
+    }
+}
+
+/// Closed provenance state for one occurrence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OccurrenceSourceEvidence<'view> {
+    /// The authority captured this exact source coordinate.
+    Captured(CapturedOccurrenceSpan<'view>),
+    /// The authority did not provide a source coordinate.
+    Unavailable,
+}
+
+/// Captured source coordinate whose construction is restricted to validated image rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapturedOccurrenceSpan<'view> {
+    span: SourceSpan,
+    path: &'view [u8],
+}
+
+impl<'view> CapturedOccurrenceSpan<'view> {
+    /// Returns the exact source coordinate.
+    #[must_use]
+    pub const fn span(self) -> SourceSpan {
+        self.span
+    }
+    /// Returns the borrowed non-UTF-8 source path bytes.
+    #[must_use]
+    pub const fn path(self) -> &'view [u8] {
+        self.path
+    }
+}
+
+impl<'view> OccurrenceSourceEvidence<'view> {
+    /// Returns the captured coordinate, if provenance was available.
+    #[must_use]
+    pub const fn source(self) -> Option<SourceSpan> {
+        match self {
+            Self::Captured(span) => Some(span.span()),
+            Self::Unavailable => None,
+        }
+    }
+    /// Returns borrowed source-path bytes when captured.
+    #[must_use]
+    pub const fn path(self) -> Option<&'view [u8]> {
+        match self {
+            Self::Captured(span) => Some(span.path()),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// Returns the exact authority availability state.
+    #[must_use]
+    pub const fn availability(self) -> FactAvailability {
+        match self {
+            Self::Captured(_) => FactAvailability::Captured,
+            Self::Unavailable => FactAvailability::Unavailable,
+        }
+    }
+}
+
 type SemanticRows<'view> = Pin<
     Box<
-        dyn Stream<
-                Item = Result<BTreeMap<Arc<str>, FieldValue>, ExecutionError<Infallible>>,
-            > + 'view,
+        dyn Stream<Item = Result<BTreeMap<Arc<str>, FieldValue>, ExecutionError<Infallible>>>
+            + 'view,
     >,
 >;
 
 /// Lazy bounded-memory result stream for a fixed semantic-image neighbor query.
 ///
-/// The stream borrows both the validated image and cancellation authority. It owns only
+/// The stream borrows the validated image and cancellation authority independently. It owns only
 /// Trustfall's query pipeline; semantic rows and links are decoded from the image on demand.
-pub struct SemanticTrustfallStream<'view> {
-    rows: SemanticRows<'view>,
-    cancellation: &'view Cancellation,
+pub struct SemanticTrustfallStream<'rows, 'cancel> {
+    rows: SemanticRows<'rows>,
+    cancellation: &'cancel Cancellation,
     done: bool,
 }
 
-impl Stream for SemanticTrustfallStream<'_> {
+type SemanticOccurrenceRows<'view, 'bytes> = Box<
+    dyn Iterator<Item = Result<SemanticOccurrenceHit<'view, 'bytes>, TrustfallGraphError>> + 'view,
+>;
+
+/// Lazy bounded-memory result stream for exhaustive occurrence-level traversal.
+pub struct SemanticOccurrenceStream<'image, 'cancel, 'bytes> {
+    rows: SemanticOccurrenceRows<'image, 'bytes>,
+    cancellation: &'cancel Cancellation,
+    done: bool,
+}
+
+impl<'image, 'cancel, 'bytes> Stream for SemanticOccurrenceStream<'image, 'cancel, 'bytes> {
+    type Item = Result<SemanticOccurrenceHit<'image, 'bytes>, TrustfallGraphError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        if self.cancellation.is_cancelled() {
+            self.done = true;
+            return Poll::Ready(Some(Err(TrustfallGraphError::Cancelled)));
+        }
+        match self.rows.next() {
+            Some(Ok(hit)) => Poll::Ready(Some(Ok(hit))),
+            Some(Err(error)) => {
+                self.done = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            None => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+        }
+    }
+}
+
+impl Stream for SemanticTrustfallStream<'_, '_> {
     type Item = Result<SemanticTrustfallHit, TrustfallGraphError>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -133,24 +282,26 @@ impl Stream for SemanticTrustfallStream<'_> {
 }
 
 /// Trustfall's async interpreter bound directly to one validated semantic image.
-pub struct SemanticTrustfallGraph<'view, 'bytes> {
-    image: &'view SemanticImageView<'bytes>,
-    cancellation: &'view Cancellation,
+pub struct SemanticTrustfallGraph<'image, 'cancel, 'bytes> {
+    image: &'image SemanticImageView<'bytes>,
+    cancellation: &'cancel Cancellation,
 }
 
-impl<'view, 'bytes: 'view> SemanticTrustfallGraph<'view, 'bytes> {
+impl<'image, 'cancel, 'bytes> SemanticTrustfallGraph<'image, 'cancel, 'bytes> {
     /// Borrows canonical semantic-image bytes and a cooperative cancellation authority.
     #[must_use]
     pub const fn new(
-        image: &'view SemanticImageView<'bytes>,
-        cancellation: &'view Cancellation,
+        image: &'image SemanticImageView<'bytes>,
+        cancellation: &'cancel Cancellation,
     ) -> Self {
         Self {
             image,
             cancellation,
         }
     }
+}
 
+impl<'image, 'cancel, 'bytes: 'image> SemanticTrustfallGraph<'image, 'cancel, 'bytes> {
     /// Starts a lazy fixed neighbor query without reconstructing graph rows.
     ///
     /// # Errors
@@ -160,7 +311,7 @@ impl<'view, 'bytes: 'view> SemanticTrustfallGraph<'view, 'bytes> {
     pub fn neighbors(
         &self,
         source: EntityId,
-    ) -> Result<SemanticTrustfallStream<'view>, TrustfallGraphError> {
+    ) -> Result<SemanticTrustfallStream<'image, 'cancel>, TrustfallGraphError> {
         if self.cancellation.is_cancelled() {
             return Err(TrustfallGraphError::Cancelled);
         }
@@ -174,6 +325,75 @@ impl<'view, 'bytes: 'view> SemanticTrustfallGraph<'view, 'bytes> {
             }
         })?;
         Ok(SemanticTrustfallStream {
+            rows,
+            cancellation: self.cancellation,
+            done: false,
+        })
+    }
+}
+
+impl<'image, 'cancel, 'bytes> SemanticTrustfallGraph<'image, 'cancel, 'bytes> {
+    /// Starts an exhaustive lazy local occurrence traversal over the reopened image.
+    ///
+    /// This operation intentionally does not use the representative-level
+    /// `neighbors` query: repeated observations of one logical link remain
+    /// distinct rows, including their source coordinates and confidence.
+    pub fn occurrence_neighbors(
+        &self,
+        source: EntityId,
+    ) -> Result<SemanticOccurrenceStream<'image, 'cancel, 'bytes>, TrustfallGraphError> {
+        if self.cancellation.is_cancelled() {
+            return Err(TrustfallGraphError::Cancelled);
+        }
+        let image = self.image;
+        let rows = Box::new(
+            image
+                .link_occurrences()
+                .map(move |(id, occurrence)| {
+                    let Some(link) = image.link(occurrence.link) else {
+                        return Err(TrustfallGraphError::OccurrenceEvidenceRejected);
+                    };
+                    let LinkTarget::Local(entity) = link.target else {
+                        return Ok(None);
+                    };
+                    if link.from != source {
+                        return Ok(None);
+                    }
+                    let Some(authority) = image.occurrence_authority(id) else {
+                        return Err(TrustfallGraphError::OccurrenceEvidenceRejected);
+                    };
+                    let provenance = match (authority.source, occurrence.source) {
+                        (FactAvailability::Captured, Some(span)) => {
+                            let Some(path) = image.atom(span.file()) else {
+                                return Err(TrustfallGraphError::OccurrenceEvidenceRejected);
+                            };
+                            OccurrenceSourceEvidence::Captured(CapturedOccurrenceSpan {
+                                span,
+                                path,
+                            })
+                        }
+                        (FactAvailability::Unavailable, None) => {
+                            OccurrenceSourceEvidence::Unavailable
+                        }
+                        _ => return Err(TrustfallGraphError::OccurrenceEvidenceRejected),
+                    };
+                    Ok(Some(SemanticOccurrenceHit {
+                        image,
+                        occurrence: id,
+                        link: occurrence.link,
+                        entity,
+                        kind: link.kind,
+                        confidence: occurrence.confidence,
+                        provenance,
+                    }))
+                })
+                .filter_map(|row| match row {
+                    Ok(Some(hit)) => Some(Ok(hit)),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                }),
+        ) as SemanticOccurrenceRows<'image, 'bytes>;
+        Ok(SemanticOccurrenceStream {
             rows,
             cancellation: self.cancellation,
             done: false,
@@ -359,6 +579,9 @@ pub enum TrustfallGraphError {
     /// Trustfall reported an execution failure not attributable to this infallible image adapter.
     #[error("Trustfall rejected lazy semantic query execution")]
     ExecutionRejected,
+    /// A reopened occurrence row violated its validated link/provenance correlation.
+    #[error("semantic occurrence evidence was inconsistent")]
+    OccurrenceEvidenceRejected,
     /// The caller's output cannot preserve every result from the immutable graph view.
     #[error("Trustfall graph output has {available} slots, required {required}")]
     InsufficientOutput {
@@ -763,9 +986,7 @@ struct BorrowedSemanticAdapter<'view, 'bytes> {
     image: &'view SemanticImageView<'bytes>,
 }
 
-impl<'view, 'bytes: 'view> AsyncBasicAdapter<'view>
-    for BorrowedSemanticAdapter<'view, 'bytes>
-{
+impl<'view, 'bytes: 'view> AsyncBasicAdapter<'view> for BorrowedSemanticAdapter<'view, 'bytes> {
     type Vertex = SemanticVertex;
 
     fn resolve_starting_vertices(
@@ -798,9 +1019,7 @@ impl<'view, 'bytes: 'view> AsyncBasicAdapter<'view>
                 SemanticVertex::Link { .. } => FieldValue::Null,
             },
             SemanticProperty::SourceLow => match vertex {
-                SemanticVertex::Entity(entity) => {
-                    FieldValue::Int64(i64::from(entity_low(*entity)))
-                }
+                SemanticVertex::Entity(entity) => FieldValue::Int64(i64::from(entity_low(*entity))),
                 SemanticVertex::Link { .. } => FieldValue::Null,
             },
             SemanticProperty::EntityHigh => match vertex {

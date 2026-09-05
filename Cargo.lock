@@ -8215,6 +8215,7 @@ dependencies = [
  "allocation-counter",
  "compiler-ir",
  "compiler-vocabulary",
+ "futures-core",
  "heart-hydration",
  "heart-identity",
  "heart-memory",

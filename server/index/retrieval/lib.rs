@@ -13,6 +13,7 @@ mod boundary;
 mod exact;
 mod lexical;
 mod qdrant;
+mod source;
 mod tantivy;
 mod terminal;
 mod trustfall;
@@ -23,6 +24,11 @@ pub use boundary::{
 };
 pub use exact::ExactRoute;
 pub use lexical::LexicalRoute;
+pub use source::{
+    CanonicalOccurrenceSource, CanonicalSource, CanonicalSourceError, VerifiedSourceImage,
+    resolve_occurrence_source, resolve_occurrence_sources, resolve_tantivy_source,
+    resolve_tantivy_sources,
+};
 pub use terminal::{
     CancellationCause, RetrievalAbsence, RetrievalCoverage, RetrievalDegradation, RetrievalFailure,
     RetrievalOperationTerminal, RetrievalResult, VectorAuthoritySurface, VectorDegradation,

@@ -9,7 +9,8 @@ mod graph;
 mod schema;
 
 pub use graph::{
-    IrTrustfallGraph, IrTrustfallHit, SemanticTrustfallGraph, SemanticTrustfallHit,
+    CapturedOccurrenceSpan, IrTrustfallGraph, IrTrustfallHit, OccurrenceSourceEvidence,
+    SemanticOccurrenceHit, SemanticOccurrenceStream, SemanticTrustfallGraph, SemanticTrustfallHit,
     SemanticTrustfallStream, TrustfallArgumentDiagnostic, TrustfallGraph, TrustfallGraphError,
     TrustfallHit, TrustfallOutputCause, TrustfallOutputField, TrustfallOutputNumber,
     TrustfallQueryDiagnostic, TrustfallSchemaDiagnostic, TrustfallTerminal,
