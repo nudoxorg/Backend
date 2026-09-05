@@ -3021,7 +3021,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
     ) -> impl IntoElement + use<Compiler> {
         div()
             .id(("typed-form-field", form_field_id(field)))
-            .h(px(32.0))
+            .min_h(px(32.0))
+            .py(px(5.0))
             .px(px(10.0))
             .flex()
             .items_center()
@@ -3037,7 +3038,19 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                 }
                 cx.notify();
             }))
-            .child(label)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.0))
+                    .child(label)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(METADATA_TEXT))
+                            .child(form_field_hint(field)),
+                    ),
+            )
             .child(
                 div()
                     .relative()
@@ -3458,6 +3471,27 @@ const fn action_element_id(action: ServiceAction) -> u64 {
         ServiceAction::ReleaseLocal => 10,
         ServiceAction::PollExecution => 11,
         ServiceAction::Cancel => 12,
+    }
+}
+
+/// What one typed field accepts, in the words of whatever parses it.
+///
+/// `Language` is checked by `LanguageProfile::try_from`, which admits
+/// thirty-two spellings; naming four and the shape they share is more use than
+/// a list nobody can read in a 32px row. `Stage` quotes the two variants'
+/// own documentation. `Source` names the byte budget the submit path enforces
+/// through `PORTABLE_LOCAL_SOURCE_LIMIT`.
+const fn form_field_hint(field: FormField) -> &'static str {
+    match field {
+        FormField::Language => {
+            "profile token, e.g. rust-2024, python-3.13, typescript, go-1.25"
+        }
+        FormField::Stage => {
+            "parse validates syntax; lower-ir also lowers facts into canonical IR"
+        }
+        FormField::Source => "the source text itself, not a path; up to 1 MiB",
+        FormField::Snapshot => "identity of an immutable published snapshot",
+        FormField::Query => "bounded query text; at most 4 rows come back",
     }
 }
 
