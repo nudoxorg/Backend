@@ -671,6 +671,99 @@ pub struct Checker {
     pub timeout: Duration,
 }
 
+/// Immutable facts for one caller-selected TypeScript checker executable.
+///
+/// The executable receives the staged source path as its only argument and
+/// emits the vendored checker's report schema on standard output.  This is a
+/// distinct authority mode from [`Checker`]'s compatibility entry points,
+/// which may still resolve the historical environment override or `node`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptCheckerProgram {
+    view: TypeScriptCheckerProgramView,
+}
+
+/// Read-only view of a validated checker executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptCheckerProgramView {
+    /// Absolute program path supplied by the caller.
+    pub executable: PathBuf,
+}
+
+impl core::ops::Deref for TypeScriptCheckerProgram {
+    type Target = TypeScriptCheckerProgramView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+impl AsRef<Path> for TypeScriptCheckerProgram {
+    fn as_ref(&self) -> &Path {
+        &self.view.executable
+    }
+}
+
+/// Rejection while admitting an explicit TypeScript checker executable.
+#[derive(Debug, thiserror::Error)]
+pub enum TypeScriptCheckerProgramError {
+    /// A relative path would defer authority selection to ambient search
+    /// state, so it cannot enter a retained package authority transaction.
+    #[error("TypeScript checker executable is not absolute: {executable:?}")]
+    RelativeExecutable {
+        /// Caller-supplied relative executable path.
+        executable: PathBuf,
+    },
+}
+
+impl TypeScriptCheckerProgram {
+    /// Admits one caller-selected absolute checker executable.
+    pub fn new(executable: PathBuf) -> Result<Self, TypeScriptCheckerProgramError> {
+        if !executable.is_absolute() {
+            return Err(TypeScriptCheckerProgramError::RelativeExecutable { executable });
+        }
+        Ok(Self {
+            view: TypeScriptCheckerProgramView { executable },
+        })
+    }
+}
+
+/// A bounded TypeScript checker transaction whose executable was selected by
+/// the caller before collection begins.
+#[derive(Debug, Clone)]
+pub struct ExplicitTypeScriptChecker {
+    checker: Checker,
+    invocation: ExplicitCheckerInvocation,
+}
+
+/// Closed explicit checker command grammar.
+#[derive(Debug, Clone)]
+enum ExplicitCheckerInvocation {
+    /// A program that directly writes the checker report schema.
+    ReportProgram(TypeScriptCheckerProgram),
+    /// An explicit Node runtime that executes the vendored checker driver.
+    Node(TypeScriptCheckerProgram),
+}
+
+impl ExplicitTypeScriptChecker {
+    /// Runs the explicit checker over one exact source file.
+    pub fn run(&self, profile: TypeScriptSource, source: &[u8]) -> Result<Report, CheckerError> {
+        self.checker
+            .run_with_explicit_invocation(&self.invocation, profile, source)
+    }
+
+    /// Runs the explicit checker against a bounded, read-only package staging
+    /// tree without consulting environment variables or `PATH`.
+    pub fn run_in_package(
+        &self,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+    ) -> Result<Report, CheckerError> {
+        self.checker
+            .run_in_package_with_invocation(&self.invocation, profile, source, package_root)
+    }
+}
+
 impl Default for Checker {
     fn default() -> Self {
         Self {
@@ -681,6 +774,32 @@ impl Default for Checker {
 }
 
 impl Checker {
+    /// Binds this bounded checker configuration to one caller-selected
+    /// absolute checker executable.
+    pub fn with_program(
+        self,
+        executable: PathBuf,
+    ) -> Result<ExplicitTypeScriptChecker, TypeScriptCheckerProgramError> {
+        Ok(ExplicitTypeScriptChecker {
+            checker: self,
+            invocation: ExplicitCheckerInvocation::ReportProgram(TypeScriptCheckerProgram::new(
+                executable,
+            )?),
+        })
+    }
+
+    /// Binds this checker to a caller-selected absolute Node runtime that
+    /// executes the vendored driver without an ambient `node` lookup.
+    pub fn with_node(
+        self,
+        executable: PathBuf,
+    ) -> Result<ExplicitTypeScriptChecker, TypeScriptCheckerProgramError> {
+        Ok(ExplicitTypeScriptChecker {
+            checker: self,
+            invocation: ExplicitCheckerInvocation::Node(TypeScriptCheckerProgram::new(executable)?),
+        })
+    }
+
     /// Decodes one report transcript without starting a process.
     ///
     /// # Errors
@@ -788,6 +907,46 @@ impl Checker {
         }
     }
 
+    /// Runs a package-staged authority transaction through one already
+    /// admitted explicit command. The public explicit capability calls this
+    /// rather than the compatibility environment/PATH resolution above.
+    fn run_in_package_with_invocation(
+        &self,
+        invocation: &ExplicitCheckerInvocation,
+        profile: TypeScriptSource,
+        source: &[u8],
+        package_root: &Path,
+    ) -> Result<Report, CheckerError> {
+        let work = work_directory();
+        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+            phase: "prepare",
+            source: cause,
+        })?;
+        let started = Instant::now();
+        let run = (|| {
+            let staged = work.join("package");
+            let mut budget = PackageBudget::new(started, self.timeout);
+            stage_package(package_root, &staged, &mut budget)?;
+            let file = staged.join(package_entry_file(profile));
+            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                phase: "prepare",
+                source: cause,
+            })?;
+            self.run_explicit_file(invocation, &work, &file)
+        })();
+        match std::fs::remove_dir_all(&work) {
+            Ok(()) => run,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
+            Err(cause) => match run {
+                Ok(_) => Err(CheckerError::Work {
+                    phase: "cleanup",
+                    source: cause,
+                }),
+                Err(primary) => Err(primary),
+            },
+        }
+    }
+
     /// Runs the vendored checker through one explicit child program.
     ///
     /// The program receives the work source file as its single argument and
@@ -867,6 +1026,59 @@ impl Checker {
         self.run_child(work, program, &file)
     }
 
+    fn run_with_explicit_invocation(
+        &self,
+        invocation: &ExplicitCheckerInvocation,
+        profile: TypeScriptSource,
+        source: &[u8],
+    ) -> Result<Report, CheckerError> {
+        let work = work_directory();
+        std::fs::create_dir(&work).map_err(|cause| CheckerError::Work {
+            phase: "prepare",
+            source: cause,
+        })?;
+        let run = (|| {
+            let file = work.join(source_file(profile));
+            std::fs::write(&file, source).map_err(|cause| CheckerError::Work {
+                phase: "prepare",
+                source: cause,
+            })?;
+            self.run_explicit_file(invocation, &work, &file)
+        })();
+        match std::fs::remove_dir_all(&work) {
+            Ok(()) => run,
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => run,
+            Err(cause) => match run {
+                Ok(_) => Err(CheckerError::Work {
+                    phase: "cleanup",
+                    source: cause,
+                }),
+                Err(primary) => Err(primary),
+            },
+        }
+    }
+
+    fn run_explicit_file(
+        &self,
+        invocation: &ExplicitCheckerInvocation,
+        work: &Path,
+        file: &Path,
+    ) -> Result<Report, CheckerError> {
+        match invocation {
+            ExplicitCheckerInvocation::ReportProgram(program) => {
+                self.run_child(work, program.as_ref(), file)
+            }
+            ExplicitCheckerInvocation::Node(node) => {
+                let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("checker")
+                    .join("main.cjs");
+                let mut command = Command::new(node.as_ref());
+                command.arg(driver).arg(file);
+                self.run_child_prepared(work, command, file)
+            }
+        }
+    }
+
     fn run_child(&self, work: &Path, program: &Path, file: &Path) -> Result<Report, CheckerError> {
         let mut command = Command::new(program);
         command.arg(file);
@@ -929,18 +1141,22 @@ impl Checker {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        let out_bytes = out_thread.join().map_err(|payload| CheckerError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardOutputReader,
-                payload.as_ref(),
-            ),
-        })?;
-        let err_bytes = err_thread.join().map_err(|payload| CheckerError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardErrorReader,
-                payload.as_ref(),
-            ),
-        })?;
+        let out_bytes = out_thread
+            .join()
+            .map_err(|payload| CheckerError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardOutputReader,
+                    payload.as_ref(),
+                ),
+            })?;
+        let err_bytes = err_thread
+            .join()
+            .map_err(|payload| CheckerError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardErrorReader,
+                    payload.as_ref(),
+                ),
+            })?;
         if let Some((stream, cause)) = out_bytes.error.or(err_bytes.error) {
             return Err(CheckerError::Pipe {
                 stream,
@@ -1192,4 +1408,23 @@ fn transcript_prefix(bytes: &[u8]) -> String {
 fn tail(bytes: &[u8]) -> String {
     let start = bytes.len().saturating_sub(TRANSCRIPT_TAIL_LIMIT);
     String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use std::path::PathBuf;
+
+    use super::{Checker, TypeScriptCheckerProgramError};
+
+    #[test]
+    fn explicit_checker_rejects_relative_executable_before_child_work() {
+        let error = Checker::default()
+            .with_program(PathBuf::from("checker"))
+            .expect_err("relative executable must not enter authority configuration");
+        assert!(matches!(
+            error,
+            TypeScriptCheckerProgramError::RelativeExecutable { executable }
+                if executable == PathBuf::from("checker")
+        ));
+    }
 }

@@ -9,7 +9,7 @@ pub mod checker;
 
 pub use checker::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType, Pyrefly,
-    SymbolOutcome, SymbolResolution,
+    PyreflyExecutableError, SymbolOutcome, SymbolResolution,
 };
 
 use compiler_vocabulary::PythonVersion;
@@ -536,15 +536,13 @@ fn annotation_at_depth(expr: &ast::Expr, depth: usize) -> Annotation {
             name: name.id.as_str().to_owned(),
             span: Some(span(expr.range())),
         },
-        ast::Expr::Attribute(_) => {
-            qualified_name(expr).map_or_else(
-                || unsupported_annotation(expr),
-                |name| Annotation::Name {
-                    name,
-                    span: Some(span(expr.range())),
-                },
-            )
-        }
+        ast::Expr::Attribute(_) => qualified_name(expr).map_or_else(
+            || unsupported_annotation(expr),
+            |name| Annotation::Name {
+                name,
+                span: Some(span(expr.range())),
+            },
+        ),
         ast::Expr::StringLiteral(literal) => string_annotation(literal, expr, depth),
         ast::Expr::NoneLiteral(_) => Annotation::None,
         ast::Expr::BinOp(binary) if binary.op == ast::Operator::BitOr => Annotation::Union(vec![

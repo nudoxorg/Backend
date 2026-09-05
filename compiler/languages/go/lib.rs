@@ -17,4 +17,7 @@ pub use image::{
     ReferenceRow, SatisfactionRow, SignatureParameterRow, TypeParameterRow, TypeRow, TypeRowKind,
     parse_constraint_blob, split_nul,
 };
-pub use oracle::{GoOracle, OracleError, Output};
+pub use oracle::{
+    ConfiguredGoOracle, GoOracle, GoOracleConfiguration, GoOracleConfigurationError,
+    GoOracleExecutable, GoOracleExecutableView, OracleError, Output,
+};

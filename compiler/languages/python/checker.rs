@@ -32,7 +32,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use compiler_vocabulary::{NativeWorker, NativeWorkerPanic, PythonVersion};
@@ -65,10 +65,10 @@ const REVEAL_CALL: &[u8] = b"reveal_type(";
 #[derive(Debug, Error)]
 pub enum CheckerError {
     /// The configured pyrefly executable could not be started.
-    #[error("pyrefly could not be started ({program}): {source}")]
+    #[error("pyrefly could not be started ({program:?}): {source}")]
     Spawn {
         /// Configured program spelling.
-        program: String,
+        program: PathBuf,
         /// Operating-system spawn failure.
         source: std::io::Error,
     },
@@ -286,7 +286,7 @@ impl CheckerReport {
 #[derive(Debug, Clone)]
 pub struct Pyrefly {
     /// Program spelling executed.
-    program: String,
+    program: PathBuf,
     /// Arguments inserted before the pyrefly subcommand (`pyrefly` under uvx).
     arguments: Vec<String>,
     /// Maximum bytes retained and accepted from each child stream.
@@ -295,10 +295,22 @@ pub struct Pyrefly {
     timeout: Duration,
 }
 
+/// Rejection while admitting an explicit pyrefly executable.
+#[derive(Debug, Error)]
+pub enum PyreflyExecutableError {
+    /// A relative path would consult ambient process search state when the
+    /// authority transaction later starts.
+    #[error("pyrefly executable is not absolute: {executable:?}")]
+    RelativeExecutable {
+        /// Caller-supplied relative executable path.
+        executable: PathBuf,
+    },
+}
+
 impl Default for Pyrefly {
     fn default() -> Self {
         Self {
-            program: "pyrefly".to_owned(),
+            program: PathBuf::from("pyrefly"),
             arguments: Vec::new(),
             output_limit: DEFAULT_OUTPUT_LIMIT,
             timeout: DEFAULT_TIMEOUT,
@@ -313,7 +325,7 @@ impl Pyrefly {
     pub fn from_env() -> Self {
         let mut adapter = Self::default();
         if let Ok(override_bin) = std::env::var(BINARY_OVERRIDE) {
-            adapter.program = override_bin;
+            adapter.program = PathBuf::from(override_bin);
             adapter.arguments.clear();
         }
         adapter
@@ -324,11 +336,27 @@ impl Pyrefly {
     #[must_use]
     pub fn uvx() -> Self {
         Self {
-            program: "uvx".to_owned(),
+            program: PathBuf::from("uvx"),
             arguments: vec!["pyrefly".to_owned()],
             output_limit: DEFAULT_OUTPUT_LIMIT,
             timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Creates a pyrefly authority adapter bound to a caller-selected
+    /// absolute executable.  Unlike [`Pyrefly::from_env`] and [`Default`],
+    /// this constructor cannot consult environment variables or `PATH` when
+    /// a child starts.
+    pub fn from_executable(executable: PathBuf) -> Result<Self, PyreflyExecutableError> {
+        if !executable.is_absolute() {
+            return Err(PyreflyExecutableError::RelativeExecutable { executable });
+        }
+        Ok(Self {
+            program: executable,
+            arguments: Vec::new(),
+            output_limit: DEFAULT_OUTPUT_LIMIT,
+            timeout: DEFAULT_TIMEOUT,
+        })
     }
 
     /// Overrides the per-stream output bound.
@@ -349,13 +377,13 @@ impl Pyrefly {
     /// starting any child process.
     #[must_use]
     pub fn is_available(&self) -> bool {
-        if self.program.contains('/') || self.program.contains('\\') {
+        if self.program.is_absolute() || self.program.components().count() > 1 {
             return program_file_exists(&self.program);
         }
         std::env::var_os("PATH").is_some_and(|paths| {
             std::env::split_paths(&paths).any(|dir| {
-                dir.join(&self.program).is_file()
-                    || dir.join(format!("{}.exe", self.program)).is_file()
+                let candidate = dir.join(&self.program);
+                candidate.is_file() || candidate.with_extension("exe").is_file()
             })
         })
     }
@@ -504,18 +532,22 @@ impl Pyrefly {
             }
             std::thread::sleep(Duration::from_millis(2));
         };
-        let out = out_thread.join().map_err(|payload| CheckerError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardOutputReader,
-                payload.as_ref(),
-            ),
-        })?;
-        let err = err_thread.join().map_err(|payload| CheckerError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardErrorReader,
-                payload.as_ref(),
-            ),
-        })?;
+        let out = out_thread
+            .join()
+            .map_err(|payload| CheckerError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardOutputReader,
+                    payload.as_ref(),
+                ),
+            })?;
+        let err = err_thread
+            .join()
+            .map_err(|payload| CheckerError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardErrorReader,
+                    payload.as_ref(),
+                ),
+            })?;
         if let Some((stream, source)) = out.error.or(err.error) {
             return Err(CheckerError::Pipe { stream, source });
         }
@@ -643,8 +675,7 @@ const fn profile_tag(profile: PythonVersion) -> &'static str {
 }
 
 /// True when a path-like program spelling names an existing executable file.
-fn program_file_exists(program: &str) -> bool {
-    let path = PathBuf::from(program);
+fn program_file_exists(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1715,9 +1746,10 @@ mod tests {
     use crate::{DeclarationKind, Span, extract};
 
     use super::{
-        CheckerError, InferenceSite, InferredType, Pyrefly, decode_diagnostics,
-        parse_revealed_type, split_top_level,
+        CheckerError, InferenceSite, InferredType, Pyrefly, PyreflyExecutableError,
+        decode_diagnostics, parse_revealed_type, split_top_level,
     };
+    use std::path::PathBuf;
 
     /// One failed expectation with its exact operands.
     #[derive(Debug, thiserror::Error)]
@@ -1935,7 +1967,7 @@ mod tests {
     #[test]
     fn missing_authority_is_the_typed_spawn_terminal() {
         let checker = Pyrefly {
-            program: "definitely-not-pyrefly-on-any-path".to_owned(),
+            program: PathBuf::from("definitely-not-pyrefly-on-any-path"),
             arguments: Vec::new(),
             output_limit: 1024,
             timeout: core::time::Duration::from_secs(1),
@@ -2106,5 +2138,18 @@ mod tests {
         assert_eq!(report.inference_at(other), None);
         assert_eq!(report.symbol_at(span), None);
         assert!(!report.import_resolved(span));
+    }
+
+    /// Explicit package authority never lets a relative executable fall back
+    /// to ambient process search state.
+    #[test]
+    fn explicit_pyrefly_rejects_relative_executable_before_child_work() {
+        let error = Pyrefly::from_executable(PathBuf::from("pyrefly"))
+            .expect_err("relative executable must not enter authority configuration");
+        assert!(matches!(
+            error,
+            PyreflyExecutableError::RelativeExecutable { executable }
+                if executable == PathBuf::from("pyrefly")
+        ));
     }
 }

@@ -15,8 +15,9 @@ pub use authority::{
 };
 pub use checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
-    Declaration, LiteralBase, MappedModifier, Narrowing, ObjectMember, Origin, Reference, Report,
-    TemplatePart, TypeTree, source_digest,
+    Declaration, ExplicitTypeScriptChecker, LiteralBase, MappedModifier, Narrowing, ObjectMember,
+    Origin, Reference, Report, TemplatePart, TypeScriptCheckerProgram,
+    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeTree, source_digest,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::AuthorityError;

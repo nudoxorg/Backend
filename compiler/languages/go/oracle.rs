@@ -15,7 +15,10 @@
 //! * The oracle uses `omitempty` aggressively, so every optional field carries
 //!   `#[serde(default)]`.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use compiler_vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
@@ -664,6 +667,15 @@ pub enum OracleError {
         #[source]
         source: std::io::Error,
     },
+    /// One explicitly configured oracle command could not be started.
+    #[error("configured Go oracle could not be started ({program}): {source}")]
+    ConfiguredSpawn {
+        /// Exact caller-admitted program spelling.
+        program: String,
+        /// Operating system spawn failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// The child exited unsuccessfully, retaining its diagnostic tail.
     #[error("Go oracle exited with {status}; stderr tail: {stderr}")]
     Exit { status: String, stderr: String },
@@ -715,6 +727,88 @@ pub struct GoOracle {
     pub timeout: std::time::Duration,
 }
 
+/// Immutable facts for one caller-selected Go executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoOracleExecutable {
+    view: GoOracleExecutableView,
+}
+
+/// Read-only view of an admitted Go executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoOracleExecutableView {
+    /// Caller-supplied absolute executable path.
+    pub executable: PathBuf,
+}
+
+impl core::ops::Deref for GoOracleExecutable {
+    type Target = GoOracleExecutableView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+impl AsRef<Path> for GoOracleExecutable {
+    fn as_ref(&self) -> &Path {
+        &self.view.executable
+    }
+}
+
+/// Rejection while admitting an explicit Go executable.
+#[derive(Debug, thiserror::Error)]
+pub enum GoOracleConfigurationError {
+    /// A relative path would defer oracle selection to ambient process state.
+    #[error("Go oracle executable is not absolute: {executable:?}")]
+    RelativeExecutable {
+        /// Caller-supplied relative executable path.
+        executable: PathBuf,
+    },
+}
+
+impl GoOracleExecutable {
+    /// Admits one absolute executable path.
+    pub fn new(executable: PathBuf) -> Result<Self, GoOracleConfigurationError> {
+        if !executable.is_absolute() {
+            return Err(GoOracleConfigurationError::RelativeExecutable { executable });
+        }
+        Ok(Self {
+            view: GoOracleExecutableView { executable },
+        })
+    }
+}
+
+/// Closed explicit command configuration for the Go oracle.
+///
+/// An oracle binary directly speaks the extractor protocol.  A Go toolchain
+/// runs the vendored extractor source.  Both alternatives retain an explicit
+/// absolute executable and neither reads environment variables or `PATH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoOracleConfiguration {
+    /// A binary implementing the vendored oracle protocol.
+    OracleBinary(GoOracleExecutable),
+    /// A Go compiler used to run the vendored oracle source.
+    GoToolchain(GoOracleExecutable),
+}
+
+impl GoOracleConfiguration {
+    /// Configures a direct oracle binary.
+    pub fn oracle_binary(executable: PathBuf) -> Result<Self, GoOracleConfigurationError> {
+        Ok(Self::OracleBinary(GoOracleExecutable::new(executable)?))
+    }
+
+    /// Configures an explicit Go toolchain for the vendored oracle source.
+    pub fn go_toolchain(executable: PathBuf) -> Result<Self, GoOracleConfigurationError> {
+        Ok(Self::GoToolchain(GoOracleExecutable::new(executable)?))
+    }
+}
+
+/// Bounded Go oracle capability with caller-selected execution authority.
+#[derive(Debug, Clone)]
+pub struct ConfiguredGoOracle {
+    oracle: GoOracle,
+    configuration: GoOracleConfiguration,
+}
+
 impl Default for GoOracle {
     fn default() -> Self {
         Self {
@@ -725,6 +819,17 @@ impl Default for GoOracle {
 }
 
 impl GoOracle {
+    /// Binds this bounded adapter to one caller-selected executable
+    /// configuration.  The returned capability never consults environment
+    /// variables or `PATH`.
+    #[must_use]
+    pub fn with_configuration(self, configuration: GoOracleConfiguration) -> ConfiguredGoOracle {
+        ConfiguredGoOracle {
+            oracle: self,
+            configuration,
+        }
+    }
+
     /// Decodes a transcript without starting a process.
     pub fn decode(&self, bytes: &[u8]) -> Result<Output, OracleError> {
         let output: Output =
@@ -798,10 +903,72 @@ impl GoOracle {
         self.execute(&mut command)
     }
 
+    fn configured_command(
+        configuration: &GoOracleConfiguration,
+        authority_source: Option<&Path>,
+        module: &Path,
+    ) -> std::process::Command {
+        match configuration {
+            GoOracleConfiguration::OracleBinary(executable) => {
+                let mut command = std::process::Command::new(executable.as_ref());
+                if let Some(source) = authority_source {
+                    command.arg("--authority-image").arg(source);
+                }
+                command.arg(module);
+                command
+            }
+            GoOracleConfiguration::GoToolchain(executable) => {
+                let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("oracle");
+                let mut command = std::process::Command::new(executable.as_ref());
+                command.args(["run", "."]);
+                if let Some(source) = authority_source {
+                    command.arg("--authority-image").arg(source);
+                }
+                command.arg(module).current_dir(oracle_dir);
+                command
+            }
+        }
+    }
+
+    fn run_configured(
+        &self,
+        configuration: &GoOracleConfiguration,
+        module: &Path,
+    ) -> Result<Output, OracleError> {
+        let mut command = Self::configured_command(configuration, None, module);
+        let stdout = self.execute_configured(&mut command)?;
+        self.decode(&stdout)
+    }
+
+    fn authority_image_configured(
+        &self,
+        configuration: &GoOracleConfiguration,
+        source: &Path,
+        module: &Path,
+    ) -> Result<Vec<u8>, OracleError> {
+        let mut command = Self::configured_command(configuration, Some(source), module);
+        self.execute_configured(&mut command)
+    }
+
     /// Spawns one bounded oracle child and collects its standard output.
     /// The child runs in its own process group; oversized output, deadlines,
     /// and pipe faults all reap the child and fold into typed rejections.
     fn execute(&self, command: &mut std::process::Command) -> Result<Vec<u8>, OracleError> {
+        self.execute_with_origin(command, false)
+    }
+
+    fn execute_configured(
+        &self,
+        command: &mut std::process::Command,
+    ) -> Result<Vec<u8>, OracleError> {
+        self.execute_with_origin(command, true)
+    }
+
+    fn execute_with_origin(
+        &self,
+        command: &mut std::process::Command,
+        configured: bool,
+    ) -> Result<Vec<u8>, OracleError> {
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -810,12 +977,19 @@ impl GoOracle {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|source| OracleError::ToolingUnavailable {
-                tool: "NUDOX_GO_ORACLE_BIN or go run",
-                source,
-            })?;
+        let mut child = command.spawn().map_err(|source| {
+            if configured {
+                OracleError::ConfiguredSpawn {
+                    program: command.get_program().to_string_lossy().into_owned(),
+                    source,
+                }
+            } else {
+                OracleError::ToolingUnavailable {
+                    tool: "NUDOX_GO_ORACLE_BIN or go run",
+                    source,
+                }
+            }
+        })?;
         let stdout = child.stdout.take().ok_or_else(|| OracleError::Pipe {
             stream: "stdout",
             source: std::io::Error::other("stdout was not piped"),
@@ -850,18 +1024,22 @@ impl GoOracle {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
-        let stdout = out_thread.join().map_err(|payload| OracleError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardOutputReader,
-                payload.as_ref(),
-            ),
-        })?;
-        let stderr = err_thread.join().map_err(|payload| OracleError::WorkerPanic {
-            cause: NativeWorkerPanic::capture(
-                NativeWorker::StandardErrorReader,
-                payload.as_ref(),
-            ),
-        })?;
+        let stdout = out_thread
+            .join()
+            .map_err(|payload| OracleError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardOutputReader,
+                    payload.as_ref(),
+                ),
+            })?;
+        let stderr = err_thread
+            .join()
+            .map_err(|payload| OracleError::WorkerPanic {
+                cause: NativeWorkerPanic::capture(
+                    NativeWorker::StandardErrorReader,
+                    payload.as_ref(),
+                ),
+            })?;
         if let Some((stream, source)) = stdout.error.or(stderr.error) {
             return Err(OracleError::Pipe { stream, source });
         }
@@ -890,6 +1068,19 @@ impl GoOracle {
             });
         }
         Ok(stdout.bytes)
+    }
+}
+
+impl ConfiguredGoOracle {
+    /// Runs the selected oracle configuration over one module.
+    pub fn run(&self, module: &Path) -> Result<Output, OracleError> {
+        self.oracle.run_configured(&self.configuration, module)
+    }
+
+    /// Produces the authority image for one selected source file and module.
+    pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
+        self.oracle
+            .authority_image_configured(&self.configuration, source, module)
     }
 }
 
@@ -970,8 +1161,9 @@ fn tail(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod read_tests {
-    use super::read_bounded;
+    use super::{GoOracleConfiguration, GoOracleConfigurationError, read_bounded};
     use std::io::{self, Read};
+    use std::path::PathBuf;
 
     struct FaultyReader {
         interrupted: bool,
@@ -997,5 +1189,16 @@ mod read_tests {
         let (stream, error) = result.error.expect("pipe fault retained");
         assert_eq!(stream, "stdout");
         assert_eq!(error.to_string(), "injected pipe fault");
+    }
+
+    #[test]
+    fn explicit_go_toolchain_rejects_relative_executable_before_child_work() {
+        let error = GoOracleConfiguration::go_toolchain(PathBuf::from("go"))
+            .expect_err("relative Go toolchain must not enter authority configuration");
+        assert!(matches!(
+            error,
+            GoOracleConfigurationError::RelativeExecutable { executable }
+                if executable == PathBuf::from("go")
+        ));
     }
 }
