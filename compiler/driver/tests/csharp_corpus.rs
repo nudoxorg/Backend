@@ -955,7 +955,10 @@ fn corpus_row_lifecycle(row: &CorpusRow) -> Result<(), TestError> {
             },
         );
         match failed {
-            Err(CompileFailure::CSharpProjection { .. }) => {
+            Err(CompileFailure::LoweringUnsupported {
+                cause: compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. },
+                ..
+            }) => {
                 eprintln!(
                     "csharp corpus typed terminal: {} stopped at the lane's closed capacity bound ({operand})",
                     row.label

@@ -127,8 +127,6 @@ pub(super) fn compound_native_work_cleanup<'diagnostic>(
         | CompileFailure::ToolchainMismatch { .. }
         | CompileFailure::ExtensionAtomUnbound { .. }
         | CompileFailure::ExtensionTypeParametersUnbound { .. }
-        | CompileFailure::FactRejected { .. }
-        | CompileFailure::CSharpProjection { .. }
         | CompileFailure::ClangProjection { .. }
         | CompileFailure::NativeWork {
             phase: NativeWorkPhase::Cleanup,

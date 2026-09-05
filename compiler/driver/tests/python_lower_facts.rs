@@ -15,15 +15,16 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault,
-    FactRejection, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
-    compile, compile_ir,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
     ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
     SemanticTypeTag, TypeExpr,
 };
-use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage};
+use compiler_vocabulary::{
+    LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
+};
 use thiserror::Error;
 
 /// Separates concurrently executing fixtures created during one process lifetime.
@@ -77,7 +78,7 @@ enum TestError {
         source: compiler_ir::FragmentError,
     },
     #[error("emission lane rejected a fact: {0:?}")]
-    Rejected(FactRejection),
+    Rejected(ProjectionAdmissionFault),
     #[error("lane falsifier: {0}")]
     Falsified(&'static str),
     #[error("coordinate conversion failed")]
@@ -111,13 +112,15 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::Authority { .. } => "authority",
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
-        CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
+        CompileFailure::LoweringUnsupported { cause, .. } => match cause {
+            LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            LoweringUnsupported::CSharpProjection { .. } => "csharp-projection",
+            _ => "lowering-unsupported",
+        },
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound"
         }
-        CompileFailure::FactRejected { .. } => "fact-rejected",
-        CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",
@@ -197,7 +200,7 @@ fn scratch_dir(label: &'static str) -> Result<PathBuf, TestError> {
 fn attempt_fragment(
     source: &'static [u8],
     label: &'static str,
-) -> Result<Result<Vec<u8>, FactRejection>, TestError> {
+) -> Result<Result<Vec<u8>, ProjectionAdmissionFault>, TestError> {
     let toolchain = python_toolchain()?;
     let work = scratch_dir(label)?;
     let cancelled = AtomicBool::new(false);
@@ -226,7 +229,10 @@ fn attempt_fragment(
             },
         ) {
             Ok(compiled) => Ok(Ok(compiled.fragment.as_ref().to_vec())),
-            Err(CompileFailure::FactRejected { rejected, .. }) => Ok(Err(rejected)),
+            Err(CompileFailure::LoweringUnsupported {
+                cause: LoweringUnsupported::FactRejected { cause, .. },
+                ..
+            }) => Ok(Err(cause)),
             Err(failure) => Err(TestError::Compile(failure_label(&failure))),
         }
     })?;
@@ -610,7 +616,7 @@ fn thirty_two_parameter_function_admits_at_the_bound() -> Result<(), TestError> 
 #[test]
 fn thirty_three_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
     match attempt_fragment(THIRTY_THREE_PARAMETERS, "thirty-three")? {
-        Err(rejection) if rejection.cause == FactFault::ChildCapacity => Ok(()),
+        Err(ProjectionAdmissionFault::ChildCapacity) => Ok(()),
         Err(rejection) => Err(TestError::Rejected(rejection)),
         Ok(_) => Err(TestError::Falsified(
             "a 33-parameter function was admitted past the bound",

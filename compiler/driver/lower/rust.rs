@@ -81,7 +81,10 @@ use ra_ap_syntax::{
 };
 
 use crate::{
-    lower::{EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact, push_fact},
+    lower::{
+        EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
+        portable_admission, portable_count, push_fact,
+    },
     types::LoweringUnsupported,
 };
 
@@ -163,7 +166,9 @@ fn push<'source>(
 ) -> Result<usize, RustAuthorityError> {
     push_fact(facts, fact).map_err(|cause| RustAuthorityError::Admission {
         cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
-            fact: u32::try_from(cause.fact).unwrap_or(u32::MAX),
+            fact: portable_count(cause.fact),
+            name_len: portable_count(cause.name_len),
+            cause: portable_admission(cause.cause),
         },
     })
 }
@@ -3140,8 +3145,8 @@ mod tests {
         let outcome = lower_bytes(&source);
         match outcome {
             Err(TestError::Collection(RustCollectError::Lowering(
-                compiler_vocabulary::LoweringUnsupported::FactRejected { fact },
-            ))) if fact == crate::lower::MAX_EMISSION_FACTS as u32 => Ok(()),
+                compiler_vocabulary::LoweringUnsupported::FactRejected { fact, .. },
+            ))) if fact == crate::lower::portable_count(crate::lower::MAX_EMISSION_FACTS) => Ok(()),
             Err(_) => Err(TestError::Missing("capacity terminal")),
             Ok(_) => Err(TestError::Missing("capacity rejection")),
         }

@@ -17,7 +17,10 @@ use compiler_languages_typescript::{
     SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
     syntax_mapped_modifier, with_analysis,
 };
-use compiler_vocabulary::TypeScriptSource;
+use compiler_vocabulary::{
+    ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
+    TypeScriptProjectionFault, TypeScriptSource,
+};
 
 use crate::{
     lower::{
@@ -51,6 +54,8 @@ pub(crate) enum TypeScriptCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
+    /// Projection rejected one exact authority-backed cross-reference fact.
+    Projection(TypeScriptProjectionFault),
     /// An OXC declaration span could not name a slice of the admitted source.
     Span { start: u32, end: u32 },
 }
@@ -73,11 +78,49 @@ fn fault(cause: FactFault) -> TypeScriptCollectError {
     })
 }
 
-/// Maps one foreign-key rejection onto the coarse lane terminal. The path and
-/// display cells here are proven non-empty source slices, so a rejection
-/// means a malformed cross-package path and the lane cannot proceed.
-fn foreign_fault(_cause: compiler_ir::ForeignKeyFault) -> TypeScriptCollectError {
-    lane_rejection()
+/// Retains one foreign-key grammar fault across the portable terminal.
+fn foreign_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> TypeScriptCollectError {
+    TypeScriptCollectError::Projection(TypeScriptProjectionFault::ForeignKey {
+        start: span.start,
+        end: span.end,
+        cause: match cause {
+            compiler_ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            compiler_ir::ForeignKeyFault::BackslashInPath => {
+                ProjectionForeignKeyFault::BackslashInPath
+            }
+        },
+    })
+}
+
+/// Retains the exact rejected component of an import-module package lineage.
+fn lineage_fault(cause: compiler_ir::PackageLineageFault, span: Span) -> TypeScriptCollectError {
+    TypeScriptCollectError::Projection(TypeScriptProjectionFault::PackageLineage {
+        start: span.start,
+        end: span.end,
+        cause: match cause {
+            compiler_ir::PackageLineageFault::EmptyEcosystem => {
+                ProjectionPackageLineageFault::EmptyEcosystem
+            }
+            compiler_ir::PackageLineageFault::EmptyName => {
+                ProjectionPackageLineageFault::EmptyPackage
+            }
+            compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+                ProjectionPackageLineageFault::SeparatorInEcosystem
+            }
+            compiler_ir::PackageLineageFault::SeparatorInName => {
+                ProjectionPackageLineageFault::SeparatorInPackage
+            }
+            compiler_ir::PackageLineageFault::Backslash { segment } => {
+                ProjectionPackageLineageFault::Backslash {
+                    part: match segment {
+                        0 => ProjectionLineagePart::Ecosystem,
+                        1 => ProjectionLineagePart::Package,
+                        segment => ProjectionLineagePart::Invalid { segment },
+                    },
+                }
+            }
+        },
+    })
 }
 
 fn computed_fault<'source>(
@@ -845,21 +888,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             let module = self
                 .text_span(Span::new(row.module_start, row.module_end))
-                .ok_or_else(lane_rejection)?;
+                .ok_or(TypeScriptCollectError::Span {
+                    start: row.module_start,
+                    end: row.module_end,
+                })?;
             let display = self
                 .text_span(Span::new(row.display_start, row.display_end))
-                .ok_or_else(lane_rejection)?;
-            let origin = match PackageLineage::new(NPM_ECOSYSTEM, module) {
-                Ok(lineage) => ForeignOrigin::Package(lineage),
-                Err(_) => ForeignOrigin::Universe {
-                    ecosystem: NPM_ECOSYSTEM,
-                },
-            };
+                .ok_or(TypeScriptCollectError::Span {
+                    start: row.display_start,
+                    end: row.display_end,
+                })?;
+            let origin =
+                ForeignOrigin::Package(PackageLineage::new(NPM_ECOSYSTEM, module).map_err(
+                    |cause| lineage_fault(cause, Span::new(row.module_start, row.module_end)),
+                )?);
             let key = ForeignKey::new(origin, display, display, Some(EntityKind::Reexport))
-                .map_err(foreign_fault)?;
+                .map_err(|cause| {
+                    foreign_fault(cause, Span::new(row.display_start, row.display_end))
+                })?;
             return Ok(OccurrenceTarget::Foreign(key));
         }
-        Err(lane_rejection())
+        Err(TypeScriptCollectError::Projection(
+            TypeScriptProjectionFault::MissingImportBinding { fact },
+        ))
     }
 
     /// Pushes one synthetic fact embodying an anonymous type expression,
@@ -2254,7 +2305,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 if let Some(upgraded) = self.checker_resolved_unresolved(span)? {
                     upgraded
                 } else {
-                    let name = self.text_span(span).unwrap_or("");
+                    // A syntactic foreign target remains authority-backed by
+                    // its exact source span.  Do not turn a failed source
+                    // projection into an empty key: that would certify a
+                    // different external declaration.
+                    let name = self.text_span(span).ok_or(TypeScriptCollectError::Span {
+                        start: span.start,
+                        end: span.end,
+                    })?;
                     let key = ForeignKey::new(
                         ForeignOrigin::Universe {
                             ecosystem: NPM_ECOSYSTEM,
@@ -2263,7 +2321,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         name,
                         None,
                     )
-                    .map_err(foreign_fault)?;
+                    .map_err(|cause| foreign_fault(cause, span))?;
                     (
                         OccurrenceTarget::Foreign(key),
                         OccurrenceConfidence::Syntactic,
@@ -2360,7 +2418,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 path,
                 None,
             )
-            .map_err(foreign_fault)?;
+            .map_err(|cause| foreign_fault(cause, span))?;
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -2472,7 +2530,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 path,
                 None,
             )
-            .map_err(foreign_fault)?;
+            .map_err(|cause| {
+                foreign_fault(cause, Span::new(reference.span.start, reference.span.end))
+            })?;
             let kind = if call {
                 ReferenceKind::FunctionCall
             } else {
@@ -3423,6 +3483,56 @@ fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScri
         _ => unknown_record(TypeReason::OracleGap),
     };
     Ok(record)
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
+    use compiler_ir::{ForeignKeyFault, PackageLineageFault};
+    use compiler_languages_typescript::Span;
+    use compiler_vocabulary::{
+        ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
+        TypeScriptProjectionFault,
+    };
+
+    /// A cross-package key grammar failure must remain distinguishable from
+    /// an unsupported declaration at the TypeScript compile boundary.
+    #[test]
+    fn foreign_key_fault_retains_its_exact_closed_cause() {
+        let TypeScriptCollectError::Projection(TypeScriptProjectionFault::ForeignKey {
+            start,
+            end,
+            cause,
+        }) = foreign_fault(ForeignKeyFault::BackslashInPath, Span::new(2, 7))
+        else {
+            panic!("foreign-key projection terminal was erased");
+        };
+        assert_eq!(
+            (start, end, cause),
+            (2, 7, ProjectionForeignKeyFault::BackslashInPath)
+        );
+    }
+
+    /// A malformed authority lineage retains the exact invalid component
+    /// rather than being relabelled as the npm universe.
+    #[test]
+    fn lineage_fault_retains_the_raw_invalid_component() {
+        let TypeScriptCollectError::Projection(TypeScriptProjectionFault::PackageLineage {
+            start,
+            end,
+            cause:
+                ProjectionPackageLineageFault::Backslash {
+                    part: ProjectionLineagePart::Invalid { segment },
+                },
+        }) = lineage_fault(
+            PackageLineageFault::Backslash { segment: 7 },
+            Span::new(11, 19),
+        )
+        else {
+            panic!("package-lineage projection terminal was erased");
+        };
+        assert_eq!((start, end, segment), (11, 19, 7));
+    }
 }
 
 /// The closed primitive record of one checker literal base.

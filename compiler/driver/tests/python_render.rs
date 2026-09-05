@@ -98,13 +98,17 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::Authority { .. } => "authority",
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
-        CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
+        CompileFailure::LoweringUnsupported { cause, .. } => match cause {
+            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+                "csharp-projection"
+            }
+            _ => "lowering-unsupported",
+        },
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound"
         }
-        CompileFailure::FactRejected { .. } => "fact-rejected",
-        CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",

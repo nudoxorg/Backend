@@ -5,14 +5,17 @@
 mod python_support;
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactRejection,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
 use compiler_ir::{
     DecodedOccurrence, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
     LanguageExtensionWireFact, OccurrenceTarget, PythonFacts, PythonParameterKind, SECTION_NONE,
 };
-use compiler_vocabulary::{LanguageProfile, NativeTool, PythonVersion, Stage};
+use compiler_vocabulary::{
+    LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, PythonVersion,
+    Stage,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -44,7 +47,7 @@ enum Error {
         package: &'static str,
         module: String,
         label: &'static str,
-        rejection: Option<FactRejection>,
+        rejection: Option<ProjectionAdmissionFault>,
     },
 }
 
@@ -83,13 +86,15 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::Authority { .. } => "authority",
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
-        CompileFailure::LoweringUnsupported { .. } => "lowering-unsupported",
+        CompileFailure::LoweringUnsupported { cause, .. } => match cause {
+            LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            LoweringUnsupported::CSharpProjection { .. } => "csharp-projection",
+            _ => "lowering-unsupported",
+        },
         CompileFailure::ExtensionAtomUnbound { .. } => "extension-atom-unbound",
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound"
         }
-        CompileFailure::FactRejected { .. } => "fact-rejected",
-        CompileFailure::CSharpProjection { .. } => "csharp-projection",
         CompileFailure::ClangProjection { .. } => "clang-projection",
         CompileFailure::Build { .. } => "build",
         CompileFailure::Prepare { .. } => "prepare",
@@ -241,7 +246,10 @@ fn compile_module(
         Err(failure) => {
             let label = failure_label(&failure);
             let rejection = match &failure {
-                CompileFailure::FactRejected { rejected, .. } => Some(*rejected),
+                CompileFailure::LoweringUnsupported {
+                    cause: LoweringUnsupported::FactRejected { cause, .. },
+                    ..
+                } => Some(*cause),
                 _ => None,
             };
             Err(Error::Terminal {

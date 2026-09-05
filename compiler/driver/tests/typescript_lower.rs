@@ -11,8 +11,8 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault,
-    NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
+    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{
     DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
@@ -24,7 +24,10 @@ use compiler_languages_typescript::{
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
-use compiler_vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+use compiler_vocabulary::{
+    LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
+    ProjectionSemanticTypeTag, Stage, TypeScriptSource,
+};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
 const SOURCE: &[u8] = include_bytes!("../../languages/typescript/tests/fixtures/source.ts");
@@ -177,10 +180,13 @@ fn ir_tag_shape(ir: &compiler_ir::Ir, id: compiler_ir::TypeId) -> (SemanticTypeT
             ir.types(arguments).unwrap().len() as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Function {
-            parameters, results, ..
+            parameters,
+            results,
+            ..
         }) => (
             SemanticTypeTag::FunctionPointer,
-            (ir.tuple_elements(parameters).unwrap().len() + ir.tuple_elements(results).unwrap().len()) as u8,
+            (ir.tuple_elements(parameters).unwrap().len()
+                + ir.tuple_elements(results).unwrap().len()) as u8,
         ),
         TypeExpr::Concrete(ConcreteType::Array { .. }) => (SemanticTypeTag::ArraySequence, 1),
         TypeExpr::Concrete(ConcreteType::Union(types)) => {
@@ -533,8 +539,7 @@ fn checker_mapped_types_map_their_modifier_vocabularies_and_as_child_exactly() {
 
 #[test]
 fn direct_mapped_conditional_key_does_not_fabricate_an_optional_modifier() {
-    const SOURCE: &[u8] =
-        b"export type table<T, U, X, Y, V> = { [K in T extends U ? X : Y]: V };";
+    const SOURCE: &[u8] = b"export type table<T, U, X, Y, V> = { [K in T extends U ? X : Y]: V };";
     let view = view(SOURCE, None);
     let owner = named(&view, b"table").0;
     let mapped = facts(&view)
@@ -715,10 +720,18 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() {
     );
     let above = report(source);
     match try_lower(source, Some(&above)) {
-        Err(CompileFailure::FactRejected { rejected, .. }) => {
-            assert_eq!(rejected.fact, 16384);
-            assert_eq!(rejected.name_len, 6);
-            assert_eq!(rejected.cause, FactFault::Capacity);
+        Err(CompileFailure::LoweringUnsupported {
+            cause:
+                LoweringUnsupported::FactRejected {
+                    fact,
+                    name_len,
+                    cause,
+                },
+            ..
+        }) => {
+            assert_eq!(fact, 16_384);
+            assert_eq!(name_len, 6);
+            assert_eq!(cause, ProjectionAdmissionFault::Capacity);
         }
         Ok(_) => panic!("expected typed fact capacity rejection, source was admitted"),
         Err(_) => panic!("expected typed fact capacity rejection, got another typed terminal"),
@@ -746,16 +759,22 @@ fn checker_object_member_without_source_spelling_retains_typed_child_cause() {
         }),
     }]);
     match try_lower(SOURCE, Some(&checker)) {
-        Err(CompileFailure::FactRejected { rejected, .. }) => assert_eq!(
-            rejected.cause,
-            FactFault::TypeChild {
-                position: 0,
-                fault: compiler_ir::SemanticTypeFault::ChildNameRequired {
-                    tag: SemanticTypeTag::AnonymousRecord,
-                    position: 0,
+        Err(CompileFailure::LoweringUnsupported {
+            cause:
+                LoweringUnsupported::FactRejected {
+                    cause:
+                        ProjectionAdmissionFault::TypeChild {
+                            position: 0,
+                            cause:
+                                ProjectionSemanticTypeFault::ChildNameRequired {
+                                    tag: ProjectionSemanticTypeTag::AnonymousRecord,
+                                    position: 0,
+                                },
+                        },
+                    ..
                 },
-            }
-        ),
+            ..
+        }) => {}
         Ok(_) => panic!("expected source-backed member spelling rejection"),
         Err(_) => panic!("expected typed source-backed member spelling rejection"),
     }
@@ -825,7 +844,7 @@ fn forward_nominal_checker_and_lowering_keep_the_later_class() {
                         profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                         stage: Stage::LowerIr,
                         source: SOURCE,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+                        declaration_scope: compiler_driver::DeclarationScope::fixture(),
                         toolchain: ToolchainSelection::ResolvedNative(toolchain),
                         authority: SemanticAuthorityInput::TypeScript { report: &checker },
                         control: CompileControl {
@@ -1104,9 +1123,7 @@ fn golden_lowered_facts_match_the_frozen_table() {
         });
         let extension = typescript.get(item.id()).unwrap();
         let declared = ir_tag_shape(&compiled.ir, extension.declared.unwrap());
-        let computed = extension
-            .observed
-            .map(|id| ir_tag_shape(&compiled.ir, id));
+        let computed = extension.observed.map(|id| ir_tag_shape(&compiled.ir, id));
         assert_eq!(declared.0, row.declared, "row {row_index} {:?}", row.name);
         assert_eq!(
             computed.is_some(),

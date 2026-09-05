@@ -82,18 +82,6 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
                 element_count: u32::try_from(element_count).unwrap_or(u32::MAX),
             }),
         ),
-        CompileFailure::FactRejected { source_identity, recipe, rejected } => compile_from_driver(
-            source_identity,
-            recipe,
-            lowering(compiler_vocabulary::LoweringUnsupported::FactRejected {
-                fact: u32::try_from(rejected.fact).unwrap_or(u32::MAX),
-            }),
-        ),
-        CompileFailure::CSharpProjection { source_identity, recipe, .. } => compile_from_driver(
-            source_identity,
-            recipe,
-            lowering(compiler_vocabulary::LoweringUnsupported::CSharpDeclarationForm),
-        ),
         CompileFailure::ClangProjection { source_identity, recipe, .. } => compile_from_driver(
             source_identity,
             recipe,
@@ -335,14 +323,6 @@ mod tests {
         Ok(*cause)
     }
 
-    fn fact_rejection() -> compiler_driver::FactRejection {
-        compiler_driver::FactRejection {
-            fact: 17,
-            name_len: 6,
-            cause: compiler_driver::FactFault::Capacity,
-        }
-    }
-
     fn source_and_recipe() -> (
         compiler_ir::SourceIdentity,
         compiler_vocabulary::CompileRecipeFact,
@@ -391,16 +371,25 @@ mod tests {
     #[test]
     fn fact_rejection_projects_with_the_exact_ordinal() -> Result<(), ProjectionError> {
         let (source, recipe) = source_and_recipe();
-        let failure = compiler_driver::CompileFailure::FactRejected {
+        let failure = compiler_driver::CompileFailure::LoweringUnsupported {
             source_identity: source,
             recipe,
-            rejected: fact_rejection(),
+            cause: compiler_vocabulary::LoweringUnsupported::FactRejected {
+                fact: 17,
+                name_len: 6,
+                cause: compiler_vocabulary::ProjectionAdmissionFault::Capacity,
+            },
         };
         let cause = lowering_cause(super::compile_terminal(failure))?;
-        let compiler_vocabulary::LoweringUnsupported::FactRejected { fact } = cause else {
+        let compiler_vocabulary::LoweringUnsupported::FactRejected {
+            fact,
+            name_len,
+            cause: compiler_vocabulary::ProjectionAdmissionFault::Capacity,
+        } = cause
+        else {
             return Err(ProjectionError::FactOrdinal);
         };
-        if fact != 17 {
+        if fact != 17 || name_len != 6 {
             return Err(ProjectionError::FactOrdinal);
         }
         Ok(())

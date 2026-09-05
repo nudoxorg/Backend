@@ -4,7 +4,7 @@
 mod go_support;
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, FactFault,
+    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use compiler_ir::{FragmentView, ImageProvenance};
@@ -12,7 +12,9 @@ use compiler_languages_go::{GoImage, GoOracle};
 use compiler_publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published,
 };
-use compiler_vocabulary::{GoVersion, LanguageProfile, NativeTool, Stage};
+use compiler_vocabulary::{
+    GoVersion, LanguageProfile, LoweringUnsupported, NativeTool, ProjectionAdmissionFault, Stage,
+};
 use heart_identity::{ContentId, SourceFactDomain};
 use server_index_build::{IndexBuildScratch, build};
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths};
@@ -260,7 +262,7 @@ fn row(
         profile: PROFILE,
         stage: STAGE,
         source: &source,
-            declaration_scope: compiler_driver::DeclarationScope::fixture(),
+        declaration_scope: compiler_driver::DeclarationScope::fixture(),
         toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
         authority: SemanticAuthorityInput::Go {
             image: &image_bytes,
@@ -278,13 +280,17 @@ fn row(
         },
     ) {
         Ok(ir) => ir,
-        Err(CompileFailure::FactRejected { rejected, .. })
-            if module.starts_with("golang.org/x/tools")
-                && rejected.fact == 16_384
-                && rejected.cause == FactFault::Capacity =>
-        {
+        Err(CompileFailure::LoweringUnsupported {
+            cause:
+                LoweringUnsupported::FactRejected {
+                    fact,
+                    cause: ProjectionAdmissionFault::Capacity,
+                    ..
+                },
+            ..
+        }) if module.starts_with("golang.org/x/tools") && fact == 16_384 => {
             return Ok((
-                rejected.fact,
+                16_384,
                 "FactCapacity",
                 started.elapsed().as_millis(),
                 oracle_ms,
@@ -311,7 +317,9 @@ fn row(
         ..
     } = ir.ir.image_provenance()
     else {
-        return Err(Error::Failure("semantic image provenance unavailable".into()));
+        return Err(Error::Failure(
+            "semantic image provenance unavailable".into(),
+        ));
     };
     if image_source.identity != ContentId::<SourceFactDomain>::from_canonical_bytes(&source) {
         return Err(Error::Failure("source identity mismatch".into()));

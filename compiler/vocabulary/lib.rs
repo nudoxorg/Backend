@@ -413,12 +413,18 @@ pub enum LoweringUnsupported {
         /// Elements the admitted type-parameter lane actually held.
         element_count: u32,
     },
-    /// Canonical admission rejected the fact at this ordinal; the bounded
-    /// projection of the driver's exact terminal.
-    #[error("fact {fact} was rejected by the canonical admission lane")]
+    /// Canonical admission rejected one exact fact.  This is the portable
+    /// projection of the driver's complete rejection snapshot.
+    #[error(
+        "fact {fact} with name length {name_len} was rejected by the canonical admission lane: {cause:?}"
+    )]
     FactRejected {
         /// Zero-based ordinal the fact would have occupied.
-        fact: u32,
+        fact: u64,
+        /// Exact byte length of the rejected declaration name.
+        name_len: u64,
+        /// Closed admission cause and all of its source operands.
+        cause: ProjectionAdmissionFault,
     },
     /// Rust function signatures need a distinct semantic recipe and are not lowered as constants.
     #[error("Rust function recipe is not represented")]
@@ -1596,10 +1602,7 @@ pub enum GoImageFault {
         type_count: u32,
     },
     /// Method-set owner had the wrong type kind.
-    MethodSetOwnerKind {
-        index: u32,
-        kind: GoImageTypeKind,
-    },
+    MethodSetOwnerKind { index: u32, kind: GoImageTypeKind },
     /// Method-set type root outside type plane.
     MethodSetTypeRoot {
         index: u32,
@@ -1751,10 +1754,23 @@ pub enum GoProjectionFault {
 /// Closed TypeScript authority projection terminal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TypeScriptProjectionFault {
-    /// A foreign target key failed grammar validation.
-    ForeignKey { cause: ProjectionForeignKeyFault },
-    /// An import-module package lineage failed grammar validation.
+    /// A foreign target key failed grammar validation at this exact spelling.
+    ForeignKey {
+        /// Half-open source span of the path/display spelling.
+        start: u32,
+        /// Exclusive source end.
+        end: u32,
+        /// Exact grammar cause.
+        cause: ProjectionForeignKeyFault,
+    },
+    /// An import-module package lineage failed grammar validation at this
+    /// exact module spelling.
     PackageLineage {
+        /// Half-open source span of the module spelling.
+        start: u32,
+        /// Exclusive source end.
+        end: u32,
+        /// Exact grammar cause.
         cause: ProjectionPackageLineageFault,
     },
     /// A host-size coordinate could not fit the wire's `u32` coordinate.
@@ -1767,11 +1783,29 @@ pub enum TypeScriptProjectionFault {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PythonProjectionFault {
     /// An authority spelling that must become a foreign key was not UTF-8.
-    ForeignSpellingUtf8,
-    /// A foreign target key failed grammar validation.
-    ForeignKey { cause: ProjectionForeignKeyFault },
-    /// A foreign package lineage failed grammar validation.
+    ForeignSpellingUtf8 {
+        /// Inclusive source start.
+        start: u32,
+        /// Exclusive source end.
+        end: u32,
+    },
+    /// A foreign target key failed grammar validation at this exact spelling.
+    ForeignKey {
+        /// Inclusive source start.
+        start: u32,
+        /// Exclusive source end.
+        end: u32,
+        /// Exact grammar cause.
+        cause: ProjectionForeignKeyFault,
+    },
+    /// A foreign package lineage failed grammar validation at this exact
+    /// module spelling.
     PackageLineage {
+        /// Inclusive source start.
+        start: u32,
+        /// Exclusive source end.
+        end: u32,
+        /// Exact grammar cause.
         cause: ProjectionPackageLineageFault,
     },
 }
@@ -2104,7 +2138,7 @@ impl core::fmt::Display for JavaProjectionFault {
 
 const _: () = assert!(core::mem::size_of::<GoProjectionFault>() <= 64);
 const _: () = assert!(core::mem::size_of::<TypeScriptProjectionFault>() <= 16);
-const _: () = assert!(core::mem::size_of::<PythonProjectionFault>() <= 8);
+const _: () = assert!(core::mem::size_of::<PythonProjectionFault>() <= 16);
 const _: () = assert!(core::mem::size_of::<CSharpProjectionFault>() <= 64);
 const _: () = assert!(core::mem::size_of::<ClangProjectionFault>() <= 32);
 const _: () = assert!(core::mem::size_of::<JavaProjectionFault>() <= 32);

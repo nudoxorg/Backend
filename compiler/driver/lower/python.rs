@@ -38,7 +38,10 @@ use compiler_languages_python::{
     OccurrenceFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
     TypeReason as ExtractedReason, extract,
 };
-use compiler_vocabulary::PythonVersion;
+use compiler_vocabulary::{
+    ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
+    PythonProjectionFault, PythonVersion,
+};
 
 use crate::{
     lower::{EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact, push_fact},
@@ -63,6 +66,8 @@ pub(crate) enum PythonCollectError {
     Lowering(LoweringUnsupported),
     /// Canonical admission rejected one exact fact; operands retained.
     Rejected(FactRejection),
+    /// Projection rejected one exact foreign-key authority fact.
+    Projection(PythonProjectionFault),
     /// Ruff returned a declaration span outside the exact caller source.
     Span { start: u32, end: u32 },
 }
@@ -1479,14 +1484,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
             // names; an unmatched row still carries its written spelling.
             let written = self.slice(occurrence.span)?;
             return Ok(Some((
-                foreign_universe(written)?,
+                foreign_universe(written, occurrence.span)?,
                 OccurrenceConfidence::Index,
             )));
         };
         if let Some(imported) = row.imported {
             let module_spelling = self.slice(imported)?;
-            let binding = core::str::from_utf8(row.name).unwrap_or("");
-            let target = foreign_package(module_spelling, binding)?;
+            let binding = core::str::from_utf8(row.name).map_err(|_| {
+                PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                    start: occurrence.span.start,
+                    end: occurrence.span.end,
+                })
+            })?;
+            let target = foreign_package(module_spelling, binding, imported)?;
             let confidence = match checked {
                 Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                 _ => OccurrenceConfidence::Index,
@@ -1957,37 +1967,90 @@ fn widened_literal_record(value: &LiteralValue) -> Option<SemanticTypeRecord<'st
 fn foreign_package<'source>(
     module_spelling: &'source [u8],
     display: &'source str,
+    spelling_span: Span,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
-    let path = core::str::from_utf8(module_spelling).ok();
-    if let Some(path) = path.filter(|path| !path.is_empty()) {
-        let name = match path.split_once('.') {
-            Some((head, _)) => head,
-            None => path,
-        };
-        let Ok(lineage) = PackageLineage::new("pypi", name) else {
-            return foreign_universe(module_spelling);
-        };
-        if let Ok(key) = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, None) {
-            return Ok(OccurrenceTarget::Foreign(key));
-        }
-    }
-    foreign_universe(module_spelling)
+    let path = core::str::from_utf8(module_spelling).map_err(|_| {
+        PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+            start: spelling_span.start,
+            end: spelling_span.end,
+        })
+    })?;
+    let name = match path.split_once('.') {
+        Some((head, _)) => head,
+        None => path,
+    };
+    let lineage =
+        PackageLineage::new("pypi", name).map_err(|cause| lineage_fault(cause, spelling_span))?;
+    let key = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, None)
+        .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
+    Ok(OccurrenceTarget::Foreign(key))
 }
 
 /// A foreign key outside every package, carrying the written spelling.
 fn foreign_universe<'source>(
     written: &'source [u8],
+    spelling_span: Span,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
-    let path = core::str::from_utf8(written).unwrap_or("");
-    let usable = if path.is_empty() { "unresolved" } else { path };
+    let path = core::str::from_utf8(written).map_err(|_| {
+        PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+            start: spelling_span.start,
+            end: spelling_span.end,
+        })
+    })?;
     let key = ForeignKey::new(
         ForeignOrigin::Universe { ecosystem: "pypi" },
-        usable,
+        path,
         path,
         None,
     )
-    .map_err(lane_rejected)?;
+    .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
     Ok(OccurrenceTarget::Foreign(key))
+}
+
+/// Projects one validated foreign-key grammar rejection without replacing the
+/// written package spelling by a universe fallback.
+fn foreign_key_fault(cause: compiler_ir::ForeignKeyFault, span: Span) -> PythonCollectError {
+    PythonCollectError::Projection(PythonProjectionFault::ForeignKey {
+        start: span.start,
+        end: span.end,
+        cause: match cause {
+            compiler_ir::ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+            compiler_ir::ForeignKeyFault::BackslashInPath => {
+                ProjectionForeignKeyFault::BackslashInPath
+            }
+        },
+    })
+}
+
+/// Projects one exact package-lineage grammar rejection.
+fn lineage_fault(cause: compiler_ir::PackageLineageFault, span: Span) -> PythonCollectError {
+    PythonCollectError::Projection(PythonProjectionFault::PackageLineage {
+        start: span.start,
+        end: span.end,
+        cause: match cause {
+            compiler_ir::PackageLineageFault::EmptyEcosystem => {
+                ProjectionPackageLineageFault::EmptyEcosystem
+            }
+            compiler_ir::PackageLineageFault::EmptyName => {
+                ProjectionPackageLineageFault::EmptyPackage
+            }
+            compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+                ProjectionPackageLineageFault::SeparatorInEcosystem
+            }
+            compiler_ir::PackageLineageFault::SeparatorInName => {
+                ProjectionPackageLineageFault::SeparatorInPackage
+            }
+            compiler_ir::PackageLineageFault::Backslash { segment } => {
+                ProjectionPackageLineageFault::Backslash {
+                    part: match segment {
+                        0 => ProjectionLineagePart::Ecosystem,
+                        1 => ProjectionLineagePart::Package,
+                        segment => ProjectionLineagePart::Invalid { segment },
+                    },
+                }
+            }
+        },
+    })
 }
 
 /// Strips the matching quote run from one docstring slice. A docstring whose
@@ -2180,4 +2243,56 @@ fn span_bounds(span: Span) -> Result<(usize, usize), PythonCollectError> {
 }
 
 #[cfg(test)]
-mod tests {} // diagnostic stub in throwaway worktree
+mod tests {
+    use super::{PythonCollectError, foreign_key_fault, foreign_universe, lineage_fault};
+    use compiler_ir::{ForeignKeyFault, PackageLineageFault};
+    use compiler_languages_python::Span;
+    use compiler_vocabulary::{
+        ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
+        PythonProjectionFault,
+    };
+
+    #[test]
+    fn foreign_spelling_utf8_retains_the_occurrence_span() {
+        let span = Span { start: 17, end: 21 };
+        let Err(PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+            start,
+            end,
+        })) = foreign_universe(&[0xff], span)
+        else {
+            panic!("foreign UTF-8 rejection lost its source span");
+        };
+        assert_eq!((start, end), (17, 21));
+    }
+
+    #[test]
+    fn foreign_key_and_lineage_faults_retain_their_exact_spans() {
+        let key_span = Span { start: 5, end: 14 };
+        let key_error = foreign_key_fault(ForeignKeyFault::BackslashInPath, key_span);
+        let PythonCollectError::Projection(PythonProjectionFault::ForeignKey { start, end, cause }) =
+            key_error
+        else {
+            panic!("foreign-key grammar fault was erased");
+        };
+        assert_eq!(
+            (start, end, cause),
+            (5, 14, ProjectionForeignKeyFault::BackslashInPath)
+        );
+
+        let lineage_span = Span { start: 22, end: 31 };
+        let lineage_error =
+            lineage_fault(PackageLineageFault::Backslash { segment: 9 }, lineage_span);
+        let PythonCollectError::Projection(PythonProjectionFault::PackageLineage {
+            start,
+            end,
+            cause:
+                ProjectionPackageLineageFault::Backslash {
+                    part: ProjectionLineagePart::Invalid { segment },
+                },
+        }) = lineage_error
+        else {
+            panic!("package-lineage grammar fault was erased");
+        };
+        assert_eq!((start, end, segment), (22, 31, 9));
+    }
+}

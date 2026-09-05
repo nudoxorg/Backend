@@ -443,13 +443,17 @@ pub(super) fn compile_terminal(failure: &CompileFailure<'_>) -> CompileTerminal 
         CompileFailure::AuthorityInputProfileMismatch { .. } => {
             CompileTerminal::AuthorityInputProfileMismatch
         }
-        CompileFailure::LoweringUnsupported { cause, .. } => {
-            CompileTerminal::LoweringUnsupported(*cause)
-        }
+        CompileFailure::LoweringUnsupported { cause, .. } => match cause {
+            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                CompileTerminal::FactRejected
+            }
+            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+                CompileTerminal::CSharpProjection
+            }
+            cause => CompileTerminal::LoweringUnsupported(*cause),
+        },
         CompileFailure::ExtensionAtomUnbound { .. } => CompileTerminal::Build,
         CompileFailure::ExtensionTypeParametersUnbound { .. } => CompileTerminal::Build,
-        CompileFailure::FactRejected { .. } => CompileTerminal::FactRejected,
-        CompileFailure::CSharpProjection { .. } => CompileTerminal::CSharpProjection,
         CompileFailure::ClangProjection { .. } => CompileTerminal::ClangProjection,
         CompileFailure::Build { .. } => CompileTerminal::Build,
         CompileFailure::Prepare { .. } => CompileTerminal::Prepare,

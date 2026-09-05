@@ -422,14 +422,6 @@ pub enum CompileFailure<'diagnostic> {
         length: u32,
         element_count: usize,
     },
-    /// Canonical admission rejected one exact emitted fact; the ordinal,
-    /// rejected name length, and full typed cause are retained by value.
-    #[error("{recipe:?} rejected emission fact {rejected:?}")]
-    FactRejected {
-        source_identity: SourceIdentity,
-        recipe: CompileRecipeFact,
-        rejected: crate::types::FactRejection,
-    },
     /// Clang projection rejected one exact authority fact before canonical admission.
     #[error("{recipe:?} Clang projection failed: {fault:?}")]
     ClangProjection {

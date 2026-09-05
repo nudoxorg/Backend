@@ -10,9 +10,20 @@ use crate::lower::{self, AdmissionFault, typescript::TypeScriptCollectError};
 use super::{
     AuthorityDiagnostic, AuthorityDiagnosticFault, AuthorityFailure, CompileFailure, CompileOutput,
     CompileRecipeFact, CompileRequest, CompileScratch, CompiledFragment, CompiledSemantic,
-    NativeDiagnostic, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity, SourceLease,
-    ToolchainSelection, ToolchainSelectionFact, WorkPermit, WorkStopped,
+    FactRejection, NativeDiagnostic, ResolvedToolchain, SemanticAuthorityInput, SourceIdentity,
+    SourceLease, ToolchainSelection, ToolchainSelectionFact, WorkPermit, WorkStopped,
 };
+
+/// Projects the driver's complete admission snapshot into the one portable
+/// lowering terminal.  The collector arena never escapes this boundary, but
+/// every source operand does.
+fn rejected_lowering(rejected: FactRejection) -> compiler_vocabulary::LoweringUnsupported {
+    compiler_vocabulary::LoweringUnsupported::FactRejected {
+        fact: lower::portable_count(rejected.fact),
+        name_len: lower::portable_count(rejected.name_len),
+        cause: lower::portable_admission(rejected.cause),
+    }
+}
 
 /// Compiles the compact fragment compatibility projection.
 ///
@@ -741,11 +752,20 @@ fn python_terminal<'diagnostic>(
                 cause,
             },
         },
-        lower::python::PythonCollectError::Rejected(rejected) => CompileFailure::FactRejected {
-            source_identity,
-            recipe,
-            rejected,
-        },
+        lower::python::PythonCollectError::Rejected(rejected) => {
+            CompileFailure::LoweringUnsupported {
+                source_identity,
+                recipe,
+                cause: rejected_lowering(rejected),
+            }
+        }
+        lower::python::PythonCollectError::Projection(fault) => {
+            CompileFailure::LoweringUnsupported {
+                source_identity,
+                recipe,
+                cause: compiler_vocabulary::LoweringUnsupported::PythonProjection { fault },
+            }
+        }
         lower::python::PythonCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -810,10 +830,10 @@ fn go_terminal<'diagnostic>(
                 },
             }
         }
-        lower::go::GoCollectError::Rejected(rejected) => CompileFailure::FactRejected {
+        lower::go::GoCollectError::Rejected(rejected) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
-            rejected,
+            cause: rejected_lowering(rejected),
         },
         lower::go::GoCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
@@ -857,16 +877,13 @@ fn csharp_terminal<'diagnostic>(
                 end,
             },
         },
-        lower::csharp::CSharpCollectError::Rejected(rejected) => CompileFailure::FactRejected {
-            source_identity,
-            recipe,
-            rejected,
-        },
-        lower::csharp::CSharpCollectError::Projection(fault) => CompileFailure::CSharpProjection {
-            source_identity,
-            recipe,
-            fault,
-        },
+        lower::csharp::CSharpCollectError::Rejected(rejected) => {
+            CompileFailure::LoweringUnsupported {
+                source_identity,
+                recipe,
+                cause: rejected_lowering(rejected),
+            }
+        }
         lower::csharp::CSharpCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
@@ -912,10 +929,10 @@ fn java_terminal<'diagnostic>(
                 },
             }
         }
-        lower::java::JavaCollectError::Rejected(rejected) => CompileFailure::FactRejected {
+        lower::java::JavaCollectError::Rejected(rejected) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
-            rejected,
+            cause: rejected_lowering(rejected),
         },
         lower::java::JavaCollectError::Lowering(cause) => CompileFailure::LoweringUnsupported {
             source_identity,
@@ -939,11 +956,13 @@ fn clang_terminal<'diagnostic>(
                 cause,
             },
         },
-        lower::clang::ClangCollectError::Rejected(rejected) => CompileFailure::FactRejected {
-            source_identity,
-            recipe,
-            rejected,
-        },
+        lower::clang::ClangCollectError::Rejected(rejected) => {
+            CompileFailure::LoweringUnsupported {
+                source_identity,
+                recipe,
+                cause: rejected_lowering(rejected),
+            }
+        }
         lower::clang::ClangCollectError::Projection(fault) => CompileFailure::ClangProjection {
             source_identity,
             recipe,
@@ -1022,10 +1041,15 @@ fn typescript_terminal<'diagnostic>(
                 cause,
             },
         },
-        TypeScriptCollectError::Rejected(rejected) => CompileFailure::FactRejected {
+        TypeScriptCollectError::Rejected(rejected) => CompileFailure::LoweringUnsupported {
             source_identity,
             recipe,
-            rejected,
+            cause: rejected_lowering(rejected),
+        },
+        TypeScriptCollectError::Projection(fault) => CompileFailure::LoweringUnsupported {
+            source_identity,
+            recipe,
+            cause: compiler_vocabulary::LoweringUnsupported::TypeScriptProjection { fault },
         },
         TypeScriptCollectError::Span { start, end } => CompileFailure::Authority {
             source_identity,

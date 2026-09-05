@@ -29,9 +29,9 @@ use compiler_ir::{
     PreparedFragment, RecipeFact, SourceIdentity, TypeFactInput, TypeFactLane, TypeNode,
     WriteError, canonicalize_data_with_budget,
 };
+use compiler_vocabulary::ProjectionFactLane;
 use core::mem::size_of;
 use core::num::NonZeroU16;
-use compiler_vocabulary::ProjectionFactLane;
 
 mod admission;
 pub(crate) mod clang;
@@ -44,8 +44,8 @@ pub(crate) mod python;
 pub(crate) mod rust;
 pub(crate) mod typescript;
 
+pub(crate) use admission::{portable_admission, portable_count};
 pub(super) use provenance::StagedSourceSpan;
-pub(super) use admission::{portable_admission, portable_count};
 use provenance::{MemberSetCapture, Provenance, local_parent};
 
 /// Dense bound of the multi-declaration semantic emission lane.
@@ -520,7 +520,6 @@ impl RejectedFact<'_> {
         }
     }
 }
-
 
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.

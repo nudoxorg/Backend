@@ -12,10 +12,12 @@ use std::{
 };
 
 use compiler_driver::{
-    CompileControl, CompileFailure, CompileRequest, CompileScratch, FactFault, NativeTool,
-    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile_ir,
+    CompileControl, CompileFailure, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
+    SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use compiler_vocabulary::{LanguageProfile, PythonVersion, Stage};
+use compiler_vocabulary::{
+    LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -31,9 +33,9 @@ enum TestError {
     #[error("the lane rejection lost its exact terminal: {0:?}")]
     WrongTerminal(String),
     #[error("the rejection lost its capacity cause: {0:?}")]
-    WrongCause(FactFault),
+    WrongCause(ProjectionAdmissionFault),
     #[error("the rejected name length {0} does not name the rejected ordinal")]
-    WrongName(usize),
+    WrongName(u64),
     #[error("work directory setup failed")]
     Work,
 }
@@ -43,7 +45,7 @@ fn one_function(index: usize) -> String {
     format!("def f{index}():\n    return 0\n\n")
 }
 
-fn decimal_digits(mut value: usize) -> usize {
+fn decimal_digits(mut value: u64) -> u64 {
     let mut count = 1;
     while value >= 10 {
         value /= 10;
@@ -53,7 +55,7 @@ fn decimal_digits(mut value: usize) -> usize {
 }
 
 /// The bounded emission lane rejects the fact past its frozen capacity with
-/// the exact ordinal, rejected name length, and `FactFault::Capacity` cause
+/// the exact ordinal, rejected name length, and portable capacity cause
 /// at the public compile terminal. The assertion is stated against the
 /// rejected ordinal itself, so it survives the frozen bound moving.
 #[test]
@@ -115,14 +117,23 @@ fn overflowing_the_emission_lane_retains_the_exact_rejection_operands() -> Resul
         Ok(failure) => failure,
         Err(admitted) => return Err(admitted),
     };
-    let CompileFailure::FactRejected { rejected, .. } = &failure else {
+    let CompileFailure::LoweringUnsupported {
+        cause:
+            LoweringUnsupported::FactRejected {
+                fact,
+                name_len,
+                cause,
+            },
+        ..
+    } = &failure
+    else {
         return Err(TestError::WrongTerminal(format!("{failure:?}")));
     };
-    if rejected.cause != FactFault::Capacity {
-        return Err(TestError::WrongCause(rejected.cause));
+    if *cause != ProjectionAdmissionFault::Capacity {
+        return Err(TestError::WrongCause(*cause));
     }
-    if rejected.name_len != b"f".len() + decimal_digits(rejected.fact) {
-        return Err(TestError::WrongName(rejected.name_len));
+    if *name_len != 1 + decimal_digits(*fact) {
+        return Err(TestError::WrongName(*name_len));
     }
     Ok(())
 }

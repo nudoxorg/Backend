@@ -206,6 +206,12 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
             compiler_vocabulary::LoweringUnsupported::NoSupportedDeclaration => {
                 "lowering-unsupported:no-supported-declaration".to_owned()
             }
+            compiler_vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected".to_owned()
+            }
+            compiler_vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
+                "csharp-projection".to_owned()
+            }
             other => format!("lowering-unsupported:{other}"),
         },
         CompileFailure::Authority { .. } => "authority".to_owned(),
@@ -217,8 +223,6 @@ fn failure_label(failure: &CompileFailure<'_>) -> String {
         CompileFailure::ExtensionTypeParametersUnbound { .. } => {
             "extension-type-parameters-unbound".to_owned()
         }
-        CompileFailure::FactRejected { .. } => "fact-rejected".to_owned(),
-        CompileFailure::CSharpProjection { .. } => "csharp-projection".to_owned(),
         CompileFailure::ClangProjection { .. } => "clang-projection".to_owned(),
         CompileFailure::Build { .. } => "build".to_owned(),
         CompileFailure::Prepare { .. } => "prepare".to_owned(),
