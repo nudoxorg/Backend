@@ -94,7 +94,7 @@ pub struct CSharpAuthorityControl<'cancel> {
 /// owns the enclosing compilation request.  `oracle` is held by
 /// [`CSharpOracle`] and must be an absolute path to the published helper DLL.
 #[derive(Clone, Copy, Debug)]
-pub struct CSharpAuthorityRequest<'request, 'config> {
+pub struct CSharpAuthorityRequest<'request, 'config, 'cancel> {
     /// Package tree that supplies source and package-local C# files.
     pub package_root: &'request Path,
     /// Exact source file whose bytes and spans the image must bind.
@@ -108,7 +108,7 @@ pub struct CSharpAuthorityRequest<'request, 'config> {
     /// Already-resolved absolute dotnet executable.
     pub toolchain: &'request Path,
     /// Cancellation/deadline authority for this transaction.
-    pub control: CSharpAuthorityControl<'request>,
+    pub control: CSharpAuthorityControl<'cancel>,
     /// Explicit Roslyn source-mode configuration.
     pub configuration: CSharpAuthorityConfiguration<'config>,
 }
@@ -218,9 +218,9 @@ impl CSharpOracle {
     /// output-limit, and image-validation causes.  A child failure retains a
     /// bounded stderr tail rather than collapsing the helper's diagnosis into
     /// a boolean unavailable result.
-    pub fn authority_image<'request, 'config>(
+    pub fn authority_image<'request, 'config, 'cancel>(
         &self,
-        request: CSharpAuthorityRequest<'request, 'config>,
+        request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<Vec<u8>, CSharpAuthorityError> {
         checkpoint(request.control, CSharpAuthorityPhase::Admission)?;
         if request.native_tool != NativeTool::CSharpCompiler {
@@ -411,9 +411,9 @@ impl CSharpOracle {
     ///
     /// The returned owner is convenient for a package authority transaction
     /// whose driver input borrows the image for the duration of lowering.
-    pub fn produce<'request, 'config>(
+    pub fn produce<'request, 'config, 'cancel>(
         &self,
-        request: CSharpAuthorityRequest<'request, 'config>,
+        request: CSharpAuthorityRequest<'request, 'config, 'cancel>,
     ) -> Result<CSharpAuthorityImage, CSharpAuthorityError> {
         self.authority_image(request)
             .map(CSharpAuthorityImage::from_bytes)
@@ -583,7 +583,7 @@ fn profile_tag(profile: CSharpVersion) -> &'static str {
 
 fn validate_absolute_paths(
     oracle: &Path,
-    request: CSharpAuthorityRequest<'_, '_>,
+    request: CSharpAuthorityRequest<'_, '_, '_>,
 ) -> Result<(), CSharpAuthorityError> {
     for (kind, path) in [
         ("oracle", oracle),
