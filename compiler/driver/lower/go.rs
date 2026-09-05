@@ -44,8 +44,6 @@
 //! owner-relative span at the owner's start.
 
 use core::str;
-use std::collections::HashMap;
-
 use compiler_ir::{
     AtomListId, ChannelDirection, DocFragmentInput, EntityId, EntityKind, EntityListId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, GoFacts, GoSignature, NominalRef, Occurrence,
@@ -54,10 +52,15 @@ use compiler_ir::{
     SemanticTypeRecord, SemanticTypeTag, TypeListId, TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_go::{
-    ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, ImageError, MemberKind, TypeRowKind,
-    parse_constraint_blob,
+    ChanDir, Declaration, DeclarationKind, DocOwner, GoImage, HeaderError, ImageError, MemberKind,
+    TypeRowKind, parse_constraint_blob,
 };
-use compiler_vocabulary::LoweringUnsupported;
+use compiler_vocabulary::{
+    GoImageDeclarationKind, GoImageDocOwnerKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault,
+    GoImageMemberKind, GoImagePlane, GoImageTypeKind, GoProjectionFault as PortableGoProjectionFault,
+    GoProjectionIndexPhase, GoProjectionListPhase, LoweringUnsupported, ProjectionForeignKeyFault,
+    ProjectionLineagePart, ProjectionPackageLineageFault,
+};
 use sha2::{Digest, Sha256};
 
 use crate::lower::{
@@ -94,11 +97,16 @@ pub(crate) enum GoCollectError {
 /// typed; widening [`GoCollectError`] requires extending the frozen driver
 /// failure match and is recorded as a lane criticism in the module review.
 #[derive(Debug)]
-enum ProjectionFault<'image> {
+enum ProjectionFault {
+    /// A validated authority image row could not be reread.
+    Image(ImageError),
     /// A bounded coordinate or index cannot be represented by the fixed lane.
-    IndexCapacity,
+    IndexCapacity {
+        phase: GoProjectionIndexPhase,
+        observed: u64,
+    },
     /// The recursive type graph exceeded the producer depth budget.
-    Depth,
+    Depth { type_row: u32 },
     /// The authority marked a callable variadic without a final typed
     /// parameter to own the rest marker.
     VariadicWithoutParameter {
@@ -106,47 +114,25 @@ enum ProjectionFault<'image> {
         signature: u32,
     },
     /// No pushed fact existed to own an anonymous compound row.
-    Anchor,
+    Anchor { owner: u32 },
     /// A pooled field or method list exceeded its bounded width.
-    ListCapacity,
-    /// A same-package reference named no declared function.
-    OrphanTarget {
-        /// The unresolved target spelling.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        function: &'image [u8],
+    ListCapacity {
+        owner: u32,
+        phase: GoProjectionListPhase,
     },
+    /// A same-package reference named no declared function.
+    OrphanTarget { reference: u32 },
     /// A foreign key could not be built for a resolved external target.
-    ForeignKey(
-        /// The exact foreign-key rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        ForeignKeyFault,
-    ),
+    ForeignKey { reference: u32, cause: ForeignKeyFault },
     /// The `go` package lineage was rejected.
-    Lineage(
-        /// The exact lineage rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        PackageLineageFault,
-    ),
+    Lineage {
+        reference: u32,
+        cause: PackageLineageFault,
+    },
     /// An image atom was not UTF-8 although the image validated its planes.
-    Utf8,
+    Utf8 { plane: GoImagePlane, row: u32 },
     /// A reference span was inverted although the image proved containment.
-    Span(
-        /// The exact relative-span rejection.
-        #[expect(
-            dead_code,
-            reason = "operands are retained for typed diagnostics; the collect boundary folds every class to the lane's closed terminal"
-        )]
-        RelSpanFault,
-    ),
+    Span { row: u32, start: u32, end: u32 },
     /// A doc, method, or member row named no pushed owner fact.
     OrphanOwner {
         /// The image row index whose owner was never pushed.
@@ -158,12 +144,659 @@ enum ProjectionFault<'image> {
     },
 }
 
+fn go_u32(value: usize, phase: GoProjectionIndexPhase) -> Result<u32, (GoProjectionIndexPhase, u64)> {
+    u32::try_from(value).map_err(|_| (phase, value as u64))
+}
+
+fn go_plane(plane: &'static str) -> Option<GoImagePlane> {
+    match plane {
+        "declaration" => Some(GoImagePlane::Declaration),
+        "type" => Some(GoImagePlane::Type),
+        "type child" => Some(GoImagePlane::TypeChild),
+        "method" => Some(GoImagePlane::Method),
+        "type parameter" => Some(GoImagePlane::TypeParameter),
+        "member" => Some(GoImagePlane::Member),
+        "doc" => Some(GoImagePlane::Doc),
+        "reference" => Some(GoImagePlane::Reference),
+        "reference target" => Some(GoImagePlane::ReferenceTarget),
+        "build constraint" => Some(GoImagePlane::BuildConstraint),
+        "satisfaction" => Some(GoImagePlane::Satisfaction),
+        "satisfaction target" => Some(GoImagePlane::SatisfactionTarget),
+        "package" => Some(GoImagePlane::Package),
+        "signature parameter" => Some(GoImagePlane::SignatureParameter),
+        "method set" => Some(GoImagePlane::MethodSet),
+        "module" => Some(GoImagePlane::Module),
+        _ => None,
+    }
+}
+
+fn go_flag_cell(cell: &'static str) -> Option<GoImageFlagCell> {
+    match cell {
+        "exported" => Some(GoImageFlagCell::Exported),
+        "pointer-receiver" => Some(GoImageFlagCell::PointerReceiver),
+        "promoted" => Some(GoImageFlagCell::Promoted),
+        "embedded" => Some(GoImageFlagCell::Embedded),
+        _ => None,
+    }
+}
+
+const fn go_decl_kind(kind: DeclarationKind) -> GoImageDeclarationKind {
+    match kind {
+        DeclarationKind::Type => GoImageDeclarationKind::Type,
+        DeclarationKind::Alias => GoImageDeclarationKind::Alias,
+        DeclarationKind::Function => GoImageDeclarationKind::Function,
+        DeclarationKind::Constant => GoImageDeclarationKind::Constant,
+        DeclarationKind::Static => GoImageDeclarationKind::Static,
+    }
+}
+
+const fn go_type_kind(kind: TypeRowKind) -> GoImageTypeKind {
+    match kind {
+        TypeRowKind::Basic => GoImageTypeKind::Basic,
+        TypeRowKind::Named => GoImageTypeKind::Named,
+        TypeRowKind::Alias => GoImageTypeKind::Alias,
+        TypeRowKind::TypeParam => GoImageTypeKind::TypeParameter,
+        TypeRowKind::Pointer => GoImageTypeKind::Pointer,
+        TypeRowKind::Slice => GoImageTypeKind::Slice,
+        TypeRowKind::Array => GoImageTypeKind::Array,
+        TypeRowKind::Map => GoImageTypeKind::Map,
+        TypeRowKind::Chan => GoImageTypeKind::Channel,
+        TypeRowKind::Func => GoImageTypeKind::Function,
+        TypeRowKind::Struct => GoImageTypeKind::Struct,
+        TypeRowKind::Interface => GoImageTypeKind::Interface,
+        TypeRowKind::Union => GoImageTypeKind::Union,
+        TypeRowKind::Tuple => GoImageTypeKind::Tuple,
+        TypeRowKind::Invalid => GoImageTypeKind::Invalid,
+    }
+}
+
+const fn go_member_kind(kind: MemberKind) -> GoImageMemberKind {
+    match kind {
+        MemberKind::Field => GoImageMemberKind::Field,
+        MemberKind::Method => GoImageMemberKind::Method,
+    }
+}
+
+const fn go_doc_owner_kind(kind: DocOwner) -> GoImageDocOwnerKind {
+    match kind {
+        DocOwner::Declaration => GoImageDocOwnerKind::Declaration,
+        DocOwner::Method => GoImageDocOwnerKind::Method,
+        DocOwner::Member => GoImageDocOwnerKind::Member,
+        DocOwner::Package => GoImageDocOwnerKind::Package,
+    }
+}
+
+const fn portable_foreign_key(fault: ForeignKeyFault) -> ProjectionForeignKeyFault {
+    match fault {
+        ForeignKeyFault::EmptyPath => ProjectionForeignKeyFault::EmptyPath,
+        ForeignKeyFault::BackslashInPath => ProjectionForeignKeyFault::BackslashInPath,
+    }
+}
+
+const fn portable_lineage(fault: PackageLineageFault) -> ProjectionPackageLineageFault {
+    match fault {
+        PackageLineageFault::EmptyEcosystem => ProjectionPackageLineageFault::EmptyEcosystem,
+        PackageLineageFault::EmptyName => ProjectionPackageLineageFault::EmptyPackage,
+        PackageLineageFault::SeparatorInEcosystem => {
+            ProjectionPackageLineageFault::SeparatorInEcosystem
+        }
+        PackageLineageFault::SeparatorInName => ProjectionPackageLineageFault::SeparatorInPackage,
+        PackageLineageFault::Backslash { segment } => {
+            ProjectionPackageLineageFault::Backslash {
+                part: match segment {
+                    0 => ProjectionLineagePart::Ecosystem,
+                    1 => ProjectionLineagePart::Package,
+                    other => ProjectionLineagePart::Invalid { segment: other },
+                },
+            }
+        }
+    }
+}
+
+fn portable_header_fault(
+    error: HeaderError,
+) -> Result<GoImageHeaderFault, (GoProjectionIndexPhase, u64)> {
+    Ok(match error {
+        HeaderError::Truncated { actual } => GoImageHeaderFault::Truncated {
+            actual: go_u32(actual, GoProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::Magic { found } => GoImageHeaderFault::Magic { found },
+        HeaderError::Version { found } => GoImageHeaderFault::Version { found },
+        HeaderError::Length { found } => GoImageHeaderFault::Length {
+            found: go_u32(found, GoProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::BodyLength { declared, actual } => GoImageHeaderFault::BodyLength {
+            declared: go_u32(declared, GoProjectionIndexPhase::ImageHeader)?,
+            actual: go_u32(actual, GoProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::Reserved => GoImageHeaderFault::Reserved,
+        HeaderError::ModuleCount { found } => GoImageHeaderFault::ModuleCount {
+            found: go_u32(found, GoProjectionIndexPhase::ImageHeader)?,
+        },
+    })
+}
+
+fn portable_image_fault(
+    error: ImageError,
+) -> Result<GoImageFault, (GoProjectionIndexPhase, u64)> {
+    Ok(match error {
+        ImageError::Header(error) => GoImageFault::Header {
+            cause: portable_header_fault(error)?,
+        },
+        ImageError::Digest => GoImageFault::Digest,
+        ImageError::RowBounds {
+            plane,
+            index,
+            count,
+        } => GoImageFault::RowBounds {
+            plane: go_plane(plane).ok_or((GoProjectionIndexPhase::ImageRow, 0))?,
+            index: go_u32(index, GoProjectionIndexPhase::ImageRow)?,
+            count: go_u32(count, GoProjectionIndexPhase::ImageRow)?,
+        },
+        ImageError::DeclarationKind { index, found } => GoImageFault::DeclarationKind {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            found,
+        },
+        ImageError::ExportedFlag { index, found } => GoImageFault::ExportedFlag {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            found,
+        },
+        ImageError::DeclarationIota { index, found } => GoImageFault::DeclarationIota {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            found,
+        },
+        ImageError::DeclarationReserved { index } => GoImageFault::DeclarationReserved {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+        },
+        ImageError::TypeReserved { index } => GoImageFault::TypeReserved {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MethodReserved { index } => GoImageFault::MethodReserved {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+        },
+        ImageError::MemberReserved { index } => GoImageFault::MemberReserved {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+        },
+        ImageError::DocReserved { index } => GoImageFault::DocReserved {
+            index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
+        },
+        ImageError::ReferenceReserved { index } => GoImageFault::ReferenceReserved {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+        },
+        ImageError::DeclarationTypeRoot {
+            index,
+            root,
+            type_count,
+        } => GoImageFault::DeclarationTypeRoot {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            root,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::DeclarationSpan { index, start, end } => GoImageFault::DeclarationSpan {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            start,
+            end,
+        },
+        ImageError::TypeKind { index, found } => GoImageFault::TypeKind {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            found,
+        },
+        ImageError::TypeNameRequired { index, kind } => GoImageFault::TypeNameRequired {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            kind: go_type_kind(kind),
+        },
+        ImageError::TypeNameForbidden { index, kind } => GoImageFault::TypeNameForbidden {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            kind: go_type_kind(kind),
+        },
+        ImageError::TypeDirection { index, found } => GoImageFault::TypeDirection {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            found,
+        },
+        ImageError::TypeDirectionCell { index, kind } => GoImageFault::TypeDirectionCell {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            kind: go_type_kind(kind),
+        },
+        ImageError::TypeVariadicFlag { index, found } => GoImageFault::TypeVariadicFlag {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            found,
+        },
+        ImageError::TypeVariadicCell { index, kind } => GoImageFault::TypeVariadicCell {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            kind: go_type_kind(kind),
+        },
+        ImageError::ArrayLength { index, length } => GoImageFault::ArrayLength {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            length,
+        },
+        ImageError::TypeParamCount {
+            index,
+            kind,
+            param_count,
+            child_count,
+        } => GoImageFault::TypeParamCount {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            kind: go_type_kind(kind),
+            param_count,
+            child_count,
+        },
+        ImageError::TypeChildRange {
+            index,
+            start,
+            count,
+            child_count,
+        } => GoImageFault::TypeChildRange {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            start: go_u32(start, GoProjectionIndexPhase::TypeChild)?,
+            count: go_u32(count, GoProjectionIndexPhase::TypeChild)?,
+            child_count: go_u32(child_count, GoProjectionIndexPhase::TypeChild)?,
+        },
+        ImageError::TypeChildTarget {
+            index,
+            target,
+            type_count,
+        } => GoImageFault::TypeChildTarget {
+            index: go_u32(index, GoProjectionIndexPhase::TypeChild)?,
+            target,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::TypeChildFlags { index, flags } => GoImageFault::TypeChildFlags {
+            index: go_u32(index, GoProjectionIndexPhase::TypeChild)?,
+            flags,
+        },
+        ImageError::TypeChildTiling { declared, plane } => GoImageFault::TypeChildTiling {
+            declared: go_u32(declared, GoProjectionIndexPhase::TypeChild)?,
+            plane: go_u32(plane, GoProjectionIndexPhase::TypeChild)?,
+        },
+        ImageError::TypeMemberRange {
+            index,
+            start,
+            count,
+            member_count,
+        } => GoImageFault::TypeMemberRange {
+            index: go_u32(index, GoProjectionIndexPhase::TypeRow)?,
+            start: go_u32(start, GoProjectionIndexPhase::Member)?,
+            count: go_u32(count, GoProjectionIndexPhase::Member)?,
+            member_count: go_u32(member_count, GoProjectionIndexPhase::Member)?,
+        },
+        ImageError::MethodOwner {
+            index,
+            owner,
+            declaration_count,
+        } => GoImageFault::MethodOwner {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+            owner,
+            declaration_count: go_u32(declaration_count, GoProjectionIndexPhase::Declaration)?,
+        },
+        ImageError::MethodFlag { index, cell, found } => GoImageFault::MethodFlag {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+            cell: go_flag_cell(cell).ok_or((GoProjectionIndexPhase::Method, 0))?,
+            found,
+        },
+        ImageError::MethodTypeRoot {
+            index,
+            root,
+            type_count,
+        } => GoImageFault::MethodTypeRoot {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+            root,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MethodReceiverParams {
+            index,
+            count,
+            blob_bytes,
+        } => GoImageFault::MethodReceiverParams {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+            count,
+            blob_bytes,
+        },
+        ImageError::MethodSort {
+            index,
+            owner,
+            previous,
+        } => GoImageFault::MethodSort {
+            index: go_u32(index, GoProjectionIndexPhase::Method)?,
+            owner,
+            previous,
+        },
+        ImageError::TypeParameterOwner {
+            index,
+            owner,
+            declaration_count,
+        } => GoImageFault::TypeParameterOwner {
+            index: go_u32(index, GoProjectionIndexPhase::TypeParameter)?,
+            owner,
+            declaration_count: go_u32(declaration_count, GoProjectionIndexPhase::Declaration)?,
+        },
+        ImageError::TypeParameterConstraint {
+            index,
+            root,
+            type_count,
+        } => GoImageFault::TypeParameterConstraint {
+            index: go_u32(index, GoProjectionIndexPhase::TypeParameter)?,
+            root,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::TypeParameterSort {
+            index,
+            owner,
+            previous,
+        } => GoImageFault::TypeParameterSort {
+            index: go_u32(index, GoProjectionIndexPhase::TypeParameter)?,
+            owner,
+            previous,
+        },
+        ImageError::MemberKind { index, found } => GoImageFault::MemberKind {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+            found,
+        },
+        ImageError::MemberFlag { index, cell, found } => GoImageFault::MemberFlag {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+            cell: go_flag_cell(cell).ok_or((GoProjectionIndexPhase::Member, 0))?,
+            found,
+        },
+        ImageError::MemberEmbedded { index } => GoImageFault::MemberEmbedded {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+        },
+        ImageError::MemberOwner {
+            index,
+            owner,
+            type_count,
+        } => GoImageFault::MemberOwner {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+            owner,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MemberTypeRoot {
+            index,
+            root,
+            type_count,
+        } => GoImageFault::MemberTypeRoot {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+            root,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MemberSort {
+            index,
+            owner,
+            previous,
+        } => GoImageFault::MemberSort {
+            index: go_u32(index, GoProjectionIndexPhase::Member)?,
+            owner,
+            previous,
+        },
+        ImageError::MemberOwnerRange {
+            owner,
+            start,
+            count,
+            actual_start,
+            actual_count,
+        } => GoImageFault::MemberOwnerRange {
+            owner,
+            start: go_u32(start, GoProjectionIndexPhase::Member)?,
+            count: go_u32(count, GoProjectionIndexPhase::Member)?,
+            actual_start: go_u32(actual_start, GoProjectionIndexPhase::Member)?,
+            actual_count: go_u32(actual_count, GoProjectionIndexPhase::Member)?,
+        },
+        ImageError::DocOwnerKind { index, found } => GoImageFault::DocOwnerKind {
+            index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
+            found,
+        },
+        ImageError::DocOwner { index, owner, bound } => GoImageFault::DocOwner {
+            index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
+            owner,
+            bound: go_u32(bound, GoProjectionIndexPhase::Documentation)?,
+        },
+        ImageError::EmptyDoc { index } => GoImageFault::EmptyDoc {
+            index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
+        },
+        ImageError::DocSort {
+            index,
+            owner_kind,
+            owner,
+            previous_kind,
+            previous_owner,
+        } => GoImageFault::DocSort {
+            index: go_u32(index, GoProjectionIndexPhase::Documentation)?,
+            owner_kind,
+            owner,
+            previous_kind,
+            previous_owner,
+        },
+        ImageError::ReferenceOwner {
+            index,
+            owner,
+            declaration_count,
+        } => GoImageFault::ReferenceOwner {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+            owner,
+            declaration_count: go_u32(declaration_count, GoProjectionIndexPhase::Declaration)?,
+        },
+        ImageError::ReferenceSpan { index, start, end } => GoImageFault::ReferenceSpan {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+            start,
+            end,
+        },
+        ImageError::ReferenceOwnerUnresolved {
+            index,
+            owner_bytes,
+            function_bytes,
+        } => GoImageFault::ReferenceOwnerUnresolved {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+            owner_bytes: go_u32(owner_bytes, GoProjectionIndexPhase::Reference)?,
+            function_bytes: go_u32(function_bytes, GoProjectionIndexPhase::Reference)?,
+        },
+        ImageError::ReferenceOwnerSpan { index } => GoImageFault::ReferenceOwnerSpan {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+        },
+        ImageError::ReferenceFile { index } => GoImageFault::ReferenceFile {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+        },
+        ImageError::ReferenceContainment {
+            index,
+            start,
+            end,
+            owner_start,
+            owner_end,
+        } => GoImageFault::ReferenceContainment {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+            start,
+            end,
+            owner_start,
+            owner_end,
+        },
+        ImageError::ReferenceSort { index } => GoImageFault::ReferenceSort {
+            index: go_u32(index, GoProjectionIndexPhase::Reference)?,
+        },
+        ImageError::EmptyConstraint { index } => GoImageFault::EmptyConstraint {
+            index: go_u32(index, GoProjectionIndexPhase::Constraint)?,
+        },
+        ImageError::ConstraintBlob {
+            index,
+            count,
+            blob_bytes,
+        } => GoImageFault::ConstraintBlob {
+            index: go_u32(index, GoProjectionIndexPhase::Constraint)?,
+            count,
+            blob_bytes,
+        },
+        ImageError::ConstraintSort { index } => GoImageFault::ConstraintSort {
+            index: go_u32(index, GoProjectionIndexPhase::Constraint)?,
+        },
+        ImageError::SatisfactionSubject {
+            index,
+            subject,
+            declaration_count,
+        } => GoImageFault::SatisfactionSubject {
+            index: go_u32(index, GoProjectionIndexPhase::Satisfaction)?,
+            subject,
+            declaration_count: go_u32(declaration_count, GoProjectionIndexPhase::Declaration)?,
+        },
+        ImageError::SatisfactionSort {
+            index,
+            subject,
+            previous,
+        } => GoImageFault::SatisfactionSort {
+            index: go_u32(index, GoProjectionIndexPhase::Satisfaction)?,
+            subject,
+            previous,
+        },
+        ImageError::SatisfactionSubjectKind { index, kind } => {
+            GoImageFault::SatisfactionSubjectKind {
+                index: go_u32(index, GoProjectionIndexPhase::Satisfaction)?,
+                kind: go_decl_kind(kind),
+            }
+        }
+        ImageError::ModulePath => GoImageFault::ModulePath,
+        ImageError::PackageFiles {
+            index,
+            count,
+            blob_bytes,
+        } => GoImageFault::PackageFiles {
+            index: go_u32(index, GoProjectionIndexPhase::Package)?,
+            count,
+            blob_bytes,
+        },
+        ImageError::PackageSort { index } => GoImageFault::PackageSort {
+            index: go_u32(index, GoProjectionIndexPhase::Package)?,
+        },
+        ImageError::DeclarationPackage {
+            index,
+            package_count,
+        } => GoImageFault::DeclarationPackage {
+            index: go_u32(index, GoProjectionIndexPhase::Declaration)?,
+            package_count: go_u32(package_count, GoProjectionIndexPhase::Package)?,
+        },
+        ImageError::SignatureParameterPosition { index } => {
+            GoImageFault::SignatureParameterPosition {
+                index: go_u32(index, GoProjectionIndexPhase::SignatureParameter)?,
+            }
+        }
+        ImageError::MethodSetOwner {
+            index,
+            owner,
+            type_count,
+        } => GoImageFault::MethodSetOwner {
+            index: go_u32(index, GoProjectionIndexPhase::MethodSet)?,
+            owner,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MethodSetOwnerKind { index, kind } => GoImageFault::MethodSetOwnerKind {
+            index: go_u32(index, GoProjectionIndexPhase::MethodSet)?,
+            kind: go_type_kind(kind),
+        },
+        ImageError::MethodSetTypeRoot {
+            index,
+            root,
+            type_count,
+        } => GoImageFault::MethodSetTypeRoot {
+            index: go_u32(index, GoProjectionIndexPhase::MethodSet)?,
+            root,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::MethodSetSort { index } => GoImageFault::MethodSetSort {
+            index: go_u32(index, GoProjectionIndexPhase::MethodSet)?,
+        },
+        ImageError::SignatureParameterOwner {
+            index,
+            owner,
+            type_count,
+        } => GoImageFault::SignatureParameterOwner {
+            index: go_u32(index, GoProjectionIndexPhase::SignatureParameter)?,
+            owner,
+            type_count: go_u32(type_count, GoProjectionIndexPhase::TypeRow)?,
+        },
+        ImageError::SignatureParameterOwnerRow {
+            index,
+            owner,
+            expected,
+        } => GoImageFault::SignatureParameterOwnerRow {
+            index: go_u32(index, GoProjectionIndexPhase::SignatureParameter)?,
+            owner,
+            expected,
+        },
+        ImageError::SignatureParameterOrdinal {
+            index,
+            ordinal,
+            expected,
+        } => GoImageFault::SignatureParameterOrdinal {
+            index: go_u32(index, GoProjectionIndexPhase::SignatureParameter)?,
+            ordinal,
+            expected,
+        },
+        ImageError::SignatureParameterTiling { declared, plane } => {
+            GoImageFault::SignatureParameterTiling {
+                declared: go_u32(declared, GoProjectionIndexPhase::SignatureParameter)?,
+                plane: go_u32(plane, GoProjectionIndexPhase::SignatureParameter)?,
+            }
+        }
+        ImageError::EmptyName { plane, index } => GoImageFault::EmptyName {
+            plane: go_plane(plane).ok_or((GoProjectionIndexPhase::ImageRow, 0))?,
+            index: go_u32(index, GoProjectionIndexPhase::ImageRow)?,
+        },
+        ImageError::AtomRange {
+            plane,
+            index,
+            offset,
+            length,
+            atom_bytes,
+        } => GoImageFault::AtomRange {
+            plane: go_plane(plane).ok_or((GoProjectionIndexPhase::Atom, 0))?,
+            index: go_u32(index, GoProjectionIndexPhase::Atom)?,
+            offset: go_u32(offset, GoProjectionIndexPhase::Atom)?,
+            length: go_u32(length, GoProjectionIndexPhase::Atom)?,
+            atom_bytes: go_u32(atom_bytes, GoProjectionIndexPhase::Atom)?,
+        },
+        ImageError::AtomUtf8 { plane, index } => GoImageFault::AtomUtf8 {
+            plane: go_plane(plane).ok_or((GoProjectionIndexPhase::Atom, 0))?,
+            index: go_u32(index, GoProjectionIndexPhase::Atom)?,
+        },
+    })
+}
+
 /// Folds one projection fault into the lane's closed terminal. The shared
 /// driver failure match owns the terminal arms and is outside this module's
 /// ownership, so operand-preserving Go terminals stay folded here.
-fn terminal(fault: ProjectionFault<'_>) -> GoCollectError {
-    let _ = fault;
-    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+fn terminal(fault: ProjectionFault) -> GoCollectError {
+    let fault = match fault {
+        ProjectionFault::Image(image) => match portable_image_fault(image) {
+            Ok(cause) => PortableGoProjectionFault::Image { cause },
+            Err((phase, observed)) => PortableGoProjectionFault::IndexCapacity { phase, observed },
+        },
+        ProjectionFault::IndexCapacity { phase, observed } => {
+            PortableGoProjectionFault::IndexCapacity { phase, observed }
+        }
+        ProjectionFault::Depth { type_row } => PortableGoProjectionFault::Depth { type_row },
+        ProjectionFault::VariadicWithoutParameter { signature } => {
+            PortableGoProjectionFault::VariadicWithoutParameter { signature }
+        }
+        ProjectionFault::Anchor { owner } => PortableGoProjectionFault::Anchor { owner },
+        ProjectionFault::ListCapacity { owner, phase } => {
+            PortableGoProjectionFault::ListCapacity { owner, phase }
+        }
+        ProjectionFault::OrphanTarget { reference } => {
+            PortableGoProjectionFault::OrphanTarget { reference }
+        }
+        ProjectionFault::ForeignKey { reference, cause } => {
+            PortableGoProjectionFault::ForeignKey {
+                reference,
+                cause: portable_foreign_key(cause),
+            }
+        }
+        ProjectionFault::Lineage { reference, cause } => PortableGoProjectionFault::PackageLineage {
+            reference,
+            cause: portable_lineage(cause),
+        },
+        ProjectionFault::Utf8 { plane, row } => {
+            PortableGoProjectionFault::AtomUtf8 { plane, row }
+        }
+        ProjectionFault::Span { row, start, end } => {
+            PortableGoProjectionFault::RelativeSpan { row, start, end }
+        }
+        ProjectionFault::OrphanOwner { owner } => PortableGoProjectionFault::OrphanOwner { owner },
+    };
+    GoCollectError::Lowering(LoweringUnsupported::GoProjection { fault })
 }
 
 /// Folds one bounded-lane fact rejection into the lane's closed terminal.
@@ -178,8 +811,12 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<u32, GoCollectError> {
     let ordinal = push_fact(facts, fact).map_err(GoCollectError::Rejected)?;
-    u32::try_from(ordinal)
-        .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))
+    u32::try_from(ordinal).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: GoProjectionIndexPhase::FactOrdinal,
+            observed: ordinal as u64,
+        })
+    })
 }
 
 /// Producer depth budget of the recursive type graph. Go type cycles always
@@ -259,7 +896,9 @@ pub(crate) fn collect<'source>(
         match declaration.kind {
             DeclarationKind::Type => go.type_family(index, &declaration)?,
             DeclarationKind::Function => go.function(index, &declaration)?,
-            DeclarationKind::Constant | DeclarationKind::Static => go.value(&declaration)?,
+            DeclarationKind::Constant | DeclarationKind::Static => {
+                go.value(index, &declaration)?
+            }
             DeclarationKind::Alias => {}
         }
     }
@@ -392,8 +1031,6 @@ struct Projector<'x, 'source> {
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
     names: Vec<(&'source [u8], &'source [u8], u32)>,
-    /// Image declaration coordinates by their package-qualified name.
-    declaration_indices: HashMap<(&'source [u8], &'source [u8]), usize>,
     /// Memoized anonymous-context coordinates per image type row. Entries are
     /// valid only for the current declaration transaction and are replaced
     /// when the next owner reaches the same image coordinate.
@@ -402,15 +1039,6 @@ struct Projector<'x, 'source> {
 
 impl<'x, 'source> Projector<'x, 'source> {
     fn new(image: GoImage<'source>, facts: &'x mut FactSet<'source>) -> Self {
-        let declaration_indices = image
-            .declarations()
-            .enumerate()
-            .filter_map(|(index, declaration)| {
-                declaration
-                    .ok()
-                    .map(|declaration| ((declaration.package, declaration.name), index))
-            })
-            .collect();
         Self {
             declaration_ordinals: vec![None; image.declaration_count()],
             method_ordinals: vec![None; image.method_count()],
@@ -419,7 +1047,6 @@ impl<'x, 'source> Projector<'x, 'source> {
             image,
             facts,
             names: Vec::new(),
-            declaration_indices,
         }
     }
 
@@ -439,8 +1066,12 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// The pending fact that owns anonymous rows being built immediately
     /// before its push. `FactSet` records this reserved coordinate and proves
     /// it becomes valid when the caller admits that exact next fact.
-    fn anchor(&self) -> Result<u32, ProjectionFault<'source>> {
-        u32::try_from(self.facts.len()).map_err(|_| ProjectionFault::Anchor)
+    fn anchor(&self) -> Result<u32, ProjectionFault> {
+        let length = self.facts.len();
+        u32::try_from(length).map_err(|_| ProjectionFault::IndexCapacity {
+            phase: GoProjectionIndexPhase::FactOrdinal,
+            observed: length as u64,
+        })
     }
 
     /// Pass one: one named type with its recursive diagonal self-nominal.
@@ -449,8 +1080,12 @@ impl<'x, 'source> Projector<'x, 'source> {
         index: usize,
         declaration: &Declaration<'source>,
     ) -> Result<(), GoCollectError> {
-        let own = u32::try_from(self.facts.len())
-            .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+        let own = u32::try_from(self.facts.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::FactOrdinal,
+                observed: self.facts.len() as u64,
+            })
+        })?;
         let fact = SemanticFact::new(
             EntityKind::Record,
             declaration.name,
@@ -492,11 +1127,20 @@ impl<'x, 'source> Projector<'x, 'source> {
         declaration: &Declaration<'source>,
     ) -> Result<(), GoCollectError> {
         let Some(type_ordinal) = self.declaration_ordinals[index] else {
-            return Err(terminal(ProjectionFault::OrphanOwner {
-                owner: u32::try_from(index).unwrap_or(u32::MAX),
-            }));
+            let owner = u32::try_from(index).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: GoProjectionIndexPhase::Declaration,
+                    observed: index as u64,
+                })
+            })?;
+            return Err(terminal(ProjectionFault::OrphanOwner { owner }));
         };
-        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+        let parameter_start = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::TypeParameter,
+                observed: self.facts.type_parameter_len as u64,
+            })
+        })?;
         self.type_parameters(index)?;
         let type_parameters = self
             .facts
@@ -525,7 +1169,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             if usize::try_from(method.owner).is_ok_and(|owner| owner != index) {
                 continue;
             }
-            let receiver_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+            let receiver_start = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: GoProjectionIndexPhase::TypeParameter,
+                    observed: self.facts.type_parameter_len as u64,
+                })
+            })?;
             for name in blank_separated(method.receiver_type_params) {
                 self.facts
                     .push_type_parameter(name, None, None)
@@ -558,11 +1207,24 @@ impl<'x, 'source> Projector<'x, 'source> {
             )?);
             method_names.push(method_set.name);
         }
-        let fields_list = self.entity_list(&fields)?;
-        let method_set = self.entity_list(&methods)?;
+        let fields_list = self.entity_list(
+            &fields,
+            type_ordinal,
+            GoProjectionListPhase::Entity,
+        )?;
+        let method_set = self.entity_list(
+            &methods,
+            type_ordinal,
+            GoProjectionListPhase::Entity,
+        )?;
         self.facts
             .attach_extension_with_type_parameters(
-                usize::try_from(type_ordinal).unwrap_or(usize::MAX),
+                usize::try_from(type_ordinal).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: GoProjectionIndexPhase::FactOrdinal,
+                        observed: type_ordinal as u64,
+                    })
+                })?,
                 EmissionExtension::Go(GoFacts {
                     signature: GoSignature {
                         parameters: TypeListId::new(0),
@@ -659,7 +1321,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             if member.kind != MemberKind::Method {
                 continue;
             }
-            let start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+            let start = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: GoProjectionIndexPhase::TypeParameter,
+                    observed: self.facts.type_parameter_len as u64,
+                })
+            })?;
             let ordinal = self.executable(member.name, member.type_root, start)?;
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -673,7 +1340,12 @@ impl<'x, 'source> Projector<'x, 'source> {
         index: usize,
         declaration: &Declaration<'source>,
     ) -> Result<(), GoCollectError> {
-        let parameter_start = self.facts.type_parameter_len.try_into().unwrap_or(u32::MAX);
+        let parameter_start = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::TypeParameter,
+                observed: self.facts.type_parameter_len as u64,
+            })
+        })?;
         self.type_parameters(index)?;
         let ordinal = self.executable(declaration.name, declaration.type_root, parameter_start)?;
         self.declaration_ordinals[index] = Some(ordinal);
@@ -682,7 +1354,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Pass two: one constant or variable with its projected declared type.
-    fn value(&mut self, declaration: &Declaration<'source>) -> Result<(), GoCollectError> {
+    fn value(
+        &mut self,
+        index: usize,
+        declaration: &Declaration<'source>,
+    ) -> Result<(), GoCollectError> {
         let kind = entity_kind(declaration.kind);
         let root = self.root(declaration.type_root, TypeReason::Unannotated)?;
         let (constant_value, constant_group, constant_flags) = if kind == EntityKind::Constant {
@@ -706,8 +1382,12 @@ impl<'x, 'source> Projector<'x, 'source> {
         } else {
             (AtomListId::new(0), 0, 0)
         };
-        let empty_type_parameters = u32::try_from(self.facts.type_parameter_len)
-            .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+        let empty_type_parameters = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::TypeParameter,
+                observed: self.facts.type_parameter_len as u64,
+            })
+        })?;
         let fact = root
             .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
             .with_extension(EmissionExtension::Go(GoFacts {
@@ -725,11 +1405,6 @@ impl<'x, 'source> Projector<'x, 'source> {
                 constant_flags,
             }));
         let ordinal = push(self.facts, fact)?;
-        let index = self
-            .declaration_indices
-            .get(&(declaration.package, declaration.name))
-            .copied()
-            .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner: 0 }))?;
         self.declaration_ordinals[index] = Some(ordinal);
         self.record_name(declaration.package, declaration.name, ordinal);
         Ok(())
@@ -744,12 +1419,13 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .image
                 .constraint(index)
                 .map_err(GoCollectError::Image)?;
-            let exported =
-                parse_constraint_blob(row.exported, row.exported_count).ok_or_else(|| {
-                    terminal(ProjectionFault::OrphanOwner {
-                        owner: u32::try_from(index).unwrap_or(u32::MAX),
-                    })
-                })?;
+            let owner = go_u32(index, GoProjectionIndexPhase::Constraint)
+                .map_err(|(phase, observed)| terminal(ProjectionFault::IndexCapacity {
+                    phase,
+                    observed,
+                }))?;
+            let exported = parse_constraint_blob(row.exported, row.exported_count)
+                .ok_or_else(|| terminal(ProjectionFault::OrphanOwner { owner }))?;
             let atom = self
                 .facts
                 .intern_atom(row.constraint)
@@ -758,8 +1434,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .facts
                 .intern_atom_list(core::slice::from_ref(&atom))
                 .map_err(lane_terminal)?;
-            let empty_type_parameters = u32::try_from(self.facts.type_parameter_len)
-                .map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+            let empty_type_parameters = u32::try_from(self.facts.type_parameter_len).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: GoProjectionIndexPhase::TypeParameter,
+                    observed: self.facts.type_parameter_len as u64,
+                })
+            })?;
             for declaration in exported {
                 let kind = entity_kind(declaration.kind);
                 let fact = SemanticFact::new(kind, declaration.name, constructor(kind))
@@ -836,6 +1516,10 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// spans.
     fn occurrences(&mut self) -> Result<(), GoCollectError> {
         for index in 0..self.image.reference_count() {
+            let reference_index = go_u32(index, GoProjectionIndexPhase::Reference)
+                .map_err(|(phase, observed)| {
+                    terminal(ProjectionFault::IndexCapacity { phase, observed })
+                })?;
             let row = self.image.reference(index).map_err(GoCollectError::Image)?;
             let owner = if row.owner_is_declaration {
                 self.declaration_ordinals
@@ -871,17 +1555,30 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 let ordinal = self.lookup(package, row.target).ok_or_else(|| {
                     terminal(ProjectionFault::OrphanTarget {
-                        function: row.target,
+                        reference: reference_index,
                     })
                 })?;
                 OccurrenceTarget::Local(EntityId::new(ordinal))
             } else {
                 let package = str::from_utf8(row.target_package)
-                    .map_err(|_| terminal(ProjectionFault::Utf8))?;
+                    .map_err(|_| {
+                        terminal(ProjectionFault::Utf8 {
+                            plane: GoImagePlane::ReferenceTarget,
+                            row: reference_index,
+                        })
+                    })?;
                 let function =
-                    str::from_utf8(row.target).map_err(|_| terminal(ProjectionFault::Utf8))?;
+                    str::from_utf8(row.target).map_err(|_| {
+                        terminal(ProjectionFault::Utf8 {
+                            plane: GoImagePlane::ReferenceTarget,
+                            row: reference_index,
+                        })
+                    })?;
                 let lineage = PackageLineage::new(ECOSYSTEM, package)
-                    .map_err(ProjectionFault::Lineage)
+                    .map_err(|cause| ProjectionFault::Lineage {
+                        reference: reference_index,
+                        cause,
+                    })
                     .map_err(terminal)?;
                 let key = ForeignKey::new(
                     ForeignOrigin::Package(lineage),
@@ -889,12 +1586,21 @@ impl<'x, 'source> Projector<'x, 'source> {
                     function,
                     Some(EntityKind::Function),
                 )
-                .map_err(ProjectionFault::ForeignKey)
+                .map_err(|cause| ProjectionFault::ForeignKey {
+                    reference: reference_index,
+                    cause,
+                })
                 .map_err(terminal)?;
                 OccurrenceTarget::Foreign(key)
             };
             let span = RelSpan::new(row.relative.0, row.relative.1)
-                .map_err(ProjectionFault::Span)
+                .map_err(|fault| match fault {
+                    RelSpanFault::Inverted { start, end } => ProjectionFault::Span {
+                        row: reference_index,
+                        start,
+                        end,
+                    },
+                })
                 .map_err(terminal)?;
             self.facts
                 .push_occurrence(
@@ -920,6 +1626,10 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// zero-width owner-relative span at the owner's start.
     fn satisfactions(&mut self) -> Result<(), GoCollectError> {
         for index in 0..self.image.satisfaction_count() {
+            let reference_index = go_u32(index, GoProjectionIndexPhase::Satisfaction)
+                .map_err(|(phase, observed)| {
+                    terminal(ProjectionFault::IndexCapacity { phase, observed })
+                })?;
             let row = self
                 .image
                 .satisfaction(index)
@@ -947,11 +1657,24 @@ impl<'x, 'source> Projector<'x, 'source> {
                 OccurrenceTarget::Local(EntityId::new(ordinal))
             } else {
                 let package = str::from_utf8(row.target_package)
-                    .map_err(|_| terminal(ProjectionFault::Utf8))?;
+                    .map_err(|_| {
+                        terminal(ProjectionFault::Utf8 {
+                            plane: GoImagePlane::SatisfactionTarget,
+                            row: reference_index,
+                        })
+                    })?;
                 let interface =
-                    str::from_utf8(row.target).map_err(|_| terminal(ProjectionFault::Utf8))?;
+                    str::from_utf8(row.target).map_err(|_| {
+                        terminal(ProjectionFault::Utf8 {
+                            plane: GoImagePlane::SatisfactionTarget,
+                            row: reference_index,
+                        })
+                    })?;
                 let lineage = PackageLineage::new(ECOSYSTEM, package)
-                    .map_err(ProjectionFault::Lineage)
+                    .map_err(|cause| ProjectionFault::Lineage {
+                        reference: reference_index,
+                        cause,
+                    })
                     .map_err(terminal)?;
                 let key = ForeignKey::new(
                     ForeignOrigin::Package(lineage),
@@ -959,12 +1682,21 @@ impl<'x, 'source> Projector<'x, 'source> {
                     interface,
                     Some(EntityKind::Record),
                 )
-                .map_err(ProjectionFault::ForeignKey)
+                .map_err(|cause| ProjectionFault::ForeignKey {
+                    reference: reference_index,
+                    cause,
+                })
                 .map_err(terminal)?;
                 OccurrenceTarget::Foreign(key)
             };
             let span = RelSpan::new(0, 0)
-                .map_err(ProjectionFault::Span)
+                .map_err(|fault| match fault {
+                    RelSpanFault::Inverted { start, end } => ProjectionFault::Span {
+                        row: reference_index,
+                        start,
+                        end,
+                    },
+                })
                 .map_err(terminal)?;
             self.facts
                 .push_occurrence(
@@ -1005,7 +1737,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                 variadic = row.variadic;
                 let children = self.row_children(&row)?;
                 let param_count = usize::try_from(row.param_count)
-                    .unwrap_or(0)
+                    .map_err(|_| {
+                        terminal(ProjectionFault::IndexCapacity {
+                            phase: GoProjectionIndexPhase::TypeRow,
+                            observed: u64::from(row.param_count),
+                        })
+                    })?
                     .min(children.len());
                 for (ordinal_in_signature, child) in children.iter().take(param_count).enumerate() {
                     let name = self.signature_parameter_name(row_index, ordinal_in_signature)?;
@@ -1030,7 +1767,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 }
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
                 record.payload1 = u32::try_from(results.len()).map_err(|_| {
-                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: GoProjectionIndexPhase::TypeRow,
+                        observed: results.len() as u64,
+                    })
                 })?;
                 if variadic {
                     let final_parameter = parameters.len().checked_sub(1).ok_or_else(|| {
@@ -1057,10 +1797,18 @@ impl<'x, 'source> Projector<'x, 'source> {
             .facts
             .intern_type_list(&results)
             .map_err(lane_terminal)?;
-        let arity = u32::try_from(parameters.len())
-            .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
-        let results_count = u32::try_from(results.len())
-            .map_err(|_| GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration))?;
+        let arity = u32::try_from(parameters.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::TypeRow,
+                observed: parameters.len() as u64,
+            })
+        })?;
+        let results_count = u32::try_from(results.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::TypeRow,
+                observed: results.len() as u64,
+            })
+        })?;
         let mut fact = SemanticFact::new(
             EntityKind::Function,
             name,
@@ -1149,7 +1897,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         depth: usize,
     ) -> Result<RootType<'source>, GoCollectError> {
         if depth == 0 {
-            return Err(terminal(ProjectionFault::Depth));
+            return Err(terminal(ProjectionFault::Depth {
+                type_row: row_index,
+            }));
         }
         let row = self
             .image
@@ -1185,7 +1935,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let children = self.row_children(&row)?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
                 let length = u64::try_from(row.length).map_err(|_| {
-                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                    terminal(ProjectionFault::Image(ImageError::ArrayLength {
+                        index: index_of(row_index),
+                        length: row.length,
+                    }))
                 })?;
                 let bytes = length.to_le_bytes();
                 record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -1235,7 +1988,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             TypeRowKind::Func => {
                 let children = self.row_children(&row)?;
                 let param_count = usize::try_from(row.param_count)
-                    .unwrap_or(0)
+                    .map_err(|_| {
+                        terminal(ProjectionFault::IndexCapacity {
+                            phase: GoProjectionIndexPhase::TypeRow,
+                            observed: u64::from(row.param_count),
+                        })
+                    })?
                     .min(children.len());
                 let mut projected = RootType {
                     record: {
@@ -1430,11 +2188,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                         record: unknown_record(TypeReason::OracleGap, None),
                         children: Vec::new(),
                     },
-                )
-                .map_err(lane_terminal);
+                );
         };
         if depth == 0 {
-            return Err(terminal(ProjectionFault::Depth));
+            return Err(terminal(ProjectionFault::Depth {
+                type_row: row_index,
+            }));
         }
         let row = self
             .image
@@ -1455,8 +2214,12 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// only earlier anonymous rows, because the frozen wire orders the pool
     /// before the fact rows and rejects forward child targets.
     fn project_anonymous(&mut self, row_index: usize, depth: usize) -> Result<u32, GoCollectError> {
+        let type_row = go_u32(row_index, GoProjectionIndexPhase::TypeRow)
+            .map_err(|(phase, observed)| {
+                terminal(ProjectionFault::IndexCapacity { phase, observed })
+            })?;
         if depth == 0 {
-            return Err(terminal(ProjectionFault::Depth));
+            return Err(terminal(ProjectionFault::Depth { type_row }));
         }
         let anchor = self.anchor().map_err(terminal)?;
         if let Some(memoized) = self.anonymous.get(row_index).copied().flatten() {
@@ -1526,7 +2289,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 let children = self.row_children(&row)?;
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::ArrayFixed);
                 let length = u64::try_from(row.length).map_err(|_| {
-                    GoCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
+                    terminal(ProjectionFault::Image(ImageError::ArrayLength {
+                        index: row_index,
+                        length: row.length,
+                    }))
                 })?;
                 let bytes = length.to_le_bytes();
                 record.payload0 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -1588,7 +2354,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             TypeRowKind::Func => {
                 let children = self.row_children(&row)?;
                 let param_count = usize::try_from(row.param_count)
-                    .unwrap_or(0)
+                    .map_err(|_| {
+                        terminal(ProjectionFault::IndexCapacity {
+                            phase: GoProjectionIndexPhase::TypeRow,
+                            observed: u64::from(row.param_count),
+                        })
+                    })?
                     .min(children.len());
                 let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::FunctionPointer);
                 record.payload1 = u32::try_from(children.len() - param_count)
@@ -1702,9 +2473,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 built
             }
         };
-        let coordinate = self
-            .intern_anonymous(anchor, &built)
-            .map_err(lane_terminal)?;
+        let coordinate = self.intern_anonymous(anchor, &built)?;
         if let Some(slot) = self.anonymous.get_mut(row_index) {
             *slot = Some(AnonymousMemo {
                 owner: anchor,
@@ -1716,29 +2485,29 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Appends one anonymous row's children into the pooled lane and interns
     /// the row under the given owner fact.
-    fn intern_anonymous(&mut self, anchor: u32, row: &AnonRow<'source>) -> Result<u32, FactFault> {
+    fn intern_anonymous(
+        &mut self,
+        anchor: u32,
+        row: &AnonRow<'source>,
+    ) -> Result<u32, GoCollectError> {
         for child in &row.children {
             self.facts
-                .anonymous_type_child(child.target, child.name, child.flags)?;
+                .anonymous_type_child(child.target, child.name, child.flags)
+                .map_err(lane_terminal)?;
         }
-        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
+        let fact_count = u32::try_from(self.facts.len()).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: GoProjectionIndexPhase::FactOrdinal,
+                observed: self.facts.len() as u64,
+            })
+        })?;
+        if anchor < fact_count {
             self.facts.intern_anonymous_type_row(anchor, row.record)
+                .map_err(lane_terminal)
         } else {
             self.facts
                 .intern_reserved_anchor_type_row(anchor, row.record)
-        }
-    }
-
-    /// Interns one synthetic builtin leaf row (`map`, channel directions).
-    fn builtin_row(&mut self, spelling: &'source [u8]) -> Result<u32, FactFault> {
-        let anchor = u32::try_from(self.facts.len()).unwrap_or(u32::MAX);
-        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
-        record.payload0 = SHAPE_BUILTIN;
-        record.text = Some(spelling);
-        if anchor < u32::try_from(self.facts.len()).unwrap_or(u32::MAX) {
-            self.facts.intern_anonymous_type_row(anchor, record)
-        } else {
-            self.facts.intern_reserved_anchor_type_row(anchor, record)
+                .map_err(lane_terminal)
         }
     }
 
@@ -1807,7 +2576,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         row: &compiler_languages_go::TypeRow<'source>,
     ) -> Result<Vec<u32>, GoCollectError> {
         let start = index_of(row.children.0);
-        let count = usize::try_from(row.children.1).unwrap_or(0);
+        let count = row.children.1 as usize;
         let mut children = Vec::with_capacity(count);
         for offset in 0..count {
             let (target, _) = self
@@ -1820,9 +2589,14 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Interns one pooled entity list under its bounded width.
-    fn entity_list(&mut self, ordinals: &[u32]) -> Result<EntityListId, GoCollectError> {
+    fn entity_list(
+        &mut self,
+        ordinals: &[u32],
+        owner: u32,
+        phase: GoProjectionListPhase,
+    ) -> Result<EntityListId, GoCollectError> {
         if ordinals.len() > MAX_REF_LIST_ELEMENTS {
-            return Err(terminal(ProjectionFault::ListCapacity));
+            return Err(terminal(ProjectionFault::ListCapacity { owner, phase }));
         }
         self.facts
             .intern_entity_list(ordinals)
@@ -1856,7 +2630,7 @@ impl WithShape for SemanticTypeRecord<'_> {
 /// The member-run row indices of one struct or interface row.
 fn member_run(row: &compiler_languages_go::TypeRow<'_>) -> Vec<usize> {
     let start = index_of(row.members.0);
-    let count = usize::try_from(row.members.1).unwrap_or(0);
+    let count = row.members.1 as usize;
     (start..start + count).collect()
 }
 
@@ -1866,7 +2640,7 @@ fn embedded_run<'image>(
     row: &compiler_languages_go::TypeRow<'image>,
 ) -> impl Iterator<Item = Result<u32, ImageError>> + 'image {
     let start = index_of(row.children.0);
-    let count = usize::try_from(row.children.1).unwrap_or(0);
+    let count = row.children.1 as usize;
     // `GoImage::open` already proved this exact child range. Streaming keeps
     // every target authority-bound without a per-interface allocation.
     (start..start.saturating_add(count))
@@ -1892,7 +2666,7 @@ fn blank_separated(blob: &[u8]) -> Vec<&[u8]> {
 
 /// Converts one validated u32 coordinate to its row index.
 fn index_of(coordinate: u32) -> usize {
-    usize::try_from(coordinate).unwrap_or(usize::MAX)
+    coordinate as usize
 }
 
 /// Pushes one documentation text run as lines with soft breaks between
@@ -1904,13 +2678,11 @@ fn push_doc_lines<'source>(
 ) -> Result<(), FactFault> {
     let mut line_start = 0_usize;
     while line_start < text.len() {
-        let line_end = text
-            .get(line_start..)
-            .unwrap_or(&[])
+        let line_end = text[line_start..]
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(text.len(), |at| line_start + at);
-        let line = text.get(line_start..line_end).unwrap_or(&[]);
+        let line = &text[line_start..line_end];
         if !line.is_empty() {
             facts.push_doc(owner, DocFragmentInput::Text(line))?;
         }
@@ -1929,7 +2701,10 @@ mod tests {
     use crate::lower::{FactSet, MAX_REF_LISTS};
     use crate::types::FactFault;
     use compiler_ir::{ChannelDirection, FragmentView, SourceIdentity};
-    use compiler_vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, Stage};
+    use compiler_vocabulary::{
+        CompileRecipeFact, GoImageFault, GoProjectionFault as PortableGoProjectionFault,
+        LanguageProfile, LoweringUnsupported, NativeTool, Stage,
+    };
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
 
     const HEADER_BYTES: usize = 136;
@@ -2026,6 +2801,23 @@ mod tests {
         fn from(error: core::num::TryFromIntError) -> Self {
             Self::Num(error)
         }
+    }
+
+    #[test]
+    fn image_projection_retains_exact_row_fault_operands() {
+        let error = terminal(ProjectionFault::Image(ImageError::DeclarationKind {
+            index: 7,
+            found: 0xfe,
+        }));
+        let GoCollectError::Lowering(LoweringUnsupported::GoProjection {
+            fault: PortableGoProjectionFault::Image {
+                cause: GoImageFault::DeclarationKind { index, found },
+            },
+        }) = error
+        else {
+            panic!("image fault lost its closed Go projection operands");
+        };
+        assert_eq!((index, found), (7, 0xfe));
     }
 
     #[derive(Clone, Copy)]
@@ -3253,7 +4045,12 @@ mod tests {
         let beyond_width = fixture(65);
         match lower(&beyond_width, b"package demo\ntype Authority struct{}\n") {
             Err(TestError::Collect(GoCollectError::Lowering(
-                LoweringUnsupported::NoSupportedDeclaration,
+                LoweringUnsupported::GoProjection {
+                    fault: PortableGoProjectionFault::ListCapacity {
+                        owner: 0,
+                        phase: GoProjectionListPhase::Entity,
+                    },
+                },
             ))) => Ok(()),
             Err(error) => Err(error),
             Ok(_) => Err(TestError::Missing("method-set capacity rejection")),

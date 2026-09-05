@@ -46,10 +46,15 @@ use compiler_ir::{
     SemanticTypeTag, SourceSpan, TypeParameterListId, TypeReason, TypeWidth,
 };
 use compiler_languages_csharp::{
-    CSharpImage, Declaration, DeclarationKind, ImageError, NullabilityCell, Parameter, PartialRole,
-    RefKind, ReferenceTag, ResolvedReference, TypeNode, TypeNodeKind, TypeRef, VarianceTag,
+    CSharpImage, Declaration, DeclarationKind, HeaderError, ImageError, NullabilityCell,
+    Parameter, PartialRole, RefKind, ReferenceTag, ResolvedReference, Section, TypeNode,
+    TypeNodeKind, TypeRef, VarianceTag,
 };
-use compiler_vocabulary::LoweringUnsupported;
+use compiler_vocabulary::{
+    CSharpImageFault, CSharpImageHeaderFault, CSharpImageSection, CSharpImageTypeKind,
+    CSharpProjectionFault as PortableCSharpProjectionFault, CSharpProjectionIndexPhase,
+    LoweringUnsupported,
+};
 use sha2::{Digest, Sha256};
 
 use crate::lower::{
@@ -85,10 +90,229 @@ pub(crate) enum CSharpCollectError {
 /// The terminal deliberately retains the fault rather than collapsing it to
 /// a declaration-support claim; support and malformed authority coordinates
 /// are different public outcomes.
-type ProjectionFault = CSharpProjectionFault;
+#[derive(Debug)]
+enum ProjectionFault {
+    Image(ImageError),
+    Depth { type_row: u32 },
+    NameSpan { start: u32, end: u32 },
+    OwnerOrder {
+        owner_start: u32,
+        reference_start: u32,
+    },
+    Foreign { reference: u32 },
+    AttributeCapacity { spellings: u32 },
+    IndexCapacity {
+        phase: CSharpProjectionIndexPhase,
+        observed: u64,
+    },
+    HeterogeneousArrayRank { first: u32, observed: u32 },
+    Fact(FactFault),
+}
 
 fn terminal(fault: ProjectionFault) -> CSharpCollectError {
-    CSharpCollectError::Projection(fault)
+    match fault {
+        ProjectionFault::Image(image) => match portable_image_fault(image) {
+            Ok(cause) => CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::Image { cause },
+            }),
+            Err((phase, observed)) => {
+                CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                    fault: PortableCSharpProjectionFault::IndexCapacity { phase, observed },
+                })
+            }
+        },
+        ProjectionFault::Depth { type_row } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::Depth { type_row },
+            })
+        }
+        ProjectionFault::NameSpan { start, end } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::NameSpan { start, end },
+            })
+        }
+        ProjectionFault::OwnerOrder {
+            owner_start,
+            reference_start,
+        } => CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+            fault: PortableCSharpProjectionFault::OwnerOrder {
+                owner_start,
+                reference_start,
+            },
+        }),
+        ProjectionFault::Foreign { reference } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::Foreign { reference },
+            })
+        }
+        ProjectionFault::AttributeCapacity { spellings } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::AttributeCapacity { spellings },
+            })
+        }
+        ProjectionFault::IndexCapacity { phase, observed } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::IndexCapacity { phase, observed },
+            })
+        }
+        ProjectionFault::HeterogeneousArrayRank { first, observed } => {
+            CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::HeterogeneousArrayRank { first, observed },
+            })
+        }
+        ProjectionFault::Fact(fault) => CSharpCollectError::Projection(CSharpProjectionFault::Fact(fault)),
+    }
+}
+
+fn image_u32(
+    value: usize,
+    phase: CSharpProjectionIndexPhase,
+) -> Result<u32, (CSharpProjectionIndexPhase, u64)> {
+    u32::try_from(value).map_err(|_| (phase, value as u64))
+}
+
+const fn image_section(section: Section) -> CSharpImageSection {
+    match section {
+        Section::Atoms => CSharpImageSection::Atoms,
+        Section::AtomBytes => CSharpImageSection::AtomBytes,
+        Section::Declarations => CSharpImageSection::Declarations,
+        Section::Parameters => CSharpImageSection::Parameters,
+        Section::TypeParameters => CSharpImageSection::TypeParameters,
+        Section::TypeConstraints => CSharpImageSection::TypeConstraints,
+        Section::Types => CSharpImageSection::Types,
+        Section::TypeChildren => CSharpImageSection::TypeChildren,
+        Section::Attributes => CSharpImageSection::Attributes,
+        Section::Docs => CSharpImageSection::Docs,
+        Section::References => CSharpImageSection::References,
+    }
+}
+
+const fn image_type_kind(kind: TypeNodeKind) -> CSharpImageTypeKind {
+    match kind {
+        TypeNodeKind::Named => CSharpImageTypeKind::Named,
+        TypeNodeKind::Array => CSharpImageTypeKind::Array,
+        TypeNodeKind::Pointer => CSharpImageTypeKind::Pointer,
+        TypeNodeKind::NullableValue => CSharpImageTypeKind::NullableValue,
+        TypeNodeKind::Tuple => CSharpImageTypeKind::Tuple,
+        TypeNodeKind::FunctionPointer => CSharpImageTypeKind::FunctionPointer,
+        TypeNodeKind::TypeParameter => CSharpImageTypeKind::TypeParameter,
+        TypeNodeKind::Dynamic => CSharpImageTypeKind::Dynamic,
+        TypeNodeKind::Error => CSharpImageTypeKind::Error,
+    }
+}
+
+fn portable_header_fault(
+    error: HeaderError,
+) -> Result<CSharpImageHeaderFault, (CSharpProjectionIndexPhase, u64)> {
+    Ok(match error {
+        HeaderError::Truncated { actual } => CSharpImageHeaderFault::Truncated {
+            actual: image_u32(actual, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::Magic { found } => CSharpImageHeaderFault::Magic { found },
+        HeaderError::Version { found } => CSharpImageHeaderFault::Version { found },
+        HeaderError::Length { found } => CSharpImageHeaderFault::Length {
+            found: image_u32(found, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::SectionCount { found } => CSharpImageHeaderFault::SectionCount {
+            found: image_u32(found, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::BodyLength { declared, actual } => CSharpImageHeaderFault::BodyLength {
+            declared: image_u32(declared, CSharpProjectionIndexPhase::ImageHeader)?,
+            actual: image_u32(actual, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::Reserved => CSharpImageHeaderFault::Reserved,
+        HeaderError::DirectoryTag { expected, found } => {
+            CSharpImageHeaderFault::DirectoryTag { expected, found }
+        }
+        HeaderError::DirectoryRowBytes { expected, found } => {
+            CSharpImageHeaderFault::DirectoryRowBytes {
+                expected: image_u32(expected, CSharpProjectionIndexPhase::ImageHeader)?,
+                found: image_u32(found, CSharpProjectionIndexPhase::ImageHeader)?,
+            }
+        }
+        HeaderError::DirectoryByteCount {
+            count,
+            row_bytes,
+            found,
+        } => CSharpImageHeaderFault::DirectoryByteCount {
+            count: image_u32(count, CSharpProjectionIndexPhase::ImageHeader)?,
+            row_bytes: image_u32(row_bytes, CSharpProjectionIndexPhase::ImageHeader)?,
+            found: image_u32(found, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+        HeaderError::DirectoryOffset { expected, found } => {
+            CSharpImageHeaderFault::DirectoryOffset {
+                expected: image_u32(expected, CSharpProjectionIndexPhase::ImageHeader)?,
+                found: image_u32(found, CSharpProjectionIndexPhase::ImageHeader)?,
+            }
+        }
+        HeaderError::DirectoryRange {
+            offset,
+            length,
+            image_bytes,
+        } => CSharpImageHeaderFault::DirectoryRange {
+            offset: image_u32(offset, CSharpProjectionIndexPhase::ImageHeader)?,
+            length: image_u32(length, CSharpProjectionIndexPhase::ImageHeader)?,
+            image_bytes: image_u32(image_bytes, CSharpProjectionIndexPhase::ImageHeader)?,
+        },
+    })
+}
+
+fn portable_image_fault(
+    error: ImageError,
+) -> Result<CSharpImageFault, (CSharpProjectionIndexPhase, u64)> {
+    Ok(match error {
+        ImageError::Header(error) => CSharpImageFault::Header {
+            cause: portable_header_fault(error)?,
+        },
+        ImageError::Digest => CSharpImageFault::Digest,
+        ImageError::DeclarationKind {
+            index,
+            found,
+            plane,
+        } => CSharpImageFault::DeclarationKind {
+            index: image_u32(index, CSharpProjectionIndexPhase::Declaration)?,
+            found,
+            plane: image_section(plane),
+        },
+        ImageError::DeclarationReserved { index, plane } => {
+            CSharpImageFault::DeclarationReserved {
+                index: image_u32(index, CSharpProjectionIndexPhase::Declaration)?,
+                plane: image_section(plane),
+            }
+        }
+        ImageError::NameRange {
+            index,
+            offset,
+            length,
+            atom_bytes,
+        } => CSharpImageFault::NameRange {
+            index: image_u32(index, CSharpProjectionIndexPhase::Name)?,
+            offset,
+            length,
+            atom_bytes: image_u32(atom_bytes, CSharpProjectionIndexPhase::Name)?,
+        },
+        ImageError::NameUtf8 { index } => CSharpImageFault::NameUtf8 {
+            index: image_u32(index, CSharpProjectionIndexPhase::Name)?,
+        },
+        ImageError::Span { index, start, end } => CSharpImageFault::Span {
+            index: image_u32(index, CSharpProjectionIndexPhase::SourceSpan)?,
+            start,
+            end,
+        },
+        ImageError::TypeChildCount {
+            index,
+            kind,
+            min,
+            max,
+            actual,
+        } => CSharpImageFault::TypeChildCount {
+            index: image_u32(index, CSharpProjectionIndexPhase::TypeRow)?,
+            kind: image_type_kind(kind),
+            min: image_u32(min, CSharpProjectionIndexPhase::TypeChild)?,
+            max: image_u32(max, CSharpProjectionIndexPhase::TypeChild)?,
+            actual: image_u32(actual, CSharpProjectionIndexPhase::TypeChild)?,
+        },
+    })
 }
 
 /// Retains a non-declaration lane rejection at the projection boundary.
@@ -108,7 +332,12 @@ fn push<'source>(
     fact: SemanticFact<'source>,
 ) -> Result<u32, CSharpCollectError> {
     let ordinal = push_fact(facts, fact).map_err(CSharpCollectError::Rejected)?;
-    u32::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))
+    u32::try_from(ordinal).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::FactOrdinal,
+            observed: ordinal as u64,
+        })
+    })
 }
 
 /// Producer depth budget of the recursive type graph, documented by the image
@@ -275,7 +504,12 @@ pub(crate) fn collect<'source>(
         let owner = declared
             .owner
             .map(|owner| {
-                usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity))
+                usize::try_from(owner).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: CSharpProjectionIndexPhase::Declaration,
+                        observed: owner as u64,
+                    })
+                })
             })
             .transpose()?;
         if let Some(owner) = owner
@@ -350,16 +584,27 @@ pub(crate) fn collect<'source>(
         )?;
         facts
             .attach_extension(
-                usize::try_from(ordinal).map_err(|_| terminal(ProjectionFault::IndexCapacity))?,
+                usize::try_from(ordinal).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: CSharpProjectionIndexPhase::FactOrdinal,
+                        observed: ordinal as u64,
+                    })
+                })?,
                 EmissionExtension::CSharp(extension),
             )
             .map_err(lane_terminal)?;
     }
 
     // Pass four: compiler-resolved occurrences in image order.
-    for reference in image.references() {
+    for (reference_index, reference) in image.references().enumerate() {
         let reference = reference.map_err(ProjectionFault::Image)?;
-        push_occurrence(facts, &image, &ordinals, &reference).map_err(terminal)?;
+        let reference_index = u32::try_from(reference_index).map_err(|_| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Reference,
+                observed: reference_index as u64,
+            })
+        })?;
+        push_occurrence(facts, &image, &ordinals, reference_index, &reference).map_err(terminal)?;
     }
 
     // Pass five: XML documentation provenance and summary fragments.
@@ -375,7 +620,10 @@ fn declaration<'image>(
     image: &CSharpImage<'image>,
     coordinate: usize,
 ) -> Result<Declaration<'image>, ProjectionFault> {
-    let raw = u32::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity)?;
+    let raw = u32::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity {
+        phase: CSharpProjectionIndexPhase::Declaration,
+        observed: coordinate as u64,
+    })?;
     image.declaration(raw).map_err(ProjectionFault::Image)
 }
 
@@ -477,7 +725,10 @@ impl<'image> Names<'image> {
         coordinate: ImageDeclarationId,
     ) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Name,
+                observed: self.len as u64,
+            });
         }
         self.entries[self.len] = (name, coordinate);
         self.len += 1;
@@ -533,11 +784,17 @@ impl ImageDeclarationId {
     fn from_index(index: usize) -> Result<Self, ProjectionFault> {
         u32::try_from(index)
             .map(Self)
-            .map_err(|_| ProjectionFault::IndexCapacity)
+            .map_err(|_| ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Declaration,
+                observed: index as u64,
+            })
     }
 
     fn index(self) -> Result<usize, ProjectionFault> {
-        usize::try_from(self.0).map_err(|_| ProjectionFault::IndexCapacity)
+        usize::try_from(self.0).map_err(|_| ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Declaration,
+            observed: self.0 as u64,
+        })
     }
 }
 
@@ -570,7 +827,10 @@ impl Ordinals {
 
     fn record(&mut self, coordinate: usize, ordinal: u32) -> Result<(), ProjectionFault> {
         if self.len == self.entries.len() {
-            return Err(ProjectionFault::IndexCapacity);
+            return Err(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::FactOrdinal,
+                observed: self.len as u64,
+            });
         }
         self.entries[self.len] = (coordinate, ordinal);
         self.len += 1;
@@ -606,8 +866,12 @@ fn push_type_root<'source>(
 ) -> Result<u32, CSharpCollectError> {
     let name = checked_name(source, declared)?;
     let kind = entity_kind(declared.kind, declared.flags.is_const);
-    let self_ordinal =
-        u32::try_from(facts.len()).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let self_ordinal = u32::try_from(facts.len()).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::FactOrdinal,
+            observed: facts.len() as u64,
+        })
+    })?;
     push(
         facts,
         SemanticFact::new(kind, name, constructor(kind)).typed(nominal_record(self_ordinal)),
@@ -621,7 +885,14 @@ fn push_type_root<'source>(
 fn anchor_for(ordinals: &Ordinals, declared: &Declaration<'_>) -> Result<u32, CSharpCollectError> {
     let owner = declared
         .owner
-        .map(|owner| usize::try_from(owner).map_err(|_| terminal(ProjectionFault::IndexCapacity)))
+        .map(|owner| {
+            usize::try_from(owner).map_err(|_| {
+                terminal(ProjectionFault::IndexCapacity {
+                    phase: CSharpProjectionIndexPhase::Declaration,
+                    observed: owner as u64,
+                })
+            })
+        })
         .transpose()?;
     Ok(owner
         .and_then(|owner| ordinals.lookup(owner))
@@ -896,10 +1167,21 @@ fn project_fact_type<'source>(
     depth: usize,
 ) -> Result<ProjectedType<'source>, CSharpCollectError> {
     if depth == 0 {
-        return Err(terminal(ProjectionFault::Depth));
+        return Err(terminal(ProjectionFault::Depth {
+            type_row: reference.ordinal(),
+        }));
     }
     let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
-    let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
+    let projection = owned_node(
+        facts,
+        image,
+        names,
+        ordinals,
+        anchor,
+        reference.ordinal(),
+        &node,
+        depth,
+    )?;
     if let Some(kind) = reference_nullability(projection.nullable) {
         let spelling = projection.spelling;
         let nullable = projection.nullable;
@@ -951,10 +1233,21 @@ fn child_target<'source>(
     depth: usize,
 ) -> Result<u32, CSharpCollectError> {
     if depth == 0 {
-        return Err(terminal(ProjectionFault::Depth));
+        return Err(terminal(ProjectionFault::Depth {
+            type_row: reference.ordinal(),
+        }));
     }
     let node = image.type_node(reference).map_err(ProjectionFault::Image)?;
-    let projection = owned_node(facts, image, names, ordinals, anchor, &node, depth)?;
+    let projection = owned_node(
+        facts,
+        image,
+        names,
+        ordinals,
+        anchor,
+        reference.ordinal(),
+        &node,
+        depth,
+    )?;
     let nullable = projection.nullable;
     let target = projection_target(facts, anchor, projection)?;
     match reference_nullability(nullable) {
@@ -1028,11 +1321,14 @@ fn owned_node<'source>(
     names: &Names<'source>,
     ordinals: &Ordinals,
     anchor: u32,
+    type_row: u32,
     node: &TypeNode<'source>,
     depth: usize,
 ) -> Result<OwnedNode<'source>, CSharpCollectError> {
     match node.kind {
-        TypeNodeKind::Named => named_node(facts, image, names, ordinals, anchor, node, depth),
+        TypeNodeKind::Named => {
+            named_node(facts, image, names, ordinals, anchor, type_row, node, depth)
+        }
         TypeNodeKind::Array => {
             let rank = node.children.len();
             let mut elements = node.children.clone();
@@ -1042,8 +1338,8 @@ fn owned_node<'source>(
             for sibling in elements {
                 if sibling.ty != element.ty {
                     return Err(terminal(ProjectionFault::HeterogeneousArrayRank {
-                        first: element.ty,
-                        observed: sibling.ty,
+                        first: element.ty.ordinal(),
+                        observed: sibling.ty.ordinal(),
                     }));
                 }
             }
@@ -1143,7 +1439,7 @@ fn owned_node<'source>(
             let name = node
                 .spelling
                 .map(|atom| atom.bytes)
-                .ok_or_else(|| terminal(ProjectionFault::Depth))?;
+                .ok_or_else(|| terminal(ProjectionFault::Depth { type_row }))?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
             record.text = Some(name);
             Ok(OwnedNode {
@@ -1177,13 +1473,14 @@ fn named_node<'source>(
     names: &Names<'source>,
     ordinals: &Ordinals,
     anchor: u32,
+    type_row: u32,
     node: &TypeNode<'source>,
     depth: usize,
 ) -> Result<OwnedNode<'source>, CSharpCollectError> {
     let spelling = node
         .spelling
         .map(|atom| atom.bytes)
-        .ok_or_else(|| terminal(ProjectionFault::Depth))?;
+        .ok_or_else(|| terminal(ProjectionFault::Depth { type_row }))?;
     if let Some(record) = primitive_record(spelling) {
         let void = matches!(spelling, b"System.Void" | b"void");
         return Ok(OwnedNode {
@@ -1417,10 +1714,20 @@ fn csharp_facts<'source>(
     // every resolvable constraint in source order. A generic contract is not
     // a first-match slot.
     let start = facts.type_parameter_len;
-    let start = u32::try_from(start).map_err(|_| terminal(ProjectionFault::IndexCapacity))?;
+    let start = u32::try_from(start).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::FactOrdinal,
+            observed: start as u64,
+        })
+    })?;
     let anchor = ordinals
         .lookup(coordinate)
-        .ok_or_else(|| terminal(ProjectionFault::IndexCapacity))?;
+        .ok_or_else(|| {
+            terminal(ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::FactOrdinal,
+                observed: coordinate as u64,
+            })
+        })?;
     for generic in declared.type_parameters.iter() {
         let generic = generic.map_err(ProjectionFault::Image).map_err(terminal)?;
         let mut bounds = Vec::with_capacity(generic.constraints.len());
@@ -1478,14 +1785,24 @@ fn csharp_facts<'source>(
 
     // Attributes: one interned spelling per applied attribute row.
     let mut atoms = Vec::new();
-    let raw_coordinate = u32::try_from(coordinate).unwrap_or(u32::MAX);
+    let raw_coordinate = u32::try_from(coordinate).map_err(|_| {
+        terminal(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Declaration,
+            observed: coordinate as u64,
+        })
+    })?;
     for (_declaration, spelling) in attributes
         .iter()
         .filter(|(declaration, _)| *declaration == raw_coordinate)
     {
         if atoms.len() >= MAX_REF_LIST_ELEMENTS {
             return Err(terminal(ProjectionFault::AttributeCapacity {
-                spellings: atoms.len() + 1,
+                spellings: u32::try_from(atoms.len() + 1).map_err(|_| {
+                    terminal(ProjectionFault::IndexCapacity {
+                        phase: CSharpProjectionIndexPhase::Attribute,
+                        observed: (atoms.len() + 1) as u64,
+                    })
+                })?,
             }));
         }
         let atom = facts.intern_atom(spelling).map_err(lane_terminal)?;
@@ -1526,13 +1843,21 @@ fn push_occurrence<'source>(
     facts: &mut FactSet<'source>,
     image: &CSharpImage<'source>,
     ordinals: &Ordinals,
+    reference_index: u32,
     reference: &ResolvedReference<'source>,
 ) -> Result<(), ProjectionFault> {
-    let owner_coordinate =
-        usize::try_from(reference.owner).map_err(|_| ProjectionFault::IndexCapacity)?;
+    let owner_coordinate = usize::try_from(reference.owner).map_err(|_| {
+        ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Reference,
+            observed: reference.owner as u64,
+        }
+    })?;
     let owner = ordinals
         .lookup(owner_coordinate)
-        .ok_or(ProjectionFault::IndexCapacity)?;
+        .ok_or(ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Reference,
+            observed: reference.owner as u64,
+        })?;
     let owner_start = image
         .declaration(reference.owner)
         .map_err(ProjectionFault::Image)?
@@ -1554,8 +1879,16 @@ fn push_occurrence<'source>(
     let target = match reference.target {
         Some(coordinate) => {
             let ordinal = ordinals
-                .lookup(usize::try_from(coordinate).map_err(|_| ProjectionFault::IndexCapacity)?)
-                .ok_or(ProjectionFault::IndexCapacity)?;
+                .lookup(usize::try_from(coordinate).map_err(|_| {
+                    ProjectionFault::IndexCapacity {
+                        phase: CSharpProjectionIndexPhase::Reference,
+                        observed: coordinate as u64,
+                    }
+                })?)
+                .ok_or(ProjectionFault::IndexCapacity {
+                    phase: CSharpProjectionIndexPhase::Reference,
+                    observed: coordinate as u64,
+                })?;
             OccurrenceTarget::Local(EntityId::new(ordinal))
         }
         None => {
@@ -1563,7 +1896,8 @@ fn push_occurrence<'source>(
             // string domain; the key keeps the written spelling as both path
             // and display.
             let spelling =
-                str::from_utf8(reference.spelling.bytes).map_err(|_| ProjectionFault::Foreign)?;
+                str::from_utf8(reference.spelling.bytes)
+                    .map_err(|_| ProjectionFault::Foreign { reference: reference_index })?;
             let key = ForeignKey::new(
                 ForeignOrigin::Universe {
                     ecosystem: ECOSYSTEM_STR,
@@ -1572,7 +1906,9 @@ fn push_occurrence<'source>(
                 spelling,
                 foreign_kind(reference.kind),
             )
-            .map_err(|_| ProjectionFault::Foreign)?;
+            .map_err(|_| ProjectionFault::Foreign {
+                reference: reference_index,
+            })?;
             OccurrenceTarget::Foreign(key)
         }
     };
@@ -1586,7 +1922,10 @@ fn push_occurrence<'source>(
                 span,
             },
         )
-        .map_err(|_| ProjectionFault::IndexCapacity)?;
+        .map_err(|_| ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Reference,
+            observed: owner as u64,
+        })?;
     Ok(())
 }
 
@@ -1630,8 +1969,12 @@ fn push_doc<'source>(
     ordinals: &Ordinals,
     doc: &compiler_languages_csharp::Doc<'source>,
 ) -> Result<(), ProjectionFault> {
-    let coordinate =
-        usize::try_from(doc.declaration).map_err(|_| ProjectionFault::IndexCapacity)?;
+    let coordinate = usize::try_from(doc.declaration).map_err(|_| {
+        ProjectionFault::IndexCapacity {
+            phase: CSharpProjectionIndexPhase::Documentation,
+            observed: doc.declaration as u64,
+        }
+    })?;
     let Some(owner) = ordinals.lookup(coordinate) else {
         return Ok(());
     };
@@ -1641,7 +1984,10 @@ fn push_doc<'source>(
     for fragment in summary_fragments(names, ordinals, inner) {
         facts
             .push_doc(owner, fragment)
-            .map_err(|_| ProjectionFault::IndexCapacity)?;
+            .map_err(|_| ProjectionFault::IndexCapacity {
+                phase: CSharpProjectionIndexPhase::Documentation,
+                observed: owner as u64,
+            })?;
     }
     Ok(())
 }
@@ -1866,16 +2212,16 @@ mod tests {
         FragmentView, LanguageExtensionWireFact, NominalRef, OccurrenceTarget, PrimitiveShape,
         SemanticTypeTag, SourceIdentity,
     };
-    use compiler_languages_csharp::VarianceTag;
+    use compiler_languages_csharp::{ImageError, VarianceTag};
     use compiler_vocabulary::{
-        CSharpVersion, CompileRecipeFact, LanguageProfile, NativeTool, Stage,
+        CSharpImageFault, CSharpProjectionFault as PortableCSharpProjectionFault, CSharpVersion,
+        CompileRecipeFact, LanguageProfile, LoweringUnsupported, NativeTool, Stage,
     };
     use heart_identity::{ContentId, SourceFactDomain, ToolchainDomain};
     use sha2::{Digest, Sha256};
 
-    use super::{CSharpCollectError, collect};
+    use super::{CSharpCollectError, ProjectionFault, collect, terminal};
     use crate::lower::{FactSet, MAX_EMISSION_FACTS, admit};
-    use crate::types::CSharpProjectionFault;
 
     const HEADER_BYTES: usize = 256;
     const DIRECTORY_OFFSET: usize = 48;
@@ -1937,6 +2283,30 @@ mod tests {
         fn from(error: compiler_ir::FragmentError) -> Self {
             Self::Validate(error)
         }
+    }
+
+    #[test]
+    fn image_projection_retains_exact_name_range_operands() {
+        let error = terminal(ProjectionFault::Image(ImageError::NameRange {
+            index: 7,
+            offset: 11,
+            length: 13,
+            atom_bytes: 17,
+        }));
+        let CSharpCollectError::Lowering(LoweringUnsupported::CSharpProjection {
+            fault: PortableCSharpProjectionFault::Image {
+                cause: CSharpImageFault::NameRange {
+                    index,
+                    offset,
+                    length,
+                    atom_bytes,
+                },
+            },
+        }) = error
+        else {
+            panic!("image fault lost its closed C# projection operands");
+        };
+        assert_eq!((index, offset, length, atom_bytes), (7, 11, 13, 17));
     }
 
     #[derive(Clone)]
@@ -3317,8 +3687,10 @@ mod tests {
         mutated.types[array_row as usize]
             .children
             .push((None, int_ty));
-        let Err(TestError::Collect(CSharpCollectError::Projection(
-            CSharpProjectionFault::HeterogeneousArrayRank { .. },
+        let Err(TestError::Collect(CSharpCollectError::Lowering(
+            LoweringUnsupported::CSharpProjection {
+                fault: PortableCSharpProjectionFault::HeterogeneousArrayRank { .. },
+            },
         ))) = lower(&mutated, source)
         else {
             return Err(TestError::Missing("heterogeneous array rank rejection"));

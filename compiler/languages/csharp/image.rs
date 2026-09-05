@@ -400,6 +400,14 @@ pub struct Atom<'image> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TypeRef(u32);
 
+impl TypeRef {
+    /// Returns the exact zero-based authority type-row coordinate.
+    #[must_use]
+    pub const fn ordinal(self) -> u32 {
+        self.0
+    }
+}
+
 /// An exact-size iterator over validated constraint type coordinates of one
 /// generic parameter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
