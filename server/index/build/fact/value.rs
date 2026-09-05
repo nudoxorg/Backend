@@ -260,6 +260,12 @@ pub enum ExactEntityValueError {
         /// Complete observed declaration-kind code.
         actual: u16,
     },
+    /// The exact entity value used an unknown type-authority code.
+    #[error("exact entity value type authority {actual} is unknown")]
+    TypeAuthority {
+        /// Complete observed type-authority code.
+        actual: u16,
+    },
     /// A compact type authority carried a semantic type class.
     #[error("compact exact entity type carried semantic class cell {observed}")]
     CompactTypeClass {
@@ -424,7 +430,11 @@ fn decode_exact_entity_value(
                 observed: type_class,
             })?,
         })),
-        _ => unreachable!("two-bit semantic type authority is exhaustive"),
+        _ => {
+            return Err(ExactEntityValueError::TypeAuthority {
+                actual: type_authority,
+            });
+        }
     };
     Ok(ExactEntityValueView {
         kind,
