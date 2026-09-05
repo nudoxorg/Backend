@@ -10,6 +10,7 @@ mod package_authority;
 mod package_source;
 mod runtime;
 mod terminal;
+mod toolchain_probe;
 
 pub use compiler::LocalCompiler;
 pub use config::{
@@ -42,3 +43,8 @@ pub use runtime::{
     LocalRuntimeToolchainFacts,
 };
 pub use terminal::{LocalCompilerOpenError, LocalCompilerPath};
+pub use toolchain_probe::{
+    ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeLimitError,
+    ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
+    ToolchainProbeStreamError,
+};

@@ -34,6 +34,7 @@ use interface_core::{
 use server_journal::PublicationLimits;
 use thiserror::Error;
 
+use crate::toolchain_probe::{ToolchainProbeError, ToolchainProbeLimits, probe_version};
 use crate::{
     CSharpPackageAuthorityConfiguration, JavaPackageAuthorityConfiguration, LocalCompiler,
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerOpenError, LocalCompilerPath,
@@ -99,6 +100,23 @@ pub struct LocalRuntimeToolchain {
 }
 
 impl LocalRuntimeToolchain {
+    /// Probes one absolute native executable under explicit output and deadline bounds, then owns
+    /// the executable together with the identity of the exact returned version bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns exact admission, process, bounded-stream, deadline, exit, or identity causes. No
+    /// ambient executable search or unbounded child output participates.
+    pub fn probe(
+        tool: NativeTool,
+        executable: PathBuf,
+        limits: ToolchainProbeLimits,
+    ) -> Result<Self, ToolchainProbeError> {
+        let version = probe_version(tool, &executable, limits)?;
+        Self::resolved(tool, executable, &version)
+            .map_err(|source| ToolchainProbeError::Resolution { tool, source })
+    }
+
     /// Owns one absolute executable and exact caller-probed version identity.
     ///
     /// # Errors
