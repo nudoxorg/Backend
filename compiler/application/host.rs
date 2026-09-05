@@ -73,6 +73,8 @@ pub enum LocalHostVariable {
     NudoxDotnet,
     /// Explicit Node runtime for the vendored TypeScript authority driver.
     NudoxTypeScriptNode,
+    /// Explicit Node module root containing the TypeScript compiler API.
+    NudoxTypeScriptModuleRoot,
     /// Explicit program that directly emits TypeScript authority reports.
     NudoxTypeScriptReportProgram,
     /// Explicit Pyrefly executable.
@@ -318,6 +320,7 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::NudoxJavaCompiler => "NUDOX_JAVAC",
         LocalHostVariable::NudoxDotnet => "NUDOX_DOTNET",
         LocalHostVariable::NudoxTypeScriptNode => "NUDOX_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptModuleRoot => "NUDOX_TYPESCRIPT_MODULE_ROOT",
         LocalHostVariable::NudoxTypeScriptReportProgram => "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
         LocalHostVariable::NudoxPyrefly => "NUDOX_PYREFLY",
         LocalHostVariable::NudoxGoOracle => "NUDOX_GO_ORACLE",

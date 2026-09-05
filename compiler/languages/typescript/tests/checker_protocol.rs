@@ -502,6 +502,32 @@ mod bounded_child {
             matches!(error, CheckerError::Exit { ref stderr, .. } if stderr.contains("semantic failure"))
         );
     }
+
+    #[test]
+    fn explicit_node_binds_the_selected_module_root_without_ambient_lookup() {
+        let source = b"export const n = 1;";
+        let module_root = std::env::temp_dir().join(format!(
+            "nudox-ts-modules-{}-{}",
+            std::process::id(),
+            SCRIPT_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&module_root).expect("test module root");
+        let digest = hex_of(source);
+        let node = script(&format!(
+            "test \"$NODE_PATH\" = \"{}\" || exit 7\nprintf '%s' '{{\"schemaVersion\":1,\"sourceDigest\":\"{digest}\",\"diagnostics\":[],\"declarations\":[],\"references\":[],\"narrowings\":[]}}'",
+            module_root.display(),
+        ));
+        let report = Checker::default()
+            .with_node(node, module_root.clone())
+            .expect("absolute Node authority is admissible")
+            .run(
+                compiler_vocabulary::TypeScriptSource::TypeScript,
+                source,
+            )
+            .expect("selected module root reaches the explicit child");
+        assert_eq!(report.source_digest, digest);
+        std::fs::remove_dir(&module_root).expect("remove test module root");
+    }
 }
 
 #[test]

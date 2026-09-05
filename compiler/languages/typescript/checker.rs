@@ -689,6 +689,24 @@ pub struct TypeScriptCheckerProgramView {
     pub executable: PathBuf,
 }
 
+/// Immutable facts for the caller-selected Node module search root that owns
+/// the `typescript` package used by the vendored authority driver.
+///
+/// Keeping this path beside the Node executable makes checker authority
+/// independent of the parent process's ambient `NODE_PATH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptModuleRoot {
+    view: TypeScriptModuleRootView,
+}
+
+/// Read-only view of one validated absolute Node module root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeScriptModuleRootView {
+    /// Absolute directory whose `typescript` child is the selected compiler
+    /// API implementation.
+    pub directory: PathBuf,
+}
+
 impl core::ops::Deref for TypeScriptCheckerProgram {
     type Target = TypeScriptCheckerProgramView;
 
@@ -703,6 +721,20 @@ impl AsRef<Path> for TypeScriptCheckerProgram {
     }
 }
 
+impl core::ops::Deref for TypeScriptModuleRoot {
+    type Target = TypeScriptModuleRootView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+impl AsRef<Path> for TypeScriptModuleRoot {
+    fn as_ref(&self) -> &Path {
+        &self.view.directory
+    }
+}
+
 /// Rejection while admitting an explicit TypeScript checker executable.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeScriptCheckerProgramError {
@@ -712,6 +744,13 @@ pub enum TypeScriptCheckerProgramError {
     RelativeExecutable {
         /// Caller-supplied relative executable path.
         executable: PathBuf,
+    },
+    /// A relative module root would defer compiler-API selection to the
+    /// child's working directory.
+    #[error("TypeScript Node module root is not absolute: {directory:?}")]
+    RelativeModuleRoot {
+        /// Caller-supplied relative module root.
+        directory: PathBuf,
     },
 }
 
@@ -723,6 +762,18 @@ impl TypeScriptCheckerProgram {
         }
         Ok(Self {
             view: TypeScriptCheckerProgramView { executable },
+        })
+    }
+}
+
+impl TypeScriptModuleRoot {
+    /// Admits one caller-selected absolute Node module root.
+    pub fn new(directory: PathBuf) -> Result<Self, TypeScriptCheckerProgramError> {
+        if !directory.is_absolute() {
+            return Err(TypeScriptCheckerProgramError::RelativeModuleRoot { directory });
+        }
+        Ok(Self {
+            view: TypeScriptModuleRootView { directory },
         })
     }
 }
@@ -741,7 +792,12 @@ enum ExplicitCheckerInvocation {
     /// A program that directly writes the checker report schema.
     ReportProgram(TypeScriptCheckerProgram),
     /// An explicit Node runtime that executes the vendored checker driver.
-    Node(TypeScriptCheckerProgram),
+    Node {
+        /// Exact Node runtime selected by the caller.
+        program: TypeScriptCheckerProgram,
+        /// Exact module root containing the selected `typescript` package.
+        module_root: TypeScriptModuleRoot,
+    },
 }
 
 impl ExplicitTypeScriptChecker {
@@ -793,10 +849,14 @@ impl Checker {
     pub fn with_node(
         self,
         executable: PathBuf,
+        module_root: PathBuf,
     ) -> Result<ExplicitTypeScriptChecker, TypeScriptCheckerProgramError> {
         Ok(ExplicitTypeScriptChecker {
             checker: self,
-            invocation: ExplicitCheckerInvocation::Node(TypeScriptCheckerProgram::new(executable)?),
+            invocation: ExplicitCheckerInvocation::Node {
+                program: TypeScriptCheckerProgram::new(executable)?,
+                module_root: TypeScriptModuleRoot::new(module_root)?,
+            },
         })
     }
 
@@ -1068,11 +1128,15 @@ impl Checker {
             ExplicitCheckerInvocation::ReportProgram(program) => {
                 self.run_child(work, program.as_ref(), file)
             }
-            ExplicitCheckerInvocation::Node(node) => {
+            ExplicitCheckerInvocation::Node {
+                program,
+                module_root,
+            } => {
                 let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("checker")
                     .join("main.cjs");
-                let mut command = Command::new(node.as_ref());
+                let mut command = Command::new(program.as_ref());
+                command.env("NODE_PATH", module_root.as_ref());
                 command.arg(driver).arg(file);
                 self.run_child_prepared(work, command, file)
             }
@@ -1425,6 +1489,21 @@ mod capability_tests {
             error,
             TypeScriptCheckerProgramError::RelativeExecutable { executable }
                 if executable == PathBuf::from("checker")
+        ));
+    }
+
+    #[test]
+    fn explicit_node_checker_rejects_relative_module_root_before_child_work() {
+        let error = Checker::default()
+            .with_node(
+                PathBuf::from("/configured/node"),
+                PathBuf::from("node_modules"),
+            )
+            .expect_err("relative module root must not enter authority configuration");
+        assert!(matches!(
+            error,
+            TypeScriptCheckerProgramError::RelativeModuleRoot { directory }
+                if directory == PathBuf::from("node_modules")
         ));
     }
 }

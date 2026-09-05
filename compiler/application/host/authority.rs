@@ -73,11 +73,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::TypeScriptNode,
             self.auxiliary_candidates(home, "node"),
         )?;
+        let typescript_module_root =
+            self.typescript_module_root(executables.typescript.as_deref())?;
         let typescript = if executables.typescript.is_some() {
-            match (typescript_report, node) {
-                (Some(program), _) => Some(TypeScriptChecker::default().with_program(program)?),
-                (None, Some(node)) => Some(TypeScriptChecker::default().with_node(node)?),
-                (None, None) => None,
+            match (typescript_report, node, typescript_module_root) {
+                (Some(program), _, _) => {
+                    Some(TypeScriptChecker::default().with_program(program)?)
+                }
+                (None, Some(node), Some(module_root)) => {
+                    Some(TypeScriptChecker::default().with_node(node, module_root)?)
+                }
+                (None, _, _) => None,
             }
         } else {
             None

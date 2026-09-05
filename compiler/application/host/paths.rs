@@ -37,6 +37,8 @@ pub enum LocalHostPathRole {
     Native(NativeTool),
     /// Node runtime for the vendored TypeScript authority driver.
     TypeScriptNode,
+    /// Node module root containing the TypeScript compiler API.
+    TypeScriptModuleRoot,
     /// Direct TypeScript report producer.
     TypeScriptReportProgram,
     /// Pyrefly authority executable.
@@ -260,6 +262,53 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             PathBuf::from("/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home"),
         );
         candidates
+    }
+
+    /// Locates the module root paired with one already-admitted TypeScript
+    /// compiler. Exact compiler-relative roots remain valid in explicit-only
+    /// mode because they derive from that selected compiler rather than an
+    /// ambient search. Platform roots are considered only under platform
+    /// discovery.
+    pub(super) fn typescript_module_root(
+        &self,
+        compiler: Option<&Path>,
+    ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+        if let Some(configured) =
+            self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptModuleRoot)?
+        {
+            return self
+                .validate_directory(
+                    LocalHostPathRole::TypeScriptModuleRoot,
+                    LocalHostVariable::NudoxTypeScriptModuleRoot,
+                    configured,
+                )
+                .map(Some);
+        }
+
+        let mut candidates = ArrayVec::new();
+        if let Some(compiler) = compiler {
+            if let Some(binary_directory) = compiler.parent() {
+                if let Some(compiler_root) = binary_directory.parent() {
+                    push_candidate(&mut candidates, compiler_root.join("lib/node_modules"));
+                    if compiler_root.file_name() == Some(OsStr::new("typescript")) {
+                        if let Some(module_root) = compiler_root.parent() {
+                            push_candidate(&mut candidates, module_root.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+        if self.discovery == LocalHostDiscovery::PlatformDefaults {
+            push_candidate(
+                &mut candidates,
+                PathBuf::from("/opt/homebrew/lib/node_modules"),
+            );
+            push_candidate(
+                &mut candidates,
+                PathBuf::from("/usr/local/lib/node_modules"),
+            );
+        }
+        first_existing_directory(LocalHostPathRole::TypeScriptModuleRoot, candidates)
     }
 
     pub(super) fn package_root_candidates(

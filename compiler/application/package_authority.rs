@@ -695,7 +695,10 @@ mod tests {
     #[test]
     fn retained_package_configuration_accepts_only_explicit_ts_and_go_authorities() {
         let typescript = TypeScriptChecker::default()
-            .with_node(Path::new("/configured/node").to_path_buf())
+            .with_node(
+                Path::new("/configured/node").to_path_buf(),
+                Path::new("/configured/lib/node_modules").to_path_buf(),
+            )
             .expect("absolute Node runtime is admissible");
         let go = GoOracle::default().with_configuration(
             GoOracleConfiguration::go_toolchain(Path::new("/configured/go").to_path_buf())

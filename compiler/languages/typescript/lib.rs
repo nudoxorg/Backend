@@ -17,7 +17,8 @@ pub use checker::{
     BoundDeclaration, BoundNarrowing, BoundReference, Checker, CheckerError, CheckerIndex,
     Declaration, ExplicitTypeScriptChecker, LiteralBase, MappedModifier, Narrowing, ObjectMember,
     Origin, Reference, Report, TemplatePart, TypeScriptCheckerProgram,
-    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeTree, source_digest,
+    TypeScriptCheckerProgramError, TypeScriptCheckerProgramView, TypeScriptModuleRoot,
+    TypeScriptModuleRootView, TypeTree, source_digest,
 };
 pub use coordinate::{CoordinateError, Utf8Span, Utf8ToUtf16Cursor, Utf16Span};
 pub use error::AuthorityError;
