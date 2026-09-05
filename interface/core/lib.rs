@@ -42,9 +42,9 @@ pub use model::{
 };
 pub use package::{
     MAX_PACKAGE_URL_BYTES, PackageCompileFacts, PackageCompilePhase, PackageCompileRequest,
-    PackageEcosystem, PackagePathComponentError, PackageProfileMismatch, PackageSourceCause,
-    PackageSourceIoFact, PackageSourceIoPhase, PackageTextRange, PackageUrl, PackageUrlError,
-    PackageUrlFacts, RejectedPackageUrl,
+    PackageDeclarationScopeCause, PackageEcosystem, PackagePathComponentError,
+    PackageProfileMismatch, PackageSourceCause, PackageSourceIoFact, PackageSourceIoPhase,
+    PackageTextRange, PackageUrl, PackageUrlError, PackageUrlFacts, RejectedPackageUrl,
 };
 pub use retrieval::{
     DocSection, MAX_SIGNATURE_TOKENS, RetrievalCapability, RetrievalCause, RetrievalMode,

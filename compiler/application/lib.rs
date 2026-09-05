@@ -6,14 +6,17 @@
 mod compiler;
 mod config;
 mod documentation;
+mod package_source;
 mod terminal;
 
 pub use compiler::LocalCompiler;
 pub use config::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch, LocalCompilerTimeout,
-    LocalCompilerTimeoutError, LocalToolchainSet, LocalToolchainSetError,
-    MAX_FRAGMENT_OUTPUT_BYTES, MAX_LOCAL_COMPILER_TIMEOUT, MAX_LOCAL_TOOLCHAINS,
-    MAX_LOCALITY_OUTPUT_BYTES, MAX_MANIFEST_ENTRIES, MAX_MANIFEST_OUTPUT_BYTES,
+    LocalCompilerTimeoutError, LocalPackageRoot, LocalPackageRootError, LocalPackageRootFacts,
+    LocalPackageRootSet, LocalPackageRootSetError, LocalToolchainSet, LocalToolchainSetError,
+    MAX_FRAGMENT_OUTPUT_BYTES, MAX_LOCAL_COMPILER_TIMEOUT, MAX_LOCAL_PACKAGE_ROOTS,
+    MAX_LOCAL_TOOLCHAINS, MAX_LOCALITY_OUTPUT_BYTES, MAX_MANIFEST_ENTRIES,
+    MAX_MANIFEST_OUTPUT_BYTES,
 };
 pub use documentation::{
     CanonicalDocumentationEntities, DocumentationEntity, DocumentationEntityView,
@@ -22,4 +25,5 @@ pub use documentation::{
     DocumentationRelations, DocumentationSession, DocumentationSessionView, DocumentationTarget,
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
 };
+pub use package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub use terminal::{LocalCompilerOpenError, LocalCompilerPath};

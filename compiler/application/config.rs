@@ -8,10 +8,13 @@ use std::{ops::Deref, path::Path, sync::atomic::AtomicBool, time::Duration};
 use compiler_driver::ToolchainSelection;
 use compiler_publication::manifest::StoredFragmentFacts;
 use compiler_vocabulary::{MAX_NATIVE_DIAGNOSTIC_BYTES, NativeTool};
+use interface_core::PackageEcosystem;
 use thiserror::Error;
 
 /// Maximum explicit native-tool rows one local compiler configuration may borrow.
 pub const MAX_LOCAL_TOOLCHAINS: usize = NativeTool::ALL.len();
+/// Maximum explicit package-root rows one local compiler configuration may borrow.
+pub const MAX_LOCAL_PACKAGE_ROOTS: usize = 7;
 /// Largest per-invocation native work interval accepted by the portable local adapter.
 pub const MAX_LOCAL_COMPILER_TIMEOUT: Duration = Duration::from_hours(1);
 
@@ -108,6 +111,150 @@ impl<'path> Deref for LocalToolchainSet<'path> {
     fn deref(&self) -> &Self::Target {
         self.entries
     }
+}
+
+/// Immutable facts of one validated local package-store root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalPackageRootFacts<'path> {
+    /// Closed ecosystem whose package-manager layout is rooted here.
+    pub ecosystem: PackageEcosystem,
+    /// Absolute caller-selected cache or repository root.
+    pub path: &'path Path,
+}
+
+/// One absolute package-store root accepted after entry validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalPackageRoot<'path> {
+    facts: LocalPackageRootFacts<'path>,
+}
+
+impl<'path> LocalPackageRoot<'path> {
+    /// Validates one explicit package-store root without consulting environment state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejected ecosystem when `path` is relative.
+    pub fn new(
+        ecosystem: PackageEcosystem,
+        path: &'path Path,
+    ) -> Result<Self, LocalPackageRootError> {
+        if !path.is_absolute() {
+            return Err(LocalPackageRootError::Relative { ecosystem });
+        }
+        Ok(Self {
+            facts: LocalPackageRootFacts { ecosystem, path },
+        })
+    }
+}
+
+impl<'path> Deref for LocalPackageRoot<'path> {
+    type Target = LocalPackageRootFacts<'path>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
+}
+
+/// Canonically ordered, caller-owned package-store roots.
+#[derive(Clone, Copy, Debug)]
+pub struct LocalPackageRootSet<'path> {
+    entries: &'path [LocalPackageRoot<'path>],
+}
+
+impl<'path> LocalPackageRootSet<'path> {
+    /// The explicit absence of all package stores.
+    pub const EMPTY: Self = Self { entries: &[] };
+
+    /// Validates a bounded table in strictly ascending ecosystem order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed capacity, duplicate, or ordering rejection.
+    pub fn validate(
+        entries: &'path [LocalPackageRoot<'path>],
+    ) -> Result<Self, LocalPackageRootSetError> {
+        if entries.len() > MAX_LOCAL_PACKAGE_ROOTS {
+            return Err(LocalPackageRootSetError::Capacity {
+                actual: entries.len(),
+                maximum: MAX_LOCAL_PACKAGE_ROOTS,
+            });
+        }
+        let mut previous = None;
+        for entry in entries {
+            if let Some(preceding) = previous {
+                match entry.ecosystem.cmp(&preceding) {
+                    core::cmp::Ordering::Equal => {
+                        return Err(LocalPackageRootSetError::Duplicate {
+                            ecosystem: entry.ecosystem,
+                        });
+                    }
+                    core::cmp::Ordering::Less => {
+                        return Err(LocalPackageRootSetError::OutOfOrder {
+                            preceding,
+                            observed: entry.ecosystem,
+                        });
+                    }
+                    core::cmp::Ordering::Greater => {}
+                }
+            }
+            previous = Some(entry.ecosystem);
+        }
+        Ok(Self { entries })
+    }
+
+    pub(crate) fn select(self, ecosystem: PackageEcosystem) -> Option<&'path Path> {
+        self.entries
+            .binary_search_by_key(&ecosystem, |entry| entry.ecosystem)
+            .ok()
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| entry.path)
+    }
+}
+
+impl<'path> Deref for LocalPackageRootSet<'path> {
+    type Target = [LocalPackageRoot<'path>];
+
+    fn deref(&self) -> &Self::Target {
+        self.entries
+    }
+}
+
+/// Rejection while entering one package-store root.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LocalPackageRootError {
+    /// Relative roots would make package resolution depend on ambient process state.
+    #[error("local {ecosystem:?} package root is relative")]
+    Relative {
+        /// Ecosystem whose root was rejected.
+        ecosystem: PackageEcosystem,
+    },
+}
+
+/// Rejection while validating the complete package-root table.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LocalPackageRootSetError {
+    /// More than one root per closed ecosystem was supplied.
+    #[error("local package-root table has {actual} rows; maximum is {maximum}")]
+    Capacity {
+        /// Observed root count.
+        actual: usize,
+        /// Closed table maximum.
+        maximum: usize,
+    },
+    /// Two rows attempted to own one ecosystem.
+    #[error("local package-root table duplicates {ecosystem:?}")]
+    Duplicate {
+        /// Duplicated ecosystem.
+        ecosystem: PackageEcosystem,
+    },
+    /// Rows were not ordered by the closed ecosystem vocabulary.
+    #[error("local package-root table orders {observed:?} after {preceding:?}")]
+    OutOfOrder {
+        /// Earlier row.
+        preceding: PackageEcosystem,
+        /// Later lower-valued row.
+        observed: PackageEcosystem,
+    },
 }
 
 /// Typed rejection while validating caller-owned native-tool routing rows.

@@ -19,18 +19,21 @@ use heart_identity::{
 use interface_core::{
     CompilerCapability, CompilerReadiness, CompilerRequest as ApplicationCompilerRequest,
     CompilerTerminal, GeneratedArtifact, PackageCompilePhase, PackageCompileRequest,
-    PublicationAuthority, SemanticImageAuthority, SourceAuthority,
+    PackageDeclarationScopeCause, PackageSourceCause, PublicationAuthority, SemanticImageAuthority,
+    SourceAuthority,
 };
 use server_journal::{DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError};
 
 use crate::{
     LocalCompilerConfig, LocalCompilerOpenError, LocalCompilerPath, LocalCompilerScratch,
+    LocalPackageRootSet, package_source,
     terminal::{compile_terminal, source_authority},
 };
 
 /// Concrete local compiler with bounded explicit native toolchains, publisher, paths, and scratch.
 pub struct LocalCompiler<'path, 'scratch, 'cancel> {
     config: LocalCompilerConfig<'path, 'cancel>,
+    package_roots: LocalPackageRootSet<'path>,
     publisher: DurablePublisher,
     scratch: &'scratch mut LocalCompilerScratch,
 }
@@ -51,6 +54,23 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         limits: PublicationLimits,
         scratch: &'scratch mut LocalCompilerScratch,
     ) -> Result<Self, LocalCompilerOpenError> {
+        Self::create_with_package_roots(config, LocalPackageRootSet::EMPTY, limits, scratch)
+    }
+
+    /// Creates a durable compiler with explicit local package-store roots.
+    ///
+    /// The root table has already proven absolute, unique, ordered ecosystem ownership. No
+    /// package command consults process environment or walks outside these roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same exact configuration and durable-publisher terminal as [`Self::create`].
+    pub fn create_with_package_roots(
+        config: LocalCompilerConfig<'path, 'cancel>,
+        package_roots: LocalPackageRootSet<'path>,
+        limits: PublicationLimits,
+        scratch: &'scratch mut LocalCompilerScratch,
+    ) -> Result<Self, LocalCompilerOpenError> {
         for (path, role) in [
             (config.artifact_directory, LocalCompilerPath::Artifacts),
             (config.journal_directory, LocalCompilerPath::Journal),
@@ -65,6 +85,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             .map_err(LocalCompilerOpenError::Publisher)?;
         Ok(Self {
             config,
+            package_roots,
             publisher,
             scratch,
         })
@@ -137,6 +158,29 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         &mut self,
         request: ApplicationCompilerRequest<'_>,
     ) -> Result<GeneratedArtifact, CompilerTerminal> {
+        let mut ignored = |_| {};
+        self.compile_scoped_and_publish(
+            request,
+            DeclarationScope::standalone(request.profile),
+            compiler_driver::SemanticAuthorityInput::None,
+            &mut ignored,
+        )
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "this single outer application boundary retains source, recipe, and publication authorities inline; any emitted native diagnostic is already the only cold boxed fact"
+    )]
+    fn compile_scoped_and_publish<Progress>(
+        &mut self,
+        request: ApplicationCompilerRequest<'_>,
+        declaration_scope: DeclarationScope<'_>,
+        authority: compiler_driver::SemanticAuthorityInput<'_>,
+        progress: &mut Progress,
+    ) -> Result<GeneratedArtifact, CompilerTerminal>
+    where
+        Progress: FnMut(PackageCompilePhase),
+    {
         let source = request_source(request).map_err(source_terminal)?;
         let toolchain = self
             .toolchain(request)
@@ -149,14 +193,15 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 timeout: *timeout,
             }
         })?;
+        progress(PackageCompilePhase::Lower);
         let compiled = compile_fused_semantic(
             CompileRequest {
                 profile: request.profile,
                 stage: request.stage,
                 source: request.source.as_bytes(),
-                declaration_scope: DeclarationScope::standalone(request.profile),
+                declaration_scope,
                 toolchain,
-                authority: compiler_driver::SemanticAuthorityInput::None,
+                authority,
                 control: CompileControl {
                     deadline,
                     cancelled: self.config.control.cancelled,
@@ -190,6 +235,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         self.scratch
             .semantic_image_output
             .resize(semantic_length, 0);
+        progress(PackageCompilePhase::Publish);
         let publication = publish_semantic(
             &self.publisher,
             self.config.artifact_directory,
@@ -208,6 +254,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         .map_err(|error| crate::terminal::semantic_publication_terminal(source, recipe, error))?;
         drop(compiled);
 
+        progress(PackageCompilePhase::Reopen);
         let opened = open_published_semantic(
             &self.publisher,
             self.config.artifact_directory,
@@ -283,19 +330,149 @@ impl CompilerCapability for LocalCompiler<'_, '_, '_> {
     fn compile_package<Progress>(
         &mut self,
         request: &PackageCompileRequest,
-        _: &mut Progress,
+        progress: &mut Progress,
     ) -> Result<GeneratedArtifact, CompilerTerminal>
     where
         Progress: FnMut(PackageCompilePhase),
     {
-        // This configured compiler owns source compilation and publication,
-        // but no package-source locator yet.  Reporting the capability as
-        // unavailable is honest: entering a synthetic source phase here
-        // would falsely claim resolution authority.
-        Err(CompilerTerminal::Unavailable {
-            language: request.target.profile.language(),
+        let target = request.as_ref().identity;
+        if self
+            .config
+            .control
+            .cancelled
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CompilerTerminal::PackageCancelled {
+                target,
+                phase: PackageCompilePhase::Locate,
+            });
+        }
+        progress(PackageCompilePhase::Locate);
+        let resolved =
+            package_source::resolve(self.package_roots, request.as_ref()).map_err(|cause| {
+                CompilerTerminal::PackageSource {
+                    target,
+                    phase: PackageCompilePhase::Locate,
+                    cause,
+                }
+            })?;
+        progress(PackageCompilePhase::EnterSource);
+        let source = std::str::from_utf8(&resolved.bytes).map_err(|cause| {
+            CompilerTerminal::PackageSource {
+                target,
+                phase: PackageCompilePhase::EnterSource,
+                cause: PackageSourceCause::InvalidUtf8 {
+                    valid_up_to: cause.valid_up_to(),
+                    error_len: cause
+                        .error_len()
+                        .and_then(|length| u8::try_from(length).ok()),
+                },
+            }
+        })?;
+        let package = request.as_ref();
+        let package_name_start = package
+            .namespace
+            .map_or(package.name.start, |namespace| namespace.start);
+        let package_name = &package[interface_core::PackageTextRange {
+            start: package_name_start,
+            end: package.name.end,
+        }];
+        let lineage = compiler_ir::PackageLineage::new(
+            package_ecosystem_name(package.ecosystem),
+            package_name,
+        )
+        .map_err(|cause| CompilerTerminal::PackageSource {
+            target,
+            phase: PackageCompilePhase::EnterSource,
+            cause: PackageSourceCause::DeclarationScope {
+                cause: lineage_cause(cause),
+            },
+        })?;
+        let scope = DeclarationScope::new(lineage, &resolved.relative_source).map_err(|cause| {
+            CompilerTerminal::PackageSource {
+                target,
+                phase: PackageCompilePhase::EnterSource,
+                cause: PackageSourceCause::DeclarationScope {
+                    cause: declaration_scope_cause(cause),
+                },
+            }
+        })?;
+        progress(PackageCompilePhase::Authority);
+        let application_request = ApplicationCompilerRequest {
+            profile: request.target.profile,
             stage: request.target.stage,
-        })
+            source,
+        };
+        match request.target.profile {
+            compiler_vocabulary::LanguageProfile::C(_)
+            | compiler_vocabulary::LanguageProfile::Cxx(_) => self.compile_scoped_and_publish(
+                application_request,
+                scope,
+                compiler_driver::SemanticAuthorityInput::None,
+                progress,
+            ),
+            compiler_vocabulary::LanguageProfile::Rust(_)
+            | compiler_vocabulary::LanguageProfile::TypeScript(_)
+            | compiler_vocabulary::LanguageProfile::Python(_)
+            | compiler_vocabulary::LanguageProfile::Go(_)
+            | compiler_vocabulary::LanguageProfile::Java(_)
+            | compiler_vocabulary::LanguageProfile::CSharp(_) => {
+                let _ = (
+                    resolved.package_root,
+                    resolved.source_path,
+                    application_request,
+                    scope,
+                );
+                Err(CompilerTerminal::Unavailable {
+                    language: request.target.profile.language(),
+                    stage: request.target.stage,
+                })
+            }
+        }
+    }
+}
+
+const fn package_ecosystem_name(ecosystem: interface_core::PackageEcosystem) -> &'static str {
+    match ecosystem {
+        interface_core::PackageEcosystem::Cargo => "cargo",
+        interface_core::PackageEcosystem::Npm => "npm",
+        interface_core::PackageEcosystem::Pypi => "pypi",
+        interface_core::PackageEcosystem::Golang => "golang",
+        interface_core::PackageEcosystem::Maven => "maven",
+        interface_core::PackageEcosystem::Nuget => "nuget",
+        interface_core::PackageEcosystem::Generic => "generic",
+    }
+}
+
+const fn lineage_cause(cause: compiler_ir::PackageLineageFault) -> PackageDeclarationScopeCause {
+    match cause {
+        compiler_ir::PackageLineageFault::EmptyEcosystem => {
+            PackageDeclarationScopeCause::EmptyEcosystem
+        }
+        compiler_ir::PackageLineageFault::EmptyName => PackageDeclarationScopeCause::EmptyPackage,
+        compiler_ir::PackageLineageFault::SeparatorInEcosystem => {
+            PackageDeclarationScopeCause::EcosystemSeparator
+        }
+        compiler_ir::PackageLineageFault::SeparatorInName => {
+            PackageDeclarationScopeCause::PackageSeparator
+        }
+        compiler_ir::PackageLineageFault::Backslash { segment } => {
+            PackageDeclarationScopeCause::LineageBackslash { segment }
+        }
+    }
+}
+
+const fn declaration_scope_cause(
+    cause: compiler_ir::DeclarationKeyFault,
+) -> PackageDeclarationScopeCause {
+    match cause {
+        compiler_ir::DeclarationKeyFault::Path(compiler_ir::DeclarationPathFault::Empty) => {
+            PackageDeclarationScopeCause::EmptySourcePath
+        }
+        compiler_ir::DeclarationKeyFault::Path(compiler_ir::DeclarationPathFault::Backslash) => {
+            PackageDeclarationScopeCause::SourceBackslash
+        }
+        compiler_ir::DeclarationKeyFault::EmptyName => PackageDeclarationScopeCause::EmptyPackage,
     }
 }
 

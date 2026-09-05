@@ -241,6 +241,28 @@ pub enum PackagePathComponentError {
     InvalidUtf8,
 }
 
+/// Exact declaration-scope rejection after package and source paths were resolved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageDeclarationScopeCause {
+    /// Ecosystem lineage segment was empty.
+    EmptyEcosystem,
+    /// Package lineage segment was empty.
+    EmptyPackage,
+    /// Ecosystem lineage segment contained the reserved separator.
+    EcosystemSeparator,
+    /// Package lineage segment contained the reserved separator.
+    PackageSeparator,
+    /// One lineage segment contained a platform path separator.
+    LineageBackslash {
+        /// Offending segment (`0` ecosystem, `1` package).
+        segment: u8,
+    },
+    /// Package-relative source path was empty.
+    EmptySourcePath,
+    /// Package-relative source path contained a platform path separator.
+    SourceBackslash,
+}
+
 /// Exact package-source resolution rejection.
 #[derive(Debug, Eq, PartialEq)]
 pub enum PackageSourceCause {
@@ -261,10 +283,29 @@ pub enum PackageSourceCause {
         /// Closed component rejection.
         cause: PackagePathComponentError,
     },
+    /// The canonical PURL could not mint a stable declaration scope.
+    DeclarationScope {
+        /// Exact closed scope rejection.
+        cause: PackageDeclarationScopeCause,
+    },
+    /// Package source was not UTF-8 and cannot enter a semantic source compiler.
+    InvalidUtf8 {
+        /// Bytes before the first invalid sequence.
+        valid_up_to: usize,
+        /// Invalid sequence width when known.
+        error_len: Option<u8>,
+    },
     /// The requested package directory is absent.
     PackageUnavailable {
         /// Exact resolved path.
         path: Box<Path>,
+    },
+    /// Canonical package resolution escaped its configured ecosystem store.
+    PackageEscapesStore {
+        /// Canonical configured store root.
+        store: Box<Path>,
+        /// Canonical escaped package directory.
+        package: Box<Path>,
     },
     /// The requested source file is absent or not a regular file.
     SourceUnavailable {
@@ -300,6 +341,13 @@ pub enum PackageSourceCause {
         observed: usize,
         /// Fixed maximum inspected rows.
         maximum: usize,
+    },
+    /// More than one Cargo registry namespace contained the exact pinned package.
+    RegistryNamespaceAmbiguous {
+        /// First canonical-order matching package directory.
+        first: Box<Path>,
+        /// Second canonical-order matching package directory proving ambiguity.
+        second: Box<Path>,
     },
 }
 
