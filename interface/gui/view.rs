@@ -961,9 +961,10 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                             .truncate()
                             .text_xs()
                             .text_color(rgb(METADATA_TEXT))
-                            .child(package.name)
-                            .child(" / ")
-                            .child(document.name),
+                            // One text run, not three: the .truncate() above
+                            // ellipsizes a single run, and three children under
+                            // block display stacked onto three lines.
+                            .child(format!("{} / {}", package.name, document.name)),
                     )
                     .child(
                         div()
@@ -1226,6 +1227,10 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                 row.when_some(facts.shortcut, |row, shortcut| {
                     row.child(
                         div()
+                            .flex()
+                            .items_center()
+                            .flex()
+                            .items_center()
                             .ml_auto()
                             .text_sm()
                             .text_color(rgb(METADATA_TEXT))
@@ -1511,6 +1516,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                                     .gap(px(8.0))
                                     .child(
                                         div()
+                                            .flex()
+                                            .items_center()
                                             .text_xs()
                                             .text_color(rgb(METADATA_TEXT))
                                             .child(row_count.to_string())
@@ -1687,6 +1694,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .id("settings-notification-epoch")
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
@@ -2122,6 +2131,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                                     )
                                     .child(
                                         div()
+                                            .flex()
+                                            .items_center()
                                             .text_xs()
                                             .text_color(rgb(METADATA_TEXT))
                                             .child(package.item_count.to_string())
@@ -2667,6 +2678,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             .child(div().text_sm().child("Published generated artifact"))
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
                     .child("Source bytes: ")
@@ -2674,6 +2687,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
                     .child("Fragment: ")
@@ -2681,6 +2696,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
                     .child("Manifest: ")
@@ -2688,6 +2705,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .text_color(rgb(METADATA_TEXT))
                     .child("Binding: ")
@@ -3114,6 +3133,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
             .children(summaries.into_iter().map(|summary| {
                 let facts = surface_facts(summary.surface);
                 div()
+                    .flex()
+                    .items_center()
                     .id(facts.element_id)
                     .cursor_pointer()
                     .hover(|style| style.text_color(rgb(FOREGROUND)))
@@ -3229,6 +3250,8 @@ impl<Compiler: CompilerCapability + Clone + Send + 'static> GpuiShellView<Compil
                             .when_some(command_facts(command).shortcut, |row, shortcut| {
                                 row.child(
                                     div()
+                                        .flex()
+                                        .items_center()
                                         .ml_auto()
                                         .text_sm()
                                         .text_color(rgb(METADATA_TEXT))
